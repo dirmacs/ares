@@ -1,4 +1,6 @@
-mod client;
-mod llamacpp;
-mod ollama;
-mod openai;
+pub mod client;
+pub mod llamacpp;
+pub mod ollama;
+pub mod openai;
+
+pub use client::{LLMClient, LLMClientFactory, LLMResponse, Provider};

@@ -1,3 +1,4 @@
+mod db;
 mod llm;
 mod types;
 mod utils;

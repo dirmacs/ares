@@ -52,7 +52,7 @@ pub enum Provider {
 impl Provider {
     pub async fn create_client(&self) -> Result<Box<dyn LLMClient>> {
         match self {
-            Provider::OpenAI { api_key, model } =>
+            Provider::OpenAI { api_key, model } => Ok(Box::new()),
         }
     }
 }

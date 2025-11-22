@@ -248,7 +248,175 @@ impl TursoClient {
         Ok(())
     }
 
-    // pub async fn get_conversation_history(&self, conversation_id: &str) -> Result<Vec<Message>> {
-    //     let conn = self.connection()?;
-    // }
+    pub async fn get_conversation_history(&self, conversation_id: &str) -> Result<Vec<Message>> {
+        let conn = self.connection()?;
+
+        let mut rows = conn
+            .query(
+                "SELECT role, content, timestamp FROM messages
+                 WHERE conversation_id = ? ORDER BY timestamp ASC",
+                [conversation_id],
+            )
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to query messages: {}", e)))?;
+
+        let mut messages = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
+            let role_str: String = row.get(0).map_err(|e| AppError::Database(e.to_string()))?;
+            let role = match role_str.as_str() {
+                "system" => MessageRole::System,
+                "user" => MessageRole::User,
+                "assistant" => MessageRole::Assistant,
+                _ => MessageRole::User,
+            };
+
+            messages.push(Message {
+                role,
+                content: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
+                timestamp: chrono::DateTime::from_timestamp(
+                    row.get::<i64>(2)
+                        .map_err(|e| AppError::Database(e.to_string()))?,
+                    0,
+                )
+                .unwrap(),
+            });
+        }
+
+        Ok(messages)
+    }
+
+    // Memory operations
+    pub async fn store_memory_fact(&self, fact: &MemoryFact) -> Result<()> {
+        let conn = self.connection()?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_facts
+            (id, user_id, category, fact_key, fact_value, confidence, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                &fact.id,
+                &fact.user_id,
+                &fact.category,
+                &fact.fact_key,
+                &fact.fact_value,
+                fact.confidence,
+                fact.created_at.timestamp(),
+                fact.updated_at.timestamp(),
+            ),
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to store memory fact: {}", e)))?;
+
+        Ok(())
+    }
+
+    pub async fn get_user_memory(&self, user_id: &str) -> Result<Vec<MemoryFact>> {
+        let conn = self.connection()?;
+
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, category, fact_key, fact_value, confidence, created_at, updated_at
+                FROM memory_facts WHERE user_id = ?",
+                [user_id],
+            )
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to query memory facts: {}", e)))?;
+
+        let mut facts = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
+            facts.push(MemoryFact {
+                id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
+                user_id: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
+                category: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
+                fact_key: row.get(3).map_err(|e| AppError::Database(e.to_string()))?,
+                fact_value: row.get(4).map_err(|e| AppError::Database(e.to_string()))?,
+                confidence: row.get(5).map_err(|e| AppError::Database(e.to_string()))?,
+                created_at: chrono::DateTime::from_timestamp(
+                    row.get::<i64>(6)
+                        .map_err(|e| AppError::Database(e.to_string()))?,
+                    0,
+                )
+                .unwrap(),
+                updated_at: chrono::DateTime::from_timestamp(
+                    row.get::<i64>(7)
+                        .map_err(|e| AppError::Database(e.to_string()))?,
+                    0,
+                )
+                .unwrap(),
+            });
+        }
+
+        Ok(facts)
+    }
+
+    pub async fn store_preference(&self, user_id: &str, preference: &Preference) -> Result<()> {
+        let conn = self.connection()?;
+        let now = Utc::now().timestamp();
+        let id = uuid::Uuid::new_v4().to_string();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO preferences
+             (id, user_id, category, key, value, confidence, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                id,
+                user_id,
+                &preference.category,
+                &preference.key,
+                &preference.value,
+                preference.confidence,
+                now,
+            ),
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to store preference: {}", e)))?;
+
+        Ok(())
+    }
+
+    pub async fn get_user_preferences(&self, user_id: &str) -> Result<Vec<Preference>> {
+        let conn = self.connection()?;
+
+        let mut rows = conn
+            .query(
+                "SELECT category, key, value, confidence FROM preferences WHERE user_id = ?",
+                [user_id],
+            )
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to query preferences: {}", e)))?;
+
+        let mut preferences = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
+            preferences.push(Preference {
+                category: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
+                key: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
+                value: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
+                confidence: row.get(3).map_err(|e| AppError::Database(e.to_string()))?,
+            });
+        }
+
+        Ok(preferences)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct User {
+    pub id: String,
+    pub email: String,
+    pub password_hash: String,
+    pub name: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }

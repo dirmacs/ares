@@ -103,6 +103,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "async-openai",
+ "async-stream",
  "async-trait",
  "axum 0.8.7",
  "axum-test",

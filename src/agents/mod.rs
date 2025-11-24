@@ -1,4 +1,9 @@
+pub mod finance;
+pub mod hr;
+pub mod invoice;
+pub mod product;
 pub mod router;
+pub mod sales;
 
 use crate::types::{AgentContext, AgentType, Result};
 use async_trait::async_trait;

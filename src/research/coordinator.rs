@@ -29,8 +29,124 @@ impl ResearchCoordinator {
     }
 
     async fn generate_research_questions(&self, query: &str) -> Result<Vec<String>> {
-        // let prompt = format!(
+        let prompt = format!(
+            r#"Generate {} focused research questions to comprehensively answer: {}
 
-        // )
+Return only the questions, one per line, numbered 1-{}.
+
+Example:
+
+1. [QUESTION 1]
+2. [QUESTION 2]
+3. [QUESTION 3]
+..."#,
+            self.depth, query, self.depth
+        );
+
+        let response = self.llm.generate(&prompt).await?;
+
+        Ok(response
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                // Remove numbering
+                line.trim()
+                    .trim_start_matches(|c: char| c.is_numeric() || c == '.' || c == ')')
+                    .trim()
+                    .to_string()
+            })
+            .collect())
+    }
+
+    async fn parallel_research(&self, questions: &[String]) -> Result<Vec<String>> {
+        let mut set = JoinSet::new();
+
+        for question in questions.iter().take(self.depth as usize) {
+            let question = question.clone();
+            let llm_clone = self.llm.model_name().to_string(); // Simplified for example
+
+            set.spawn(async move {
+                // Simplified research - in production, this would call web search tools
+                format!("Research findings for: {}", question)
+            });
+        }
+
+        let mut results = Vec::new();
+        while let Some(res) = set.join_next().await {
+            if let Ok(finding) = res {
+                results.push(finding);
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn generate_followup_questions(
+        &self,
+        _original_query: &str,
+        findings: &[String],
+    ) -> Result<Vec<String>> {
+        if findings.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let prompt = format!(
+            r#"Based on these findings:
+    {}
+
+    Generate 2-3 follow-up research questions.
+
+    ONLY output the questions and nothing else, like this:
+
+    <question1>
+    <question2>
+    <question3>
+
+    "#,
+            findings.join("\n")
+        );
+
+        let response = self.llm.generate(&prompt).await?;
+
+        Ok(response
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .take(3)
+            .map(|s| s.to_string())
+            .collect())
+    }
+
+    async fn synthesize_findings(&self, query: &str, findings: &[String]) -> Result<String> {
+        let prompt = format!(
+            r#"Original query: {}
+
+      Research findings:
+      {}
+
+      Synthesize these findings into a comprehensive, well-structured answer. Include:
+      1. Direct answer to the question
+      2. Key insights
+      3. Supporting evidence
+      4. Caveats or limitations if any
+
+      Provide a clear, professional response."#,
+            query,
+            findings.join("\n\n")
+        );
+
+        self.llm.generate(&prompt).await
+    }
+
+    fn extract_sources(&self, findings: &[String]) -> Vec<Source> {
+        // Simplified source extraction
+        findings
+            .iter()
+            .enumerate()
+            .map(|(i, finding)| Source {
+                title: format!("Research Finding {}", i + 1),
+                url: None,
+                relevance_score: 0.8,
+            })
+            .collect()
     }
 }

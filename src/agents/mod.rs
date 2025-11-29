@@ -1,6 +1,7 @@
 pub mod finance;
 pub mod hr;
 pub mod invoice;
+pub mod orchestrator;
 pub mod product;
 pub mod router;
 pub mod sales;

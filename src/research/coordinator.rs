@@ -25,7 +25,43 @@ impl ResearchCoordinator {
         let mut all_sources = Vec::new();
 
         // Generate initial research questions
-        // let questions = self.generate_research
+        let questions = self.generate_research_questions(query).await?;
+
+        // Execute breadth-first parallel search
+        for iteration in 0..self.max_iterations {
+            tracing::info!(
+                "Research iteration {}/{}",
+                iteration + 1,
+                self.max_iterations
+            );
+
+            let findings = self.parallel_research(&questions).await?;
+            all_findings.extend(findings);
+
+            // Check if we have enough information
+            if all_findings.len() >= (self.depth as usize * 3) {
+                break;
+            }
+
+            // Generate follow-up questions based on findings
+            if iteration < self.max_iterations - 1 {
+                let follow_ups = self
+                    .generate_followup_questions(query, &all_findings)
+                    .await?;
+
+                if follow_ups.is_empty() {
+                    break;
+                }
+            }
+        }
+
+        // Synthesize findings
+        let synthesis = self.synthesize_findings(query, &all_findings).await?;
+
+        // Extract sources
+        all_sources = self.extract_sources(&all_findings);
+
+        Ok((synthesis, all_sources))
     }
 
     async fn generate_research_questions(&self, query: &str) -> Result<Vec<String>> {

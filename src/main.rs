@@ -3,7 +3,9 @@ mod api;
 mod auth;
 mod db;
 mod llm;
+mod rag;
 mod research;
+mod tools;
 mod types;
 mod utils;
 

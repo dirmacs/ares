@@ -1,1 +1,2 @@
-mod handlers;
+pub mod handlers;
+pub mod routes;

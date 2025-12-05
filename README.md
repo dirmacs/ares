@@ -6,6 +6,7 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 
 - ✅ **Local-First Operation**: Works completely offline with local databases and LLM models
 - ✅ **Generic LLM Client**: Support for OpenAI, Anthropic, Ollama, llama.cpp
+- ✅ **Full Tool Calling**: Native function calling support for Ollama (llama3.1+) and OpenAI models
 - ✅ **Authentication**: JWT-based auth with Argon2 password hashing
 - ✅ **Database**: Local libSQL/SQLite (or remote Turso), local in-memory vector store
 - ✅ **Tool Calling**: Type-safe function calling with automatic schema generation
@@ -241,6 +242,110 @@ async fn main() {
 | `search` | Search the web for information |
 | `fetch_page` | Fetch and convert a web page to markdown |
 | `calculate` | Perform basic arithmetic (add, subtract, multiply, divide) |
+
+## Tool Calling
+
+ARES supports full tool calling (function calling) for compatible LLM models. Tools enable the LLM to interact with external systems and perform actions.
+
+### Supported Models
+
+| Provider | Models | Support Level |
+|----------|--------|---------------|
+| Ollama | llama3.1+, llama3.2 (3B+), mistral-nemo, qwen2.5 | ✅ Full |
+| OpenAI | gpt-4, gpt-4o, gpt-3.5-turbo | ✅ Full |
+| Other Ollama | llama2, mistral (v0.1-0.2) | ❌ No support |
+
+### Default Tools
+
+ARES comes with three built-in tools:
+
+1. **web_search** - Search the web using DuckDuckGo (via daedra)
+2. **fetch_page** - Fetch and convert web pages to markdown (via daedra)
+3. **calculator** - Perform basic arithmetic operations
+
+### Quick Example
+
+```rust
+use ares::llm::{LLMClient, Provider};
+use ares::tools::ToolRegistry;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create Ollama client with a tool-calling compatible model
+    let provider = Provider::Ollama {
+        base_url: "http://localhost:11434".to_string(),
+        model: "llama3.1".to_string(),
+    };
+    let client = provider.create_client().await?;
+    
+    // Get default tools (web_search, fetch_page, calculator)
+    let registry = ToolRegistry::with_default_tools();
+    let tools = registry.get_tool_definitions();
+    
+    // Make a request with tool calling enabled
+    let response = client.generate_with_tools(
+        "What's 42 plus 17? Use the calculator.",
+        &tools
+    ).await?;
+    
+    // Execute any tool calls
+    for tool_call in &response.tool_calls {
+        let result = registry.execute(&tool_call.name, tool_call.arguments.clone()).await?;
+        println!("Tool {} returned: {:?}", tool_call.name, result);
+    }
+    
+    Ok(())
+}
+```
+
+### Creating Custom Tools
+
+You can easily create and register custom tools:
+
+```rust
+use ares::tools::{Tool, ToolRegistry};
+use async_trait::async_trait;
+use serde_json::{json, Value};
+use std::sync::Arc;
+
+struct WeatherTool;
+
+#[async_trait]
+impl Tool for WeatherTool {
+    fn name(&self) -> &str {
+        "get_weather"
+    }
+    
+    fn description(&self) -> &str {
+        "Get the current weather for a location"
+    }
+    
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": "City name"
+                }
+            },
+            "required": ["location"]
+        })
+    }
+    
+    async fn execute(&self, args: Value) -> ares::types::Result<Value> {
+        // Your implementation here
+        Ok(json!({"temperature": 22, "condition": "Sunny"}))
+    }
+}
+
+// Register the tool
+let mut registry = ToolRegistry::new();
+registry.register(Arc::new(WeatherTool));
+```
+
+For more examples and detailed documentation, see [TOOL_CALLING.md](TOOL_CALLING.md).
+
 
 ## Agent Types
 

@@ -1,6 +1,6 @@
 use crate::{
     agents::Agent,
-    llm::LLMCLient,
+    llm::LLMClient,
     types::{AgentContext, AgentType, Result},
 };
 use async_trait::async_trait;

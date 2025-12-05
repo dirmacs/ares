@@ -6,7 +6,7 @@ pub struct EmbeddingService {
 }
 
 impl EmbeddingService {
-    pub fn new(model_name: &str) -> Result<Self> {
+    pub fn new(_model_name: &str) -> Result<Self> {
         let model = TextEmbedding::try_new(
             InitOptions::new(EmbeddingModel::BGESmallENV15).with_show_download_progress(true),
         )
@@ -15,9 +15,9 @@ impl EmbeddingService {
         Ok(Self { model })
     }
 
-    pub fn embed(&self, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
+    pub fn embed(&mut self, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
         self.model
-            .embed(texts.to_vec(), None)
+            .embed(texts, None)
             .map_err(|e| crate::types::AppError::Internal(e.to_string()))
     }
 }

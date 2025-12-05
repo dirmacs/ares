@@ -2,7 +2,7 @@ use crate::{
     AppState,
     auth::middleware::AuthUser,
     research::coordinator::ResearchCoordinator,
-    types::{ResearchRequest, ResearchResponse, Result, Source},
+    types::{ResearchRequest, ResearchResponse, Result},
 };
 use axum::{Json, extract::State};
 use std::time::Instant;
@@ -35,7 +35,7 @@ pub async fn deep_research(
     let coordinator = ResearchCoordinator::new(llm_client, depth, max_iterations);
 
     // Execute research
-    let (findings, source) = coordinator.research(&payload.query).await?;
+    let (findings, sources) = coordinator.research(&payload.query).await?;
 
     let duration = start.elapsed();
 

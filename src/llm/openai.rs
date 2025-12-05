@@ -6,7 +6,7 @@ use async_openai::{
     types::{
         ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
         ChatCompletionRequestUserMessage, ChatCompletionTool, ChatCompletionToolChoiceOption,
-        ChatCompletionToolType, CreateChatCompletionRequest, CreateChatCompletionRequestArgs,
+        ChatCompletionToolType, CreateChatCompletionRequestArgs,
     },
 };
 use async_trait::async_trait;
@@ -160,7 +160,11 @@ impl LLMClient for OpenAIClient {
             .ok_or_else(|| AppError::LLM("No response from OpenAI".to_string()))?;
 
         let content = choice.message.content.clone().unwrap_or_default();
-        let finish_reason = choice.finish_reason.clone().unwrap_or_default().to_string();
+        let finish_reason = choice
+            .finish_reason
+            .as_ref()
+            .map(|r| format!("{:?}", r))
+            .unwrap_or_else(|| "unknown".to_string());
 
         let tool_calls = if let Some(calls) = &choice.message.tool_calls {
             calls

@@ -1,10 +1,10 @@
 use crate::auth::jwt::AuthService;
 use crate::types::Claims;
 use axum::{
-    extract::{Request, State},
-    http::{StatusCode, header},
+    extract::{FromRequestParts, Request, State},
+    http::{StatusCode, header, request::Parts},
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use std::sync::Arc;
 
@@ -32,14 +32,9 @@ pub async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
-// Extractor for claims
-use async_trait::async_trait;
-use axum::extract::FromRequestParts;
-use axum::http::request::Parts;
-
+/// Extractor for authenticated user claims
 pub struct AuthUser(pub Claims);
 
-#[async_trait]
 impl<S> FromRequestParts<S> for AuthUser
 where
     S: Send + Sync,

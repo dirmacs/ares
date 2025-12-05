@@ -1,26 +1,12 @@
-mod agents;
-mod api;
-mod auth;
-mod db;
-mod llm;
-mod mcp;
-mod memory;
-mod rag;
-mod research;
-mod tools;
-mod types;
-mod utils;
-
-use crate::{
+use ares::{
+    AppState,
     auth::jwt::AuthService,
     db::{QdrantClient, TursoClient},
     llm::{LLMClientFactory, Provider},
     utils::config::Config,
 };
-use axum::{
-    Router,
-    routing::{get, post},
-};
+use ares::{api, types};
+use axum::{Router, routing::get};
 use std::sync::Arc;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -29,15 +15,6 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub config: Arc<Config>,
-    pub turso: Arc<TursoClient>,
-    pub qdrant: Arc<QdrantClient>,
-    pub llm_factory: Arc<LLMClientFactory>,
-    pub auth_service: Arc<AuthService>,
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -55,35 +32,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
     tracing::info!("Configuration loaded");
 
+    if config.is_local_mode() {
+        tracing::info!("Running in LOCAL mode - no external services required");
+    } else {
+        tracing::info!("Running in REMOTE mode - connecting to external services");
+    }
+
+    // Ensure data directory exists for local mode
+    if config.is_local_mode()
+        && !config.database.turso_url.starts_with(":memory:")
+        && let Some(parent) = std::path::Path::new(&config.database.turso_url).parent()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+
     // Initialize database clients
     let turso = TursoClient::new(
         config.database.turso_url.clone(),
         config.database.turso_auth_token.clone(),
     )
     .await?;
-    tracing::info!("Turso client initialized");
+    tracing::info!(
+        "Database client initialized (mode: {})",
+        if config.is_local_mode() {
+            "local"
+        } else {
+            "remote"
+        }
+    );
 
+    // Initialize vector store (local in-memory by default)
     let qdrant = QdrantClient::new(
         config.database.qdrant_url.clone(),
         config.database.qdrant_api_key.clone(),
     )
     .await?;
-    tracing::info!("Qdrant client initialized");
+    tracing::info!("Vector store initialized (local in-memory mode)");
 
     // Initialize LLM factory with default provider
-    let default_provider = if let Some(api_key) = &config.llm.openai_api_key {
-        Provider::OpenAI {
-            api_base: "https://integrate.api.nvidia.com".to_string(),
-            api_key: api_key.clone(),
-            model: "mistralai/mistral-large-3-675b-instruct-2512".to_string(),
-        }
-    } else {
-        Provider::Ollama {
-            base_url: config.llm.ollama_url.clone(),
-            model: "qwen3-vl:2b".to_string(),
-        }
-    };
-
+    let default_provider = determine_llm_provider(&config);
     let llm_factory = LLMClientFactory::new(default_provider);
     tracing::info!("LLM client factory initialized");
 
@@ -166,6 +153,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+/// Determine the best LLM provider based on configuration
+fn determine_llm_provider(config: &Config) -> Provider {
+    // Check for explicit provider preference
+    if let Some(provider_name) = &config.llm.default_provider {
+        match provider_name.to_lowercase().as_str() {
+            "openai" => {
+                if let Some(api_key) = &config.llm.openai_api_key {
+                    return Provider::OpenAI {
+                        api_base: config
+                            .llm
+                            .openai_api_base
+                            .clone()
+                            .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+                        api_key: api_key.clone(),
+                        model: config
+                            .llm
+                            .default_model
+                            .clone()
+                            .unwrap_or_else(|| "gpt-4o-mini".to_string()),
+                    };
+                }
+            }
+            "ollama" => {
+                return Provider::Ollama {
+                    base_url: config.llm.ollama_url.clone(),
+                    model: config
+                        .llm
+                        .default_model
+                        .clone()
+                        .unwrap_or_else(|| "llama3.2".to_string()),
+                };
+            }
+            "llamacpp" => {
+                return Provider::LlamaCpp {
+                    model_path: config
+                        .llm
+                        .default_model
+                        .clone()
+                        .unwrap_or_else(|| "./models/llama.gguf".to_string()),
+                };
+            }
+            _ => {}
+        }
+    }
+
+    // Auto-detect based on available credentials
+    if let Some(api_key) = &config.llm.openai_api_key {
+        Provider::OpenAI {
+            api_base: config
+                .llm
+                .openai_api_base
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+            api_key: api_key.clone(),
+            model: config
+                .llm
+                .default_model
+                .clone()
+                .unwrap_or_else(|| "gpt-4o-mini".to_string()),
+        }
+    } else {
+        // Default to Ollama for local-first operation
+        Provider::Ollama {
+            base_url: config.llm.ollama_url.clone(),
+            model: config
+                .llm
+                .default_model
+                .clone()
+                .unwrap_or_else(|| "llama3.2".to_string()),
+        }
+    }
 }
 
 async fn health_check() -> &'static str {

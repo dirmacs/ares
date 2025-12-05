@@ -1,9 +1,9 @@
 use crate::{
     AppState,
-    agents::{Agent, router::RouterAgent},
+    agents::router::RouterAgent,
     auth::middleware::AuthUser,
     types::{
-        AgentContext, AgentType, AppError, ChatRequest, ChatResponse, Message, MessageRole, Result,
+        AgentContext, AgentType, AppError, ChatRequest, ChatResponse, MessageRole, Result,
         UserMemory,
     },
 };

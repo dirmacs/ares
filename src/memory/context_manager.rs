@@ -1,4 +1,4 @@
-use crate::types::{Message, Result};
+use crate::types::Message;
 use std::collections::VecDeque;
 
 pub struct ContextManager {

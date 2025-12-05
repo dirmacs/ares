@@ -1,11 +1,12 @@
 use crate::llm::client::{LLMClient, LLMResponse};
-use crate::types::{AppError, Result, ToolDefinition};
+use crate::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_stream::stream;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use ollama_rs::{
     Ollama,
-    generation::chat::{ChatMessage, request::ChatMessageRequest},
+    generation::chat::{ChatMessage, request::ChatMessageRequest, ChatMessageRequest as ChatRequest},
+    generation::tools::Tool as OllamaTool,
 };
 
 pub struct OllamaClient {
@@ -95,17 +96,74 @@ impl LLMClient for OllamaClient {
     async fn generate_with_tools(
         &self,
         prompt: &str,
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
     ) -> Result<LLMResponse> {
-        // Ollama supports function calling through the tools API
-        // For basic use cases, we return the response without tool calling
-        // Tool calling requires model support (e.g., llama3.1+, mistral-nemo)
-        let content = self.generate(prompt).await?;
+        // Ollama supports function calling for compatible models (llama3.1+, mistral-nemo, etc.)
+        // If no tools provided, fall back to regular generation
+        if tools.is_empty() {
+            let content = self.generate(prompt).await?;
+            return Ok(LLMResponse {
+                content,
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+            });
+        }
+
+        // Convert our ToolDefinition to Ollama's Tool format
+        let ollama_tools: Vec<OllamaTool> = tools
+            .iter()
+            .map(|tool| {
+                // Ollama expects tools in OpenAI function calling format
+                OllamaTool {
+                    function: ollama_rs::generation::tools::Function {
+                        name: tool.name.clone(),
+                        description: tool.description.clone(),
+                        parameters: tool.parameters.clone(),
+                    },
+                    r#type: "function".to_string(),
+                }
+            })
+            .collect();
+
+        let messages = vec![ChatMessage::user(prompt.to_string())];
+        
+        let mut request = ChatMessageRequest::new(self.model.clone(), messages);
+        request = request.tools(ollama_tools);
+
+        let response = self
+            .client
+            .send_chat_messages(request)
+            .await
+            .map_err(|e| AppError::LLM(format!("Ollama tool calling error: {}", e)))?;
+
+        // Extract tool calls if present
+        let tool_calls: Vec<ToolCall> = if let Some(calls) = response.message.tool_calls {
+            calls
+                .into_iter()
+                .enumerate()
+                .map(|(idx, call)| ToolCall {
+                    id: format!("call_{}", idx),
+                    name: call.function.name,
+                    arguments: call.function.arguments,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        // Determine finish reason
+        let finish_reason = if !tool_calls.is_empty() {
+            "tool_calls".to_string()
+        } else if let Some(reason) = response.done_reason {
+            reason
+        } else {
+            "stop".to_string()
+        };
 
         Ok(LLMResponse {
-            content,
-            tool_calls: vec![],
-            finish_reason: "stop".to_string(),
+            content: response.message.content,
+            tool_calls,
+            finish_reason,
         })
     }
 
@@ -151,6 +209,9 @@ impl LLMClient for OllamaClient {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use serde_json::json;
+
     #[test]
     fn test_url_parsing_full() {
         // This tests the URL parsing logic
@@ -193,5 +254,36 @@ mod tests {
 
         assert_eq!(host, "192.168.1.100");
         assert_eq!(port, 8080);
+    }
+
+    #[test]
+    fn test_tool_definition_conversion() {
+        let tool_def = ToolDefinition {
+            name: "test_tool".to_string(),
+            description: "A test tool".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "arg1": {
+                        "type": "string",
+                        "description": "First argument"
+                    }
+                },
+                "required": ["arg1"]
+            }),
+        };
+
+        let ollama_tool = OllamaTool {
+            function: ollama_rs::generation::tools::Function {
+                name: tool_def.name.clone(),
+                description: tool_def.description.clone(),
+                parameters: tool_def.parameters.clone(),
+            },
+            r#type: "function".to_string(),
+        };
+
+        assert_eq!(ollama_tool.function.name, "test_tool");
+        assert_eq!(ollama_tool.function.description, "A test tool");
+        assert_eq!(ollama_tool.r#type, "function");
     }
 }

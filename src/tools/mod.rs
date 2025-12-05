@@ -2,4 +2,4 @@ pub mod calculator;
 pub mod registry;
 pub mod search;
 
-pub use registry::Tool;
+pub use registry::{Tool, ToolRegistry};

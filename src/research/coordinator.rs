@@ -1,6 +1,6 @@
 use crate::{
     llm::LLMClient,
-    types::{AppError, Result, Source},
+    types::{Result, Source},
 };
 use tokio::task::JoinSet;
 
@@ -11,7 +11,7 @@ pub struct ResearchCoordinator {
 }
 
 impl ResearchCoordinator {
-    pub fn new(llm: Box<dyn LLMCLient>, depth: u8, max_iterations: u8) -> Self {
+    pub fn new(llm: Box<dyn LLMClient>, depth: u8, max_iterations: u8) -> Self {
         Self {
             llm,
             depth,
@@ -22,7 +22,7 @@ impl ResearchCoordinator {
     /// Execute deep research on a query
     pub async fn research(&self, query: &str) -> Result<(String, Vec<Source>)> {
         let mut all_findings = Vec::new();
-        let mut all_sources = Vec::new();
+        let all_sources;
 
         // Generate initial research questions
         let questions = self.generate_research_questions(query).await?;
@@ -99,7 +99,7 @@ Example:
 
         for question in questions.iter().take(self.depth as usize) {
             let question = question.clone();
-            let llm_clone = self.llm.model_name().to_string(); // Simplified for example
+            let _llm_clone = self.llm.model_name().to_string(); // Simplified for example
 
             set.spawn(async move {
                 // Simplified research - in production, this would call web search tools
@@ -178,7 +178,7 @@ Example:
         findings
             .iter()
             .enumerate()
-            .map(|(i, finding)| Source {
+            .map(|(i, _finding)| Source {
                 title: format!("Research Finding {}", i + 1),
                 url: None,
                 relevance_score: 0.8,

@@ -1,26 +1,8 @@
-mod agents;
-mod api;
-mod auth;
-mod db;
-mod llm;
-mod mcp;
-mod memory;
-mod rag;
-mod research;
-mod tools;
-mod types;
-mod utils;
-
-use crate::{
-    auth::jwt::AuthService,
-    db::{QdrantClient, TursoClient},
-    llm::{LLMClientFactory, Provider},
-    utils::config::Config,
+use ares::{
+    api, auth::jwt::AuthService, db::TursoClient, llm::LLMClientFactory, utils::config::Config,
+    AppState,
 };
-use axum::{
-    Router,
-    routing::{get, post},
-};
+use axum::{routing::get, Router};
 use std::sync::Arc;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -29,15 +11,6 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub config: Arc<Config>,
-    pub turso: Arc<TursoClient>,
-    pub qdrant: Arc<QdrantClient>,
-    pub llm_factory: Arc<LLMClientFactory>,
-    pub auth_service: Arc<AuthService>,
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -63,28 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     tracing::info!("Turso client initialized");
 
-    let qdrant = QdrantClient::new(
-        config.database.qdrant_url.clone(),
-        config.database.qdrant_api_key.clone(),
-    )
-    .await?;
-    tracing::info!("Qdrant client initialized");
-
-    // Initialize LLM factory with default provider
-    let default_provider = if let Some(api_key) = &config.llm.openai_api_key {
-        Provider::OpenAI {
-            api_base: "https://integrate.api.nvidia.com".to_string(),
-            api_key: api_key.clone(),
-            model: "mistralai/mistral-large-3-675b-instruct-2512".to_string(),
-        }
-    } else {
-        Provider::Ollama {
-            base_url: config.llm.ollama_url.clone(),
-            model: "qwen3-vl:2b".to_string(),
-        }
-    };
-
-    let llm_factory = LLMClientFactory::new(default_provider);
+    // Initialize LLM factory from environment
+    let llm_factory = LLMClientFactory::from_env()?;
     tracing::info!("LLM client factory initialized");
 
     // Initialize auth service
@@ -99,7 +52,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         config: Arc::new(config.clone()),
         turso: Arc::new(turso),
-        qdrant: Arc::new(qdrant),
         llm_factory: Arc::new(llm_factory),
         auth_service: Arc::new(auth_service),
     };
@@ -108,21 +60,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[derive(OpenApi)]
     #[openapi(
         paths(
-            api::handlers::auth::register,
-            api::handlers::auth::login,
-            api::handlers::chat::chat,
-            api::handlers::research::deep_research,
+            ares::api::handlers::auth::register,
+            ares::api::handlers::auth::login,
+            ares::api::handlers::chat::chat,
+            ares::api::handlers::research::deep_research,
         ),
         components(schemas(
-            types::ChatRequest,
-            types::ChatResponse,
-            types::ResearchRequest,
-            types::ResearchResponse,
-            types::LoginRequest,
-            types::RegisterRequest,
-            types::TokenResponse,
-            types::AgentType,
-            types::Source,
+            ares::types::ChatRequest,
+            ares::types::ChatResponse,
+            ares::types::ResearchRequest,
+            ares::types::ResearchResponse,
+            ares::types::LoginRequest,
+            ares::types::RegisterRequest,
+            ares::types::TokenResponse,
+            ares::types::AgentType,
+            ares::types::Source,
         )),
         tags(
               (name = "auth", description = "Authentication endpoints"),

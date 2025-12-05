@@ -1,7 +1,7 @@
 use crate::{
     agents::Agent,
     llm::LLMClient,
-    types::{AgentContext, AgentType, AppError, Result},
+    types::{AgentContext, AgentType, Result},
 };
 use async_trait::async_trait;
 

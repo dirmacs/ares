@@ -1,29 +1,56 @@
 [package]
 name = "ares"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[features]
+default = ["local-db"]
+
+# LLM Providers
+ollama = ["dep:ollama-rs"]
+openai = ["dep:async-openai"]
+llamacpp = ["dep:llama-cpp-2"]
+
+# LlamaCpp GPU backends (mutually exclusive - pick one)
+llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]
+llamacpp-metal = ["llamacpp", "llama-cpp-2/metal"]
+llamacpp-vulkan = ["llamacpp", "llama-cpp-2/vulkan"]
+
+# Database backends
+local-db = []  # Uses libsql with local SQLite
+turso = []     # Enables remote Turso database support
+qdrant = ["dep:qdrant-client"]
+
+# MCP server support
+mcp = ["dep:rmcp"]
+
+# All features for development
+full = ["ollama", "openai", "llamacpp", "turso", "qdrant", "mcp"]
 
 [dependencies]
 anyhow = "1.0.100"
 argon2 = "0.5.3"
-async-openai = "0.30.1"
+async-openai = { version = "0.31.1", optional = true }
 async-stream = "0.3.6"
 async-trait = "0.1.89"
 axum = { version = "0.8.7", features = ["macros", "multipart"] }
 cargo-llvm-cov = "0.6.21"
 chrono = { version = "0.4.42", features = ["serde"] }
 config = "0.15.19"
+daedra = "0.1.2"
 dotenv = "0.15.0"
-fastembed = "5.2.1"
-jsonwebtoken = "10.2.0"
+fastembed = "5.3.1"
+jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
 libsql = { version = "0.9.29", features = ["core", "replication"] }
-llama-cpp-2 = "0.1.126"
-ollama-rs = { version = "0.3.3", features = ["stream"] }
-qdrant-client = "1.16.0"
+llama-cpp-2 = { version = "0.1.129", optional = true }
+ollama-rs = { version = "0.3.3", features = ["stream"], optional = true }
+qdrant-client = { version = "1.16.0", optional = true }
 rand = "0.9.2"
 reqwest = { version = "0.12.24", features = ["json"] }
-rig-core = "0.24.0"
-rmcp = { version = "0.9.0", features = ["server", "client"] }
+sha2 = "0.11.0-rc.3"
+futures = "0.3.29"
+rig-core = "0.25.0"
+rmcp = { version = "0.10.0", features = ["server", "client", "transport-io", "macros"], optional = true }
 schemars = { version = "1.1.0", features = ["derive"] }
 scraper = "0.24.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -31,18 +58,20 @@ serde_json = "1.0.145"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["full"] }
 tower = { version = "0.5.2", features = ["full"] }
-tower-http = { version = "0.6.6", features = ["trace", "cors", "compression-gzip"] }
+tower-http = { version = "0.6.7", features = ["trace", "cors", "compression-gzip"] }
 tower-sessions = "0.14.0"
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
 utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
-uuid = { version = "1.18.1", features = ["v4", "serde"] }
+uuid = { version = "1.19.0", features = ["v4", "serde"] }
 
 [dev-dependencies]
-axum-test = "18.2.1"
+axum-test = "18.4.1"
 cargo-llvm-cov = "0.6.21"
-mockall = "0.13.1"
+mockall = "0.14.0"
+rstest = "0.26.1"
+tempfile = "3.23.0"
 wiremock = "0.6.5"
 
 [profile.release]

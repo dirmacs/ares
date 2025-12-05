@@ -1,13 +1,13 @@
 use crate::{
-    AppState,
-    agents::{Agent, router::RouterAgent},
+    agents::router::RouterAgent,
     auth::middleware::AuthUser,
     types::{
-        AgentContext, AgentType, AppError, ChatRequest, ChatResponse, Message, MessageRole, Result,
+        AgentContext, AgentType, AppError, ChatRequest, ChatResponse, MessageRole, Result,
         UserMemory,
     },
+    AppState,
 };
-use axum::{Json, extract::State};
+use axum::{extract::State, Json};
 use uuid::Uuid;
 
 /// Chat with the AI assistant

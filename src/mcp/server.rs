@@ -1,3 +1,4 @@
+#[cfg(feature = "mcp")]
 use rmcp::{ServerBuilder, tool};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -8,8 +9,10 @@ struct SearchArgs {
     limit: Option<usize>,
 }
 
+#[cfg(feature = "mcp")]
 pub struct McpServer;
 
+#[cfg(feature = "mcp")]
 impl McpServer {
     pub async fn start() -> crate::types::Result<()> {
         let server = ServerBuilder::new()

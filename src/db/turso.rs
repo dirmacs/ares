@@ -1,22 +1,79 @@
 use crate::types::{AppError, MemoryFact, Message, MessageRole, Preference, Result};
 use chrono::Utc;
 use libsql::{Builder, Connection, Database};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub struct TursoClient {
     db: Database,
+    /// Cached connection for in-memory databases to ensure schema persists
+    cached_conn: Arc<Mutex<Option<Connection>>>,
+    is_memory: bool,
 }
 
 impl TursoClient {
-    pub async fn new(url: String, auth_token: String) -> Result<Self> {
+    /// Create a new TursoClient with remote Turso database
+    pub async fn new_remote(url: String, auth_token: String) -> Result<Self> {
         let db = Builder::new_remote(url, auth_token)
             .build()
             .await
             .map_err(|e| AppError::Database(format!("Failed to connect to Turso: {}", e)))?;
 
-        let client = Self { db };
+        let client = Self {
+            db,
+            cached_conn: Arc::new(Mutex::new(None)),
+            is_memory: false,
+        };
         client.initialize_schema().await?;
 
         Ok(client)
+    }
+
+    /// Create a new TursoClient with local SQLite database
+    pub async fn new_local(path: &str) -> Result<Self> {
+        let is_memory = path == ":memory:";
+        let db = Builder::new_local(path)
+            .build()
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to open local database: {}", e)))?;
+
+        let client = Self {
+            db,
+            cached_conn: Arc::new(Mutex::new(None)),
+            is_memory,
+        };
+
+        // For in-memory databases, we need to cache the connection
+        // so that schema persists across calls
+        if is_memory {
+            let conn = client
+                .db
+                .connect()
+                .map_err(|e| AppError::Database(format!("Failed to get connection: {}", e)))?;
+            *client.cached_conn.lock().await = Some(conn);
+        }
+
+        client.initialize_schema().await?;
+
+        Ok(client)
+    }
+
+    /// Create a new TursoClient with in-memory database (useful for testing)
+    pub async fn new_memory() -> Result<Self> {
+        Self::new_local(":memory:").await
+    }
+
+    /// Create client based on URL format - routes to local or remote
+    pub async fn new(url: String, auth_token: String) -> Result<Self> {
+        // If URL starts with "file:" or is a path, use local mode
+        if url.starts_with("file:") || url.ends_with(".db") || url == ":memory:" {
+            Self::new_local(&url).await
+        } else if url.starts_with("libsql://") || url.starts_with("https://") {
+            Self::new_remote(url, auth_token).await
+        } else {
+            // Default to local with the URL as path
+            Self::new_local(&url).await
+        }
     }
 
     pub fn connection(&self) -> Result<Connection> {
@@ -25,8 +82,20 @@ impl TursoClient {
             .map_err(|e| AppError::Database(format!("Failed to get connection: {}", e)))
     }
 
+    /// Get the connection to use for operations (handles in-memory vs file-based)
+    pub async fn operation_conn(&self) -> Result<Connection> {
+        if self.is_memory {
+            let guard = self.cached_conn.lock().await;
+            guard.as_ref().cloned().ok_or_else(|| {
+                AppError::Database("No cached connection for in-memory database".to_string())
+            })
+        } else {
+            self.connection()
+        }
+    }
+
     async fn initialize_schema(&self) -> Result<()> {
-        let conn = self.connection()?;
+        let conn = self.operation_conn().await?;
 
         // Users table
         conn.execute(
@@ -135,7 +204,7 @@ impl TursoClient {
         password_hash: &str,
         name: &str,
     ) -> Result<()> {
-        let conn = self.connection()?;
+        let conn = self.operation_conn().await?;
         let now = Utc::now().timestamp();
 
         conn.execute(
@@ -150,7 +219,7 @@ impl TursoClient {
     }
 
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
-        let conn = self.connection()?;
+        let conn = self.operation_conn().await?;
 
         let mut rows = conn
             .query(
@@ -187,7 +256,7 @@ impl TursoClient {
         token_hash: &str,
         expires_at: i64,
     ) -> Result<()> {
-        let conn = self.connection()?;
+        let conn = self.operation_conn().await?;
         let now = Utc::now().timestamp();
 
         conn.execute(
@@ -208,7 +277,7 @@ impl TursoClient {
         user_id: &str,
         title: Option<&str>,
     ) -> Result<()> {
-        let conn = self.connection()?;
+        let conn = self.operation_conn().await?;
         let now = Utc::now().timestamp();
 
         conn.execute(
@@ -229,7 +298,7 @@ impl TursoClient {
         role: MessageRole,
         content: &str,
     ) -> Result<()> {
-        let conn = self.connection()?;
+        let conn = self.operation_conn().await?;
         let now = Utc::now().timestamp();
         let role_str = match role {
             MessageRole::System => "system",
@@ -249,7 +318,7 @@ impl TursoClient {
     }
 
     pub async fn get_conversation_history(&self, conversation_id: &str) -> Result<Vec<Message>> {
-        let conn = self.connection()?;
+        let conn = self.operation_conn().await?;
 
         let mut rows = conn
             .query(
@@ -291,19 +360,19 @@ impl TursoClient {
 
     // Memory operations
     pub async fn store_memory_fact(&self, fact: &MemoryFact) -> Result<()> {
-        let conn = self.connection()?;
+        let conn = self.operation_conn().await?;
 
         conn.execute(
             "INSERT OR REPLACE INTO memory_facts
             (id, user_id, category, fact_key, fact_value, confidence, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                &fact.id,
-                &fact.user_id,
-                &fact.category,
-                &fact.fact_key,
-                &fact.fact_value,
-                fact.confidence,
+                fact.id.as_str(),
+                fact.user_id.as_str(),
+                fact.category.as_str(),
+                fact.fact_key.as_str(),
+                fact.fact_value.as_str(),
+                fact.confidence as f64,
                 fact.created_at.timestamp(),
                 fact.updated_at.timestamp(),
             ),
@@ -315,7 +384,7 @@ impl TursoClient {
     }
 
     pub async fn get_user_memory(&self, user_id: &str) -> Result<Vec<MemoryFact>> {
-        let conn = self.connection()?;
+        let conn = self.operation_conn().await?;
 
         let mut rows = conn
             .query(
@@ -338,7 +407,10 @@ impl TursoClient {
                 category: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
                 fact_key: row.get(3).map_err(|e| AppError::Database(e.to_string()))?,
                 fact_value: row.get(4).map_err(|e| AppError::Database(e.to_string()))?,
-                confidence: row.get(5).map_err(|e| AppError::Database(e.to_string()))?,
+                confidence: row
+                    .get::<f64>(5)
+                    .map_err(|e| AppError::Database(e.to_string()))?
+                    as f32,
                 created_at: chrono::DateTime::from_timestamp(
                     row.get::<i64>(6)
                         .map_err(|e| AppError::Database(e.to_string()))?,
@@ -358,7 +430,7 @@ impl TursoClient {
     }
 
     pub async fn store_preference(&self, user_id: &str, preference: &Preference) -> Result<()> {
-        let conn = self.connection()?;
+        let conn = self.operation_conn().await?;
         let now = Utc::now().timestamp();
         let id = uuid::Uuid::new_v4().to_string();
 
@@ -369,10 +441,10 @@ impl TursoClient {
             (
                 id,
                 user_id,
-                &preference.category,
-                &preference.key,
-                &preference.value,
-                preference.confidence,
+                preference.category.as_str(),
+                preference.key.as_str(),
+                preference.value.as_str(),
+                preference.confidence as f64,
                 now,
             ),
         )
@@ -383,7 +455,7 @@ impl TursoClient {
     }
 
     pub async fn get_user_preferences(&self, user_id: &str) -> Result<Vec<Preference>> {
-        let conn = self.connection()?;
+        let conn = self.operation_conn().await?;
 
         let mut rows = conn
             .query(
@@ -403,7 +475,10 @@ impl TursoClient {
                 category: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
                 key: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
                 value: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
-                confidence: row.get(3).map_err(|e| AppError::Database(e.to_string()))?,
+                confidence: row
+                    .get::<f64>(3)
+                    .map_err(|e| AppError::Database(e.to_string()))?
+                    as f32,
             });
         }
 

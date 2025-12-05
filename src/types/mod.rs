@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
-use uuid::Uuid;
+
 
 // ============= API Request/Response Types =============
 
@@ -118,7 +118,7 @@ pub struct ToolDefinition {
     pub parameters: serde_json::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
@@ -191,7 +191,7 @@ pub struct TokenResponse {
     pub expires_in: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
     pub sub: String,
     pub email: String,
@@ -218,6 +218,12 @@ pub enum AppError {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("Configuration error: {0}")]
+    Configuration(String),
+
+    #[error("External service error: {0}")]
+    External(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -230,6 +236,8 @@ impl axum::response::IntoResponse for AppError {
             AppError::Auth(msg) => (axum::http::StatusCode::UNAUTHORIZED, msg),
             AppError::NotFound(msg) => (axum::http::StatusCode::NOT_FOUND, msg),
             AppError::InvalidInput(msg) => (axum::http::StatusCode::BAD_REQUEST, msg),
+            AppError::Configuration(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg),
+            AppError::External(msg) => (axum::http::StatusCode::BAD_GATEWAY, msg),
             AppError::Internal(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
 

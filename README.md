@@ -23,7 +23,7 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 
 ### Prerequisites
 
-- **Rust 1.75+**: Install via [rustup](https://rustup.rs/)
+- **Rust 1.91+**: Install via [rustup](https://rustup.rs/)
 - **Ollama** (recommended): For local LLM inference - [Install Ollama](https://ollama.ai)
 
 ### 1. Clone and Setup

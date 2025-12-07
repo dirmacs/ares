@@ -23,8 +23,6 @@ openai = ["dep:async-openai"]
 # LlamaCpp - Direct GGUF model loading via llama.cpp
 llamacpp = ["dep:llama-cpp-2"]
 
-
-
 # LlamaCpp GPU backends (mutually exclusive - pick one)
 llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]
 llamacpp-metal = ["llamacpp", "llama-cpp-2/metal"]

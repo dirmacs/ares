@@ -22,21 +22,16 @@ use crate::types::{AppError, MemoryFact, Message, MessageRole, Preference, Resul
 use async_trait::async_trait;
 
 /// Database provider configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum DatabaseProvider {
     /// In-memory SQLite database (ephemeral, lost on restart)
+    #[default]
     Memory,
     /// File-based SQLite database
     SQLite { path: String },
     /// Remote Turso database (requires network access)
     #[cfg(feature = "turso")]
     Turso { url: String, auth_token: String },
-}
-
-impl Default for DatabaseProvider {
-    fn default() -> Self {
-        Self::Memory
-    }
 }
 
 impl DatabaseProvider {

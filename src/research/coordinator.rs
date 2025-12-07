@@ -22,7 +22,6 @@ impl ResearchCoordinator {
     /// Execute deep research on a query
     pub async fn research(&self, query: &str) -> Result<(String, Vec<Source>)> {
         let mut all_findings = Vec::new();
-        let all_sources;
 
         // Generate initial research questions
         let questions = self.generate_research_questions(query).await?;
@@ -59,7 +58,7 @@ impl ResearchCoordinator {
         let synthesis = self.synthesize_findings(query, &all_findings).await?;
 
         // Extract sources
-        all_sources = self.extract_sources(&all_findings);
+        let all_sources = self.extract_sources(&all_findings);
 
         Ok((synthesis, all_sources))
     }

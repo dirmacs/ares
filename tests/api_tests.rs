@@ -166,7 +166,12 @@ async fn create_test_app() -> Router {
 
     // Create a test user for auth middleware
     turso
-        .create_user("test-user", "test@example.com", "dummy_hash", "Test User")
+        .create_user(
+            "test-user",
+            "testuser@example.com",
+            "dummy_hash",
+            "Test User",
+        )
         .await
         .expect("Failed to create test user");
 
@@ -222,7 +227,10 @@ async fn create_test_app() -> Router {
     // Build a minimal router for testing
     Router::new()
         .route("/health", get(|| async { "OK" }))
-        .nest("/api", ares::api::routes::create_router())
+        .nest(
+            "/api",
+            ares::api::routes::create_router(state.auth_service.clone()),
+        )
         .with_state(state)
 }
 

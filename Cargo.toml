@@ -23,6 +23,8 @@ openai = ["dep:async-openai"]
 # LlamaCpp - Direct GGUF model loading via llama.cpp
 llamacpp = ["dep:llama-cpp-2"]
 
+
+
 # LlamaCpp GPU backends (mutually exclusive - pick one)
 llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]
 llamacpp-metal = ["llamacpp", "llama-cpp-2/metal"]
@@ -99,6 +101,8 @@ qdrant-client = { version = "1.16.0", optional = true }
 ollama-rs = { version = "0.3.3", features = ["stream"], optional = true }
 async-openai = { version = "0.31.1", features = ["chat-completion"], optional = true }
 llama-cpp-2 = { version = "0.1.129", optional = true }
+
+
 
 # Embeddings and RAG
 fastembed = "5.3.1"

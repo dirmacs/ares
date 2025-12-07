@@ -669,4 +669,32 @@ mod tests {
         let has_tool_call = response.contains("\"tool_call\"");
         assert!(!has_tool_call);
     }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_llamacpp_client_creation_fails_with_invalid_path() {
+        // Smoke test: ensure client creation fails gracefully with invalid model path
+        let result = LlamaCppClient::new("nonexistent_model.gguf".to_string());
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        match error {
+            crate::types::AppError::LLM(msg) => {
+                assert!(msg.contains("Failed to load model"));
+            }
+            _ => panic!("Expected LLM error"),
+        }
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_llamacpp_client_with_params() {
+        // Test parameter validation without loading
+        let result = LlamaCppClient::with_params(
+            "dummy.gguf".to_string(),
+            2048, // smaller context
+            2,    // fewer threads
+            256,  // fewer max tokens
+        );
+        assert!(result.is_err()); // Should fail due to invalid path
+    }
 }

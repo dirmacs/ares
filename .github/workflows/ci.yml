@@ -137,6 +137,18 @@ jobs:
       - name: Check MSRV
         run: cargo check
 
+  # Ollama Integration tests (mocked)
+  ollama-integration:
+    name: Ollama Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run Ollama mocked integration tests
+        run: cargo test --features "ollama" --test ollama_integration_tests -- --nocapture
+
   # Coverage report (optional - runs on Linux only)
   coverage:
     name: Code Coverage
@@ -173,7 +185,7 @@ jobs:
   # All checks must pass
   ci-success:
     name: CI Success
-    needs: [fmt, clippy, build, test, docs, msrv]
+    needs: [fmt, clippy, build, test, docs, msrv, ollama-e2e]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -184,7 +196,8 @@ jobs:
              [[ "${{ needs.build.result }}" != "success" ]] || \
              [[ "${{ needs.test.result }}" != "success" ]] || \
              [[ "${{ needs.docs.result }}" != "success" ]] || \
-             [[ "${{ needs.msrv.result }}" != "success" ]]; then
+             [[ "${{ needs.msrv.result }}" != "success" ]] || \
+             [[ "${{ needs.ollama-e2e.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
           fi

@@ -1,25 +1,32 @@
 use crate::auth::jwt::AuthService;
 use crate::types::Claims;
-use axum::{
-    extract::{Request, State},
-    http::{header, StatusCode},
-    middleware::Next,
-    response::{IntoResponse, Response},
-};
+use axum::{extract::Request, http::StatusCode, middleware::Next, response::Response};
 use std::sync::Arc;
 
-pub async fn auth_middleware(mut req: Request, next: Next) -> Response {
-    // Temporary: Put fake claims for testing
-    // TODO: Properly implement auth middleware with state access
-    use crate::types::Claims;
-    let fake_claims = Claims {
-        sub: "test-user".to_string(),
-        email: "test@example.com".to_string(),
-        exp: 2000000000, // far future
-        iat: 1000000000,
-    };
-    req.extensions_mut().insert(fake_claims);
-    next.run(req).await
+pub async fn auth_middleware(auth_service: Arc<AuthService>, req: Request, next: Next) -> Response {
+    // Extract Authorization header
+    if let Some(auth_header) = req.headers().get("authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                match auth_service.verify_token(token) {
+                    Ok(claims) => {
+                        let mut req = req;
+                        req.extensions_mut().insert(claims);
+                        return next.run(req).await;
+                    }
+                    Err(_) => {
+                        // Invalid token
+                    }
+                }
+            }
+        }
+    }
+
+    // No valid token provided
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .body("Unauthorized".into())
+        .unwrap()
 }
 
 // Extractor for claims

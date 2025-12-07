@@ -17,7 +17,7 @@ impl EmbeddingService {
 
     pub fn embed(&mut self, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
         self.model
-            .embed(texts.to_vec(), None)
+            .embed(texts, None)
             .map_err(|e| crate::types::AppError::Internal(e.to_string()))
     }
 }

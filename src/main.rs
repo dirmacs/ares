@@ -94,7 +94,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Health check
         .route("/health", get(health_check))
         // API routes
-        .nest("/api", api::routes::create_router())
+        .nest(
+            "/api",
+            api::routes::create_router(state.auth_service.clone()),
+        )
         // Swagger UI
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         // Add middleware

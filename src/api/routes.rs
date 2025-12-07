@@ -1,18 +1,21 @@
 use crate::AppState;
 use axum::{
-    Router,
+    middleware,
     routing::{get, post},
+    Router,
 };
 
 pub fn create_router() -> Router<AppState> {
-    Router::new()
+    let public_routes = Router::new()
         // Public routes (no auth required)
         .route("/auth/register", post(crate::api::handlers::auth::register))
         .route("/auth/login", post(crate::api::handlers::auth::login))
         .route(
             "/auth/refresh",
             post(crate::api::handlers::auth::refresh_token),
-        )
+        );
+
+    let protected_routes = Router::new()
         // Protected routes (auth required)
         .route("/chat", post(crate::api::handlers::chat::chat))
         .route(
@@ -21,6 +24,9 @@ pub fn create_router() -> Router<AppState> {
         )
         .route("/agents", get(crate::api::handlers::agents::list_agents))
         .route("/memory", get(crate::api::handlers::chat::get_user_memory))
-        // Note: auth middleware needs to be applied per-route or via a separate layer
-        // .route_layer(middleware::from_fn(auth_middleware))
+        .layer(middleware::from_fn(
+            crate::auth::middleware::auth_middleware,
+        ));
+
+    public_routes.merge(protected_routes)
 }

@@ -19,6 +19,7 @@ pub mod utils;
 
 // Re-export commonly used types
 pub use db::TursoClient;
+pub use llm::client::LLMClientFactoryTrait;
 pub use llm::{LLMClient, LLMClientFactory, LLMResponse, Provider};
 pub use types::{AppError, Result};
 
@@ -30,6 +31,6 @@ use std::sync::Arc;
 pub struct AppState {
     pub config: Arc<Config>,
     pub turso: Arc<TursoClient>,
-    pub llm_factory: Arc<LLMClientFactory>,
+    pub llm_factory: Arc<dyn LLMClientFactoryTrait>,
     pub auth_service: Arc<AuthService>,
 }

@@ -1,11 +1,10 @@
 use crate::types::{AppError, Document, Result, SearchQuery, SearchResult};
 use qdrant_client::{
-    Qdrant,
     qdrant::{
         Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance, FieldCondition, Filter,
-        Match, PointStruct, PointsIdsList, SearchPointsBuilder, UpsertPointsBuilder, VectorParams,
-        VectorParamsBuilder, Vectors, VectorsConfig,
+        Match, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
     },
+    Qdrant,
 };
 use std::collections::HashMap;
 
@@ -16,12 +15,12 @@ pub struct QdrantClient {
 impl QdrantClient {
     pub async fn new(url: String, api_key: Option<String>) -> Result<Self> {
         let client = if let Some(key) = api_key {
-            Qdrant::from_url("https://localhost:6334")
+            Qdrant::from_url(&url)
                 .api_key(key)
                 .build()
                 .map_err(|e| AppError::Database(format!("Failed to create Qdrant client: {}", e)))?
         } else {
-            Qdrant::from_url("https://localhost:6334")
+            Qdrant::from_url(&url)
                 .build()
                 .map_err(|e| AppError::Database(format!("Failed to create Qdrant client: {}", e)))?
         };
@@ -45,7 +44,7 @@ impl QdrantClient {
         let exists = collections
             .collections
             .iter()
-            .any(|c| c.name = collection_name);
+            .any(|c| c.name == collection_name);
 
         if !exists {
             // Create collection with 384-dimensional vectors (for BGE-small)
@@ -143,7 +142,7 @@ impl QdrantClient {
 
                 Some(SearchResult {
                     document: Document {
-                        id: scored_ppint.id?.to_string(),
+                        id: scored_point.id.as_ref()?.to_string(),
                         content,
                         metadata: crate::types::DocumentMetadata {
                             title,
@@ -169,7 +168,7 @@ impl QdrantClient {
         self.client
             .delete_points(
                 DeletePointsBuilder::new(collection_name)
-                    .points(PointsIdsList { ids: &[id.into()] })
+                    .points(vec![id.to_string().into()])
                     .wait(true),
             )
             .await

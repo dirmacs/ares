@@ -34,17 +34,13 @@ pub async fn chat(
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     // Check if conversation exists, create if not
-    let history = match state.turso.get_conversation_history(&context_id).await {
-        Ok(hist) => hist,
-        Err(_) => {
-            // Create new conversation
-            state
-                .turso
-                .create_conversation(&context_id, &claims.sub, None)
-                .await?;
-            Vec::new()
-        }
-    };
+    if !state.turso.conversation_exists(&context_id).await? {
+        state
+            .turso
+            .create_conversation(&context_id, &claims.sub, None)
+            .await?;
+    }
+    let history = state.turso.get_conversation_history(&context_id).await?;
 
     // Load user memory
     let memory_facts = state.turso.get_user_memory(&claims.sub).await?;

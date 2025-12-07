@@ -291,6 +291,24 @@ impl TursoClient {
         Ok(())
     }
 
+    pub async fn conversation_exists(&self, conversation_id: &str) -> Result<bool> {
+        let conn = self.operation_conn().await?;
+
+        let mut rows = conn
+            .query(
+                "SELECT 1 FROM conversations WHERE id = ?",
+                [conversation_id],
+            )
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to check conversation: {}", e)))?;
+
+        Ok(rows
+            .next()
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?
+            .is_some())
+    }
+
     pub async fn add_message(
         &self,
         id: &str,

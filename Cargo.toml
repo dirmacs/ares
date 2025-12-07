@@ -2,13 +2,25 @@
 name = "ares"
 version = "0.1.1"
 edition = "2021"
+description = "A.R.E.S - Agentic Retrieval Enhanced Server: A production-grade agentic chatbot server with multi-provider LLM support"
+license = "MIT"
+repository = "https://github.com/your-org/ares"
+readme = "README.md"
+keywords = ["llm", "chatbot", "agent", "rag", "ai"]
+categories = ["web-programming", "asynchronous"]
 
 [features]
-default = ["local-db"]
+# Default features for local-first development
+default = ["local-db", "ollama"]
 
-# LLM Providers
+# ============= LLM Providers =============
+# Ollama - Local LLM inference via Ollama server
 ollama = ["dep:ollama-rs"]
+
+# OpenAI - OpenAI API and compatible endpoints
 openai = ["dep:async-openai"]
+
+# LlamaCpp - Direct GGUF model loading via llama.cpp
 llamacpp = ["dep:llama-cpp-2"]
 
 # LlamaCpp GPU backends (mutually exclusive - pick one)
@@ -16,65 +28,121 @@ llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]
 llamacpp-metal = ["llamacpp", "llama-cpp-2/metal"]
 llamacpp-vulkan = ["llamacpp", "llama-cpp-2/vulkan"]
 
-# Database backends
-local-db = []  # Uses libsql with local SQLite
-turso = []     # Enables remote Turso database support
+# ============= Database Backends =============
+# Local SQLite database via libsql (default for local development)
+local-db = []
+
+# Remote Turso database support
+turso = []
+
+# Qdrant vector database for semantic search
 qdrant = ["dep:qdrant-client"]
 
-# MCP server support
+# ============= Additional Features =============
+# MCP (Model Context Protocol) server support
 mcp = ["dep:rmcp"]
 
-# All features for development
+# ============= Feature Bundles =============
+# All LLM providers
+all-llm = ["ollama", "openai", "llamacpp"]
+
+# All database backends
+all-db = ["local-db", "turso", "qdrant"]
+
+# Full feature set for development/testing
 full = ["ollama", "openai", "llamacpp", "turso", "qdrant", "mcp"]
 
+# Minimal build - no optional features
+minimal = []
+
 [dependencies]
+# Core dependencies
 anyhow = "1.0.100"
-argon2 = "0.5.3"
-async-openai = { version = "0.31.1", optional = true }
 async-stream = "0.3.6"
 async-trait = "0.1.89"
-axum = { version = "0.8.7", features = ["macros", "multipart"] }
-cargo-llvm-cov = "0.6.21"
 chrono = { version = "0.4.42", features = ["serde"] }
-config = "0.15.19"
-daedra = "0.1.2"
-dotenv = "0.15.0"
-fastembed = "5.3.1"
-jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
-libsql = { version = "0.9.29", features = ["core", "replication"] }
-llama-cpp-2 = { version = "0.1.129", optional = true }
-ollama-rs = { version = "0.3.3", features = ["stream"], optional = true }
-qdrant-client = { version = "1.16.0", optional = true }
-rand = "0.9.2"
-reqwest = { version = "0.12.24", features = ["json"] }
-sha2 = "0.11.0-rc.3"
 futures = "0.3.29"
-rig-core = "0.25.0"
-rmcp = { version = "0.10.0", features = ["server", "client", "transport-io", "macros"], optional = true }
-schemars = { version = "1.1.0", features = ["derive"] }
-scraper = "0.24.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["full"] }
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
+uuid = { version = "1.19.0", features = ["v4", "serde"] }
+
+# Web framework
+axum = { version = "0.8.7", features = ["macros", "multipart"] }
 tower = { version = "0.5.2", features = ["full"] }
 tower-http = { version = "0.6.7", features = ["trace", "cors", "compression-gzip"] }
 tower-sessions = "0.14.0"
-tracing = "0.1.43"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
+
+# HTTP client
+reqwest = { version = "0.12.24", features = ["json"] }
+
+# Authentication
+argon2 = "0.5.3"
+jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
+sha2 = "0.11.0-rc.3"
+rand = "0.9.2"
+
+# Configuration
+config = "0.15.19"
+dotenv = "0.15.0"
+
+# Database - libsql (always included for local-db)
+libsql = { version = "0.9.29", features = ["core", "replication"] }
+
+# Vector database (optional)
+qdrant-client = { version = "1.16.0", optional = true }
+
+# LLM Providers (optional)
+ollama-rs = { version = "0.3.3", features = ["stream"], optional = true }
+async-openai = { version = "0.31.1", features = ["chat-completion"], optional = true }
+llama-cpp-2 = { version = "0.1.129", optional = true }
+
+# Embeddings and RAG
+fastembed = "5.3.1"
+rig-core = "0.25.0"
+
+# Web scraping and search
+daedra = "0.1.2"
+scraper = "0.24.0"
+
+# Schema and documentation
+schemars = { version = "1.1.0", features = ["derive"] }
 utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
-uuid = { version = "1.19.0", features = ["v4", "serde"] }
+
+# MCP support (optional)
+rmcp = { version = "0.10.0", features = ["server", "client", "transport-io", "macros"], optional = true }
 
 [dev-dependencies]
+# Testing utilities
 axum-test = "18.4.1"
-cargo-llvm-cov = "0.6.21"
 mockall = "0.14.0"
 rstest = "0.26.1"
 tempfile = "3.23.0"
 wiremock = "0.6.5"
 
+# Note: cargo-llvm-cov is a CLI tool, not a library dependency
+# Install with: cargo install cargo-llvm-cov
+
+[profile.dev]
+# Faster compile times for development
+opt-level = 0
+debug = true
+
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
+strip = true
+
+[profile.test]
+opt-level = 0
+debug = true
+
+# Documentation settings
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

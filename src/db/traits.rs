@@ -149,6 +149,9 @@ pub trait DatabaseClient: Send + Sync {
     async fn create_conversation(&self, id: &str, user_id: &str, title: Option<&str>)
         -> Result<()>;
 
+    /// Check if a conversation exists
+    async fn conversation_exists(&self, conversation_id: &str) -> Result<bool>;
+
     /// Get conversations for a user
     async fn get_user_conversations(&self, user_id: &str) -> Result<Vec<ConversationSummary>>;
 
@@ -296,6 +299,24 @@ impl DatabaseClient for super::turso::TursoClient {
         title: Option<&str>,
     ) -> Result<()> {
         super::turso::TursoClient::create_conversation(self, id, user_id, title).await
+    }
+
+    async fn conversation_exists(&self, conversation_id: &str) -> Result<bool> {
+        let conn = self.operation_conn().await?;
+
+        let mut rows = conn
+            .query(
+                "SELECT 1 FROM conversations WHERE id = ?",
+                [conversation_id],
+            )
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to check conversation: {}", e)))?;
+
+        Ok(rows
+            .next()
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?
+            .is_some())
     }
 
     async fn get_user_conversations(&self, user_id: &str) -> Result<Vec<ConversationSummary>> {

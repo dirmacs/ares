@@ -1,0 +1,105 @@
+version: "3.8"
+
+services:
+  # Ollama - Local LLM server
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ares-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    # Uncomment for GPU support (NVIDIA)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Qdrant - Vector database (optional)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ares-qdrant
+    ports:
+      - "6334:6334"
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # A.R.E.S Server - Main application
+  ares:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - FEATURES=ollama,local-db
+    container_name: ares-server
+    ports:
+      - "3000:3000"
+    environment:
+      # Server
+      - HOST=0.0.0.0
+      - PORT=3000
+
+      # Database (local SQLite)
+      - TURSO_URL=file:/data/local.db
+      - TURSO_AUTH_TOKEN=
+
+      # Ollama (default provider)
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2
+
+      # Optional: Qdrant
+      - QDRANT_URL=http://qdrant:6334
+      - QDRANT_API_KEY=
+
+      # Authentication
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production-at-least-32-chars}
+      - API_KEY=${API_KEY:-dev-api-key}
+
+      # Logging
+      - RUST_LOG=info,ares=debug
+    volumes:
+      - ares_data:/data
+      - ./models:/models
+    depends_on:
+      ollama:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  ollama_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  ares_data:
+    driver: local
+
+networks:
+  default:
+    name: ares-network

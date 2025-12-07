@@ -5,7 +5,7 @@ A.R.E.S includes a full MCP server implementation that exposes tools via the Mod
 ## Features
 
 - **Calculator Tool**: Perform basic arithmetic operations (add, subtract, multiply, divide)
-- **Web Search Tool**: Search the web using DuckDuckGo via daedra (no API key required)
+- **Web Search Tool**: Search the web using DuckDuckGo via [daedra](https://github.com/dirmacs/daedra) (no API key required)
 - **Server Stats Tool**: Get server statistics and operation counts
 - **Echo Tool**: Simple echo for testing connectivity
 

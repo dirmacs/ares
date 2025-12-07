@@ -19,7 +19,7 @@ A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed in
 ✅ **101 Passing Tests**: Unit, integration, mocked network tests, and MCP tests  
 ✅ **CI/CD Pipeline**: Multi-platform testing with GitHub Actions  
 ✅ **Developer Documentation**: Setup guides, contributing guidelines, GGUF usage  
-✅ **daedra Integration**: Local web search without proprietary APIs  
+✅ **[daedra](https://github.com/dirmacs/daedra) Integration**: Local web search without proprietary APIs  
 ✅ **MCP Server Implementation**: Full Model Context Protocol support with tools  
 
 ---
@@ -28,7 +28,7 @@ A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed in
 
 ### Objectives
 - Remove dependency on Turso and Qdrant cloud services
-- Integrate daedra crate for local web search
+- Integrate [daedra](https://github.com/dirmacs/daedra) crate for local web search
 - Complete or remove TODOs/FIXMEs
 - Ensure test coverage and quality
 
@@ -40,7 +40,7 @@ A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed in
 - **No Cloud Dependencies**: Turso/Qdrant are optional features
 - **Provider Priority**: LlamaCpp → OpenAI → Ollama
 
-#### 2. daedra Integration
+#### 2. [daedra](https://github.com/dirmacs/daedra) Integration
 - **Location**: `src/tools/search.rs`
 - **Function**: `WebSearch` tool uses `daedra::tools::search::perform_search`
 - **Benefit**: No DuckDuckGo API key or external search service required

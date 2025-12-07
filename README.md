@@ -15,7 +15,7 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 - ✅ **RAG**: Pluggable knowledge bases with semantic search
 - ✅ **Memory**: User personalization and context management
 - ✅ **Deep Research**: Multi-step research with parallel subagents
-- ✅ **Web Search**: Built-in web search via daedra (no API keys required)
+- ✅ **Web Search**: Built-in web search via [daedra](https://github.com/dirmacs/daedra) (no API keys required)
 - ✅ **OpenAPI**: Automatic API documentation generation
 - ✅ **Testing**: Comprehensive unit and integration tests
 

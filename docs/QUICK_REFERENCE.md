@@ -302,7 +302,7 @@ cargo build
 # Update dependencies
 cargo update
 
-# Check Rust version (needs 1.75+)
+# Check Rust version (needs 1.91+)
 rustc --version
 rustup update
 ```

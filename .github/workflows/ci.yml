@@ -132,7 +132,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.75.0
+      - uses: dtolnay/rust-toolchain@1.91.1
       - uses: Swatinem/rust-cache@v2
       - name: Check MSRV
         run: cargo check
@@ -185,7 +185,7 @@ jobs:
   # All checks must pass
   ci-success:
     name: CI Success
-    needs: [fmt, clippy, build, test, docs, msrv, ollama-e2e]
+    needs: [fmt, clippy, build, test, docs, msrv, ollama-integration]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -197,7 +197,7 @@ jobs:
              [[ "${{ needs.test.result }}" != "success" ]] || \
              [[ "${{ needs.docs.result }}" != "success" ]] || \
              [[ "${{ needs.msrv.result }}" != "success" ]] || \
-             [[ "${{ needs.ollama-e2e.result }}" != "success" ]]; then
+             [[ "${{ needs.ollama-integration.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
           fi

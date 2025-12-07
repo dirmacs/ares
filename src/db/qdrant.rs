@@ -1,8 +1,9 @@
 use crate::types::{AppError, Document, Result, SearchQuery, SearchResult};
 use qdrant_client::{
     qdrant::{
-        Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance, FieldCondition, Filter,
-        Match, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
+        condition::ConditionOneOf, r#match::MatchValue, Condition, CreateCollectionBuilder,
+        DeletePointsBuilder, Distance, FieldCondition, Filter, Match, PointId, PointStruct,
+        SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
     },
     Qdrant,
 };
@@ -31,6 +32,7 @@ impl QdrantClient {
         Ok(qdrant)
     }
 
+    #[allow(dead_code)]
     async fn initialize_collections(&self) -> Result<()> {
         let collection_name = "documents";
 
@@ -68,7 +70,7 @@ impl QdrantClient {
             .as_ref()
             .ok_or_else(|| AppError::Database("Document missing embedding".to_string()))?;
 
-        let mut payload = HashMap::new();
+        let mut payload: HashMap<String, qdrant_client::qdrant::Value> = HashMap::new();
         payload.insert("content".to_string(), document.content.clone().into());
         payload.insert("title".to_string(), document.metadata.title.clone().into());
         payload.insert(
@@ -114,10 +116,16 @@ impl QdrantClient {
         if let Some(filters) = &query.filters {
             let mut conditions = Vec::new();
             for filter in filters {
-                conditions.push(Condition::from(FieldCondition::new_match(
-                    filter.field.clone(),
-                    Match::from(filter.value.clone()),
-                )));
+                let field_condition = FieldCondition {
+                    key: filter.field.clone(),
+                    r#match: Some(Match {
+                        match_value: Some(MatchValue::Text(filter.value.clone())),
+                    }),
+                    ..Default::default()
+                };
+                conditions.push(Condition {
+                    condition_one_of: Some(ConditionOneOf::Field(field_condition)),
+                });
             }
             search_builder = search_builder.filter(Filter::must(conditions));
         }
@@ -140,9 +148,13 @@ impl QdrantClient {
                 let tags: Vec<String> =
                     serde_json::from_value(payload.get("tags")?.clone().into()).ok()?;
 
+                let id_str = match scored_point.id?.point_id_options? {
+                    qdrant_client::qdrant::point_id::PointIdOptions::Num(num) => num.to_string(),
+                    qdrant_client::qdrant::point_id::PointIdOptions::Uuid(uuid) => uuid,
+                };
                 Some(SearchResult {
                     document: Document {
-                        id: scored_point.id.as_ref()?.to_string(),
+                        id: id_str,
                         content,
                         metadata: crate::types::DocumentMetadata {
                             title,
@@ -165,10 +177,20 @@ impl QdrantClient {
 
         // collection_name, &[id.into()], None
 
+        use qdrant_client::qdrant::point_id::PointIdOptions;
+        let point_id = if let Ok(num) = id.parse::<u64>() {
+            PointId {
+                point_id_options: Some(PointIdOptions::Num(num)),
+            }
+        } else {
+            PointId {
+                point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+            }
+        };
         self.client
             .delete_points(
                 DeletePointsBuilder::new(collection_name)
-                    .points(vec![id.to_string().into()])
+                    .points(vec![point_id])
                     .wait(true),
             )
             .await

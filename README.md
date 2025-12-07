@@ -1,20 +1,155 @@
-# ares
+# A.R.E.S - Agentic Retrieval Enhanced Server
 
 A production-grade agentic chatbot server built in Rust with multi-provider LLM support, tool calling, RAG, MCP integration, and advanced research capabilities.
 
 ## Features
 
-- ✅ **Generic LLM Client**: Support for OpenAI, Anthropic, Ollama, llama.cpp
-- ✅ **Authentication**: JWT-based auth with Argon2 password hashing
-- ✅ **Database**: Turso for state/persistence, Qdrant for vector search
+- ✅ **Multi-Provider LLM Support**: Ollama, OpenAI, LlamaCpp (direct GGUF loading)
+- ✅ **Local-First Development**: Runs entirely locally with Ollama and SQLite by default
 - ✅ **Tool Calling**: Type-safe function calling with automatic schema generation
+- ✅ **Streaming**: Real-time streaming responses from all providers
+- ✅ **Authentication**: JWT-based auth with Argon2 password hashing
+- ✅ **Database**: Local SQLite (libsql) by default, optional Turso and Qdrant
 - ✅ **MCP Support**: Pluggable Model Context Protocol server integration
 - ✅ **Agent Framework**: Multi-agent orchestration with specialized agents
 - ✅ **RAG**: Pluggable knowledge bases with semantic search
 - ✅ **Memory**: User personalization and context management
 - ✅ **Deep Research**: Multi-step research with parallel subagents
+- ✅ **Web Search**: Built-in web search via daedra (no API keys required)
 - ✅ **OpenAPI**: Automatic API documentation generation
 - ✅ **Testing**: Comprehensive unit and integration tests
+
+## Quick Start
+
+### Prerequisites
+
+- **Rust 1.75+**: Install via [rustup](https://rustup.rs/)
+- **Ollama** (recommended): For local LLM inference - [Install Ollama](https://ollama.ai)
+
+### 1. Clone and Setup
+
+```bash
+git clone <repo>
+cd ares
+cp .env.example .env
+```
+
+### 2. Start Ollama (Recommended)
+
+```bash
+# Install a model
+ollama pull llama3.2
+
+# Ollama runs automatically as a service, or start manually:
+ollama serve
+```
+
+### 3. Build and Run
+
+```bash
+# Build with default features (local-db + ollama)
+cargo build
+
+# Run the server
+cargo run
+```
+
+Server runs on `http://localhost:3000`
+
+## Feature Flags
+
+A.R.E.S uses Cargo features for conditional compilation:
+
+### LLM Providers
+
+| Feature | Description | Default |
+|---------|-------------|---------|
+| `ollama` | Ollama local inference | ✅ Yes |
+| `openai` | OpenAI API (and compatible) | No |
+| `llamacpp` | Direct GGUF model loading | No |
+| `llamacpp-cuda` | LlamaCpp with CUDA | No |
+| `llamacpp-metal` | LlamaCpp with Metal (macOS) | No |
+| `llamacpp-vulkan` | LlamaCpp with Vulkan | No |
+
+### Database Backends
+
+| Feature | Description | Default |
+|---------|-------------|---------|
+| `local-db` | Local SQLite via libsql | ✅ Yes |
+| `turso` | Remote Turso database | No |
+| `qdrant` | Qdrant vector database | No |
+
+### Feature Bundles
+
+| Feature | Includes |
+|---------|----------|
+| `all-llm` | ollama + openai + llamacpp |
+| `all-db` | local-db + turso + qdrant |
+| `full` | All optional features |
+| `minimal` | No optional features |
+
+### Building with Features
+
+```bash
+# Default (ollama + local-db)
+cargo build
+
+# With OpenAI support
+cargo build --features "openai"
+
+# With direct GGUF loading
+cargo build --features "llamacpp"
+
+# With CUDA GPU acceleration
+cargo build --features "llamacpp-cuda"
+
+# Full feature set
+cargo build --features "full"
+```
+
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file or set environment variables:
+
+```bash
+# Server
+HOST=127.0.0.1
+PORT=3000
+
+# Database (local SQLite by default)
+TURSO_URL=file:local.db
+TURSO_AUTH_TOKEN=
+
+# LLM Provider - Ollama (default)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2
+
+# LLM Provider - OpenAI (optional)
+# OPENAI_API_KEY=sk-...
+# OPENAI_API_BASE=https://api.openai.com/v1
+# OPENAI_MODEL=gpt-4
+
+# LLM Provider - LlamaCpp (optional, highest priority if set)
+# LLAMACPP_MODEL_PATH=/path/to/model.gguf
+
+# Authentication
+JWT_SECRET=your-secret-key-at-least-32-characters
+API_KEY=your-api-key
+
+# Optional: Qdrant for vector search
+# QDRANT_URL=http://localhost:6334
+# QDRANT_API_KEY=
+```
+
+### Provider Priority
+
+When multiple providers are configured, they are selected in this order:
+
+1. **LlamaCpp** - If `LLAMACPP_MODEL_PATH` is set
+2. **OpenAI** - If `OPENAI_API_KEY` is set
+3. **Ollama** - Default fallback (no API key required)
 
 ## Architecture
 
@@ -51,59 +186,11 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
        │                   │                  │
 ┌──────▼────────┐  ┌───────▼───────┐  ┌──────▼──────┐
 │  LLM Clients  │  │  Tool Registry │  │  Knowledge  │
-│  - OpenAI     │  │  - Search      │  │    Bases    │
-│  - Ollama     │  │  - Calculator  │  │  - Qdrant   │
-│  - llama.cpp  │  │  - Database    │  │  - Turso    │
+│  - Ollama     │  │  - Web Search  │  │    Bases    │
+│  - OpenAI     │  │  - Calculator  │  │  - SQLite   │
+│  - LlamaCpp   │  │  - Database    │  │  - Qdrant   │
 └───────────────┘  └───────────────┘  └──────────────┘
 ```
-
-## Quick Start
-
-### Prerequisites
-
-- Rust 1.75+
-- Docker (for Qdrant)
-- Turso account or local libSQL
-
-### 1. Clone and Setup
-
-```bash
-git clone <repo>
-cd agentic-chatbot-server
-cp .env.example .env
-```
-
-### 2. Configure Environment
-
-Edit `.env`:
-
-```bash
-# Required
-TURSO_URL=libsql://your-database.turso.io
-TURSO_AUTH_TOKEN=your_token
-JWT_SECRET=your_secret_key
-API_KEY=your_api_key
-
-# At least one LLM provider
-OPENAI_API_KEY=sk-...
-# OR
-OLLAMA_URL=http://localhost:11434
-```
-
-### 3. Start Qdrant
-
-```bash
-docker run -p 6334:6334 qdrant/qdrant
-```
-
-### 4. Build and Run
-
-```bash
-cargo build --release
-cargo run
-```
-
-Server runs on `http://localhost:3000`
 
 ## API Documentation
 
@@ -113,23 +200,27 @@ Interactive Swagger UI available at: `http://localhost:3000/swagger-ui/`
 
 #### Register
 ```bash
-POST /api/auth/register
-{
-  "email": "user@example.com",
-  "password": "secure_password",
-  "name": "John Doe"
-}
+curl -X POST http://localhost:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "secure_password",
+    "name": "John Doe"
+  }'
 ```
 
 #### Login
 ```bash
-POST /api/auth/login
-{
-  "email": "user@example.com",
-  "password": "secure_password"
-}
+curl -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "secure_password"
+  }'
+```
 
 Response:
+```json
 {
   "access_token": "eyJ...",
   "refresh_token": "eyJ...",
@@ -140,246 +231,44 @@ Response:
 ### Chat
 
 ```bash
-POST /api/chat
-Authorization: Bearer <access_token>
-{
-  "message": "What products do we have?",
-  "agent_type": "product"
-}
-
-Response:
-{
-  "response": "Here are our current products...",
-  "agent": "ProductAgent",
-  "context_id": "uuid",
-  "sources": [...]
-}
+curl -X POST http://localhost:3000/api/chat \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What products do we have?",
+    "agent_type": "product"
+  }'
 ```
 
 ### Deep Research
 
 ```bash
-POST /api/research
-Authorization: Bearer <access_token>
-{
-  "query": "Analyze market trends in renewable energy",
-  "depth": 3,
-  "max_iterations": 5
-}
-
-Response:
-{
-  "findings": "Comprehensive research report...",
-  "sources": [...],
-  "duration_ms": 45000
-}
+curl -X POST http://localhost:3000/api/research \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Analyze market trends in renewable energy",
+    "depth": 3,
+    "max_iterations": 5
+  }'
 ```
 
-## Agent Types
+## Tool Calling
 
-- **Router**: Initial query classifier
-- **Orchestrator**: Coordinates multiple agents
-- **Product**: Product information and recommendations
-- **Invoice**: Invoice processing and queries
-- **Sales**: Sales data and analytics
-- **Finance**: Financial analysis and reporting
-- **HR**: Human resources queries
+A.R.E.S supports tool calling with Ollama models that support function calling (llama3.1+, mistral, etc.):
 
-## Testing
+### Built-in Tools
 
-### Run All Tests
+- **calculator**: Basic arithmetic operations
+- **web_search**: Web search via DuckDuckGo (no API key required)
 
-```bash
-cargo test
-```
-
-### Run with Coverage
-
-```bash
-cargo install cargo-llvm-cov
-cargo llvm-cov --html --open
-```
-
-### Run Integration Tests Only
-
-```bash
-cargo test --test '*'
-```
-
-## Project Structure
-
-```
-src/
-├── main.rs              # Application entry point
-├── api/                 # API routes and handlers
-├── agents/              # Agent implementations
-├── llm/                 # LLM client abstractions
-├── tools/               # Tool calling framework
-├── mcp/                 # MCP integration
-├── rag/                 # RAG components
-├── db/                  # Database clients
-├── auth/                # Authentication
-├── memory/              # User memory system
-├── research/            # Deep research
-├── types/               # Type definitions
-└── utils/               # Utilities
-```
-
-## Configuration
-
-### LLM Providers
-
-The server supports multiple LLM providers simultaneously:
+### Tool Calling Example
 
 ```rust
-// In your code, select provider dynamically
-let provider = Provider::OpenAI {
-    api_key: config.llm.openai_api_key.unwrap(),
-    model: "gpt-4".to_string(),
-};
+use ares::llm::{OllamaClient, OllamaToolCoordinator};
+use ares::tools::registry::ToolRegistry;
+use ares::tools::{Calculator, WebSearch};
 
-let client = provider.create_client().await?;
-```
-
-### Custom Tools
-
-Add custom tools by implementing the `Tool` trait:
-
-```rust
-use crate::tools::Tool;
-
-struct MyCustomTool;
-
-#[async_trait]
-impl Tool for MyCustomTool {
-    fn name(&self) -> &str { "my_tool" }
-    fn description(&self) -> &str { "My custom tool" }
-
-    async fn execute(&self, args: serde_json::Value) -> Result<serde_json::Value> {
-        // Implementation
-    }
-}
-```
-
-### Knowledge Bases
-
-Implement custom knowledge bases:
-
-```rust
-use crate::rag::KnowledgeBase;
-
-struct MyKnowledgeBase;
-
-#[async_trait]
-impl KnowledgeBase for MyKnowledgeBase {
-    async fn search(&self, query: &str) -> Result<Vec<Document>> {
-        // Implementation
-    }
-}
-```
-
-## Performance
-
-- **Latency**: <100ms for simple queries
-- **Throughput**: 1000+ req/sec on modern hardware
-- **Memory**: ~50MB base + ~1MB per concurrent request
-- **Database**: Supports 100K+ documents with sub-50ms search
-
-## Security
-
-- Argon2 password hashing (OWASP recommended)
-- JWT with RS256 (asymmetric) for production
-- Token rotation for refresh tokens
-- Rate limiting on auth endpoints
-- Input validation on all endpoints
-- Secure random number generation
-
-## Monitoring
-
-Structured logging with tracing:
-
-```bash
-RUST_LOG=info cargo run
-```
-
-OpenTelemetry integration for production monitoring.
-
-## Deployment
-
-### Docker
-
-```dockerfile
-FROM rust:1.75 as builder
-WORKDIR /app
-COPY . .
-RUN cargo build --release
-
-FROM debian:bookworm-slim
-COPY --from=builder /app/target/release/agentic-chatbot-server /usr/local/bin/
-CMD ["agentic-chatbot-server"]
-```
-
-### Environment Variables
-
-All configuration via environment variables - see `.env.example`
-
-## Development
-
-### Adding a New Agent
-
-1. Create agent file in `src/agents/`
-2. Implement `Agent` trait
-3. Register in agent graph
-4. Add to `AgentType` enum
-5. Update router logic
-
-### Adding a New Tool
-
-1. Create tool file in `src/tools/`
-2. Implement `Tool` trait
-3. Register in tool registry
-4. Add schema with `schemars`
-
-## Troubleshooting
-
-### Qdrant Connection Error
-
-Ensure Qdrant is running:
-```bash
-docker ps | grep qdrant
-```
-
-### Database Migration Issues
-
-Reset Turso database:
-```bash
-turso db shell <database-name>
-DROP TABLE IF EXISTS users;
-# Restart server to recreate
-```
-
-### JWT Errors
-
-Regenerate secret:
-```bash
-openssl rand -base64 32
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create feature branch
-3. Add tests for new functionality
-4. Ensure `cargo test` passes
-5. Run `cargo fmt` and `cargo clippy`
-6. Submit pull request
-
-## License
-
-MIT
-
-## Acknowledgments
-
-- Built with [Rig.rs](https://github.com/0xPlaygrounds/rig)
-- Inspired by LangChain and AutoGPT
-- Uses production patterns from Anthropic's research
+// Set up tools
+let mut registry = ToolRegistry::new();
+registry.register

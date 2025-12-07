@@ -384,7 +384,7 @@ fn test_tool_call_complex_arguments() {
         arguments: serde_json::json!({
             "string_arg": "hello",
             "number_arg": 42,
-            "float_arg": 3.14,
+            "float_arg": 2.75,
             "bool_arg": true,
             "null_arg": null,
             "array_arg": [1, 2, 3],

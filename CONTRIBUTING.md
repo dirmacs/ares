@@ -22,7 +22,7 @@ This project follows the [Rust Code of Conduct](https://www.rust-lang.org/polici
 
 ### Prerequisites
 
-- **Rust 1.75+**: Install via [rustup](https://rustup.rs/)
+- **Rust 1.91+**: Install via [rustup](https://rustup.rs/)
 - **Git**: For version control
 - **Docker** (optional): For running Qdrant vector database
 - **Ollama** (optional): For local LLM inference

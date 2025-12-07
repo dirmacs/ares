@@ -785,7 +785,7 @@ async fn test_tool_call_complex_arguments() {
         arguments: json!({
             "string_arg": "hello",
             "number_arg": 42,
-            "float_arg": 3.14,
+            "float_arg": 2.75,
             "bool_arg": true,
             "null_arg": null,
             "array_arg": [1, 2, 3],
@@ -795,7 +795,7 @@ async fn test_tool_call_complex_arguments() {
 
     assert_eq!(tool_call.arguments["string_arg"], "hello");
     assert_eq!(tool_call.arguments["number_arg"], 42);
-    assert!((tool_call.arguments["float_arg"].as_f64().unwrap() - 3.14).abs() < 0.001);
+    assert!((tool_call.arguments["float_arg"].as_f64().unwrap() - 2.75).abs() < 0.001);
     assert!(tool_call.arguments["bool_arg"].as_bool().unwrap());
     assert!(tool_call.arguments["null_arg"].is_null());
     assert_eq!(

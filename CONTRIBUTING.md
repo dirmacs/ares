@@ -230,7 +230,7 @@ test(api): add concurrent login tests
 ### Running Tests
 
 ```bash
-# Run all tests
+# Run all tests (mocked, no external services required)
 cargo test
 
 # Run with specific features
@@ -248,6 +248,67 @@ cargo test --test '*'
 # Run only unit tests
 cargo test --lib
 ```
+
+### Live Ollama Tests
+
+There are additional tests that connect to a **real Ollama instance**. These tests are **ignored by default** and must be explicitly enabled.
+
+#### Prerequisites
+
+1. A running Ollama server (default: `http://localhost:11434`)
+2. A model pulled (e.g., `ollama pull llama3.2`)
+
+#### Running Live Tests
+
+**Option 1: Set environment variable in your shell**
+
+```bash
+# Bash/Zsh
+OLLAMA_LIVE_TESTS=1 cargo test --test ollama_live_tests -- --ignored
+
+# Nushell
+$env.OLLAMA_LIVE_TESTS = "1"; cargo test --test ollama_live_tests -- --ignored
+
+# PowerShell
+$env:OLLAMA_LIVE_TESTS = "1"; cargo test --test ollama_live_tests -- --ignored
+```
+
+**Option 2: Add to your `.env` file**
+
+```bash
+# Add to .env
+OLLAMA_LIVE_TESTS=1
+```
+
+Then run:
+```bash
+# Source .env first if needed, or use a tool like dotenv
+cargo test --test ollama_live_tests -- --ignored
+```
+
+#### Configuring Live Tests
+
+You can customize the Ollama connection:
+
+```bash
+# Custom Ollama URL
+OLLAMA_URL=http://192.168.1.100:11434 OLLAMA_LIVE_TESTS=1 cargo test --test ollama_live_tests -- --ignored
+
+# Custom model
+OLLAMA_MODEL=mistral OLLAMA_LIVE_TESTS=1 cargo test --test ollama_live_tests -- --ignored
+```
+
+#### Live Test Coverage
+
+The live tests cover:
+- Connection verification
+- Basic text generation
+- System prompt handling
+- Conversation history
+- Streaming responses
+- Tool calling
+- Error handling (invalid models)
+- Sequential and concurrent requests
 
 ### Test Coverage
 

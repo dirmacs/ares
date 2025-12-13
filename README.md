@@ -275,3 +275,52 @@ use ares::tools::{Calculator, WebSearch};
 // Set up tools
 let mut registry = ToolRegistry::new();
 registry.register
+
+## Testing
+
+A.R.E.S has comprehensive test coverage with both mocked and live tests.
+
+### Unit & Integration Tests (Mocked)
+
+```bash
+# Run all tests (no external services required)
+cargo test
+
+# Run with verbose output
+cargo test -- --nocapture
+```
+
+### Live Ollama Tests
+
+Tests that connect to a **real Ollama instance** are available but **ignored by default**.
+
+#### Prerequisites
+- Running Ollama server at `http://localhost:11434`
+- A model installed (e.g., `ollama pull llama3.2`)
+
+#### Running Live Tests
+
+```bash
+# Set the environment variable and run ignored tests
+OLLAMA_LIVE_TESTS=1 cargo test --test ollama_live_tests -- --ignored
+
+# With custom Ollama URL or model
+OLLAMA_URL=http://192.168.1.100:11434 OLLAMA_MODEL=mistral OLLAMA_LIVE_TESTS=1 \
+  cargo test --test ollama_live_tests -- --ignored
+```
+
+Or add `OLLAMA_LIVE_TESTS=1` to your `.env` file.
+
+### API Tests (Hurl)
+
+End-to-end API tests using [Hurl](https://hurl.dev):
+
+```bash
+# Install Hurl
+brew install hurl  # macOS
+
+# Run API tests (server must be running)
+cd scripts/hurl && nu run.nu
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for more testing details.

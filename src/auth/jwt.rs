@@ -100,6 +100,9 @@ impl AuthService {
         let mut hasher = Sha256::new();
         hasher.update(token.as_bytes());
         let result = hasher.finalize();
-        result.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        result
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
     }
 }

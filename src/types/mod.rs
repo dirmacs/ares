@@ -2,7 +2,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-
 // ============= API Request/Response Types =============
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

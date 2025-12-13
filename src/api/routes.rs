@@ -1,9 +1,8 @@
-use crate::auth::jwt::AuthService;
 use crate::AppState;
+use crate::auth::jwt::AuthService;
 use axum::{
-    middleware,
+    Router, middleware,
     routing::{get, post},
-    Router,
 };
 use std::sync::Arc;
 

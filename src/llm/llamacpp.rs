@@ -31,7 +31,7 @@ use llama_cpp_2::{
     context::params::LlamaContextParams,
     llama_backend::LlamaBackend,
     llama_batch::LlamaBatch,
-    model::{params::LlamaModelParams, AddBos, LlamaModel, Special},
+    model::{AddBos, LlamaModel, Special, params::LlamaModelParams},
     sampling::LlamaSampler,
 };
 use std::num::NonZeroU32;

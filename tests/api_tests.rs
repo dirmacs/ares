@@ -1,15 +1,15 @@
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use axum_test::TestServer;
 use serde_json::json;
 use std::sync::Arc;
 
 use ares::{
+    AppState,
     auth::jwt::AuthService,
     db::TursoClient,
     llm::client::{LLMClientFactoryTrait, Provider},
     llm::{LLMClient, LLMResponse},
     types::{Result, ToolCall, ToolDefinition},
-    AppState,
 };
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
@@ -189,8 +189,9 @@ async fn create_test_app() -> Router {
             port: 3000,
         },
         database: ares::utils::config::DatabaseConfig {
-            turso_url: ":memory:".to_string(),
-            turso_auth_token: "".to_string(),
+            database_url: ":memory:".to_string(),
+            turso_url: None,
+            turso_auth_token: None,
             qdrant_url: "http://localhost:6334".to_string(),
             qdrant_api_key: None,
         },

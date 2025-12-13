@@ -118,13 +118,16 @@ Create a `.env` file or set environment variables:
 HOST=127.0.0.1
 PORT=3000
 
-# Database (local SQLite by default)
-TURSO_URL=file:local.db
-TURSO_AUTH_TOKEN=
+# Database (local-first)
+# Examples: ./data/ares.db | file:./data/ares.db | :memory:
+DATABASE_URL=./data/ares.db
+
+# Optional: Turso cloud (set both to enable)
+# TURSO_URL=libsql://<your-db>-<your-org>.turso.io
+# TURSO_AUTH_TOKEN=...
 
 # LLM Provider - Ollama (default)
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2
+OLLAMA_URL=http://localhost:11434
 
 # LLM Provider - OpenAI (optional)
 # OPENAI_API_KEY=sk-...

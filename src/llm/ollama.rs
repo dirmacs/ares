@@ -25,11 +25,11 @@ use crate::tools::registry::ToolRegistry;
 use crate::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_stream::stream;
 use async_trait::async_trait;
-use futures::{future::join_all, Stream, StreamExt};
+use futures::{Stream, StreamExt, future::join_all};
 use ollama_rs::{
-    generation::chat::{request::ChatMessageRequest, ChatMessage},
-    generation::tools::{ToolCall as OllamaToolCall, ToolFunctionInfo, ToolInfo, ToolType},
     Ollama,
+    generation::chat::{ChatMessage, request::ChatMessageRequest},
+    generation::tools::{ToolCall as OllamaToolCall, ToolFunctionInfo, ToolInfo, ToolType},
 };
 use schemars::Schema;
 use std::sync::Arc;
@@ -76,21 +76,54 @@ impl OllamaClient {
         model: String,
         tool_config: ToolCallingConfig,
     ) -> Result<Self> {
-        let url_parts: Vec<&str> = base_url.split("://").collect();
-        let (host, port) = if url_parts.len() == 2 {
-            let host_port: Vec<&str> = url_parts[1].split(':').collect();
-            let host = host_port[0].to_string();
-            let port = if host_port.len() == 2 {
-                host_port[1].parse().unwrap_or(11434)
-            } else {
-                11434
-            };
-            (host, port)
+        // ollama-rs' `Ollama::new(host, port)` parses `host` using reqwest's IntoUrl.
+        // If `host` is something like "localhost" (no scheme), it panics with
+        // `RelativeUrlWithoutBase`. To avoid server crashes, normalize user input
+        // so we *always* pass an absolute URL like "http://localhost".
+        //
+        // Accept incoming configs like:
+        // - http://localhost:11434
+        // - https://example.com:11434
+        // - localhost:11434
+        // - localhost
+        // - localhost:11434/api (path ignored)
+        let trimmed = base_url.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::Configuration(
+                "OLLAMA_URL is empty/invalid; expected something like http://localhost:11434"
+                    .to_string(),
+            ));
+        }
+
+        // Strip scheme if present to get host[:port][/path...]
+        let without_scheme = trimmed
+            .strip_prefix("http://")
+            .or_else(|| trimmed.strip_prefix("https://"))
+            .unwrap_or(trimmed);
+
+        // Drop any path/query fragments after the first '/'. E.g. "localhost:11434/api" → "localhost:11434"
+        let host_port = without_scheme
+            .split(&['/', '?', '#'][..])
+            .next()
+            .unwrap_or("localhost:11434");
+
+        // Split host and port
+        let (host, port) = if let Some(colon_idx) = host_port.rfind(':') {
+            let h = &host_port[..colon_idx];
+            let p_str = &host_port[colon_idx + 1..];
+            let p = p_str.parse::<u16>().map_err(|_| {
+                AppError::Configuration(format!(
+                    "Invalid OLLAMA_URL port in '{}'; expected e.g. http://localhost:11434",
+                    base_url
+                ))
+            })?;
+            (h.to_string(), p)
         } else {
-            ("localhost".to_string(), 11434)
+            (host_port.to_string(), 11434)
         };
 
-        let client = Ollama::new(host, port);
+        // ollama-rs Ollama::new expects an absolute URL; pass scheme+host
+        let client = Ollama::new(format!("http://{}", host), port);
 
         Ok(Self {
             client,

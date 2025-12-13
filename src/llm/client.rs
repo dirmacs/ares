@@ -175,7 +175,9 @@ impl Provider {
         // Ollama as default local inference (no API key required)
         #[cfg(feature = "ollama")]
         {
-            let base_url = std::env::var("OLLAMA_BASE_URL")
+            // Accept both OLLAMA_URL (preferred) and legacy OLLAMA_BASE_URL
+            let base_url = std::env::var("OLLAMA_URL")
+                .or_else(|_| std::env::var("OLLAMA_BASE_URL"))
                 .unwrap_or_else(|_| "http://localhost:11434".into());
             let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".into());
             return Ok(Provider::Ollama { base_url, model });

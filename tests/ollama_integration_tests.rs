@@ -141,10 +141,12 @@ async fn test_ollama_mock_server_with_system_prompt() {
 
     assert_eq!(response.status(), 200);
     let body: serde_json::Value = response.json().await.unwrap();
-    assert!(body["message"]["content"]
-        .as_str()
-        .unwrap()
-        .contains("coding assistant"));
+    assert!(
+        body["message"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("coding assistant")
+    );
 }
 
 #[tokio::test]

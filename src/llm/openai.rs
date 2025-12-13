@@ -23,6 +23,7 @@
 use crate::llm::client::{LLMClient, LLMResponse};
 use crate::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_openai::{
+    Client,
     config::OpenAIConfig,
     types::chat::{
         ChatCompletionMessageToolCalls, ChatCompletionRequestAssistantMessageArgs,
@@ -30,7 +31,6 @@ use async_openai::{
         ChatCompletionRequestUserMessageArgs, ChatCompletionTool, ChatCompletionTools,
         CreateChatCompletionRequestArgs, FunctionObject,
     },
-    Client,
 };
 use async_trait::async_trait;
 use futures::StreamExt;

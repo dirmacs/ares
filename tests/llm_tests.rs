@@ -233,10 +233,12 @@ fn test_llm_response_with_tool_calls() {
 #[test]
 fn test_provider_from_env_no_config() {
     // Clear environment variables for this test
-    std::env::remove_var("LLAMACPP_MODEL_PATH");
-    std::env::remove_var("OPENAI_API_KEY");
-    std::env::remove_var("OLLAMA_BASE_URL");
-    std::env::remove_var("OLLAMA_MODEL");
+    unsafe {
+        std::env::remove_var("LLAMACPP_MODEL_PATH");
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("OLLAMA_URL");
+        std::env::remove_var("OLLAMA_MODEL");
+    }
 
     // With ollama feature enabled by default, this should succeed
     let result = Provider::from_env();

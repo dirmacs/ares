@@ -1,8 +1,8 @@
 use ares::{
-    api, auth::jwt::AuthService, db::TursoClient, llm::LLMClientFactory, utils::config::Config,
-    AppState,
+    AppState, api, auth::jwt::AuthService, db::TursoClient, llm::LLMClientFactory,
+    utils::config::Config,
 };
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use std::sync::Arc;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -29,12 +29,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Configuration loaded");
 
     // Initialize database clients
-    let turso = TursoClient::new(
+    // Local-first initialization. If Turso cloud config is provided, it will be preferred.
+    // Otherwise we use a local libsql/SQLite file database.
+    let turso = if let (Some(url), Some(token)) = (
         config.database.turso_url.clone(),
         config.database.turso_auth_token.clone(),
-    )
-    .await?;
-    tracing::info!("Turso client initialized");
+    ) {
+        tracing::info!("Initializing Turso (remote) database");
+        TursoClient::new_remote(url, token).await?
+    } else {
+        // Ensure data directory exists for the default "./data/ares.db" path.
+        // (No-op if DATABASE_URL points elsewhere, or is ":memory:")
+        if !config.database.database_url.contains(":memory:")
+            && !config.database.database_url.starts_with("libsql://")
+            && !config.database.database_url.starts_with("https://")
+        {
+            let path = config
+                .database
+                .database_url
+                .strip_prefix("file:")
+                .unwrap_or(&config.database.database_url);
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        tracing::info!(
+            database_url = %config.database.database_url,
+            "Initializing local database"
+        );
+        TursoClient::new_local(&config.database.database_url).await?
+    };
+    tracing::info!("Database client initialized");
 
     // Initialize LLM factory from environment
     let llm_factory = LLMClientFactory::from_env()?;

@@ -18,8 +18,15 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatabaseConfig {
-    pub turso_url: String,
-    pub turso_auth_token: String,
+    /// Local database path/URL. Examples:
+    /// - "./data/ares.db"
+    /// - "file:./data/ares.db"
+    /// - ":memory:" (ephemeral)
+    pub database_url: String,
+    /// Optional Turso/libsql cloud URL (e.g. libsql://<db>-<org>.turso.io)
+    pub turso_url: Option<String>,
+    /// Optional Turso auth token
+    pub turso_auth_token: Option<String>,
     pub qdrant_url: String,
     pub qdrant_api_key: Option<String>,
 }
@@ -58,8 +65,18 @@ impl Config {
                     .parse()?,
             },
             database: DatabaseConfig {
-                turso_url: env::var("TURSO_URL")?,
-                turso_auth_token: env::var("TURSO_AUTH_TOKEN")?,
+                // Local-first default
+                database_url: env::var("DATABASE_URL")
+                    .or_else(|_| env::var("DATABASE_PATH"))
+                    .unwrap_or_else(|_| "./data/ares.db".to_string()),
+                // Cloud config is optional
+                turso_url: env::var("TURSO_URL")
+                    .or_else(|_| env::var("TURSO_DATABASE_URL"))
+                    .ok()
+                    .filter(|v| !v.trim().is_empty()),
+                turso_auth_token: env::var("TURSO_AUTH_TOKEN")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty()),
                 qdrant_url: env::var("QDRANT_URL")
                     .unwrap_or_else(|_| "http://localhost:6334".to_string()),
                 qdrant_api_key: env::var("QDRANT_API_KEY").ok(),

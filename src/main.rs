@@ -1,6 +1,6 @@
 use ares::{
-    AppState, AresConfigManager, ConfigBasedLLMFactory, ProviderRegistry,
-    api, auth::jwt::AuthService, db::TursoClient,
+    AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, ProviderRegistry,
+    ToolRegistry, api, auth::jwt::AuthService, db::TursoClient,
 };
 use axum::{Router, routing::get};
 use std::sync::Arc;
@@ -121,6 +121,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Auth service initialized");
 
     // =================================================================
+    // Initialize Tool Registry
+    // =================================================================
+    let mut tool_registry = ToolRegistry::with_config(&config);
+    
+    // Register built-in tools
+    tool_registry.register(Arc::new(ares::tools::calculator::Calculator));
+    tool_registry.register(Arc::new(ares::tools::search::WebSearch::new()));
+    
+    let tool_registry = Arc::new(tool_registry);
+    tracing::info!(
+        "Tool registry initialized with {} tools",
+        tool_registry.enabled_tool_names().len()
+    );
+
+    // =================================================================
+    // Initialize Agent Registry
+    // =================================================================
+    let agent_registry = AgentRegistry::from_config(
+        &config,
+        Arc::clone(&provider_registry),
+        Arc::clone(&tool_registry),
+    );
+    let agent_registry = Arc::new(agent_registry);
+    tracing::info!(
+        "Agent registry initialized with {} agents",
+        agent_registry.agent_names().len()
+    );
+
+    // =================================================================
     // Create Application State
     // =================================================================
     let state = AppState {
@@ -128,6 +157,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         turso: Arc::new(turso),
         llm_factory,
         provider_registry,
+        agent_registry,
+        tool_registry,
         auth_service: Arc::new(auth_service),
     };
 

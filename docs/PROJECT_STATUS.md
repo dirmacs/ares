@@ -157,7 +157,7 @@ llamacpp-vulkan # Vulkan API
 - GPU acceleration adds 5-10x performance boost
 
 **Ollama Capabilities**:
-- Native tool calling in llama3.1+, mistral, qwen2.5
+- Native tool calling in granite4+, mistral, qwen2.5
 - NDJSON streaming format
 - Built-in model management
 - Easy local deployment
@@ -683,7 +683,7 @@ API_KEY=<your-key>
 ```bash
 # Ollama (default)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2
+OLLAMA_MODEL=granite4:tiny-h
 
 # OpenAI
 OPENAI_API_KEY=sk-...

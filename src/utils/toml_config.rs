@@ -399,6 +399,27 @@ impl Default for RagConfig {
 
 // ============= Configuration Loading & Validation =============
 
+/// Configuration warnings that don't prevent operation but may indicate issues
+#[derive(Debug, Clone)]
+pub struct ConfigWarning {
+    pub kind: ConfigWarningKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigWarningKind {
+    UnusedProvider,
+    UnusedModel,
+    UnusedTool,
+    UnusedAgent,
+}
+
+impl std::fmt::Display for ConfigWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
 /// Errors that can occur during configuration loading
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -428,6 +449,9 @@ pub enum ConfigError {
 
     #[error("Tool '{0}' referenced by agent '{1}' does not exist")]
     MissingTool(String, String),
+
+    #[error("Circular reference detected: {0}")]
+    CircularReference(String),
 
     #[error("Watch error: {0}")]
     WatchError(#[from] notify::Error),
@@ -544,7 +568,155 @@ impl AresConfig {
             }
         }
 
+        // Check for circular references in workflows (entry_agent -> fallback cycles)
+        self.detect_circular_references()?;
+
         Ok(())
+    }
+
+    /// Detect circular references in workflow configurations
+    ///
+    /// Currently checks for:
+    /// - Workflow entry_agent pointing to itself via fallback chain
+    fn detect_circular_references(&self) -> Result<(), ConfigError> {
+        use std::collections::HashSet;
+
+        for (workflow_name, workflow_config) in &self.workflows {
+            let mut visited = HashSet::new();
+            let mut current = Some(workflow_config.entry_agent.as_str());
+
+            while let Some(agent_name) = current {
+                if visited.contains(agent_name) {
+                    return Err(ConfigError::CircularReference(format!(
+                        "Circular reference detected in workflow '{}': agent '{}' appears multiple times in the chain",
+                        workflow_name, agent_name
+                    )));
+                }
+                visited.insert(agent_name);
+
+                // Check if this agent is the entry for any workflow that has this workflow's entry as fallback
+                // This is a simple check - could be extended for more complex scenarios
+                current = None;
+
+                // For now, we just check that fallback_agent doesn't equal entry_agent
+                if let Some(ref fallback) = workflow_config.fallback_agent {
+                    if fallback == &workflow_config.entry_agent {
+                        return Err(ConfigError::CircularReference(format!(
+                            "Workflow '{}' has entry_agent '{}' that equals fallback_agent",
+                            workflow_name, workflow_config.entry_agent
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate configuration with warnings for unused items
+    ///
+    /// Returns Ok with warnings, or Err if validation fails
+    pub fn validate_with_warnings(&self) -> Result<Vec<ConfigWarning>, ConfigError> {
+        // Run standard validation first
+        self.validate()?;
+
+        // Collect warnings
+        let mut warnings = Vec::new();
+
+        // Check for unused providers
+        warnings.extend(self.check_unused_providers());
+
+        // Check for unused models
+        warnings.extend(self.check_unused_models());
+
+        // Check for unused tools
+        warnings.extend(self.check_unused_tools());
+
+        // Check for unused agents
+        warnings.extend(self.check_unused_agents());
+
+        Ok(warnings)
+    }
+
+    /// Check for providers that aren't referenced by any model
+    fn check_unused_providers(&self) -> Vec<ConfigWarning> {
+        use std::collections::HashSet;
+
+        let referenced: HashSet<_> = self.models.values().map(|m| m.provider.as_str()).collect();
+
+        self.providers
+            .keys()
+            .filter(|name| !referenced.contains(name.as_str()))
+            .map(|name| ConfigWarning {
+                kind: ConfigWarningKind::UnusedProvider,
+                message: format!("Provider '{}' is defined but not referenced by any model", name),
+            })
+            .collect()
+    }
+
+    /// Check for models that aren't referenced by any agent
+    fn check_unused_models(&self) -> Vec<ConfigWarning> {
+        use std::collections::HashSet;
+
+        let referenced: HashSet<_> = self.agents.values().map(|a| a.model.as_str()).collect();
+
+        self.models
+            .keys()
+            .filter(|name| !referenced.contains(name.as_str()))
+            .map(|name| ConfigWarning {
+                kind: ConfigWarningKind::UnusedModel,
+                message: format!("Model '{}' is defined but not referenced by any agent", name),
+            })
+            .collect()
+    }
+
+    /// Check for tools that aren't referenced by any agent
+    fn check_unused_tools(&self) -> Vec<ConfigWarning> {
+        use std::collections::HashSet;
+
+        let referenced: HashSet<_> = self
+            .agents
+            .values()
+            .flat_map(|a| a.tools.iter().map(|t| t.as_str()))
+            .collect();
+
+        self.tools
+            .keys()
+            .filter(|name| !referenced.contains(name.as_str()))
+            .map(|name| ConfigWarning {
+                kind: ConfigWarningKind::UnusedTool,
+                message: format!("Tool '{}' is defined but not referenced by any agent", name),
+            })
+            .collect()
+    }
+
+    /// Check for agents that aren't referenced by any workflow
+    fn check_unused_agents(&self) -> Vec<ConfigWarning> {
+        use std::collections::HashSet;
+
+        let referenced: HashSet<_> = self
+            .workflows
+            .values()
+            .flat_map(|w| {
+                let mut refs = vec![w.entry_agent.as_str()];
+                if let Some(ref fallback) = w.fallback_agent {
+                    refs.push(fallback.as_str());
+                }
+                refs
+            })
+            .collect();
+
+        // Also consider orchestrator/router as always "used" since they're system agents
+        let system_agents: HashSet<&str> = ["orchestrator", "router"].into_iter().collect();
+
+        self.agents
+            .keys()
+            .filter(|name| !referenced.contains(name.as_str()) && !system_agents.contains(name.as_str()))
+            .map(|name| ConfigWarning {
+                kind: ConfigWarningKind::UnusedAgent,
+                message: format!("Agent '{}' is defined but not referenced by any workflow", name),
+            })
+            .collect()
     }
 
     fn validate_env_var(&self, name: &str) -> Result<(), ConfigError> {
@@ -787,11 +959,11 @@ url = "./data/test.db"
 [providers.ollama-local]
 type = "ollama"
 base_url = "http://localhost:11434"
-default_model = "llama3.2"
+default_model = "granite4:tiny-h"
 
 [models.default]
 provider = "ollama-local"
-model = "llama3.2"
+model = "granite4:tiny-h"
 temperature = 0.7
 max_tokens = 512
 
@@ -873,7 +1045,7 @@ api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
 type = "ollama"
-default_model = "llama3.2"
+default_model = "granite4:tiny-h"
 [agents.test]
 model = "nonexistent"
 "#;
@@ -900,10 +1072,10 @@ api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
 type = "ollama"
-default_model = "llama3.2"
+default_model = "granite4:tiny-h"
 [models.default]
 provider = "test"
-model = "llama3.2"
+model = "granite4:tiny-h"
 [agents.test]
 model = "default"
 tools = ["nonexistent_tool"]
@@ -1036,5 +1208,208 @@ api_key_env = "TEST_API_KEY"
 
         assert_eq!(loaded.server.host, config.server.host);
         assert_eq!(loaded.server.port, config.server.port);
+    }
+
+    #[test]
+    fn test_circular_reference_detection() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "granite4:tiny-h"
+[models.default]
+provider = "test"
+model = "granite4:tiny-h"
+[agents.agent_a]
+model = "default"
+[workflows.circular]
+entry_agent = "agent_a"
+fallback_agent = "agent_a"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let result = config.validate();
+
+        assert!(matches!(result, Err(ConfigError::CircularReference(_))));
+    }
+
+    #[test]
+    fn test_unused_provider_warning() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.used]
+type = "ollama"
+default_model = "granite4:tiny-h"
+[providers.unused]
+type = "ollama"
+default_model = "granite4:tiny-h"
+[models.default]
+provider = "used"
+model = "granite4:tiny-h"
+[agents.router]
+model = "default"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let warnings = config.validate_with_warnings().unwrap();
+
+        assert!(warnings.iter().any(|w| w.kind == ConfigWarningKind::UnusedProvider && w.message.contains("unused")));
+    }
+
+    #[test]
+    fn test_unused_model_warning() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "granite4:tiny-h"
+[models.used]
+provider = "test"
+model = "granite4:tiny-h"
+[models.unused]
+provider = "test"
+model = "other"
+[agents.router]
+model = "used"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let warnings = config.validate_with_warnings().unwrap();
+
+        assert!(warnings.iter().any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("unused")));
+    }
+
+    #[test]
+    fn test_unused_tool_warning() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "granite4:tiny-h"
+[models.default]
+provider = "test"
+model = "granite4:tiny-h"
+[tools.used_tool]
+enabled = true
+[tools.unused_tool]
+enabled = true
+[agents.router]
+model = "default"
+tools = ["used_tool"]
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let warnings = config.validate_with_warnings().unwrap();
+
+        assert!(warnings.iter().any(|w| w.kind == ConfigWarningKind::UnusedTool && w.message.contains("unused_tool")));
+    }
+
+    #[test]
+    fn test_unused_agent_warning() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "granite4:tiny-h"
+[models.default]
+provider = "test"
+model = "granite4:tiny-h"
+[agents.router]
+model = "default"
+[agents.orphaned]
+model = "default"
+[workflows.test_flow]
+entry_agent = "router"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let warnings = config.validate_with_warnings().unwrap();
+
+        assert!(warnings.iter().any(|w| w.kind == ConfigWarningKind::UnusedAgent && w.message.contains("orphaned")));
+    }
+
+    #[test]
+    fn test_no_warnings_for_fully_connected_config() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "granite4:tiny-h"
+[models.default]
+provider = "test"
+model = "granite4:tiny-h"
+[tools.calc]
+enabled = true
+[agents.router]
+model = "default"
+tools = ["calc"]
+[workflows.main]
+entry_agent = "router"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let warnings = config.validate_with_warnings().unwrap();
+
+        assert!(warnings.is_empty(), "Expected no warnings but got: {:?}", warnings);
     }
 }

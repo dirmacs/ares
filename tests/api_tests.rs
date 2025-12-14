@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 
 use ares::{
-    AppState,
+    AgentRegistry, AppState, ToolRegistry,
     auth::jwt::AuthService,
     db::TursoClient,
     llm::client::{LLMClientFactoryTrait, Provider},
@@ -193,13 +193,13 @@ async fn create_test_app() -> Router {
     let mut providers = HashMap::new();
     providers.insert("ollama-local".to_string(), ProviderConfig::Ollama {
         base_url: "http://localhost:11434".to_string(),
-        default_model: "llama3.2".to_string(),
+        default_model: "granite4:tiny-h".to_string(),
     });
 
     let mut models = HashMap::new();
     models.insert("default".to_string(), ModelConfig {
         provider: "ollama-local".to_string(),
-        model: "llama3.2".to_string(),
+        model: "granite4:tiny-h".to_string(),
         temperature: 0.7,
         max_tokens: 512,
         top_p: None,
@@ -211,6 +211,14 @@ async fn create_test_app() -> Router {
     agents.insert("router".to_string(), AgentConfig {
         model: "default".to_string(),
         system_prompt: Some("You are a routing agent.".to_string()),
+        tools: vec![],
+        max_tool_iterations: 10,
+        parallel_tools: false,
+        extra: HashMap::new(),
+    });
+    agents.insert("product".to_string(), AgentConfig {
+        model: "default".to_string(),
+        system_prompt: Some("You are a product support agent.".to_string()),
         tools: vec![],
         max_tool_iterations: 10,
         parallel_tools: false,
@@ -252,11 +260,23 @@ async fn create_test_app() -> Router {
     // Create config-based LLM factory
     let llm_factory = Arc::new(ConfigBasedLLMFactory::new(provider_registry.clone(), "default"));
 
+    // Create tool registry
+    let tool_registry = Arc::new(ToolRegistry::with_config(&config_manager.config()));
+
+    // Create agent registry
+    let agent_registry = Arc::new(AgentRegistry::from_config(
+        &config_manager.config(),
+        provider_registry.clone(),
+        tool_registry.clone(),
+    ));
+
     let state = AppState {
         config_manager,
         turso: Arc::new(turso),
         llm_factory,
         provider_registry,
+        agent_registry,
+        tool_registry,
         auth_service: Arc::new(auth_service),
     };
 

@@ -4,7 +4,7 @@
 //!
 //! To run these tests, you need:
 //! 1. A running Ollama server (default: http://localhost:11434)
-//! 2. The `llama3.2` model pulled (or set OLLAMA_MODEL env var)
+//! 2. The `granite4:tiny-h` model pulled (or set OLLAMA_MODEL env var)
 //!
 //! # Running the tests
 //!
@@ -40,7 +40,7 @@ fn get_ollama_url() -> String {
 
 /// Get the model name from environment or use default
 fn get_model() -> String {
-    std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".to_string())
+    std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "granite4:tiny-h".to_string())
 }
 
 /// Create a live Ollama client

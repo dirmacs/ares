@@ -87,20 +87,20 @@ docker compose -f docker-compose.dev.yml build --no-cache
 
 ```bash
 # Pull a model
-ollama pull llama3.2
+ollama pull granite4:tiny-h
 ollama pull mistral
 
 # List models
 ollama list
 
 # Run model interactively
-ollama run llama3.2
+ollama run granite4:tiny-h
 
 # Delete model
-ollama rm llama3.2
+ollama rm granite4:tiny-h
 
 # Show model info
-ollama show llama3.2
+ollama show granite4:tiny-h
 ```
 
 ## 📦 GGUF Model Setup
@@ -146,7 +146,7 @@ TURSO_URL=file:local.db
 
 # Ollama (default)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2
+OLLAMA_MODEL=granite4:tiny-h
 
 # LlamaCpp (takes priority)
 LLAMACPP_MODEL_PATH=/path/to/model.gguf
@@ -373,7 +373,7 @@ cargo test my_agent
 ```bash
 # .env
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2
+OLLAMA_MODEL=granite4:tiny-h
 # Comment out other providers
 
 cargo run

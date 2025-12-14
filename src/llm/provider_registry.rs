@@ -220,7 +220,7 @@ mod tests {
             "ollama-local",
             ProviderConfig::Ollama {
                 base_url: "http://localhost:11434".to_string(),
-                default_model: "llama3.2".to_string(),
+                default_model: "granite4:tiny-h".to_string(),
             },
         );
 
@@ -235,14 +235,14 @@ mod tests {
             "ollama-local",
             ProviderConfig::Ollama {
                 base_url: "http://localhost:11434".to_string(),
-                default_model: "llama3.2".to_string(),
+                default_model: "granite4:tiny-h".to_string(),
             },
         );
         registry.register_model(
             "fast",
             ModelConfig {
                 provider: "ollama-local".to_string(),
-                model: "llama3.2:1b".to_string(),
+                model: "granite4:tiny-h".to_string(),
                 temperature: 0.7,
                 max_tokens: 256,
                 top_p: None,

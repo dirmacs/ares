@@ -7,7 +7,7 @@
 use crate::agents::Agent;
 use crate::llm::LLMClient;
 use crate::tools::registry::ToolRegistry;
-use crate::types::{AgentContext, AgentType, Result};
+use crate::types::{AgentContext, AgentType, Result, ToolDefinition};
 use crate::utils::toml_config::AgentConfig;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -24,6 +24,8 @@ pub struct ConfigurableAgent {
     system_prompt: String,
     /// Tools available to this agent
     tool_registry: Option<Arc<ToolRegistry>>,
+    /// List of tool names this agent is allowed to use
+    allowed_tools: Vec<String>,
     /// Maximum tool calling iterations
     max_tool_iterations: usize,
     /// Whether to execute tools in parallel
@@ -57,6 +59,7 @@ impl ConfigurableAgent {
             llm,
             system_prompt,
             tool_registry,
+            allowed_tools: config.tools.clone(),
             max_tool_iterations: config.max_tool_iterations,
             parallel_tools: config.parallel_tools,
         }
@@ -69,6 +72,7 @@ impl ConfigurableAgent {
         llm: Box<dyn LLMClient>,
         system_prompt: String,
         tool_registry: Option<Arc<ToolRegistry>>,
+        allowed_tools: Vec<String>,
         max_tool_iterations: usize,
         parallel_tools: bool,
     ) -> Self {
@@ -78,6 +82,7 @@ impl ConfigurableAgent {
             llm,
             system_prompt,
             tool_registry,
+            allowed_tools,
             max_tool_iterations,
             parallel_tools,
         }
@@ -143,12 +148,42 @@ Handle employee info, policies, and benefits."#.to_string(),
 
     /// Check if this agent has tools configured
     pub fn has_tools(&self) -> bool {
-        self.tool_registry.is_some()
+        !self.allowed_tools.is_empty() && self.tool_registry.is_some()
     }
 
     /// Get the tool registry (if any)
     pub fn tool_registry(&self) -> Option<&Arc<ToolRegistry>> {
         self.tool_registry.as_ref()
+    }
+
+    /// Get the list of allowed tool names for this agent
+    pub fn allowed_tools(&self) -> &[String] {
+        &self.allowed_tools
+    }
+
+    /// Get tool definitions for only this agent's allowed tools
+    /// 
+    /// This filters the tool registry to only return tools that:
+    /// 1. Are in this agent's allowed tools list
+    /// 2. Are enabled in the tool registry
+    pub fn get_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {
+        match &self.tool_registry {
+            Some(registry) => {
+                let allowed: Vec<&str> = self.allowed_tools.iter().map(|s| s.as_str()).collect();
+                registry.get_tool_definitions_for(&allowed)
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Check if a specific tool is allowed for this agent
+    pub fn can_use_tool(&self, tool_name: &str) -> bool {
+        self.allowed_tools.contains(&tool_name.to_string())
+            && self
+                .tool_registry
+                .as_ref()
+                .map(|r| r.is_enabled(tool_name))
+                .unwrap_or(false)
     }
 }
 
@@ -223,5 +258,152 @@ mod tests {
 
         let prompt = ConfigurableAgent::default_system_prompt("product");
         assert!(prompt.contains("Product"));
+    }
+
+    #[test]
+    fn test_allowed_tools() {
+        use crate::utils::toml_config::AgentConfig;
+        use crate::llm::LLMResponse;
+        use std::collections::HashMap;
+
+        // Create a mock LLM client (we'll use a simple mock)
+        struct MockLLM;
+        
+        #[async_trait]
+        impl LLMClient for MockLLM {
+            async fn generate(&self, _: &str) -> Result<String> {
+                Ok("mock".to_string())
+            }
+            async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
+                Ok("mock".to_string())
+            }
+            async fn generate_with_history(
+                &self,
+                _: &[(String, String)],
+            ) -> Result<String> {
+                Ok("mock".to_string())
+            }
+            async fn generate_with_tools(
+                &self,
+                _: &str,
+                _: &[ToolDefinition],
+            ) -> Result<LLMResponse> {
+                Ok(LLMResponse {
+                    content: "mock".to_string(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".to_string(),
+                })
+            }
+            async fn stream(
+                &self,
+                _: &str,
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+                Ok(Box::new(futures::stream::empty()))
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+        }
+
+        let config = AgentConfig {
+            model: "default".to_string(),
+            system_prompt: None,
+            tools: vec!["calculator".to_string(), "web_search".to_string()],
+            max_tool_iterations: 5,
+            parallel_tools: false,
+            extra: HashMap::new(),
+        };
+
+        let agent = ConfigurableAgent::new(
+            "orchestrator",
+            &config,
+            Box::new(MockLLM),
+            None, // No registry for this test
+        );
+
+        assert_eq!(agent.allowed_tools().len(), 2);
+        assert!(agent.allowed_tools().contains(&"calculator".to_string()));
+        assert!(agent.allowed_tools().contains(&"web_search".to_string()));
+    }
+
+    #[test]
+    fn test_has_tools_requires_both_config_and_registry() {
+        use crate::utils::toml_config::AgentConfig;
+        use crate::llm::LLMResponse;
+        use std::collections::HashMap;
+
+        struct MockLLM;
+        
+        #[async_trait]
+        impl LLMClient for MockLLM {
+            async fn generate(&self, _: &str) -> Result<String> {
+                Ok("mock".to_string())
+            }
+            async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
+                Ok("mock".to_string())
+            }
+            async fn generate_with_history(
+                &self,
+                _: &[(String, String)],
+            ) -> Result<String> {
+                Ok("mock".to_string())
+            }
+            async fn generate_with_tools(
+                &self,
+                _: &str,
+                _: &[ToolDefinition],
+            ) -> Result<LLMResponse> {
+                Ok(LLMResponse {
+                    content: "mock".to_string(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".to_string(),
+                })
+            }
+            async fn stream(
+                &self,
+                _: &str,
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+                Ok(Box::new(futures::stream::empty()))
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+        }
+
+        // Agent with tools config but no registry
+        let config = AgentConfig {
+            model: "default".to_string(),
+            system_prompt: None,
+            tools: vec!["calculator".to_string()],
+            max_tool_iterations: 5,
+            parallel_tools: false,
+            extra: HashMap::new(),
+        };
+
+        let agent = ConfigurableAgent::new(
+            "orchestrator",
+            &config,
+            Box::new(MockLLM),
+            None,
+        );
+        assert!(!agent.has_tools()); // No registry
+
+        // Agent with empty tools
+        let config_empty = AgentConfig {
+            model: "default".to_string(),
+            system_prompt: None,
+            tools: vec![],
+            max_tool_iterations: 5,
+            parallel_tools: false,
+            extra: HashMap::new(),
+        };
+
+        let agent_empty = ConfigurableAgent::new(
+            "product",
+            &config_empty,
+            Box::new(MockLLM),
+            Some(Arc::new(ToolRegistry::new())),
+        );
+        assert!(!agent_empty.has_tools()); // Empty tools list
     }
 }

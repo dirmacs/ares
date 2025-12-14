@@ -1,3 +1,21 @@
+//! Legacy Product Agent
+//!
+//! **DEPRECATED**: This module is deprecated since v0.2.0.
+//! Use `ConfigurableAgent` with `ares.toml` configuration instead.
+//!
+//! # Migration
+//!
+//! Instead of instantiating `ProductAgent` directly, configure agents in `ares.toml`:
+//!
+//! ```toml
+//! [agents.product]
+//! model = "balanced"
+//! tools = []
+//! system_prompt = "You are a Product Agent..."
+//! ```
+//!
+//! Then use `AgentRegistry::create_agent("product")` to create the agent.
+
 use crate::{
     agents::Agent,
     llm::LLMClient,
@@ -5,16 +23,22 @@ use crate::{
 };
 use async_trait::async_trait;
 
+#[deprecated(
+    since = "0.2.0",
+    note = "Use ConfigurableAgent with ares.toml configuration instead. See agents/configurable.rs"
+)]
 pub struct ProductAgent {
     llm: Box<dyn LLMClient>,
 }
 
+#[allow(deprecated)]
 impl ProductAgent {
     pub fn new(llm: Box<dyn LLMClient>) -> Self {
         Self { llm }
     }
 }
 
+#[allow(deprecated)]
 #[async_trait]
 impl Agent for ProductAgent {
     async fn execute(&self, input: &str, context: &AgentContext) -> Result<String> {

@@ -68,7 +68,7 @@ pub enum Provider {
     Ollama {
         /// Base URL for Ollama API (default: http://localhost:11434)
         base_url: String,
-        /// Model name (e.g., "llama3.2", "mistral", "codellama")
+        /// Model name (e.g., "granite4:tiny-h", "mistral", "qwen3-vl:2b")
         model: String,
     },
 
@@ -133,7 +133,7 @@ impl Provider {
     ///
     /// ## Ollama
     /// - `OLLAMA_BASE_URL` - Server URL (default: http://localhost:11434)
-    /// - `OLLAMA_MODEL` - Model name (default: llama3.2)
+    /// - `OLLAMA_MODEL` - Model name (default: granite4:tiny-h)
     ///
     /// # Errors
     ///
@@ -143,7 +143,7 @@ impl Provider {
     ///
     /// ```rust,ignore
     /// // Set environment variables
-    /// std::env::set_var("OLLAMA_MODEL", "llama3.2");
+    /// std::env::set_var("OLLAMA_MODEL", "granite4:tiny-h");
     ///
     /// let provider = Provider::from_env()?;
     /// let client = provider.create_client().await?;
@@ -180,7 +180,7 @@ impl Provider {
             let base_url = std::env::var("OLLAMA_URL")
                 .or_else(|_| std::env::var("OLLAMA_BASE_URL"))
                 .unwrap_or_else(|_| "http://localhost:11434".into());
-            let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".into());
+            let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "granite4:tiny-h".into());
             return Ok(Provider::Ollama { base_url, model });
         }
 
@@ -449,7 +449,7 @@ mod tests {
     fn test_ollama_provider_properties() {
         let provider = Provider::Ollama {
             base_url: "http://localhost:11434".to_string(),
-            model: "llama3.2".to_string(),
+            model: "granite4:tiny-h".to_string(),
         };
 
         assert_eq!(provider.name(), "ollama");

@@ -42,9 +42,18 @@ pub struct ResearchResponse {
     pub duration_ms: u64,
 }
 
+// ============= Workflow Types =============
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct WorkflowRequest {
+    pub query: String,
+    #[serde(default)]
+    pub context: std::collections::HashMap<String, serde_json::Value>,
+}
+
 // ============= Agent Types =============
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentType {
     Router,

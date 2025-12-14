@@ -1,4 +1,5 @@
 pub mod client;
+pub mod provider_registry;
 
 #[cfg(feature = "llamacpp")]
 pub mod llamacpp;
@@ -10,3 +11,4 @@ pub mod ollama;
 pub mod openai;
 
 pub use client::{LLMClient, LLMClientFactory, LLMResponse, Provider};
+pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};

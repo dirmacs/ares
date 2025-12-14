@@ -61,7 +61,7 @@ anyhow = "1.0.100"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
 chrono = { version = "0.4.42", features = ["serde"] }
-futures = "0.3.29"
+futures = "0.3.31"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 thiserror = "2.0.17"
@@ -73,21 +73,25 @@ uuid = { version = "1.19.0", features = ["v4", "serde"] }
 # Web framework
 axum = { version = "0.8.7", features = ["macros", "multipart"] }
 tower = { version = "0.5.2", features = ["full"] }
-tower-http = { version = "0.6.7", features = ["trace", "cors", "compression-gzip"] }
+tower-http = { version = "0.6.8", features = ["trace", "cors", "compression-gzip"] }
 tower-sessions = "0.14.0"
 
 # HTTP client
-reqwest = { version = "0.12.24", features = ["json"] }
+reqwest = { version = "0.12.25", features = ["json"] }
 
 # Authentication
 argon2 = "0.5.3"
 jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
-sha2 = "0.11.0-rc.3"
+sha2 = "0.10.9"
 rand = "0.9.2"
 
 # Configuration
 config = "0.15.19"
 dotenv = "0.15.0"
+toml = "0.9.8"
+notify = { version = "8.2.0", features = ["macos_fsevent"] }
+parking_lot = "0.12.5"
+arc-swap = "1.7.1"
 
 # Database - libsql (always included for local-db)
 libsql = { version = "0.9.29", features = ["core", "replication"] }
@@ -98,17 +102,17 @@ qdrant-client = { version = "1.16.0", optional = true }
 # LLM Providers (optional)
 ollama-rs = { version = "0.3.3", features = ["stream"], optional = true }
 async-openai = { version = "0.31.1", features = ["chat-completion"], optional = true }
-llama-cpp-2 = { version = "0.1.129", optional = true }
+llama-cpp-2 = { version = "0.1.130", optional = true }
 
 
 
 # Embeddings and RAG
-fastembed = "5.3.1"
-rig-core = "0.25.0"
+fastembed = "5.4.0"
+rig-core = "0.26.0"
 
 # Web scraping and search
 daedra = "0.1.2"
-scraper = "0.24.0"
+scraper = "0.25.0"
 
 # Schema and documentation
 schemars = { version = "1.1.0", features = ["derive"] }
@@ -116,7 +120,7 @@ utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 
 # MCP support (optional)
-rmcp = { version = "0.10.0", features = ["server", "client", "transport-io", "macros"], optional = true }
+rmcp = { version = "0.11.0", features = ["server", "client", "transport-io", "macros"], optional = true }
 
 [dev-dependencies]
 # Testing utilities

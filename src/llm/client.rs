@@ -1,4 +1,5 @@
 use crate::types::{AppError, Result, ToolCall, ToolDefinition};
+use crate::utils::toml_config::{ModelConfig, ProviderConfig};
 use async_trait::async_trait;
 
 /// Generic LLM client trait for provider abstraction
@@ -234,6 +235,88 @@ impl Provider {
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => true,
         }
+    }
+
+    /// Create a provider from TOML configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `provider_config` - The provider configuration from ares.toml
+    /// * `model_override` - Optional model name to override the provider default
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider type doesn't match an enabled feature
+    /// or if required environment variables are not set.
+    #[allow(unused_variables)]
+    pub fn from_config(
+        provider_config: &ProviderConfig,
+        model_override: Option<&str>,
+    ) -> Result<Self> {
+        match provider_config {
+            #[cfg(feature = "ollama")]
+            ProviderConfig::Ollama {
+                base_url,
+                default_model,
+            } => Ok(Provider::Ollama {
+                base_url: base_url.clone(),
+                model: model_override
+                    .map(String::from)
+                    .unwrap_or_else(|| default_model.clone()),
+            }),
+
+            #[cfg(not(feature = "ollama"))]
+            ProviderConfig::Ollama { .. } => Err(AppError::Configuration(
+                "Ollama provider configured but 'ollama' feature is not enabled".into(),
+            )),
+
+            #[cfg(feature = "openai")]
+            ProviderConfig::OpenAI {
+                api_key_env,
+                api_base,
+                default_model,
+            } => {
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    AppError::Configuration(format!(
+                        "OpenAI API key environment variable '{}' is not set",
+                        api_key_env
+                    ))
+                })?;
+                Ok(Provider::OpenAI {
+                    api_key,
+                    api_base: api_base.clone(),
+                    model: model_override
+                        .map(String::from)
+                        .unwrap_or_else(|| default_model.clone()),
+                })
+            }
+
+            #[cfg(not(feature = "openai"))]
+            ProviderConfig::OpenAI { .. } => Err(AppError::Configuration(
+                "OpenAI provider configured but 'openai' feature is not enabled".into(),
+            )),
+
+            #[cfg(feature = "llamacpp")]
+            ProviderConfig::LlamaCpp { model_path, .. } => Ok(Provider::LlamaCpp {
+                model_path: model_path.clone(),
+            }),
+
+            #[cfg(not(feature = "llamacpp"))]
+            ProviderConfig::LlamaCpp { .. } => Err(AppError::Configuration(
+                "LlamaCpp provider configured but 'llamacpp' feature is not enabled".into(),
+            )),
+        }
+    }
+
+    /// Create a provider from a model configuration and its associated provider config
+    ///
+    /// This is the primary way to create providers from TOML config, as it resolves
+    /// the model -> provider reference chain.
+    pub fn from_model_config(
+        model_config: &ModelConfig,
+        provider_config: &ProviderConfig,
+    ) -> Result<Self> {
+        Self::from_config(provider_config, Some(&model_config.model))
     }
 }
 

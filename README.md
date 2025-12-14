@@ -109,9 +109,105 @@ cargo build --features "full"
 
 ## Configuration
 
+A.R.E.S uses a **TOML configuration file** (`ares.toml`) for declarative configuration of all components. The server **requires** this file to start.
+
+### Quick Start
+
+```bash
+# Copy the example config
+cp ares.example.toml ares.toml
+
+# Set required environment variables
+export JWT_SECRET="your-secret-key-at-least-32-characters"
+export API_KEY="your-api-key"
+```
+
+### Configuration File (ares.toml)
+
+The configuration file defines providers, models, agents, tools, and workflows:
+
+```toml
+# Server settings
+[server]
+host = "127.0.0.1"
+port = 3000
+log_level = "info"
+
+# Authentication (secrets loaded from env vars)
+[auth]
+jwt_secret_env = "JWT_SECRET"
+api_key_env = "API_KEY"
+
+# Database
+[database]
+url = "./data/ares.db"
+
+# LLM Providers (define named providers)
+[providers.ollama-local]
+type = "ollama"
+base_url = "http://localhost:11434"
+default_model = "llama3.2"
+
+# Models (reference providers, set parameters)
+[models.fast]
+provider = "ollama-local"
+model = "llama3.2:1b"
+temperature = 0.7
+max_tokens = 256
+
+[models.balanced]
+provider = "ollama-local"
+model = "llama3.2"
+temperature = 0.7
+max_tokens = 512
+
+# Tools
+[tools.calculator]
+enabled = true
+timeout_secs = 10
+
+[tools.web_search]
+enabled = true
+timeout_secs = 30
+
+# Agents (reference models and tools)
+[agents.router]
+model = "fast"
+system_prompt = "You are a routing agent..."
+
+[agents.product]
+model = "balanced"
+tools = []
+system_prompt = "You are a Product Agent..."
+
+# Workflows
+[workflows.default]
+entry_agent = "router"
+fallback_agent = "orchestrator"
+```
+
+See `ares.toml` for the complete configuration with all options documented.
+
+### Hot Reloading
+
+Configuration changes are **automatically detected** and applied without restarting the server. Edit `ares.toml` and the changes will be picked up within 500ms.
+
 ### Environment Variables
 
-Create a `.env` file or set environment variables:
+The following environment variables **must** be set (referenced by `ares.toml`):
+
+```bash
+# Required
+JWT_SECRET=your-secret-key-at-least-32-characters
+API_KEY=your-api-key
+
+# Optional (for OpenAI provider)
+OPENAI_API_KEY=sk-...
+```
+
+### Legacy Environment Variables
+
+For backward compatibility, these environment variables can also be used:
 
 ```bash
 # Server

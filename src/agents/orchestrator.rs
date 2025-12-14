@@ -61,7 +61,31 @@ Only respond with valid JSON."#;
         task: &str,
         context: &AgentContext,
     ) -> Result<String> {
-        let llm = self.state.llm_factory.create_default().await?;
+        // Get agent-specific model from config
+        let config = self.state.config_manager.config();
+        let agent_name = match agent_type {
+            AgentType::Product => "product",
+            AgentType::Invoice => "invoice",
+            AgentType::Sales => "sales",
+            AgentType::Finance => "finance",
+            AgentType::HR => "hr",
+            _ => "orchestrator",
+        };
+
+        let model_name = config
+            .get_agent(agent_name)
+            .map(|a| a.model.as_str())
+            .unwrap_or("balanced");
+
+        let llm = match self
+            .state
+            .provider_registry
+            .create_client_for_model(model_name)
+            .await
+        {
+            Ok(client) => client,
+            Err(_) => self.state.llm_factory.create_default().await?,
+        };
 
         match agent_type {
             AgentType::Product => {
@@ -117,7 +141,15 @@ impl Agent for OrchestratorAgent {
     }
 
     fn system_prompt(&self) -> String {
-        "You are an orchestrator agent that coordinates multiple specialized agents to answer complex queries.".to_string()
+        // Get system prompt from config if available
+        let config = self.state.config_manager.config();
+        config
+            .get_agent("orchestrator")
+            .and_then(|a| a.system_prompt.clone())
+            .unwrap_or_else(|| {
+                "You are an orchestrator agent that coordinates multiple specialized agents to answer complex queries.".to_string()
+            })
+
     }
 
     fn agent_type(&self) -> AgentType {

@@ -1,8 +1,8 @@
 # A.R.E.S Project Status & Completion Summary
 
-**Date**: 2024-12-14  
+**Date**: 2024-12-15  
 **Status**: ✅ All Core Features Implemented and Tested  
-**Version**: 0.1.2
+**Version**: 0.2.0
 
 ---
 
@@ -18,7 +18,9 @@ A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed in
 ✅ **Feature-Gated Architecture**: Flexible compilation with 12+ feature flags  
 ✅ **TOML Configuration**: Declarative configuration for providers, models, agents, tools, and workflows  
 ✅ **Hot Reloading**: Configuration changes apply without server restart  
-✅ **112+ Passing Tests**: Unit, integration, mocked network tests, and MCP tests  
+✅ **Workflow Engine**: Multi-agent orchestration with declarative workflows  
+✅ **ConfigurableAgent**: Dynamic agent creation from TOML (legacy agents removed)  
+✅ **135+ Passing Tests**: Unit, integration, mocked network tests, and MCP tests  
 ✅ **CI/CD Pipeline**: Multi-platform testing with GitHub Actions  
 ✅ **Developer Documentation**: Setup guides, contributing guidelines, GGUF usage  
 ✅ **[daedra](https://github.com/dirmacs/daedra) Integration**: Local web search without proprietary APIs  
@@ -720,6 +722,114 @@ RUST_LOG=info,ares=debug
 
 ---
 
+## Iteration 4: Workflow Engine & Dynamic Agents (v0.2.0)
+
+### Objectives
+- Complete workflow engine for multi-agent orchestration
+- Replace hardcoded agents with ConfigurableAgent
+- Improve router agent for reliable delegation
+- Remove deprecated legacy agents
+
+### Completed Tasks
+
+#### 1. Workflow Engine Implementation
+
+**Location**: `src/workflows/engine.rs`
+
+**Features**:
+- ✅ Execute declarative workflows from TOML configuration
+- ✅ Multi-agent routing via router agents
+- ✅ Fallback agent support when routing fails
+- ✅ Depth and iteration limits for workflow execution
+- ✅ Detailed execution tracking (steps, timing, reasoning path)
+- ✅ Robust router output parsing (handles various LLM output formats)
+
+**Workflow Output Structure**:
+```json
+{
+  "final_response": "...",
+  "steps_executed": 2,
+  "agents_used": ["router", "product"],
+  "reasoning_path": [
+    {
+      "agent_name": "router",
+      "input": "...",
+      "output": "product",
+      "timestamp": 1702500000,
+      "duration_ms": 150
+    },
+    ...
+  ]
+}
+```
+
+#### 2. ConfigurableAgent as Primary
+
+**Location**: `src/agents/configurable.rs`
+
+All agents are now created dynamically from TOML configuration:
+- Model selection via `model` reference
+- Custom system prompts
+- Per-agent tool filtering
+- Tool iteration limits
+
+**Configuration Example**:
+```toml
+[agents.product]
+model = "balanced"
+tools = ["calculator"]
+system_prompt = "You are a Product Agent..."
+```
+
+#### 3. Router Agent Improvements
+
+**Location**: `src/agents/router.rs`
+
+- ✅ Returns lowercase agent names for workflow compatibility
+- ✅ Robust output parsing handles:
+  - Clean output: "product"
+  - Whitespace: "  product  "
+  - Extra text: "I would route this to product"
+  - Agent suffix: "product agent"
+- ✅ Falls back to orchestrator for unrecognized routing
+
+#### 4. Legacy Agent Removal
+
+**Removed Files** (previously deprecated):
+- `src/agents/product.rs`
+- `src/agents/invoice.rs`
+- `src/agents/sales.rs`
+- `src/agents/finance.rs`
+- `src/agents/hr.rs`
+
+These are fully replaced by `ConfigurableAgent` with TOML configuration.
+
+#### 5. API Endpoints
+
+**New Workflow Endpoints**:
+- `GET /api/workflows` - List available workflows
+- `POST /api/workflows/{name}` - Execute a workflow
+
+**Hurl Test Coverage**:
+- ✅ List workflows with auth
+- ✅ Execute workflow with validation
+- ✅ Execute workflow with context
+- ✅ Handle nonexistent workflows (404)
+- ✅ Unauthorized access protection
+
+#### 6. Test Results
+
+| Category | Count | Status |
+|----------|-------|--------|
+| Unit Tests | 53 | ✅ Pass |
+| API Tests | 36 | ✅ Pass |
+| Integration Tests | 10 | ✅ Pass |
+| LLM Tests | 21 | ✅ Pass |
+| Ollama Integration | 15 | ✅ Pass |
+| **Total** | **135** | ✅ **All Pass** |
+
+---
+
 ## Success Metrics
 
 | Metric | Target | Achieved | Status |
@@ -737,18 +847,25 @@ RUST_LOG=info,ares=debug
 
 ## Conclusion
 
-All objectives from the three iterations have been successfully completed:
+All objectives from the four iterations have been successfully completed:
 
 ✅ **Iteration 1**: Local-first architecture, daedra integration, code cleanup, comprehensive testing  
 ✅ **Iteration 2**: GGUF/LlamaCpp implementation, full Ollama tool calling, feature gating  
 ✅ **Iteration 3**: Documentation, developer experience, setup automation  
+✅ **Iteration 4**: Workflow engine, ConfigurableAgent, router improvements, legacy agent removal  
 
 **The A.R.E.S project is production-ready for local-first LLM applications with excellent developer experience and comprehensive testing.**
+
+### What's New in v0.2.0
+- **Workflow Engine**: Execute multi-agent workflows declaratively
+- **ConfigurableAgent**: All agents defined via TOML configuration
+- **Improved Router**: Robust parsing and reliable delegation
+- **Cleaner Codebase**: Legacy agents removed, cleaner architecture
 
 ### Next Immediate Actions
 1. Review and merge the implementation
 2. Enable CI/CD in GitHub repository
-3. Create a release tag (v0.1.1)
+3. Create a release tag (v0.2.0)
 4. Consider publishing to crates.io
 
 ### For Questions or Issues

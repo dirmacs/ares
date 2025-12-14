@@ -442,40 +442,84 @@ curl -X POST http://localhost:3000/api/research \
 
 ### Workflows
 
-Execute a named workflow defined in `ares.toml`:
+Workflows enable multi-agent orchestration. Define workflows in `ares.toml`:
+
+```toml
+[workflows.default]
+entry_agent = "router"           # Starting agent
+fallback_agent = "orchestrator"  # Used if routing fails
+max_depth = 5                    # Maximum agent chain depth
+max_iterations = 10              # Maximum total iterations
+```
+
+#### List Available Workflows
 
 ```bash
-# Execute a workflow
+curl http://localhost:3000/api/workflows \
+  -H "Authorization: Bearer <access_token>"
+```
+
+Response:
+```json
+["default", "research"]
+```
+
+#### Execute a Workflow
+
+```bash
 curl -X POST http://localhost:3000/api/workflows/default \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "What products are available?",
-    "context": {}
+    "query": "What are our Q4 product sales figures?"
   }'
 ```
 
 Response:
 ```json
 {
-  "workflow_name": "default",
-  "steps": [
+  "final_response": "Based on the Q4 data, our product sales were...",
+  "steps_executed": 3,
+  "agents_used": ["router", "sales", "product"],
+  "reasoning_path": [
     {
-      "agent": "router",
-      "input": "What products are available?",
-      "output": "Routing to product agent..."
+      "agent_name": "router",
+      "input": "What are our Q4 product sales figures?",
+      "output": "sales",
+      "timestamp": 1702500000,
+      "duration_ms": 150
+    },
+    {
+      "agent_name": "sales",
+      "input": "What are our Q4 product sales figures?",
+      "output": "For Q4 sales data, I'll need to check...",
+      "timestamp": 1702500001,
+      "duration_ms": 800
+    },
+    {
+      "agent_name": "product",
+      "input": "What are our Q4 product sales figures?",
+      "output": "Based on the Q4 data, our product sales were...",
+      "timestamp": 1702500002,
+      "duration_ms": 650
     }
-  ],
-  "final_output": "We have the following products...",
-  "success": true
+  ]
 }
 ```
 
-List available workflows:
+#### Workflow with Context
 
 ```bash
-curl http://localhost:3000/api/workflows \
-  -H "Authorization: Bearer <access_token>"
+curl -X POST http://localhost:3000/api/workflows/default \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What are the sales figures?",
+    "context": {
+      "department": "electronics",
+      "quarter": "Q4"
+    }
+  }'
 ```
 
 ## Tool Calling

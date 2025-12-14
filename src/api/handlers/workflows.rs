@@ -43,10 +43,7 @@ pub async fn execute_workflow(
 ) -> Result<Json<WorkflowOutput>> {
     // Create workflow engine
     let config = state.config_manager.config();
-    let workflow_engine = WorkflowEngine::new(
-        Arc::clone(&state.agent_registry),
-        config,
-    );
+    let workflow_engine = WorkflowEngine::new(Arc::clone(&state.agent_registry), config);
 
     // Check if workflow exists
     if !workflow_engine.has_workflow(&workflow_name) {
@@ -90,7 +87,7 @@ pub async fn list_workflows(
     AuthUser(_claims): AuthUser,
 ) -> Result<Json<Vec<WorkflowInfo>>> {
     let config = state.config_manager.config();
-    
+
     let workflows: Vec<WorkflowInfo> = config
         .workflows
         .iter()

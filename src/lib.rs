@@ -22,7 +22,9 @@ pub mod workflows;
 pub use agents::{AgentRegistry, AgentRegistryBuilder};
 pub use db::TursoClient;
 pub use llm::client::LLMClientFactoryTrait;
-pub use llm::{ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, Provider, ProviderRegistry};
+pub use llm::{
+    ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, Provider, ProviderRegistry,
+};
 pub use tools::registry::ToolRegistry;
 pub use types::{AppError, Result};
 pub use utils::toml_config::{AresConfig, AresConfigManager};

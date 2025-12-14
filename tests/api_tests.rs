@@ -1,18 +1,22 @@
 use axum::{Router, routing::get};
 use axum_test::TestServer;
 use serde_json::json;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use ares::{
-    AgentRegistry, AppState, ToolRegistry,
+    AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, ProviderRegistry,
+    ToolRegistry,
     auth::jwt::AuthService,
     db::TursoClient,
     llm::client::{LLMClientFactoryTrait, Provider},
     llm::{LLMClient, LLMResponse},
     types::{Result, ToolCall, ToolDefinition},
-    AresConfigManager, ConfigBasedLLMFactory, ProviderRegistry,
-    utils::toml_config::{AresConfig, ServerConfig as TomlServerConfig, AuthConfig as TomlAuthConfig, DatabaseConfig as TomlDatabaseConfig, ProviderConfig, ModelConfig, AgentConfig, RagConfig},
+    utils::toml_config::{
+        AgentConfig, AresConfig, AuthConfig as TomlAuthConfig,
+        DatabaseConfig as TomlDatabaseConfig, ModelConfig, ProviderConfig, RagConfig,
+        ServerConfig as TomlServerConfig,
+    },
 };
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
@@ -191,39 +195,51 @@ async fn create_test_app() -> Router {
 
     // Create test TOML config
     let mut providers = HashMap::new();
-    providers.insert("ollama-local".to_string(), ProviderConfig::Ollama {
-        base_url: "http://localhost:11434".to_string(),
-        default_model: "granite4:tiny-h".to_string(),
-    });
+    providers.insert(
+        "ollama-local".to_string(),
+        ProviderConfig::Ollama {
+            base_url: "http://localhost:11434".to_string(),
+            default_model: "granite4:tiny-h".to_string(),
+        },
+    );
 
     let mut models = HashMap::new();
-    models.insert("default".to_string(), ModelConfig {
-        provider: "ollama-local".to_string(),
-        model: "granite4:tiny-h".to_string(),
-        temperature: 0.7,
-        max_tokens: 512,
-        top_p: None,
-        frequency_penalty: None,
-        presence_penalty: None,
-    });
+    models.insert(
+        "default".to_string(),
+        ModelConfig {
+            provider: "ollama-local".to_string(),
+            model: "granite4:tiny-h".to_string(),
+            temperature: 0.7,
+            max_tokens: 512,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+        },
+    );
 
     let mut agents = HashMap::new();
-    agents.insert("router".to_string(), AgentConfig {
-        model: "default".to_string(),
-        system_prompt: Some("You are a routing agent.".to_string()),
-        tools: vec![],
-        max_tool_iterations: 10,
-        parallel_tools: false,
-        extra: HashMap::new(),
-    });
-    agents.insert("product".to_string(), AgentConfig {
-        model: "default".to_string(),
-        system_prompt: Some("You are a product support agent.".to_string()),
-        tools: vec![],
-        max_tool_iterations: 10,
-        parallel_tools: false,
-        extra: HashMap::new(),
-    });
+    agents.insert(
+        "router".to_string(),
+        AgentConfig {
+            model: "default".to_string(),
+            system_prompt: Some("You are a routing agent.".to_string()),
+            tools: vec![],
+            max_tool_iterations: 10,
+            parallel_tools: false,
+            extra: HashMap::new(),
+        },
+    );
+    agents.insert(
+        "product".to_string(),
+        AgentConfig {
+            model: "default".to_string(),
+            system_prompt: Some("You are a product support agent.".to_string()),
+            tools: vec![],
+            max_tool_iterations: 10,
+            parallel_tools: false,
+            extra: HashMap::new(),
+        },
+    );
 
     let ares_config = AresConfig {
         server: TomlServerConfig {
@@ -258,7 +274,10 @@ async fn create_test_app() -> Router {
     let provider_registry = Arc::new(ProviderRegistry::from_config(&config_manager.config()));
 
     // Create config-based LLM factory
-    let llm_factory = Arc::new(ConfigBasedLLMFactory::new(provider_registry.clone(), "default"));
+    let llm_factory = Arc::new(ConfigBasedLLMFactory::new(
+        provider_registry.clone(),
+        "default",
+    ));
 
     // Create tool registry
     let tool_registry = Arc::new(ToolRegistry::with_config(&config_manager.config()));
@@ -650,12 +669,18 @@ async fn test_chat_endpoint_with_live_ollama() {
 
     response.assert_status_ok();
     let body: serde_json::Value = response.json();
-    
+
     // Verify response structure (don't assert specific content as LLM responses vary)
     assert_eq!(body["agent"], "Product");
     assert!(body["response"].is_string(), "Response should be a string");
-    assert!(!body["response"].as_str().unwrap().is_empty(), "Response should not be empty");
-    assert!(body["context_id"].is_string(), "context_id should be a string");
+    assert!(
+        !body["response"].as_str().unwrap().is_empty(),
+        "Response should not be empty"
+    );
+    assert!(
+        body["context_id"].is_string(),
+        "context_id should be a string"
+    );
 }
 
 // ============= Mock LLM Tests =============

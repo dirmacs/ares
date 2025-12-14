@@ -1,4 +1,16 @@
-version: "3.8"
+# A.R.E.S - Development Docker Compose
+# =============================================================================
+# This is the development configuration with all services.
+# 
+# Usage:
+#   just docker-up        - Start all services
+#   just docker-down      - Stop all services
+#   just docker-logs      - View logs
+#   just docker-services  - Start only Ollama and Qdrant (for local dev)
+#
+# Note: After starting Ollama, pull a model:
+#   just ollama-pull      - Pull default model (granite4:tiny-h)
+# =============================================================================
 
 services:
   # Ollama - Local LLM server
@@ -25,6 +37,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    restart: unless-stopped
 
   # Qdrant - Vector database (optional)
   qdrant:
@@ -42,6 +55,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    restart: unless-stopped
 
   # A.R.E.S Server - Main application
   ares:

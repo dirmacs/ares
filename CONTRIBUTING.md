@@ -24,6 +24,7 @@ This project follows the [Rust Code of Conduct](https://www.rust-lang.org/polici
 
 - **Rust 1.91+**: Install via [rustup](https://rustup.rs/)
 - **Git**: For version control
+- **just** (recommended): Command runner - [Install just](https://just.systems)
 - **Docker** (optional): For running Qdrant vector database
 - **Ollama** (optional): For local LLM inference
 
@@ -88,15 +89,19 @@ QDRANT_URL=http://localhost:6334
 ```bash
 # Build with default features (local-db + ollama)
 cargo build
+# Or: just build
 
 # Build with specific features
 cargo build --features "ollama,openai"
+# Or: just build-features "ollama,openai"
 
 # Build with all features
 cargo build --all-features
+# Or: just build-all
 
 # Build release version
 cargo build --release
+# Or: just build-release
 ```
 
 ### Running Locally
@@ -104,12 +109,19 @@ cargo build --release
 ```bash
 # Start with default configuration
 cargo run
+# Or: just run
 
 # Run with specific features
 cargo run --features "ollama"
+# Or: just run-features "ollama"
 
-# With logging
+# With debug logging
 RUST_LOG=debug cargo run
+# Or: just run-debug
+
+# With trace logging
+RUST_LOG=trace cargo run
+# Or: just run-trace
 ```
 
 ## Feature Flags
@@ -154,6 +166,43 @@ cargo check --features "minimal"
 
 # Run clippy on all feature combinations
 cargo clippy --all-features
+# Or: just lint-all
+```
+
+## Using just (Recommended)
+
+A.R.E.S uses [just](https://just.systems) as a command runner to simplify development workflows:
+
+```bash
+# Install just
+brew install just          # macOS
+cargo install just         # Any platform
+
+# See all available commands
+just --list
+
+# Common development workflows
+just build                 # Build debug
+just test                  # Run tests
+just lint                  # Run clippy
+just fmt                   # Format code
+just quality               # Run all quality checks (fmt + lint)
+just ci                    # Run full CI checks
+
+# Docker workflows
+just docker-up             # Start dev environment
+just docker-down           # Stop services
+just docker-logs           # View logs
+
+# Testing workflows
+just test-verbose          # Tests with output
+just test-ignored          # Run live Ollama tests
+just test-all              # Run all tests
+just hurl                  # Run API tests
+just hurl-verbose          # API tests with verbose output
+
+# Pre-commit workflow
+just pre-commit            # Format, lint, and test
 ```
 
 ## Making Changes
@@ -279,21 +328,26 @@ Use `config.validate_with_warnings()` to also get warnings about unused config i
 ```bash
 # Run all tests (mocked, no external services required)
 cargo test
+# Or: just test
 
 # Run with specific features
 cargo test --features "ollama,openai"
 
 # Run a specific test
 cargo test test_name
+# Or: just test-filter test_name
 
 # Run tests with output
 cargo test -- --nocapture
+# Or: just test-verbose
 
 # Run only integration tests
 cargo test --test '*'
+# Or: just test-integration
 
 # Run only unit tests
 cargo test --lib
+# Or: just test-lib
 ```
 
 ### Live Ollama Tests
@@ -307,7 +361,20 @@ There are additional tests that connect to a **real Ollama instance**. These tes
 
 #### Running Live Tests
 
-**Option 1: Set environment variable in your shell**
+**Option 1: Using just (recommended)**
+
+```bash
+# Run all ignored tests (including live Ollama tests)
+just test-ignored
+
+# Run with verbose output
+just test-ignored-verbose
+
+# Run all tests (normal + ignored)
+just test-all
+```
+
+**Option 2: Set environment variable in your shell**
 
 ```bash
 # Bash/Zsh

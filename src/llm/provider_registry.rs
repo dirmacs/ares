@@ -115,9 +115,10 @@ impl ProviderRegistry {
 
     /// Create an LLM client using the default model
     pub async fn create_default_client(&self) -> Result<Box<dyn LLMClient>> {
-        let model_name = self.default_model.as_ref().ok_or_else(|| {
-            AppError::Configuration("No default model configured".into())
-        })?;
+        let model_name = self
+            .default_model
+            .as_ref()
+            .ok_or_else(|| AppError::Configuration("No default model configured".into()))?;
 
         self.create_client_for_model(model_name).await
     }
@@ -161,12 +162,10 @@ impl ConfigBasedLLMFactory {
         let registry = ProviderRegistry::from_config(config);
 
         // Get the first model as default, or error if no models defined
-        let default_model = config
-            .models
-            .keys()
-            .next()
-            .cloned()
-            .ok_or_else(|| AppError::Configuration("No models defined in configuration".into()))?;
+        let default_model =
+            config.models.keys().next().cloned().ok_or_else(|| {
+                AppError::Configuration("No models defined in configuration".into())
+            })?;
 
         Ok(Self {
             registry: Arc::new(registry),

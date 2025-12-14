@@ -59,18 +59,12 @@ impl ToolRegistry {
 
     /// Check if a tool is enabled
     pub fn is_enabled(&self, name: &str) -> bool {
-        self.configs
-            .get(name)
-            .map(|c| c.enabled)
-            .unwrap_or(true) // Default to enabled if no config
+        self.configs.get(name).map(|c| c.enabled).unwrap_or(true) // Default to enabled if no config
     }
 
     /// Get timeout for a tool
     pub fn get_timeout(&self, name: &str) -> u64 {
-        self.configs
-            .get(name)
-            .map(|c| c.timeout_secs)
-            .unwrap_or(30) // Default 30 seconds
+        self.configs.get(name).map(|c| c.timeout_secs).unwrap_or(30) // Default 30 seconds
     }
 
     /// Get all tool definitions (only enabled tools)

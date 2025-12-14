@@ -30,6 +30,7 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 
 - **Rust 1.91+**: Install via [rustup](https://rustup.rs/)
 - **Ollama** (recommended): For local LLM inference - [Install Ollama](https://ollama.ai)
+- **just** (recommended): Command runner - [Install just](https://just.systems)
 
 ### 1. Clone and Setup
 
@@ -37,6 +38,9 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 git clone <repo>
 cd ares
 cp .env.example .env
+
+# Or use just to set up everything:
+just setup
 ```
 
 ### 2. Start Ollama (Recommended)
@@ -44,6 +48,7 @@ cp .env.example .env
 ```bash
 # Install a model
 ollama pull granite4:tiny-h
+# Or: just ollama-pull
 
 # Ollama runs automatically as a service, or start manually:
 ollama serve
@@ -54,9 +59,11 @@ ollama serve
 ```bash
 # Build with default features (local-db + ollama)
 cargo build
+# Or: just build
 
 # Run the server
 cargo run
+# Or: just run
 ```
 
 Server runs on `http://localhost:3000`
@@ -98,9 +105,11 @@ A.R.E.S uses Cargo features for conditional compilation:
 ```bash
 # Default (ollama + local-db)
 cargo build
+# Or: just build
 
 # With OpenAI support
 cargo build --features "openai"
+# Or: just build-features "openai"
 
 # With direct GGUF loading
 cargo build --features "llamacpp"
@@ -110,6 +119,11 @@ cargo build --features "llamacpp-cuda"
 
 # Full feature set
 cargo build --features "full"
+# Or: just build-all
+
+# Release build
+cargo build --release
+# Or: just build-release
 ```
 
 ## Configuration
@@ -493,9 +507,11 @@ A.R.E.S has comprehensive test coverage with both mocked and live tests.
 ```bash
 # Run all tests (no external services required)
 cargo test
+# Or: just test
 
 # Run with verbose output
 cargo test -- --nocapture
+# Or: just test-verbose
 ```
 
 ### Live Ollama Tests
@@ -511,6 +527,13 @@ Tests that connect to a **real Ollama instance** are available but **ignored by 
 ```bash
 # Set the environment variable and run ignored tests
 OLLAMA_LIVE_TESTS=1 cargo test --test ollama_live_tests -- --ignored
+# Or: just test-ignored
+
+# All tests (normal + ignored)
+just test-all
+
+# With verbose output
+just test-all-verbose
 
 # With custom Ollama URL or model
 OLLAMA_URL=http://192.168.1.100:11434 OLLAMA_MODEL=mistral OLLAMA_LIVE_TESTS=1 \
@@ -528,7 +551,55 @@ End-to-end API tests using [Hurl](https://hurl.dev):
 brew install hurl  # macOS
 
 # Run API tests (server must be running)
-cd scripts/hurl && nu run.nu
+just hurl
+
+# Run with verbose output
+just hurl-verbose
+
+# Run specific test group
+just hurl-health
+just hurl-auth
+just hurl-chat
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for more testing details.
+
+## Common Commands (just)
+
+A.R.E.S uses [just](https://just.systems) as a command runner. Run `just --list` to see all available commands:
+
+```bash
+# Show all commands
+just --list
+
+# Build & Run
+just build          # Build (debug)
+just build-release  # Build (release)
+just run            # Run server
+just run-debug      # Run with debug logging
+
+# Testing
+just test           # Run tests
+just test-verbose   # Run tests with output
+just test-ignored   # Run live Ollama tests
+just test-all       # Run all tests
+just hurl           # Run API tests
+
+# Code Quality
+just lint           # Run clippy
+just fmt            # Format code
+just quality        # Run all quality checks
+
+# Docker
+just docker-up      # Start dev services
+just docker-down    # Stop services
+just docker-logs    # View logs
+
+# Ollama
+just ollama-pull    # Pull default model
+just ollama-status  # Check if running
+
+# Info
+just info           # Show project info
+just status         # Show environment status
+```

@@ -111,7 +111,7 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
 #[test]
 fn test_config_creation_and_validation() {
     let config = create_test_config();
-    
+
     // Should validate successfully
     let result = config.validate();
     assert!(result.is_ok(), "Config validation failed: {:?}", result);
@@ -120,9 +120,9 @@ fn test_config_creation_and_validation() {
 #[test]
 fn test_config_with_warnings() {
     use ares::utils::toml_config::*;
-    
+
     let mut config = create_test_config();
-    
+
     // Add an unused provider
     config.providers.insert(
         "unused-provider".to_string(),
@@ -131,12 +131,14 @@ fn test_config_with_warnings() {
             default_model: "unused".to_string(),
         },
     );
-    
+
     // Validation should pass but return warnings
     let warnings = config.validate_with_warnings().expect("Validation failed");
-    
+
     assert!(
-        warnings.iter().any(|w| w.message.contains("unused-provider")),
+        warnings
+            .iter()
+            .any(|w| w.message.contains("unused-provider")),
         "Expected warning about unused provider"
     );
 }
@@ -146,25 +148,25 @@ fn test_agent_registry_from_config() {
     use ares::agents::AgentRegistry;
     use ares::llm::ProviderRegistry;
     use ares::tools::registry::ToolRegistry;
-    
+
     let config = create_test_config();
-    
+
     // Create registries
     let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
     let tool_registry = Arc::new(ToolRegistry::new());
-    
+
     // Create agent registry from config
     let agent_registry = AgentRegistry::from_config(&config, provider_registry, tool_registry);
-    
+
     // Verify agents are registered
     assert!(agent_registry.has_agent("test-agent"));
     assert!(agent_registry.has_agent("fallback-agent"));
     assert!(!agent_registry.has_agent("nonexistent"));
-    
+
     // Verify agent configuration
     let model = agent_registry.get_agent_model("test-agent");
     assert_eq!(model, Some("test-model"));
-    
+
     let tools = agent_registry.get_agent_tools("test-agent");
     assert!(tools.contains(&"calculator"));
 }
@@ -172,23 +174,23 @@ fn test_agent_registry_from_config() {
 #[test]
 fn test_provider_registry_from_config() {
     use ares::llm::ProviderRegistry;
-    
+
     let config = create_test_config();
     let registry = ProviderRegistry::from_config(&config);
-    
+
     // Should have the test provider registered
     assert!(registry.has_model("test-model"));
 }
 
 #[test]
 fn test_workflow_engine_from_config() {
-    use ares::workflows::WorkflowEngine;
     use ares::agents::AgentRegistry;
     use ares::llm::ProviderRegistry;
     use ares::tools::registry::ToolRegistry;
-    
+    use ares::workflows::WorkflowEngine;
+
     let config = create_test_config();
-    
+
     // Create registries
     let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
     let tool_registry = Arc::new(ToolRegistry::new());
@@ -197,17 +199,17 @@ fn test_workflow_engine_from_config() {
         provider_registry,
         tool_registry,
     ));
-    
+
     // Create config Arc
     let config_arc = Arc::new(config);
-    
+
     // Create workflow engine
     let engine = WorkflowEngine::new(agent_registry, config_arc);
-    
+
     // Verify workflow is available
     let workflows = engine.available_workflows();
     assert!(workflows.iter().any(|w| *w == "test-workflow"));
-    
+
     // Verify workflow config
     let wf_config = engine.get_workflow_config("test-workflow");
     assert!(wf_config.is_some());
@@ -219,9 +221,9 @@ fn test_workflow_engine_from_config() {
 #[test]
 fn test_circular_reference_rejected() {
     use ares::utils::toml_config::*;
-    
+
     let mut config = create_test_config();
-    
+
     // Create a workflow with circular fallback (entry == fallback)
     config.workflows.insert(
         "circular".to_string(),
@@ -233,15 +235,15 @@ fn test_circular_reference_rejected() {
             parallel_subagents: false,
         },
     );
-    
+
     let result = config.validate();
-    assert!(
-        result.is_err(),
-        "Should reject circular reference"
-    );
-    
+    assert!(result.is_err(), "Should reject circular reference");
+
     if let Err(ConfigError::CircularReference(msg)) = result {
-        assert!(msg.contains("circular"), "Error should mention circular reference");
+        assert!(
+            msg.contains("circular"),
+            "Error should mention circular reference"
+        );
     } else {
         panic!("Expected CircularReference error");
     }
@@ -250,9 +252,9 @@ fn test_circular_reference_rejected() {
 #[test]
 fn test_missing_reference_rejected() {
     use ares::utils::toml_config::*;
-    
+
     let mut config = create_test_config();
-    
+
     // Add agent referencing nonexistent model
     config.agents.insert(
         "broken-agent".to_string(),
@@ -265,10 +267,10 @@ fn test_missing_reference_rejected() {
             extra: HashMap::new(),
         },
     );
-    
+
     let result = config.validate();
     assert!(result.is_err(), "Should reject missing model reference");
-    
+
     match result {
         Err(ConfigError::MissingModel(model, agent)) => {
             assert_eq!(model, "nonexistent-model");
@@ -281,7 +283,7 @@ fn test_missing_reference_rejected() {
 #[test]
 fn test_tool_filtering_in_agent() {
     use ares::utils::toml_config::AgentConfig;
-    
+
     // Agent with restricted tools
     let agent_config = AgentConfig {
         model: "test-model".to_string(),
@@ -291,7 +293,7 @@ fn test_tool_filtering_in_agent() {
         parallel_tools: false,
         extra: HashMap::new(),
     };
-    
+
     // Verify tools are captured
     assert_eq!(agent_config.tools.len(), 1);
     assert!(agent_config.tools.contains(&"calculator".to_string()));
@@ -301,13 +303,13 @@ fn test_tool_filtering_in_agent() {
 #[test]
 fn test_config_manager_access() {
     use ares::utils::toml_config::AresConfigManager;
-    
+
     let config = create_test_config();
     let manager = AresConfigManager::from_config(config.clone());
-    
+
     // Get config through manager
     let loaded = manager.config();
-    
+
     // Verify data matches
     assert_eq!(loaded.server.host, config.server.host);
     assert_eq!(loaded.server.port, config.server.port);
@@ -319,33 +321,30 @@ fn test_full_integration_config_to_agent() {
     use ares::agents::AgentRegistry;
     use ares::llm::ProviderRegistry;
     use ares::tools::registry::ToolRegistry;
-    
+
     let config = create_test_config();
-    
+
     // Create full stack of registries
     let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
     let tool_registry = Arc::new(ToolRegistry::new());
-    let agent_registry = AgentRegistry::from_config(
-        &config,
-        provider_registry.clone(),
-        tool_registry.clone(),
-    );
-    
+    let agent_registry =
+        AgentRegistry::from_config(&config, provider_registry.clone(), tool_registry.clone());
+
     // Verify the full chain works
     // 1. Config has agent
     assert!(config.agents.contains_key("test-agent"));
-    
+
     // 2. Agent references valid model
     let agent_config = config.agents.get("test-agent").unwrap();
     assert!(config.models.contains_key(&agent_config.model));
-    
+
     // 3. Model references valid provider
     let model_config = config.models.get(&agent_config.model).unwrap();
     assert!(config.providers.contains_key(&model_config.provider));
-    
+
     // 4. Registry has agent
     assert!(agent_registry.has_agent("test-agent"));
-    
+
     // 5. Registry can provide agent model
     assert_eq!(
         agent_registry.get_agent_model("test-agent"),

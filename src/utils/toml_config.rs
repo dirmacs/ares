@@ -493,10 +493,10 @@ impl AresConfig {
         if let Some(ref env) = self.database.turso_token_env {
             self.validate_env_var(env)?;
         }
-        if let Some(ref qdrant) = self.database.qdrant {
-            if let Some(ref env) = qdrant.api_key_env {
-                self.validate_env_var(env)?;
-            }
+        if let Some(ref qdrant) = self.database.qdrant
+            && let Some(ref env) = qdrant.api_key_env
+        {
+            self.validate_env_var(env)?;
         }
 
         // Validate provider env vars
@@ -558,13 +558,13 @@ impl AresConfig {
                 ));
             }
 
-            if let Some(ref fallback) = workflow_config.fallback_agent {
-                if !self.agents.contains_key(fallback) {
-                    return Err(ConfigError::MissingAgent(
-                        fallback.clone(),
-                        workflow_name.clone(),
-                    ));
-                }
+            if let Some(ref fallback) = workflow_config.fallback_agent
+                && !self.agents.contains_key(fallback)
+            {
+                return Err(ConfigError::MissingAgent(
+                    fallback.clone(),
+                    workflow_name.clone(),
+                ));
             }
         }
 
@@ -599,13 +599,13 @@ impl AresConfig {
                 current = None;
 
                 // For now, we just check that fallback_agent doesn't equal entry_agent
-                if let Some(ref fallback) = workflow_config.fallback_agent {
-                    if fallback == &workflow_config.entry_agent {
-                        return Err(ConfigError::CircularReference(format!(
-                            "Workflow '{}' has entry_agent '{}' that equals fallback_agent",
-                            workflow_name, workflow_config.entry_agent
-                        )));
-                    }
+                if let Some(ref fallback) = workflow_config.fallback_agent
+                    && fallback == &workflow_config.entry_agent
+                {
+                    return Err(ConfigError::CircularReference(format!(
+                        "Workflow '{}' has entry_agent '{}' that equals fallback_agent",
+                        workflow_name, workflow_config.entry_agent
+                    )));
                 }
             }
         }
@@ -649,7 +649,10 @@ impl AresConfig {
             .filter(|name| !referenced.contains(name.as_str()))
             .map(|name| ConfigWarning {
                 kind: ConfigWarningKind::UnusedProvider,
-                message: format!("Provider '{}' is defined but not referenced by any model", name),
+                message: format!(
+                    "Provider '{}' is defined but not referenced by any model",
+                    name
+                ),
             })
             .collect()
     }
@@ -665,7 +668,10 @@ impl AresConfig {
             .filter(|name| !referenced.contains(name.as_str()))
             .map(|name| ConfigWarning {
                 kind: ConfigWarningKind::UnusedModel,
-                message: format!("Model '{}' is defined but not referenced by any agent", name),
+                message: format!(
+                    "Model '{}' is defined but not referenced by any agent",
+                    name
+                ),
             })
             .collect()
     }
@@ -711,10 +717,15 @@ impl AresConfig {
 
         self.agents
             .keys()
-            .filter(|name| !referenced.contains(name.as_str()) && !system_agents.contains(name.as_str()))
+            .filter(|name| {
+                !referenced.contains(name.as_str()) && !system_agents.contains(name.as_str())
+            })
             .map(|name| ConfigWarning {
                 kind: ConfigWarningKind::UnusedAgent,
-                message: format!("Agent '{}' is defined but not referenced by any workflow", name),
+                message: format!(
+                    "Agent '{}' is defined but not referenced by any workflow",
+                    name
+                ),
             })
             .collect()
     }
@@ -816,7 +827,7 @@ impl AresConfigManager {
                 .map_err(ConfigError::ReadError)?
                 .join(path)
         };
-        
+
         let config = AresConfig::load(&path)?;
 
         Ok(Self {
@@ -895,7 +906,10 @@ impl AresConfigManager {
                         last_reload = std::time::Instant::now();
                     }
                     Err(e) => {
-                        warn!("Failed to hot-reload config: {}. Keeping previous config.", e);
+                        warn!(
+                            "Failed to hot-reload config: {}. Keeping previous config.",
+                            e
+                        );
                     }
                 }
             }
@@ -1273,7 +1287,11 @@ model = "default"
         let config: AresConfig = toml::from_str(content).unwrap();
         let warnings = config.validate_with_warnings().unwrap();
 
-        assert!(warnings.iter().any(|w| w.kind == ConfigWarningKind::UnusedProvider && w.message.contains("unused")));
+        assert!(
+            warnings.iter().any(
+                |w| w.kind == ConfigWarningKind::UnusedProvider && w.message.contains("unused")
+            )
+        );
     }
 
     #[test]
@@ -1306,7 +1324,11 @@ model = "used"
         let config: AresConfig = toml::from_str(content).unwrap();
         let warnings = config.validate_with_warnings().unwrap();
 
-        assert!(warnings.iter().any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("unused")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("unused"))
+        );
     }
 
     #[test]
@@ -1341,7 +1363,12 @@ tools = ["used_tool"]
         let config: AresConfig = toml::from_str(content).unwrap();
         let warnings = config.validate_with_warnings().unwrap();
 
-        assert!(warnings.iter().any(|w| w.kind == ConfigWarningKind::UnusedTool && w.message.contains("unused_tool")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.kind == ConfigWarningKind::UnusedTool
+                    && w.message.contains("unused_tool"))
+        );
     }
 
     #[test]
@@ -1410,6 +1437,10 @@ entry_agent = "router"
         let config: AresConfig = toml::from_str(content).unwrap();
         let warnings = config.validate_with_warnings().unwrap();
 
-        assert!(warnings.is_empty(), "Expected no warnings but got: {:?}", warnings);
+        assert!(
+            warnings.is_empty(),
+            "Expected no warnings but got: {:?}",
+            warnings
+        );
     }
 }

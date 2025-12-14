@@ -66,6 +66,7 @@ impl ConfigurableAgent {
     }
 
     /// Create a new configurable agent with explicit parameters
+    #[allow(clippy::too_many_arguments)]
     pub fn with_params(
         name: &str,
         agent_type: AgentType,
@@ -107,26 +108,33 @@ impl ConfigurableAgent {
         match name.to_lowercase().as_str() {
             "router" => r#"You are a routing agent that classifies user queries.
 Available agents: product, invoice, sales, finance, hr, orchestrator.
-Respond with ONLY the agent name (one word, lowercase)."#.to_string(),
-            
+Respond with ONLY the agent name (one word, lowercase)."#
+                .to_string(),
+
             "orchestrator" => r#"You are an orchestrator agent for complex queries.
-Break down requests, delegate to specialists, and synthesize results."#.to_string(),
-            
+Break down requests, delegate to specialists, and synthesize results."#
+                .to_string(),
+
             "product" => r#"You are a Product Agent for product-related queries.
-Handle catalog, specifications, inventory, and pricing questions."#.to_string(),
-            
+Handle catalog, specifications, inventory, and pricing questions."#
+                .to_string(),
+
             "invoice" => r#"You are an Invoice Agent for billing queries.
-Handle invoices, payments, and billing history."#.to_string(),
-            
+Handle invoices, payments, and billing history."#
+                .to_string(),
+
             "sales" => r#"You are a Sales Agent for sales analytics.
-Handle performance metrics, revenue, and customer data."#.to_string(),
-            
+Handle performance metrics, revenue, and customer data."#
+                .to_string(),
+
             "finance" => r#"You are a Finance Agent for financial analysis.
-Handle statements, budgets, and expense management."#.to_string(),
-            
+Handle statements, budgets, and expense management."#
+                .to_string(),
+
             "hr" => r#"You are an HR Agent for human resources.
-Handle employee info, policies, and benefits."#.to_string(),
-            
+Handle employee info, policies, and benefits."#
+                .to_string(),
+
             _ => format!("You are a {} agent.", name),
         }
     }
@@ -162,7 +170,7 @@ Handle employee info, policies, and benefits."#.to_string(),
     }
 
     /// Get tool definitions for only this agent's allowed tools
-    /// 
+    ///
     /// This filters the tool registry to only return tools that:
     /// 1. Are in this agent's allowed tools list
     /// 2. Are enabled in the tool registry
@@ -262,13 +270,13 @@ mod tests {
 
     #[test]
     fn test_allowed_tools() {
-        use crate::utils::toml_config::AgentConfig;
         use crate::llm::LLMResponse;
+        use crate::utils::toml_config::AgentConfig;
         use std::collections::HashMap;
 
         // Create a mock LLM client (we'll use a simple mock)
         struct MockLLM;
-        
+
         #[async_trait]
         impl LLMClient for MockLLM {
             async fn generate(&self, _: &str) -> Result<String> {
@@ -277,10 +285,7 @@ mod tests {
             async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
                 Ok("mock".to_string())
             }
-            async fn generate_with_history(
-                &self,
-                _: &[(String, String)],
-            ) -> Result<String> {
+            async fn generate_with_history(&self, _: &[(String, String)]) -> Result<String> {
                 Ok("mock".to_string())
             }
             async fn generate_with_tools(
@@ -297,7 +302,8 @@ mod tests {
             async fn stream(
                 &self,
                 _: &str,
-            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+            {
                 Ok(Box::new(futures::stream::empty()))
             }
             fn model_name(&self) -> &str {
@@ -328,12 +334,12 @@ mod tests {
 
     #[test]
     fn test_has_tools_requires_both_config_and_registry() {
-        use crate::utils::toml_config::AgentConfig;
         use crate::llm::LLMResponse;
+        use crate::utils::toml_config::AgentConfig;
         use std::collections::HashMap;
 
         struct MockLLM;
-        
+
         #[async_trait]
         impl LLMClient for MockLLM {
             async fn generate(&self, _: &str) -> Result<String> {
@@ -342,10 +348,7 @@ mod tests {
             async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
                 Ok("mock".to_string())
             }
-            async fn generate_with_history(
-                &self,
-                _: &[(String, String)],
-            ) -> Result<String> {
+            async fn generate_with_history(&self, _: &[(String, String)]) -> Result<String> {
                 Ok("mock".to_string())
             }
             async fn generate_with_tools(
@@ -362,7 +365,8 @@ mod tests {
             async fn stream(
                 &self,
                 _: &str,
-            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+            {
                 Ok(Box::new(futures::stream::empty()))
             }
             fn model_name(&self) -> &str {
@@ -380,12 +384,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        let agent = ConfigurableAgent::new(
-            "orchestrator",
-            &config,
-            Box::new(MockLLM),
-            None,
-        );
+        let agent = ConfigurableAgent::new("orchestrator", &config, Box::new(MockLLM), None);
         assert!(!agent.has_tools()); // No registry
 
         // Agent with empty tools

@@ -1,6 +1,6 @@
 use crate::{
     AppState,
-    agents::{Agent, router::RouterAgent, registry::AgentRegistry},
+    agents::{Agent, registry::AgentRegistry, router::RouterAgent},
     auth::middleware::AuthUser,
     types::{
         AgentContext, AgentType, AppError, ChatRequest, ChatResponse, MessageRole, Result,
@@ -74,7 +74,11 @@ pub async fn chat(
             .map(|a| a.model.as_str())
             .unwrap_or("fast");
 
-        let router_llm = match state.provider_registry.create_client_for_model(router_model).await {
+        let router_llm = match state
+            .provider_registry
+            .create_client_for_model(router_model)
+            .await
+        {
             Ok(client) => client,
             Err(_) => state.llm_factory.create_default().await?,
         };
@@ -115,7 +119,7 @@ async fn execute_agent(
 ) -> Result<ChatResponse> {
     // Get agent name from type
     let agent_name = AgentRegistry::type_to_name(agent_type);
-    
+
     if agent_type == AgentType::Router {
         return Err(AppError::InvalidInput(
             "Router agent cannot be called directly".to_string(),
@@ -124,7 +128,7 @@ async fn execute_agent(
 
     // Create agent from registry (uses config-driven ConfigurableAgent)
     let agent = state.agent_registry.create_agent(agent_name).await?;
-    
+
     // Execute the agent
     let response = agent.execute(message, context).await?;
 

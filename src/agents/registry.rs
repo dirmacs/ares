@@ -7,7 +7,7 @@ use crate::agents::configurable::ConfigurableAgent;
 use crate::llm::ProviderRegistry;
 use crate::tools::registry::ToolRegistry;
 use crate::types::{AgentType, AppError, Result};
-use crate::utils::toml_config::{AresConfig, AgentConfig};
+use crate::utils::toml_config::{AgentConfig, AresConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -23,10 +23,7 @@ pub struct AgentRegistry {
 
 impl AgentRegistry {
     /// Create a new agent registry
-    pub fn new(
-        provider_registry: Arc<ProviderRegistry>,
-        tool_registry: Arc<ToolRegistry>,
-    ) -> Self {
+    pub fn new(provider_registry: Arc<ProviderRegistry>, tool_registry: Arc<ToolRegistry>) -> Self {
         Self {
             configs: HashMap::new(),
             provider_registry,
@@ -184,9 +181,9 @@ impl AgentRegistryBuilder {
             AppError::Configuration("ProviderRegistry is required for AgentRegistry".into())
         })?;
 
-        let tool_registry = self.tool_registry.unwrap_or_else(|| {
-            Arc::new(ToolRegistry::new())
-        });
+        let tool_registry = self
+            .tool_registry
+            .unwrap_or_else(|| Arc::new(ToolRegistry::new()));
 
         Ok(AgentRegistry {
             configs: self.configs,
@@ -240,7 +237,10 @@ mod tests {
         assert_eq!(AgentRegistry::type_to_name(AgentType::Invoice), "invoice");
         assert_eq!(AgentRegistry::type_to_name(AgentType::Sales), "sales");
         assert_eq!(AgentRegistry::type_to_name(AgentType::Finance), "finance");
-        assert_eq!(AgentRegistry::type_to_name(AgentType::Orchestrator), "orchestrator");
+        assert_eq!(
+            AgentRegistry::type_to_name(AgentType::Orchestrator),
+            "orchestrator"
+        );
     }
 
     #[test]
@@ -272,23 +272,29 @@ mod tests {
         let tool_registry = Arc::new(ToolRegistry::new());
         let mut registry = AgentRegistry::new(provider_registry, tool_registry);
 
-        registry.register("agent1", AgentConfig {
-            model: "default".to_string(),
-            system_prompt: None,
-            tools: vec![],
-            max_tool_iterations: 10,
-            parallel_tools: false,
-            extra: HashMap::new(),
-        });
+        registry.register(
+            "agent1",
+            AgentConfig {
+                model: "default".to_string(),
+                system_prompt: None,
+                tools: vec![],
+                max_tool_iterations: 10,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
+        );
 
-        registry.register("agent2", AgentConfig {
-            model: "default".to_string(),
-            system_prompt: None,
-            tools: vec![],
-            max_tool_iterations: 10,
-            parallel_tools: false,
-            extra: HashMap::new(),
-        });
+        registry.register(
+            "agent2",
+            AgentConfig {
+                model: "default".to_string(),
+                system_prompt: None,
+                tools: vec![],
+                max_tool_iterations: 10,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
+        );
 
         let names = registry.agent_names();
         assert_eq!(names.len(), 2);
@@ -302,14 +308,17 @@ mod tests {
         let tool_registry = Arc::new(ToolRegistry::new());
         let mut registry = AgentRegistry::new(provider_registry, tool_registry);
 
-        registry.register("test", AgentConfig {
-            model: "default".to_string(),
-            system_prompt: None,
-            tools: vec![],
-            max_tool_iterations: 10,
-            parallel_tools: false,
-            extra: HashMap::new(),
-        });
+        registry.register(
+            "test",
+            AgentConfig {
+                model: "default".to_string(),
+                system_prompt: None,
+                tools: vec![],
+                max_tool_iterations: 10,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
+        );
 
         assert_eq!(registry.get_agent_model("test"), Some("default"));
         assert_eq!(registry.get_agent_model("nonexistent"), None);
@@ -321,23 +330,29 @@ mod tests {
         let tool_registry = Arc::new(ToolRegistry::new());
         let mut registry = AgentRegistry::new(provider_registry, tool_registry);
 
-        registry.register("with_tools", AgentConfig {
-            model: "default".to_string(),
-            system_prompt: None,
-            tools: vec!["calculator".to_string(), "web_search".to_string()],
-            max_tool_iterations: 10,
-            parallel_tools: false,
-            extra: HashMap::new(),
-        });
+        registry.register(
+            "with_tools",
+            AgentConfig {
+                model: "default".to_string(),
+                system_prompt: None,
+                tools: vec!["calculator".to_string(), "web_search".to_string()],
+                max_tool_iterations: 10,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
+        );
 
-        registry.register("no_tools", AgentConfig {
-            model: "default".to_string(),
-            system_prompt: None,
-            tools: vec![],
-            max_tool_iterations: 10,
-            parallel_tools: false,
-            extra: HashMap::new(),
-        });
+        registry.register(
+            "no_tools",
+            AgentConfig {
+                model: "default".to_string(),
+                system_prompt: None,
+                tools: vec![],
+                max_tool_iterations: 10,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
+        );
 
         let tools = registry.get_agent_tools("with_tools");
         assert_eq!(tools.len(), 2);
@@ -362,14 +377,17 @@ mod tests {
 
         let result = AgentRegistryBuilder::new()
             .with_provider_registry(provider_registry)
-            .with_agent("test", AgentConfig {
-                model: "default".to_string(),
-                system_prompt: Some("Test".to_string()),
-                tools: vec![],
-                max_tool_iterations: 5,
-                parallel_tools: false,
-                extra: HashMap::new(),
-            })
+            .with_agent(
+                "test",
+                AgentConfig {
+                    model: "default".to_string(),
+                    system_prompt: Some("Test".to_string()),
+                    tools: vec![],
+                    max_tool_iterations: 5,
+                    parallel_tools: false,
+                    extra: HashMap::new(),
+                },
+            )
             .build();
 
         assert!(result.is_ok());

@@ -74,10 +74,11 @@ impl DatabaseProvider {
         }
 
         // Check for SQLite file path
-        if let Ok(path) = std::env::var("DATABASE_PATH") {
-            if !path.is_empty() && path != ":memory:" {
-                return DatabaseProvider::SQLite { path };
-            }
+        if let Ok(path) = std::env::var("DATABASE_PATH")
+            && !path.is_empty()
+            && path != ":memory:"
+        {
+            return DatabaseProvider::SQLite { path };
         }
 
         // Default to in-memory

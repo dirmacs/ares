@@ -1,28 +1,48 @@
-version: "3.8"
+# A.R.E.S - Production Docker Compose
+# =============================================================================
+# This is the production configuration. For development, use docker-compose.dev.yml
+# 
+# Usage:
+#   docker compose up -d
+#   just docker-logs  (to view logs)
+# =============================================================================
 
 services:
-  chatbot:
+  ares:
     build: .
+    container_name: ares
     ports:
       - "3000:3000"
     environment:
       HOST: 0.0.0.0
       PORT: 3000
-      DATABASE_URL: ${DATABASE_URL:-./data/ares.db}
-      TURSO_URL: ${TURSO_URL}
-      TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN}
+      TURSO_URL: ${TURSO_URL:-file:./data/ares.db}
+      TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN:-}
       QDRANT_URL: http://qdrant:6334
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      JWT_SECRET: ${JWT_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      RUST_LOG: ${RUST_LOG:-info}
     depends_on:
-      - qdrant
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - ares_data:/app/data
+    restart: unless-stopped
 
   qdrant:
     image: qdrant/qdrant:latest
+    container_name: ares-qdrant
     ports:
       - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6334/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
 
 volumes:
+  ares_data:
   qdrant_data:

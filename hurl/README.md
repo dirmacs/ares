@@ -2,12 +2,34 @@
 
 These `.hurl` files exercise the running A.R.E.S server end-to-end.
 
-## Prereqs
+## Prerequisites
 
 - `ares` server running (default: `http://127.0.0.1:3000`)
 - `hurl` installed and available on PATH
+- `just` (recommended) - command runner for easy test execution
 
-## Run the suite (Nu shell)
+## Run the suite
+
+### Using just (Recommended)
+
+```bash
+# Run all tests
+just hurl
+
+# Run with verbose output
+just hurl-verbose
+
+# Run specific test groups
+just hurl-health      # Health check only
+just hurl-auth        # Authentication tests
+just hurl-chat        # Chat tests
+just hurl-research    # Research tests
+
+# Run a specific file
+just hurl-file hurl/cases/00_health.hurl
+```
+
+### Using Nu shell (Alternative)
 
 ```nu
 ./scripts/hurl/run.nu
@@ -22,7 +44,11 @@ Override defaults via environment variables:
 
 Example:
 
-```nu
+```bash
+# With just
+ARES_BASE_URL=http://192.168.1.100:3000 just hurl
+
+# With Nu shell
 $env.ARES_BASE_URL = "http://127.0.0.1:3000"
 $env.ARES_TEST_EMAIL = "hurl.user1@example.com"
 $env.ARES_TEST_PASSWORD = "correcthorsebatterystaple"

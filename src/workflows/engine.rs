@@ -75,7 +75,10 @@ impl WorkflowEngine {
     ) -> Result<WorkflowOutput> {
         // Get workflow configuration
         let workflow = self.config.get_workflow(workflow_name).ok_or_else(|| {
-            AppError::Configuration(format!("Workflow '{}' not found in configuration", workflow_name))
+            AppError::Configuration(format!(
+                "Workflow '{}' not found in configuration",
+                workflow_name
+            ))
         })?;
 
         let mut steps = Vec::new();
@@ -129,7 +132,7 @@ impl WorkflowEngine {
             if agent.agent_type() == AgentType::Router {
                 // Router's output should be an agent name
                 let next_agent = output.trim().to_lowercase();
-                
+
                 // Validate the routed agent exists
                 if self.agent_registry.has_agent(&next_agent) {
                     current_agent_name = next_agent;
@@ -192,8 +195,8 @@ mod tests {
     use crate::llm::ProviderRegistry;
     use crate::tools::registry::ToolRegistry;
     use crate::utils::toml_config::{
-        AgentConfig, AuthConfig, DatabaseConfig, ModelConfig, ProviderConfig,
-        RagConfig, ServerConfig, WorkflowConfig,
+        AgentConfig, AuthConfig, DatabaseConfig, ModelConfig, ProviderConfig, RagConfig,
+        ServerConfig, WorkflowConfig,
     };
     use std::collections::HashMap;
 
@@ -303,7 +306,7 @@ mod tests {
         ));
 
         let engine = WorkflowEngine::new(agent_registry, config);
-        
+
         assert!(engine.has_workflow("default"));
         assert!(engine.has_workflow("research"));
         assert!(!engine.has_workflow("nonexistent"));
@@ -322,7 +325,7 @@ mod tests {
 
         let engine = WorkflowEngine::new(agent_registry, config);
         let workflows = engine.available_workflows();
-        
+
         assert!(workflows.contains(&"default"));
         assert!(workflows.contains(&"research"));
     }
@@ -339,12 +342,15 @@ mod tests {
         ));
 
         let engine = WorkflowEngine::new(agent_registry, config);
-        
+
         let default_config = engine.get_workflow_config("default").unwrap();
         assert_eq!(default_config.entry_agent, "router");
-        assert_eq!(default_config.fallback_agent, Some("orchestrator".to_string()));
+        assert_eq!(
+            default_config.fallback_agent,
+            Some("orchestrator".to_string())
+        );
         assert_eq!(default_config.max_depth, 3);
-        
+
         let research_config = engine.get_workflow_config("research").unwrap();
         assert_eq!(research_config.entry_agent, "orchestrator");
         assert!(research_config.parallel_subagents);
@@ -378,7 +384,7 @@ mod tests {
         assert!(json.contains("Test response"));
         assert!(json.contains("router"));
         assert!(json.contains("product"));
-        
+
         let deserialized: WorkflowOutput = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.steps_executed, 2);
     }

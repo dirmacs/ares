@@ -48,7 +48,11 @@ pub async fn deep_research(
         .unwrap_or("powerful");
 
     // Create research coordinator with config-based model
-    let llm_client = match state.provider_registry.create_client_for_model(model_name).await {
+    let llm_client = match state
+        .provider_registry
+        .create_client_for_model(model_name)
+        .await
+    {
         Ok(client) => client,
         Err(_) => state.llm_factory.create_default().await?,
     };

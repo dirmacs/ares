@@ -84,14 +84,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize Database
     // =================================================================
     // Check for Turso cloud config first, then fall back to local SQLite
-    let turso = if let (Some(turso_url_env), Some(turso_token_env)) =
-        (&config.database.turso_url_env, &config.database.turso_token_env)
-    {
+    let turso = if let (Some(turso_url_env), Some(turso_token_env)) = (
+        &config.database.turso_url_env,
+        &config.database.turso_token_env,
+    ) {
         // Try to get cloud credentials from env vars
-        if let (Ok(url), Ok(token)) = (
-            std::env::var(turso_url_env),
-            std::env::var(turso_token_env),
-        ) {
+        if let (Ok(url), Ok(token)) = (std::env::var(turso_url_env), std::env::var(turso_token_env))
+        {
             if !url.is_empty() && !token.is_empty() {
                 tracing::info!("Initializing Turso (remote) database");
                 TursoClient::new_remote(url, token).await?
@@ -124,11 +123,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize Tool Registry
     // =================================================================
     let mut tool_registry = ToolRegistry::with_config(&config);
-    
+
     // Register built-in tools
     tool_registry.register(Arc::new(ares::tools::calculator::Calculator));
     tool_registry.register(Arc::new(ares::tools::search::WebSearch::new()));
-    
+
     let tool_registry = Arc::new(tool_registry);
     tracing::info!(
         "Tool registry initialized with {} tools",
@@ -240,10 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Initialize local SQLite database
 async fn init_local_db(url: &str) -> Result<TursoClient, Box<dyn std::error::Error>> {
     // Ensure data directory exists for the default "./data/ares.db" path.
-    if !url.contains(":memory:")
-        && !url.starts_with("libsql://")
-        && !url.starts_with("https://")
-    {
+    if !url.contains(":memory:") && !url.starts_with("libsql://") && !url.starts_with("https://") {
         let path = url.strip_prefix("file:").unwrap_or(url);
         if let Some(parent) = std::path::Path::new(path).parent() {
             std::fs::create_dir_all(parent)?;

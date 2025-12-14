@@ -18,8 +18,16 @@ pub struct OrchestratorAgent {
 }
 
 impl OrchestratorAgent {
-    pub fn new(llm: Box<dyn LLMClient>, state: AppState, agent_registry: Arc<AgentRegistry>) -> Self {
-        Self { llm, state, agent_registry }
+    pub fn new(
+        llm: Box<dyn LLMClient>,
+        state: AppState,
+        agent_registry: Arc<AgentRegistry>,
+    ) -> Self {
+        Self {
+            llm,
+            state,
+            agent_registry,
+        }
     }
 
     /// Decompose a complex task into subtasks for specialized agents

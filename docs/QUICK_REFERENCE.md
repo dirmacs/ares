@@ -9,30 +9,84 @@ Fast reference for common development tasks and commands.
 git clone <repo>
 cd ares
 
-# 2. Run setup script (auto-configures everything)
-./scripts/dev-setup.sh        # Linux/Mac
-./scripts/dev-setup.ps1        # Windows
+# 2. Install just (command runner)
+brew install just          # macOS
+# Or: cargo install just
 
-# 3. Build and run
-cargo run --features ollama
+# 3. Run setup (auto-configures everything)
+just setup
+
+# 4. Build and run
+just run
 ```
 
-## 🔧 Build Commands
+## 📋 Just Commands (Recommended)
+
+Run `just --list` for all available commands. Here are the most common:
+
+```bash
+# Build
+just build              # Debug build
+just build-release      # Release build
+just build-features "x" # Build with features
+just clean              # Clean artifacts
+
+# Run
+just run                # Run server
+just run-debug          # Run with debug logging
+just run-trace          # Run with trace logging
+
+# Test
+just test               # Run tests
+just test-verbose       # Tests with output
+just test-ignored       # Live Ollama tests
+just test-all           # All tests
+just hurl               # API tests
+just hurl-verbose       # API tests (verbose)
+
+# Code Quality
+just lint               # Run clippy
+just fmt                # Format code
+just fmt-check          # Check formatting
+just quality            # Format + lint check
+
+# Docker
+just docker-up          # Start dev environment
+just docker-down        # Stop services
+just docker-logs        # View logs
+just docker-services    # Start only Ollama + Qdrant
+
+# Ollama
+just ollama-status      # Check if running
+just ollama-pull        # Pull default model
+just ollama-list        # List models
+
+# Info
+just info               # Project info
+just status             # Environment status
+just --list             # All commands
+```
+
+## 🔧 Build Commands (Cargo)
 
 ```bash
 # Default build (ollama + local-db)
 cargo build
+# Or: just build
 
 # With specific features
 cargo build --features "llamacpp"
 cargo build --features "openai"
 cargo build --features "llamacpp-cuda"
+# Or: just build-features "llamacpp"
 
 # All features
 cargo build --features "full"
+# Or: just build-all
 
 # Release build
 cargo build --release --features "ollama"
+# Or: just build-release
 
 # Minimal build
 cargo build --no-default-features
@@ -43,55 +97,100 @@ cargo build --no-default-features
 ```bash
 # Run all tests
 cargo test
+# Or: just test
 
 # Run specific test file
 cargo test --test api_tests
 cargo test --test llm_tests
+# Or: just test-file api_tests
 
 # Run with features
 cargo test --features "llamacpp"
 
 # Run specific test
 cargo test test_ollama_client
+# Or: just test-filter test_ollama_client
 
 # Show test output
 cargo test -- --nocapture
+# Or: just test-verbose
 
-# Run ignored tests
-cargo test -- --ignored
+# Run ignored tests (live Ollama)
+OLLAMA_LIVE_TESTS=1 cargo test -- --ignored
+# Or: just test-ignored
+
+# Run all tests
+just test-all
+```
+
+## 🌐 API Tests (Hurl)
+
+```bash
+# Run all hurl tests
+just hurl
+
+# Run with verbose output
+just hurl-verbose
+
+# Run specific test groups
+just hurl-health
+just hurl-auth
+just hurl-chat
+just hurl-research
+
+# Run specific file
+just hurl-file hurl/cases/00_health.hurl
 ```
 
 ## 🐳 Docker Commands
 
 ```bash
-# Start all services
-docker compose -f docker-compose.dev.yml up
-
-# Start in background
+# Start all services (development)
 docker compose -f docker-compose.dev.yml up -d
+# Or: just docker-up
+
+# Start in foreground
+docker compose -f docker-compose.dev.yml up
 
 # Start specific service
 docker compose -f docker-compose.dev.yml up ollama
 
+# Start only Ollama + Qdrant (for local development)
+just docker-services
+
 # Stop all
 docker compose -f docker-compose.dev.yml down
+# Or: just docker-down
 
 # View logs
 docker compose -f docker-compose.dev.yml logs -f ares
+# Or: just docker-logs
+
+# View specific service logs
+just docker-logs-service ollama
 
 # Rebuild
 docker compose -f docker-compose.dev.yml build --no-cache
+# Or: just docker-rebuild
 ```
 
 ## 🤖 Ollama Commands
 
 ```bash
-# Pull a model
+# Check if Ollama is running
+just ollama-status
+
+# Pull the default model
+just ollama-pull
+
+# Pull a specific model
 ollama pull granite4:tiny-h
 ollama pull mistral
+# Or: just ollama-pull-model mistral
 
 # List models
 ollama list
+# Or: just ollama-list
 
 # Run model interactively
 ollama run granite4:tiny-h
@@ -123,7 +222,10 @@ cargo run --features llamacpp
 ## 🔑 Environment Setup
 
 ```bash
-# Copy example
+# Using just (recommended)
+just setup
+
+# Manual: Copy example
 cp .env.example .env
 
 # Generate secrets
@@ -164,15 +266,34 @@ API_KEY=<your-key>
 ```bash
 # Format code
 cargo fmt
+# Or: just fmt
 
 # Check formatting
 cargo fmt -- --check
+# Or: just fmt-check
 
 # Lint
 cargo clippy
+# Or: just lint
 
 # Lint with warnings as errors
 cargo clippy -- -D warnings
+
+# Lint all features
+cargo clippy --all-features
+# Or: just lint-all
+
+# Run all quality checks
+just quality
+
+# Pre-commit checks (format, lint, test)
+just pre-commit
+
+# CI checks
+just ci
+
+# Full CI (including live tests)
+just ci-full
 
 # Security audit
 cargo audit
@@ -186,16 +307,27 @@ cargo outdated
 ```bash
 # Check compilation without building
 cargo check
+# Or: just check
 
 # Check with all features
 cargo check --features "full"
 
 # Build documentation
 cargo doc --open
+# Or: just doc-open
 
 # Generate test coverage
 cargo install cargo-llvm-cov
 cargo llvm-cov --open
+
+# Project info
+just info
+
+# Environment status
+just status
+
+# Verify everything works
+just verify
 ```
 
 ## 🌐 API Endpoints

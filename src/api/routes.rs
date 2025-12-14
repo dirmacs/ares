@@ -25,6 +25,15 @@ pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
             post(crate::api::handlers::research::deep_research),
         )
         .route("/memory", get(crate::api::handlers::chat::get_user_memory))
+        // Workflow routes
+        .route(
+            "/workflows",
+            get(crate::api::handlers::workflows::list_workflows),
+        )
+        .route(
+            "/workflows/{workflow_name}",
+            post(crate::api::handlers::workflows::execute_workflow),
+        )
         .layer(middleware::from_fn(move |req, next| {
             crate::auth::middleware::auth_middleware(auth_service.clone(), req, next)
         }));

@@ -5,8 +5,12 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 ## Features
 
 - ✅ **Multi-Provider LLM Support**: Ollama, OpenAI, LlamaCpp (direct GGUF loading)
+- ✅ **TOML Configuration**: Declarative configuration with hot-reloading
+- ✅ **Configurable Agents**: Define agents via TOML with custom models, tools, and prompts
+- ✅ **Workflow Engine**: Declarative workflow execution with agent routing
 - ✅ **Local-First Development**: Runs entirely locally with Ollama and SQLite by default
 - ✅ **Tool Calling**: Type-safe function calling with automatic schema generation
+- ✅ **Per-Agent Tool Filtering**: Restrict which tools each agent can access
 - ✅ **Streaming**: Real-time streaming responses from all providers
 - ✅ **Authentication**: JWT-based auth with Argon2 password hashing
 - ✅ **Database**: Local SQLite (libsql) by default, optional Turso and Qdrant
@@ -18,6 +22,7 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 - ✅ **Web Search**: Built-in web search via [daedra](https://github.com/dirmacs/daedra) (no API keys required)
 - ✅ **OpenAPI**: Automatic API documentation generation
 - ✅ **Testing**: Comprehensive unit and integration tests
+- ✅ **Config Validation**: Circular reference detection and unused config warnings
 
 ## Quick Start
 
@@ -38,7 +43,7 @@ cp .env.example .env
 
 ```bash
 # Install a model
-ollama pull llama3.2
+ollama pull granite4:tiny-h
 
 # Ollama runs automatically as a service, or start manually:
 ollama serve
@@ -146,22 +151,33 @@ url = "./data/ares.db"
 [providers.ollama-local]
 type = "ollama"
 base_url = "http://localhost:11434"
-default_model = "llama3.2"
+default_model = "granite4:tiny-h"
+
+[providers.openai]  # Optional
+type = "openai"
+api_key_env = "OPENAI_API_KEY"
+default_model = "gpt-4"
 
 # Models (reference providers, set parameters)
 [models.fast]
 provider = "ollama-local"
-model = "llama3.2:1b"
+model = "granite4:tiny-h"
 temperature = 0.7
 max_tokens = 256
 
 [models.balanced]
 provider = "ollama-local"
-model = "llama3.2"
+model = "granite4:tiny-h"
 temperature = 0.7
 max_tokens = 512
 
-# Tools
+[models.smart]
+provider = "ollama-local"
+model = "qwen3-vl:2b"
+temperature = 0.3
+max_tokens = 1024
+
+# Tools (define available tools)
 [tools.calculator]
 enabled = true
 timeout_secs = 10
@@ -173,20 +189,54 @@ timeout_secs = 30
 # Agents (reference models and tools)
 [agents.router]
 model = "fast"
-system_prompt = "You are a routing agent..."
+system_prompt = "You route requests to specialized agents..."
 
 [agents.product]
 model = "balanced"
-tools = []
+tools = ["calculator"]                     # Tool filtering: only calculator
 system_prompt = "You are a Product Agent..."
 
-# Workflows
+[agents.research]
+model = "smart"
+tools = ["web_search", "calculator"]       # Multiple tools
+system_prompt = "You conduct research..."
+
+# Workflows (define agent routing)
 [workflows.default]
 entry_agent = "router"
-fallback_agent = "orchestrator"
+fallback_agent = "product"
+max_depth = 5
+
+[workflows.research_flow]
+entry_agent = "research"
+max_depth = 10
 ```
 
-See `ares.toml` for the complete configuration with all options documented.
+### Per-Agent Tool Filtering
+
+Each agent can specify which tools it has access to:
+
+```toml
+[agents.restricted]
+model = "balanced"
+tools = ["calculator"]  # Only calculator, no web search
+
+[agents.full_access]
+model = "balanced"
+tools = ["calculator", "web_search"]  # Both tools
+```
+
+If `tools` is empty or omitted, the agent has no tool access.
+
+### Configuration Validation
+
+The configuration is validated on load with:
+
+- **Reference checking**: Models must reference valid providers, agents must reference valid models
+- **Circular reference detection**: Workflows cannot have circular agent references
+- **Environment variables**: All referenced env vars must be set
+
+For warnings about unused configuration items (providers, models, tools not referenced by anything), the `validate_with_warnings()` method is available.
 
 ### Hot Reloading
 
@@ -253,43 +303,67 @@ When multiple providers are configured, they are selected in this order:
 ## Architecture
 
 ```
-┌─────────────┐
-│   Client    │
-└──────┬──────┘
-       │
-┌──────▼──────────────────────────────────────┐
-│           API Layer (Axum)                   │
-│  - Authentication Middleware                 │
-│  - OpenAPI Documentation                     │
-└──────┬──────────────────────────────────────┘
-       │
-┌──────▼──────────────────────────────────────┐
-│         Agent Graph Workflow                 │
-│                                              │
-│  ┌─────────┐    ┌──────────────┐           │
-│  │ Router  │───▶│ Orchestrator │           │
-│  └─────────┘    └───────┬──────┘           │
-│                          │                   │
-│         ┌────────────────┼────────────┐     │
-│         │                │            │     │
-│    ┌────▼────┐     ┌────▼────┐  ┌───▼───┐ │
-│    │ Product │     │ Invoice │  │   HR  │ │
-│    │  Agent  │     │  Agent  │  │ Agent │ │
-│    └─────────┘     └─────────┘  └───────┘ │
-│         │                │            │     │
-│         └────────────────┼────────────┘     │
-│                          │                   │
-└──────────────────────────┼───────────────────┘
-                           │
-       ┌───────────────────┼──────────────────┐
-       │                   │                  │
-┌──────▼────────┐  ┌───────▼───────┐  ┌──────▼──────┐
-│  LLM Clients  │  │  Tool Registry │  │  Knowledge  │
-│  - Ollama     │  │  - Web Search  │  │    Bases    │
-│  - OpenAI     │  │  - Calculator  │  │  - SQLite   │
-│  - LlamaCpp   │  │  - Database    │  │  - Qdrant   │
-└───────────────┘  └───────────────┘  └──────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            ares.toml (Configuration)                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │providers │  │ models   │  │ agents   │  │  tools   │  │workflows │     │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘     │
+└──────────────────────────────┬──────────────────────────────────────────────┘
+                               │ Hot Reload
+┌──────────────────────────────▼──────────────────────────────────────────────┐
+│                         AresConfigManager                                    │
+│                    (Thread-safe config access)                               │
+└──────────────────────────────┬──────────────────────────────────────────────┘
+                               │
+       ┌───────────────────────┼───────────────────────────┐
+       │                       │                           │
+┌──────▼──────┐         ┌──────▼──────┐            ┌──────▼──────┐
+│  Provider   │         │    Agent    │            │    Tool     │
+│  Registry   │         │  Registry   │            │  Registry   │
+└──────┬──────┘         └──────┬──────┘            └──────┬──────┘
+       │                       │                          │
+       │                ┌──────▼──────┐                   │
+       │                │Configurable │◄──────────────────┘
+       │                │   Agent     │  (filtered tools)
+       │                └──────┬──────┘
+       │                       │
+┌──────▼───────────────────────┼──────────────────────────────────────────────┐
+│      LLM Clients             │                                               │
+│  ┌────────┐ ┌────────┐      │                                               │
+│  │Ollama  │ │OpenAI  │      │                                               │
+│  └────────┘ └────────┘      │                                               │
+│  ┌────────┐                 │                                               │
+│  │LlamaCpp│                 │                                               │
+│  └────────┘                 │                                               │
+└─────────────────────────────┼───────────────────────────────────────────────┘
+                              │
+┌─────────────────────────────▼───────────────────────────────────────────────┐
+│                         Workflow Engine                                      │
+│  ┌─────────────┐    execute_workflow()    ┌─────────────┐                  │
+│  │  Workflow   │─────────────────────────▶│  Agent      │                  │
+│  │  Config     │                          │  Execution  │                  │
+│  └─────────────┘                          └─────────────┘                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+      ┌───────────────────────┼───────────────────┐
+      │                       │                   │
+┌─────▼─────────┐     ┌──────▼───────┐    ┌─────▼───────┐
+│  API Layer    │     │ Tool Calls   │    │  Knowledge  │
+│  (Axum)       │     │              │    │    Bases    │
+│ /api/chat     │     │ - Calculator │    │  - SQLite   │
+│ /api/research │     │ - Web Search │    │  - Qdrant   │
+│ /api/workflows│     │              │    │             │
+└───────────────┘     └──────────────┘    └─────────────┘
 ```
+
+### Key Components
+
+- **AresConfigManager**: Thread-safe configuration management with hot-reloading
+- **ProviderRegistry**: Creates LLM clients based on model configuration  
+- **AgentRegistry**: Creates ConfigurableAgents from TOML configuration
+- **ToolRegistry**: Manages available tools and their configurations
+- **ConfigurableAgent**: Generic agent implementation that uses config for behavior
+- **WorkflowEngine**: Executes declarative workflows defined in TOML
 
 ## API Documentation
 
@@ -352,9 +426,47 @@ curl -X POST http://localhost:3000/api/research \
   }'
 ```
 
+### Workflows
+
+Execute a named workflow defined in `ares.toml`:
+
+```bash
+# Execute a workflow
+curl -X POST http://localhost:3000/api/workflows/default \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "What products are available?",
+    "context": {}
+  }'
+```
+
+Response:
+```json
+{
+  "workflow_name": "default",
+  "steps": [
+    {
+      "agent": "router",
+      "input": "What products are available?",
+      "output": "Routing to product agent..."
+    }
+  ],
+  "final_output": "We have the following products...",
+  "success": true
+}
+```
+
+List available workflows:
+
+```bash
+curl http://localhost:3000/api/workflows \
+  -H "Authorization: Bearer <access_token>"
+```
+
 ## Tool Calling
 
-A.R.E.S supports tool calling with Ollama models that support function calling (llama3.1+, mistral, etc.):
+A.R.E.S supports tool calling with Ollama models that support function calling (granite4:tiny-h+, mistral, etc.):
 
 ### Built-in Tools
 
@@ -392,7 +504,7 @@ Tests that connect to a **real Ollama instance** are available but **ignored by 
 
 #### Prerequisites
 - Running Ollama server at `http://localhost:11434`
-- A model installed (e.g., `ollama pull llama3.2`)
+- A model installed (e.g., `ollama pull granite4:tiny-h`)
 
 #### Running Live Tests
 

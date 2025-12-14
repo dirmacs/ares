@@ -144,7 +144,7 @@ TURSO_AUTH_TOKEN=
 
 # Ollama Configuration (default provider)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2
+OLLAMA_MODEL=granite4:tiny-h
 
 # Optional: OpenAI (if you want to use it)
 # OPENAI_API_KEY=sk-...
@@ -192,14 +192,13 @@ function Start-InteractiveSetup {
     Write-Host ""
 
     Write-Host "Select models to pull (you can select multiple separated by space):"
-    Write-Host "1) llama3.2 (3B) - Recommended for development"
-    Write-Host "2) llama3.2:1b - Smallest, fastest"
-    Write-Host "3) llama3.1 (8B) - Higher quality, tool calling support"
-    Write-Host "4) mistral (7B) - Excellent general purpose"
-    Write-Host "5) phi3 - Efficient 3.8B model"
-    Write-Host "6) qwen2.5:1.5b - Fast multilingual"
-    Write-Host "7) Custom model name"
-    Write-Host "8) Skip model download"
+    Write-Host "1) granite4:tiny-h (4B) - Recommended for development"
+    Write-Host "2) qwen3-vl:2b - Vision model with multimodal support"
+    Write-Host "3) mistral (7B) - Excellent general purpose"
+    Write-Host "4) phi3 - Efficient 3.8B model"
+    Write-Host "5) qwen2.5:1.5b - Fast multilingual"
+    Write-Host "6) Custom model name"
+    Write-Host "7) Skip model download"
     Write-Host ""
 
     $choices = Read-Host "Enter your choices (e.g., 1 3 4)"
@@ -207,17 +206,16 @@ function Start-InteractiveSetup {
 
     foreach ($choice in $choiceArray) {
         switch ($choice) {
-            "1" { Get-OllamaModel "llama3.2" }
-            "2" { Get-OllamaModel "llama3.2:1b" }
-            "3" { Get-OllamaModel "llama3.1" }
-            "4" { Get-OllamaModel "mistral" }
-            "5" { Get-OllamaModel "phi3" }
-            "6" { Get-OllamaModel "qwen2.5:1.5b" }
-            "7" {
+            "1" { Get-OllamaModel "granite4:tiny-h" }
+            "2" { Get-OllamaModel "qwen3-vl:2b" }
+            "3" { Get-OllamaModel "mistral" }
+            "4" { Get-OllamaModel "phi3" }
+            "5" { Get-OllamaModel "qwen2.5:1.5b" }
+            "6" {
                 $customModel = Read-Host "Enter model name"
                 Get-OllamaModel $customModel
             }
-            "8" { Write-Info "Skipping model download" }
+            "7" { Write-Info "Skipping model download" }
             default { Write-Warning "Invalid choice: $choice" }
         }
     }

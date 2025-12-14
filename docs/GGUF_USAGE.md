@@ -249,7 +249,7 @@ use ares::types::ToolDefinition;
 use serde_json::json;
 
 let provider = Provider::LlamaCpp {
-    model_path: "/path/to/llama-3.1-8b.gguf".to_string(),
+    model_path: "/path/to/qwen3-vl-2b.gguf".to_string(),
 };
 
 let client = provider.create_client().await?;

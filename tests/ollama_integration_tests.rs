@@ -18,7 +18,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// Create a mock Ollama chat completion response
 fn mock_chat_response(content: &str, done: bool) -> serde_json::Value {
     json!({
-        "model": "llama3.2",
+        "model": "granite4:tiny-h",
         "created_at": "2024-01-01T00:00:00Z",
         "message": {
             "role": "assistant",
@@ -46,7 +46,7 @@ fn mock_chat_response_with_tools(
         .collect();
 
     json!({
-        "model": "llama3.2",
+        "model": "granite4:tiny-h",
         "created_at": "2024-01-01T00:00:00Z",
         "message": {
             "role": "assistant",
@@ -66,7 +66,7 @@ fn mock_streaming_response(chunks: &[&str]) -> String {
         .map(|(i, chunk)| {
             let done = i == total - 1;
             let response = json!({
-                "model": "llama3.2",
+                "model": "granite4:tiny-h",
                 "created_at": "2024-01-01T00:00:00Z",
                 "message": {
                     "role": "assistant",
@@ -100,7 +100,7 @@ async fn test_ollama_mock_server_simple_chat() {
     let response = client
         .post(format!("{}/api/chat", mock_server.uri()))
         .json(&json!({
-            "model": "llama3.2",
+            "model": "granite4:tiny-h",
             "messages": [{"role": "user", "content": "Hello"}]
         }))
         .send()
@@ -129,7 +129,7 @@ async fn test_ollama_mock_server_with_system_prompt() {
     let response = client
         .post(format!("{}/api/chat", mock_server.uri()))
         .json(&json!({
-            "model": "llama3.2",
+            "model": "granite4:tiny-h",
             "messages": [
                 {"role": "system", "content": "You are a coding assistant"},
                 {"role": "user", "content": "Who are you?"}
@@ -165,7 +165,7 @@ async fn test_ollama_mock_server_with_history() {
     let response = client
         .post(format!("{}/api/chat", mock_server.uri()))
         .json(&json!({
-            "model": "llama3.2",
+            "model": "granite4:tiny-h",
             "messages": [
                 {"role": "user", "content": "What is 2 + 2?"},
                 {"role": "assistant", "content": "2 + 2 equals 4."},
@@ -200,7 +200,7 @@ async fn test_ollama_mock_server_streaming() {
     let response = client
         .post(format!("{}/api/chat", mock_server.uri()))
         .json(&json!({
-            "model": "llama3.2",
+            "model": "granite4:tiny-h",
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": true
         }))
@@ -235,7 +235,7 @@ async fn test_ollama_mock_server_single_tool_call() {
     let response = client
         .post(format!("{}/api/chat", mock_server.uri()))
         .json(&json!({
-            "model": "llama3.2",
+            "model": "granite4:tiny-h",
             "messages": [{"role": "user", "content": "What is 5 + 3?"}],
             "tools": [{
                 "type": "function",
@@ -292,7 +292,7 @@ async fn test_ollama_mock_server_multiple_tool_calls() {
     let response = client
         .post(format!("{}/api/chat", mock_server.uri()))
         .json(&json!({
-            "model": "llama3.2",
+            "model": "granite4:tiny-h",
             "messages": [{"role": "user", "content": "Calculate 5+3 and 4*2"}]
         }))
         .send()
@@ -328,7 +328,7 @@ async fn test_ollama_mock_server_error() {
     let response = client
         .post(format!("{}/api/chat", mock_server.uri()))
         .json(&json!({
-            "model": "llama3.2",
+            "model": "granite4:tiny-h",
             "messages": [{"role": "user", "content": "Hello"}]
         }))
         .send()
@@ -378,7 +378,7 @@ async fn test_ollama_mock_server_malformed_response() {
     let response = client
         .post(format!("{}/api/chat", mock_server.uri()))
         .json(&json!({
-            "model": "llama3.2",
+            "model": "granite4:tiny-h",
             "messages": [{"role": "user", "content": "Hello"}]
         }))
         .send()
@@ -406,7 +406,7 @@ async fn test_ollama_mock_server_empty_response() {
     let response = client
         .post(format!("{}/api/chat", mock_server.uri()))
         .json(&json!({
-            "model": "llama3.2",
+            "model": "granite4:tiny-h",
             "messages": [{"role": "user", "content": "Hello"}]
         }))
         .send()
@@ -435,7 +435,7 @@ async fn test_ollama_mock_server_unicode_content() {
     let response = client
         .post(format!("{}/api/chat", mock_server.uri()))
         .json(&json!({
-            "model": "llama3.2",
+            "model": "granite4:tiny-h",
             "messages": [{"role": "user", "content": "Say hello in multiple languages"}]
         }))
         .send()
@@ -477,7 +477,7 @@ async fn test_ollama_mock_server_concurrent_requests() {
             client_clone
                 .post(format!("{}/api/chat", uri_clone))
                 .json(&json!({
-                    "model": "llama3.2",
+                    "model": "granite4:tiny-h",
                     "messages": [{"role": "user", "content": format!("Request {}", i)}]
                 }))
                 .send()
@@ -500,7 +500,7 @@ async fn test_ollama_mock_server_concurrent_requests() {
 fn test_mock_chat_response_format() {
     let response = mock_chat_response("Test content", true);
 
-    assert_eq!(response["model"], "llama3.2");
+    assert_eq!(response["model"], "granite4:tiny-h");
     assert_eq!(response["message"]["role"], "assistant");
     assert_eq!(response["message"]["content"], "Test content");
     assert_eq!(response["done"], true);

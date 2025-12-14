@@ -1,11 +1,34 @@
 pub mod configurable;
-pub mod finance;
-pub mod hr;
-pub mod invoice;
 pub mod orchestrator;
-pub mod product;
 pub mod registry;
 pub mod router;
+
+// Legacy agents - deprecated in 0.2.0, kept for backward compatibility
+// These will be removed in a future version. Use ConfigurableAgent instead.
+#[deprecated(
+    since = "0.2.0",
+    note = "Legacy agents are deprecated. Use ConfigurableAgent with TOML configuration instead."
+)]
+pub mod finance;
+#[deprecated(
+    since = "0.2.0",
+    note = "Legacy agents are deprecated. Use ConfigurableAgent with TOML configuration instead."
+)]
+pub mod hr;
+#[deprecated(
+    since = "0.2.0",
+    note = "Legacy agents are deprecated. Use ConfigurableAgent with TOML configuration instead."
+)]
+pub mod invoice;
+#[deprecated(
+    since = "0.2.0",
+    note = "Legacy agents are deprecated. Use ConfigurableAgent with TOML configuration instead."
+)]
+pub mod product;
+#[deprecated(
+    since = "0.2.0",
+    note = "Legacy agents are deprecated. Use ConfigurableAgent with TOML configuration instead."
+)]
 pub mod sales;
 
 use crate::types::{AgentContext, AgentType, Result};

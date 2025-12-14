@@ -1,6 +1,6 @@
 use crate::{
     AppState,
-    agents::router::RouterAgent,
+    agents::{Agent, router::RouterAgent, registry::AgentRegistry},
     auth::middleware::AuthUser,
     types::{
         AgentContext, AgentType, AppError, ChatRequest, ChatResponse, MessageRole, Result,
@@ -113,62 +113,20 @@ async fn execute_agent(
     context: &AgentContext,
     state: &AppState,
 ) -> Result<ChatResponse> {
-    use crate::agents::*;
+    // Get agent name from type
+    let agent_name = AgentRegistry::type_to_name(agent_type);
+    
+    if agent_type == AgentType::Router {
+        return Err(AppError::InvalidInput(
+            "Router agent cannot be called directly".to_string(),
+        ));
+    }
 
-    // Get agent model from config
-    let config = state.config_manager.config();
-    let agent_name = match agent_type {
-        AgentType::Product => "product",
-        AgentType::Invoice => "invoice",
-        AgentType::Sales => "sales",
-        AgentType::Finance => "finance",
-        AgentType::HR => "hr",
-        AgentType::Orchestrator => "orchestrator",
-        AgentType::Router => {
-            return Err(AppError::InvalidInput(
-                "Router agent cannot be called directly".to_string(),
-            ));
-        }
-    };
-
-    // Get the model for this agent from config, or fall back to default
-    let model_name = config
-        .get_agent(agent_name)
-        .map(|a| a.model.as_str())
-        .unwrap_or("balanced");
-
-    let llm_client = match state.provider_registry.create_client_for_model(model_name).await {
-        Ok(client) => client,
-        Err(_) => state.llm_factory.create_default().await?,
-    };
-
-    let response = match agent_type {
-        AgentType::Product => {
-            let agent = product::ProductAgent::new(llm_client);
-            agent.execute(message, context).await?
-        }
-        AgentType::Invoice => {
-            let agent = invoice::InvoiceAgent::new(llm_client);
-            agent.execute(message, context).await?
-        }
-        AgentType::Sales => {
-            let agent = sales::SalesAgent::new(llm_client);
-            agent.execute(message, context).await?
-        }
-        AgentType::Finance => {
-            let agent = finance::FinanceAgent::new(llm_client);
-            agent.execute(message, context).await?
-        }
-        AgentType::HR => {
-            let agent = hr::HrAgent::new(llm_client);
-            agent.execute(message, context).await?
-        }
-        AgentType::Orchestrator => {
-            let agent = orchestrator::OrchestratorAgent::new(llm_client, state.clone());
-            agent.execute(message, context).await?
-        }
-        AgentType::Router => unreachable!(), // Already handled above
-    };
+    // Create agent from registry (uses config-driven ConfigurableAgent)
+    let agent = state.agent_registry.create_agent(agent_name).await?;
+    
+    // Execute the agent
+    let response = agent.execute(message, context).await?;
 
     Ok(ChatResponse {
         response,

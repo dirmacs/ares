@@ -64,7 +64,7 @@ TURSO_AUTH_TOKEN=
 # LLM Provider (choose one or more)
 # Option 1: Ollama (recommended for local development)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2
+OLLAMA_MODEL=granite4:tiny-h
 
 # Option 2: OpenAI
 # OPENAI_API_KEY=sk-your-key
@@ -225,6 +225,53 @@ test(api): add concurrent login tests
 4. Add tests
 5. Document the tool's purpose and parameters
 
+### Adding a New Agent (via TOML)
+
+New agents can be added purely via configuration in `ares.toml`:
+
+```toml
+[agents.my_custom_agent]
+model = "balanced"                          # Reference a defined model
+tools = ["calculator", "web_search"]        # Tools this agent can use
+system_prompt = """
+You are a custom agent specialized in...
+Your role is to...
+"""
+```
+
+The `ConfigurableAgent` will automatically pick up this configuration.
+
+### Adding a New Workflow
+
+Workflows are also defined in `ares.toml`:
+
+```toml
+[workflows.my_workflow]
+entry_agent = "my_custom_agent"        # First agent to handle requests
+fallback_agent = "product"             # Fallback if entry agent fails
+max_depth = 5                          # Maximum routing depth
+```
+
+### Architecture: Key Registries
+
+When contributing code, understand these core components:
+
+- **`AresConfigManager`** (`src/utils/toml_config.rs`): Thread-safe config access with hot-reload
+- **`ProviderRegistry`** (`src/llm/provider_registry.rs`): Creates LLM clients from config
+- **`AgentRegistry`** (`src/agents/registry.rs`): Creates agents from TOML definitions
+- **`ToolRegistry`** (`src/tools/registry.rs`): Manages tool availability and configuration
+- **`WorkflowEngine`** (`src/workflows/engine.rs`): Executes declarative workflows
+- **`ConfigurableAgent`** (`src/agents/configurable.rs`): Generic config-driven agent
+
+### Configuration Validation
+
+The configuration system validates:
+- Reference integrity (models → providers, agents → models, workflows → agents)
+- Circular reference detection in workflows
+- Environment variable availability
+
+Use `config.validate_with_warnings()` to also get warnings about unused config items.
+
 ## Testing
 
 ### Running Tests
@@ -256,7 +303,7 @@ There are additional tests that connect to a **real Ollama instance**. These tes
 #### Prerequisites
 
 1. A running Ollama server (default: `http://localhost:11434`)
-2. A model pulled (e.g., `ollama pull llama3.2`)
+2. A model pulled (e.g., `ollama pull granite4:tiny-h`)
 
 #### Running Live Tests
 
@@ -408,7 +455,7 @@ cargo clippy --all-features -- -D warnings
 /// ```rust,ignore
 /// let client = create_client(Provider::Ollama {
 ///     base_url: "http://localhost:11434".into(),
-///     model: "llama3.2".into(),
+///     model: "granite4:tiny-h".into(),
 /// }).await?;
 /// ```
 pub async fn create_client(provider: Provider) -> Result<Box<dyn LLMClient>> {

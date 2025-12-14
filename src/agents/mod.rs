@@ -1,13 +1,19 @@
+pub mod configurable;
 pub mod finance;
 pub mod hr;
 pub mod invoice;
 pub mod orchestrator;
 pub mod product;
+pub mod registry;
 pub mod router;
 pub mod sales;
 
 use crate::types::{AgentContext, AgentType, Result};
 use async_trait::async_trait;
+
+// Re-export commonly used types
+pub use configurable::ConfigurableAgent;
+pub use registry::{AgentRegistry, AgentRegistryBuilder};
 
 /// Base trait for all agents
 #[async_trait]

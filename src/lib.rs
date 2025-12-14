@@ -20,17 +20,24 @@ pub mod utils;
 // Re-export commonly used types
 pub use db::TursoClient;
 pub use llm::client::LLMClientFactoryTrait;
-pub use llm::{LLMClient, LLMClientFactory, LLMResponse, Provider};
+pub use llm::{ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, Provider, ProviderRegistry};
 pub use types::{AppError, Result};
+pub use utils::toml_config::{AresConfig, AresConfigManager};
 
-use crate::{auth::jwt::AuthService, utils::config::Config};
+use crate::auth::jwt::AuthService;
 use std::sync::Arc;
 
 /// Application state shared across handlers
 #[derive(Clone)]
 pub struct AppState {
-    pub config: Arc<Config>,
+    /// TOML-based configuration with hot-reload support
+    pub config_manager: Arc<AresConfigManager>,
+    /// Database client
     pub turso: Arc<TursoClient>,
-    pub llm_factory: Arc<dyn LLMClientFactoryTrait>,
+    /// LLM client factory (config-based)
+    pub llm_factory: Arc<ConfigBasedLLMFactory>,
+    /// Provider registry for model/provider management
+    pub provider_registry: Arc<ProviderRegistry>,
+    /// Authentication service
     pub auth_service: Arc<AuthService>,
 }

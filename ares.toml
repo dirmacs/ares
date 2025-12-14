@@ -1,0 +1,292 @@
+# A.R.E.S Configuration File
+# ==========================
+# This is the main configuration file for the Agentic Retrieval Enhanced Server.
+# The server will NOT start without this file present.
+#
+# Configuration is hot-reloadable - changes to this file will be automatically
+# detected and applied without restarting the server.
+
+# =============================================================================
+# Server Configuration
+# =============================================================================
+[server]
+host = "127.0.0.1"
+port = 3000
+log_level = "info"
+
+# =============================================================================
+# Authentication Configuration
+# =============================================================================
+# Secrets are loaded from environment variables for security.
+# Ensure these env vars are set before starting the server.
+[auth]
+jwt_secret_env = "JWT_SECRET"      # Env var containing JWT signing secret (min 32 chars)
+jwt_access_expiry = 900            # Access token expiry in seconds (15 minutes)
+jwt_refresh_expiry = 604800        # Refresh token expiry in seconds (7 days)
+api_key_env = "API_KEY"            # Env var containing API key for service auth
+
+# =============================================================================
+# Database Configuration
+# =============================================================================
+[database]
+url = "./data/ares.db"             # Local SQLite database path
+
+# Optional: Turso cloud database (uncomment to enable)
+# turso_url_env = "TURSO_URL"
+# turso_token_env = "TURSO_AUTH_TOKEN"
+
+# Optional: Qdrant vector database for semantic search
+# [database.qdrant]
+# url = "http://localhost:6334"
+# api_key_env = "QDRANT_API_KEY"
+
+# =============================================================================
+# LLM Providers
+# =============================================================================
+# Define named provider configurations. These are referenced by models below.
+# Only providers with compiled feature flags will be available at runtime.
+
+[providers.ollama-local]
+type = "ollama"
+base_url = "http://localhost:11434"
+default_model = "llama3.2"
+
+# Example: Additional Ollama provider with different default model
+# [providers.ollama-granite]
+# type = "ollama"
+# base_url = "http://localhost:11434"
+# default_model = "granite3.1-dense:8b"
+
+# Example: OpenAI provider (requires 'openai' feature)
+# [providers.openai]
+# type = "openai"
+# api_key_env = "OPENAI_API_KEY"
+# api_base = "https://api.openai.com/v1"
+# default_model = "gpt-4"
+
+# Example: LlamaCpp for direct GGUF loading (requires 'llamacpp' feature)
+# [providers.llamacpp]
+# type = "llamacpp"
+# model_path = "./models/llama-3.2-3b.gguf"
+# n_ctx = 4096
+# n_threads = 4
+# max_tokens = 512
+
+# =============================================================================
+# Model Configurations
+# =============================================================================
+# Named model configurations that can be referenced by agents.
+# Each model references a provider and specifies inference parameters.
+
+[models.fast]
+provider = "ollama-local"
+model = "llama3.2:1b"
+temperature = 0.7
+max_tokens = 256
+
+[models.balanced]
+provider = "ollama-local"
+model = "llama3.2"
+temperature = 0.7
+max_tokens = 512
+
+[models.powerful]
+provider = "ollama-local"
+model = "llama3.2"
+temperature = 0.5
+max_tokens = 1024
+
+# Example: Vision model for multimodal tasks
+# [models.vision]
+# provider = "ollama-local"
+# model = "qwen2-vl:2b"
+# temperature = 0.7
+# max_tokens = 512
+
+# Example: Coding-specialized model
+# [models.coding]
+# provider = "ollama-local"
+# model = "qwen2.5-coder:7b"
+# temperature = 0.3
+# max_tokens = 2048
+
+# =============================================================================
+# Tools Configuration
+# =============================================================================
+# Define which tools are available and their settings.
+# Set enabled = false to disable a tool without removing it.
+
+[tools.calculator]
+enabled = true
+description = "Performs basic arithmetic operations"
+timeout_secs = 10
+
+[tools.web_search]
+enabled = true
+description = "Search the web using DuckDuckGo (no API key required)"
+timeout_secs = 30
+
+# =============================================================================
+# Agent Configurations
+# =============================================================================
+# Define agents with their models, tools, and system prompts.
+# Agent types: router, orchestrator, product, invoice, sales, finance, hr
+
+[agents.router]
+model = "fast"
+tools = []
+max_tool_iterations = 1
+system_prompt = """
+You are a routing agent that classifies user queries and routes them to the appropriate specialized agent.
+
+Available agents:
+- product: Product information, recommendations, catalog queries
+- invoice: Invoice processing, billing questions, payment status
+- sales: Sales data, analytics, performance metrics
+- finance: Financial reports, budgets, expense analysis
+- hr: Human resources, employee information, policies
+- orchestrator: Complex queries requiring multiple agents or research
+
+Analyze the user's query and respond with ONLY the agent name (lowercase, one word).
+Examples:
+- "What products do we have?" → product
+- "Show me last quarter's sales" → sales
+- "What's our hiring policy?" → hr
+- "Create a comprehensive market analysis" → orchestrator
+
+Respond with ONLY the agent name, nothing else.
+"""
+
+[agents.orchestrator]
+model = "powerful"
+tools = ["calculator", "web_search"]
+max_tool_iterations = 10
+parallel_tools = false
+system_prompt = """
+You are an orchestrator agent that coordinates multiple specialized agents to answer complex queries.
+
+Your capabilities:
+- Break down complex requests into subtasks
+- Delegate to specialized agents (product, invoice, sales, finance, hr)
+- Synthesize results from multiple sources
+- Perform web searches for external information
+- Execute calculations when needed
+
+Always provide comprehensive, well-structured answers.
+"""
+
+[agents.product]
+model = "balanced"
+tools = []
+max_tool_iterations = 5
+system_prompt = """
+You are a Product Agent specialized in handling product-related queries.
+
+Your capabilities:
+- Product catalog search and recommendations
+- Product specifications and details
+- Inventory status and availability
+- Product comparisons and alternatives
+- Pricing information
+- Product category navigation
+
+Always provide accurate, helpful information about products.
+If you don't have specific product data, suggest how the user can find it.
+"""
+
+[agents.invoice]
+model = "balanced"
+tools = ["calculator"]
+max_tool_iterations = 5
+system_prompt = """
+You are an Invoice Agent specialized in invoice processing and billing queries.
+
+Your capabilities:
+- Invoice lookup and status
+- Payment processing inquiries
+- Billing history and statements
+- Payment terms and due dates
+- Invoice discrepancies and disputes
+- Credit notes and adjustments
+
+Always provide accurate billing information and calculations.
+"""
+
+[agents.sales]
+model = "balanced"
+tools = ["calculator"]
+max_tool_iterations = 5
+system_prompt = """
+You are a Sales Agent specialized in sales data and analytics.
+
+Your capabilities:
+- Sales performance metrics
+- Revenue analysis and forecasting
+- Customer acquisition data
+- Sales pipeline insights
+- Regional and product-based breakdowns
+- Commission calculations
+
+Provide data-driven insights when possible.
+"""
+
+[agents.finance]
+model = "balanced"
+tools = ["calculator"]
+max_tool_iterations = 5
+system_prompt = """
+You are a Finance Agent specialized in financial analysis and reporting.
+
+Your capabilities:
+- Financial statements and reports
+- Budget tracking and variance analysis
+- Expense management
+- Cash flow analysis
+- Financial projections
+- Cost accounting
+
+Ensure accuracy in all financial calculations and analyses.
+"""
+
+[agents.hr]
+model = "balanced"
+tools = []
+max_tool_iterations = 5
+system_prompt = """
+You are an HR Agent specialized in human resources queries.
+
+Your capabilities:
+- Employee information and records
+- Company policies and procedures
+- Benefits and compensation
+- Leave management
+- Recruitment and hiring
+- Training and development
+
+Maintain confidentiality and provide policy-compliant responses.
+"""
+
+# =============================================================================
+# Workflow Configurations
+# =============================================================================
+# Define how agents work together to handle requests.
+
+[workflows.default]
+entry_agent = "router"
+fallback_agent = "orchestrator"
+max_depth = 3
+max_iterations = 5
+
+[workflows.research]
+entry_agent = "orchestrator"
+max_depth = 3
+max_iterations = 10
+parallel_subagents = true
+
+# =============================================================================
+# RAG Configuration
+# =============================================================================
+[rag]
+embedding_model = "BAAI/bge-small-en-v1.5"
+chunk_size = 1000
+chunk_overlap = 200

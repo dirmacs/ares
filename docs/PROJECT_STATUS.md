@@ -1,14 +1,14 @@
 # A.R.E.S Project Status & Completion Summary
 
-**Date**: 2024-12-07  
+**Date**: 2024-12-14  
 **Status**: ✅ All Core Features Implemented and Tested  
-**Version**: 0.1.1
+**Version**: 0.1.2
 
 ---
 
 ## Executive Summary
 
-A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed into a **local-first**, production-ready agentic chatbot server with comprehensive LLM provider support, tool calling, and robust testing infrastructure.
+A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed into a **local-first**, production-ready agentic chatbot server with comprehensive LLM provider support, tool calling, **declarative TOML configuration**, and robust testing infrastructure.
 
 ### Key Achievements
 
@@ -16,7 +16,9 @@ A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed in
 ✅ **Direct GGUF Support**: Full LlamaCpp integration with streaming  
 ✅ **Comprehensive Tool Calling**: Multi-turn orchestration with Ollama  
 ✅ **Feature-Gated Architecture**: Flexible compilation with 12+ feature flags  
-✅ **101 Passing Tests**: Unit, integration, mocked network tests, and MCP tests  
+✅ **TOML Configuration**: Declarative configuration for providers, models, agents, tools, and workflows  
+✅ **Hot Reloading**: Configuration changes apply without server restart  
+✅ **112+ Passing Tests**: Unit, integration, mocked network tests, and MCP tests  
 ✅ **CI/CD Pipeline**: Multi-platform testing with GitHub Actions  
 ✅ **Developer Documentation**: Setup guides, contributing guidelines, GGUF usage  
 ✅ **[daedra](https://github.com/dirmacs/daedra) Integration**: Local web search without proprietary APIs  
@@ -58,8 +60,12 @@ A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed in
 - **Ollama Integration**: `tests/ollama_integration_tests.rs` - 15 wiremock tests
 - **MCP Tests**: `src/mcp/server.rs` - 14 tests for MCP server functionality
 - **Unit Tests**: `src/llm/*.rs` - 14 tests for LLM client implementations
+- **TOML Config Tests**: `src/utils/toml_config.rs` - 3 tests for config parsing/validation
+- **Provider Registry Tests**: `src/llm/provider_registry.rs` - 3 tests
+- **Agent Registry Tests**: `src/agents/registry.rs` - 1 test
+- **Tool Registry Tests**: `src/tools/registry.rs` - 3 tests
 - **Coverage**: All core functionality tested
-- **Status**: ✅ 101/101 tests passing
+- **Status**: ✅ 112+ tests passing
 
 #### 5. CI/CD & Quality
 - **GitHub Actions**: `.github/workflows/ci.yml`
@@ -276,24 +282,138 @@ llamacpp-vulkan # Vulkan API
 
 ---
 
+## Iteration 4: Declarative TOML Configuration
+
+### Objectives
+- Replace hardcoded agent and model configurations with TOML-based declarative config
+- Enable hot-reloading of configuration without server restart
+- Support named providers, models, agents, tools, and workflows
+- Validate configuration integrity (references between components)
+- Make the agentic behavior fully customizable via `ares.toml`
+
+### Completed Tasks
+
+#### 1. TOML Configuration Schema (`src/utils/toml_config.rs`)
+
+**Configuration Structure**:
+```toml
+[server]          # Host, port, log level
+[auth]            # JWT secrets (env var references), token expiry
+[database]        # Local SQLite path, optional Turso/Qdrant
+
+[providers.*]     # Named LLM provider configs (Ollama, OpenAI, LlamaCpp)
+[models.*]        # Named model configs referencing providers
+[tools.*]         # Tool enable/disable and settings
+[agents.*]        # Agent configs with model, tools, system prompts
+[workflows.*]     # Multi-agent workflow definitions
+[rag]             # RAG settings (embedding model, chunking)
+```
+
+**Key Features**:
+- ✅ Environment variable references for secrets (`api_key_env = "OPENAI_API_KEY"`)
+- ✅ Named references (agents → models → providers)
+- ✅ Comprehensive validation (missing refs, env vars, file paths)
+- ✅ Sensible defaults with full customization
+- ✅ Serde-based deserialization with proper error messages
+
+#### 2. Hot Reloading (`AresConfigManager`)
+
+**Implementation**:
+- Uses `arc-swap` for lockless reads
+- File watcher via `notify` crate
+- Debounced reloads (500ms) to handle rapid saves
+- Graceful error handling (keeps previous config on parse errors)
+
+**Usage**:
+```rust
+let config_manager = AresConfigManager::new("ares.toml")?;
+config_manager.start_watching()?;  // Hot reload enabled
+let config = config_manager.config();  // Lockless read
+```
+
+#### 3. Provider Registry (`src/llm/provider_registry.rs`)
+
+**Components**:
+- `ProviderRegistry`: Manages named provider/model configurations
+- `ConfigBasedLLMFactory`: Creates LLM clients from config
+
+**API**:
+```rust
+registry.create_client_for_model("fast").await?;    // By model name
+registry.create_client_for_provider("ollama").await?;  // By provider name
+registry.create_default_client().await?;             // Default model
+```
+
+#### 4. Agent Registry (`src/agents/registry.rs`)
+
+**Features**:
+- Dynamic agent creation from TOML configuration
+- Per-agent model selection
+- Per-agent tool assignment
+- Custom system prompts from config
+
+#### 5. Configurable Agents (`src/agents/configurable.rs`)
+
+**Implementation**:
+- `ConfigurableAgent`: Generic agent driven by config
+- Replaces the need for separate agent structs per type
+- Supports dynamic system prompts, tools, and models
+
+**Note**: Legacy agents (`product.rs`, `invoice.rs`, etc.) are retained for backward compatibility but `ConfigurableAgent` is the preferred approach for new agents.
+
+#### 6. Tool Configuration (`src/tools/registry.rs`)
+
+**Enhancements**:
+- Per-tool enable/disable via config
+- Custom descriptions override
+- Configurable timeouts
+- Tool filtering respects enabled status
+
+#### 7. New Files Created
+
+| File | Purpose |
+|------|---------|
+| `ares.toml` | Main configuration file (required) |
+| `ares.example.toml` | Example configuration for new users |
+| `src/utils/toml_config.rs` | TOML types, parsing, validation, hot-reload |
+| `src/llm/provider_registry.rs` | Named provider/model management |
+| `src/agents/configurable.rs` | Generic configurable agent |
+| `src/agents/registry.rs` | Agent registry for dynamic creation |
+
+#### 8. Tests Added
+
+- `test_parse_config`: Validates TOML parsing
+- `test_validation_missing_provider`: Tests provider reference validation
+- `test_validation_missing_model`: Tests model reference validation
+- Provider registry unit tests (3)
+- Tool registry config tests (3)
+- Agent type conversion tests (2)
+
+---
+
 ## Test Coverage Summary
 
 ### Unit Tests (src/)
 - `src/llm/client.rs`: 4 tests
 - `src/llm/ollama.rs`: 8 tests
+- `src/llm/provider_registry.rs`: 3 tests
 - `src/tools/search.rs`: 2 tests
-- **Total**: 14 tests
+- `src/tools/registry.rs`: 3 tests
+- `src/utils/toml_config.rs`: 3 tests
+- `src/agents/configurable.rs`: 2 tests
+- `src/agents/registry.rs`: 1 test
+- **Total**: 26 tests
 
 ### Integration Tests (tests/)
 
 #### API Tests (`api_tests.rs`)
-- Health endpoint: 1 test
-- Authentication: 5 tests
-- Chat endpoints: 8 tests
-- Agent system: 6 tests
-- Error handling: 8 tests
+- Health endpoint: 2 tests
+- Authentication: 10 tests
+- Chat endpoints: 1 test (live Ollama, ignored by default)
+- Mock LLM client: 6 tests
+- Serialization/Structures: 10 tests
 - Edge cases: 8 tests
-- **Total**: 36 tests
+- **Total**: 37 tests (36 + 1 ignored)
 
 #### LLM Tests (`llm_tests.rs`)
 - Mock client: 7 tests

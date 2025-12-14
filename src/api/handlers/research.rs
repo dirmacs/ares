@@ -27,11 +27,32 @@ pub async fn deep_research(
 ) -> Result<Json<ResearchResponse>> {
     let start = Instant::now();
 
-    let depth = payload.depth.unwrap_or(2);
-    let max_iterations = payload.max_iterations.unwrap_or(5);
+    // Get research workflow config
+    let config = state.config_manager.config();
+    let (depth, max_iterations) = if let Some(workflow) = config.get_workflow("research") {
+        (
+            payload.depth.unwrap_or(workflow.max_depth),
+            payload.max_iterations.unwrap_or(workflow.max_iterations),
+        )
+    } else {
+        (
+            payload.depth.unwrap_or(2),
+            payload.max_iterations.unwrap_or(5),
+        )
+    };
 
-    // Create research coordinator
-    let llm_client = state.llm_factory.create_default().await?;
+    // Get model for orchestrator (used for research)
+    let model_name = config
+        .get_agent("orchestrator")
+        .map(|a| a.model.as_str())
+        .unwrap_or("powerful");
+
+    // Create research coordinator with config-based model
+    let llm_client = match state.provider_registry.create_client_for_model(model_name).await {
+        Ok(client) => client,
+        Err(_) => state.llm_factory.create_default().await?,
+    };
+
     let coordinator = ResearchCoordinator::new(llm_client, depth, max_iterations);
 
     // Execute research

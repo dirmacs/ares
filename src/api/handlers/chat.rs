@@ -67,8 +67,19 @@ pub async fn chat(
     let agent_type = if let Some(at) = payload.agent_type {
         at
     } else {
-        // Use router agent to determine appropriate agent
-        let router = RouterAgent::new(state.llm_factory.create_default().await?);
+        // Get router model from config, or use default
+        let config = state.config_manager.config();
+        let router_model = config
+            .get_agent("router")
+            .map(|a| a.model.as_str())
+            .unwrap_or("fast");
+
+        let router_llm = match state.provider_registry.create_client_for_model(router_model).await {
+            Ok(client) => client,
+            Err(_) => state.llm_factory.create_default().await?,
+        };
+
+        let router = RouterAgent::new(router_llm);
         router.route(&payload.message, &agent_context).await?
     };
 
@@ -104,7 +115,32 @@ async fn execute_agent(
 ) -> Result<ChatResponse> {
     use crate::agents::*;
 
-    let llm_client = state.llm_factory.create_default().await?;
+    // Get agent model from config
+    let config = state.config_manager.config();
+    let agent_name = match agent_type {
+        AgentType::Product => "product",
+        AgentType::Invoice => "invoice",
+        AgentType::Sales => "sales",
+        AgentType::Finance => "finance",
+        AgentType::HR => "hr",
+        AgentType::Orchestrator => "orchestrator",
+        AgentType::Router => {
+            return Err(AppError::InvalidInput(
+                "Router agent cannot be called directly".to_string(),
+            ));
+        }
+    };
+
+    // Get the model for this agent from config, or fall back to default
+    let model_name = config
+        .get_agent(agent_name)
+        .map(|a| a.model.as_str())
+        .unwrap_or("balanced");
+
+    let llm_client = match state.provider_registry.create_client_for_model(model_name).await {
+        Ok(client) => client,
+        Err(_) => state.llm_factory.create_default().await?,
+    };
 
     let response = match agent_type {
         AgentType::Product => {
@@ -131,11 +167,7 @@ async fn execute_agent(
             let agent = orchestrator::OrchestratorAgent::new(llm_client, state.clone());
             agent.execute(message, context).await?
         }
-        AgentType::Router => {
-            return Err(AppError::InvalidInput(
-                "Router agent cannot be called directly".to_string(),
-            ));
-        }
+        AgentType::Router => unreachable!(), // Already handled above
     };
 
     Ok(ChatResponse {

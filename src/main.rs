@@ -1,6 +1,6 @@
 use ares::{
-    AppState, api, auth::jwt::AuthService, db::TursoClient, llm::LLMClientFactory,
-    utils::config::Config,
+    AppState, AresConfigManager, ConfigBasedLLMFactory, ProviderRegistry,
+    api, auth::jwt::AuthService, db::TursoClient,
 };
 use axum::{Router, routing::get};
 use std::sync::Arc;
@@ -12,8 +12,13 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+const CONFIG_FILE: &str = "ares.toml";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load .env file for secrets (JWT_SECRET, API_KEY, etc.)
+    dotenv::dotenv().ok();
+
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
@@ -24,65 +29,111 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Starting A.R.E.S - Agentic Retrieval Enhanced Server");
 
-    // Load configuration
-    let config = Config::from_env()?;
-    tracing::info!("Configuration loaded");
-
-    // Initialize database clients
-    // Local-first initialization. If Turso cloud config is provided, it will be preferred.
-    // Otherwise we use a local libsql/SQLite file database.
-    let turso = if let (Some(url), Some(token)) = (
-        config.database.turso_url.clone(),
-        config.database.turso_auth_token.clone(),
-    ) {
-        tracing::info!("Initializing Turso (remote) database");
-        TursoClient::new_remote(url, token).await?
-    } else {
-        // Ensure data directory exists for the default "./data/ares.db" path.
-        // (No-op if DATABASE_URL points elsewhere, or is ":memory:")
-        if !config.database.database_url.contains(":memory:")
-            && !config.database.database_url.starts_with("libsql://")
-            && !config.database.database_url.starts_with("https://")
-        {
-            let path = config
-                .database
-                .database_url
-                .strip_prefix("file:")
-                .unwrap_or(&config.database.database_url);
-            if let Some(parent) = std::path::Path::new(path).parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-
-        tracing::info!(
-            database_url = %config.database.database_url,
-            "Initializing local database"
+    // =================================================================
+    // Load TOML Configuration
+    // =================================================================
+    // The server REQUIRES ares.toml to exist. Panic if it doesn't.
+    if !std::path::Path::new(CONFIG_FILE).exists() {
+        panic!(
+            "Configuration file '{}' not found!\n\
+             A.R.E.S requires ares.toml to run.\n\
+             Copy ares.example.toml to ares.toml and customize it.",
+            CONFIG_FILE
         );
-        TursoClient::new_local(&config.database.database_url).await?
+    }
+
+    let mut config_manager = AresConfigManager::new(CONFIG_FILE)
+        .expect("Failed to load ares.toml - check for syntax errors");
+
+    // Start hot-reload watcher
+    config_manager
+        .start_watching()
+        .expect("Failed to start config file watcher");
+
+    let config_manager = Arc::new(config_manager);
+    let config = config_manager.config();
+
+    tracing::info!(
+        "Configuration loaded from {} (hot-reload enabled)",
+        CONFIG_FILE
+    );
+
+    // =================================================================
+    // Initialize Provider Registry
+    // =================================================================
+    let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
+    tracing::info!(
+        "Provider registry initialized with {} providers, {} models",
+        config.providers.len(),
+        config.models.len()
+    );
+
+    // =================================================================
+    // Initialize LLM Factory
+    // =================================================================
+    let llm_factory = Arc::new(
+        ConfigBasedLLMFactory::from_config(&config)
+            .expect("Failed to create LLM factory from config"),
+    );
+    tracing::info!(
+        "LLM factory initialized with default model: {}",
+        llm_factory.default_model()
+    );
+
+    // =================================================================
+    // Initialize Database
+    // =================================================================
+    // Check for Turso cloud config first, then fall back to local SQLite
+    let turso = if let (Some(turso_url_env), Some(turso_token_env)) =
+        (&config.database.turso_url_env, &config.database.turso_token_env)
+    {
+        // Try to get cloud credentials from env vars
+        if let (Ok(url), Ok(token)) = (
+            std::env::var(turso_url_env),
+            std::env::var(turso_token_env),
+        ) {
+            if !url.is_empty() && !token.is_empty() {
+                tracing::info!("Initializing Turso (remote) database");
+                TursoClient::new_remote(url, token).await?
+            } else {
+                init_local_db(&config.database.url).await?
+            }
+        } else {
+            init_local_db(&config.database.url).await?
+        }
+    } else {
+        init_local_db(&config.database.url).await?
     };
+
     tracing::info!("Database client initialized");
 
-    // Initialize LLM factory from environment
-    let llm_factory = LLMClientFactory::from_env()?;
-    tracing::info!("LLM client factory initialized");
-
-    // Initialize auth service
+    // =================================================================
+    // Initialize Auth Service
+    // =================================================================
+    let jwt_secret = config
+        .jwt_secret()
+        .expect("JWT_SECRET environment variable must be set");
     let auth_service = AuthService::new(
-        config.auth.jwt_secret.clone(),
+        jwt_secret,
         config.auth.jwt_access_expiry,
         config.auth.jwt_refresh_expiry,
     );
     tracing::info!("Auth service initialized");
 
-    // Create application state
+    // =================================================================
+    // Create Application State
+    // =================================================================
     let state = AppState {
-        config: Arc::new(config.clone()),
+        config_manager: Arc::clone(&config_manager),
         turso: Arc::new(turso),
-        llm_factory: Arc::new(llm_factory),
+        llm_factory,
+        provider_registry,
         auth_service: Arc::new(auth_service),
     };
 
-    // Build OpenAPI documentation
+    // =================================================================
+    // Build OpenAPI Documentation
+    // =================================================================
     #[derive(OpenApi)]
     #[openapi(
         paths(
@@ -115,10 +166,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )]
     struct ApiDoc;
 
-    // Build router
+    // =================================================================
+    // Build Router
+    // =================================================================
     let app = Router::new()
         // Health check
         .route("/health", get(health_check))
+        // Configuration info endpoint
+        .route("/config/info", get(config_info))
         // API routes
         .nest(
             "/api",
@@ -137,7 +192,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Add state
         .with_state(state);
 
-    // Start server
+    // =================================================================
+    // Start Server
+    // =================================================================
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
@@ -149,6 +206,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Initialize local SQLite database
+async fn init_local_db(url: &str) -> Result<TursoClient, Box<dyn std::error::Error>> {
+    // Ensure data directory exists for the default "./data/ares.db" path.
+    if !url.contains(":memory:")
+        && !url.starts_with("libsql://")
+        && !url.starts_with("https://")
+    {
+        let path = url.strip_prefix("file:").unwrap_or(url);
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    tracing::info!(database_url = %url, "Initializing local database");
+    Ok(TursoClient::new_local(url).await?)
+}
+
+/// Health check endpoint
 async fn health_check() -> &'static str {
     "OK"
+}
+
+/// Configuration info endpoint (non-sensitive info only)
+async fn config_info(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    let config = state.config_manager.config();
+    axum::Json(serde_json::json!({
+        "server": {
+            "host": config.server.host,
+            "port": config.server.port,
+            "log_level": config.server.log_level,
+        },
+        "providers": config.providers.keys().collect::<Vec<_>>(),
+        "models": config.models.keys().collect::<Vec<_>>(),
+        "agents": config.agents.keys().collect::<Vec<_>>(),
+        "tools": config.enabled_tools(),
+        "workflows": config.workflows.keys().collect::<Vec<_>>(),
+    }))
 }

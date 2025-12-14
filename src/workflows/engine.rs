@@ -39,6 +39,18 @@ pub struct WorkflowStep {
     pub duration_ms: u64,
 }
 
+/// Valid agent names for routing
+const VALID_AGENTS: &[&str] = &[
+    "product",
+    "invoice",
+    "sales",
+    "finance",
+    "hr",
+    "orchestrator",
+    "research",
+    "router",
+];
+
 /// Workflow engine that orchestrates agent execution
 pub struct WorkflowEngine {
     /// Agent registry for creating agents
@@ -54,6 +66,40 @@ impl WorkflowEngine {
             agent_registry,
             config,
         }
+    }
+
+    /// Parse routing decision from router output
+    ///
+    /// This handles various output formats:
+    /// - Clean output: "product"
+    /// - With whitespace: "  product  "
+    /// - With extra text: "I would route this to product"
+    /// - Agent suffix: "product agent"
+    fn parse_routing_decision(output: &str) -> Option<String> {
+        let trimmed = output.trim().to_lowercase();
+
+        // First, try exact match
+        if VALID_AGENTS.contains(&trimmed.as_str()) {
+            return Some(trimmed);
+        }
+
+        // Try to extract valid agent name from output
+        // Split by common delimiters and check each word
+        for word in trimmed.split(|c: char| c.is_whitespace() || c == ':' || c == ',' || c == '.') {
+            let word = word.trim();
+            if VALID_AGENTS.contains(&word) {
+                return Some(word.to_string());
+            }
+        }
+
+        // Check if any valid agent name is contained in the output
+        for agent in VALID_AGENTS {
+            if trimmed.contains(agent) {
+                return Some(agent.to_string());
+            }
+        }
+
+        None
     }
 
     /// Execute a workflow by name
@@ -131,18 +177,24 @@ impl WorkflowEngine {
             // Check if the agent is a router and needs to delegate
             if agent.agent_type() == AgentType::Router {
                 // Router's output should be an agent name
-                let next_agent = output.trim().to_lowercase();
+                // Use robust parsing to handle various output formats
+                let next_agent = Self::parse_routing_decision(&output);
 
-                // Validate the routed agent exists
-                if self.agent_registry.has_agent(&next_agent) {
-                    current_agent_name = next_agent;
-                    // Keep the original user input for the routed agent
-                    depth += 1;
-                    continue;
-                } else if let Some(ref fallback) = workflow.fallback_agent {
+                if let Some(ref agent_name) = next_agent {
+                    // Validate the routed agent exists
+                    if self.agent_registry.has_agent(agent_name) {
+                        current_agent_name = agent_name.clone();
+                        // Keep the original user input for the routed agent
+                        depth += 1;
+                        continue;
+                    }
+                }
+
+                // Agent not found or couldn't parse - try fallback
+                if let Some(ref fallback) = workflow.fallback_agent {
                     // Use fallback if routed agent doesn't exist
                     tracing::warn!(
-                        "Routed agent '{}' not found, using fallback '{}'",
+                        "Routed agent '{:?}' not found or invalid, using fallback '{}'",
                         next_agent,
                         fallback
                     );

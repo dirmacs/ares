@@ -5,6 +5,17 @@ use crate::{
 };
 use async_trait::async_trait;
 
+/// Valid agent names for routing
+const VALID_AGENTS: &[&str] = &[
+    "product",
+    "invoice",
+    "sales",
+    "finance",
+    "hr",
+    "orchestrator",
+    "research",
+];
+
 pub struct RouterAgent {
     llm: Box<dyn LLMClient>,
 }
@@ -14,24 +25,61 @@ impl RouterAgent {
         Self { llm }
     }
 
+    /// Parse routing decision from LLM output
+    ///
+    /// This handles various LLM output formats:
+    /// - Clean output: "product"
+    /// - With whitespace: "  product  "
+    /// - With extra text: "I would route this to product"
+    /// - Agent suffix: "product agent"
+    fn parse_routing_decision(output: &str) -> Option<String> {
+        let trimmed = output.trim().to_lowercase();
+
+        // First, try exact match
+        if VALID_AGENTS.contains(&trimmed.as_str()) {
+            return Some(trimmed);
+        }
+
+        // Try to extract valid agent name from output
+        // Split by common delimiters and check each word
+        for word in trimmed.split(|c: char| c.is_whitespace() || c == ':' || c == ',' || c == '.') {
+            let word = word.trim();
+            if VALID_AGENTS.contains(&word) {
+                return Some(word.to_string());
+            }
+        }
+
+        // Check if any valid agent name is contained in the output
+        for agent in VALID_AGENTS {
+            if trimmed.contains(agent) {
+                return Some(agent.to_string());
+            }
+        }
+
+        None
+    }
+
     // Route the query to the appropriate agent
     pub async fn route(&self, query: &str, _context: &AgentContext) -> Result<AgentType> {
         let system_prompt = self.system_prompt();
         let response = self.llm.generate_with_system(&system_prompt, query).await?;
 
-        // Parse the response to determine agent type
+        // Parse the response with robust matching
+        let agent_name = Self::parse_routing_decision(&response);
 
-        let agent_type = response.trim().to_lowercase();
-
-        match agent_type.as_str() {
-            "product" => Ok(AgentType::Product),
-            "invoice" => Ok(AgentType::Invoice),
-            "sales" => Ok(AgentType::Sales),
-            "finance" => Ok(AgentType::Finance),
-            "hr" => Ok(AgentType::HR),
-            "orchestrator" => Ok(AgentType::Orchestrator),
+        match agent_name.as_deref() {
+            Some("product") => Ok(AgentType::Product),
+            Some("invoice") => Ok(AgentType::Invoice),
+            Some("sales") => Ok(AgentType::Sales),
+            Some("finance") => Ok(AgentType::Finance),
+            Some("hr") => Ok(AgentType::HR),
+            Some("orchestrator") | Some("research") => Ok(AgentType::Orchestrator),
             _ => {
-                // Default to orchestrator for complex queries
+                // Default to orchestrator for complex queries or unrecognized routing
+                tracing::debug!(
+                    "Router could not parse output '{}', defaulting to orchestrator",
+                    response
+                );
                 Ok(AgentType::Orchestrator)
             }
         }
@@ -42,7 +90,17 @@ impl RouterAgent {
 impl Agent for RouterAgent {
     async fn execute(&self, input: &str, context: &AgentContext) -> Result<String> {
         let agent_type = self.route(input, context).await?;
-        Ok(format!("{:?}", agent_type))
+        // Return lowercase agent name for workflow engine compatibility
+        let agent_name = match agent_type {
+            AgentType::Router => "router",
+            AgentType::Orchestrator => "orchestrator",
+            AgentType::Product => "product",
+            AgentType::Invoice => "invoice",
+            AgentType::Sales => "sales",
+            AgentType::Finance => "finance",
+            AgentType::HR => "hr",
+        };
+        Ok(agent_name.to_string())
     }
 
     fn system_prompt(&self) -> String {

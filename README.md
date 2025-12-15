@@ -1,5 +1,7 @@
 # A.R.E.S - Agentic Retrieval Enhanced Server
 
+![Ares Logo](./docs/ares.png)
+
 A production-grade agentic chatbot server built in Rust with multi-provider LLM support, tool calling, RAG, MCP integration, and advanced research capabilities.
 
 ## Features

@@ -6,25 +6,25 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 
 ## Features
 
-- ✅ **Multi-Provider LLM Support**: Ollama, OpenAI, LlamaCpp (direct GGUF loading)
-- ✅ **TOML Configuration**: Declarative configuration with hot-reloading
-- ✅ **Configurable Agents**: Define agents via TOML with custom models, tools, and prompts
-- ✅ **Workflow Engine**: Declarative workflow execution with agent routing
-- ✅ **Local-First Development**: Runs entirely locally with Ollama and SQLite by default
-- ✅ **Tool Calling**: Type-safe function calling with automatic schema generation
-- ✅ **Per-Agent Tool Filtering**: Restrict which tools each agent can access
-- ✅ **Streaming**: Real-time streaming responses from all providers
-- ✅ **Authentication**: JWT-based auth with Argon2 password hashing
-- ✅ **Database**: Local SQLite (libsql) by default, optional Turso and Qdrant
-- ✅ **MCP Support**: Pluggable Model Context Protocol server integration
-- ✅ **Agent Framework**: Multi-agent orchestration with specialized agents
-- ✅ **RAG**: Pluggable knowledge bases with semantic search
-- ✅ **Memory**: User personalization and context management
-- ✅ **Deep Research**: Multi-step research with parallel subagents
-- ✅ **Web Search**: Built-in web search via [daedra](https://github.com/dirmacs/daedra) (no API keys required)
-- ✅ **OpenAPI**: Automatic API documentation generation
-- ✅ **Testing**: Comprehensive unit and integration tests
-- ✅ **Config Validation**: Circular reference detection and unused config warnings
+- 🤖 **Multi-Provider LLM Support**: Ollama, OpenAI, LlamaCpp (direct GGUF loading)
+- ⚙️ **TOML Configuration**: Declarative configuration with hot-reloading
+- 🎭 **Configurable Agents**: Define agents via TOML with custom models, tools, and prompts
+- 🔄 **Workflow Engine**: Declarative workflow execution with agent routing
+- 🏠 **Local-First Development**: Runs entirely locally with Ollama and SQLite by default
+- 🔧 **Tool Calling**: Type-safe function calling with automatic schema generation
+- 🎯 **Per-Agent Tool Filtering**: Restrict which tools each agent can access
+- 📡 **Streaming**: Real-time streaming responses from all providers
+- 🔐 **Authentication**: JWT-based auth with Argon2 password hashing
+- 💾 **Database**: Local SQLite (libsql) by default, optional Turso and Qdrant
+- 🔌 **MCP Support**: Pluggable Model Context Protocol server integration
+- 🕸️ **Agent Framework**: Multi-agent orchestration with specialized agents
+- 📚 **RAG**: Pluggable knowledge bases with semantic search
+- 🧠 **Memory**: User personalization and context management
+- 🔬 **Deep Research**: Multi-step research with parallel subagents
+- 🌐 **Web Search**: Built-in web search via [daedra](https://github.com/dirmacs/daedra) (no API keys required)
+- 📖 **OpenAPI**: Automatic API documentation generation
+- 🧪 **Testing**: Comprehensive unit and integration tests
+- ✔️ **Config Validation**: Circular reference detection and unused config warnings
 
 ## Quick Start
 

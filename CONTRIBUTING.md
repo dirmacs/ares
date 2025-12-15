@@ -38,7 +38,7 @@ This project follows the [Rust Code of Conduct](https://www.rust-lang.org/polici
    ```
 3. Add the upstream remote:
    ```bash
-   git remote add upstream https://github.com/original-org/ares.git
+   git remote add upstream https://github.com/dirmacs/ares.git
    ```
 
 ## Development Setup
@@ -602,7 +602,6 @@ We follow [Semantic Versioning](https://semver.org/):
 
 - **Issues**: Search existing issues or create a new one
 - **Discussions**: For questions and ideas
-- **Discord**: [Link if available]
 
 ## Recognition
 

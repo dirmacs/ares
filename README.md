@@ -35,7 +35,7 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 ### 1. Clone and Setup
 
 ```bash
-git clone <repo>
+git clone https://github.com/dirmacs/ares.git
 cd ares
 cp .env.example .env
 

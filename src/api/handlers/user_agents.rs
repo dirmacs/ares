@@ -156,7 +156,11 @@ pub async fn create_agent(
 
     // Validate model exists (check TOON config first, then TOML config)
     let model_exists = state.dynamic_config.model(&req.model).is_some()
-        || state.config_manager.config().get_model(&req.model).is_some();
+        || state
+            .config_manager
+            .config()
+            .get_model(&req.model)
+            .is_some();
 
     if !model_exists {
         return Err(AppError::InvalidInput(format!(
@@ -385,7 +389,10 @@ pub async fn update_agent(
         let model_exists = state.dynamic_config.model(&model).is_some()
             || state.config_manager.config().get_model(&model).is_some();
         if !model_exists {
-            return Err(AppError::InvalidInput(format!("Model '{}' not found", model)));
+            return Err(AppError::InvalidInput(format!(
+                "Model '{}' not found",
+                model
+            )));
         }
         agent.model = model;
     }

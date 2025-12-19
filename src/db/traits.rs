@@ -142,7 +142,7 @@ pub trait DatabaseClient: Send + Sync {
 
     /// Create a new conversation
     async fn create_conversation(&self, id: &str, user_id: &str, title: Option<&str>)
-    -> Result<()>;
+        -> Result<()>;
 
     /// Check if a conversation exists
     async fn conversation_exists(&self, conversation_id: &str) -> Result<bool>;

@@ -1,7 +1,7 @@
 use crate::tools::registry::Tool;
 use crate::types::Result;
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 pub struct Calculator;
 

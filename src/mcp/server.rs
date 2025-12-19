@@ -24,10 +24,10 @@
 //! ```
 
 use rmcp::{
-    ServerHandler, ServiceExt,
     model::*,
     service::{RequestContext, RoleServer},
     transport::stdio,
+    ServerHandler, ServiceExt,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;

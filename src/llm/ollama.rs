@@ -25,11 +25,11 @@ use crate::tools::registry::ToolRegistry;
 use crate::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_stream::stream;
 use async_trait::async_trait;
-use futures::{Stream, StreamExt, future::join_all};
+use futures::{future::join_all, Stream, StreamExt};
 use ollama_rs::{
-    Ollama,
-    generation::chat::{ChatMessage, request::ChatMessageRequest},
+    generation::chat::{request::ChatMessageRequest, ChatMessage},
     generation::tools::{ToolCall as OllamaToolCall, ToolFunctionInfo, ToolInfo, ToolType},
+    Ollama,
 };
 use schemars::Schema;
 use std::sync::Arc;

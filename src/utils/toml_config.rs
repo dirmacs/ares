@@ -1437,11 +1437,9 @@ model = "default"
         let config: AresConfig = toml::from_str(content).unwrap();
         let warnings = config.validate_with_warnings().unwrap();
 
-        assert!(
-            warnings.iter().any(
-                |w| w.kind == ConfigWarningKind::UnusedProvider && w.message.contains("unused")
-            )
-        );
+        assert!(warnings
+            .iter()
+            .any(|w| w.kind == ConfigWarningKind::UnusedProvider && w.message.contains("unused")));
     }
 
     #[test]
@@ -1474,11 +1472,9 @@ model = "used"
         let config: AresConfig = toml::from_str(content).unwrap();
         let warnings = config.validate_with_warnings().unwrap();
 
-        assert!(
-            warnings
-                .iter()
-                .any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("unused"))
-        );
+        assert!(warnings
+            .iter()
+            .any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("unused")));
     }
 
     #[test]
@@ -1513,12 +1509,9 @@ tools = ["used_tool"]
         let config: AresConfig = toml::from_str(content).unwrap();
         let warnings = config.validate_with_warnings().unwrap();
 
-        assert!(
-            warnings
-                .iter()
-                .any(|w| w.kind == ConfigWarningKind::UnusedTool
-                    && w.message.contains("unused_tool"))
-        );
+        assert!(warnings
+            .iter()
+            .any(|w| w.kind == ConfigWarningKind::UnusedTool && w.message.contains("unused_tool")));
     }
 
     #[test]
@@ -1552,7 +1545,9 @@ entry_agent = "router"
         let config: AresConfig = toml::from_str(content).unwrap();
         let warnings = config.validate_with_warnings().unwrap();
 
-        assert!(warnings.iter().any(|w| w.kind == ConfigWarningKind::UnusedAgent && w.message.contains("orphaned")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.kind == ConfigWarningKind::UnusedAgent && w.message.contains("orphaned")));
     }
 
     #[test]

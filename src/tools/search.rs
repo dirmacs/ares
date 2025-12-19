@@ -1,7 +1,7 @@
 use crate::tools::registry::Tool;
 use crate::types::Result;
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 pub struct WebSearch {
     _client: reqwest::Client,
@@ -100,12 +100,10 @@ mod tests {
         let schema = tool.parameters_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["query"].is_object());
-        assert!(
-            schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("query"))
-        );
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("query")));
     }
 
     #[tokio::test]

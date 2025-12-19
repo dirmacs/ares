@@ -532,11 +532,8 @@ impl DynamicConfig {
         }
 
         // Check for unused tools
-        let used_tools: std::collections::HashSet<_> = self
-            .agents
-            .values()
-            .flat_map(|a| a.tools.iter())
-            .collect();
+        let used_tools: std::collections::HashSet<_> =
+            self.agents.values().flat_map(|a| a.tools.iter()).collect();
         for tool_name in self.tools.keys() {
             if !used_tools.contains(tool_name) {
                 warnings.push(ConfigWarning {
@@ -592,7 +589,10 @@ impl HasName for ToonMcpConfig {
 }
 
 /// Load all .toon files from a directory into a HashMap keyed by name
-fn load_configs_from_dir<T>(dir: &Path, config_type: &str) -> Result<HashMap<String, T>, ToonConfigError>
+fn load_configs_from_dir<T>(
+    dir: &Path,
+    config_type: &str,
+) -> Result<HashMap<String, T>, ToonConfigError>
 where
     T: for<'de> Deserialize<'de> + HasName,
 {
@@ -646,9 +646,8 @@ where
         ))
     })?;
 
-    decode_default(&content).map_err(|e| {
-        ToonConfigError::Parse(format!("Failed to parse {:?}: {}", path, e))
-    })
+    decode_default(&content)
+        .map_err(|e| ToonConfigError::Parse(format!("Failed to parse {:?}: {}", path, e)))
 }
 
 // ============= Error Types =============
@@ -756,13 +755,15 @@ impl DynamicConfigManager {
     ///
     /// This uses the paths defined in `config.config` (DynamicConfigPaths)
     /// to initialize the manager.
-    pub fn from_config(config: &crate::utils::toml_config::AresConfig) -> Result<Self, ToonConfigError> {
+    pub fn from_config(
+        config: &crate::utils::toml_config::AresConfig,
+    ) -> Result<Self, ToonConfigError> {
         let agents_dir = PathBuf::from(&config.config.agents_dir);
         let models_dir = PathBuf::from(&config.config.models_dir);
         let tools_dir = PathBuf::from(&config.config.tools_dir);
         let workflows_dir = PathBuf::from(&config.config.workflows_dir);
         let mcps_dir = PathBuf::from(&config.config.mcps_dir);
-        
+
         Self::new(
             agents_dir,
             models_dir,
@@ -871,7 +872,10 @@ impl DynamicConfigManager {
                                         info!("Config reloaded successfully");
                                     }
                                     Err(e) => {
-                                        error!("Config validation failed, keeping old config: {}", e);
+                                        error!(
+                                            "Config validation failed, keeping old config: {}",
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -888,7 +892,13 @@ impl DynamicConfigManager {
         })?;
 
         // Watch all config directories
-        for dir in [&agents_dir, &models_dir, &tools_dir, &workflows_dir, &mcps_dir] {
+        for dir in [
+            &agents_dir,
+            &models_dir,
+            &tools_dir,
+            &workflows_dir,
+            &mcps_dir,
+        ] {
             if dir.exists() {
                 watcher.watch(dir, RecursiveMode::Recursive)?;
                 debug!("Watching directory: {:?}", dir);
@@ -1096,7 +1106,8 @@ mod tests {
             "/home".to_string(),
             "/tmp".to_string(),
         ];
-        mcp.env.insert("NODE_ENV".to_string(), "production".to_string());
+        mcp.env
+            .insert("NODE_ENV".to_string(), "production".to_string());
         mcp.timeout_secs = 30;
 
         let toon = mcp.to_toon().expect("Failed to encode");
@@ -1147,10 +1158,9 @@ system_prompt: Test agent prompt"#;
         );
 
         // Add a tool
-        config.tools.insert(
-            "calculator".to_string(),
-            ToonToolConfig::new("calculator"),
-        );
+        config
+            .tools
+            .insert("calculator".to_string(), ToonToolConfig::new("calculator"));
 
         // Add an agent that uses the model and tool
         let mut agent = ToonAgentConfig::new("router", "fast");
@@ -1179,10 +1189,7 @@ system_prompt: Test agent prompt"#;
         // Validation should fail
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unknown model"));
+        assert!(result.unwrap_err().to_string().contains("unknown model"));
     }
 
     #[test]
@@ -1203,10 +1210,7 @@ system_prompt: Test agent prompt"#;
         // Validation should fail
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unknown tool"));
+        assert!(result.unwrap_err().to_string().contains("unknown tool"));
     }
 
     #[test]

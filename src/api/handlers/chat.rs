@@ -1,6 +1,5 @@
 use crate::{
-    AppState,
-    agents::{Agent, registry::AgentRegistry, router::RouterAgent},
+    agents::{registry::AgentRegistry, router::RouterAgent, Agent},
     api::handlers::user_agents::resolve_agent,
     auth::middleware::AuthUser,
     types::{
@@ -8,8 +7,9 @@ use crate::{
         UserMemory,
     },
     utils::toml_config::AgentConfig,
+    AppState,
 };
-use axum::{Json, extract::State};
+use axum::{extract::State, Json};
 use uuid::Uuid;
 
 /// Chat with the AI assistant

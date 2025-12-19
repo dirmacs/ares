@@ -1,11 +1,11 @@
 use crate::types::{AppError, Document, Result, SearchQuery, SearchResult};
 use qdrant_client::{
-    Qdrant,
     qdrant::{
-        Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance, FieldCondition, Filter,
-        Match, PointId, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
-        condition::ConditionOneOf, r#match::MatchValue,
+        condition::ConditionOneOf, r#match::MatchValue, Condition, CreateCollectionBuilder,
+        DeletePointsBuilder, Distance, FieldCondition, Filter, Match, PointId, PointStruct,
+        SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
     },
+    Qdrant,
 };
 use std::collections::HashMap;
 

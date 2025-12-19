@@ -29,7 +29,14 @@ fn setup_test_config_dirs() -> (TempDir, PathBuf, PathBuf, PathBuf, PathBuf, Pat
     std::fs::create_dir_all(&workflows_dir).unwrap();
     std::fs::create_dir_all(&mcps_dir).unwrap();
 
-    (temp_dir, agents_dir, models_dir, tools_dir, workflows_dir, mcps_dir)
+    (
+        temp_dir,
+        agents_dir,
+        models_dir,
+        tools_dir,
+        workflows_dir,
+        mcps_dir,
+    )
 }
 
 #[test]
@@ -46,10 +53,10 @@ fn test_toon_agent_roundtrip() {
 
     // Encode to TOON
     let toon = encode_default(&agent).expect("Failed to encode agent");
-    
+
     // Decode back
     let decoded: ToonAgentConfig = decode_default(&toon).expect("Failed to decode agent");
-    
+
     assert_eq!(agent.name, decoded.name);
     assert_eq!(agent.model, decoded.model);
     assert_eq!(agent.system_prompt, decoded.system_prompt);
@@ -261,12 +268,15 @@ fn test_empty_directories_work() {
 #[test]
 fn test_toon_mcp_roundtrip() {
     use ares::utils::toon_config::ToonMcpConfig;
-    
+
     let mcp = ToonMcpConfig {
         name: "filesystem".to_string(),
         enabled: true,
         command: "npx".to_string(),
-        args: vec!["-y".to_string(), "@modelcontextprotocol/server-filesystem".to_string()],
+        args: vec![
+            "-y".to_string(),
+            "@modelcontextprotocol/server-filesystem".to_string(),
+        ],
         env: {
             let mut env = std::collections::HashMap::new();
             env.insert("NODE_ENV".to_string(), "production".to_string());
@@ -298,18 +308,28 @@ fn test_toon_config_with_extra_fields() {
         parallel_tools: false,
         extra: {
             let mut extra = std::collections::HashMap::new();
-            extra.insert("custom_field".to_string(), serde_json::json!("custom_value"));
+            extra.insert(
+                "custom_field".to_string(),
+                serde_json::json!("custom_value"),
+            );
             extra.insert("custom_number".to_string(), serde_json::json!(42));
             extra
         },
     };
 
     let toon = encode_default(&agent).expect("Failed to encode agent with extra fields");
-    let decoded: ToonAgentConfig = decode_default(&toon).expect("Failed to decode agent with extra fields");
+    let decoded: ToonAgentConfig =
+        decode_default(&toon).expect("Failed to decode agent with extra fields");
 
     assert_eq!(agent.name, decoded.name);
-    assert_eq!(agent.extra.get("custom_field"), decoded.extra.get("custom_field"));
-    assert_eq!(agent.extra.get("custom_number"), decoded.extra.get("custom_number"));
+    assert_eq!(
+        agent.extra.get("custom_field"),
+        decoded.extra.get("custom_field")
+    );
+    assert_eq!(
+        agent.extra.get("custom_number"),
+        decoded.extra.get("custom_number")
+    );
 }
 
 #[test]
@@ -326,7 +346,8 @@ fn test_toon_model_with_optional_fields() {
     };
 
     let toon = encode_default(&model).expect("Failed to encode model with optionals");
-    let decoded: ToonModelConfig = decode_default(&toon).expect("Failed to decode model with optionals");
+    let decoded: ToonModelConfig =
+        decode_default(&toon).expect("Failed to decode model with optionals");
 
     assert_eq!(model.name, decoded.name);
     assert_eq!(model.top_p, decoded.top_p);
@@ -353,7 +374,8 @@ fn test_dynamic_config_validation_with_workflows() {
     std::fs::write(
         models_dir.join("test-model.toon"),
         encode_default(&model).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create agent
     let agent = ToonAgentConfig {
@@ -368,7 +390,8 @@ fn test_dynamic_config_validation_with_workflows() {
     std::fs::write(
         agents_dir.join("router.toon"),
         encode_default(&agent).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create workflow referencing the agent
     let workflow = ToonWorkflowConfig {
@@ -382,7 +405,8 @@ fn test_dynamic_config_validation_with_workflows() {
     std::fs::write(
         workflows_dir.join("default.toon"),
         encode_default(&workflow).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
 
     let manager = DynamicConfigManager::new(
         agents_dir,
@@ -417,7 +441,8 @@ fn test_dynamic_config_validation_invalid_workflow_agent() {
     std::fs::write(
         workflows_dir.join("invalid-workflow.toon"),
         encode_default(&workflow).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
 
     let manager = DynamicConfigManager::new(
         agents_dir,

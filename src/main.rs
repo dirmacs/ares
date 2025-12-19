@@ -4,10 +4,10 @@
 //! For library usage, import from the `ares` crate instead.
 
 use ares::{
-    AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
-    ProviderRegistry, ToolRegistry, api, auth::jwt::AuthService, db::TursoClient,
+    api, auth::jwt::AuthService, db::TursoClient, AgentRegistry, AppState, AresConfigManager,
+    ConfigBasedLLMFactory, DynamicConfigManager, ProviderRegistry, ToolRegistry,
 };
-use axum::{Router, routing::get};
+use axum::{routing::get, Router};
 use std::sync::Arc;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -167,7 +167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(dm)
         }
         Err(e) => {
-            tracing::warn!("Failed to initialize dynamic config manager: {}. Using empty config.", e);
+            tracing::warn!(
+                "Failed to initialize dynamic config manager: {}. Using empty config.",
+                e
+            );
             // Create an empty manager - directories may not exist yet
             Arc::new(
                 DynamicConfigManager::new(
@@ -178,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     std::path::PathBuf::from(&config.config.mcps_dir),
                     false, // Don't try hot-reload if initial load failed
                 )
-                .unwrap_or_else(|_| panic!("Cannot create even empty DynamicConfigManager"))
+                .unwrap_or_else(|_| panic!("Cannot create even empty DynamicConfigManager")),
             )
         }
     };

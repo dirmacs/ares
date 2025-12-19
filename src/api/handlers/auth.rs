@@ -1,8 +1,8 @@
 use crate::{
-    AppState,
     types::{AppError, LoginRequest, RegisterRequest, Result, TokenResponse},
+    AppState,
 };
-use axum::{Json, extract::State};
+use axum::{extract::State, Json};
 use uuid::Uuid;
 
 /// Register a new user

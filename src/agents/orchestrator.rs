@@ -1,8 +1,8 @@
 use crate::{
-    AppState,
     agents::{Agent, AgentRegistry},
     llm::LLMClient,
     types::{AgentContext, AgentType, AppError, Result},
+    AppState,
 };
 use async_trait::async_trait;
 use std::sync::Arc;

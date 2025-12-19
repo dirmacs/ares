@@ -1,12 +1,10 @@
-use axum::{Router, routing::get};
+use axum::{routing::get, Router};
 use axum_test::TestServer;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use ares::{
-    AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
-    ProviderRegistry, ToolRegistry,
     auth::jwt::AuthService,
     db::TursoClient,
     llm::client::{LLMClientFactoryTrait, Provider},
@@ -17,6 +15,8 @@ use ares::{
         DatabaseConfig as TomlDatabaseConfig, DynamicConfigPaths, ModelConfig, ProviderConfig,
         RagConfig, ServerConfig as TomlServerConfig,
     },
+    AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
+    ProviderRegistry, ToolRegistry,
 };
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
@@ -298,7 +298,7 @@ async fn create_test_app() -> Router {
     std::fs::create_dir_all(base.join("tools")).unwrap();
     std::fs::create_dir_all(base.join("workflows")).unwrap();
     std::fs::create_dir_all(base.join("mcps")).unwrap();
-    
+
     let dynamic_config = Arc::new(
         DynamicConfigManager::new(
             base.join("agents"),

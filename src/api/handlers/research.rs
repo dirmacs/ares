@@ -1,10 +1,10 @@
 use crate::{
-    AppState,
     auth::middleware::AuthUser,
     research::coordinator::ResearchCoordinator,
     types::{ResearchRequest, ResearchResponse, Result},
+    AppState,
 };
-use axum::{Json, extract::State};
+use axum::{extract::State, Json};
 use std::time::Instant;
 
 /// Perform deep research on a query

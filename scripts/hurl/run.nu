@@ -22,6 +22,8 @@ let cases = [
   "hurl/cases/20_chat_and_memory.hurl"
   "hurl/cases/21_research.hurl"
   "hurl/cases/22_protected_negative.hurl"
+  "hurl/cases/30_workflows.hurl"
+  "hurl/cases/40_toon_import_export.hurl"
 ]
 
 mut failed = false

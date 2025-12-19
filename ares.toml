@@ -49,7 +49,7 @@ url = "./data/ares.db"             # Local SQLite database path
 [providers.ollama-local]
 type = "ollama"
 base_url = "http://localhost:11434"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 
 # Example: Additional Ollama provider with different default model
 # [providers.ollama-vision]
@@ -80,13 +80,13 @@ default_model = "granite4:tiny-h"
 
 [models.fast]
 provider = "ollama-local"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 temperature = 0.7
 max_tokens = 256
 
 [models.balanced]
 provider = "ollama-local"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 temperature = 0.7
 max_tokens = 512
 
@@ -106,7 +106,7 @@ max_tokens = 1024
 # Example: Coding-specialized model
 # [models.coding]
 # provider = "ollama-local"
-# model = "granite4:tiny-h"
+# model = "ministral-3:3b"
 # temperature = 0.3
 # max_tokens = 2048
 
@@ -290,3 +290,25 @@ parallel_subagents = true
 embedding_model = "BAAI/bge-small-en-v1.5"
 chunk_size = 1000
 chunk_overlap = 200
+
+# =============================================================================
+# Dynamic Configuration Paths (TOON Files)
+# =============================================================================
+# ARES uses a hybrid TOML + TOON configuration approach:
+# - TOML (this file): Static infrastructure config (server, auth, database, providers)
+# - TOON (config/*.toon): Dynamic behavioral config (agents, workflows, models, tools, MCPs)
+#
+# Benefits of TOON format:
+# - 30-60% token savings when sending to LLMs
+# - Hot-reloadable without server restart
+# - One file per entity for easy management
+# - LLM-friendly format optimized for AI consumption
+
+[config]
+agents_dir = "config/agents"       # Agent definitions (*.toon)
+workflows_dir = "config/workflows" # Workflow definitions (*.toon)
+models_dir = "config/models"       # Model configurations (*.toon)
+tools_dir = "config/tools"         # Tool configurations (*.toon)
+mcps_dir = "config/mcps"           # MCP server configurations (*.toon)
+hot_reload = true                  # Watch for changes and reload
+watch_interval_ms = 1000           # How often to check for changes

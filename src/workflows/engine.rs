@@ -3,12 +3,13 @@
 //! Executes declarative workflows by orchestrating agent execution based on
 //! TOML configuration.
 
-use crate::agents::{Agent, AgentRegistry};
+use crate::agents::Agent;
+use crate::api::handlers::user_agents::resolve_agent;
 use crate::types::{AgentContext, AgentType, AppError, Result};
-use crate::utils::toml_config::{AresConfig, WorkflowConfig};
+use crate::utils::toml_config::{AgentConfig, WorkflowConfig};
+use crate::AppState;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use utoipa::ToSchema;
 
 /// Output from a workflow execution
@@ -53,19 +54,14 @@ const VALID_AGENTS: &[&str] = &[
 
 /// Workflow engine that orchestrates agent execution
 pub struct WorkflowEngine {
-    /// Agent registry for creating agents
-    agent_registry: Arc<AgentRegistry>,
-    /// Configuration reference
-    config: Arc<AresConfig>,
+    /// Application state for resolving agents
+    state: AppState,
 }
 
 impl WorkflowEngine {
     /// Create a new workflow engine
-    pub fn new(agent_registry: Arc<AgentRegistry>, config: Arc<AresConfig>) -> Self {
-        Self {
-            agent_registry,
-            config,
-        }
+    pub fn new(state: AppState) -> Self {
+        Self { state }
     }
 
     /// Parse routing decision from router output
@@ -120,7 +116,8 @@ impl WorkflowEngine {
         context: &AgentContext,
     ) -> Result<WorkflowOutput> {
         // Get workflow configuration
-        let workflow = self.config.get_workflow(workflow_name).ok_or_else(|| {
+        let config = self.state.config_manager.config();
+        let workflow = config.get_workflow(workflow_name).ok_or_else(|| {
             AppError::Configuration(format!(
                 "Workflow '{}' not found in configuration",
                 workflow_name
@@ -138,24 +135,37 @@ impl WorkflowEngine {
             let step_start = std::time::Instant::now();
             let timestamp = Utc::now().timestamp();
 
-            // Create the agent
-            let agent = match self.agent_registry.create_agent(&current_agent_name).await {
-                Ok(agent) => agent,
+            // Resolve agent using the 3-tier hierarchy
+            let (user_agent, _source) = match resolve_agent(&self.state, &context.user_id, &current_agent_name).await {
+                Ok(res) => res,
                 Err(e) => {
                     // Try fallback agent if available
                     if let Some(ref fallback) = workflow.fallback_agent {
                         tracing::warn!(
-                            "Failed to create agent '{}', using fallback '{}'",
+                            "Failed to resolve agent '{}', using fallback '{}'",
                             current_agent_name,
                             fallback
                         );
                         current_agent_name = fallback.clone();
-                        self.agent_registry.create_agent(fallback).await?
+                        resolve_agent(&self.state, &context.user_id, fallback).await?
                     } else {
                         return Err(e);
                     }
                 }
             };
+
+            // Convert UserAgent to AgentConfig
+            let agent_config = AgentConfig {
+                model: user_agent.model.clone(),
+                system_prompt: user_agent.system_prompt.clone(),
+                tools: user_agent.tools_vec(),
+                max_tool_iterations: user_agent.max_tool_iterations as usize,
+                parallel_tools: user_agent.parallel_tools,
+                extra: std::collections::HashMap::new(),
+            };
+
+            // Create the agent
+            let agent = self.state.agent_registry.create_agent_from_config(&current_agent_name, &agent_config).await?;
 
             // Execute the agent
             let output = agent.execute(&current_input, context).await?;
@@ -181,8 +191,8 @@ impl WorkflowEngine {
                 let next_agent = Self::parse_routing_decision(&output);
 
                 if let Some(ref agent_name) = next_agent {
-                    // Validate the routed agent exists
-                    if self.agent_registry.has_agent(agent_name) {
+                    // Validate the routed agent exists (check hierarchy)
+                    if resolve_agent(&self.state, &context.user_id, agent_name).await.is_ok() {
                         current_agent_name = agent_name.clone();
                         // Keep the original user input for the routed agent
                         depth += 1;
@@ -226,18 +236,18 @@ impl WorkflowEngine {
     }
 
     /// Get available workflow names
-    pub fn available_workflows(&self) -> Vec<&str> {
-        self.config.workflows.keys().map(|s| s.as_str()).collect()
+    pub fn available_workflows(&self) -> Vec<String> {
+        self.state.config_manager.config().workflows.keys().cloned().collect()
     }
 
     /// Check if a workflow exists
     pub fn has_workflow(&self, name: &str) -> bool {
-        self.config.workflows.contains_key(name)
+        self.state.config_manager.config().workflows.contains_key(name)
     }
 
     /// Get workflow configuration
-    pub fn get_workflow_config(&self, name: &str) -> Option<&WorkflowConfig> {
-        self.config.get_workflow(name)
+    pub fn get_workflow_config(&self, name: &str) -> Option<WorkflowConfig> {
+        self.state.config_manager.config().get_workflow(name).cloned()
     }
 }
 
@@ -248,9 +258,11 @@ mod tests {
     use crate::tools::registry::ToolRegistry;
     use crate::utils::toml_config::{
         AgentConfig, AuthConfig, DatabaseConfig, ModelConfig, ProviderConfig, RagConfig,
-        ServerConfig, WorkflowConfig,
+        ServerConfig, AresConfig,
     };
+    use crate::{AgentRegistry, AresConfigManager, DynamicConfigManager};
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn create_test_config() -> AresConfig {
         let mut providers = HashMap::new();
@@ -258,7 +270,7 @@ mod tests {
             "ollama-local".to_string(),
             ProviderConfig::Ollama {
                 base_url: "http://localhost:11434".to_string(),
-                default_model: "granite4:tiny-h".to_string(),
+                default_model: "ministral-3:3b".to_string(),
             },
         );
 
@@ -267,7 +279,7 @@ mod tests {
             "default".to_string(),
             ModelConfig {
                 provider: "ollama-local".to_string(),
-                model: "granite4:tiny-h".to_string(),
+                model: "ministral-3:3b".to_string(),
                 temperature: 0.7,
                 max_tokens: 512,
                 top_p: None,
@@ -337,6 +349,7 @@ mod tests {
             server: ServerConfig::default(),
             auth: AuthConfig::default(),
             database: DatabaseConfig::default(),
+            config: crate::utils::toml_config::DynamicConfigPaths::default(),
             providers,
             models,
             tools: HashMap::new(),
@@ -353,11 +366,30 @@ mod tests {
         let tool_registry = Arc::new(ToolRegistry::new());
         let agent_registry = Arc::new(AgentRegistry::from_config(
             &config,
-            provider_registry,
-            tool_registry,
+            provider_registry.clone(),
+            tool_registry.clone(),
         ));
 
-        let engine = WorkflowEngine::new(agent_registry, config);
+        // Create a dummy AppState for testing
+        let state = AppState {
+            config_manager: Arc::new(AresConfigManager::from_config((*config).clone())),
+            dynamic_config: Arc::new(DynamicConfigManager::new(
+                std::path::PathBuf::from("config/agents"),
+                std::path::PathBuf::from("config/models"),
+                std::path::PathBuf::from("config/tools"),
+                std::path::PathBuf::from("config/workflows"),
+                std::path::PathBuf::from("config/mcps"),
+                false,
+            ).unwrap()),
+            turso: Arc::new(futures::executor::block_on(crate::db::TursoClient::new_memory()).unwrap()),
+            llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")),
+            provider_registry,
+            agent_registry,
+            tool_registry,
+            auth_service: Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800)),
+        };
+
+        let engine = WorkflowEngine::new(state);
 
         assert!(engine.has_workflow("default"));
         assert!(engine.has_workflow("research"));
@@ -371,15 +403,34 @@ mod tests {
         let tool_registry = Arc::new(ToolRegistry::new());
         let agent_registry = Arc::new(AgentRegistry::from_config(
             &config,
-            provider_registry,
-            tool_registry,
+            provider_registry.clone(),
+            tool_registry.clone(),
         ));
 
-        let engine = WorkflowEngine::new(agent_registry, config);
+        // Create a dummy AppState for testing
+        let state = AppState {
+            config_manager: Arc::new(AresConfigManager::from_config((*config).clone())),
+            dynamic_config: Arc::new(DynamicConfigManager::new(
+                std::path::PathBuf::from("config/agents"),
+                std::path::PathBuf::from("config/models"),
+                std::path::PathBuf::from("config/tools"),
+                std::path::PathBuf::from("config/workflows"),
+                std::path::PathBuf::from("config/mcps"),
+                false,
+            ).unwrap()),
+            turso: Arc::new(futures::executor::block_on(crate::db::TursoClient::new_memory()).unwrap()),
+            llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")),
+            provider_registry,
+            agent_registry,
+            tool_registry,
+            auth_service: Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800)),
+        };
+
+        let engine = WorkflowEngine::new(state);
         let workflows = engine.available_workflows();
 
-        assert!(workflows.contains(&"default"));
-        assert!(workflows.contains(&"research"));
+        assert!(workflows.contains(&"default".to_string()));
+        assert!(workflows.contains(&"research".to_string()));
     }
 
     #[test]
@@ -389,11 +440,30 @@ mod tests {
         let tool_registry = Arc::new(ToolRegistry::new());
         let agent_registry = Arc::new(AgentRegistry::from_config(
             &config,
-            provider_registry,
-            tool_registry,
+            provider_registry.clone(),
+            tool_registry.clone(),
         ));
 
-        let engine = WorkflowEngine::new(agent_registry, config);
+        // Create a dummy AppState for testing
+        let state = AppState {
+            config_manager: Arc::new(AresConfigManager::from_config((*config).clone())),
+            dynamic_config: Arc::new(DynamicConfigManager::new(
+                std::path::PathBuf::from("config/agents"),
+                std::path::PathBuf::from("config/models"),
+                std::path::PathBuf::from("config/tools"),
+                std::path::PathBuf::from("config/workflows"),
+                std::path::PathBuf::from("config/mcps"),
+                false,
+            ).unwrap()),
+            turso: Arc::new(futures::executor::block_on(crate::db::TursoClient::new_memory()).unwrap()),
+            llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")),
+            provider_registry,
+            agent_registry,
+            tool_registry,
+            auth_service: Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800)),
+        };
+
+        let engine = WorkflowEngine::new(state);
 
         let default_config = engine.get_workflow_config("default").unwrap();
         assert_eq!(default_config.entry_agent, "router");

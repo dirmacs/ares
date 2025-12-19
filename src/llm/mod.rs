@@ -1,3 +1,7 @@
+//! LLM provider clients and abstractions.
+
+#![allow(missing_docs)]
+
 pub mod client;
 pub mod provider_registry;
 

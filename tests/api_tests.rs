@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ares::{
-    AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, ProviderRegistry,
-    ToolRegistry,
+    AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
+    ProviderRegistry, ToolRegistry,
     auth::jwt::AuthService,
     db::TursoClient,
     llm::client::{LLMClientFactoryTrait, Provider},
@@ -14,8 +14,8 @@ use ares::{
     types::{Result, ToolCall, ToolDefinition},
     utils::toml_config::{
         AgentConfig, AresConfig, AuthConfig as TomlAuthConfig,
-        DatabaseConfig as TomlDatabaseConfig, ModelConfig, ProviderConfig, RagConfig,
-        ServerConfig as TomlServerConfig,
+        DatabaseConfig as TomlDatabaseConfig, DynamicConfigPaths, ModelConfig, ProviderConfig,
+        RagConfig, ServerConfig as TomlServerConfig,
     },
 };
 use async_trait::async_trait;
@@ -199,7 +199,7 @@ async fn create_test_app() -> Router {
         "ollama-local".to_string(),
         ProviderConfig::Ollama {
             base_url: "http://localhost:11434".to_string(),
-            default_model: "granite4:tiny-h".to_string(),
+            default_model: "ministral-3:3b".to_string(),
         },
     );
 
@@ -208,7 +208,7 @@ async fn create_test_app() -> Router {
         "default".to_string(),
         ModelConfig {
             provider: "ollama-local".to_string(),
-            model: "granite4:tiny-h".to_string(),
+            model: "ministral-3:3b".to_string(),
             temperature: 0.7,
             max_tokens: 512,
             top_p: None,
@@ -259,6 +259,7 @@ async fn create_test_app() -> Router {
             turso_token_env: None,
             qdrant: None,
         },
+        config: DynamicConfigPaths::default(),
         providers,
         models,
         tools: HashMap::new(),
@@ -289,6 +290,27 @@ async fn create_test_app() -> Router {
         tool_registry.clone(),
     ));
 
+    // Create dynamic config manager with temp directories for testing
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let base = temp_dir.path();
+    std::fs::create_dir_all(base.join("agents")).unwrap();
+    std::fs::create_dir_all(base.join("models")).unwrap();
+    std::fs::create_dir_all(base.join("tools")).unwrap();
+    std::fs::create_dir_all(base.join("workflows")).unwrap();
+    std::fs::create_dir_all(base.join("mcps")).unwrap();
+    
+    let dynamic_config = Arc::new(
+        DynamicConfigManager::new(
+            base.join("agents"),
+            base.join("models"),
+            base.join("tools"),
+            base.join("workflows"),
+            base.join("mcps"),
+            false, // No hot-reload for tests
+        )
+        .expect("Failed to create DynamicConfigManager"),
+    );
+
     let state = AppState {
         config_manager,
         turso: Arc::new(turso),
@@ -297,6 +319,7 @@ async fn create_test_app() -> Router {
         agent_registry,
         tool_registry,
         auth_service: Arc::new(auth_service),
+        dynamic_config,
     };
 
     // Build a minimal router for testing
@@ -671,7 +694,13 @@ async fn test_chat_endpoint_with_live_ollama() {
     let body: serde_json::Value = response.json();
 
     // Verify response structure (don't assert specific content as LLM responses vary)
-    assert_eq!(body["agent"], "Product");
+    // Agent format now includes source: "AgentType (source)"
+    let agent = body["agent"].as_str().unwrap();
+    assert!(
+        agent.contains("Product"),
+        "Agent should contain 'Product', got: {}",
+        agent
+    );
     assert!(body["response"].is_string(), "Response should be a string");
     assert!(
         !body["response"].as_str().unwrap().is_empty(),

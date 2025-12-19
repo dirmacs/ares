@@ -1,6 +1,11 @@
+//! A.R.E.S Server Binary
+//!
+//! This is the main entry point for running A.R.E.S as a standalone server.
+//! For library usage, import from the `ares` crate instead.
+
 use ares::{
-    AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, ProviderRegistry,
-    ToolRegistry, api, auth::jwt::AuthService, db::TursoClient,
+    AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
+    ProviderRegistry, ToolRegistry, api, auth::jwt::AuthService, db::TursoClient,
 };
 use axum::{Router, routing::get};
 use std::sync::Arc;
@@ -149,6 +154,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // =================================================================
+    // Initialize Dynamic Configuration (TOON)
+    // =================================================================
+    let dynamic_config = match DynamicConfigManager::from_config(&config) {
+        Ok(dm) => {
+            tracing::info!(
+                "Dynamic config manager initialized with {} agents, {} models, {} tools",
+                dm.agents().len(),
+                dm.models().len(),
+                dm.tools().len()
+            );
+            Arc::new(dm)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize dynamic config manager: {}. Using empty config.", e);
+            // Create an empty manager - directories may not exist yet
+            Arc::new(
+                DynamicConfigManager::new(
+                    std::path::PathBuf::from(&config.config.agents_dir),
+                    std::path::PathBuf::from(&config.config.models_dir),
+                    std::path::PathBuf::from(&config.config.tools_dir),
+                    std::path::PathBuf::from(&config.config.workflows_dir),
+                    std::path::PathBuf::from(&config.config.mcps_dir),
+                    false, // Don't try hot-reload if initial load failed
+                )
+                .unwrap_or_else(|_| panic!("Cannot create even empty DynamicConfigManager"))
+            )
+        }
+    };
+
+    // =================================================================
     // Create Application State
     // =================================================================
     let state = AppState {
@@ -159,6 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         agent_registry,
         tool_registry,
         auth_service: Arc::new(auth_service),
+        dynamic_config,
     };
 
     // =================================================================

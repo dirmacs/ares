@@ -62,13 +62,13 @@ url = "./data/ares.db"
 [providers.ollama-local]
 type = "ollama"
 base_url = "http://localhost:11434"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 
 # Multiple Ollama configs with different models
 [providers.ollama-fast]
 type = "ollama"
 base_url = "http://localhost:11434"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 
 [providers.ollama-vision]
 type = "ollama"
@@ -78,13 +78,13 @@ default_model = "qwen3-vl:2b"
 [providers.ollama-code]
 type = "ollama"
 base_url = "http://localhost:11434"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 
 # Granite model (IBM)
 [providers.ollama-granite]
 type = "ollama"
 base_url = "http://localhost:11434"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 
 # OpenAI API (requires 'openai' feature and OPENAI_API_KEY env var)
 # [providers.openai]
@@ -117,14 +117,14 @@ default_model = "granite4:tiny-h"
 # Fast model for quick routing decisions
 [models.fast]
 provider = "ollama-fast"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 temperature = 0.7
 max_tokens = 256
 
 # Balanced model for most tasks
 [models.balanced]
 provider = "ollama-local"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 temperature = 0.7
 max_tokens = 512
 
@@ -141,7 +141,7 @@ max_tokens = 1024
 # Granite model (alternative)
 [models.granite]
 provider = "ollama-granite"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 temperature = 0.7
 max_tokens = 1024
 
@@ -155,7 +155,7 @@ max_tokens = 512
 # Coding model
 [models.coding]
 provider = "ollama-code"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 temperature = 0.3
 max_tokens = 2048
 
@@ -323,3 +323,27 @@ parallel_subagents = true           # Execute subagents in parallel
 embedding_model = "BAAI/bge-small-en-v1.5"
 chunk_size = 1000                   # Characters per chunk
 chunk_overlap = 200                 # Overlap between chunks
+
+# =============================================================================
+# Dynamic Configuration Paths (TOON Files)
+# =============================================================================
+# ARES uses a hybrid TOML + TOON configuration approach:
+# - TOML (this file): Static infrastructure config (server, auth, database, providers)
+# - TOON (config/*.toon): Dynamic behavioral config (agents, workflows, models, tools, MCPs)
+#
+# Benefits of TOON format:
+# - 30-60% token savings when sending to LLMs
+# - Hot-reloadable without server restart
+# - One file per entity for easy management
+# - LLM-friendly format optimized for AI consumption
+#
+# See docs/TOON.md for more information on the TOON format.
+
+[config]
+agents_dir = "config/agents"       # Agent definitions (*.toon)
+workflows_dir = "config/workflows" # Workflow definitions (*.toon)
+models_dir = "config/models"       # Model configurations (*.toon)
+tools_dir = "config/tools"         # Tool configurations (*.toon)
+mcps_dir = "config/mcps"           # MCP server configurations (*.toon)
+hot_reload = true                  # Watch for changes and reload
+watch_interval_ms = 1000           # How often to check for changes

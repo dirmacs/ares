@@ -1,0 +1,6 @@
+name: default
+entry_agent: router
+fallback_agent: orchestrator
+max_depth: 3
+max_iterations: 5
+parallel_subagents: false

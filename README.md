@@ -1,5 +1,11 @@
 # A.R.E.S - Agentic Retrieval Enhanced Server
 
+[![Crates.io](https://img.shields.io/crates/v/ares-server.svg)](https://crates.io/crates/ares-server)
+[![Documentation](https://docs.rs/ares-server/badge.svg)](https://docs.rs/ares-server)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/rust-1.91%2B-blue.svg)](https://www.rust-lang.org)
+[![CI](https://github.com/dirmacs/ares/actions/workflows/ci.yml/badge.svg)](https://github.com/dirmacs/ares/actions/workflows/ci.yml)
+
 ![Ares Logo](./docs/ares.png)
 
 A production-grade agentic chatbot server built in Rust with multi-provider LLM support, tool calling, RAG, MCP integration, and advanced research capabilities.
@@ -26,7 +32,52 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 - 🧪 **Testing**: Comprehensive unit and integration tests
 - ✔️ **Config Validation**: Circular reference detection and unused config warnings
 
-## Quick Start
+## Installation
+
+A.R.E.S can be used as a **standalone server** or as a **library** in your Rust project.
+
+### As a Library
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ares-server = "0.2"
+```
+
+Basic usage:
+
+```rust
+use ares::{Provider, LLMClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create an Ollama provider
+    let provider = Provider::Ollama {
+        base_url: "http://localhost:11434".to_string(),
+        model: "llama3.2:3b".to_string(),
+    };
+
+    // Create a client and generate a response
+    let client = provider.create_client().await?;
+    let response = client.generate("Hello, world!").await?;
+    println!("{}", response);
+
+    Ok(())
+}
+```
+
+### As a Binary
+
+```bash
+# Install from crates.io
+cargo install ares-server
+
+# Run the server (requires ares.toml in current directory)
+ares-server
+```
+
+## Quick Start (Development)
 
 ### Prerequisites
 
@@ -49,7 +100,7 @@ just setup
 
 ```bash
 # Install a model
-ollama pull granite4:tiny-h
+ollama pull ministral-3:3b
 # Or: just ollama-pull
 
 # Ollama runs automatically as a service, or start manually:
@@ -167,7 +218,7 @@ url = "./data/ares.db"
 [providers.ollama-local]
 type = "ollama"
 base_url = "http://localhost:11434"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 
 [providers.openai]  # Optional
 type = "openai"
@@ -177,13 +228,13 @@ default_model = "gpt-4"
 # Models (reference providers, set parameters)
 [models.fast]
 provider = "ollama-local"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 temperature = 0.7
 max_tokens = 256
 
 [models.balanced]
 provider = "ollama-local"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 temperature = 0.7
 max_tokens = 512
 
@@ -315,6 +366,83 @@ When multiple providers are configured, they are selected in this order:
 1. **LlamaCpp** - If `LLAMACPP_MODEL_PATH` is set
 2. **OpenAI** - If `OPENAI_API_KEY` is set
 3. **Ollama** - Default fallback (no API key required)
+
+### Dynamic Configuration (TOON)
+
+In addition to `ares.toml`, A.R.E.S supports **TOON (Token Oriented Object Notation)** files for behavioral configuration with hot-reloading:
+
+```
+config/
+├── agents/
+│   ├── router.toon
+│   ├── orchestrator.toon
+│   └── product.toon
+├── models/
+│   ├── fast.toon
+│   └── balanced.toon
+├── tools/
+│   └── calculator.toon
+├── workflows/
+│   └── default.toon
+└── mcps/
+    └── filesystem.toon
+```
+
+**Example TOON agent config** (`config/agents/router.toon`):
+
+```toon
+name: router
+model: fast
+max_tool_iterations: 5
+parallel_tools: false
+tools[0]:
+system_prompt: |
+  You are a router agent that directs requests to specialized agents.
+```
+
+**Enable TOON configs** in `ares.toml`:
+
+```toml
+[config]
+agents_dir = "config/agents"
+models_dir = "config/models"
+tools_dir = "config/tools"
+workflows_dir = "config/workflows"
+mcps_dir = "config/mcps"
+hot_reload = true
+```
+
+TOON files are automatically hot-reloaded when changed. See [docs/DIR-12-research.md](docs/DIR-12-research.md) for details.
+
+### User-Created Agents API
+
+Users can create custom agents stored in the database with TOON import/export:
+
+```bash
+# Create a custom agent
+curl -X POST http://localhost:3000/api/agents \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-agent",
+    "model": "balanced",
+    "system_prompt": "You are a helpful assistant.",
+    "tools": ["calculator"]
+  }'
+
+# Export as TOON
+curl http://localhost:3000/api/agents/{id}/export \
+  -H "Authorization: Bearer $TOKEN"
+
+# Import from TOON
+curl -X POST http://localhost:3000/api/agents/import \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: text/plain" \
+  -d 'name: imported-agent
+model: fast
+system_prompt: |
+  You are an imported agent.'
+```
 
 ## Architecture
 
@@ -526,7 +654,7 @@ curl -X POST http://localhost:3000/api/workflows/default \
 
 ## Tool Calling
 
-A.R.E.S supports tool calling with Ollama models that support function calling (granite4:tiny-h+, mistral, etc.):
+A.R.E.S supports tool calling with Ollama models that support function calling (ministral-3:3b+, mistral, etc.):
 
 ### Built-in Tools
 
@@ -566,7 +694,7 @@ Tests that connect to a **real Ollama instance** are available but **ignored by 
 
 #### Prerequisites
 - Running Ollama server at `http://localhost:11434`
-- A model installed (e.g., `ollama pull granite4:tiny-h`)
+- A model installed (e.g., `ollama pull ministral-3:3b`)
 
 #### Running Live Tests
 

@@ -1,6 +1,7 @@
 # A.R.E.S Project Status & Completion Summary
 
 **Date**: 2024-12-15  
+**Updated**: 2024-12-19  
 **Status**: ✅ All Core Features Implemented and Tested  
 **Version**: 0.2.0
 
@@ -8,7 +9,7 @@
 
 ## Executive Summary
 
-A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed into a **local-first**, production-ready agentic chatbot server with comprehensive LLM provider support, tool calling, **declarative TOML configuration**, and robust testing infrastructure.
+A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed into a **local-first**, production-ready agentic chatbot server with comprehensive LLM provider support, tool calling, **hybrid TOML + TOON configuration**, and robust testing infrastructure.
 
 ### Key Achievements
 
@@ -16,11 +17,11 @@ A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed in
 ✅ **Direct GGUF Support**: Full LlamaCpp integration with streaming  
 ✅ **Comprehensive Tool Calling**: Multi-turn orchestration with Ollama  
 ✅ **Feature-Gated Architecture**: Flexible compilation with 12+ feature flags  
-✅ **TOML Configuration**: Declarative configuration for providers, models, agents, tools, and workflows  
+✅ **Hybrid Configuration**: TOML for infrastructure, TOON for behavioral configs (30-60% token savings)  
 ✅ **Hot Reloading**: Configuration changes apply without server restart  
 ✅ **Workflow Engine**: Multi-agent orchestration with declarative workflows  
-✅ **ConfigurableAgent**: Dynamic agent creation from TOML (legacy agents removed)  
-✅ **135+ Passing Tests**: Unit, integration, mocked network tests, and MCP tests  
+✅ **ConfigurableAgent**: Dynamic agent creation from TOON files (legacy agents removed)  
+✅ **158+ Passing Tests**: Unit, integration, mocked network tests, and MCP tests  
 ✅ **CI/CD Pipeline**: Multi-platform testing with GitHub Actions  
 ✅ **Developer Documentation**: Setup guides, contributing guidelines, GGUF usage  
 ✅ **[daedra](https://github.com/dirmacs/daedra) Integration**: Local web search without proprietary APIs  
@@ -284,112 +285,154 @@ llamacpp-vulkan # Vulkan API
 
 ---
 
-## Iteration 4: Declarative TOML Configuration
+## Iteration 4: Hybrid TOML + TOON Configuration
 
 ### Objectives
-- Replace hardcoded agent and model configurations with TOML-based declarative config
+- Replace hardcoded agent and model configurations with declarative config
 - Enable hot-reloading of configuration without server restart
 - Support named providers, models, agents, tools, and workflows
 - Validate configuration integrity (references between components)
-- Make the agentic behavior fully customizable via `ares.toml`
+- Use TOON format for behavioral configs (30-60% token savings over JSON/TOML)
+
+### Architecture Split
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         ARES Configuration                          │
+├─────────────────────────────┬───────────────────────────────────────┤
+│      TOML (ares.toml)       │           TOON (config/*.toon)        │
+│      ─────────────────      │           ────────────────────        │
+│  ✓ Server (host, port)      │  ✓ Agents (system prompts, tools)     │
+│  ✓ Auth (JWT, API keys)     │  ✓ Models (temperature, tokens)       │
+│  ✓ Database (URLs, creds)   │  ✓ Tools (enabled, timeouts)          │
+│  ✓ Providers (LLM endpoints)│  ✓ Workflows (routing, depth)         │
+│  ✓ RAG settings             │  ✓ MCPs (commands, env vars)          │
+│                             │                                       │
+│  🔒 Requires restart        │  🔄 Hot-reloadable                    │
+│  📁 Single file             │  📁 One file per entity               │
+└─────────────────────────────┴───────────────────────────────────────┘
+```
 
 ### Completed Tasks
 
-#### 1. TOML Configuration Schema (`src/utils/toml_config.rs`)
+#### 1. TOML Configuration (`src/utils/toml_config.rs`)
 
-**Configuration Structure**:
+**Infrastructure Config** (`ares.toml`):
 ```toml
 [server]          # Host, port, log level
 [auth]            # JWT secrets (env var references), token expiry
 [database]        # Local SQLite path, optional Turso/Qdrant
-
 [providers.*]     # Named LLM provider configs (Ollama, OpenAI, LlamaCpp)
-[models.*]        # Named model configs referencing providers
-[tools.*]         # Tool enable/disable and settings
-[agents.*]        # Agent configs with model, tools, system prompts
-[workflows.*]     # Multi-agent workflow definitions
 [rag]             # RAG settings (embedding model, chunking)
 ```
 
 **Key Features**:
 - ✅ Environment variable references for secrets (`api_key_env = "OPENAI_API_KEY"`)
-- ✅ Named references (agents → models → providers)
-- ✅ Comprehensive validation (missing refs, env vars, file paths)
-- ✅ Sensible defaults with full customization
-- ✅ Serde-based deserialization with proper error messages
+- ✅ Named provider references
+- ✅ Comprehensive validation
+- ✅ Hot-reloading via `AresConfigManager`
 
-#### 2. Hot Reloading (`AresConfigManager`)
+#### 2. TOON Configuration (`src/utils/toon_config.rs`)
 
-**Implementation**:
-- Uses `arc-swap` for lockless reads
-- File watcher via `notify` crate
-- Debounced reloads (500ms) to handle rapid saves
-- Graceful error handling (keeps previous config on parse errors)
+**Behavioral Config** (`config/*.toon`):
 
-**Usage**:
-```rust
-let config_manager = AresConfigManager::new("ares.toml")?;
-config_manager.start_watching()?;  // Hot reload enabled
-let config = config_manager.config();  // Lockless read
+**TOON Format Benefits**:
+- 30-60% fewer tokens than JSON/TOML
+- Optimized for LLM consumption
+- Array syntax: `tools[2]: calculator,web_search`
+- Path folding: `key.sub: value`
+
+**Example Agent** (`config/agents/orchestrator.toon`):
+```toon
+name: orchestrator
+model: powerful
+max_tool_iterations: 10
+parallel_tools: false
+tools[2]: calculator,web_search
+system_prompt: "You are an orchestrator agent..."
 ```
 
-#### 3. Provider Registry (`src/llm/provider_registry.rs`)
-
 **Components**:
-- `ProviderRegistry`: Manages named provider/model configurations
-- `ConfigBasedLLMFactory`: Creates LLM clients from config
+- `ToonAgentConfig`: Agent definitions
+- `ToonModelConfig`: Model settings (provider ref, temperature, max_tokens)
+- `ToonToolConfig`: Tool enable/disable
+- `ToonWorkflowConfig`: Workflow definitions
+- `ToonMcpConfig`: MCP server configurations
+- `DynamicConfigManager`: Hot-reload for all TOON files
+
+#### 3. Hot Reloading
+
+**TOML** (`AresConfigManager`):
+- Uses `arc-swap` for lockless reads
+- File watcher via `notify` crate
+- Debounced reloads (500ms)
+
+**TOON** (`DynamicConfigManager`):
+- Watches `config/` directories
+- Per-file reloading
+- Validation on reload
+
+#### 4. Provider Registry (`src/llm/provider_registry.rs`)
 
 **API**:
 ```rust
-registry.create_client_for_model("fast").await?;    // By model name
-registry.create_client_for_provider("ollama").await?;  // By provider name
-registry.create_default_client().await?;             // Default model
+registry.create_client_for_model("fast").await?;     // By model name
+registry.create_client_for_provider("ollama").await?; // By provider name
+registry.create_default_client().await?;              // Default model
 ```
 
-#### 4. Agent Registry (`src/agents/registry.rs`)
+#### 5. Agent Registry (`src/agents/registry.rs`)
 
 **Features**:
-- Dynamic agent creation from TOML configuration
+- Dynamic agent creation from TOON configuration
 - Per-agent model selection
 - Per-agent tool assignment
 - Custom system prompts from config
 
-#### 5. Configurable Agents (`src/agents/configurable.rs`)
+#### 6. Directory Structure
 
-**Implementation**:
-- `ConfigurableAgent`: Generic agent driven by config
-- Replaces the need for separate agent structs per type
-- Supports dynamic system prompts, tools, and models
+```
+ares/
+├── ares.toml                    # Infrastructure config (TOML)
+├── config/                      # Behavioral configs (TOON, hot-reload)
+│   ├── agents/
+│   │   ├── router.toon
+│   │   ├── orchestrator.toon
+│   │   └── ...
+│   ├── models/
+│   │   ├── fast.toon
+│   │   ├── balanced.toon
+│   │   └── powerful.toon
+│   ├── tools/
+│   │   ├── calculator.toon
+│   │   └── web_search.toon
+│   ├── workflows/
+│   │   └── default.toon
+│   └── mcps/
+│       └── filesystem.toon
+└── data/
+    └── ares.db
+```
 
-**Note**: Legacy agents (`product.rs`, `invoice.rs`, etc.) are retained for backward compatibility but `ConfigurableAgent` is the preferred approach for new agents.
-
-#### 6. Tool Configuration (`src/tools/registry.rs`)
-
-**Enhancements**:
-- Per-tool enable/disable via config
-- Custom descriptions override
-- Configurable timeouts
-- Tool filtering respects enabled status
-
-#### 7. New Files Created
+#### 7. Key Files
 
 | File | Purpose |
 |------|---------|
-| `ares.toml` | Main configuration file (required) |
+| `ares.toml` | Infrastructure configuration (required) |
 | `ares.example.toml` | Example configuration for new users |
 | `src/utils/toml_config.rs` | TOML types, parsing, validation, hot-reload |
+| `src/utils/toon_config.rs` | TOON types, parsing, validation, hot-reload |
 | `src/llm/provider_registry.rs` | Named provider/model management |
 | `src/agents/configurable.rs` | Generic configurable agent |
 | `src/agents/registry.rs` | Agent registry for dynamic creation |
 
-#### 8. Tests Added
+#### 8. Tests
 
-- `test_parse_config`: Validates TOML parsing
-- `test_validation_missing_provider`: Tests provider reference validation
-- `test_validation_missing_model`: Tests model reference validation
-- Provider registry unit tests (3)
-- Tool registry config tests (3)
-- Agent type conversion tests (2)
+- TOML config parsing and validation tests
+- TOON config roundtrip tests (7 tests in `tests/toon_integration_tests.rs`)
+- Provider registry unit tests
+- Tool registry config tests
+- Agent type conversion tests
 
 ---
 
@@ -685,7 +728,7 @@ API_KEY=<your-key>
 ```bash
 # Ollama (default)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=granite4:tiny-h
+OLLAMA_MODEL=ministral-3:3b
 
 # OpenAI
 OPENAI_API_KEY=sk-...

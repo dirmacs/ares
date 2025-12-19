@@ -33,7 +33,7 @@ This project follows the [Rust Code of Conduct](https://www.rust-lang.org/polici
 1. Fork the repository on GitHub
 2. Clone your fork:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/ares.git
+   git clone https://github.com/dirmacs/ares.git
    cd ares
    ```
 3. Add the upstream remote:
@@ -65,7 +65,7 @@ TURSO_AUTH_TOKEN=
 # LLM Provider (choose one or more)
 # Option 1: Ollama (recommended for local development)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=granite4:tiny-h
+OLLAMA_MODEL=ministral-3:3b
 
 # Option 2: OpenAI
 # OPENAI_API_KEY=sk-your-key
@@ -357,7 +357,7 @@ There are additional tests that connect to a **real Ollama instance**. These tes
 #### Prerequisites
 
 1. A running Ollama server (default: `http://localhost:11434`)
-2. A model pulled (e.g., `ollama pull granite4:tiny-h`)
+2. A model pulled (e.g., `ollama pull ministral-3:3b`)
 
 #### Running Live Tests
 
@@ -522,7 +522,7 @@ cargo clippy --all-features -- -D warnings
 /// ```rust,ignore
 /// let client = create_client(Provider::Ollama {
 ///     base_url: "http://localhost:11434".into(),
-///     model: "granite4:tiny-h".into(),
+///     model: "ministral-3:3b".into(),
 /// }).await?;
 /// ```
 pub async fn create_client(provider: Provider) -> Result<Box<dyn LLMClient>> {

@@ -1,3 +1,7 @@
+//! AI agent orchestration and management.
+
+#![allow(missing_docs)]
+
 pub mod configurable;
 pub mod orchestrator;
 pub mod registry;

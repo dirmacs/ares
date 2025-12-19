@@ -14,7 +14,7 @@
 //!
 //! let provider = Provider::Ollama {
 //!     base_url: "http://localhost:11434".to_string(),
-//!     model: "granite4:tiny-h".to_string(),
+//!     model: "ministral-3:3b".to_string(),
 //! };
 //! let client = provider.create_client().await?;
 //! let response = client.generate("Hello!").await?;

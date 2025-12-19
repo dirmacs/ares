@@ -23,8 +23,13 @@ use tracing::{error, info, warn};
 /// Root configuration structure loaded from ares.toml
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AresConfig {
+    /// HTTP server configuration (host, port, log level).
     pub server: ServerConfig,
+
+    /// Authentication configuration (JWT secrets, expiry times).
     pub auth: AuthConfig,
+
+    /// Database configuration (Turso/SQLite, Qdrant).
     pub database: DatabaseConfig,
 
     /// Named LLM provider configurations
@@ -32,36 +37,48 @@ pub struct AresConfig {
     pub providers: HashMap<String, ProviderConfig>,
 
     /// Named model configurations that reference providers
+    /// NOTE: These are being migrated to TOON files in config/models/
     #[serde(default)]
     pub models: HashMap<String, ModelConfig>,
 
     /// Tool configurations
+    /// NOTE: These are being migrated to TOON files in config/tools/
     #[serde(default)]
     pub tools: HashMap<String, ToolConfig>,
 
     /// Agent configurations
+    /// NOTE: These are being migrated to TOON files in config/agents/
     #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,
 
     /// Workflow configurations
+    /// NOTE: These are being migrated to TOON files in config/workflows/
     #[serde(default)]
     pub workflows: HashMap<String, WorkflowConfig>,
 
     /// RAG configuration
     #[serde(default)]
     pub rag: RagConfig,
+
+    /// Dynamic configuration paths (TOON files)
+    #[serde(default)]
+    pub config: DynamicConfigPaths,
 }
 
 // ============= Server Configuration =============
 
+/// Server configuration settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
+    /// Host address to bind to (default: "127.0.0.1").
     #[serde(default = "default_host")]
     pub host: String,
 
+    /// Port number to listen on (default: 3000).
     #[serde(default = "default_port")]
     pub port: u16,
 
+    /// Log level: "trace", "debug", "info", "warn", "error" (default: "info").
     #[serde(default = "default_log_level")]
     pub log_level: String,
 }
@@ -90,18 +107,21 @@ impl Default for ServerConfig {
 
 // ============= Authentication Configuration =============
 
+/// Authentication configuration settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
-    /// Environment variable name containing the JWT secret
+    /// Environment variable name containing the JWT secret.
     pub jwt_secret_env: String,
 
+    /// JWT access token expiry time in seconds (default: 900 = 15 minutes).
     #[serde(default = "default_jwt_access_expiry")]
     pub jwt_access_expiry: i64,
 
+    /// JWT refresh token expiry time in seconds (default: 604800 = 7 days).
     #[serde(default = "default_jwt_refresh_expiry")]
     pub jwt_refresh_expiry: i64,
 
-    /// Environment variable name containing the API key
+    /// Environment variable name containing the API key.
     pub api_key_env: String,
 }
 
@@ -126,19 +146,20 @@ impl Default for AuthConfig {
 
 // ============= Database Configuration =============
 
+/// Database configuration settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConfig {
-    /// Local database URL/path
+    /// Local database URL/path (default: "./data/ares.db").
     #[serde(default = "default_database_url")]
     pub url: String,
 
-    /// Environment variable for Turso URL (optional cloud config)
+    /// Environment variable for Turso URL (optional cloud config).
     pub turso_url_env: Option<String>,
 
-    /// Environment variable for Turso auth token
+    /// Environment variable for Turso auth token.
     pub turso_token_env: Option<String>,
 
-    /// Qdrant configuration (optional)
+    /// Qdrant vector database configuration (optional).
     pub qdrant: Option<QdrantConfig>,
 }
 
@@ -157,12 +178,14 @@ impl Default for DatabaseConfig {
     }
 }
 
+/// Qdrant vector database configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QdrantConfig {
+    /// Qdrant server URL (default: "http://localhost:6334").
     #[serde(default = "default_qdrant_url")]
     pub url: String,
 
-    /// Environment variable for Qdrant API key
+    /// Environment variable for Qdrant API key.
     pub api_key_env: Option<String>,
 }
 
@@ -181,27 +204,39 @@ impl Default for QdrantConfig {
 
 // ============= Provider Configuration =============
 
+/// LLM provider configuration. Tagged enum based on provider type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ProviderConfig {
+    /// Ollama local LLM server.
     Ollama {
+        /// Ollama server URL (default: "http://localhost:11434").
         #[serde(default = "default_ollama_url")]
         base_url: String,
+        /// Default model to use with this provider.
         default_model: String,
     },
+    /// OpenAI API (or compatible endpoints).
     OpenAI {
-        /// Environment variable containing API key
+        /// Environment variable containing API key.
         api_key_env: String,
+        /// API base URL (default: `https://api.openai.com/v1`).
         #[serde(default = "default_openai_base")]
         api_base: String,
+        /// Default model to use with this provider.
         default_model: String,
     },
+    /// LlamaCpp for direct GGUF model loading.
     LlamaCpp {
+        /// Path to the GGUF model file.
         model_path: String,
+        /// Context window size (default: 4096).
         #[serde(default = "default_n_ctx")]
         n_ctx: u32,
+        /// Number of threads for inference (default: 4).
         #[serde(default = "default_n_threads")]
         n_threads: u32,
+        /// Maximum tokens to generate (default: 512).
         #[serde(default = "default_max_tokens")]
         max_tokens: u32,
     },
@@ -229,27 +264,30 @@ fn default_max_tokens() -> u32 {
 
 // ============= Model Configuration =============
 
+/// Model configuration referencing a provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
-    /// Reference to a provider name defined in [providers]
+    /// Reference to a provider name defined in \[providers\].
     pub provider: String,
 
-    /// Model name/identifier to use with the provider
+    /// Model name/identifier to use with the provider.
     pub model: String,
 
+    /// Sampling temperature (0.0 = deterministic, 1.0+ = creative). Default: 0.7.
     #[serde(default = "default_temperature")]
     pub temperature: f32,
 
+    /// Maximum tokens to generate (default: 512).
     #[serde(default = "default_model_max_tokens")]
     pub max_tokens: u32,
 
-    /// Optional top_p value
+    /// Optional nucleus sampling parameter.
     pub top_p: Option<f32>,
 
-    /// Optional frequency penalty
+    /// Optional frequency penalty (-2.0 to 2.0).
     pub frequency_penalty: Option<f32>,
 
-    /// Optional presence penalty
+    /// Optional presence penalty (-2.0 to 2.0).
     pub presence_penalty: Option<f32>,
 }
 
@@ -263,18 +301,22 @@ fn default_model_max_tokens() -> u32 {
 
 // ============= Tool Configuration =============
 
+/// Tool configuration for built-in or custom tools.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolConfig {
+    /// Whether the tool is enabled (default: true).
     #[serde(default = "default_true")]
     pub enabled: bool,
 
+    /// Optional human-readable description of the tool.
     #[serde(default)]
     pub description: Option<String>,
 
+    /// Timeout in seconds for tool execution (default: 30).
     #[serde(default = "default_tool_timeout")]
     pub timeout_secs: u64,
 
-    /// Additional tool-specific configuration
+    /// Additional tool-specific configuration passed through.
     #[serde(flatten)]
     pub extra: HashMap<String, toml::Value>,
 }
@@ -300,28 +342,29 @@ impl Default for ToolConfig {
 
 // ============= Agent Configuration =============
 
+/// Agent configuration binding a model to tools and behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    /// Reference to a model name defined in [models]
+    /// Reference to a model name defined in \[models\].
     pub model: String,
 
-    /// System prompt for the agent
+    /// System prompt for the agent (personality, instructions).
     #[serde(default)]
     pub system_prompt: Option<String>,
 
-    /// List of tool names this agent can use
+    /// List of tool names this agent can use.
     #[serde(default)]
     pub tools: Vec<String>,
 
-    /// Maximum tool calling iterations
+    /// Maximum tool calling iterations before stopping (default: 10).
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: usize,
 
-    /// Whether to execute tools in parallel
+    /// Whether to execute tool calls in parallel when possible.
     #[serde(default)]
     pub parallel_tools: bool,
 
-    /// Additional agent-specific configuration
+    /// Additional agent-specific configuration passed through.
     #[serde(flatten)]
     pub extra: HashMap<String, toml::Value>,
 }
@@ -332,23 +375,24 @@ fn default_max_tool_iterations() -> usize {
 
 // ============= Workflow Configuration =============
 
+/// Workflow configuration defining agent orchestration patterns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowConfig {
-    /// Entry point agent
+    /// Entry point agent that receives initial requests.
     pub entry_agent: String,
 
-    /// Fallback agent if routing fails
+    /// Fallback agent if routing fails or no match is found.
     pub fallback_agent: Option<String>,
 
-    /// Maximum depth for recursive workflows
+    /// Maximum depth for recursive/nested workflows (default: 3).
     #[serde(default = "default_max_depth")]
     pub max_depth: u8,
 
-    /// Maximum iterations for research workflows
+    /// Maximum iterations for research/iterative workflows (default: 5).
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u8,
 
-    /// Whether to use parallel subagents
+    /// Whether to execute sub-agent calls in parallel.
     #[serde(default)]
     pub parallel_subagents: bool,
 }
@@ -363,14 +407,18 @@ fn default_max_iterations() -> u8 {
 
 // ============= RAG Configuration =============
 
+/// RAG (Retrieval Augmented Generation) configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagConfig {
+    /// Embedding model to use for vector embeddings (default: "BAAI/bge-small-en-v1.5").
     #[serde(default = "default_embedding_model")]
     pub embedding_model: String,
 
+    /// Size of text chunks for indexing (default: 1000 characters).
     #[serde(default = "default_chunk_size")]
     pub chunk_size: usize,
 
+    /// Overlap between consecutive chunks (default: 200 characters).
     #[serde(default = "default_chunk_overlap")]
     pub chunk_overlap: usize,
 }
@@ -397,20 +445,111 @@ impl Default for RagConfig {
     }
 }
 
+// ============= Dynamic Configuration Paths =============
+
+/// Paths to TOON config directories for dynamic behavioral configuration
+///
+/// ARES uses a hybrid configuration approach:
+/// - **TOML** (`ares.toml`): Static infrastructure config (server, auth, database, providers)
+/// - **TOON** (`config/*.toon`): Dynamic behavioral config (agents, workflows, models, tools, MCPs)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicConfigPaths {
+    /// Directory containing agent TOON files
+    #[serde(default = "default_agents_dir")]
+    pub agents_dir: std::path::PathBuf,
+
+    /// Directory containing workflow TOON files
+    #[serde(default = "default_workflows_dir")]
+    pub workflows_dir: std::path::PathBuf,
+
+    /// Directory containing model TOON files
+    #[serde(default = "default_models_dir")]
+    pub models_dir: std::path::PathBuf,
+
+    /// Directory containing tool TOON files
+    #[serde(default = "default_tools_dir")]
+    pub tools_dir: std::path::PathBuf,
+
+    /// Directory containing MCP TOON files
+    #[serde(default = "default_mcps_dir")]
+    pub mcps_dir: std::path::PathBuf,
+
+    /// Whether to watch for changes and hot-reload TOON configs
+    #[serde(default = "default_hot_reload")]
+    pub hot_reload: bool,
+
+    /// Interval in milliseconds for checking config changes
+    #[serde(default = "default_watch_interval")]
+    pub watch_interval_ms: u64,
+}
+
+fn default_agents_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("config/agents")
+}
+
+fn default_workflows_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("config/workflows")
+}
+
+fn default_models_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("config/models")
+}
+
+fn default_tools_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("config/tools")
+}
+
+fn default_mcps_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("config/mcps")
+}
+
+fn default_hot_reload() -> bool {
+    true
+}
+
+fn default_watch_interval() -> u64 {
+    1000
+}
+
+impl Default for DynamicConfigPaths {
+    fn default() -> Self {
+        Self {
+            agents_dir: default_agents_dir(),
+            workflows_dir: default_workflows_dir(),
+            models_dir: default_models_dir(),
+            tools_dir: default_tools_dir(),
+            mcps_dir: default_mcps_dir(),
+            hot_reload: default_hot_reload(),
+            watch_interval_ms: default_watch_interval(),
+        }
+    }
+}
+
 // ============= Configuration Loading & Validation =============
 
-/// Configuration warnings that don't prevent operation but may indicate issues
+/// Configuration warnings that don't prevent operation but may indicate issues.
 #[derive(Debug, Clone)]
 pub struct ConfigWarning {
+    /// Category of the warning.
     pub kind: ConfigWarningKind,
+
+    /// Human-readable warning message.
     pub message: String,
 }
 
+/// Categories of configuration warnings.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigWarningKind {
+    /// A provider is defined but not referenced by any model.
     UnusedProvider,
+
+    /// A model is defined but not referenced by any agent.
     UnusedModel,
+
+    /// A tool is defined but not referenced by any agent.
     UnusedTool,
+
+    /// An agent is defined but not referenced by any workflow.
     UnusedAgent,
 }
 
@@ -420,39 +559,50 @@ impl std::fmt::Display for ConfigWarning {
     }
 }
 
-/// Errors that can occur during configuration loading
+/// Errors that can occur during configuration loading.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// The configuration file was not found at the specified path.
     #[error("Configuration file not found: {0}")]
     FileNotFound(PathBuf),
 
+    /// Failed to read the configuration file from disk.
     #[error("Failed to read configuration file: {0}")]
     ReadError(#[from] std::io::Error),
 
+    /// Failed to parse the TOML content.
     #[error("Failed to parse TOML: {0}")]
     ParseError(#[from] toml::de::Error),
 
+    /// Configuration validation failed.
     #[error("Validation error: {0}")]
     ValidationError(String),
 
+    /// An environment variable referenced in the config is not set.
     #[error("Environment variable '{0}' referenced in config is not set")]
     MissingEnvVar(String),
 
+    /// A provider referenced by a model does not exist.
     #[error("Provider '{0}' referenced by model '{1}' does not exist")]
     MissingProvider(String, String),
 
+    /// A model referenced by an agent does not exist.
     #[error("Model '{0}' referenced by agent '{1}' does not exist")]
     MissingModel(String, String),
 
+    /// An agent referenced by a workflow does not exist.
     #[error("Agent '{0}' referenced by workflow '{1}' does not exist")]
     MissingAgent(String, String),
 
+    /// A tool referenced by an agent does not exist.
     #[error("Tool '{0}' referenced by agent '{1}' does not exist")]
     MissingTool(String, String),
 
+    /// A circular reference was detected in the configuration.
     #[error("Circular reference detected: {0}")]
     CircularReference(String),
 
+    /// An error occurred while watching configuration files for changes.
     #[error("Watch error: {0}")]
     WatchError(#[from] notify::Error),
 }
@@ -493,10 +643,10 @@ impl AresConfig {
         if let Some(ref env) = self.database.turso_token_env {
             self.validate_env_var(env)?;
         }
-        if let Some(ref qdrant) = self.database.qdrant
-            && let Some(ref env) = qdrant.api_key_env
-        {
-            self.validate_env_var(env)?;
+        if let Some(ref qdrant) = self.database.qdrant {
+            if let Some(ref env) = qdrant.api_key_env {
+                self.validate_env_var(env)?;
+            }
         }
 
         // Validate provider env vars
@@ -558,13 +708,13 @@ impl AresConfig {
                 ));
             }
 
-            if let Some(ref fallback) = workflow_config.fallback_agent
-                && !self.agents.contains_key(fallback)
-            {
-                return Err(ConfigError::MissingAgent(
-                    fallback.clone(),
-                    workflow_name.clone(),
-                ));
+            if let Some(ref fallback) = workflow_config.fallback_agent {
+                if !self.agents.contains_key(fallback) {
+                    return Err(ConfigError::MissingAgent(
+                        fallback.clone(),
+                        workflow_name.clone(),
+                    ));
+                }
             }
         }
 
@@ -599,13 +749,13 @@ impl AresConfig {
                 current = None;
 
                 // For now, we just check that fallback_agent doesn't equal entry_agent
-                if let Some(ref fallback) = workflow_config.fallback_agent
-                    && fallback == &workflow_config.entry_agent
-                {
-                    return Err(ConfigError::CircularReference(format!(
-                        "Workflow '{}' has entry_agent '{}' that equals fallback_agent",
-                        workflow_name, workflow_config.entry_agent
-                    )));
+                if let Some(ref fallback) = workflow_config.fallback_agent {
+                    if fallback == &workflow_config.entry_agent {
+                        return Err(ConfigError::CircularReference(format!(
+                            "Workflow '{}' has entry_agent '{}' that equals fallback_agent",
+                            workflow_name, workflow_config.entry_agent
+                        )));
+                    }
                 }
             }
         }
@@ -973,11 +1123,11 @@ url = "./data/test.db"
 [providers.ollama-local]
 type = "ollama"
 base_url = "http://localhost:11434"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 
 [models.default]
 provider = "ollama-local"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 temperature = 0.7
 max_tokens = 512
 
@@ -1059,7 +1209,7 @@ api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
 type = "ollama"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 [agents.test]
 model = "nonexistent"
 "#;
@@ -1086,10 +1236,10 @@ api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
 type = "ollama"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 [models.default]
 provider = "test"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 [agents.test]
 model = "default"
 tools = ["nonexistent_tool"]
@@ -1240,10 +1390,10 @@ api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
 type = "ollama"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 [models.default]
 provider = "test"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 [agents.agent_a]
 model = "default"
 [workflows.circular]
@@ -1273,13 +1423,13 @@ api_key_env = "TEST_API_KEY"
 [database]
 [providers.used]
 type = "ollama"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 [providers.unused]
 type = "ollama"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 [models.default]
 provider = "used"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 [agents.router]
 model = "default"
 "#;
@@ -1310,10 +1460,10 @@ api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
 type = "ollama"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 [models.used]
 provider = "test"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 [models.unused]
 provider = "test"
 model = "other"
@@ -1347,10 +1497,10 @@ api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
 type = "ollama"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 [models.default]
 provider = "test"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 [tools.used_tool]
 enabled = true
 [tools.unused_tool]
@@ -1387,10 +1537,10 @@ api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
 type = "ollama"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 [models.default]
 provider = "test"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 [agents.router]
 model = "default"
 [agents.orphaned]
@@ -1421,10 +1571,10 @@ api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
 type = "ollama"
-default_model = "granite4:tiny-h"
+default_model = "ministral-3:3b"
 [models.default]
 provider = "test"
-model = "granite4:tiny-h"
+model = "ministral-3:3b"
 [tools.calc]
 enabled = true
 [agents.router]

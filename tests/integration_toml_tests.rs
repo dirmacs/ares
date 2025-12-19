@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 /// Test helper: Create a minimal valid configuration
 fn create_test_config() -> ares::utils::toml_config::AresConfig {
-    use ares::utils::toml_config::*;
+    use ares::utils::toml_config::{*, DynamicConfigPaths};
 
     // Set required environment variables for validation
     // SAFETY: Tests should be run single-threaded for env var safety
@@ -25,7 +25,7 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
         "test-ollama".to_string(),
         ProviderConfig::Ollama {
             base_url: "http://localhost:11434".to_string(),
-            default_model: "granite4:tiny-h".to_string(),
+            default_model: "ministral-3:3b".to_string(),
         },
     );
 
@@ -34,7 +34,7 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
         "test-model".to_string(),
         ModelConfig {
             provider: "test-ollama".to_string(),
-            model: "granite4:tiny-h".to_string(),
+            model: "ministral-3:3b".to_string(),
             temperature: 0.7,
             max_tokens: 512,
             top_p: None,
@@ -99,6 +99,7 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
             api_key_env: "TEST_API_KEY".to_string(),
         },
         database: DatabaseConfig::default(),
+        config: DynamicConfigPaths::default(),
         providers,
         models,
         tools,
@@ -188,6 +189,7 @@ fn test_workflow_engine_from_config() {
     use ares::llm::ProviderRegistry;
     use ares::tools::registry::ToolRegistry;
     use ares::workflows::WorkflowEngine;
+    use ares::{AppState, AresConfigManager, DynamicConfigManager, ConfigBasedLLMFactory};
 
     let config = create_test_config();
 
@@ -196,15 +198,31 @@ fn test_workflow_engine_from_config() {
     let tool_registry = Arc::new(ToolRegistry::new());
     let agent_registry = Arc::new(AgentRegistry::from_config(
         &config,
-        provider_registry,
-        tool_registry,
+        provider_registry.clone(),
+        tool_registry.clone(),
     ));
 
-    // Create config Arc
-    let config_arc = Arc::new(config);
+    // Create AppState
+    let state = AppState {
+        config_manager: Arc::new(AresConfigManager::from_config(config)),
+        dynamic_config: Arc::new(DynamicConfigManager::new(
+            std::path::PathBuf::from("config/agents"),
+            std::path::PathBuf::from("config/models"),
+            std::path::PathBuf::from("config/tools"),
+            std::path::PathBuf::from("config/workflows"),
+            std::path::PathBuf::from("config/mcps"),
+            false,
+        ).unwrap()),
+        turso: Arc::new(futures::executor::block_on(ares::db::TursoClient::new_memory()).unwrap()),
+        llm_factory: Arc::new(ConfigBasedLLMFactory::new(provider_registry.clone(), "test-model")),
+        provider_registry,
+        agent_registry,
+        tool_registry,
+        auth_service: Arc::new(ares::auth::jwt::AuthService::new("secret".to_string(), 900, 604800)),
+    };
 
     // Create workflow engine
-    let engine = WorkflowEngine::new(agent_registry, config_arc);
+    let engine = WorkflowEngine::new(state);
 
     // Verify workflow is available
     let workflows = engine.available_workflows();

@@ -1,0 +1,5 @@
+name: research
+entry_agent: orchestrator
+max_depth: 3
+max_iterations: 10
+parallel_subagents: true

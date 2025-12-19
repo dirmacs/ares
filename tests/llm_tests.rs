@@ -298,7 +298,7 @@ fn test_llm_client_factory_creation() {
     // Create a factory with an Ollama provider (which won't be called)
     let factory = LLMClientFactory::new(Provider::Ollama {
         base_url: "http://localhost:11434".to_string(),
-        model: "granite4:tiny-h".to_string(),
+        model: "ministral-3:3b".to_string(),
     });
 
     // Factory should be created successfully

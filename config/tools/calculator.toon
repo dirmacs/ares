@@ -1,0 +1,4 @@
+name: calculator
+enabled: true
+description: Performs basic arithmetic operations
+timeout_secs: 10

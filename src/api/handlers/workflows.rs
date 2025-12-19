@@ -12,7 +12,6 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use std::sync::Arc;
 use uuid::Uuid;
 
 /// Execute a workflow by name
@@ -42,8 +41,7 @@ pub async fn execute_workflow(
     Json(payload): Json<WorkflowRequest>,
 ) -> Result<Json<WorkflowOutput>> {
     // Create workflow engine
-    let config = state.config_manager.config();
-    let workflow_engine = WorkflowEngine::new(Arc::clone(&state.agent_registry), config);
+    let workflow_engine = WorkflowEngine::new(state.clone());
 
     // Check if workflow exists
     if !workflow_engine.has_workflow(&workflow_name) {

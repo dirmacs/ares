@@ -1,0 +1,4 @@
+name: web_search
+enabled: true
+description: Search the web using DuckDuckGo (no API key required)
+timeout_secs: 30

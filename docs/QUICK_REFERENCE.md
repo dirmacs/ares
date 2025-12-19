@@ -184,7 +184,7 @@ just ollama-status
 just ollama-pull
 
 # Pull a specific model
-ollama pull granite4:tiny-h
+ollama pull ministral-3:3b
 ollama pull mistral
 # Or: just ollama-pull-model mistral
 
@@ -193,13 +193,13 @@ ollama list
 # Or: just ollama-list
 
 # Run model interactively
-ollama run granite4:tiny-h
+ollama run ministral-3:3b
 
 # Delete model
-ollama rm granite4:tiny-h
+ollama rm ministral-3:3b
 
 # Show model info
-ollama show granite4:tiny-h
+ollama show ministral-3:3b
 ```
 
 ## 📦 GGUF Model Setup
@@ -219,7 +219,57 @@ echo "LLAMACPP_MODEL_PATH=./models/Llama-3.2-3B-Instruct-Q4_K_M.gguf" >> .env
 cargo run --features llamacpp
 ```
 
-## 🔑 Environment Setup
+## � Configuration (TOML + TOON)
+
+A.R.E.S uses a hybrid configuration system:
+
+| Format | Location | Purpose |
+|--------|----------|---------|
+| **TOML** | `ares.toml` | Infrastructure (server, auth, database, providers) |
+| **TOON** | `config/*.toon` | Behavioral (agents, models, tools, workflows) |
+
+### Directory Structure
+
+```
+ares/
+├── ares.toml                    # Infrastructure config
+├── config/
+│   ├── agents/                  # Agent definitions (.toon)
+│   │   ├── router.toon
+│   │   └── orchestrator.toon
+│   ├── models/                  # Model configs (.toon)
+│   │   ├── fast.toon
+│   │   └── balanced.toon
+│   ├── tools/                   # Tool configs (.toon)
+│   ├── workflows/               # Workflow definitions (.toon)
+│   └── mcps/                    # MCP server configs (.toon)
+```
+
+### TOON Format Quick Reference
+
+```toon
+# Agent example
+name: my_agent
+model: balanced
+tools[2]: calculator,web_search
+max_tool_iterations: 10
+system_prompt: "Line 1\nLine 2"
+
+# Model example
+name: fast
+provider: ollama-local
+model: llama3.2:1b
+temperature: 0.7
+max_tokens: 1024
+```
+
+**TOON Syntax**:
+- Arrays: `tools[2]: a,b` (count prefix)
+- Empty arrays: `tools[0]:`
+- Newlines in strings: Use `\n` (not YAML `|`)
+- Booleans: `true` / `false`
+
+## �🔑 Environment Setup
 
 ```bash
 # Using just (recommended)
@@ -248,7 +298,7 @@ TURSO_URL=file:local.db
 
 # Ollama (default)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=granite4:tiny-h
+OLLAMA_MODEL=ministral-3:3b
 
 # LlamaCpp (takes priority)
 LLAMACPP_MODEL_PATH=/path/to/model.gguf
@@ -505,7 +555,7 @@ cargo test my_agent
 ```bash
 # .env
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=granite4:tiny-h
+OLLAMA_MODEL=ministral-3:3b
 # Comment out other providers
 
 cargo run
@@ -603,6 +653,6 @@ open http://localhost:3000/swagger-ui/
 
 **Quick Links:**
 - 📖 [Full Documentation](../README.md)
-- 🐛 [Issue Tracker](https://github.com/your-org/ares/issues)
-- 💬 [Discussions](https://github.com/your-org/ares/discussions)
-- 🚀 [Latest Release](https://github.com/your-org/ares/releases)
+- 🐛 [Issue Tracker](https://github.com/dirmacs/ares/issues)
+- 💬 [Discussions](https://github.com/dirmacs/ares/discussions)
+- 🚀 [Latest Release](https://github.com/dirmacs/ares/releases)

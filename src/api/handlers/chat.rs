@@ -1,11 +1,13 @@
 use crate::{
     AppState,
     agents::{Agent, registry::AgentRegistry, router::RouterAgent},
+    api::handlers::user_agents::resolve_agent,
     auth::middleware::AuthUser,
     types::{
         AgentContext, AgentType, AppError, ChatRequest, ChatResponse, MessageRole, Result,
         UserMemory,
     },
+    utils::toml_config::AgentConfig,
 };
 use axum::{Json, extract::State};
 use uuid::Uuid;
@@ -126,15 +128,31 @@ async fn execute_agent(
         ));
     }
 
-    // Create agent from registry (uses config-driven ConfigurableAgent)
-    let agent = state.agent_registry.create_agent(agent_name).await?;
+    // Resolve agent using the 3-tier hierarchy (User -> Community -> System)
+    let (user_agent, source) = resolve_agent(state, &context.user_id, agent_name).await?;
+
+    // Convert UserAgent to AgentConfig for the registry
+    let config = AgentConfig {
+        model: user_agent.model.clone(),
+        system_prompt: user_agent.system_prompt.clone(),
+        tools: user_agent.tools_vec(),
+        max_tool_iterations: user_agent.max_tool_iterations as usize,
+        parallel_tools: user_agent.parallel_tools,
+        extra: std::collections::HashMap::new(),
+    };
+
+    // Create agent from registry using the resolved config
+    let agent = state
+        .agent_registry
+        .create_agent_from_config(agent_name, &config)
+        .await?;
 
     // Execute the agent
     let response = agent.execute(message, context).await?;
 
     Ok(ChatResponse {
         response,
-        agent: format!("{:?}", agent_type),
+        agent: format!("{:?} ({})", agent_type, source),
         context_id: context.session_id.clone(),
         sources: None,
     })

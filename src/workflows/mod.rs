@@ -30,6 +30,8 @@
 //! println!("Agents used: {:?}", output.agents_used);
 //! ```
 
+#![allow(missing_docs)]
+
 pub mod engine;
 
 pub use engine::{WorkflowEngine, WorkflowOutput, WorkflowStep};

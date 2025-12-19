@@ -1,0 +1,5 @@
+name: filesystem
+enabled: true
+command: npx
+args[4]: "-y","@modelcontextprotocol/server-filesystem","/home","/tmp"
+timeout_secs: 30

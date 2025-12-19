@@ -1,0 +1,5 @@
+name: balanced
+provider: ollama-local
+model: ministral-3:3b
+temperature: 0.7
+max_tokens: 512

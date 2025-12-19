@@ -73,6 +73,15 @@ impl AgentRegistry {
             AppError::Configuration(format!("Agent '{}' not found in configuration", name))
         })?;
 
+        self.create_agent_from_config(name, config).await
+    }
+
+    /// Create an agent instance from an explicit configuration
+    pub async fn create_agent_from_config(
+        &self,
+        name: &str,
+        config: &AgentConfig,
+    ) -> Result<ConfigurableAgent> {
         // Create the LLM client for this agent's model
         let llm = self
             .provider_registry
@@ -211,14 +220,14 @@ mod tests {
             "ollama-local",
             ProviderConfig::Ollama {
                 base_url: "http://localhost:11434".to_string(),
-                default_model: "granite4:tiny-h".to_string(),
+                default_model: "ministral-3:3b".to_string(),
             },
         );
         registry.register_model(
             "default",
             crate::utils::toml_config::ModelConfig {
                 provider: "ollama-local".to_string(),
-                model: "granite4:tiny-h".to_string(),
+                model: "ministral-3:3b".to_string(),
                 temperature: 0.7,
                 max_tokens: 512,
                 top_p: None,

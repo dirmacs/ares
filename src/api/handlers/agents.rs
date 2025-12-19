@@ -1,5 +1,5 @@
-use crate::{AppState, types::AgentType};
-use axum::{Json, extract::State};
+use crate::{types::AgentType, AppState};
+use axum::{extract::State, Json};
 use serde::Serialize;
 
 pub async fn list_agents(State(_state): State<AppState>) -> Json<Vec<AgentInfo>> {

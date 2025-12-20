@@ -9,7 +9,7 @@
 #   just docker-services  - Start only Ollama and Qdrant (for local dev)
 #
 # Note: After starting Ollama, pull a model:
-#   just ollama-pull      - Pull default model (granite4:tiny-h)
+#   just ollama-pull      - Pull default model (ministral-3:3b)
 # =============================================================================
 
 services:
@@ -78,7 +78,7 @@ services:
 
       # Ollama (default provider)
       - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=granite4:tiny-h
+      - OLLAMA_MODEL=ministral-3:3b
 
       # Optional: Qdrant
       - QDRANT_URL=http://qdrant:6334

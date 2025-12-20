@@ -144,7 +144,7 @@ TURSO_AUTH_TOKEN=
 
 # Ollama Configuration (default provider)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=granite4:tiny-h
+OLLAMA_MODEL=ministral-3:3b
 
 # Optional: OpenAI (if you want to use it)
 # OPENAI_API_KEY=sk-...
@@ -192,9 +192,9 @@ function Start-InteractiveSetup {
     Write-Host ""
 
     Write-Host "Select models to pull (you can select multiple separated by space):"
-    Write-Host "1) granite4:tiny-h (4B) - Recommended for development"
+    Write-Host "1) ministral-3:3b (3B) - Excellent general purpose"
     Write-Host "2) qwen3-vl:2b - Vision model with multimodal support"
-    Write-Host "3) mistral (7B) - Excellent general purpose"
+    Write-Host "3) granite4:tiny-h (4B) - Recommended for development"
     Write-Host "4) phi3 - Efficient 3.8B model"
     Write-Host "5) qwen2.5:1.5b - Fast multilingual"
     Write-Host "6) Custom model name"
@@ -206,9 +206,9 @@ function Start-InteractiveSetup {
 
     foreach ($choice in $choiceArray) {
         switch ($choice) {
-            "1" { Get-OllamaModel "granite4:tiny-h" }
+            "1" { Get-OllamaModel "ministral-3:3b" }
             "2" { Get-OllamaModel "qwen3-vl:2b" }
-            "3" { Get-OllamaModel "mistral" }
+            "3" { Get-OllamaModel "granite4:tiny-h" }
             "4" { Get-OllamaModel "phi3" }
             "5" { Get-OllamaModel "qwen2.5:1.5b" }
             "6" {

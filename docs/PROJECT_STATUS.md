@@ -160,7 +160,7 @@ llamacpp-vulkan # Vulkan API
 - GPU acceleration adds 5-10x performance boost
 
 **Ollama Capabilities**:
-- Native tool calling in granite4+, mistral, qwen2.5
+- Native tool calling in ministral-3, granite 4, qwen3, etc.
 - NDJSON streaming format
 - Built-in model management
 - Easy local deployment

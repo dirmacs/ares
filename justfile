@@ -269,9 +269,9 @@ ollama-status:
 ollama-list:
     curl -s http://localhost:11434/api/tags | jq '.models[].name'
 
-# Pull the default model (granite4:tiny-h)
+# Pull the default model (ministral-3:3b)
 ollama-pull:
-    ollama pull granite4:tiny-h
+    ollama pull ministral-3:3b
 
 # Pull a specific model
 ollama-pull-model model:
@@ -304,7 +304,7 @@ setup-env:
 
     # Ollama Configuration (default provider)
     OLLAMA_BASE_URL=http://localhost:11434
-    OLLAMA_MODEL=granite4:tiny-h
+    OLLAMA_MODEL=ministral-3:3b
 
     # Optional: OpenAI (if you want to use it)
     # OPENAI_API_KEY=sk-...

@@ -18,6 +18,7 @@
 | User Agents API | ✅ Implemented | `src/api/handlers/user_agents.rs` |
 | TOON Import/Export | ✅ Implemented | `POST /api/agents/import`, `GET /api/agents/{id}/export` |
 | Integration Tests | ✅ 158 tests passing | `tests/toon_integration_tests.rs` |
+| Leptos UI | ✅ Implemented | `ui/` directory - Leptos + Tailwind chat interface |
 
 ---
 

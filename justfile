@@ -422,3 +422,39 @@ status:
 # Quick test to verify everything works
 verify: build test hurl-health
     @echo "Verification complete - all systems operational"
+
+# =============================================================================
+# UI Commands (Leptos Frontend)
+# =============================================================================
+
+# Install UI dependencies (run once)
+ui-setup:
+    cd ui && npm install
+    rustup target add wasm32-unknown-unknown
+    cargo install trunk --locked || true
+
+# Build the UI for production
+ui-build:
+    cd ui && npm run build:css
+    cd ui && trunk build --release
+
+# Run the UI development server (hot reload)
+ui-dev:
+    cd ui && trunk serve --open
+
+# Run UI dev server without opening browser
+ui-serve:
+    cd ui && trunk serve
+
+# Clean UI build artifacts
+ui-clean:
+    cd ui && rm -rf dist target
+
+# Run both backend and UI dev servers
+dev: 
+    @echo "Starting A.R.E.S backend and UI..."
+    @echo "Backend: http://localhost:3000"
+    @echo "UI: http://localhost:8080"
+    @just run &
+    @just ui-dev
+

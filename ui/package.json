@@ -1,0 +1,11 @@
+{
+  "name": "ares-ui",
+  "private": true,
+  "scripts": {
+    "build:css": "tailwindcss -i ./input.css -o ./dist/output.css --minify",
+    "watch:css": "tailwindcss -i ./input.css -o ./dist/output.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.0"
+  }
+}

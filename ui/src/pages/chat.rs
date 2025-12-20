@@ -46,69 +46,71 @@ pub fn ChatPage() -> impl IntoView {
         }
     };
     
-    // Send message handler
+    // Send message helper function
     let state_for_send = state.clone();
-    let send_message = {
-        move || {
-            let message_text = input.get().trim().to_string();
-            if message_text.is_empty() || is_sending.get() {
-                return;
+    let do_send_message = move |message_text: String| {
+        if message_text.is_empty() || is_sending.get() {
+            return;
+        }
+        
+        let state = state_for_send.clone();
+        // Add user message
+        let user_msg = Message::user(&message_text);
+        state.conversation.update(|c| {
+            c.messages.push(user_msg);
+        });
+        
+        is_sending.set(true);
+        
+        // Scroll after adding user message
+        scroll_to_bottom();
+        
+        // Send to API
+        let state = state.clone();
+        let agent = selected_agent.get();
+        spawn_local(async move {
+            let base_url = state.api_base.get_untracked();
+            let token = state.token.get_untracked().unwrap_or_default();
+            let context_id = state.conversation.get_untracked().id.clone();
+            
+            match send_chat(&base_url, &token, &message_text, context_id, agent.clone()).await {
+                Ok(response) => {
+                    // Add assistant response
+                    let assistant_msg = Message::assistant(&response.response, Some(response.agent));
+                    
+                    state.conversation.update(|c| {
+                        c.id = Some(response.context_id);
+                        c.messages.push(assistant_msg);
+                    });
+                }
+                Err(e) => {
+                    // Add error as system message
+                    state.conversation.update(|c| {
+                        c.messages.push(Message {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            role: MessageRole::System,
+                            content: format!("Error: {}", e),
+                            timestamp: chrono::Utc::now(),
+                            agent_type: None,
+                            tool_calls: vec![],
+                            is_streaming: false,
+                        });
+                    });
+                    state.set_error(e);
+                }
             }
             
-            let state = state_for_send.clone();
-            // Add user message
-            let user_msg = Message::user(&message_text);
-            state.conversation.update(|c| {
-                c.messages.push(user_msg);
-            });
-            
-            // Clear input
-            input.set(String::new());
-            is_sending.set(true);
-            
-            // Scroll after adding user message
+            is_sending.set(false);
             scroll_to_bottom();
-            
-            // Send to API
-            let state = state.clone();
-            let agent = selected_agent.get();
-            spawn_local(async move {
-                let base_url = state.api_base.get_untracked();
-                let token = state.token.get_untracked().unwrap_or_default();
-                let context_id = state.conversation.get_untracked().id.clone();
-                
-                match send_chat(&base_url, &token, &message_text, context_id, agent.clone()).await {
-                    Ok(response) => {
-                        // Add assistant response
-                        let mut assistant_msg = Message::assistant(&response.response, Some(response.agent_type));
-                        assistant_msg.tool_calls = response.tool_calls;
-                        
-                        state.conversation.update(|c| {
-                            c.id = Some(response.context_id);
-                            c.messages.push(assistant_msg);
-                        });
-                    }
-                    Err(e) => {
-                        // Add error as system message
-                        state.conversation.update(|c| {
-                            c.messages.push(Message {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                role: MessageRole::System,
-                                content: format!("Error: {}", e),
-                                timestamp: chrono::Utc::now(),
-                                agent_type: None,
-                                tool_calls: vec![],
-                                is_streaming: false,
-                            });
-                        });
-                        state.set_error(e);
-                    }
-                }
-                
-                is_sending.set(false);
-                scroll_to_bottom();
-            });
-        }
+        });
+    };
+    
+    // Wrapper for input-based sending
+    let do_send_for_input = do_send_message.clone();
+    let send_message = move || {
+        let message_text = input.get().trim().to_string();
+        input.set(String::new());
+        do_send_for_input(message_text);
     };
     
     // Toggle sidebar on mobile
@@ -186,9 +188,11 @@ pub fn ChatPage() -> impl IntoView {
                         // Empty state
                         {
                             let state = state.clone();
+                            let do_send = do_send_message.clone();
                             move || {
                                 if state.conversation.get().messages.is_empty() {
-                                    view! { <EmptyState selected_agent=selected_agent /> }.into_any()
+                                    let do_send = do_send.clone();
+                                    view! { <EmptyState selected_agent=selected_agent on_prompt=do_send /> }.into_any()
                                 } else {
                                     view! {}.into_any()
                                 }
@@ -230,9 +234,10 @@ pub fn ChatPage() -> impl IntoView {
 
 /// Empty state when no messages
 #[component]
-fn EmptyState(selected_agent: RwSignal<Option<String>>) -> impl IntoView {
-    let state = expect_context::<AppState>();
-    
+fn EmptyState<F>(selected_agent: RwSignal<Option<String>>, on_prompt: F) -> impl IntoView 
+where
+    F: Fn(String) + Clone + 'static
+{
     // Example prompts
     let prompts = [
         ("📊", "Analyze our Q4 sales performance"),
@@ -263,12 +268,11 @@ fn EmptyState(selected_agent: RwSignal<Option<String>>) -> impl IntoView {
             <div class="w-full max-w-2xl grid sm:grid-cols-2 gap-3">
                 {prompts.iter().map(|(emoji, prompt)| {
                     let prompt = *prompt;
+                    let on_prompt = on_prompt.clone();
                     view! {
                         <button
                             on:click=move |_| {
-                                state.conversation.update(|c| {
-                                    c.messages.push(Message::user(prompt));
-                                });
+                                on_prompt(prompt.to_string());
                             }
                             class="flex items-center gap-3 p-4 bg-slate-800/50 hover:bg-slate-800 
                                    border border-slate-700 hover:border-slate-600 rounded-xl 

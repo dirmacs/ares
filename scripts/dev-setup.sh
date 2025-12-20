@@ -120,7 +120,7 @@ TURSO_AUTH_TOKEN=
 
 # Ollama Configuration (default provider)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=granite4:tiny-h
+OLLAMA_MODEL=ministral-3:3b
 
 # Optional: OpenAI (if you want to use it)
 # OPENAI_API_KEY=sk-...
@@ -169,7 +169,7 @@ interactive_setup() {
     echo "Select models to pull (you can select multiple):"
     echo "1) granite4:tiny-h (4B) - Recommended for development"
     echo "2) qwen3-vl:2b - Vision model with multimodal support"
-    echo "3) mistral (7B) - Excellent general purpose"
+    echo "3) ministral-3 (3B) - Excellent general purpose"
     echo "4) phi3 - Efficient 3.8B model"
     echo "5) qwen2.5:1.5b - Fast multilingual"
     echo "6) Custom model name"
@@ -180,9 +180,9 @@ interactive_setup() {
 
     for choice in $choices; do
         case $choice in
-            1) pull_model "granite4:tiny-h" ;;
+            1) pull_model "ministral-3:3b" ;;
             2) pull_model "qwen3-vl:2b" ;;
-            3) pull_model "mistral" ;;
+            3) pull_model "granite4:tiny-h" ;;
             4) pull_model "phi3" ;;
             5) pull_model "qwen2.5:1.5b" ;;
             6)

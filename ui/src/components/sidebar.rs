@@ -69,9 +69,9 @@ pub fn Sidebar(
                         {move || {
                             let agents = state.agents.get();
                             agents.into_iter().map(|agent| {
-                                let name = agent.name.clone();
-                                let name_clone = name.clone();
-                                let emoji = match name.as_str() {
+                                let agent_type = agent.agent_type.clone();
+                                let agent_type_clone = agent_type.clone();
+                                let emoji = match agent_type.as_str() {
                                     "orchestrator" => "🎭",
                                     "product" => "📦",
                                     "sales" => "💰",
@@ -82,11 +82,11 @@ pub fn Sidebar(
                                 };
                                 view! {
                                     <AgentButton
-                                        name=agent.display_name.clone()
+                                        name=agent.name.clone()
                                         emoji=emoji.to_string()
                                         description=agent.description.clone()
-                                        is_selected=Signal::derive(move || selected_agent.get().as_deref() == Some(&name))
-                                        on_click=move |_| selected_agent.set(Some(name_clone.clone()))
+                                        is_selected=Signal::derive(move || selected_agent.get().as_deref() == Some(&agent_type))
+                                        on_click=move |_| selected_agent.set(Some(agent_type_clone.clone()))
                                     />
                                 }
                             }).collect::<Vec<_>>()
@@ -108,10 +108,11 @@ pub fn Sidebar(
                                 }.into_any()
                             } else {
                                 workflows.into_iter().map(|wf| {
+                                    let description = format!("Entry: {} | Max depth: {}", wf.entry_agent, wf.max_depth);
                                     view! {
                                         <div class="px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-700/50 cursor-pointer">
                                             <div class="font-medium text-slate-300">{wf.name.clone()}</div>
-                                            <div class="text-xs truncate">{wf.description.clone()}</div>
+                                            <div class="text-xs truncate">{description}</div>
                                         </div>
                                     }
                                 }).collect::<Vec<_>>().into_any()

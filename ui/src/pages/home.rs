@@ -146,7 +146,7 @@ pub fn HomePage() -> impl IntoView {
                                 }).collect::<Vec<_>>()
                             } else {
                                 agents.into_iter().map(|agent| {
-                                    let emoji = match agent.name.as_str() {
+                                    let emoji = match agent.agent_type.as_str() {
                                         "orchestrator" => "🎭",
                                         "product" => "📦",
                                         "sales" => "💰",
@@ -158,7 +158,7 @@ pub fn HomePage() -> impl IntoView {
                                     view! {
                                         <AgentCard
                                             emoji=emoji
-                                            name=agent.display_name.leak()
+                                            name=agent.name.leak()
                                             description=agent.description.leak()
                                         />
                                     }

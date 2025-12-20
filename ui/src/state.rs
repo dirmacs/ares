@@ -6,7 +6,6 @@ use crate::types::{AuthResponse, Conversation, AgentInfo, WorkflowInfo};
 
 const STORAGE_KEY_TOKEN: &str = "ares_token";
 const STORAGE_KEY_REFRESH: &str = "ares_refresh_token";
-const STORAGE_KEY_USER_ID: &str = "ares_user_id";
 
 /// Global application state
 #[derive(Clone)]
@@ -15,8 +14,6 @@ pub struct AppState {
     pub token: RwSignal<Option<String>>,
     /// Refresh token
     pub refresh_token: RwSignal<Option<String>>,
-    /// User ID
-    pub user_id: RwSignal<Option<String>>,
     /// Available agents
     pub agents: RwSignal<Vec<AgentInfo>>,
     /// Available workflows
@@ -34,12 +31,11 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         // Try to load from localStorage
-        let (token, refresh, user_id) = Self::load_from_storage();
+        let (token, refresh) = Self::load_from_storage();
         
         Self {
             token: RwSignal::new(token),
             refresh_token: RwSignal::new(refresh),
-            user_id: RwSignal::new(user_id),
             agents: RwSignal::new(vec![]),
             workflows: RwSignal::new(vec![]),
             conversation: RwSignal::new(Conversation::default()),
@@ -49,31 +45,26 @@ impl AppState {
         }
     }
 
-    fn load_from_storage() -> (Option<String>, Option<String>, Option<String>) {
+    fn load_from_storage() -> (Option<String>, Option<String>) {
         let token: Option<String> = LocalStorage::get(STORAGE_KEY_TOKEN).ok();
         let refresh: Option<String> = LocalStorage::get(STORAGE_KEY_REFRESH).ok();
-        let user_id: Option<String> = LocalStorage::get(STORAGE_KEY_USER_ID).ok();
-        (token, refresh, user_id)
+        (token, refresh)
     }
 
     pub fn save_auth(&self, auth: &AuthResponse) {
         let _ = LocalStorage::set(STORAGE_KEY_TOKEN, &auth.access_token);
         let _ = LocalStorage::set(STORAGE_KEY_REFRESH, &auth.refresh_token);
-        let _ = LocalStorage::set(STORAGE_KEY_USER_ID, &auth.user_id);
         
         self.token.set(Some(auth.access_token.clone()));
         self.refresh_token.set(Some(auth.refresh_token.clone()));
-        self.user_id.set(Some(auth.user_id.clone()));
     }
 
     pub fn clear_auth(&self) {
         LocalStorage::delete(STORAGE_KEY_TOKEN);
         LocalStorage::delete(STORAGE_KEY_REFRESH);
-        LocalStorage::delete(STORAGE_KEY_USER_ID);
         
         self.token.set(None);
         self.refresh_token.set(None);
-        self.user_id.set(None);
     }
 
     pub fn is_authenticated(&self) -> bool {

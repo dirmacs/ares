@@ -128,7 +128,7 @@ fn AgentOption(
                 {emoji}
             </div>
             <div class="flex-1 min-w-0">
-                <div class="font-medium text-white capitalize">{agent.display_name.clone()}</div>
+                <div class="font-medium text-white capitalize">{agent.name.clone()}</div>
                 <div class="text-xs text-slate-400 truncate">{agent.description.clone()}</div>
             </div>
             <Show when=move || is_selected.get()>

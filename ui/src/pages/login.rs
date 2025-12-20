@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 use crate::api::{login, register};
-use crate::components::{Header, LoadingSpinner};
+use crate::components::Header;
 use crate::state::AppState;
 
 /// Login/Register page
@@ -69,23 +69,24 @@ pub fn LoginPage() -> impl IntoView {
     };
 
     view! {
-        <div class="min-h-screen flex flex-col">
+        <div class="min-h-screen flex flex-col bg-[var(--bg-primary)]">
             <Header />
             
-            <main class="flex-1 flex items-center justify-center px-4 py-16">
-                <div class="w-full max-w-md">
+            <main class="auth-container flex-1">
+                <div class="w-full max-w-md px-4">
                     // Card
-                    <div class="bg-slate-800 rounded-2xl border border-slate-700 p-8 shadow-xl">
+                    <div class="auth-card">
                         // Header
-                        <div class="text-center mb-8">
-                            <div class="w-16 h-16 mx-auto rounded-xl bg-gradient-to-br from-blue-500 to-violet-600 
-                                        flex items-center justify-center text-3xl mb-4">
-                                "🤖"
-                            </div>
-                            <h1 class="text-2xl font-bold">
+                        <div class="auth-header">
+                            <img 
+                                src="/assets/ares.png" 
+                                alt="ARES Logo"
+                                class="auth-logo"
+                            />
+                            <h1 class="auth-title text-gradient">
                                 {move || if is_register.get() { "Create Account" } else { "Welcome Back" }}
                             </h1>
-                            <p class="text-slate-400 mt-2">
+                            <p class="auth-subtitle">
                                 {move || if is_register.get() {
                                     "Sign up to start using A.R.E.S"
                                 } else {
@@ -96,54 +97,45 @@ pub fn LoginPage() -> impl IntoView {
                         
                         // Error message
                         <Show when=move || error.get().is_some()>
-                            <div class="mb-6 p-4 bg-red-500/10 border border-red-500/50 rounded-lg text-red-400 text-sm">
+                            <div class="mb-6 p-4 bg-[var(--accent-error)]/10 border border-[var(--accent-error)]/50 
+                                        rounded-[var(--radius-md)] text-[var(--accent-error)] text-sm animate-fade-in">
                                 {move || error.get().unwrap_or_default()}
                             </div>
                         </Show>
                         
                         // Form
-                        <form on:submit=on_submit class="space-y-5">
+                        <form on:submit=on_submit class="auth-form">
                             // Name field (register only)
                             <Show when=move || is_register.get()>
-                                <div>
-                                    <label class="block text-sm font-medium text-slate-300 mb-2">
-                                        "Name"
-                                    </label>
+                                <div class="auth-input-group animate-fade-in-down">
+                                    <label class="auth-label">"Name"</label>
                                     <input
                                         type="text"
                                         prop:value=move || name.get()
                                         on:input=move |ev| name.set(event_target_value(&ev))
                                         placeholder="Your name"
                                         required=is_register.get()
-                                        class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-lg
-                                               text-white placeholder-slate-500
-                                               focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                        class="input"
                                     />
                                 </div>
                             </Show>
                             
                             // Email field
-                            <div>
-                                <label class="block text-sm font-medium text-slate-300 mb-2">
-                                    "Email"
-                                </label>
+                            <div class="auth-input-group">
+                                <label class="auth-label">"Email"</label>
                                 <input
                                     type="email"
                                     prop:value=move || email.get()
                                     on:input=move |ev| email.set(event_target_value(&ev))
                                     placeholder="you@example.com"
                                     required=true
-                                    class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-lg
-                                           text-white placeholder-slate-500
-                                           focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    class="input"
                                 />
                             </div>
                             
                             // Password field
-                            <div>
-                                <label class="block text-sm font-medium text-slate-300 mb-2">
-                                    "Password"
-                                </label>
+                            <div class="auth-input-group">
+                                <label class="auth-label">"Password"</label>
                                 <input
                                     type="password"
                                     prop:value=move || password.get()
@@ -151,12 +143,10 @@ pub fn LoginPage() -> impl IntoView {
                                     placeholder="••••••••"
                                     required=true
                                     minlength="8"
-                                    class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-lg
-                                           text-white placeholder-slate-500
-                                           focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    class="input"
                                 />
                                 <Show when=move || is_register.get()>
-                                    <p class="text-xs text-slate-500 mt-1">"Minimum 8 characters"</p>
+                                    <p class="text-xs text-[var(--text-muted)] mt-1">"Minimum 8 characters"</p>
                                 </Show>
                             </div>
                             
@@ -164,18 +154,17 @@ pub fn LoginPage() -> impl IntoView {
                             <button
                                 type="submit"
                                 disabled=move || is_loading.get()
-                                class="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50
-                                       rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
+                                class="btn btn-primary w-full py-3"
                             >
                                 <Show when=move || is_loading.get()>
-                                    <LoadingSpinner size="w-5 h-5" />
+                                    <div class="loading-spinner"></div>
                                 </Show>
                                 {move || if is_register.get() { "Create Account" } else { "Sign In" }}
                             </button>
                         </form>
                         
                         // Toggle login/register
-                        <div class="mt-6 text-center text-sm text-slate-400">
+                        <div class="auth-footer">
                             {move || if is_register.get() {
                                 "Already have an account? "
                             } else {
@@ -186,7 +175,7 @@ pub fn LoginPage() -> impl IntoView {
                                     is_register.update(|v| *v = !*v);
                                     error.set(None);
                                 }
-                                class="text-blue-400 hover:text-blue-300 font-medium"
+                                class="auth-link"
                             >
                                 {move || if is_register.get() { "Sign in" } else { "Sign up" }}
                             </button>
@@ -194,8 +183,8 @@ pub fn LoginPage() -> impl IntoView {
                     </div>
                     
                     // Demo credentials hint
-                    <div class="mt-6 p-4 bg-slate-800/50 rounded-lg border border-slate-700 text-sm text-slate-400">
-                        <p class="font-medium text-slate-300 mb-1">"💡 Demo Mode"</p>
+                    <div class="mt-6 card p-4 text-sm text-[var(--text-secondary)] animate-fade-in-up stagger-3">
+                        <p class="font-medium text-[var(--text-primary)] mb-1">"💡 Demo Mode"</p>
                         <p>"Register with any email to get started. No email verification required."</p>
                     </div>
                 </div>

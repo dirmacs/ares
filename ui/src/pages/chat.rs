@@ -117,7 +117,7 @@ pub fn ChatPage() -> impl IntoView {
     let toggle_sidebar = move |_| sidebar_open.update(|v| *v = !*v);
 
     view! {
-        <div class="h-screen flex flex-col bg-slate-900">
+        <div class="h-screen flex flex-col bg-[var(--bg-primary)]">
             <Header />
             
             <div class="flex-1 flex overflow-hidden">
@@ -127,11 +127,11 @@ pub fn ChatPage() -> impl IntoView {
                 // Main chat area
                 <main class="flex-1 flex flex-col min-w-0">
                     // Chat header
-                    <div class="h-14 px-4 flex items-center justify-between border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm">
+                    <div class="h-14 px-4 flex items-center justify-between border-b border-[var(--border-default)] glass">
                         // Mobile menu button
                         <button
                             on:click=toggle_sidebar
-                            class="lg:hidden p-2 text-slate-400 hover:text-white"
+                            class="lg:hidden btn btn-ghost p-2"
                         >
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
@@ -140,8 +140,8 @@ pub fn ChatPage() -> impl IntoView {
                         
                         // Current agent display
                         <div class="flex items-center gap-3">
-                            <div class="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 
-                                        flex items-center justify-center text-sm">
+                            <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 
+                                        flex items-center justify-center text-sm shadow-lg shadow-purple-500/20">
                                 {move || {
                                     match selected_agent.get().as_deref() {
                                         None => "🔀",
@@ -156,12 +156,12 @@ pub fn ChatPage() -> impl IntoView {
                                 }}
                             </div>
                             <div>
-                                <div class="font-medium text-sm">
+                                <div class="font-medium text-sm text-[var(--text-primary)]">
                                     {move || selected_agent.get()
                                         .map(|a| a.replace('_', " "))
                                         .unwrap_or_else(|| "Auto Router".to_string())}
                                 </div>
-                                <div class="text-xs text-slate-500">
+                                <div class="text-xs text-[var(--text-muted)]">
                                     {move || if selected_agent.get().is_none() {
                                         "Automatically routes to best agent"
                                     } else {
@@ -175,16 +175,16 @@ pub fn ChatPage() -> impl IntoView {
                         <div class="flex items-center gap-2">
                             <div class=move || format!(
                                 "w-2 h-2 rounded-full {}",
-                                if is_sending.get() { "bg-amber-400 animate-pulse" } else { "bg-green-400" }
+                                if is_sending.get() { "bg-[var(--accent-warning)] animate-pulse" } else { "bg-[var(--accent-success)]" }
                             )></div>
-                            <span class="text-xs text-slate-500">
+                            <span class="text-xs text-[var(--text-muted)]">
                                 {move || if is_sending.get() { "Processing..." } else { "Ready" }}
                             </span>
                         </div>
                     </div>
                     
                     // Messages area
-                    <div class="flex-1 overflow-y-auto px-4 py-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900">
+                    <div class="flex-1 overflow-y-auto px-4 py-6 space-y-6">
                         // Empty state
                         {
                             let state = state.clone();
@@ -249,14 +249,15 @@ where
     ];
     
     view! {
-        <div class="h-full flex flex-col items-center justify-center text-center px-4">
-            <div class="w-20 h-20 rounded-2xl bg-gradient-to-br from-blue-500 via-violet-500 to-purple-600 
-                        flex items-center justify-center text-4xl mb-6 shadow-xl shadow-violet-500/20">
-                "🤖"
-            </div>
+        <div class="empty-state h-full">
+            <img 
+                src="/assets/ares.png" 
+                alt="ARES Logo"
+                class="empty-state-icon"
+            />
             
-            <h2 class="text-2xl font-bold mb-2">"How can I help you today?"</h2>
-            <p class="text-slate-400 mb-8 max-w-md">
+            <h2 class="empty-state-title text-gradient">"How can I help you today?"</h2>
+            <p class="empty-state-description">
                 {move || if selected_agent.get().is_some() {
                     "You're chatting directly with a specialized agent."
                 } else {
@@ -265,8 +266,8 @@ where
             </p>
             
             // Quick prompts
-            <div class="w-full max-w-2xl grid sm:grid-cols-2 gap-3">
-                {prompts.iter().map(|(emoji, prompt)| {
+            <div class="quick-prompts w-full max-w-2xl grid sm:grid-cols-2 gap-3">
+                {prompts.iter().enumerate().map(|(i, (emoji, prompt))| {
                     let prompt = *prompt;
                     let on_prompt = on_prompt.clone();
                     view! {
@@ -274,30 +275,32 @@ where
                             on:click=move |_| {
                                 on_prompt(prompt.to_string());
                             }
-                            class="flex items-center gap-3 p-4 bg-slate-800/50 hover:bg-slate-800 
-                                   border border-slate-700 hover:border-slate-600 rounded-xl 
-                                   text-left transition-all group"
+                            class=format!("quick-prompt text-left animate-fade-in-up stagger-{}", (i % 5) + 1)
                         >
-                            <span class="text-2xl group-hover:scale-110 transition-transform">{*emoji}</span>
-                            <span class="text-sm text-slate-300">{prompt}</span>
+                            <span class="text-2xl mr-3 transition-transform hover:scale-110">{*emoji}</span>
+                            <span>{prompt}</span>
                         </button>
                     }
                 }).collect::<Vec<_>>()}
             </div>
             
             // Features hint
-            <div class="mt-8 flex flex-wrap justify-center gap-4 text-xs text-slate-500">
-                <span class="flex items-center gap-1">
-                    <span>"🔧"</span> "Tool calling"
+            <div class="mt-8 flex flex-wrap justify-center gap-6 text-xs text-[var(--text-muted)]">
+                <span class="flex items-center gap-2 animate-fade-in stagger-1">
+                    <span class="w-1.5 h-1.5 rounded-full bg-[var(--accent-primary)]"></span>
+                    "Tool calling"
                 </span>
-                <span class="flex items-center gap-1">
-                    <span>"💾"</span> "Memory"
+                <span class="flex items-center gap-2 animate-fade-in stagger-2">
+                    <span class="w-1.5 h-1.5 rounded-full bg-[var(--accent-secondary)]"></span>
+                    "Memory"
                 </span>
-                <span class="flex items-center gap-1">
-                    <span>"🔀"</span> "Smart routing"
+                <span class="flex items-center gap-2 animate-fade-in stagger-3">
+                    <span class="w-1.5 h-1.5 rounded-full bg-[var(--accent-success)]"></span>
+                    "Smart routing"
                 </span>
-                <span class="flex items-center gap-1">
-                    <span>"📚"</span> "RAG support"
+                <span class="flex items-center gap-2 animate-fade-in stagger-4">
+                    <span class="w-1.5 h-1.5 rounded-full bg-[var(--accent-warning)]"></span>
+                    "RAG support"
                 </span>
             </div>
         </div>

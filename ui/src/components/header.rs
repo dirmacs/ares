@@ -13,25 +13,27 @@ pub fn Header() -> impl IntoView {
     let is_auth = Signal::derive(move || state.token.get().is_some());
 
     view! {
-        <header class="h-16 bg-slate-800/80 backdrop-blur-md border-b border-slate-700 sticky top-0 z-40">
+        <header class="header h-16 sticky top-0 z-40">
             <div class="h-full max-w-7xl mx-auto px-4 flex items-center justify-between">
                 // Logo
-                <a href="/" class="flex items-center gap-3 hover:opacity-80 transition-opacity">
-                    <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center text-2xl">
-                        "🤖"
-                    </div>
+                <a href="/" class="logo hover:opacity-80 transition-opacity">
+                    <img 
+                        src="/assets/ares.png" 
+                        alt="ARES Logo" 
+                        class="logo-image"
+                    />
                     <div>
-                        <h1 class="text-xl font-bold gradient-text">"A.R.E.S"</h1>
-                        <p class="text-xs text-slate-500 -mt-0.5">"Agentic Reasoning & Execution"</p>
+                        <h1 class="text-xl font-bold text-gradient">"A.R.E.S"</h1>
+                        <p class="text-xs text-[var(--text-muted)] -mt-0.5">"Agentic Reasoning & Execution"</p>
                     </div>
                 </a>
                 
                 // Navigation
-                <nav class="flex items-center gap-4">
+                <nav class="flex items-center gap-2">
                     <Show when=move || is_auth.get()>
                         <a
                             href="/chat"
-                            class="px-4 py-2 text-sm font-medium text-slate-300 hover:text-white transition-colors"
+                            class="btn btn-ghost"
                         >
                             "Chat"
                         </a>
@@ -47,7 +49,7 @@ pub fn Header() -> impl IntoView {
                                         state.clear_auth();
                                         navigate("/", Default::default());
                                     }
-                                    class="px-4 py-2 text-sm font-medium text-slate-400 hover:text-white transition-colors"
+                                    class="btn btn-ghost"
                                 >
                                     "Sign Out"
                                 </button>
@@ -56,7 +58,7 @@ pub fn Header() -> impl IntoView {
                             view! {
                                 <a
                                     href="/login"
-                                    class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium transition-colors"
+                                    class="btn btn-primary"
                                 >
                                     "Sign In"
                                 </a>

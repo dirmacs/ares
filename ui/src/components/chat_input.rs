@@ -65,7 +65,7 @@ pub fn ChatInput(
     };
 
     view! {
-        <div class="flex items-end gap-3 p-4 bg-slate-800/50 backdrop-blur-sm border-t border-slate-700">
+        <div class="flex items-end gap-3 p-4 glass border-t border-[var(--border-default)]">
             <div class="flex-1 relative">
                 <textarea
                     node_ref=textarea_ref
@@ -75,12 +75,8 @@ pub fn ChatInput(
                     placeholder=placeholder
                     disabled=disabled
                     rows="1"
-                    class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl resize-none
-                           text-slate-100 placeholder-slate-500
-                           focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
-                           disabled:opacity-50 disabled:cursor-not-allowed
-                           scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-800"
-                    style="max-height: 200px;"
+                    class="input resize-none scrollbar-thin"
+                    style="max-height: 200px; padding-right: 3rem;"
                 ></textarea>
             </div>
             
@@ -91,13 +87,12 @@ pub fn ChatInput(
                     <button
                         on:click=on_button_click
                         disabled=move || is_disabled || is_empty.get()
-                        class="p-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 
-                               disabled:cursor-not-allowed rounded-xl transition-colors
-                               focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900"
+                        class="btn btn-primary p-3 disabled:opacity-40 disabled:cursor-not-allowed 
+                               disabled:transform-none disabled:shadow-none"
                     >
                         <svg
                             xmlns="http://www.w3.org/2000/svg"
-                            class="w-5 h-5 text-white"
+                            class="w-5 h-5"
                             viewBox="0 0 24 24"
                             fill="none"
                             stroke="currentColor"

@@ -106,15 +106,15 @@ pub async fn register(
 /// Fetch available agents
 pub async fn fetch_agents(base_url: &str) -> Result<Vec<AgentInfo>, String> {
     let url = format!("{}/api/agents", base_url);
-    let resp: AgentsListResponse = fetch_with_auth(&url, None).await?;
-    Ok(resp.agents)
+    // Backend returns array directly, not wrapped
+    fetch_with_auth(&url, None).await
 }
 
 /// Fetch available workflows (requires auth)
 pub async fn fetch_workflows(base_url: &str, token: &str) -> Result<Vec<WorkflowInfo>, String> {
     let url = format!("{}/api/workflows", base_url);
-    let resp: WorkflowsListResponse = fetch_with_auth(&url, Some(token.to_string())).await?;
-    Ok(resp.workflows)
+    // Backend returns array directly, not wrapped
+    fetch_with_auth(&url, Some(token.to_string())).await
 }
 
 /// Send a chat message

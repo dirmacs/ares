@@ -22,9 +22,7 @@ pub struct RegisterRequest {
 pub struct AuthResponse {
     pub access_token: String,
     pub refresh_token: String,
-    pub token_type: String,
-    pub expires_in: u64,
-    pub user_id: String,
+    pub expires_in: i64,
 }
 
 /// Chat request
@@ -61,32 +59,20 @@ pub struct ToolCallInfo {
 /// Agent info from the API
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentInfo {
+    pub agent_type: String,
     pub name: String,
-    pub display_name: String,
     pub description: String,
-    #[serde(default)]
-    pub capabilities: Vec<String>,
-}
-
-/// Agents list response
-#[derive(Debug, Clone, Deserialize)]
-pub struct AgentsListResponse {
-    pub agents: Vec<AgentInfo>,
 }
 
 /// Workflow info
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkflowInfo {
     pub name: String,
-    pub description: String,
-    pub agents: Vec<String>,
-    pub max_depth: usize,
-}
-
-/// Workflows list response
-#[derive(Debug, Clone, Deserialize)]
-pub struct WorkflowsListResponse {
-    pub workflows: Vec<WorkflowInfo>,
+    pub entry_agent: String,
+    pub fallback_agent: Option<String>,
+    pub max_depth: u8,
+    pub max_iterations: u8,
+    pub parallel_subagents: bool,
 }
 
 /// User memory

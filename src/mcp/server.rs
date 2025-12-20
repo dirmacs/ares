@@ -342,6 +342,7 @@ impl ServerHandler for McpServer {
         Ok(ListToolsResult {
             tools: Self::get_tools(),
             next_cursor: None,
+            meta: None,
         })
     }
 

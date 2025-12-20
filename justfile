@@ -174,9 +174,16 @@ hurl-research:
 lint:
     cargo clippy -- -D warnings
 
-# Run clippy with all features
+# Run clippy with all features (excludes llamacpp on systems without CUDA)
 lint-all:
-    cargo clippy --all-features -- -D warnings
+    #!/usr/bin/env bash
+    if command -v nvcc &> /dev/null; then
+        echo "CUDA detected, running clippy with all features..."
+        cargo clippy --all-features -- -D warnings
+    else
+        echo "CUDA not detected, running clippy without llamacpp feature..."
+        cargo clippy --features "ollama,openai,turso,qdrant,mcp" -- -D warnings
+    fi
 
 # Run clippy and fix issues automatically
 lint-fix:

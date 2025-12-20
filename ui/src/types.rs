@@ -163,3 +163,22 @@ pub struct Conversation {
     pub messages: Vec<Message>,
     pub selected_agent: Option<String>,
 }
+
+/// Streaming event from the chat/stream endpoint
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamEvent {
+    /// Event type: "start", "token", "done", "error"
+    pub event: String,
+    /// Token content (for "token" events)
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Agent type that handled the request
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// Context ID for the conversation
+    #[serde(default)]
+    pub context_id: Option<String>,
+    /// Error message (for "error" events)
+    #[serde(default)]
+    pub error: Option<String>,
+}

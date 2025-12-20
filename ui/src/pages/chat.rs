@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 use web_sys::{ScrollBehavior, ScrollIntoViewOptions};
-use crate::api::{load_agents, load_workflows, send_chat};
+use crate::api::{load_agents, load_workflows, send_chat, stream_chat};
 use crate::components::{ChatInput, ChatMessage, Header, Sidebar, TypingIndicator};
 use crate::state::AppState;
 use crate::types::{Message, MessageRole};
@@ -21,6 +21,11 @@ pub fn ChatPage() -> impl IntoView {
     let sidebar_open = RwSignal::new(false);
     let selected_agent = RwSignal::new(Option::<String>::None);
     let messages_end_ref = NodeRef::<leptos::html::Div>::new();
+    
+    // Streaming state - these are used to track the in-progress streaming response
+    let streaming_content = RwSignal::new(String::new());
+    let streaming_agent = RwSignal::new(Option::<String>::None);
+    let streaming_msg_id = RwSignal::new(Option::<String>::None);
     
     // Redirect if not authenticated
     let navigate_clone = navigate.clone();
@@ -46,7 +51,7 @@ pub fn ChatPage() -> impl IntoView {
         }
     };
     
-    // Send message helper function
+    // Send message helper function with streaming support
     let state_for_send = state.clone();
     let do_send_message = move |message_text: String| {
         if message_text.is_empty() || is_sending.get() {
@@ -61,46 +66,143 @@ pub fn ChatPage() -> impl IntoView {
         });
         
         is_sending.set(true);
+        streaming_content.set(String::new());
+        streaming_agent.set(None);
         
-        // Scroll after adding user message
+        // Generate a message ID for the streaming response
+        let msg_id = uuid::Uuid::new_v4().to_string();
+        streaming_msg_id.set(Some(msg_id.clone()));
+        
+        // Add a placeholder streaming message
+        state.conversation.update(|c| {
+            c.messages.push(Message {
+                id: msg_id.clone(),
+                role: MessageRole::Assistant,
+                content: String::new(),
+                timestamp: chrono::Utc::now(),
+                agent_type: None,
+                tool_calls: vec![],
+                is_streaming: true,
+            });
+        });
+        
+        // Scroll after adding messages
         scroll_to_bottom();
         
-        // Send to API
+        // Start streaming
         let state = state.clone();
         let agent = selected_agent.get();
+        
         spawn_local(async move {
             let base_url = state.api_base.get_untracked();
             let token = state.token.get_untracked().unwrap_or_default();
             let context_id = state.conversation.get_untracked().id.clone();
+            let msg_id_clone = msg_id.clone();
             
-            match send_chat(&base_url, &token, &message_text, context_id, agent.clone()).await {
-                Ok(response) => {
-                    // Add assistant response
-                    let assistant_msg = Message::assistant(&response.response, Some(response.agent));
-                    
-                    state.conversation.update(|c| {
-                        c.id = Some(response.context_id);
-                        c.messages.push(assistant_msg);
-                    });
-                }
-                Err(e) => {
-                    // Add error as system message
-                    state.conversation.update(|c| {
-                        c.messages.push(Message {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            role: MessageRole::System,
-                            content: format!("Error: {}", e),
-                            timestamp: chrono::Utc::now(),
-                            agent_type: None,
-                            tool_calls: vec![],
-                            is_streaming: false,
+            // Try streaming first
+            let stream_result = stream_chat(
+                &base_url,
+                &token,
+                &message_text,
+                context_id.clone(),
+                agent.clone(),
+                move |event| {
+                    match event.event.as_str() {
+                        "start" => {
+                            // Update the agent info
+                            if let Some(agent) = event.agent {
+                                streaming_agent.set(Some(agent));
+                            }
+                        }
+                        "token" => {
+                            // Append token to streaming content
+                            if let Some(content) = event.content {
+                                streaming_content.update(|c| c.push_str(&content));
+                                
+                                // Update the message in the conversation
+                                let current_content = streaming_content.get_untracked();
+                                let msg_id = msg_id_clone.clone();
+                                state.conversation.update(|c| {
+                                    if let Some(msg) = c.messages.iter_mut().find(|m| m.id == msg_id) {
+                                        msg.content = current_content;
+                                    }
+                                });
+                            }
+                        }
+                        "done" => {
+                            // Finalize the message
+                            if let Some(ctx_id) = event.context_id {
+                                state.conversation.update(|c| {
+                                    c.id = Some(ctx_id);
+                                });
+                            }
+                            
+                            let final_agent = streaming_agent.get_untracked();
+                            let msg_id = msg_id_clone.clone();
+                            state.conversation.update(|c| {
+                                if let Some(msg) = c.messages.iter_mut().find(|m| m.id == msg_id) {
+                                    msg.is_streaming = false;
+                                    msg.agent_type = final_agent;
+                                }
+                            });
+                        }
+                        "error" => {
+                            // Handle error
+                            let error_msg = event.error.unwrap_or_else(|| "Unknown error".to_string());
+                            let msg_id = msg_id_clone.clone();
+                            state.conversation.update(|c| {
+                                if let Some(msg) = c.messages.iter_mut().find(|m| m.id == msg_id) {
+                                    msg.content = format!("Error: {}", error_msg);
+                                    msg.is_streaming = false;
+                                    msg.role = MessageRole::System;
+                                }
+                            });
+                        }
+                        _ => {}
+                    }
+                },
+            ).await;
+            
+            // If streaming failed, fall back to non-streaming API
+            if let Err(e) = stream_result {
+                tracing::warn!("Streaming failed, falling back to regular API: {}", e);
+                
+                // Remove the placeholder streaming message
+                state.conversation.update(|c| {
+                    c.messages.retain(|m| m.id != msg_id);
+                });
+                
+                // Use regular chat endpoint
+                match send_chat(&base_url, &token, &message_text, context_id, agent.clone()).await {
+                    Ok(response) => {
+                        // Add assistant response
+                        let assistant_msg = Message::assistant(&response.response, Some(response.agent));
+                        
+                        state.conversation.update(|c| {
+                            c.id = Some(response.context_id);
+                            c.messages.push(assistant_msg);
                         });
-                    });
-                    state.set_error(e);
+                    }
+                    Err(e) => {
+                        // Add error as system message
+                        state.conversation.update(|c| {
+                            c.messages.push(Message {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                role: MessageRole::System,
+                                content: format!("Error: {}", e),
+                                timestamp: chrono::Utc::now(),
+                                agent_type: None,
+                                tool_calls: vec![],
+                                is_streaming: false,
+                            });
+                        });
+                        state.set_error(e);
+                    }
                 }
             }
             
             is_sending.set(false);
+            streaming_msg_id.set(None);
             scroll_to_bottom();
         });
     };

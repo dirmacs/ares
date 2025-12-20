@@ -42,6 +42,16 @@ web-sys = { version = "0.3", features = [
     "MessageEvent",
     "ScrollBehavior",
     "ScrollIntoViewOptions",
+    # For streaming via fetch + ReadableStream
+    "Headers",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "ReadableStreamReadResult",
+    "TextDecoder",
 ] }
 
 # Logging

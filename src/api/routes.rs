@@ -21,6 +21,7 @@ pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
     let protected_routes = Router::new()
         // Protected routes (auth required)
         .route("/chat", post(crate::api::handlers::chat::chat))
+        .route("/chat/stream", post(crate::api::handlers::chat::chat_stream))
         .route(
             "/research",
             post(crate::api::handlers::research::deep_research),

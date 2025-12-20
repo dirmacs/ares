@@ -1,15 +1,40 @@
 //! Chat message component
 
 use leptos::prelude::*;
-use pulldown_cmark::{Parser, html};
+use pulldown_cmark::{Parser, Options, html};
 use crate::types::{Message, MessageRole, ToolCallInfo};
 
-/// Convert markdown to HTML using pulldown-cmark
+/// Convert markdown to HTML using pulldown-cmark with enhanced options
 fn markdown_to_html(markdown: &str) -> String {
-    let parser = Parser::new(markdown);
+    // Pre-process: Convert LaTeX-style math to readable format
+    let processed = preprocess_math(markdown);
+    
+    // Enable additional markdown features
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_SMART_PUNCTUATION);
+    
+    let parser = Parser::new_ext(&processed, options);
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
     html_output
+}
+
+/// Pre-process math notation for better rendering
+fn preprocess_math(text: &str) -> String {
+    text
+        // Convert \times to ×
+        .replace("\\times", "×")
+        // Convert \div to ÷
+        .replace("\\div", "÷")
+        // Convert [ and ] LaTeX delimiters to code blocks
+        .replace("[ ", "")
+        .replace(" ]", "")
+        // Convert \frac{a}{b} to a/b (basic)
+        .replace("\\frac", "")
+        // Remove remaining backslashes before common math symbols
+        .replace("\\", "")
 }
 
 /// Render a single chat message

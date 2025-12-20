@@ -40,11 +40,17 @@ pub struct ChatRequest {
 pub struct ChatResponse {
     pub response: String,
     pub context_id: String,
-    pub agent_type: String,
+    pub agent: String,
     #[serde(default)]
-    pub tool_calls: Vec<ToolCallInfo>,
-    #[serde(default)]
-    pub sources: Vec<String>,
+    pub sources: Option<Vec<Source>>,
+}
+
+/// Source reference in responses
+#[derive(Debug, Clone, Deserialize)]
+pub struct Source {
+    pub title: String,
+    pub url: Option<String>,
+    pub relevance_score: f32,
 }
 
 /// Tool call information

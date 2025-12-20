@@ -1,0 +1,19 @@
+# Build output
+/dist
+/target
+
+# Dependencies
+/node_modules
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -1,0 +1,12 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[watch]
+watch = ["src", "index.html", "Cargo.toml", "tailwind.config.js", "input.css"]
+ignore = ["target", "dist"]
+
+[[hooks]]
+stage = "pre_build"
+command = "sh"
+command_arguments = ["-c", "npx tailwindcss -i ./input.css -o ./dist/output.css --minify 2>/dev/null || npx tailwindcss -i ./input.css -o ./dist/output.css"]

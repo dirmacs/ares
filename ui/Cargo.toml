@@ -1,0 +1,58 @@
+[package]
+name = "ares-ui"
+version = "0.1.0"
+edition = "2021"
+description = "A.R.E.S Chat UI - Modern Leptos frontend for the ARES agentic server"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+leptos = { version = "0.7", features = ["csr"] }
+leptos_router = "0.7"
+leptos_meta = "0.7"
+
+# HTTP client for API calls
+gloo-net = "0.6"
+gloo-timers = "0.3"
+gloo-storage = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async utilities
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlInputElement",
+    "HtmlTextAreaElement",
+    "Event",
+    "KeyboardEvent",
+    "EventSource",
+    "MessageEvent",
+    "ScrollBehavior",
+    "ScrollIntoViewOptions",
+] }
+
+# Logging
+console_error_panic_hook = "0.1"
+tracing = "0.1"
+tracing-wasm = "0.2"
+
+# Time handling
+chrono = { version = "0.4", features = ["wasmbind"] }
+
+# UUID generation
+uuid = { version = "1.0", features = ["v4", "js"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1

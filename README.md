@@ -14,7 +14,7 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 
 - 🤖 **Multi-Provider LLM Support**: Ollama, OpenAI, LlamaCpp (direct GGUF loading)
 - ⚙️ **TOML Configuration**: Declarative configuration with hot-reloading
-- 🎭 **Configurable Agents**: Define agents via TOML with custom models, tools, and prompts
+- 🎭 **Configurable Agents**: Define agents via [TOON (Token Oriented Object Notation)](https://toonformat.dev) with custom models, tools, and prompts
 - 🔄 **Workflow Engine**: Declarative workflow execution with agent routing
 - 🏠 **Local-First Development**: Runs entirely locally with Ollama and SQLite by default
 - 🔧 **Tool Calling**: Type-safe function calling with automatic schema generation

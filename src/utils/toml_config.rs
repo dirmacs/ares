@@ -630,6 +630,24 @@ impl AresConfig {
         Ok(config)
     }
 
+    /// Load configuration from a TOML file without validation.
+    ///
+    /// This is useful for CLI commands that only need to inspect the configuration
+    /// without actually running the server (e.g., `ares-server config`).
+    /// Environment variables are not checked.
+    pub fn load_unchecked<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+
+        if !path.exists() {
+            return Err(ConfigError::FileNotFound(path.to_path_buf()));
+        }
+
+        let content = fs::read_to_string(path)?;
+        let config: AresConfig = toml::from_str(&content)?;
+
+        Ok(config)
+    }
+
     /// Validate the configuration for internal consistency and env var availability
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Validate auth env vars exist

@@ -26,6 +26,16 @@ build-features features:
 build-all:
     cargo build --features "full"
 
+# Build with UI feature
+build-ui:
+    cd ui && trunk build --release
+    cargo build --features "ui"
+
+# Build with all features including UI
+build-full-ui:
+    cd ui && trunk build --release
+    cargo build --features "full-ui"
+
 # Clean build artifacts
 clean:
     cargo clean
@@ -45,6 +55,10 @@ run:
 # Run the server in release mode
 run-release:
     cargo run --release
+
+# Run with UI embedded
+run-ui:
+    cargo run --features "ui"
 
 # Run with specific features
 run-features features:
@@ -451,10 +465,41 @@ ui-clean:
     cd ui && rm -rf dist target
 
 # Run both backend and UI dev servers
-dev: 
+dev:
     @echo "Starting A.R.E.S backend and UI..."
     @echo "Backend: http://localhost:3000"
     @echo "UI: http://localhost:8080"
     @just run &
     @just ui-dev
 
+# =============================================================================
+# CLI Commands
+# =============================================================================
+
+# Initialize a new A.R.E.S project in the current directory
+init:
+    cargo run -- init
+
+# Initialize with OpenAI provider
+init-openai:
+    cargo run -- init --provider openai
+
+# Initialize with both Ollama and OpenAI
+init-both:
+    cargo run -- init --provider both
+
+# Show configuration summary
+config:
+    cargo run -- config
+
+# Validate configuration
+config-validate:
+    cargo run -- config --validate --full
+
+# List all agents
+agents:
+    cargo run -- agent list
+
+# Show agent details
+agent name:
+    cargo run -- agent show {{name}}

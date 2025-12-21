@@ -116,6 +116,8 @@ pub mod agents;
 pub mod api;
 /// JWT authentication and middleware.
 pub mod auth;
+/// Command-line interface and scaffolding.
+pub mod cli;
 /// Database clients (Turso/SQLite, Qdrant).
 pub mod db;
 /// LLM provider clients and abstractions.

@@ -1,6 +1,6 @@
 [package]
 name = "ares-server"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 rust-version = "1.91"
 description = "A.R.E.S - Agentic Retrieval Enhanced Server: A production-grade agentic chatbot server with multi-provider LLM support, tool calling, RAG, and MCP integration"
@@ -191,5 +191,7 @@ debug = true
 
 # Documentation settings
 [package.metadata.docs.rs]
-all-features = true
+# Don't use all-features because llamacpp and qdrant have build scripts
+# that fail in docs.rs's sandboxed read-only environment
+features = ["ollama", "openai", "local-db", "turso", "mcp"]
 rustdoc-args = ["--cfg", "docsrs"]

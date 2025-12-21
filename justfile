@@ -26,14 +26,50 @@ build-features features:
 build-all:
     cargo build --features "full"
 
-# Build with UI feature
+# Build with UI feature (auto-detects bun/npm/deno)
 build-ui:
-    cd ui && trunk build --release
+    #!/usr/bin/env bash
+    set -e
+    cd ui
+    if command -v bun &> /dev/null; then
+        echo "Using bun for UI dependencies..."
+        bun install
+    elif command -v npm &> /dev/null; then
+        echo "Using npm for UI dependencies..."
+        npm install
+    elif command -v deno &> /dev/null; then
+        echo "Using deno for UI dependencies..."
+    else
+        echo "Error: No Node.js runtime found (bun, npm, or deno)"
+        echo "Please install one of these runtimes:"
+        echo "  - bun: curl -fsSL https://bun.sh/install | bash"
+        echo "  - npm: https://nodejs.org"
+        echo "  - deno: https://deno.land"
+        exit 1
+    fi
+    trunk build --release
+    cd ..
     cargo build --features "ui"
 
-# Build with all features including UI
+# Build with all features including UI (auto-detects bun/npm/deno)
 build-full-ui:
-    cd ui && trunk build --release
+    #!/usr/bin/env bash
+    set -e
+    cd ui
+    if command -v bun &> /dev/null; then
+        echo "Using bun for UI dependencies..."
+        bun install
+    elif command -v npm &> /dev/null; then
+        echo "Using npm for UI dependencies..."
+        npm install
+    elif command -v deno &> /dev/null; then
+        echo "Using deno for UI dependencies..."
+    else
+        echo "Error: No Node.js runtime found (bun, npm, or deno)"
+        exit 1
+    fi
+    trunk build --release
+    cd ..
     cargo build --features "full-ui"
 
 # Clean build artifacts
@@ -471,6 +507,25 @@ dev:
     @echo "UI: http://localhost:8080"
     @just run &
     @just ui-dev
+
+# Check for Node.js runtime
+check-node:
+    #!/usr/bin/env bash
+    if command -v bun &> /dev/null; then
+        echo "✓ bun $(bun --version)"
+    elif command -v npm &> /dev/null; then
+        echo "✓ npm $(npm --version)"
+    elif command -v deno &> /dev/null; then
+        echo "✓ deno $(deno --version | head -1)"
+    else
+        echo "✗ No Node.js runtime found"
+        echo ""
+        echo "Install one of the following:"
+        echo "  - bun: curl -fsSL https://bun.sh/install | bash"
+        echo "  - npm: https://nodejs.org"
+        echo "  - deno: https://deno.land"
+        exit 1
+    fi
 
 # =============================================================================
 # CLI Commands

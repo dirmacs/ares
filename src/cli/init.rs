@@ -568,3 +568,292 @@ parallel_subagents: true
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn create_test_config(temp_dir: &TempDir) -> InitConfig {
+        InitConfig {
+            path: temp_dir.path().to_path_buf(),
+            force: false,
+            minimal: false,
+            no_examples: false,
+            provider: "ollama".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 3000,
+        }
+    }
+
+    #[test]
+    fn test_init_config_creation() {
+        let config = InitConfig {
+            path: std::path::PathBuf::from("/tmp/test"),
+            force: false,
+            minimal: false,
+            no_examples: false,
+            provider: "ollama".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 3000,
+        };
+
+        assert_eq!(config.path, std::path::PathBuf::from("/tmp/test"));
+        assert!(!config.force);
+        assert!(!config.minimal);
+        assert_eq!(config.provider, "ollama");
+        assert_eq!(config.port, 3000);
+    }
+
+    #[test]
+    fn test_init_result_variants() {
+        // Verify enum variants exist and can be matched
+        let success = InitResult::Success;
+        let exists = InitResult::AlreadyExists;
+        let error = InitResult::Error("test error".to_string());
+
+        match success {
+            InitResult::Success => (),
+            _ => panic!("Expected Success"),
+        }
+
+        match exists {
+            InitResult::AlreadyExists => (),
+            _ => panic!("Expected AlreadyExists"),
+        }
+
+        match error {
+            InitResult::Error(msg) => assert_eq!(msg, "test error"),
+            _ => panic!("Expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_generate_ares_toml_ollama() {
+        let config = InitConfig {
+            path: std::path::PathBuf::from("/tmp"),
+            force: false,
+            minimal: false,
+            no_examples: false,
+            provider: "ollama".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 3000,
+        };
+
+        let content = generate_ares_toml(&config);
+
+        assert!(content.contains("[server]"));
+        assert!(content.contains("host = \"127.0.0.1\""));
+        assert!(content.contains("port = 3000"));
+        assert!(content.contains("[providers.ollama-local]"));
+        assert!(content.contains("type = \"ollama\""));
+    }
+
+    #[test]
+    fn test_generate_ares_toml_openai() {
+        let config = InitConfig {
+            path: std::path::PathBuf::from("/tmp"),
+            force: false,
+            minimal: false,
+            no_examples: false,
+            provider: "openai".to_string(),
+            host: "0.0.0.0".to_string(),
+            port: 8080,
+        };
+
+        let content = generate_ares_toml(&config);
+
+        assert!(content.contains("host = \"0.0.0.0\""));
+        assert!(content.contains("port = 8080"));
+        assert!(content.contains("[providers.openai]"));
+        assert!(content.contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn test_generate_ares_toml_both() {
+        let config = InitConfig {
+            path: std::path::PathBuf::from("/tmp"),
+            force: false,
+            minimal: false,
+            no_examples: false,
+            provider: "both".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 3000,
+        };
+
+        let content = generate_ares_toml(&config);
+
+        assert!(content.contains("[providers.ollama-local]"));
+        assert!(content.contains("[providers.openai]"));
+    }
+
+    #[test]
+    fn test_generate_env_example() {
+        let content = generate_env_example();
+
+        assert!(content.contains("JWT_SECRET"));
+        assert!(content.contains("API_KEY"));
+        assert!(content.contains("RUST_LOG"));
+        assert!(content.contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn test_generate_gitignore() {
+        let content = generate_gitignore();
+
+        assert!(content.contains("/data/"));
+        assert!(content.contains(".env"));
+        assert!(content.contains("/target/"));
+        assert!(content.contains(".DS_Store"));
+    }
+
+    #[test]
+    fn test_write_file_creates_new() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let file_path = temp_dir.path().join("test.txt");
+
+        let result = write_file(&file_path, "test content", false);
+        assert!(result.is_ok());
+        assert!(file_path.exists());
+
+        let content = fs::read_to_string(&file_path).expect("Failed to read file");
+        assert_eq!(content, "test content");
+    }
+
+    #[test]
+    fn test_write_file_skips_existing_without_force() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let file_path = temp_dir.path().join("test.txt");
+
+        // Create initial file
+        fs::write(&file_path, "original").expect("Failed to write");
+
+        // Try to write without force
+        let result = write_file(&file_path, "new content", false);
+        assert!(result.is_ok());
+
+        // Content should remain original
+        let content = fs::read_to_string(&file_path).expect("Failed to read file");
+        assert_eq!(content, "original");
+    }
+
+    #[test]
+    fn test_write_file_overwrites_with_force() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let file_path = temp_dir.path().join("test.txt");
+
+        // Create initial file
+        fs::write(&file_path, "original").expect("Failed to write");
+
+        // Write with force
+        let result = write_file(&file_path, "new content", true);
+        assert!(result.is_ok());
+
+        // Content should be new
+        let content = fs::read_to_string(&file_path).expect("Failed to read file");
+        assert_eq!(content, "new content");
+    }
+
+    #[test]
+    fn test_run_creates_all_files() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let config = create_test_config(&temp_dir);
+        let output = Output::no_color();
+
+        let result = run(config, &output);
+
+        match result {
+            InitResult::Success => (),
+            _ => panic!("Expected Success"),
+        }
+
+        // Check all expected files exist
+        assert!(temp_dir.path().join("ares.toml").exists());
+        assert!(temp_dir.path().join(".env.example").exists());
+        assert!(temp_dir.path().join(".gitignore").exists());
+        assert!(temp_dir.path().join("data").is_dir());
+        assert!(temp_dir.path().join("config/agents").is_dir());
+        assert!(temp_dir.path().join("config/models").is_dir());
+        assert!(temp_dir.path().join("config/tools").is_dir());
+        assert!(temp_dir.path().join("config/workflows").is_dir());
+    }
+
+    #[test]
+    fn test_run_no_examples_skips_toon_files() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let config = InitConfig {
+            path: temp_dir.path().to_path_buf(),
+            force: false,
+            minimal: false,
+            no_examples: true,
+            provider: "ollama".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 3000,
+        };
+        let output = Output::no_color();
+
+        let result = run(config, &output);
+
+        match result {
+            InitResult::Success => (),
+            _ => panic!("Expected Success"),
+        }
+
+        // ares.toml should exist
+        assert!(temp_dir.path().join("ares.toml").exists());
+
+        // TOON files should not exist
+        assert!(!temp_dir.path().join("config/models/fast.toon").exists());
+        assert!(!temp_dir.path().join("config/agents/router.toon").exists());
+    }
+
+    #[test]
+    fn test_run_already_exists_without_force() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create initial ares.toml
+        fs::write(temp_dir.path().join("ares.toml"), "existing").expect("Failed to write");
+
+        let config = create_test_config(&temp_dir);
+        let output = Output::no_color();
+
+        let result = run(config, &output);
+
+        match result {
+            InitResult::AlreadyExists => (),
+            _ => panic!("Expected AlreadyExists"),
+        }
+    }
+
+    #[test]
+    fn test_run_force_overwrites() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create initial ares.toml
+        fs::write(temp_dir.path().join("ares.toml"), "existing").expect("Failed to write");
+
+        let config = InitConfig {
+            path: temp_dir.path().to_path_buf(),
+            force: true,
+            minimal: false,
+            no_examples: true,
+            provider: "ollama".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 3000,
+        };
+        let output = Output::no_color();
+
+        let result = run(config, &output);
+
+        match result {
+            InitResult::Success => (),
+            _ => panic!("Expected Success"),
+        }
+
+        // ares.toml should be overwritten
+        let content =
+            fs::read_to_string(temp_dir.path().join("ares.toml")).expect("Failed to read");
+        assert!(content.contains("[server]"));
+        assert!(!content.contains("existing"));
+    }
+}

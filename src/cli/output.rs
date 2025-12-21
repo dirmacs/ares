@@ -279,3 +279,106 @@ impl Output {
         println!();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_output_new() {
+        let output = Output::new();
+        assert!(output.colored);
+    }
+
+    #[test]
+    fn test_output_no_color() {
+        let output = Output::no_color();
+        assert!(!output.colored);
+    }
+
+    #[test]
+    fn test_output_default() {
+        let output = Output::default();
+        assert!(output.colored);
+    }
+
+    #[test]
+    fn test_confirm_parsing() {
+        // Note: We can't easily test interactive confirm in unit tests,
+        // but we can verify the Output struct is created correctly
+        let output = Output::new();
+        assert!(output.colored);
+
+        let output_no_color = Output::no_color();
+        assert!(!output_no_color.colored);
+    }
+
+    #[test]
+    fn test_table_row_formatting() {
+        // Verify table row doesn't panic with various inputs
+        let output = Output::no_color();
+
+        // These should not panic
+        output.table_row(&["a", "b", "c"]);
+        output.table_row(&["long_value_here", "another", "third"]);
+        output.table_row(&[]);
+    }
+
+    #[test]
+    fn test_table_header_formatting() {
+        // Verify table header doesn't panic with various inputs
+        let output = Output::no_color();
+
+        // These should not panic
+        output.table_header(&["Name", "Model", "Tools"]);
+        output.table_header(&["Single"]);
+        output.table_header(&[]);
+    }
+
+    #[test]
+    fn test_output_methods_no_panic() {
+        // Smoke test - ensure none of the output methods panic
+        let output = Output::no_color();
+
+        output.success("test success");
+        output.info("test info");
+        output.warning("test warning");
+        output.error("test error");
+        output.step(1, 3, "step message");
+        output.created("file", "path/to/file");
+        output.skipped("path", "reason");
+        output.created_dir("some/dir");
+        output.header("Test Header");
+        output.subheader("Test Subheader");
+        output.kv("key", "value");
+        output.list_item("item");
+        output.hint("hint message");
+        output.command("some command");
+        output.complete("complete message");
+        output.newline();
+    }
+
+    #[test]
+    fn test_output_methods_colored_no_panic() {
+        // Smoke test for colored output
+        let output = Output::new();
+
+        output.success("test success");
+        output.info("test info");
+        output.warning("test warning");
+        output.error("test error");
+        output.step(1, 3, "step message");
+        output.created("file", "path/to/file");
+        output.skipped("path", "reason");
+        output.created_dir("some/dir");
+        output.header("Test Header");
+        output.subheader("Test Subheader");
+        output.kv("key", "value");
+        output.list_item("item");
+        output.hint("hint message");
+        output.command("some command");
+        output.complete("complete message");
+        output.newline();
+        output.banner();
+    }
+}

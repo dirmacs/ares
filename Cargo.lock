@@ -194,6 +194,7 @@ dependencies = [
  "axum 0.8.7",
  "axum-test",
  "chrono",
+ "clap",
  "config",
  "daedra",
  "dotenv",
@@ -202,9 +203,11 @@ dependencies = [
  "jsonwebtoken",
  "libsql",
  "llama-cpp-2",
+ "mime_guess",
  "mockall",
  "notify",
  "ollama-rs",
+ "owo-colors",
  "parking_lot",
  "qdrant-client",
  "rand 0.9.2",
@@ -212,6 +215,7 @@ dependencies = [
  "rig-core",
  "rmcp",
  "rstest",
+ "rust-embed",
  "schemars",
  "scraper 0.25.0",
  "serde",
@@ -4329,6 +4333,12 @@ dependencies = [
  "tar",
  "ureq 3.1.4",
 ]
+
+[[package]]
+name = "owo-colors"
+version = "4.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c6901729fa79e91a0913333229e9ca5dc725089d1c363b2f4b4760709dc4a52"
 
 [[package]]
 name = "p256"

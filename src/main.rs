@@ -148,7 +148,7 @@ fn handle_config_command(
 
     output.subheader("Tools");
     for tool_name in config.enabled_tools() {
-        output.list_item(&tool_name);
+        output.list_item(tool_name);
     }
 
     if full {

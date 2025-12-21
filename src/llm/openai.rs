@@ -344,10 +344,17 @@ mod tests {
         };
 
         let openai_tool = OpenAIClient::convert_tool(&tool);
-        assert_eq!(openai_tool.function.name, "calculator");
-        assert_eq!(
-            openai_tool.function.description,
-            Some("Performs math operations".to_string())
-        );
+        match openai_tool {
+            ChatCompletionTools::Function(chat_tool) => {
+                assert_eq!(chat_tool.function.name, "calculator");
+                assert_eq!(
+                    chat_tool.function.description,
+                    Some("Performs math operations".to_string())
+                );
+            }
+            ChatCompletionTools::Custom(_) => {
+                panic!("Expected Function variant, got Custom");
+            }
+        }
     }
 }

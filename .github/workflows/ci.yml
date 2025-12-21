@@ -47,13 +47,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         features:
-          - default
-          - "ollama"
-          - "openai"
-          - "ollama,openai"
-          - "all-llm"
-          - "full"
-          - "minimal"
+          [
+            "default",
+            "ollama",
+            "openai",
+            "ollama,openai",
+            "all-llm",
+            "full",
+            "minimal",
+          ]
         exclude:
           # LlamaCpp requires native compilation, skip on some platforms for speed
           - os: windows-latest
@@ -68,9 +70,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Set cache key
+        id: cache-key
+        shell: bash
+        run: echo "features_slug=${FEATURES//,/_}" >> $GITHUB_OUTPUT
+        env:
+          FEATURES: ${{ matrix.features }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}-${{ matrix.features }}
+          key: ${{ matrix.os }}-${{ steps.cache-key.outputs.features_slug }}
 
       - name: Build
         run: cargo build --features "${{ matrix.features }}"
@@ -117,11 +125,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        features:
-          - default
-          - "ollama"
-          - "openai"
-          - "ollama,openai"
+        features: ["default", "ollama", "openai", "ollama,openai"]
         include:
           # Run full test suite on Linux only
           - os: ubuntu-latest
@@ -130,9 +134,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Set cache key
+        id: cache-key
+        shell: bash
+        run: echo "features_slug=${FEATURES//,/_}" >> $GITHUB_OUTPUT
+        env:
+          FEATURES: ${{ matrix.features }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}-test-${{ matrix.features }}
+          key: ${{ matrix.os }}-test-${{ steps.cache-key.outputs.features_slug }}
 
       - name: Run tests
         run: cargo test --features "${{ matrix.features }}" --no-fail-fast

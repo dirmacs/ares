@@ -282,7 +282,7 @@ async fn test_live_ollama_multiple_sequential_requests() {
 
     let client = create_live_client().await;
 
-    let prompts = vec![
+    let prompts = [
         "What is 1+1? Answer with just the number.",
         "What is 2+2? Answer with just the number.",
         "What is 3+3? Answer with just the number.",

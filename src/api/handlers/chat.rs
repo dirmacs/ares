@@ -209,22 +209,26 @@ pub async fn chat_stream(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
     Json(payload): Json<ChatRequest>,
-) -> axum::response::Sse<impl futures::Stream<Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>>> {
+) -> axum::response::Sse<
+    impl futures::Stream<
+        Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
+    >,
+> {
     use axum::response::sse::{Event, Sse};
-    
+
     // Get or create conversation
     let context_id = payload
         .context_id
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    
+
     // Clone values we need for the async stream
     let state_clone = state.clone();
     let claims_clone = claims.clone();
     let message = payload.message.clone();
-    let agent_type_req = payload.agent_type.clone();
+    let agent_type_req = payload.agent_type;
     let context_id_clone = context_id.clone();
-    
+
     let stream = async_stream::stream! {
         // Setup conversation
         if !state_clone.turso.conversation_exists(&context_id_clone).await.unwrap_or(false) {
@@ -233,9 +237,9 @@ pub async fn chat_stream(
                 .create_conversation(&context_id_clone, &claims_clone.sub, None)
                 .await;
         }
-        
+
         let history = state_clone.turso.get_conversation_history(&context_id_clone).await.unwrap_or_default();
-        
+
         // Load user memory
         let memory_facts = state_clone.turso.get_user_memory(&claims_clone.sub).await.unwrap_or_default();
         let preferences = state_clone.turso.get_user_preferences(&claims_clone.sub).await.unwrap_or_default();
@@ -248,7 +252,7 @@ pub async fn chat_stream(
         } else {
             None
         };
-        
+
         // Build agent context
         let agent_context = AgentContext {
             user_id: claims_clone.sub.clone(),
@@ -256,7 +260,7 @@ pub async fn chat_stream(
             conversation_history: history,
             user_memory,
         };
-        
+
         // Route to appropriate agent
         let agent_type = if let Some(at) = agent_type_req {
             at
@@ -266,7 +270,7 @@ pub async fn chat_stream(
                 .get_agent("router")
                 .map(|a| a.model.as_str())
                 .unwrap_or("fast");
-            
+
             let router_llm = match state_clone
                 .provider_registry
                 .create_client_for_model(router_model)
@@ -288,7 +292,7 @@ pub async fn chat_stream(
                     }
                 },
             };
-            
+
             let router = RouterAgent::new(router_llm);
             match router.route(&message, &agent_context).await {
                 Ok(t) => t,
@@ -305,7 +309,7 @@ pub async fn chat_stream(
                 }
             }
         };
-        
+
         // Send start event
         let agent_name = AgentRegistry::type_to_name(agent_type);
         let start_event = StreamEvent {
@@ -316,7 +320,7 @@ pub async fn chat_stream(
             error: None,
         };
         yield Ok(Event::default().data(serde_json::to_string(&start_event).unwrap_or_default()));
-        
+
         // Resolve agent using hierarchy
         let (user_agent, source) = match crate::api::handlers::user_agents::resolve_agent(
             &state_clone,
@@ -336,7 +340,7 @@ pub async fn chat_stream(
                 return;
             }
         };
-        
+
         // Get LLM client for streaming
         let llm = match state_clone
             .provider_registry
@@ -359,7 +363,7 @@ pub async fn chat_stream(
                 }
             },
         };
-        
+
         // Build the prompt with system message and history
         let system_prompt = user_agent.system_prompt.unwrap_or_else(|| "You are a helpful assistant.".to_string());
         let full_prompt = format!(
@@ -367,7 +371,7 @@ pub async fn chat_stream(
             system_prompt,
             message
         );
-        
+
         // Stream tokens
         use futures::StreamExt;
         let mut full_response = String::new();
@@ -412,20 +416,20 @@ pub async fn chat_stream(
                 return;
             }
         }
-        
+
         // Store messages in conversation
         let msg_id = Uuid::new_v4().to_string();
         let _ = state_clone
             .turso
             .add_message(&msg_id, &context_id_clone, MessageRole::User, &message)
             .await;
-        
+
         let resp_id = Uuid::new_v4().to_string();
         let _ = state_clone
             .turso
             .add_message(&resp_id, &context_id_clone, MessageRole::Assistant, &full_response)
             .await;
-        
+
         // Send done event
         let done_event = StreamEvent {
             event: "done".to_string(),
@@ -436,7 +440,7 @@ pub async fn chat_stream(
         };
         yield Ok(Event::default().data(serde_json::to_string(&done_event).unwrap_or_default()));
     };
-    
+
     Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()
             .interval(std::time::Duration::from_secs(15))

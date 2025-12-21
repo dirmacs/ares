@@ -39,6 +39,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// LlamaCpp client for local GGUF model inference
+#[derive(Debug)]
 pub struct LlamaCppClient {
     model_path: String,
     model: Arc<LlamaModel>,
@@ -515,6 +516,9 @@ Otherwise, respond normally with text."#,
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "llamacpp")]
+    use super::LlamaCppClient;
+
     #[test]
     fn test_format_prompt_without_system() {
         // Test the prompt formatting logic

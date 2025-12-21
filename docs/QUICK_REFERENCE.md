@@ -473,9 +473,17 @@ curl -X POST http://localhost:3000/api/chat \
 ```
 
 ### Swagger UI
+
+> **Note:** Requires the `swagger-ui` feature to be enabled at build time.
+
+```bash
+# Build with Swagger UI
+cargo build --features "swagger-ui"
+# Or use the full bundle:
+cargo build --features "full"
 ```
-http://localhost:3000/swagger-ui/
-```
+
+Then access at: `http://localhost:3000/swagger-ui/`
 
 ## 📝 Feature Flags
 
@@ -492,13 +500,16 @@ http://localhost:3000/swagger-ui/
 - `turso` - Remote Turso database
 - `qdrant` - Vector database
 
-### UI
+### UI & Documentation
 - `ui` - Embedded Leptos web UI served from backend
+- `swagger-ui` - Interactive Swagger UI API documentation at `/swagger-ui/`
+
+> **Note:** `swagger-ui` was made optional in v0.2.5 to reduce binary size and build time. It requires network access during build to download Swagger UI assets.
 
 ### Bundles
 - `all-llm` - All LLM providers
 - `all-db` - All databases
-- `full` - Everything (except UI)
+- `full` - Everything (except UI): ollama, openai, llamacpp, turso, qdrant, mcp, swagger-ui
 - `full-ui` - Everything including UI
 - `minimal` - Nothing optional
 
@@ -695,10 +706,14 @@ ares-server
 cargo build
 cargo run
 
-# Access immediately
+# Access Swagger UI (requires swagger-ui feature)
+cargo build --features swagger-ui
+cargo run --features swagger-ui
 open http://localhost:3000/swagger-ui/
 
 # With Web UI (if built with --features ui)
+cargo build --features ui
+cargo run --features ui
 open http://localhost:3000/
 ```
 
@@ -713,6 +728,8 @@ open http://localhost:3000/
 7. **Use docker-compose.dev.yml**: Easiest local setup
 8. **Check CI before pushing**: Run `cargo clippy` and `cargo test`
 9. **Build with `--features ui`**: Get a web interface bundled in
+10. **Build with `--features swagger-ui`**: Get interactive API docs at `/swagger-ui/`
+11. **Default build is lighter**: Core server doesn't include swagger-ui by default for faster builds
 
 ## 🆘 Getting Help
 

@@ -149,11 +149,14 @@ A.R.E.S uses feature flags for conditional compilation. Understanding these is c
 | `turso` | Remote Turso database |
 | `qdrant` | Qdrant vector database |
 
-### UI Feature
+### UI & Documentation Features
 
 | Feature | Description |
 |---------|-------------|
 | `ui` | Embedded Leptos web UI served from backend |
+| `swagger-ui` | Interactive Swagger UI API documentation at `/swagger-ui/` |
+
+> **Note:** The `swagger-ui` feature was made optional in v0.2.5 to reduce binary size and build time. It requires network access during build to download Swagger UI assets.
 
 ### Feature Bundles
 
@@ -161,7 +164,7 @@ A.R.E.S uses feature flags for conditional compilation. Understanding these is c
 |---------|----------|
 | `all-llm` | ollama + openai + llamacpp |
 | `all-db` | local-db + turso + qdrant |
-| `full` | All optional features (except UI) |
+| `full` | All optional features (except UI): ollama, openai, llamacpp, turso, qdrant, mcp, swagger-ui |
 | `full-ui` | All optional features + UI |
 | `minimal` | No optional features |
 
@@ -181,7 +184,15 @@ cargo clippy --features "full"
 # Build with UI feature (requires Node.js runtime)
 cargo build --features "ui"
 # Or: just build-ui
+
+# Build with Swagger UI (interactive API documentation)
+cargo build --features "swagger-ui"
+
+# Build with both UI and Swagger UI
+cargo build --features "ui,swagger-ui"
 ```
+
+> **Note about docs.rs:** Some features (`llamacpp`, `qdrant`, `swagger-ui`) cannot be built on docs.rs due to their build requirements (native compilation, network access, or filesystem writes). Documentation is built with: `ollama`, `openai`, `local-db`, `turso`, `mcp`.
 
 ## Using just (Recommended)
 

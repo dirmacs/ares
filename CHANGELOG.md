@@ -5,6 +5,35 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2024-12-21
+
+### Changed
+
+- **Swagger UI is now optional**: The interactive API documentation (Swagger UI) is now behind the `swagger-ui` feature flag
+  - This reduces the default binary size and build time
+  - The core server no longer requires network access during build
+  - Enable with `cargo build --features swagger-ui` or use the `full` bundle
+  - When enabled, Swagger UI is available at `/swagger-ui/`
+
+- **Improved docs.rs compatibility**: Documentation builds now work on docs.rs
+  - Removed problematic dependencies from docs.rs builds (`llamacpp`, `qdrant`, `swagger-ui`)
+  - These features require native compilation or network access which docs.rs doesn't support
+
+### Fixed
+
+- **docs.rs build failures**: Fixed build failures caused by:
+  - `utoipa-swagger-ui` requiring network access to download Swagger UI assets
+  - `llama-cpp-sys-2` requiring native C++ compilation
+  - `qdrant-client` build script requiring filesystem write access
+
+## [0.2.4] - 2024-12-21
+
+### Fixed
+
+- **CI workflow**: Fixed rust-cache key validation errors caused by commas in feature matrix
+- **Clippy errors**: Fixed various clippy warnings treated as errors in CI
+- **Test compilation**: Fixed `ChatCompletionTools` enum pattern matching in OpenAI tests
+
 ## 0.2.3
 
 ### Added
@@ -121,6 +150,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.2.5]: https://github.com/dirmacs/ares/compare/v0.2.4...v0.2.5
+[0.2.4]: https://github.com/dirmacs/ares/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/dirmacs/ares/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/dirmacs/ares/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/dirmacs/ares/compare/v0.2.0...v0.2.1

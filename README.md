@@ -200,11 +200,14 @@ A.R.E.S uses Cargo features for conditional compilation:
 | `turso` | Remote Turso database | No |
 | `qdrant` | Qdrant vector database | No |
 
-### UI
+### UI & Documentation
 
 | Feature | Description | Default |
 |---------|-------------|---------|
 | `ui` | Embedded Leptos web UI served from backend | No |
+| `swagger-ui` | Interactive API documentation at `/swagger-ui/` | No |
+
+> **Note:** `swagger-ui` was made optional in v0.2.5 to reduce binary size and build time. The feature requires network access during build to download Swagger UI assets.
 
 ### Feature Bundles
 
@@ -212,7 +215,7 @@ A.R.E.S uses Cargo features for conditional compilation:
 |---------|----------|
 | `all-llm` | ollama + openai + llamacpp |
 | `all-db` | local-db + turso + qdrant |
-| `full` | All optional features (except UI) |
+| `full` | All optional features (except UI): ollama, openai, llamacpp, turso, qdrant, mcp, swagger-ui |
 | `full-ui` | All optional features + UI |
 | `minimal` | No optional features |
 
@@ -239,6 +242,9 @@ cargo build --features "full"
 
 # With embedded Web UI
 cargo build --features "ui"
+
+# With Swagger UI (interactive API docs)
+cargo build --features "swagger-ui"
 
 # Full feature set with UI
 cargo build --features "full-ui"
@@ -581,6 +587,13 @@ system_prompt: |
 ## API Documentation
 
 Interactive Swagger UI available at: `http://localhost:3000/swagger-ui/`
+
+> **Note:** Swagger UI requires the `swagger-ui` feature to be enabled at build time:
+> ```bash
+> cargo build --features "swagger-ui"
+> # Or use the full bundle:
+> cargo build --features "full"
+> ```
 
 ### Authentication
 

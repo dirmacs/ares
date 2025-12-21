@@ -1,6 +1,6 @@
 [package]
 name = "ares-server"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 rust-version = "1.91"
 description = "A.R.E.S - Agentic Retrieval Enhanced Server: A production-grade agentic chatbot server with multi-provider LLM support, tool calling, RAG, and MCP integration"
@@ -71,6 +71,9 @@ mcp = ["dep:rmcp"]
 # Embedded UI - serves the Leptos frontend from the backend
 ui = ["dep:rust-embed", "dep:mime_guess"]
 
+# Swagger UI - interactive API documentation (requires network during build)
+swagger-ui = ["dep:utoipa-swagger-ui"]
+
 # ============= Feature Bundles =============
 # All LLM providers
 all-llm = ["ollama", "openai", "llamacpp"]
@@ -79,7 +82,7 @@ all-llm = ["ollama", "openai", "llamacpp"]
 all-db = ["local-db", "turso", "qdrant"]
 
 # Full feature set for development/testing
-full = ["ollama", "openai", "llamacpp", "turso", "qdrant", "mcp"]
+full = ["ollama", "openai", "llamacpp", "turso", "qdrant", "mcp", "swagger-ui"]
 
 # Full feature set with UI
 full-ui = ["full", "ui"]
@@ -154,7 +157,7 @@ scraper = "0.25.0"
 # Schema and documentation
 schemars = { version = "1.1.0", features = ["derive"] }
 utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"] }
-utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
 
 # MCP support (optional)
 rmcp = { version = "0.12.0", features = ["server", "client", "transport-io", "macros"], optional = true }

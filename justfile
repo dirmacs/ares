@@ -26,6 +26,10 @@ build-features features:
 build-all:
     cargo build --features "full"
 
+# Build with Swagger UI (interactive API docs)
+build-swagger:
+    cargo build --features "swagger-ui"
+
 # Build with UI feature (auto-detects bun/npm/deno)
 build-ui:
     #!/usr/bin/env bash
@@ -95,6 +99,10 @@ run-release:
 # Run with UI embedded
 run-ui:
     cargo run --features "ui"
+
+# Run with Swagger UI (interactive API docs at /swagger-ui/)
+run-swagger:
+    cargo run --features "swagger-ui"
 
 # Run with specific features
 run-features features:
@@ -453,6 +461,12 @@ info:
     @echo "  - turso: Turso/LibSQL database"
     @echo "  - qdrant: Qdrant vector database"
     @echo "  - mcp: Model Context Protocol server"
+    @echo "  - swagger-ui: Interactive API docs at /swagger-ui/"
+    @echo "  - ui: Embedded Leptos web UI"
+    @echo ""
+    @echo "Feature bundles:"
+    @echo "  - full: All features except UI (includes swagger-ui)"
+    @echo "  - full-ui: All features including UI"
     @echo ""
     @echo "Run 'just --list' for available commands"
 

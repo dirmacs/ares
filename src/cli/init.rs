@@ -147,7 +147,8 @@ pub fn run(config: InitConfig, output: &Output) -> InitResult {
         "Server will be available at http://{}:{}",
         config.host, config.port
     ));
-    output.hint("API docs available at /swagger-ui/");
+    output.hint("API docs available at /swagger-ui/ (requires 'swagger-ui' feature)");
+    output.hint("Build with: cargo build --features swagger-ui");
 
     InitResult::Success
 }

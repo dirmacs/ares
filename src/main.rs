@@ -32,7 +32,9 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+#[cfg(feature = "swagger-ui")]
 use utoipa::OpenApi;
+#[cfg(feature = "swagger-ui")]
 use utoipa_swagger_ui::SwaggerUi;
 
 #[tokio::main]
@@ -422,8 +424,9 @@ async fn run_server(
     };
 
     // =================================================================
-    // Build OpenAPI Documentation
+    // Build OpenAPI Documentation (only when swagger-ui is enabled)
     // =================================================================
+    #[cfg(feature = "swagger-ui")]
     #[derive(OpenApi)]
     #[openapi(
         paths(
@@ -469,9 +472,15 @@ async fn run_server(
         .nest(
             "/api",
             api::routes::create_router(state.auth_service.clone()),
-        )
-        // Swagger UI
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
+        );
+
+    // Swagger UI (optional - requires network during build)
+    #[cfg(feature = "swagger-ui")]
+    {
+        app = app
+            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
+        tracing::info!("Swagger UI enabled - available at /swagger-ui");
+    }
 
     // =================================================================
     // Add UI routes if the `ui` feature is enabled

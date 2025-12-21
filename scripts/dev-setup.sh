@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Development Setup Script for A.R.E.S
 # This script helps set up a local development environment with Ollama models
+# and initialize a new A.R.E.S project.
 
 set -e
 
@@ -35,6 +36,70 @@ check_docker_compose() {
         error "Docker Compose is not installed. Please install it first."
     fi
     success "Docker Compose is available"
+}
+
+# Check for Node.js runtime (npm, bun, or deno)
+check_node_runtime() {
+    if command -v bun &> /dev/null; then
+        success "Bun is available ($(bun --version))"
+        NODE_RUNTIME="bun"
+        return 0
+    elif command -v npm &> /dev/null; then
+        success "npm is available ($(npm --version))"
+        NODE_RUNTIME="npm"
+        return 0
+    elif command -v deno &> /dev/null; then
+        success "Deno is available ($(deno --version | head -1))"
+        NODE_RUNTIME="deno"
+        return 0
+    else
+        warning "No Node.js runtime found (bun, npm, or deno)"
+        warning "Node.js runtime is required for UI development"
+        NODE_RUNTIME=""
+        return 1
+    fi
+}
+
+# Check if ares-server binary is available
+check_ares_binary() {
+    if command -v ares-server &> /dev/null; then
+        success "ares-server binary found"
+        return 0
+    elif [ -f "./target/debug/ares-server" ]; then
+        success "ares-server binary found (debug build)"
+        ARES_BIN="./target/debug/ares-server"
+        return 0
+    elif [ -f "./target/release/ares-server" ]; then
+        success "ares-server binary found (release build)"
+        ARES_BIN="./target/release/ares-server"
+        return 0
+    else
+        warning "ares-server binary not found"
+        info "Building ares-server..."
+        cargo build
+        ARES_BIN="./target/debug/ares-server"
+        return 0
+    fi
+}
+
+# Initialize a new A.R.E.S project using the CLI
+init_project() {
+    info "Initializing A.R.E.S project..."
+
+    if [ -f "ares.toml" ]; then
+        warning "ares.toml already exists"
+        read -p "Overwrite existing configuration? [y/N]: " overwrite
+        if [[ "$overwrite" =~ ^[Yy]$ ]]; then
+            ${ARES_BIN:-ares-server} init --force
+        else
+            info "Skipping initialization"
+            return 0
+        fi
+    else
+        ${ARES_BIN:-ares-server} init
+    fi
+
+    success "Project initialized"
 }
 
 # Check if Ollama is running
@@ -209,6 +274,8 @@ main() {
 
     # Check prerequisites
     check_docker_compose
+    check_node_runtime || true
+    check_ares_binary || true
 
     # Setup environment
     setup_env
@@ -217,37 +284,47 @@ main() {
     # Ask user what they want to do
     echo ""
     echo "Setup options:"
-    echo "1) Full setup (start services + pull models)"
-    echo "2) Start services only"
-    echo "3) Pull models only (services must be running)"
-    echo "4) List current models"
+    echo "1) Full setup (init project + start services + pull models)"
+    echo "2) Initialize project only (using ares-server init)"
+    echo "3) Start services only"
+    echo "4) Pull models only (services must be running)"
+    echo "5) List current models"
+    echo "6) Setup UI development environment"
     echo ""
-    read -p "Choose an option (1-4): " setup_choice
+    read -p "Choose an option (1-6): " setup_choice
 
     case $setup_choice in
         1)
+            init_project
             start_services
             interactive_setup
             list_models
             ;;
         2)
+            init_project
+            success "Project initialized. Run this script again to start services."
+            ;;
+        3)
             start_services
             success "Services started. Run this script again to pull models."
             ;;
-        3)
+        4)
             if check_ollama; then
                 interactive_setup
                 list_models
             else
-                error "Ollama is not running. Start services first (option 2)."
+                error "Ollama is not running. Start services first (option 3)."
             fi
             ;;
-        4)
+        5)
             if check_ollama; then
                 list_models
             else
                 error "Ollama is not running."
             fi
+            ;;
+        6)
+            setup_ui_dev
             ;;
         *)
             error "Invalid option"
@@ -277,6 +354,57 @@ main() {
     echo "     http://localhost:6333/dashboard"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+}
+
+# Setup UI development environment
+setup_ui_dev() {
+    info "Setting up UI development environment..."
+
+    if [ -z "$NODE_RUNTIME" ]; then
+        error "No Node.js runtime found. Please install bun, npm, or deno first."
+    fi
+
+    # Check for wasm32 target
+    if ! rustup target list --installed | grep -q wasm32-unknown-unknown; then
+        info "Installing wasm32-unknown-unknown target..."
+        rustup target add wasm32-unknown-unknown
+    fi
+    success "WASM target installed"
+
+    # Check for trunk
+    if ! command -v trunk &> /dev/null; then
+        info "Installing trunk..."
+        cargo install trunk --locked
+    fi
+    success "Trunk installed"
+
+    # Install UI dependencies
+    info "Installing UI dependencies..."
+    cd ui
+    case $NODE_RUNTIME in
+        bun)
+            bun install
+            ;;
+        npm)
+            npm install
+            ;;
+        deno)
+            # Deno doesn't need npm install for most cases
+            info "Deno detected - dependencies will be fetched on demand"
+            ;;
+    esac
+    cd ..
+    success "UI dependencies installed"
+
+    echo ""
+    success "UI development environment is ready!"
+    echo ""
+    info "To start the UI development server:"
+    echo "     cd ui && trunk serve --open"
+    echo ""
+    info "Or use just:"
+    echo "     just ui-dev"
+    echo ""
 }
 
 # Run main function

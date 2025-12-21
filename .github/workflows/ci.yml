@@ -35,8 +35,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Clippy (default features)
         run: cargo clippy --all-targets -- -D warnings
-      - name: Clippy (all features)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy (all features except UI)
+        run: cargo clippy --all-targets --features "full" -- -D warnings
 
   # Build matrix for different feature combinations
   build:
@@ -75,6 +75,40 @@ jobs:
       - name: Build
         run: cargo build --features "${{ matrix.features }}"
 
+  # UI Build (requires WASM target and Node.js/Bun)
+  build-ui:
+    name: Build with UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-ui
+
+      # Install Bun for Tailwind CSS
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Install trunk for building the UI
+      - name: Install Trunk
+        run: cargo install trunk --locked
+
+      # Build UI assets
+      - name: Install UI dependencies
+        run: cd ui && bun install
+
+      - name: Build UI
+        run: cd ui && trunk build --release
+
+      # Build backend with UI feature
+      - name: Build with UI feature
+        run: cargo build --features "ui"
+
   # Test matrix
   test:
     name: Test (${{ matrix.os }}, ${{ matrix.features }})
@@ -102,6 +136,38 @@ jobs:
 
       - name: Run tests
         run: cargo test --features "${{ matrix.features }}" --no-fail-fast
+
+  # CLI Tests
+  cli-tests:
+    name: CLI Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-tests
+
+      - name: Run CLI unit tests
+        run: cargo test --lib cli:: -- --nocapture
+
+      - name: Run CLI integration tests
+        run: cargo test --test cli_tests -- --nocapture
+
+      - name: Test init command
+        run: |
+          cargo build
+          mkdir -p /tmp/ares-test
+          ./target/debug/ares-server init /tmp/ares-test
+          test -f /tmp/ares-test/ares.toml
+          test -d /tmp/ares-test/config/agents
+          test -d /tmp/ares-test/config/models
+
+      - name: Test help command
+        run: ./target/debug/ares-server --help
+
+      - name: Test version command
+        run: ./target/debug/ares-server --version
 
   # Documentation build check
   docs:
@@ -185,7 +251,7 @@ jobs:
   # All checks must pass
   ci-success:
     name: CI Success
-    needs: [fmt, clippy, build, test, docs, msrv, ollama-integration]
+    needs: [fmt, clippy, build, build-ui, test, cli-tests, docs, msrv, ollama-integration]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -194,7 +260,9 @@ jobs:
           if [[ "${{ needs.fmt.result }}" != "success" ]] || \
              [[ "${{ needs.clippy.result }}" != "success" ]] || \
              [[ "${{ needs.build.result }}" != "success" ]] || \
+             [[ "${{ needs.build-ui.result }}" != "success" ]] || \
              [[ "${{ needs.test.result }}" != "success" ]] || \
+             [[ "${{ needs.cli-tests.result }}" != "success" ]] || \
              [[ "${{ needs.docs.result }}" != "success" ]] || \
              [[ "${{ needs.msrv.result }}" != "success" ]] || \
              [[ "${{ needs.ollama-integration.result }}" != "success" ]]; then

@@ -70,12 +70,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### As a Binary
 
 ```bash
-# Install from crates.io
+# Install from crates.io (basic installation)
 cargo install ares-server
 
-# Run the server (requires ares.toml in current directory)
+# Install with embedded Web UI
+cargo install ares-server --features ui
+
+# Initialize a new project (creates ares.toml and config files)
+ares-server init
+
+# Run the server
 ares-server
 ```
+
+## CLI Commands
+
+A.R.E.S provides a full-featured CLI with colored output:
+
+```bash
+# Initialize a new project with all configuration files
+ares-server init
+
+# Initialize with custom options
+ares-server init --provider openai --port 8080 --host 0.0.0.0
+
+# Initialize with minimal configuration
+ares-server init --minimal
+
+# View configuration summary
+ares-server config
+
+# Validate configuration
+ares-server config --validate
+
+# List all configured agents
+ares-server agent list
+
+# Show details for a specific agent
+ares-server agent show orchestrator
+
+# Start the server
+ares-server
+
+# Start with verbose logging
+ares-server --verbose
+
+# Use a custom config file
+ares-server --config custom.toml
+
+# Disable colored output
+ares-server --no-color init
+```
+
+### Init Command Options
+
+| Option | Description |
+|--------|-------------|
+| `--force, -f` | Overwrite existing files |
+| `--minimal, -m` | Create minimal configuration |
+| `--no-examples` | Skip creating TOON example files |
+| `--provider <NAME>` | LLM provider: `ollama`, `openai`, or `both` |
+| `--host <ADDR>` | Server host address (default: 127.0.0.1) |
+| `--port <PORT>` | Server port (default: 3000) |
 
 ## Quick Start (Development)
 
@@ -144,13 +200,20 @@ A.R.E.S uses Cargo features for conditional compilation:
 | `turso` | Remote Turso database | No |
 | `qdrant` | Qdrant vector database | No |
 
+### UI
+
+| Feature | Description | Default |
+|---------|-------------|---------|
+| `ui` | Embedded Leptos web UI served from backend | No |
+
 ### Feature Bundles
 
 | Feature | Includes |
 |---------|----------|
 | `all-llm` | ollama + openai + llamacpp |
 | `all-db` | local-db + turso + qdrant |
-| `full` | All optional features |
+| `full` | All optional features (except UI) |
+| `full-ui` | All optional features + UI |
 | `minimal` | No optional features |
 
 ### Building with Features
@@ -173,6 +236,12 @@ cargo build --features "llamacpp-cuda"
 # Full feature set
 cargo build --features "full"
 # Or: just build-all
+
+# With embedded Web UI
+cargo build --features "ui"
+
+# Full feature set with UI
+cargo build --features "full-ui"
 
 # Release build
 cargo build --release

@@ -5,19 +5,54 @@ Fast reference for common development tasks and commands.
 ## 🚀 Quick Start
 
 ```bash
-# 1. Clone and setup
+# Option 1: Install from crates.io
+cargo install ares-server
+ares-server init
+ares-server
+
+# Option 2: Install with embedded Web UI
+cargo install ares-server --features ui
+ares-server init
+ares-server  # UI available at http://localhost:3000/
+
+# Option 3: Clone and develop
 git clone <repo>
 cd ares
-
-# 2. Install just (command runner)
-brew install just          # macOS
-# Or: cargo install just
-
-# 3. Run setup (auto-configures everything)
 just setup
-
-# 4. Build and run
 just run
+```
+
+## 🖥️ CLI Commands
+
+```bash
+# Initialize a new project
+ares-server init                          # Create ares.toml and config/
+ares-server init --provider openai        # Use OpenAI instead of Ollama
+ares-server init --provider both          # Configure both providers
+ares-server init --host 0.0.0.0 --port 8080  # Custom host/port
+ares-server init --force                  # Overwrite existing files
+ares-server init --minimal                # Minimal configuration
+ares-server init --no-examples            # Skip TOON example files
+
+# View configuration
+ares-server config                        # Show config summary
+ares-server config --full                 # Show full configuration
+ares-server config --validate             # Validate configuration
+
+# Manage agents
+ares-server agent list                    # List all agents
+ares-server agent show orchestrator       # Show agent details
+
+# Run the server
+ares-server                               # Start with default config
+ares-server --config custom.toml          # Use custom config file
+ares-server --verbose                     # Enable verbose logging
+ares-server --no-color                    # Disable colored output
+
+# Help
+ares-server --help                        # Show all options
+ares-server init --help                   # Show init options
+ares-server --version                     # Show version
 ```
 
 ## 📋 Just Commands (Recommended)
@@ -29,12 +64,22 @@ Run `just --list` for all available commands. Here are the most common:
 just build              # Debug build
 just build-release      # Release build
 just build-features "x" # Build with features
+just build-ui           # Build with embedded UI
+just build-full-ui      # Build with all features + UI
 just clean              # Clean artifacts
 
 # Run
 just run                # Run server
+just run-ui             # Run with embedded UI
 just run-debug          # Run with debug logging
 just run-trace          # Run with trace logging
+
+# CLI Commands
+just init               # Initialize project (ares-server init)
+just init-openai        # Initialize with OpenAI
+just config             # Show configuration
+just agents             # List all agents
+just agent <name>       # Show agent details
 
 # Test
 just test               # Run tests
@@ -61,6 +106,13 @@ just ollama-status      # Check if running
 just ollama-pull        # Pull default model
 just ollama-list        # List models
 
+# UI Development
+just ui-setup           # Install UI dependencies
+just ui-dev             # Run UI dev server
+just ui-build           # Build UI for production
+just ui-clean           # Clean UI artifacts
+just dev                # Run backend + UI together
+
 # Info
 just info               # Project info
 just status             # Environment status
@@ -83,6 +135,14 @@ cargo build --features "llamacpp-cuda"
 # All features
 cargo build --features "full"
 # Or: just build-all
+
+# With embedded UI
+cargo build --features "ui"
+# Or: just build-ui
+
+# All features with UI
+cargo build --features "full-ui"
+# Or: just build-full-ui
 
 # Release build
 cargo build --release --features "ollama"
@@ -432,10 +492,14 @@ http://localhost:3000/swagger-ui/
 - `turso` - Remote Turso database
 - `qdrant` - Vector database
 
+### UI
+- `ui` - Embedded Leptos web UI served from backend
+
 ### Bundles
 - `all-llm` - All LLM providers
 - `all-db` - All databases
-- `full` - Everything
+- `full` - Everything (except UI)
+- `full-ui` - Everything including UI
 - `minimal` - Nothing optional
 
 ## 🐛 Troubleshooting
@@ -622,32 +686,42 @@ nvidia-smi  # NVIDIA
 ## 🎉 Quick Wins
 
 ```bash
-# Get running in 3 commands
+# Get running in 2 commands (if installed via cargo)
+ares-server init
+ares-server
+
+# Get running in 3 commands (development)
 ./scripts/dev-setup.sh
 cargo build
 cargo run
 
 # Access immediately
 open http://localhost:3000/swagger-ui/
+
+# With Web UI (if built with --features ui)
+open http://localhost:3000/
 ```
 
 ## 💡 Pro Tips
 
-1. **Use feature flags wisely**: Don't build with `full` unless needed
-2. **Cache Ollama models**: They download once and persist
-3. **Use Q4_K_M quantization**: Best quality/size ratio
-4. **Monitor RAM usage**: Large models can consume 8GB+
-5. **Enable GPU when available**: 5-10x speed boost
-6. **Use docker-compose.dev.yml**: Easiest local setup
-7. **Check CI before pushing**: Run `cargo clippy` and `cargo test`
+1. **Use `ares-server init`**: Fastest way to get started
+2. **Use feature flags wisely**: Don't build with `full` unless needed
+3. **Cache Ollama models**: They download once and persist
+4. **Use Q4_K_M quantization**: Best quality/size ratio
+5. **Monitor RAM usage**: Large models can consume 8GB+
+6. **Enable GPU when available**: 5-10x speed boost
+7. **Use docker-compose.dev.yml**: Easiest local setup
+8. **Check CI before pushing**: Run `cargo clippy` and `cargo test`
+9. **Build with `--features ui`**: Get a web interface bundled in
 
 ## 🆘 Getting Help
 
-1. Check `docs/` directory for guides
-2. Search closed issues on GitHub
-3. Run `cargo doc --open` for API docs
-4. Use `--help` flag: `cargo run -- --help`
-5. Enable debug logging: `RUST_LOG=debug cargo run`
+1. Run `ares-server --help` for CLI options
+2. Run `ares-server init --help` for init options
+3. Check `docs/` directory for guides
+4. Search closed issues on GitHub
+5. Run `cargo doc --open` for API docs
+6. Enable debug logging: `RUST_LOG=debug ares-server`
 
 ---
 

@@ -818,8 +818,17 @@ just --list
 # Build & Run
 just build          # Build (debug)
 just build-release  # Build (release)
+just build-ui       # Build with embedded UI
 just run            # Run server
+just run-ui         # Run with embedded UI
 just run-debug      # Run with debug logging
+
+# CLI Commands
+just init           # Initialize project (ares-server init)
+just init-openai    # Initialize with OpenAI provider
+just config         # Show configuration summary
+just agents         # List all agents
+just agent <name>   # Show agent details
 
 # Testing
 just test           # Run tests
@@ -838,6 +847,12 @@ just docker-up      # Start dev services
 just docker-down    # Stop services
 just docker-logs    # View logs
 
+# UI Development
+just ui-setup       # Install UI dependencies
+just ui-dev         # Run UI dev server
+just ui-build       # Build UI for production
+just dev            # Run backend + UI together
+
 # Ollama
 just ollama-pull    # Pull default model
 just ollama-status  # Check if running
@@ -846,3 +861,163 @@ just ollama-status  # Check if running
 just info           # Show project info
 just status         # Show environment status
 ```
+
+## Troubleshooting
+
+### Configuration File Not Found
+
+```bash
+# Error: Configuration file 'ares.toml' not found!
+
+# Solution: Initialize a new project
+ares-server init
+```
+
+### Port Already in Use
+
+```bash
+# Error: Address already in use (os error 48)
+
+# Find the process using port 3000
+lsof -i :3000          # Linux/macOS
+netstat -ano | findstr :3000  # Windows
+
+# Kill the process
+kill -9 <PID>          # Linux/macOS
+taskkill /PID <PID> /F # Windows
+```
+
+### Ollama Connection Failed
+
+```bash
+# Check if Ollama is running
+curl http://localhost:11434/api/tags
+
+# Start Ollama
+ollama serve
+
+# Or start via Docker
+just docker-services
+```
+
+### Missing Environment Variables
+
+```bash
+# Error: MissingEnvVar("JWT_SECRET")
+
+# Solution: Set up environment variables
+cp .env.example .env
+# Edit .env and set JWT_SECRET (min 32 characters) and API_KEY
+```
+
+### UI Build Errors (Node.js runtime required)
+
+```bash
+# Error: npx: command not found
+
+# Solution: Install a Node.js runtime
+# Option 1: Install Bun (recommended)
+curl -fsSL https://bun.sh/install | bash
+
+# Option 2: Install Node.js
+brew install node  # macOS
+# or download from https://nodejs.org
+```
+
+### WASM Build Errors
+
+```bash
+# Error: target `wasm32-unknown-unknown` not found
+
+# Solution: Add the WASM target
+rustup target add wasm32-unknown-unknown
+
+# Install trunk
+cargo install trunk --locked
+```
+
+## Requirements
+
+### Minimum Requirements
+
+- **Rust**: 1.91 or later
+- **Operating System**: Linux, macOS, or Windows
+- **Memory**: 2GB RAM (4GB+ recommended for larger models)
+
+### Optional Requirements
+
+- **Ollama**: For local LLM inference (recommended)
+- **Node.js runtime**: Bun, npm, or Deno (required for UI development)
+- **Docker**: For containerized deployment
+- **GPU**: NVIDIA (CUDA) or Apple Silicon (Metal) for accelerated inference
+
+## Security Considerations
+
+- **JWT_SECRET**: Must be at least 32 characters. Generate with: `openssl rand -base64 32`
+- **API_KEY**: Should be unique per deployment
+- **Environment Variables**: Never commit `.env` files to version control
+- **HTTPS**: Use HTTPS in production (configure via reverse proxy)
+- **Rate Limiting**: Consider adding rate limiting for production deployments
+
+## Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Quick Contribution Guide
+
+```bash
+# 1. Fork and clone the repository
+git clone https://github.com/YOUR_USERNAME/ares.git
+cd ares
+
+# 2. Create a feature branch
+git checkout -b feature/my-feature
+
+# 3. Make your changes and run tests
+cargo fmt
+cargo clippy
+cargo test
+
+# 4. Commit and push
+git commit -m "feat: add my feature"
+git push origin feature/my-feature
+
+# 5. Open a Pull Request
+```
+
+### Development Setup
+
+```bash
+# Install development dependencies
+just setup
+
+# Run pre-commit checks before pushing
+just pre-commit
+```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a list of changes in each version.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- [Ollama](https://ollama.ai/) - Local LLM inference
+- [llama.cpp](https://github.com/ggerganov/llama.cpp) - GGUF model support
+- [Axum](https://github.com/tokio-rs/axum) - Web framework
+- [Leptos](https://leptos.dev/) - Reactive web UI framework
+- [TOON Format](https://toonformat.dev) - Token-optimized configuration format
+
+## Support
+
+- 📖 [Documentation](https://docs.rs/ares-server)
+- 🐛 [Issue Tracker](https://github.com/dirmacs/ares/issues)
+- 💬 [Discussions](https://github.com/dirmacs/ares/discussions)
+- 🚀 [Latest Release](https://github.com/dirmacs/ares/releases)
+
+---
+
+Made with ❤️ by [Dirmacs](https://dirmacs.com)

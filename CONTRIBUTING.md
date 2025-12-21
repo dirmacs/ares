@@ -8,6 +8,8 @@ Thank you for your interest in contributing to A.R.E.S (Agentic Retrieval Enhanc
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
 - [Feature Flags](#feature-flags)
+- [CLI Development](#cli-development)
+- [UI Development](#ui-development)
 - [Making Changes](#making-changes)
 - [Testing](#testing)
 - [Code Style](#code-style)
@@ -27,6 +29,7 @@ This project follows the [Rust Code of Conduct](https://www.rust-lang.org/polici
 - **just** (recommended): Command runner - [Install just](https://just.systems)
 - **Docker** (optional): For running Qdrant vector database
 - **Ollama** (optional): For local LLM inference
+- **Node.js runtime** (for UI development): bun, npm, or deno
 
 ### Fork and Clone
 
@@ -146,13 +149,20 @@ A.R.E.S uses feature flags for conditional compilation. Understanding these is c
 | `turso` | Remote Turso database |
 | `qdrant` | Qdrant vector database |
 
+### UI Feature
+
+| Feature | Description |
+|---------|-------------|
+| `ui` | Embedded Leptos web UI served from backend |
+
 ### Feature Bundles
 
 | Feature | Includes |
 |---------|----------|
 | `all-llm` | ollama + openai + llamacpp |
 | `all-db` | local-db + turso + qdrant |
-| `full` | All optional features |
+| `full` | All optional features (except UI) |
+| `full-ui` | All optional features + UI |
 | `minimal` | No optional features |
 
 ### Working with Features
@@ -164,9 +174,13 @@ cargo test --features "ollama,qdrant"
 # Check that code compiles with minimal features
 cargo check --features "minimal"
 
-# Run clippy on all feature combinations
-cargo clippy --all-features
+# Run clippy on all feature combinations (except UI)
+cargo clippy --features "full"
 # Or: just lint-all
+
+# Build with UI feature (requires Node.js runtime)
+cargo build --features "ui"
+# Or: just build-ui
 ```
 
 ## Using just (Recommended)
@@ -183,11 +197,17 @@ just --list
 
 # Common development workflows
 just build                 # Build debug
+just build-ui              # Build with embedded UI
 just test                  # Run tests
 just lint                  # Run clippy
 just fmt                   # Format code
 just quality               # Run all quality checks (fmt + lint)
 just ci                    # Run full CI checks
+
+# CLI commands
+just init                  # Initialize project (ares-server init)
+just config                # Show configuration summary
+just agents                # List all agents
 
 # Docker workflows
 just docker-up             # Start dev environment
@@ -200,6 +220,13 @@ just test-ignored          # Run live Ollama tests
 just test-all              # Run all tests
 just hurl                  # Run API tests
 just hurl-verbose          # API tests with verbose output
+
+# UI development
+just ui-setup              # Install UI dependencies
+just ui-dev                # Run UI dev server
+just ui-build              # Build UI for production
+just dev                   # Run backend + UI together
+just check-node            # Check for Node.js runtime
 
 # Pre-commit workflow
 just pre-commit            # Format, lint, and test
@@ -301,6 +328,104 @@ fallback_agent = "product"             # Fallback if entry agent fails
 max_depth = 5                          # Maximum routing depth
 ```
 
+## CLI Development
+
+The CLI is implemented in `src/cli/` with the following structure:
+
+```
+src/cli/
+├── mod.rs      # CLI argument parsing with clap
+├── init.rs     # Init command scaffolding logic
+└── output.rs   # Colored TUI output helpers
+```
+
+### Adding a New CLI Command
+
+1. Add the command variant to `Commands` enum in `src/cli/mod.rs`
+2. Implement the command handler in `src/main.rs`
+3. Add tests in `tests/cli_tests.rs`
+
+### CLI Testing
+
+```bash
+# Run CLI unit tests
+cargo test --lib cli::
+
+# Run CLI integration tests
+cargo test --test cli_tests
+
+# Test init command manually
+cargo run -- init /tmp/test-project
+cargo run -- config --config /tmp/test-project/ares.toml
+cargo run -- agent list --config /tmp/test-project/ares.toml
+```
+
+## UI Development
+
+The embedded web UI is built with Leptos and requires a Node.js runtime (bun, npm, or deno).
+
+### Prerequisites
+
+```bash
+# Check for Node.js runtime
+just check-node
+
+# Install WASM target
+rustup target add wasm32-unknown-unknown
+
+# Install trunk
+cargo install trunk --locked
+
+# Install UI dependencies
+cd ui && bun install  # or npm install
+```
+
+### Development Workflow
+
+```bash
+# Run UI dev server (hot reload)
+just ui-dev
+# Or: cd ui && trunk serve --open
+
+# Run backend and UI together
+just dev
+
+# Build UI for production
+just ui-build
+# Or: cd ui && trunk build --release
+
+# Build backend with embedded UI
+just build-ui
+# Or: cargo build --features "ui"
+```
+
+### UI Project Structure
+
+```
+ui/
+├── src/
+│   ├── lib.rs        # Main app component
+│   ├── api.rs        # API client
+│   ├── state.rs      # Global state management
+│   ├── types.rs      # Type definitions
+│   ├── components/   # Reusable UI components
+│   └── pages/        # Page components
+├── index.html        # HTML template
+├── Trunk.toml        # Trunk configuration
+├── Cargo.toml        # Rust dependencies
+└── tailwind.config.js # Tailwind CSS config
+```
+
+### Node.js Runtime Detection
+
+The build system automatically detects available runtimes:
+
+1. **bun** (preferred) - Fastest, recommended
+2. **npm** - Standard Node.js package manager
+3. **deno** - Alternative runtime
+
+If no runtime is found, the build will fail with instructions.
+
 ### Architecture: Key Registries
 
 When contributing code, understand these core components:
@@ -329,6 +454,11 @@ Use `config.validate_with_warnings()` to also get warnings about unused config i
 # Run all tests (mocked, no external services required)
 cargo test
 # Or: just test
+
+# Run CLI tests specifically
+cargo test --lib cli::
+cargo test --test cli_tests
+# Or: just test-filter cli
 
 # Run with specific features
 cargo test --features "ollama,openai"
@@ -501,6 +631,9 @@ cargo clippy --all-features -- -D warnings
 - Use `///` for item documentation
 - Use `//!` for module-level documentation
 - Include examples in doc comments when helpful
+- Update CHANGELOG.md for notable changes
+- Update README.md for user-facing features
+- Update docs/QUICK_REFERENCE.md for new commands
 
 ```rust
 /// Creates a new LLM client for the specified provider.
@@ -536,10 +669,11 @@ pub async fn create_client(provider: Provider) -> Result<Box<dyn LLMClient>> {
 
 1. [ ] Rebase on latest `main`
 2. [ ] Run `cargo fmt`
-3. [ ] Run `cargo clippy --all-features`
-4. [ ] Run `cargo test --all-features`
-5. [ ] Update documentation if needed
-6. [ ] Add/update tests for changes
+3. [ ] Run `cargo clippy --features "full"`
+4. [ ] Run `cargo test`
+5. [ ] Run `cargo test --test cli_tests` (if CLI changes)
+6. [ ] Update documentation if needed (README, QUICK_REFERENCE, CHANGELOG)
+7. [ ] Add/update tests for changes
 
 ### PR Description Template
 

@@ -1,7 +1,7 @@
 # A.R.E.S - Development Docker Compose
 # =============================================================================
 # This is the development configuration with all services.
-# 
+#
 # Usage:
 #   just docker-up        - Start all services
 #   just docker-down      - Stop all services
@@ -10,6 +10,12 @@
 #
 # Note: After starting Ollama, pull a model:
 #   just ollama-pull      - Pull default model (ministral-3:3b)
+#
+# Building with UI:
+#   docker compose -f docker-compose.dev.yml build --build-arg FEATURES=ui ares
+#
+# Initialize a project (run once):
+#   docker run --rm -v $(pwd)/data:/app ares-server init /app
 # =============================================================================
 
 services:
@@ -63,7 +69,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        - FEATURES=ollama,local-db
+        # Use "ui" to include embedded web UI, or "ollama,local-db" for minimal
+        - FEATURES=${ARES_FEATURES:-ollama,local-db}
     container_name: ares-server
     ports:
       - "3000:3000"
@@ -92,6 +99,7 @@ services:
       - RUST_LOG=info,ares=debug
     volumes:
       - ares_data:/data
+      - ares_config:/app/config
       - ./models:/models
     depends_on:
       ollama:
@@ -106,12 +114,30 @@ services:
       retries: 3
       start_period: 60s
 
+  # A.R.E.S Init - One-time initialization container
+  # Run: docker compose -f docker-compose.dev.yml run --rm ares-init
+  ares-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - FEATURES=ollama,local-db
+    container_name: ares-init
+    volumes:
+      - ares_data:/app/data
+      - ares_config:/app/config
+    command: ["ares-server", "init", "--force"]
+    profiles:
+      - init
+
 volumes:
   ollama_data:
     driver: local
   qdrant_data:
     driver: local
   ares_data:
+    driver: local
+  ares_config:
     driver: local
 
 networks:

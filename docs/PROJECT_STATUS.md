@@ -1,27 +1,28 @@
 # A.R.E.S Project Status & Completion Summary
 
 **Date**: 2024-12-15  
-**Updated**: 2024-12-19  
+**Updated**: 2026-01-13  
 **Status**: ✅ All Core Features Implemented and Tested  
-**Version**: 0.2.0
+**Version**: 0.3.0
 
 ---
 
 ## Executive Summary
 
-A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed into a **local-first**, production-ready agentic chatbot server with comprehensive LLM provider support, tool calling, **hybrid TOML + TOON configuration**, and robust testing infrastructure.
+A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed into a **local-first**, production-ready agentic chatbot server with comprehensive LLM provider support, tool calling, **hybrid TOML + TOON configuration**, **RAG with pure-Rust vector store**, and robust testing infrastructure.
 
 ### Key Achievements
 
 ✅ **Local-First by Default**: Ollama + SQLite, no external APIs required  
 ✅ **Direct GGUF Support**: Full LlamaCpp integration with streaming  
 ✅ **Comprehensive Tool Calling**: Multi-turn orchestration with Ollama  
-✅ **Feature-Gated Architecture**: Flexible compilation with 12+ feature flags  
+✅ **Feature-Gated Architecture**: Flexible compilation with 15+ feature flags  
 ✅ **Hybrid Configuration**: TOML for infrastructure, TOON for behavioral configs (30-60% token savings)  
 ✅ **Hot Reloading**: Configuration changes apply without server restart  
 ✅ **Workflow Engine**: Multi-agent orchestration with declarative workflows  
 ✅ **ConfigurableAgent**: Dynamic agent creation from TOON files (legacy agents removed)  
-✅ **158+ Passing Tests**: Unit, integration, mocked network tests, and MCP tests  
+✅ **RAG System**: Pure-Rust ares-vector store, multi-strategy search, reranking  
+✅ **175+ Passing Tests**: Unit, integration, mocked network tests, RAG, and MCP tests  
 ✅ **CI/CD Pipeline**: Multi-platform testing with GitHub Actions  
 ✅ **Developer Documentation**: Setup guides, contributing guidelines, GGUF usage  
 ✅ **[daedra](https://github.com/dirmacs/daedra) Integration**: Local web search without proprietary APIs  
@@ -68,7 +69,7 @@ A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed in
 - **Agent Registry Tests**: `src/agents/registry.rs` - 1 test
 - **Tool Registry Tests**: `src/tools/registry.rs` - 3 tests
 - **Coverage**: All core functionality tested
-- **Status**: ✅ 112+ tests passing
+- **Status**: ✅ 175+ tests passing
 
 #### 5. CI/CD & Quality
 - **GitHub Actions**: `.github/workflows/ci.yml`
@@ -497,7 +498,7 @@ ares/
 | Ollama Tools | Partial | ✅ Complete | Multi-turn orchestration |
 | OpenAI Tools | Partial | ✅ Updated | Latest async-openai API |
 | Web Search | External API | daedra (local) | No API key needed |
-| Test Coverage | Basic | Comprehensive | 72 tests |
+| Test Coverage | Basic | Comprehensive | 175+ tests |
 | CI/CD | ❌ | ✅ | GitHub Actions |
 | Feature Flags | Basic | 12+ flags | Flexible builds |
 | Documentation | Minimal | Complete | 4 guide documents |
@@ -869,7 +870,135 @@ These are fully replaced by `ConfigurableAgent` with TOML configuration.
 | Integration Tests | 10 | ✅ Pass |
 | LLM Tests | 21 | ✅ Pass |
 | Ollama Integration | 15 | ✅ Pass |
-| **Total** | **135** | ✅ **All Pass** |
+| RAG Tests | 45 | ✅ Pass |
+| **Total** | **180** | ✅ **All Pass** |
+
+---
+
+## Iteration 5: RAG Pipeline & Vector Store (v0.3.0 / DIR-24)
+
+### Objectives
+- Implement pure-Rust vector database for local-first operation
+- Add comprehensive RAG pipeline with document ingestion
+- Support multiple search strategies (semantic, BM25, fuzzy, hybrid)
+- Add reranking for improved search relevance
+- Maintain zero external service dependencies
+
+### Completed Tasks
+
+#### 1. ares-vector Crate (Pure-Rust Vector DB)
+
+**Location**: `crates/ares-vector/`
+
+**Features**:
+- ✅ HNSW (Hierarchical Navigable Small World) graph indexing
+- ✅ Multiple distance metrics (Cosine, Euclidean, Dot Product)
+- ✅ Memory-mapped persistence via `memmap2`
+- ✅ Collection management (create, delete, list)
+- ✅ Batch operations for efficient ingestion
+- ✅ Thread-safe with `parking_lot` RwLocks
+- ✅ No external dependencies (no Qdrant/Milvus/etc.)
+
+**Key Files**:
+- `lib.rs`: Public API
+- `collection.rs`: Vector collection management
+- `index.rs`: HNSW implementation
+- `persistence.rs`: Memory-mapped storage
+
+#### 2. Embedding Service
+
+**Location**: `src/rag/embeddings.rs`
+
+**Models Supported**:
+- BGE family (small, base, large)
+- All-MiniLM (L6, L12)
+- Nomic Embed Text v1.5
+- Qwen3 Embeddings (via Candle)
+- GTE-Modern-BERT (via Candle)
+
+**Features**:
+- ✅ Dense embeddings via FastEmbed/ONNX
+- ✅ Sparse embeddings for hybrid search (SPLADE)
+- ✅ Batch processing with configurable sizes
+- ✅ Dimension normalization
+
+#### 3. Chunking Strategies
+
+**Location**: `src/rag/chunker.rs`
+
+**Strategies**:
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| Word | Fixed word count chunks | General purpose |
+| Character | Fixed character count | Precise control |
+| Semantic | Sentence boundary aware | Natural splits |
+
+**Features**:
+- ✅ Configurable chunk size and overlap
+- ✅ Minimum chunk filtering
+- ✅ UTF-8 safe splitting
+
+#### 4. Multi-Strategy Search
+
+**Location**: `src/rag/search.rs`
+
+**Search Strategies**:
+| Strategy | Algorithm | Best For |
+|----------|-----------|----------|
+| Semantic | Vector similarity | Conceptual matching |
+| BM25 | TF-IDF scoring | Keyword matching |
+| Fuzzy | Levenshtein distance | Typo tolerance |
+| Hybrid | Weighted combination | Best of both |
+
+**Features**:
+- ✅ Configurable hybrid weights
+- ✅ Top-k retrieval
+- ✅ Score normalization
+
+#### 5. Reranking
+
+**Location**: `src/rag/reranker.rs`
+
+**Models**:
+- MiniLM-L6-v2 cross-encoder
+- BGE Reranker
+
+**Features**:
+- ✅ Cross-encoder scoring
+- ✅ Score normalization
+- ✅ Configurable candidate count
+
+#### 6. RAG API Endpoints
+
+**Endpoints**:
+- `POST /api/rag/ingest` - Ingest documents with chunking
+- `POST /api/rag/search` - Multi-strategy search
+- `GET /api/rag/collections` - List collections
+- `DELETE /api/rag/collections/{name}` - Delete collection
+
+#### 7. Configuration
+
+**ares.toml [rag] section**:
+```toml
+[rag]
+vector_store = "ares-vector"
+vector_path = "./data/vectors"
+embedding_model = "bge-small-en-v1.5"
+chunking_strategy = "word"
+chunk_size = 200
+chunk_overlap = 50
+```
+
+#### 8. Test Coverage
+
+| Test Category | Count |
+|---------------|-------|
+| Vector Store | 12 |
+| Embeddings | 15 |
+| Chunking | 8 |
+| Search | 6 |
+| Reranking | 4 |
+| **Total RAG** | **45** |
 
 ---
 
@@ -884,20 +1013,30 @@ These are fully replaced by `ConfigurableAgent` with TOML configuration.
 | Test coverage | >70% | ✅ 100% core | ✅ |
 | CI/CD | Yes | ✅ Yes | ✅ |
 | Documentation | Complete | ✅ Complete | ✅ |
-| Feature flags | 8+ | ✅ 12+ | ✅ |
+| Feature flags | 8+ | ✅ 15+ | ✅ |
+| RAG / Vector Store | Yes | ✅ Yes | ✅ |
 
 ---
 
 ## Conclusion
 
-All objectives from the four iterations have been successfully completed:
+All objectives from the five iterations have been successfully completed:
 
 ✅ **Iteration 1**: Local-first architecture, daedra integration, code cleanup, comprehensive testing  
 ✅ **Iteration 2**: GGUF/LlamaCpp implementation, full Ollama tool calling, feature gating  
 ✅ **Iteration 3**: Documentation, developer experience, setup automation  
 ✅ **Iteration 4**: Workflow engine, ConfigurableAgent, router improvements, legacy agent removal  
+✅ **Iteration 5**: Pure-Rust vector store, RAG pipeline, multi-strategy search, reranking  
 
-**The A.R.E.S project is production-ready for local-first LLM applications with excellent developer experience and comprehensive testing.**
+**The A.R.E.S project is production-ready for local-first LLM applications with excellent developer experience, RAG capabilities, and comprehensive testing.**
+
+### What's New in v0.3.0
+- **ares-vector**: Pure-Rust vector database with HNSW indexing (no external dependencies)
+- **RAG Pipeline**: Document ingestion, chunking (word/semantic/character), embeddings
+- **Multi-Strategy Search**: Semantic, BM25, fuzzy, and hybrid search modes
+- **Reranking**: Cross-encoder reranking for improved relevance
+- **Collection Management**: Full CRUD operations for vector collections
+- **API Endpoints**: `/api/rag/ingest`, `/api/rag/search`, `/api/rag/collections`
 
 ### What's New in v0.2.0
 - **Workflow Engine**: Execute multi-agent workflows declaratively
@@ -907,9 +1046,8 @@ All objectives from the four iterations have been successfully completed:
 
 ### Next Immediate Actions
 1. Review and merge the implementation
-2. Enable CI/CD in GitHub repository
-3. Create a release tag (v0.2.0)
-4. Consider publishing to crates.io
+2. Create a release tag (v0.3.0)
+3. Consider publishing to crates.io
 
 ### For Questions or Issues
 - Check `CONTRIBUTING.md` for development guidelines

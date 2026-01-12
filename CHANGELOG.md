@@ -5,6 +5,54 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **ares-vector**: Pure-Rust vector database with HNSW indexing
+  - No external dependencies (Qdrant, Milvus, etc. not required)
+  - Memory-mapped persistence via `memmap2`
+  - Multiple distance metrics: Cosine, Euclidean, Dot Product
+  - Thread-safe with `parking_lot` RwLocks
+  - Collection management (create, delete, list)
+  - Located in `crates/ares-vector/`
+
+- **RAG Pipeline**: Comprehensive document retrieval system
+  - Document ingestion with automatic chunking
+  - Multiple chunking strategies: word, character, semantic
+  - Configurable chunk size and overlap
+
+- **Embedding Service**: Multi-model embedding support
+  - BGE family (small, base, large) via FastEmbed
+  - All-MiniLM models (L6, L12)
+  - Nomic Embed Text v1.5
+  - Qwen3 Embeddings (via Candle)
+  - GTE-Modern-BERT (via Candle)
+  - Sparse embeddings (SPLADE) for hybrid search
+
+- **Multi-Strategy Search**: Multiple search algorithms
+  - Semantic: Vector similarity search
+  - BM25: Traditional TF-IDF keyword matching
+  - Fuzzy: Levenshtein distance for typo tolerance
+  - Hybrid: Weighted combination of semantic + BM25
+
+- **Reranking**: Cross-encoder reranking for improved relevance
+  - MiniLM-L6-v2 cross-encoder
+  - BGE Reranker support
+
+- **RAG API Endpoints**:
+  - `POST /api/rag/ingest` - Ingest documents with chunking
+  - `POST /api/rag/search` - Multi-strategy search with optional reranking
+  - `GET /api/rag/collections` - List all collections
+  - `DELETE /api/rag/collections/{name}` - Delete a collection
+
+- **New feature flag**: `ares-vector` for pure-Rust vector store
+
+### Changed
+
+- **CI Workflow**: Added `ares-vector` feature to test matrix across all platforms
+- **Feature flags**: Now 15+ feature flags (was 12+)
+
 ## [0.2.5] - 2024-12-21
 
 ### Changed

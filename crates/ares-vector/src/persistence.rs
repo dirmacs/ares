@@ -9,7 +9,6 @@ use crate::error::{Error, Result};
 use crate::types::VectorMetadata;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, info, warn};
 
 /// Collection metadata stored on disk.

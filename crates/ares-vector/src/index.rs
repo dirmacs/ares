@@ -144,12 +144,7 @@ impl HnswIndex {
     /// Insert a vector into the index.
     ///
     /// If a vector with the same ID exists, it will be updated.
-    pub fn insert(
-        &self,
-        id: &str,
-        vector: &[f32],
-        meta: Option<VectorMetadata>,
-    ) -> Result<()> {
+    pub fn insert(&self, id: &str, vector: &[f32], meta: Option<VectorMetadata>) -> Result<()> {
         // Validate dimensions
         if vector.len() != self.dimensions {
             return Err(Error::DimensionMismatch {
@@ -160,7 +155,9 @@ impl HnswIndex {
 
         // Validate vector values
         if vector.iter().any(|v| v.is_nan() || v.is_infinite()) {
-            return Err(Error::InvalidVector("Vector contains NaN or Inf".to_string()));
+            return Err(Error::InvalidVector(
+                "Vector contains NaN or Inf".to_string(),
+            ));
         }
 
         // Check if this is an update
@@ -199,16 +196,16 @@ impl HnswIndex {
         let inner = self.inner.write();
         match &*inner {
             IndexInner::Cosine(hnsw) => {
-                hnsw.insert((&vector.to_vec(), internal_id));
+                hnsw.insert((vector, internal_id));
             }
             IndexInner::Euclidean(hnsw) => {
-                hnsw.insert((&vector.to_vec(), internal_id));
+                hnsw.insert((vector, internal_id));
             }
             IndexInner::DotProduct(hnsw) => {
-                hnsw.insert((&vector.to_vec(), internal_id));
+                hnsw.insert((vector, internal_id));
             }
             IndexInner::Manhattan(hnsw) => {
-                hnsw.insert((&vector.to_vec(), internal_id));
+                hnsw.insert((vector, internal_id));
             }
         }
 
@@ -244,9 +241,10 @@ impl HnswIndex {
 
             let internal_id = {
                 let id_map = self.id_to_internal.read();
-                id_map.get(id).copied().unwrap_or_else(|| {
-                    self.next_internal_id.fetch_add(1, Ordering::SeqCst)
-                })
+                id_map
+                    .get(id)
+                    .copied()
+                    .unwrap_or_else(|| self.next_internal_id.fetch_add(1, Ordering::SeqCst))
             };
 
             // Store mappings
@@ -383,18 +381,10 @@ impl HnswIndex {
         let inner = self.inner.read();
 
         let neighbors = match &*inner {
-            IndexInner::Cosine(hnsw) => {
-                hnsw.search(query, limit, ef_search)
-            }
-            IndexInner::Euclidean(hnsw) => {
-                hnsw.search(query, limit, ef_search)
-            }
-            IndexInner::DotProduct(hnsw) => {
-                hnsw.search(query, limit, ef_search)
-            }
-            IndexInner::Manhattan(hnsw) => {
-                hnsw.search(query, limit, ef_search)
-            }
+            IndexInner::Cosine(hnsw) => hnsw.search(query, limit, ef_search),
+            IndexInner::Euclidean(hnsw) => hnsw.search(query, limit, ef_search),
+            IndexInner::DotProduct(hnsw) => hnsw.search(query, limit, ef_search),
+            IndexInner::Manhattan(hnsw) => hnsw.search(query, limit, ef_search),
         };
 
         let internal_to_id = self.internal_to_id.read();
@@ -428,7 +418,10 @@ impl HnswIndex {
         min_score: f32,
     ) -> Result<Vec<SearchResult>> {
         let results = self.search(query, limit)?;
-        Ok(results.into_iter().filter(|r| r.score >= min_score).collect())
+        Ok(results
+            .into_iter()
+            .filter(|r| r.score >= min_score)
+            .collect())
     }
 
     /// Get a vector by ID.
@@ -440,12 +433,7 @@ impl HnswIndex {
     }
 
     /// Update a vector.
-    pub fn update(
-        &self,
-        id: &str,
-        vector: &[f32],
-        meta: Option<VectorMetadata>,
-    ) -> Result<()> {
+    pub fn update(&self, id: &str, vector: &[f32], meta: Option<VectorMetadata>) -> Result<()> {
         if !self.contains(id) {
             return Err(Error::VectorNotFound(id.to_string()));
         }
@@ -486,42 +474,34 @@ impl HnswIndex {
         let max_layer = 16;
 
         let new_inner = match self.metric {
-            DistanceMetric::Cosine => {
-                IndexInner::Cosine(Hnsw::new(
-                    self.config.m,
-                    max_elements,
-                    max_layer,
-                    self.config.ef_construction,
-                    DistCosine {},
-                ))
-            }
-            DistanceMetric::Euclidean => {
-                IndexInner::Euclidean(Hnsw::new(
-                    self.config.m,
-                    max_elements,
-                    max_layer,
-                    self.config.ef_construction,
-                    DistL2 {},
-                ))
-            }
-            DistanceMetric::DotProduct => {
-                IndexInner::DotProduct(Hnsw::new(
-                    self.config.m,
-                    max_elements,
-                    max_layer,
-                    self.config.ef_construction,
-                    DistDot {},
-                ))
-            }
-            DistanceMetric::Manhattan => {
-                IndexInner::Manhattan(Hnsw::new(
-                    self.config.m,
-                    max_elements,
-                    max_layer,
-                    self.config.ef_construction,
-                    DistL1 {},
-                ))
-            }
+            DistanceMetric::Cosine => IndexInner::Cosine(Hnsw::new(
+                self.config.m,
+                max_elements,
+                max_layer,
+                self.config.ef_construction,
+                DistCosine {},
+            )),
+            DistanceMetric::Euclidean => IndexInner::Euclidean(Hnsw::new(
+                self.config.m,
+                max_elements,
+                max_layer,
+                self.config.ef_construction,
+                DistL2 {},
+            )),
+            DistanceMetric::DotProduct => IndexInner::DotProduct(Hnsw::new(
+                self.config.m,
+                max_elements,
+                max_layer,
+                self.config.ef_construction,
+                DistDot {},
+            )),
+            DistanceMetric::Manhattan => IndexInner::Manhattan(Hnsw::new(
+                self.config.m,
+                max_elements,
+                max_layer,
+                self.config.ef_construction,
+                DistL1 {},
+            )),
         };
 
         *self.inner.write() = new_inner;
@@ -628,7 +608,8 @@ mod tests {
     fn test_get() {
         let index = HnswIndex::new(3, DistanceMetric::Cosine, default_config()).unwrap();
 
-        let meta = VectorMetadata::from_pairs([("key", MetadataValue::String("value".to_string()))]);
+        let meta =
+            VectorMetadata::from_pairs([("key", MetadataValue::String("value".to_string()))]);
         index.insert("vec1", &[1.0, 2.0, 3.0], Some(meta)).unwrap();
 
         let (vector, metadata) = index.get("vec1").unwrap();

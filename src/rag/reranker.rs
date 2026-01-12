@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use fastembed::{RerankerModel as FastEmbedRerankerModel, RerankInitOptions, TextRerank};
+use fastembed::{RerankInitOptions, RerankerModel as FastEmbedRerankerModel, TextRerank};
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
@@ -188,8 +188,9 @@ impl Reranker {
                 tokio::task::spawn_blocking(move || {
                     let init_options = RerankInitOptions::new(config.model.to_fastembed_model())
                         .with_show_download_progress(config.show_download_progress);
-                    let model = TextRerank::try_new(init_options)
-                        .map_err(|e| AppError::Internal(format!("Failed to load reranker: {}", e)))?;
+                    let model = TextRerank::try_new(init_options).map_err(|e| {
+                        AppError::Internal(format!("Failed to load reranker: {}", e))
+                    })?;
                     Ok(Arc::new(tokio::sync::Mutex::new(model)))
                 })
                 .await
@@ -214,7 +215,10 @@ impl Reranker {
         }
 
         let model = self.get_model().await?;
-        let documents: Vec<String> = results.iter().map(|(_, content, _)| content.clone()).collect();
+        let documents: Vec<String> = results
+            .iter()
+            .map(|(_, content, _)| content.clone())
+            .collect();
 
         let query = query.to_string();
         let rerank_scores = tokio::task::spawn_blocking(move || {
@@ -283,7 +287,10 @@ impl Reranker {
         }
 
         let model = self.get_model().await?;
-        let documents: Vec<String> = results.iter().map(|(_, content, _)| content.clone()).collect();
+        let documents: Vec<String> = results
+            .iter()
+            .map(|(_, content, _)| content.clone())
+            .collect();
 
         let query = query.to_string();
         let rerank_scores = tokio::task::spawn_blocking(move || {

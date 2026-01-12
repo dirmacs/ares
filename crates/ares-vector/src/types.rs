@@ -31,7 +31,10 @@ impl VectorMetadata {
         V: Into<MetadataValue>,
     {
         Self {
-            data: pairs.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
+            data: pairs
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
         }
     }
 
@@ -165,7 +168,11 @@ pub struct SearchResult {
 impl SearchResult {
     /// Create a new search result.
     pub fn new(id: VectorId, score: f32, metadata: Option<VectorMetadata>) -> Self {
-        Self { id, score, metadata }
+        Self {
+            id,
+            score,
+            metadata,
+        }
     }
 }
 
@@ -218,7 +225,10 @@ mod tests {
         let result = SearchResult::new(
             "doc1".to_string(),
             0.95,
-            Some(VectorMetadata::from_pairs([("title", MetadataValue::String("Test".to_string()))])),
+            Some(VectorMetadata::from_pairs([(
+                "title",
+                MetadataValue::String("Test".to_string()),
+            )])),
         );
 
         assert_eq!(result.id, "doc1");

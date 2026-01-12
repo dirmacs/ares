@@ -76,12 +76,7 @@ impl Collection {
     }
 
     /// Insert a vector.
-    pub fn insert(
-        &self,
-        id: &str,
-        vector: &[f32],
-        metadata: Option<VectorMetadata>,
-    ) -> Result<()> {
+    pub fn insert(&self, id: &str, vector: &[f32], metadata: Option<VectorMetadata>) -> Result<()> {
         self.index.insert(id, vector, metadata)
     }
 
@@ -94,12 +89,7 @@ impl Collection {
     }
 
     /// Update a vector.
-    pub fn update(
-        &self,
-        id: &str,
-        vector: &[f32],
-        metadata: Option<VectorMetadata>,
-    ) -> Result<()> {
+    pub fn update(&self, id: &str, vector: &[f32], metadata: Option<VectorMetadata>) -> Result<()> {
         self.index.update(id, vector, metadata)
     }
 

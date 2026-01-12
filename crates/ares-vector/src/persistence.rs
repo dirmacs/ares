@@ -8,7 +8,7 @@ use crate::distance::DistanceMetric;
 use crate::error::{Error, Result};
 use crate::types::VectorMetadata;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::Path;
 use tracing::{debug, info, warn};
 
 /// Collection metadata stored on disk.
@@ -35,11 +35,7 @@ pub(crate) struct StoredVectorData {
 /// Creates the following files:
 /// - `{base_path}/{name}/metadata.json` - Collection metadata
 /// - `{base_path}/{name}/vectors.bin` - Vector data (bincode format)
-pub async fn save_collection(
-    base_path: &PathBuf,
-    name: &str,
-    collection: &Collection,
-) -> Result<()> {
+pub async fn save_collection(base_path: &Path, name: &str, collection: &Collection) -> Result<()> {
     let collection_path = base_path.join(name);
     tokio::fs::create_dir_all(&collection_path).await?;
 
@@ -79,7 +75,7 @@ pub async fn save_collection(
 }
 
 /// Load a collection from disk.
-pub async fn load_collection(base_path: &PathBuf, name: &str) -> Result<Collection> {
+pub async fn load_collection(base_path: &Path, name: &str) -> Result<Collection> {
     let collection_path = base_path.join(name);
 
     if !collection_path.exists() {
@@ -146,7 +142,7 @@ pub(crate) mod bincode_persistence {
 
     /// Save vectors using bincode for efficiency.
     pub(crate) async fn save_vectors_bincode(
-        path: &PathBuf,
+        path: &Path,
         vectors: &[StoredVectorData],
     ) -> Result<()> {
         let data = bincode::serialize(vectors)
@@ -160,7 +156,7 @@ pub(crate) mod bincode_persistence {
     }
 
     /// Load vectors using bincode.
-    pub(crate) async fn load_vectors_bincode(path: &PathBuf) -> Result<Vec<StoredVectorData>> {
+    pub(crate) async fn load_vectors_bincode(path: &Path) -> Result<Vec<StoredVectorData>> {
         let mut file = tokio::fs::File::open(path).await?;
         let mut data = Vec::new();
         file.read_to_end(&mut data).await?;

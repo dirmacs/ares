@@ -199,9 +199,7 @@ impl VectorStoreProvider {
     pub fn from_env() -> Self {
         #[cfg(feature = "ares-vector")]
         if let Ok(path) = std::env::var("ARES_VECTOR_PATH") {
-            return VectorStoreProvider::AresVector {
-                path: Some(path),
-            };
+            return VectorStoreProvider::AresVector { path: Some(path) };
         }
 
         #[cfg(feature = "lancedb")]
@@ -597,7 +595,11 @@ impl VectorStore for InMemoryVectorStore {
             .collect();
 
         // Sort by score descending
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Limit results
         results.truncate(limit);
@@ -706,10 +708,7 @@ mod tests {
 
         assert_eq!(store.count("test").await.unwrap(), 1);
 
-        let deleted = store
-            .delete("test", &["doc1".to_string()])
-            .await
-            .unwrap();
+        let deleted = store.delete("test", &["doc1".to_string()]).await.unwrap();
         assert_eq!(deleted, 1);
 
         assert_eq!(store.count("test").await.unwrap(), 0);
@@ -745,12 +744,16 @@ mod tests {
     #[tokio::test]
     async fn test_cosine_similarity() {
         // Identical vectors
-        assert!((InMemoryVectorStore::cosine_similarity(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 0.001);
+        assert!(
+            (InMemoryVectorStore::cosine_similarity(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 0.001
+        );
 
         // Orthogonal vectors
         assert!(InMemoryVectorStore::cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]).abs() < 0.001);
 
         // Opposite vectors
-        assert!((InMemoryVectorStore::cosine_similarity(&[1.0, 0.0], &[-1.0, 0.0]) + 1.0).abs() < 0.001);
+        assert!(
+            (InMemoryVectorStore::cosine_similarity(&[1.0, 0.0], &[-1.0, 0.0]) + 1.0).abs() < 0.001
+        );
     }
 }

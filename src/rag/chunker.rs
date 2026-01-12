@@ -175,7 +175,11 @@ impl TextChunker {
     fn chunk_by_words(&self, text: &str) -> Vec<Chunk> {
         let words: Vec<&str> = text.split_whitespace().collect();
         let mut chunks = Vec::new();
-        let step = self.config.chunk_size.saturating_sub(self.config.chunk_overlap).max(1);
+        let step = self
+            .config
+            .chunk_size
+            .saturating_sub(self.config.chunk_overlap)
+            .max(1);
 
         let mut chunk_index = 0;
         let mut word_index = 0;
@@ -246,7 +250,11 @@ impl TextChunker {
     fn chunk_by_characters(&self, text: &str) -> Vec<Chunk> {
         let chars: Vec<char> = text.chars().collect();
         let mut chunks = Vec::new();
-        let step = self.config.chunk_size.saturating_sub(self.config.chunk_overlap).max(1);
+        let step = self
+            .config
+            .chunk_size
+            .saturating_sub(self.config.chunk_overlap)
+            .max(1);
 
         let mut char_index = 0;
         let mut chunk_index = 0;
@@ -331,7 +339,11 @@ mod tests {
         let chunks = chunker.chunk(text);
 
         // With overlap, we should see multiple chunks
-        assert!(chunks.len() > 1, "Expected multiple chunks, got: {:?}", chunks);
+        assert!(
+            chunks.len() > 1,
+            "Expected multiple chunks, got: {:?}",
+            chunks
+        );
     }
 
     #[test]
@@ -388,7 +400,7 @@ mod tests {
         let chunker = TextChunker::with_word_chunking(100, 10);
         let text = "Hello world. This is a test with multiple words.";
         let chunks = chunker.chunk(text);
-        assert!(chunks.len() >= 1);
+        assert!(!chunks.is_empty());
     }
 
     #[test]
@@ -414,4 +426,3 @@ mod tests {
         assert_eq!(chunks[0], "Short text");
     }
 }
-

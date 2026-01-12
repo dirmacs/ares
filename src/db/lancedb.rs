@@ -95,9 +95,7 @@ impl LanceDBStore {
         documents: &[Document],
         dimensions: usize,
     ) -> Result<arrow_array::RecordBatch> {
-        use arrow_array::builder::{
-            FixedSizeListBuilder, Float32Builder, StringBuilder,
-        };
+        use arrow_array::builder::{FixedSizeListBuilder, Float32Builder, StringBuilder};
         use arrow_array::types::Float32Type;
         use arrow_array::Array;
         use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
@@ -214,7 +212,9 @@ impl LanceDBStore {
             .open_table(collection)
             .execute()
             .await
-            .map_err(|e| AppError::NotFound(format!("Collection '{}' not found: {}", collection, e)))?;
+            .map_err(|e| {
+                AppError::NotFound(format!("Collection '{}' not found: {}", collection, e))
+            })?;
 
         // Get schema from a small query
         let results = table
@@ -272,7 +272,10 @@ impl VectorStore for LanceDBStore {
         use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
         use std::sync::Arc as StdArc;
 
-        debug!("Creating collection '{}' with {} dimensions", name, dimensions);
+        debug!(
+            "Creating collection '{}' with {} dimensions",
+            name, dimensions
+        );
 
         // Check if table already exists
         let tables = self
@@ -438,7 +441,11 @@ impl VectorStore for LanceDBStore {
             return Ok(0);
         }
 
-        debug!("Upserting {} documents to '{}'", documents.len(), collection);
+        debug!(
+            "Upserting {} documents to '{}'",
+            documents.len(),
+            collection
+        );
 
         let dimensions = self.get_dimensions_from_table(collection).await?;
         let batch = self.documents_to_record_batch(documents, dimensions)?;
@@ -448,7 +455,9 @@ impl VectorStore for LanceDBStore {
             .open_table(collection)
             .execute()
             .await
-            .map_err(|e| AppError::NotFound(format!("Collection '{}' not found: {}", collection, e)))?;
+            .map_err(|e| {
+                AppError::NotFound(format!("Collection '{}' not found: {}", collection, e))
+            })?;
 
         // Use merge insert (upsert) based on ID
         table
@@ -483,7 +492,9 @@ impl VectorStore for LanceDBStore {
             .open_table(collection)
             .execute()
             .await
-            .map_err(|e| AppError::NotFound(format!("Collection '{}' not found: {}", collection, e)))?;
+            .map_err(|e| {
+                AppError::NotFound(format!("Collection '{}' not found: {}", collection, e))
+            })?;
 
         let query_vec: Vec<f32> = embedding.to_vec();
 
@@ -631,7 +642,9 @@ impl VectorStore for LanceDBStore {
             .open_table(collection)
             .execute()
             .await
-            .map_err(|e| AppError::NotFound(format!("Collection '{}' not found: {}", collection, e)))?;
+            .map_err(|e| {
+                AppError::NotFound(format!("Collection '{}' not found: {}", collection, e))
+            })?;
 
         // Build WHERE clause for deletion
         let id_list = ids
@@ -658,7 +671,9 @@ impl VectorStore for LanceDBStore {
             .open_table(collection)
             .execute()
             .await
-            .map_err(|e| AppError::NotFound(format!("Collection '{}' not found: {}", collection, e)))?;
+            .map_err(|e| {
+                AppError::NotFound(format!("Collection '{}' not found: {}", collection, e))
+            })?;
 
         let predicate = format!("{} = '{}'", schema::ID, id.replace('\'', "''"));
 

@@ -125,9 +125,7 @@ pub async fn ingest(
     let chunks = chunker.chunk_with_metadata(&payload.content);
 
     if chunks.is_empty() {
-        return Err(AppError::InvalidInput(
-            "Content too small to chunk".into(),
-        ));
+        return Err(AppError::InvalidInput("Content too small to chunk".into()));
     }
 
     // Ensure collection exists
@@ -285,7 +283,12 @@ pub async fn search(
                         .map(|r| (r.document.id.clone(), r.score))
                         .collect();
                     let weights = HybridWeights::default();
-                    search_engine.search_hybrid(&payload.query, &semantic_scores, &weights, payload.limit)
+                    search_engine.search_hybrid(
+                        &payload.query,
+                        &semantic_scores,
+                        &weights,
+                        payload.limit,
+                    )
                 }
                 _ => vec![], // Already handled above
             };
@@ -294,14 +297,15 @@ pub async fn search(
             strategy_results
                 .iter()
                 .filter_map(|(id, score)| {
-                    vector_results.iter().find(|r| r.document.id == *id).map(|r| {
-                        RagSearchResult {
+                    vector_results
+                        .iter()
+                        .find(|r| r.document.id == *id)
+                        .map(|r| RagSearchResult {
                             id: r.document.id.clone(),
                             content: r.document.content.clone(),
                             score: *score,
                             metadata: r.document.metadata.clone(),
-                        }
-                    })
+                        })
                 })
                 .collect()
         }

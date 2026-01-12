@@ -1,6 +1,7 @@
 # Cargo workspace configuration
 [workspace]
 members = [".", "crates/*"]
+exclude = ["ui"]
 resolver = "2"
 
 [workspace.package]

@@ -27,16 +27,16 @@ pub mod vectorstore;
 // Provider implementations
 #[cfg(feature = "ares-vector")]
 pub mod ares_vector;
-#[cfg(feature = "lancedb")]
-pub mod lancedb;
-#[cfg(feature = "qdrant")]
-pub mod qdrant;
-#[cfg(feature = "pgvector")]
-pub mod pgvector;
 #[cfg(feature = "chromadb")]
 pub mod chromadb;
+#[cfg(feature = "lancedb")]
+pub mod lancedb;
+#[cfg(feature = "pgvector")]
+pub mod pgvector;
 #[cfg(feature = "pinecone")]
 pub mod pinecone;
+#[cfg(feature = "qdrant")]
+pub mod qdrant;
 
 // Relational database
 pub mod traits;

@@ -23,9 +23,7 @@ use std::str::FromStr;
 use tokio::task::spawn_blocking;
 
 // Re-export fastembed types for convenience
-pub use fastembed::{
-    EmbeddingModel as FastEmbedModel, InitOptions, SparseModel, TextEmbedding,
-};
+pub use fastembed::{EmbeddingModel as FastEmbedModel, InitOptions, SparseModel, TextEmbedding};
 
 // ============================================================================
 // Embedding Model Configuration
@@ -593,7 +591,10 @@ impl EmbeddingService {
                         .with_show_download_progress(config.show_download_progress),
                 )
                 .map_err(|e| {
-                    AppError::Internal(format!("Failed to initialize sparse embedding model: {}", e))
+                    AppError::Internal(format!(
+                        "Failed to initialize sparse embedding model: {}",
+                        e
+                    ))
                 })?,
             )
         } else {
@@ -703,9 +704,7 @@ impl EmbeddingService {
                 fastembed::SparseInitOptions::new(sparse_model_type)
                     .with_show_download_progress(show_progress),
             )
-            .map_err(|e| {
-                AppError::Internal(format!("Failed to initialize sparse model: {}", e))
-            })?;
+            .map_err(|e| AppError::Internal(format!("Failed to initialize sparse model: {}", e)))?;
 
             let refs: Vec<&str> = texts_owned.iter().map(|s| s.as_str()).collect();
             model
@@ -735,8 +734,10 @@ impl EmbeddingService {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(dead_code)]
+#[derive(Default)]
 pub enum AccelerationBackend {
     /// CPU execution (default, always available)
+    #[default]
     Cpu,
     /// NVIDIA CUDA acceleration
     Cuda { device_id: usize },
@@ -744,12 +745,6 @@ pub enum AccelerationBackend {
     Metal,
     /// Vulkan GPU acceleration
     Vulkan,
-}
-
-impl Default for AccelerationBackend {
-    fn default() -> Self {
-        Self::Cpu
-    }
 }
 
 // ============================================================================
@@ -776,10 +771,9 @@ impl LegacyEmbeddingService {
     /// Embed texts (synchronous API)
     pub fn embed(&mut self, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
         let model_type = self.inner.config.model.to_fastembed_model();
-        let mut model = TextEmbedding::try_new(
-            InitOptions::new(model_type).with_show_download_progress(true),
-        )
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        let mut model =
+            TextEmbedding::try_new(InitOptions::new(model_type).with_show_download_progress(true))
+                .map_err(|e| AppError::Internal(e.to_string()))?;
 
         model
             .embed(texts, None)
@@ -810,7 +804,9 @@ mod tests {
             EmbeddingModelType::BgeSmallEnV15
         );
         assert_eq!(
-            "multilingual-e5-large".parse::<EmbeddingModelType>().unwrap(),
+            "multilingual-e5-large"
+                .parse::<EmbeddingModelType>()
+                .unwrap(),
             EmbeddingModelType::MultilingualE5Large
         );
         assert_eq!(
@@ -836,10 +832,7 @@ mod tests {
             EmbeddingModelType::NomicEmbedTextV1.max_context_length(),
             8192
         );
-        assert_eq!(
-            EmbeddingModelType::BgeSmallEnV15.max_context_length(),
-            512
-        );
+        assert_eq!(EmbeddingModelType::BgeSmallEnV15.max_context_length(), 512);
     }
 
     #[test]

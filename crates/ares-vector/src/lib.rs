@@ -76,7 +76,7 @@ pub use distance::DistanceMetric;
 pub use error::{Error, Result};
 pub use types::{SearchResult, VectorId, VectorMetadata};
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, info, instrument, warn};
 
@@ -170,7 +170,12 @@ impl VectorDb {
         )?;
 
         // Insert returns Err if key already exists (handles race condition)
-        if self.inner.collections.insert(name.to_string(), Arc::new(collection)).is_err() {
+        if self
+            .inner
+            .collections
+            .insert(name.to_string(), Arc::new(collection))
+            .is_err()
+        {
             return Err(Error::CollectionExists(name.to_string()));
         }
 
@@ -387,7 +392,11 @@ impl VectorDb {
     /// # Returns
     ///
     /// The vector and its metadata if found.
-    pub async fn get(&self, collection: &str, id: &str) -> Result<Option<(Vec<f32>, Option<VectorMetadata>)>> {
+    pub async fn get(
+        &self,
+        collection: &str,
+        id: &str,
+    ) -> Result<Option<(Vec<f32>, Option<VectorMetadata>)>> {
         let col = self.get_collection(collection)?;
         Ok(col.get(id))
     }
@@ -422,7 +431,7 @@ impl VectorDb {
         };
 
         info!("Persisting database to disk");
-        
+
         // Collect names and collections for persistence
         let mut to_persist: Vec<(String, Arc<Collection>)> = Vec::new();
         self.inner.collections.scan(|name, collection| {
@@ -447,7 +456,7 @@ impl VectorDb {
     }
 
     // Internal: Load collections from disk
-    async fn load_collections(&self, path: &PathBuf) -> Result<()> {
+    async fn load_collections(&self, path: &Path) -> Result<()> {
         if !path.exists() {
             tokio::fs::create_dir_all(path).await?;
             return Ok(());
@@ -467,7 +476,10 @@ impl VectorDb {
             match self.load_collection(path, &name).await {
                 Ok(collection) => {
                     // scc::HashMap::insert returns Err if key exists, Ok otherwise
-                    let _ = self.inner.collections.insert(name.clone(), Arc::new(collection));
+                    let _ = self
+                        .inner
+                        .collections
+                        .insert(name.clone(), Arc::new(collection));
                     info!(name, "Loaded collection");
                 }
                 Err(e) => {
@@ -479,20 +491,20 @@ impl VectorDb {
         Ok(())
     }
 
-    async fn load_collection(&self, base_path: &PathBuf, name: &str) -> Result<Collection> {
+    async fn load_collection(&self, base_path: &Path, name: &str) -> Result<Collection> {
         persistence::load_collection(base_path, name).await
     }
 
     async fn persist_collection(
         &self,
-        base_path: &PathBuf,
+        base_path: &Path,
         name: &str,
         collection: &Collection,
     ) -> Result<()> {
         persistence::save_collection(base_path, name, collection).await
     }
 
-    async fn persist_collection_metadata(&self, base_path: &PathBuf, _name: &str) -> Result<()> {
+    async fn persist_collection_metadata(&self, base_path: &Path, _name: &str) -> Result<()> {
         let collections = self.list_collections();
         let metadata_path = base_path.join("collections.json");
         let data = serde_json::to_string_pretty(&collections)
@@ -501,7 +513,7 @@ impl VectorDb {
         Ok(())
     }
 
-    async fn delete_collection_files(&self, base_path: &PathBuf, name: &str) -> Result<()> {
+    async fn delete_collection_files(&self, base_path: &Path, name: &str) -> Result<()> {
         let collection_path = base_path.join(name);
         if collection_path.exists() {
             tokio::fs::remove_dir_all(&collection_path).await?;
@@ -541,9 +553,6 @@ pub struct HnswParams {
     /// Size of the dynamic candidate list during search.
     pub ef_search: usize,
 }
-
-// Required for serde_json usage
-use serde_json;
 
 #[cfg(test)]
 mod tests {

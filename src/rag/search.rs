@@ -266,7 +266,8 @@ impl Bm25Index {
 
             // BM25 formula
             let numerator = tf * (self.k1 + 1.0);
-            let denominator = tf + self.k1 * (1.0 - self.b + self.b * doc_len / self.avg_doc_length);
+            let denominator =
+                tf + self.k1 * (1.0 - self.b + self.b * doc_len / self.avg_doc_length);
             score += idf * numerator / denominator;
         }
 
@@ -358,7 +359,8 @@ impl FuzzyIndex {
 
     /// Add a document to the index
     pub fn add_document(&mut self, id: &str, content: &str) {
-        self.documents.insert(id.to_string(), content.to_lowercase());
+        self.documents
+            .insert(id.to_string(), content.to_lowercase());
     }
 
     /// Remove a document from the index
@@ -432,7 +434,8 @@ impl FuzzyIndex {
         }
 
         if matched_words > 0 {
-            (total_score / query_words.len() as f32) * (matched_words as f32 / query_words.len() as f32)
+            (total_score / query_words.len() as f32)
+                * (matched_words as f32 / query_words.len() as f32)
         } else {
             0.0
         }
@@ -720,13 +723,13 @@ mod tests {
     fn test_rrf_fusion() {
         let rrf = RrfFusion::new();
 
-        let list1 = vec![
+        let list1 = [
             ("doc1".to_string(), 0.9),
             ("doc2".to_string(), 0.8),
             ("doc3".to_string(), 0.7),
         ];
 
-        let list2 = vec![
+        let list2 = [
             ("doc2".to_string(), 0.95),
             ("doc1".to_string(), 0.85),
             ("doc4".to_string(), 0.75),
@@ -803,10 +806,7 @@ mod tests {
         engine.index_documents(&docs);
 
         // Simulate semantic results
-        let semantic_results = vec![
-            ("doc1".to_string(), 0.95),
-            ("doc2".to_string(), 0.80),
-        ];
+        let semantic_results = vec![("doc1".to_string(), 0.95), ("doc2".to_string(), 0.80)];
 
         let weights = HybridWeights {
             semantic: 0.5,

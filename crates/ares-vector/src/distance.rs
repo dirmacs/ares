@@ -377,9 +377,21 @@ mod tests {
 
     #[test]
     fn test_metric_from_str() {
-        assert_eq!("cosine".parse::<DistanceMetric>().unwrap(), DistanceMetric::Cosine);
-        assert_eq!("l2".parse::<DistanceMetric>().unwrap(), DistanceMetric::Euclidean);
-        assert_eq!("dot".parse::<DistanceMetric>().unwrap(), DistanceMetric::DotProduct);
-        assert_eq!("manhattan".parse::<DistanceMetric>().unwrap(), DistanceMetric::Manhattan);
+        assert_eq!(
+            "cosine".parse::<DistanceMetric>().unwrap(),
+            DistanceMetric::Cosine
+        );
+        assert_eq!(
+            "l2".parse::<DistanceMetric>().unwrap(),
+            DistanceMetric::Euclidean
+        );
+        assert_eq!(
+            "dot".parse::<DistanceMetric>().unwrap(),
+            DistanceMetric::DotProduct
+        );
+        assert_eq!(
+            "manhattan".parse::<DistanceMetric>().unwrap(),
+            DistanceMetric::Manhattan
+        );
     }
 }

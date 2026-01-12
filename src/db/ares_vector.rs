@@ -23,7 +23,7 @@ use crate::types::{AppError, Document, Result, SearchResult};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::vectorstore::{CollectionInfo, CollectionStats, VectorStore};
@@ -90,15 +90,15 @@ impl AresVectorStore {
     }
 
     /// Load document metadata from disk.
-    async fn load_documents(&self, path: &PathBuf) -> Result<()> {
+    async fn load_documents(&self, path: &Path) -> Result<()> {
         let docs_path = path.join("documents.json");
         if docs_path.exists() {
             let data = tokio::fs::read_to_string(&docs_path).await.map_err(|e| {
                 AppError::Configuration(format!("Failed to read documents file: {}", e))
             })?;
 
-            let loaded: HashMap<String, HashMap<String, Document>> =
-                serde_json::from_str(&data).map_err(|e| {
+            let loaded: HashMap<String, HashMap<String, Document>> = serde_json::from_str(&data)
+                .map_err(|e| {
                     AppError::Configuration(format!("Failed to parse documents file: {}", e))
                 })?;
 
@@ -131,7 +131,6 @@ impl AresVectorStore {
         }
         Ok(())
     }
-
 }
 
 #[async_trait]
@@ -150,7 +149,8 @@ impl VectorStore for AresVectorStore {
         }
 
         // Create the collection with default configuration
-        self.db.create_collection(name, dimensions, DistanceMetric::Cosine)
+        self.db
+            .create_collection(name, dimensions, DistanceMetric::Cosine)
             .await
             .map_err(|e| AppError::Internal(format!("Failed to create collection: {}", e)))?;
 
@@ -169,7 +169,8 @@ impl VectorStore for AresVectorStore {
     }
 
     async fn delete_collection(&self, name: &str) -> Result<()> {
-        self.db.delete_collection(name)
+        self.db
+            .delete_collection(name)
             .await
             .map_err(|e| AppError::Internal(format!("Failed to delete collection: {}", e)))?;
 
@@ -210,9 +211,10 @@ impl VectorStore for AresVectorStore {
     }
 
     async fn collection_stats(&self, name: &str) -> Result<CollectionStats> {
-        let collection = self.db.get_collection(name).map_err(|_| {
-            AppError::NotFound(format!("Collection '{}' not found", name))
-        })?;
+        let collection = self
+            .db
+            .get_collection(name)
+            .map_err(|_| AppError::NotFound(format!("Collection '{}' not found", name)))?;
 
         let stats = collection.stats();
 
@@ -247,12 +249,19 @@ impl VectorStore for AresVectorStore {
 
             // Convert document metadata to vector metadata
             let meta = VectorMetadata::from_pairs([
-                ("title", ares_vector::types::MetadataValue::String(doc.metadata.title.clone())),
-                ("source", ares_vector::types::MetadataValue::String(doc.metadata.source.clone())),
+                (
+                    "title",
+                    ares_vector::types::MetadataValue::String(doc.metadata.title.clone()),
+                ),
+                (
+                    "source",
+                    ares_vector::types::MetadataValue::String(doc.metadata.source.clone()),
+                ),
             ]);
 
             // Insert/update in vector index
-            self.db.insert(collection, &doc.id, embedding, Some(meta))
+            self.db
+                .insert(collection, &doc.id, embedding, Some(meta))
                 .await
                 .map_err(|e| AppError::Internal(format!("Failed to insert vector: {}", e)))?;
 
@@ -282,16 +291,17 @@ impl VectorStore for AresVectorStore {
         threshold: f32,
     ) -> Result<Vec<SearchResult>> {
         // Search in vector index
-        let vector_results = self.db
+        let vector_results = self
+            .db
             .search(collection, embedding, limit * 2) // Fetch extra for threshold filtering
             .await
             .map_err(|e| AppError::Internal(format!("Search failed: {}", e)))?;
 
         // Get full documents and filter by threshold
         let docs = self.documents.read();
-        let collection_docs = docs.get(collection).ok_or_else(|| {
-            AppError::NotFound(format!("Collection '{}' not found", collection))
-        })?;
+        let collection_docs = docs
+            .get(collection)
+            .ok_or_else(|| AppError::NotFound(format!("Collection '{}' not found", collection)))?;
 
         let mut results = Vec::with_capacity(limit);
         for result in vector_results {
@@ -330,17 +340,14 @@ impl VectorStore for AresVectorStore {
         let mut deleted = 0;
 
         for id in ids {
-            match self.db.delete(collection, id).await {
-                Ok(true) => {
-                    // Remove from document storage
-                    let mut docs = self.documents.write();
-                    if let Some(collection_docs) = docs.get_mut(collection) {
-                        if collection_docs.remove(id).is_some() {
-                            deleted += 1;
-                        }
+            if let Ok(true) = self.db.delete(collection, id).await {
+                // Remove from document storage
+                let mut docs = self.documents.write();
+                if let Some(collection_docs) = docs.get_mut(collection) {
+                    if collection_docs.remove(id).is_some() {
+                        deleted += 1;
                     }
                 }
-                _ => {}
             }
         }
 
@@ -355,9 +362,9 @@ impl VectorStore for AresVectorStore {
     async fn get(&self, collection: &str, id: &str) -> Result<Option<Document>> {
         let docs = self.documents.read();
 
-        let collection_docs = docs.get(collection).ok_or_else(|| {
-            AppError::NotFound(format!("Collection '{}' not found", collection))
-        })?;
+        let collection_docs = docs
+            .get(collection)
+            .ok_or_else(|| AppError::NotFound(format!("Collection '{}' not found", collection)))?;
 
         Ok(collection_docs.get(id).cloned())
     }
@@ -370,7 +377,9 @@ impl Default for AresVectorStore {
         let config = Config::memory();
         let db = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                VectorDb::open(config).await.expect("Failed to create in-memory VectorDb")
+                VectorDb::open(config)
+                    .await
+                    .expect("Failed to create in-memory VectorDb")
             })
         });
 

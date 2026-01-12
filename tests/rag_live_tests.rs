@@ -75,9 +75,7 @@ fn get_vector_path() -> Option<String> {
 macro_rules! skip_if_not_live {
     () => {
         if !should_run_live_tests() {
-            eprintln!(
-                "Skipping live test. Set RAG_LIVE_TESTS=1 to run with real models."
-            );
+            eprintln!("Skipping live test. Set RAG_LIVE_TESTS=1 to run with real models.");
             return;
         }
     };
@@ -257,10 +255,7 @@ async fn test_live_embedding_similarity() {
         "Cooking recipes for dinner",
     ];
 
-    let embeddings = service
-        .embed_texts(&texts)
-        .await
-        .expect("Embedding failed");
+    let embeddings = service.embed_texts(&texts).await.expect("Embedding failed");
 
     // Calculate cosine similarities
     fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -354,7 +349,12 @@ async fn test_live_vector_store_crud() {
 
     println!("Search results:");
     for (i, result) in results.iter().enumerate() {
-        println!("  {}. {} (score: {:.4})", i + 1, result.document.id, result.score);
+        println!(
+            "  {}. {} (score: {:.4})",
+            i + 1,
+            result.document.id,
+            result.score
+        );
     }
 
     assert!(!results.is_empty(), "Should find some results");
@@ -721,12 +721,7 @@ async fn test_live_full_rag_pipeline() {
 
     println!("\nAfter reranking ({:?}):", rerank_time);
     for (i, r) in reranked.iter().enumerate() {
-        println!(
-            "  {}. {} (final: {:.4})",
-            i + 1,
-            r.id,
-            r.final_score
-        );
+        println!("  {}. {} (final: {:.4})", i + 1, r.id, r.final_score);
     }
 
     // 5. Show top context for LLM

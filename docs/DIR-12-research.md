@@ -17,7 +17,7 @@
 | Database Schema | ✅ Implemented | `user_agents`, `user_tools`, `user_mcps`, `agent_executions` |
 | User Agents API | ✅ Implemented | `src/api/handlers/user_agents.rs` |
 | TOON Import/Export | ✅ Implemented | `POST /api/agents/import`, `GET /api/agents/{id}/export` |
-| Integration Tests | ✅ 158 tests passing | `tests/toon_integration_tests.rs` |
+| Integration Tests | ✅ 175+ tests passing | `tests/toon_integration_tests.rs` |
 | Leptos UI | ✅ Implemented | `ui/` directory - Leptos + Tailwind chat interface |
 
 ---
@@ -1139,7 +1139,7 @@ CREATE TABLE agent_executions (
 
 ### Test Coverage
 
-- **158 tests passing** across all modules
+- **175+ tests passing** across all modules
 - 7 dedicated TOON integration tests in `tests/toon_integration_tests.rs`
 - Tests cover roundtrip encoding/decoding, DynamicConfigManager loading, API handlers
 

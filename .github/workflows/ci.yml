@@ -52,6 +52,7 @@ jobs:
             "ollama",
             "openai",
             "ollama,openai",
+            "ares-vector",
             "all-llm",
             "full",
             "minimal",
@@ -130,6 +131,13 @@ jobs:
           # Run full test suite on Linux only
           - os: ubuntu-latest
             features: "all-llm"
+          # Run ares-vector (pure Rust vector DB) tests on all platforms
+          - os: ubuntu-latest
+            features: "ares-vector"
+          - os: windows-latest
+            features: "ares-vector"
+          - os: macos-latest
+            features: "ares-vector"
 
     steps:
       - uses: actions/checkout@v4

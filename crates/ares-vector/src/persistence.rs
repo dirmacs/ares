@@ -142,6 +142,7 @@ pub async fn load_collection(base_path: &PathBuf, name: &str) -> Result<Collecti
 #[allow(dead_code)]
 pub(crate) mod bincode_persistence {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// Save vectors using bincode for efficiency.
     pub(crate) async fn save_vectors_bincode(

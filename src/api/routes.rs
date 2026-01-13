@@ -2,7 +2,7 @@ use crate::auth::jwt::AuthService;
 use crate::AppState;
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use std::sync::Arc;
@@ -38,6 +38,17 @@ pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
         .route(
             "/workflows/{workflow_name}",
             post(crate::api::handlers::workflows::execute_workflow),
+        )
+        // RAG routes
+        .route("/rag/ingest", post(crate::api::handlers::rag::ingest))
+        .route("/rag/search", post(crate::api::handlers::rag::search))
+        .route(
+            "/rag/collection",
+            delete(crate::api::handlers::rag::delete_collection),
+        )
+        .route(
+            "/rag/collections",
+            get(crate::api::handlers::rag::list_collections),
         )
         // User agent routes
         .route(

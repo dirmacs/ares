@@ -13,6 +13,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// Default datetime for serde deserialization
+fn default_datetime() -> DateTime<Utc> {
+    Utc::now()
+}
+
 // ============= API Request/Response Types =============
 
 /// Request payload for chat endpoints.
@@ -72,6 +77,116 @@ pub struct ResearchResponse {
     pub sources: Vec<Source>,
     /// Time taken for the research in milliseconds.
     pub duration_ms: u64,
+}
+
+// ============= RAG API Types =============
+
+/// Request to ingest a document into the RAG system.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RagIngestRequest {
+    /// Collection name to ingest into.
+    pub collection: String,
+    /// The text content to ingest.
+    pub content: String,
+    /// Optional document title.
+    pub title: Option<String>,
+    /// Optional source URL or path.
+    pub source: Option<String>,
+    /// Optional tags for categorization.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Chunking strategy to use.
+    #[serde(default)]
+    pub chunking_strategy: Option<String>,
+}
+
+/// Response from document ingestion.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RagIngestResponse {
+    /// Number of chunks created.
+    pub chunks_created: usize,
+    /// Document IDs created.
+    pub document_ids: Vec<String>,
+    /// Collection name.
+    pub collection: String,
+}
+
+/// Request to search the RAG system.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RagSearchRequest {
+    /// Collection to search.
+    pub collection: String,
+    /// The search query.
+    pub query: String,
+    /// Maximum results to return (default: 10).
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
+    /// Search strategy to use: semantic, bm25, fuzzy, hybrid.
+    #[serde(default)]
+    pub strategy: Option<String>,
+    /// Minimum similarity threshold (0.0 to 1.0).
+    #[serde(default = "default_search_threshold")]
+    pub threshold: f32,
+    /// Whether to enable reranking.
+    #[serde(default)]
+    pub rerank: bool,
+    /// Reranker model to use if reranking.
+    #[serde(default)]
+    pub reranker_model: Option<String>,
+}
+
+fn default_search_limit() -> usize {
+    10
+}
+
+fn default_search_threshold() -> f32 {
+    0.0
+}
+
+/// Single search result.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RagSearchResult {
+    /// Document ID.
+    pub id: String,
+    /// Matching text content.
+    pub content: String,
+    /// Relevance score.
+    pub score: f32,
+    /// Document metadata.
+    pub metadata: DocumentMetadata,
+}
+
+/// Response from RAG search.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RagSearchResponse {
+    /// Search results.
+    pub results: Vec<RagSearchResult>,
+    /// Total number of results before limit.
+    pub total: usize,
+    /// Search strategy used.
+    pub strategy: String,
+    /// Whether reranking was applied.
+    pub reranked: bool,
+    /// Query processing time in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// Request to delete a collection.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RagDeleteCollectionRequest {
+    /// Collection name to delete.
+    pub collection: String,
+}
+
+/// Response from collection deletion.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RagDeleteCollectionResponse {
+    /// Whether deletion was successful.
+    pub success: bool,
+    /// Collection that was deleted.
+    pub collection: String,
+    /// Number of documents deleted.
+    pub documents_deleted: usize,
 }
 
 // ============= Workflow Types =============
@@ -240,15 +355,19 @@ pub struct Document {
 }
 
 /// Metadata associated with a document.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct DocumentMetadata {
     /// Title of the document.
+    #[serde(default)]
     pub title: String,
     /// Source of the document (e.g., URL, file path).
+    #[serde(default)]
     pub source: String,
     /// When the document was created or ingested.
+    #[serde(default = "default_datetime")]
     pub created_at: DateTime<Utc>,
     /// Tags for categorization and filtering.
+    #[serde(default)]
     pub tags: Vec<String>,
 }
 

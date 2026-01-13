@@ -1061,12 +1061,12 @@ impl UserAgent {
         }
     }
 
-    /// Get tools as a Vec<String>
+    /// Get tools as a `Vec<String>`
     pub fn tools_vec(&self) -> Vec<String> {
         serde_json::from_str(&self.tools).unwrap_or_default()
     }
 
-    /// Set tools from a Vec<String>
+    /// Set tools from a `Vec<String>`
     pub fn set_tools(&mut self, tools: Vec<String>) {
         self.tools = serde_json::to_string(&tools).unwrap_or_else(|_| "[]".to_string());
     }

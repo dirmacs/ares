@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "A.R.E.S Chat UI - Modern Leptos frontend for the ARES agentic server"
 
+# Keep this package out of the parent workspace
+[workspace]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

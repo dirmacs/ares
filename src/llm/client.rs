@@ -57,7 +57,7 @@ pub enum Provider {
     OpenAI {
         /// API key for authentication
         api_key: String,
-        /// Base URL for the API (default: https://api.openai.com/v1)
+        /// Base URL for the API (default: <https://api.openai.com/v1>)
         api_base: String,
         /// Model identifier (e.g., "gpt-4", "gpt-3.5-turbo")
         model: String,
@@ -128,7 +128,7 @@ impl Provider {
     ///
     /// ## OpenAI
     /// - `OPENAI_API_KEY` - API key (required)
-    /// - `OPENAI_API_BASE` - Base URL (default: https://api.openai.com/v1)
+    /// - `OPENAI_API_BASE` - Base URL (default: <https://api.openai.com/v1>)
     /// - `OPENAI_MODEL` - Model name (default: gpt-4)
     ///
     /// ## Ollama

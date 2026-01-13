@@ -24,7 +24,7 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 - 💾 **Database**: Local SQLite (libsql) by default, optional Turso and Qdrant
 - 🔌 **MCP Support**: Pluggable Model Context Protocol server integration
 - 🕸️ **Agent Framework**: Multi-agent orchestration with specialized agents
-- 📚 **RAG**: Pluggable knowledge bases with semantic search
+- 📚 **RAG**: Pure-Rust vector store (ares-vector), multi-strategy search (semantic, BM25, fuzzy, hybrid), reranking
 - 🧠 **Memory**: User personalization and context management
 - 🔬 **Deep Research**: Multi-step research with parallel subagents
 - 🌐 **Web Search**: Built-in web search via [daedra](https://github.com/dirmacs/daedra) (no API keys required)
@@ -199,6 +199,7 @@ A.R.E.S uses Cargo features for conditional compilation:
 | `local-db` | Local SQLite via libsql | ✅ Yes |
 | `turso` | Remote Turso database | No |
 | `qdrant` | Qdrant vector database | No |
+| `ares-vector` | Pure-Rust vector store with HNSW indexing | No |
 
 ### UI & Documentation
 
@@ -732,6 +733,52 @@ curl -X POST http://localhost:3000/api/workflows/default \
       "quarter": "Q4"
     }
   }'
+```
+
+### RAG (Retrieval Augmented Generation)
+
+A.R.E.S includes a comprehensive RAG system with a pure-Rust vector store. Requires the `ares-vector` feature.
+
+#### Ingest Documents
+
+```bash
+curl -X POST http://localhost:3000/api/rag/ingest \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection": "docs",
+    "content": "Your document content here...",
+    "metadata": {"source": "manual", "category": "technical"},
+    "chunking_strategy": "word"
+  }'
+```
+
+#### Search Documents
+
+```bash
+curl -X POST http://localhost:3000/api/rag/search \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection": "docs",
+    "query": "What is the architecture?",
+    "strategy": "hybrid",
+    "top_k": 5,
+    "rerank": true
+  }'
+```
+
+**Search Strategies**:
+- `semantic`: Vector similarity search
+- `bm25`: Traditional keyword matching
+- `fuzzy`: Typo-tolerant search
+- `hybrid`: Weighted combination of semantic + BM25
+
+#### List Collections
+
+```bash
+curl http://localhost:3000/api/rag/collections \
+  -H "Authorization: Bearer <access_token>"
 ```
 
 ## Tool Calling

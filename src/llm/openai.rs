@@ -47,7 +47,7 @@ impl OpenAIClient {
     /// # Arguments
     ///
     /// * `api_key` - OpenAI API key
-    /// * `api_base` - Base URL for the API (e.g., "https://api.openai.com/v1")
+    /// * `api_base` - Base URL for the API (e.g., `https://api.openai.com/v1`)
     /// * `model` - Model identifier (e.g., "gpt-4", "gpt-3.5-turbo")
     pub fn new(api_key: String, api_base: String, model: String) -> Self {
         let config = OpenAIConfig::new()

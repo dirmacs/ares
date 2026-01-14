@@ -89,6 +89,7 @@ impl Provider {
     /// - The provider cannot be initialized
     /// - Required configuration is missing
     /// - Network connectivity issues (for remote providers)
+    #[allow(unreachable_patterns)]
     pub async fn create_client(&self) -> Result<Box<dyn LLMClient>> {
         match self {
             #[cfg(feature = "openai")]
@@ -111,7 +112,7 @@ impl Provider {
             Provider::LlamaCpp { model_path } => Ok(Box::new(
                 super::llamacpp::LlamaCppClient::new(model_path.clone())?,
             )),
-        }
+            _ => unreachable!("Provider variant not enabled"),        }
     }
 
     /// Create a provider from environment variables
@@ -192,6 +193,7 @@ impl Provider {
     }
 
     /// Get the provider name as a string
+    #[allow(unreachable_patterns)]
     pub fn name(&self) -> &'static str {
         match self {
             #[cfg(feature = "openai")]
@@ -202,10 +204,12 @@ impl Provider {
 
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => "llamacpp",
+            _ => unreachable!("Provider variant not enabled"),
         }
     }
 
     /// Check if this provider requires an API key
+    #[allow(unreachable_patterns)]
     pub fn requires_api_key(&self) -> bool {
         match self {
             #[cfg(feature = "openai")]
@@ -216,10 +220,12 @@ impl Provider {
 
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => false,
+            _ => unreachable!("Provider variant not enabled"),
         }
     }
 
     /// Check if this provider is local (no network required)
+    #[allow(unreachable_patterns)]
     pub fn is_local(&self) -> bool {
         match self {
             #[cfg(feature = "openai")]
@@ -234,6 +240,7 @@ impl Provider {
 
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => true,
+            _ => unreachable!("Provider variant not enabled"),
         }
     }
 

@@ -538,6 +538,24 @@ impl HnswIndex {
         vector_bytes + id_bytes + meta_bytes + graph_bytes
     }
 
+    /// Export all vectors for persistence.
+    ///
+    /// Returns an iterator over (id, vector, metadata) tuples.
+    pub fn export_all(&self) -> Vec<(String, Vec<f32>, Option<VectorMetadata>)> {
+        let id_to_internal = self.id_to_internal.read();
+        let vectors = self.vectors.read();
+        let metadata = self.metadata.read();
+
+        id_to_internal
+            .iter()
+            .filter_map(|(id, &internal_id)| {
+                let vector = vectors.get(&internal_id)?.clone();
+                let meta = metadata.get(&internal_id).cloned();
+                Some((id.clone(), vector, meta))
+            })
+            .collect()
+    }
+
     /// Convert HNSW distance to a similarity score (higher = more similar).
     fn distance_to_score(&self, distance: f32) -> f32 {
         match self.metric {

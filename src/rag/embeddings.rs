@@ -18,12 +18,27 @@
 
 use crate::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::task::spawn_blocking;
 
 // Re-export fastembed types for convenience
 pub use fastembed::{EmbeddingModel as FastEmbedModel, InitOptions, SparseModel, TextEmbedding};
+
+/// Global lock for model initialization to prevent race conditions during parallel downloads.
+/// The key is the model name (from FastEmbedModel's Debug representation).
+static MODEL_INIT_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+/// Get or create a lock for a specific model to prevent concurrent initialization.
+fn get_model_lock(model_name: &str) -> Arc<Mutex<()>> {
+    let locks = MODEL_INIT_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = locks.lock().unwrap();
+    map.entry(model_name.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
 
 // ============================================================================
 // Embedding Model Configuration
@@ -577,7 +592,21 @@ pub struct EmbeddingService {
 
 impl EmbeddingService {
     /// Create a new embedding service with the given configuration
+    ///
+    /// Uses a per-model lock to prevent race conditions when multiple threads
+    /// try to download/initialize the same model simultaneously.
     pub fn new(config: EmbeddingConfig) -> Result<Self> {
+        let model_name = format!("{:?}", config.model.to_fastembed_model());
+        let model_lock = get_model_lock(&model_name);
+
+        // Acquire lock for this specific model to prevent concurrent downloads
+        let _guard = model_lock.lock().map_err(|e| {
+            AppError::Internal(format!(
+                "Failed to acquire model initialization lock: {}",
+                e
+            ))
+        })?;
+
         let model = TextEmbedding::try_new(
             InitOptions::new(config.model.to_fastembed_model())
                 .with_show_download_progress(config.show_download_progress),
@@ -585,6 +614,12 @@ impl EmbeddingService {
         .map_err(|e| AppError::Internal(format!("Failed to initialize embedding model: {}", e)))?;
 
         let sparse_model = if config.sparse_enabled {
+            let sparse_model_name = format!("{:?}", config.sparse_model.to_fastembed_model());
+            let sparse_lock = get_model_lock(&sparse_model_name);
+            let _sparse_guard = sparse_lock.lock().map_err(|e| {
+                AppError::Internal(format!("Failed to acquire sparse model lock: {}", e))
+            })?;
+
             Some(
                 fastembed::SparseTextEmbedding::try_new(
                     fastembed::SparseInitOptions::new(config.sparse_model.to_fastembed_model())
@@ -649,6 +684,8 @@ impl EmbeddingService {
     ///
     /// This is more efficient than calling `embed_text` multiple times
     /// as it batches the texts and processes them together.
+    ///
+    /// Uses a per-model lock to prevent race conditions during model initialization.
     pub async fn embed_texts<S: AsRef<str> + Send + Sync + 'static>(
         &self,
         texts: &[S],
@@ -665,7 +702,16 @@ impl EmbeddingService {
         let model_type = self.config.model.to_fastembed_model();
         let show_progress = self.config.show_download_progress;
 
+        // Get the lock for this model type
+        let model_name = format!("{:?}", model_type);
+        let model_lock = get_model_lock(&model_name);
+
         spawn_blocking(move || {
+            // Acquire lock to prevent concurrent model downloads
+            let _guard = model_lock
+                .lock()
+                .map_err(|e| AppError::Internal(format!("Failed to acquire model lock: {}", e)))?;
+
             // Create model in the blocking context
             let mut model = TextEmbedding::try_new(
                 InitOptions::new(model_type).with_show_download_progress(show_progress),
@@ -684,6 +730,8 @@ impl EmbeddingService {
     }
 
     /// Generate sparse embeddings for hybrid search
+    ///
+    /// Uses a per-model lock to prevent race conditions during model initialization.
     pub async fn embed_sparse<S: AsRef<str> + Send + Sync + 'static>(
         &self,
         texts: &[S],
@@ -699,7 +747,16 @@ impl EmbeddingService {
         let sparse_model_type = self.config.sparse_model.to_fastembed_model();
         let show_progress = self.config.show_download_progress;
 
+        // Get the lock for this sparse model type
+        let model_name = format!("{:?}", sparse_model_type);
+        let model_lock = get_model_lock(&model_name);
+
         spawn_blocking(move || {
+            // Acquire lock to prevent concurrent model downloads
+            let _guard = model_lock.lock().map_err(|e| {
+                AppError::Internal(format!("Failed to acquire sparse model lock: {}", e))
+            })?;
+
             let mut model = fastembed::SparseTextEmbedding::try_new(
                 fastembed::SparseInitOptions::new(sparse_model_type)
                     .with_show_download_progress(show_progress),

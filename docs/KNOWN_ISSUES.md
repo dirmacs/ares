@@ -160,8 +160,24 @@ If you encounter issues not listed here:
 ✅ RAG pipeline with pure-Rust vector store  
 ✅ Rate limiting infrastructure  
 ✅ Improved CORS configuration  
+✅ **Vector persistence bug fixed** - Vectors now properly saved to disk (commit 354a771)  
+✅ **Race condition in parallel model loading fixed** - Added per-model initialization locks (commit 354a771)  
+
+## Open Issues
+
+### Fuzzy Search with Query Typos (LOW)
+
+**Status**: ⚠️ Open (see GitHub issue #4)
+
+**Issue**: Fuzzy search only matches exact words in documents. When users make typos in their search query (e.g., "progamming languge"), the search returns 0 results.
+
+**Expected Behavior**: Query "progamming languge" should match documents containing "programming language".
+
+**Location**: `src/rag/search.rs`
+
+**Workaround**: Spell queries correctly, or use semantic search which handles conceptual matching better.
 
 ---
 
 **Last Updated**: 2026-01-16  
-**Version**: 0.3.0
+**Version**: 0.3.1

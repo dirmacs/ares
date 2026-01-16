@@ -5,6 +5,29 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-01-16
+
+### Fixed
+
+- **Vector Persistence (CRITICAL)**: Fixed bug where vectors were not saved to disk
+  - Root cause: HNSW index didn't support iteration, so `save_collection()` saved empty files
+  - Added `export_all()` method to `HnswIndex` in `crates/ares-vector/src/index.rs`
+  - Added `export_all()` method to `Collection` in `crates/ares-vector/src/collection.rs`
+  - Updated `save_collection()` in `crates/ares-vector/src/persistence.rs` to actually save vectors
+  - Added regression tests: `test_vector_persistence_regression` and `test_metadata_persistence`
+
+- **Race Condition in Parallel Model Loading (MEDIUM)**: Fixed concurrent download failures
+  - Root cause: Multiple threads loading fastembed model simultaneously caused conflicts
+  - Added per-model initialization locks using `OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>>`
+  - Applied locks to `EmbeddingService::new()`, `embed_texts()`, and `embed_sparse()`
+  - Location: `src/rag/embeddings.rs`
+
+### Known Issues
+
+- **Fuzzy Search with Query Typos (LOW)**: Query "progamming languge" returns 0 results
+  - See GitHub issue #4 for details and proposed fix
+  - Workaround: Use semantic search or spell queries correctly
+
 ## [0.3.0] - 2026-01-13
 
 ### Added
@@ -198,6 +221,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.3.1]: https://github.com/dirmacs/ares/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/dirmacs/ares/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/dirmacs/ares/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/dirmacs/ares/compare/v0.2.3...v0.2.4

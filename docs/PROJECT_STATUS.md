@@ -1,9 +1,9 @@
 # A.R.E.S Project Status & Completion Summary
 
 **Date**: 2024-12-15  
-**Updated**: 2026-01-13  
+**Updated**: 2026-01-16  
 **Status**: ✅ All Core Features Implemented and Tested  
-**Version**: 0.3.0
+**Version**: 0.3.1
 
 ---
 
@@ -1029,6 +1029,16 @@ All objectives from the five iterations have been successfully completed:
 ✅ **Iteration 5**: Pure-Rust vector store, RAG pipeline, multi-strategy search, reranking  
 
 **The A.R.E.S project is production-ready for local-first LLM applications with excellent developer experience, RAG capabilities, and comprehensive testing.**
+
+### What's New in v0.3.1
+- **Vector Persistence Fix**: Fixed critical bug where vectors were not saved to disk on server shutdown
+  - Added `export_all()` method to `HnswIndex` and `Collection`
+  - Updated `save_collection()` to properly export and persist vectors
+  - Added regression tests for persistence
+- **Race Condition Fix**: Fixed parallel model loading race condition in embedding service
+  - Added per-model initialization locks using `OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>>`
+  - Prevents concurrent downloads when multiple threads initialize the same model
+- **Test Coverage**: All 28 ares-vector tests, 35 RAG unit tests, and 11 live tests pass
 
 ### What's New in v0.3.0
 - **ares-vector**: Pure-Rust vector database with HNSW indexing (no external dependencies)

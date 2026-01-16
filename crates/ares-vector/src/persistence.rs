@@ -34,7 +34,7 @@ pub(crate) struct StoredVectorData {
 ///
 /// Creates the following files:
 /// - `{base_path}/{name}/metadata.json` - Collection metadata
-/// - `{base_path}/{name}/vectors.bin` - Vector data (bincode format)
+/// - `{base_path}/{name}/vectors.json` - Vector data (JSON format)
 pub async fn save_collection(base_path: &Path, name: &str, collection: &Collection) -> Result<()> {
     let collection_path = base_path.join(name);
     tokio::fs::create_dir_all(&collection_path).await?;
@@ -54,23 +54,23 @@ pub async fn save_collection(base_path: &Path, name: &str, collection: &Collecti
         .map_err(|e| Error::Persistence(format!("Failed to serialize metadata: {}", e)))?;
     tokio::fs::write(&metadata_path, metadata_json).await?;
 
-    // Collect all vectors
-    // Note: We can't iterate over the index directly, so we'll need to
-    // track vectors separately or use a different approach for persistence.
-    // For now, we'll save what we can access.
+    // Export all vectors from the collection
+    let exported = collection.export_all();
+    let vectors: Vec<StoredVectorData> = exported
+        .into_iter()
+        .map(|(id, vector, metadata)| StoredVectorData {
+            id,
+            vector,
+            metadata,
+        })
+        .collect();
 
-    // This is a limitation - we'll need to enhance the index to support
-    // iteration for proper persistence. For now, save an empty vectors file.
     let vectors_path = collection_path.join("vectors.json");
-
-    // In a real implementation, we'd iterate over the index
-    // For now, we acknowledge this limitation
-    let vectors: Vec<StoredVectorData> = Vec::new();
     let vectors_json = serde_json::to_string(&vectors)
         .map_err(|e| Error::Persistence(format!("Failed to serialize vectors: {}", e)))?;
     tokio::fs::write(&vectors_path, vectors_json).await?;
 
-    info!(name, path = ?collection_path, "Saved collection");
+    info!(name, vectors = vectors.len(), path = ?collection_path, "Saved collection");
     Ok(())
 }
 
@@ -199,5 +199,128 @@ mod tests {
         assert_eq!(loaded.name(), "test");
         assert_eq!(loaded.dimensions(), 3);
         assert_eq!(loaded.metric(), DistanceMetric::Cosine);
+    }
+
+    /// Test that vectors are actually persisted and can be retrieved after reload.
+    /// This is a regression test for the bug where vectors.json was saved empty.
+    #[tokio::test]
+    async fn test_vector_persistence_regression() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+
+        // Create collection with multiple vectors
+        let collection = Collection::new(
+            "persist_test".to_string(),
+            3,
+            DistanceMetric::Cosine,
+            HnswConfig::default(),
+        )
+        .unwrap();
+
+        // Insert multiple vectors with metadata
+        let mut meta1 = VectorMetadata::new();
+        meta1.insert("doc_id", "doc1");
+        meta1.insert("category", "rust");
+
+        let mut meta2 = VectorMetadata::new();
+        meta2.insert("doc_id", "doc2");
+        meta2.insert("category", "python");
+
+        collection
+            .insert("vec1", &[1.0, 0.0, 0.0], Some(meta1.clone()))
+            .unwrap();
+        collection
+            .insert("vec2", &[0.0, 1.0, 0.0], Some(meta2.clone()))
+            .unwrap();
+        collection.insert("vec3", &[0.0, 0.0, 1.0], None).unwrap();
+
+        // Verify vectors are in collection before save
+        assert_eq!(collection.len(), 3);
+
+        // Save collection
+        save_collection(&base_path, "persist_test", &collection)
+            .await
+            .unwrap();
+
+        // Verify vectors.json file exists and is not empty
+        let vectors_path = base_path.join("persist_test").join("vectors.json");
+        assert!(vectors_path.exists(), "vectors.json should exist");
+        let vectors_json = tokio::fs::read_to_string(&vectors_path).await.unwrap();
+        let stored_vectors: Vec<StoredVectorData> =
+            serde_json::from_str(&vectors_json).expect("vectors.json should be valid JSON");
+        assert_eq!(
+            stored_vectors.len(),
+            3,
+            "vectors.json should contain 3 vectors"
+        );
+
+        // Load collection (simulating server restart)
+        let loaded = load_collection(&base_path, "persist_test").await.unwrap();
+
+        // Verify all vectors are present
+        assert_eq!(loaded.len(), 3, "Loaded collection should have 3 vectors");
+
+        // Verify vectors can be retrieved by ID (get returns (Vec<f32>, Option<VectorMetadata>))
+        let (v1_vec, _v1_meta) = loaded.get("vec1").expect("vec1 should exist");
+        assert_eq!(v1_vec.len(), 3);
+        assert!((v1_vec[0] - 1.0).abs() < 0.0001);
+
+        let (v2_vec, _v2_meta) = loaded.get("vec2").expect("vec2 should exist");
+        assert_eq!(v2_vec.len(), 3);
+        assert!((v2_vec[1] - 1.0).abs() < 0.0001);
+
+        let (v3_vec, _v3_meta) = loaded.get("vec3").expect("vec3 should exist");
+        assert_eq!(v3_vec.len(), 3);
+        assert!((v3_vec[2] - 1.0).abs() < 0.0001);
+
+        // Verify search works on loaded collection
+        let results = loaded.search(&[1.0, 0.0, 0.0], 3).unwrap();
+        assert!(!results.is_empty(), "Search should return results");
+        assert_eq!(results[0].id, "vec1", "vec1 should be the closest match");
+    }
+
+    /// Test that metadata is correctly persisted and loaded.
+    #[tokio::test]
+    async fn test_metadata_persistence() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+
+        let collection = Collection::new(
+            "meta_test".to_string(),
+            3,
+            DistanceMetric::Euclidean,
+            HnswConfig::default(),
+        )
+        .unwrap();
+
+        let mut meta = VectorMetadata::new();
+        meta.insert("title", "Test Document");
+        meta.insert("page", 42i64);
+        meta.insert("score", 0.95f64);
+        meta.insert("published", true);
+
+        collection
+            .insert("doc1", &[1.0, 2.0, 3.0], Some(meta))
+            .unwrap();
+
+        save_collection(&base_path, "meta_test", &collection)
+            .await
+            .unwrap();
+
+        let loaded = load_collection(&base_path, "meta_test").await.unwrap();
+
+        // Export and check metadata
+        let exported = loaded.export_all();
+        assert_eq!(exported.len(), 1);
+
+        let (id, _vector, loaded_meta) = &exported[0];
+        assert_eq!(id, "doc1");
+        let loaded_meta = loaded_meta.as_ref().expect("metadata should exist");
+
+        // Use VectorMetadata helper methods
+        assert_eq!(loaded_meta.get_string("title"), Some("Test Document"));
+        assert_eq!(loaded_meta.get_int("page"), Some(42));
+        assert!((loaded_meta.get_float("score").unwrap() - 0.95).abs() < 0.0001);
+        assert_eq!(loaded_meta.get_bool("published"), Some(true));
     }
 }

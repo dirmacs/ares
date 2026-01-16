@@ -159,6 +159,13 @@ impl Collection {
     pub(crate) fn index(&self) -> &Arc<HnswIndex> {
         &self.index
     }
+
+    /// Export all vectors for persistence.
+    ///
+    /// Returns a vector of (id, vector, metadata) tuples.
+    pub fn export_all(&self) -> Vec<(String, Vec<f32>, Option<VectorMetadata>)> {
+        self.index.export_all()
+    }
 }
 
 #[cfg(test)]

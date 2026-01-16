@@ -10,10 +10,26 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// LLM Provider type
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LlmProvider {
+    /// NVIDIA API (build.nvidia.com) - default
+    #[default]
+    Nvidia,
+    /// Local Ollama instance
+    Ollama,
+    /// OpenAI-compatible API
+    OpenAI,
+}
+
 /// Main configuration for Pawan
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PawanConfig {
+    /// LLM provider to use
+    pub provider: LlmProvider,
+
     /// LLM model to use for coding tasks
     pub model: String,
 
@@ -41,7 +57,13 @@ pub struct PawanConfig {
     /// Temperature for LLM responses
     pub temperature: f32,
 
-    /// Enable reasoning mode (for Nemotron models)
+    /// Top-p sampling parameter
+    pub top_p: f32,
+
+    /// Maximum tokens in response
+    pub max_tokens: usize,
+
+    /// Enable reasoning/thinking mode (for DeepSeek/Nemotron models)
     pub reasoning_mode: bool,
 
     /// Healing configuration
@@ -73,6 +95,7 @@ impl Default for PawanConfig {
         );
 
         Self {
+            provider: LlmProvider::Nvidia,
             model: crate::DEFAULT_MODEL.to_string(),
             dry_run: false,
             auto_backup: true,
@@ -81,7 +104,9 @@ impl Default for PawanConfig {
             max_file_size_kb: 1024,
             max_tool_iterations: crate::MAX_TOOL_ITERATIONS,
             system_prompt: None,
-            temperature: 0.6,
+            temperature: 1.0,
+            top_p: 0.95,
+            max_tokens: 8192,
             reasoning_mode: true,
             healing: HealingConfig::default(),
             targets,
@@ -241,20 +266,16 @@ impl PawanConfig {
         self.targets.get(name)
     }
 
-    /// Get the system prompt, with reasoning mode prefix for Nemotron models
+    /// Get the system prompt, with reasoning mode prefix for DeepSeek/thinking models
     pub fn get_system_prompt(&self) -> String {
-        let reasoning_prefix = if self.reasoning_mode {
-            "detailed thinking on\n\n"
-        } else {
-            "detailed thinking off\n\n"
-        };
-
-        let base_prompt = self
-            .system_prompt
+        self.system_prompt
             .clone()
-            .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+            .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string())
+    }
 
-        format!("{}{}", reasoning_prefix, base_prompt)
+    /// Check if thinking mode should be enabled (for DeepSeek models)
+    pub fn use_thinking_mode(&self) -> bool {
+        self.reasoning_mode && self.model.contains("deepseek")
     }
 }
 

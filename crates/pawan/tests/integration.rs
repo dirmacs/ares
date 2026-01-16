@@ -314,7 +314,7 @@ fn test_healing_config_defaults() {
 fn test_config_defaults() {
     let config = PawanConfig::default();
 
-    assert_eq!(config.model, "nemotron");
+    assert_eq!(config.model, "deepseek-ai/deepseek-v3.2");
     assert!(!config.dry_run);
     assert!(config.auto_backup);
     assert!(config.reasoning_mode);
@@ -328,8 +328,10 @@ fn test_config_system_prompt_with_reasoning() {
 
     let prompt = config.get_system_prompt();
 
-    assert!(prompt.starts_with("detailed thinking on"));
+    // System prompt contains Pawan identity
     assert!(prompt.contains("Pawan"));
+    // With deepseek model and reasoning_mode, thinking mode should be enabled
+    assert!(config.use_thinking_mode());
 }
 
 #[test]
@@ -339,7 +341,10 @@ fn test_config_system_prompt_without_reasoning() {
 
     let prompt = config.get_system_prompt();
 
-    assert!(prompt.starts_with("detailed thinking off"));
+    // System prompt still contains Pawan identity
+    assert!(prompt.contains("Pawan"));
+    // With reasoning_mode false, thinking mode should be disabled
+    assert!(!config.use_thinking_mode());
 }
 
 #[test]

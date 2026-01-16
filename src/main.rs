@@ -581,17 +581,21 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
     use axum::http::{header, Method};
     use tower_http::cors::AllowOrigin;
 
-    let allow_origin = if origins.len() == 1 && origins[0] == "*" {
+    let (allow_origin, allow_credentials) = if origins.len() == 1 && origins[0] == "*" {
         tracing::warn!(
             "CORS is configured to allow all origins (*) - not recommended for production"
         );
-        AllowOrigin::any()
+        // Cannot use credentials with wildcard origin
+        (AllowOrigin::any(), false)
     } else if origins.is_empty() {
         tracing::warn!("No CORS origins configured, defaulting to allow all");
-        AllowOrigin::any()
+        (AllowOrigin::any(), false)
     } else {
         tracing::info!("CORS configured for origins: {:?}", origins);
-        AllowOrigin::list(origins.iter().filter_map(|o| o.parse().ok()))
+        (
+            AllowOrigin::list(origins.iter().filter_map(|o| o.parse().ok())),
+            true,
+        )
     };
 
     CorsLayer::new()
@@ -610,7 +614,7 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
             header::ACCEPT,
             header::ORIGIN,
         ])
-        .allow_credentials(true)
+        .allow_credentials(allow_credentials)
 }
 
 /// Health check endpoint

@@ -3,11 +3,13 @@ use crate::types::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+/// Web search tool using DuckDuckGo via daedra.
 pub struct WebSearch {
     _client: reqwest::Client,
 }
 
 impl WebSearch {
+    /// Creates a new WebSearch tool instance.
     pub fn new() -> Self {
         Self {
             _client: reqwest::Client::new(),

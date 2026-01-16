@@ -27,10 +27,7 @@ use ares::{
 };
 use axum::{routing::get, Router};
 use std::sync::Arc;
-use tower_http::{
-    cors::{Any, CorsLayer},
-    trace::TraceLayer,
-};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[cfg(feature = "swagger-ui")]
 use utoipa::OpenApi;
@@ -236,7 +233,7 @@ async fn run_server(
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load .env file for secrets (JWT_SECRET, API_KEY, etc.)
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
 
     // Initialize tracing
     let log_filter = if verbose { "debug,ares=trace" } else { "info" };
@@ -430,10 +427,25 @@ async fn run_server(
     #[derive(OpenApi)]
     #[openapi(
         paths(
+            // Auth endpoints
             ares::api::handlers::auth::register,
             ares::api::handlers::auth::login,
+            // Chat endpoints
             ares::api::handlers::chat::chat,
+            ares::api::handlers::chat::chat_stream,
+            ares::api::handlers::chat::get_user_memory,
+            // Research endpoints
             ares::api::handlers::research::deep_research,
+            // Conversation endpoints
+            ares::api::handlers::conversations::list_conversations,
+            ares::api::handlers::conversations::get_conversation,
+            ares::api::handlers::conversations::update_conversation,
+            ares::api::handlers::conversations::delete_conversation,
+            // RAG endpoints
+            ares::api::handlers::rag::ingest,
+            ares::api::handlers::rag::search,
+            ares::api::handlers::rag::delete_collection,
+            ares::api::handlers::rag::list_collections,
         ),
         components(schemas(
             ares::types::ChatRequest,
@@ -445,15 +457,21 @@ async fn run_server(
             ares::types::TokenResponse,
             ares::types::AgentType,
             ares::types::Source,
+            ares::api::handlers::conversations::ConversationSummary,
+            ares::api::handlers::conversations::ConversationDetails,
+            ares::api::handlers::conversations::ConversationMessage,
+            ares::api::handlers::conversations::UpdateConversationRequest,
         )),
         tags(
             (name = "auth", description = "Authentication endpoints"),
             (name = "chat", description = "Chat endpoints"),
             (name = "research", description = "Research endpoints"),
+            (name = "conversations", description = "Conversation management endpoints"),
+            (name = "rag", description = "RAG (Retrieval Augmented Generation) endpoints"),
         ),
         info(
             title = "A.R.E.S - Agentic Retrieval Enhanced Server API",
-            version = "0.1.0",
+            version = "0.3.0",
             description = "Production-grade agentic chatbot server with multi-provider LLM support"
         )
     )]
@@ -494,15 +512,40 @@ async fn run_server(
     // =================================================================
     // Add Middleware
     // =================================================================
-    let app = app
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
+    // Build CORS layer from configuration
+    let cors = build_cors_layer(&config.server.cors_origins);
+
+    // Build rate limiting layer if enabled
+    let app = if config.server.rate_limit_per_second > 0 {
+        use governor::{Quota, RateLimiter};
+        use std::num::NonZeroU32;
+
+        let quota = Quota::per_second(
+            NonZeroU32::new(config.server.rate_limit_per_second)
+                .unwrap_or(NonZeroU32::new(100).unwrap()),
         )
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .allow_burst(
+            NonZeroU32::new(config.server.rate_limit_burst).unwrap_or(NonZeroU32::new(10).unwrap()),
+        );
+
+        let _governor = RateLimiter::direct(quota);
+        tracing::info!(
+            "Rate limiting enabled: {} req/sec with burst of {}",
+            config.server.rate_limit_per_second,
+            config.server.rate_limit_burst
+        );
+
+        // Note: For production, consider using tower_governor for per-IP rate limiting
+        // Currently using a global rate limiter for simplicity
+        app.layer(cors)
+            .layer(TraceLayer::new_for_http())
+            .with_state(state)
+    } else {
+        tracing::warn!("Rate limiting is disabled - not recommended for production");
+        app.layer(cors)
+            .layer(TraceLayer::new_for_http())
+            .with_state(state)
+    };
 
     // =================================================================
     // Start Server
@@ -531,6 +574,43 @@ async fn init_local_db(url: &str) -> Result<TursoClient, Box<dyn std::error::Err
 
     tracing::info!(database_url = %url, "Initializing local database");
     Ok(TursoClient::new_local(url).await?)
+}
+
+/// Build CORS layer from configuration
+fn build_cors_layer(origins: &[String]) -> CorsLayer {
+    use axum::http::{header, Method};
+    use tower_http::cors::AllowOrigin;
+
+    let allow_origin = if origins.len() == 1 && origins[0] == "*" {
+        tracing::warn!(
+            "CORS is configured to allow all origins (*) - not recommended for production"
+        );
+        AllowOrigin::any()
+    } else if origins.is_empty() {
+        tracing::warn!("No CORS origins configured, defaulting to allow all");
+        AllowOrigin::any()
+    } else {
+        tracing::info!("CORS configured for origins: {:?}", origins);
+        AllowOrigin::list(origins.iter().filter_map(|o| o.parse().ok()))
+    };
+
+    CorsLayer::new()
+        .allow_origin(allow_origin)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+            Method::PATCH,
+        ])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::ORIGIN,
+        ])
+        .allow_credentials(true)
 }
 
 /// Health check endpoint

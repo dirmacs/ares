@@ -3,6 +3,7 @@ use crate::types::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+/// Calculator tool for basic arithmetic operations.
 pub struct Calculator;
 
 #[async_trait]

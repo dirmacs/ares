@@ -16,11 +16,16 @@ const VALID_AGENTS: &[&str] = &[
     "research",
 ];
 
+/// Router agent that directs queries to specialized agents.
+///
+/// Uses an LLM to analyze user queries and determine which
+/// specialized agent is best suited to handle them.
 pub struct RouterAgent {
     llm: Box<dyn LLMClient>,
 }
 
 impl RouterAgent {
+    /// Creates a new RouterAgent with the given LLM client.
     pub fn new(llm: Box<dyn LLMClient>) -> Self {
         Self { llm }
     }
@@ -59,7 +64,7 @@ impl RouterAgent {
         None
     }
 
-    // Route the query to the appropriate agent
+    /// Routes a query to the appropriate agent type.
     pub async fn route(&self, query: &str, _context: &AgentContext) -> Result<AgentType> {
         let system_prompt = self.system_prompt();
         let response = self.llm.generate_with_system(&system_prompt, query).await?;

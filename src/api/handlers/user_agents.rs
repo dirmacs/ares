@@ -22,20 +22,29 @@ use toon_format::{decode_default, encode_default};
 /// Request to create a new user agent
 #[derive(Debug, Deserialize)]
 pub struct CreateAgentRequest {
+    /// Unique agent name (alphanumeric, hyphens, underscores)
     pub name: String,
+    /// Human-readable display name
     #[serde(default)]
     pub display_name: Option<String>,
+    /// Agent description
     #[serde(default)]
     pub description: Option<String>,
+    /// LLM model identifier (e.g., "gpt-4", "llama3.2")
     pub model: String,
+    /// System prompt defining agent behavior
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// List of tool names the agent can use
     #[serde(default)]
     pub tools: Vec<String>,
+    /// Maximum iterations for tool use loops
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: i32,
+    /// Whether to execute tools in parallel
     #[serde(default)]
     pub parallel_tools: bool,
+    /// Whether agent is visible in community marketplace
     #[serde(default)]
     pub is_public: bool,
 }
@@ -47,10 +56,15 @@ fn default_max_tool_iterations() -> i32 {
 /// Response after creating an agent
 #[derive(Debug, Serialize)]
 pub struct CreateAgentResponse {
+    /// Unique agent identifier (UUID)
     pub id: String,
+    /// Agent name
     pub name: String,
+    /// Human-readable display name
     pub display_name: Option<String>,
+    /// Unix timestamp of creation
     pub created_at: i64,
+    /// API endpoint for chatting with this agent
     pub api_endpoint: String,
     /// TOON serialization for preview/export
     pub toon_preview: String,
@@ -59,19 +73,33 @@ pub struct CreateAgentResponse {
 /// Response for agent details
 #[derive(Debug, Serialize)]
 pub struct AgentResponse {
+    /// Unique agent identifier (UUID)
     pub id: String,
+    /// Agent name
     pub name: String,
+    /// Human-readable display name
     pub display_name: Option<String>,
+    /// Agent description
     pub description: Option<String>,
+    /// LLM model identifier
     pub model: String,
+    /// System prompt defining agent behavior
     pub system_prompt: Option<String>,
+    /// List of tool names the agent can use
     pub tools: Vec<String>,
+    /// Maximum iterations for tool use loops
     pub max_tool_iterations: i32,
+    /// Whether to execute tools in parallel
     pub parallel_tools: bool,
+    /// Whether agent is visible in community marketplace
     pub is_public: bool,
+    /// Number of times this agent has been used
     pub usage_count: i32,
+    /// Average rating (1-5 stars)
     pub average_rating: Option<f32>,
+    /// Unix timestamp of creation
     pub created_at: i64,
+    /// Unix timestamp of last update
     pub updated_at: i64,
     /// Source of the agent: "user", "community", or "system"
     pub source: String,
@@ -106,20 +134,28 @@ fn default_limit() -> u32 {
 /// Request to update an agent
 #[derive(Debug, Deserialize)]
 pub struct UpdateAgentRequest {
+    /// Human-readable display name
     #[serde(default)]
     pub display_name: Option<String>,
+    /// Agent description
     #[serde(default)]
     pub description: Option<String>,
+    /// LLM model identifier
     #[serde(default)]
     pub model: Option<String>,
+    /// System prompt defining agent behavior
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// List of tool names the agent can use
     #[serde(default)]
     pub tools: Option<Vec<String>>,
+    /// Maximum iterations for tool use loops
     #[serde(default)]
     pub max_tool_iterations: Option<i32>,
+    /// Whether to execute tools in parallel
     #[serde(default)]
     pub parallel_tools: Option<bool>,
+    /// Whether agent is visible in community marketplace
     #[serde(default)]
     pub is_public: Option<bool>,
 }

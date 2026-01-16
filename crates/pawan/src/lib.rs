@@ -78,8 +78,11 @@ pub type Result<T> = std::result::Result<T, PawanError>;
 /// Version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Default model for coding tasks (Nemotron reasoning model)
-pub const DEFAULT_MODEL: &str = "nemotron";
+/// Default model for coding tasks (DeepSeek v3.2 via NVIDIA API)
+pub const DEFAULT_MODEL: &str = "deepseek-ai/deepseek-v3.2";
+
+/// Default NVIDIA API URL
+pub const DEFAULT_NVIDIA_API_URL: &str = "https://integrate.api.nvidia.com/v1";
 
 /// Maximum iterations for tool calling loops
 pub const MAX_TOOL_ITERATIONS: usize = 50;

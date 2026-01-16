@@ -4,9 +4,9 @@
 //! - Manages conversation history
 //! - Coordinates tool calling with the LLM
 //! - Provides streaming responses
-//! - Supports multiple LLM backends via ares
+//! - Supports multiple LLM backends (NVIDIA API, Ollama, OpenAI)
 
-use crate::config::PawanConfig;
+use crate::config::{LlmProvider, PawanConfig};
 use crate::tools::{ToolDefinition, ToolRegistry};
 use crate::{PawanError, Result};
 use serde::{Deserialize, Serialize};
@@ -121,8 +121,10 @@ pub struct PawanAgent {
     workspace_root: PathBuf,
     /// HTTP client for API calls
     http_client: reqwest::Client,
-    /// Ollama base URL
-    ollama_url: String,
+    /// API base URL (depends on provider)
+    api_url: String,
+    /// API key (for NVIDIA/OpenAI)
+    api_key: Option<String>,
 }
 
 impl PawanAgent {
@@ -131,6 +133,27 @@ impl PawanAgent {
         let tools = ToolRegistry::with_defaults(workspace_root.clone());
         let system_prompt = config.get_system_prompt();
 
+        // Determine API URL and key based on provider
+        let (api_url, api_key) = match config.provider {
+            LlmProvider::Nvidia => {
+                let url = std::env::var("NVIDIA_API_URL")
+                    .unwrap_or_else(|_| crate::DEFAULT_NVIDIA_API_URL.to_string());
+                let key = std::env::var("NVIDIA_API_KEY").ok();
+                (url, key)
+            }
+            LlmProvider::Ollama => {
+                let url = std::env::var("OLLAMA_URL")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string());
+                (url, None)
+            }
+            LlmProvider::OpenAI => {
+                let url = std::env::var("OPENAI_API_URL")
+                    .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+                let key = std::env::var("OPENAI_API_KEY").ok();
+                (url, key)
+            }
+        };
+
         Self {
             config,
             tools,
@@ -138,8 +161,8 @@ impl PawanAgent {
             system_prompt,
             workspace_root,
             http_client: reqwest::Client::new(),
-            ollama_url: std::env::var("OLLAMA_URL")
-                .unwrap_or_else(|_| "http://localhost:11434".to_string()),
+            api_url,
+            api_key,
         }
     }
 
@@ -289,8 +312,384 @@ impl PawanAgent {
         }
     }
 
-    /// Generate a response with tool calling support using Ollama API
+    /// Generate a response with tool calling support
     async fn generate_with_tools(&self, on_token: &Option<TokenCallback>) -> Result<LLMResponse> {
+        match self.config.provider {
+            LlmProvider::Nvidia | LlmProvider::OpenAI => {
+                self.generate_openai_compatible(on_token).await
+            }
+            LlmProvider::Ollama => self.generate_ollama(on_token).await,
+        }
+    }
+
+    /// Generate using OpenAI-compatible API (NVIDIA, OpenAI)
+    async fn generate_openai_compatible(
+        &self,
+        on_token: &Option<TokenCallback>,
+    ) -> Result<LLMResponse> {
+        let tool_defs = self.get_tool_definitions();
+
+        // Build messages for OpenAI format
+        let mut messages = vec![json!({
+            "role": "system",
+            "content": self.system_prompt
+        })];
+
+        for msg in &self.history {
+            match msg.role {
+                Role::System => {
+                    messages.push(json!({
+                        "role": "system",
+                        "content": msg.content
+                    }));
+                }
+                Role::User => {
+                    messages.push(json!({
+                        "role": "user",
+                        "content": msg.content
+                    }));
+                }
+                Role::Assistant => {
+                    if msg.tool_calls.is_empty() {
+                        messages.push(json!({
+                            "role": "assistant",
+                            "content": msg.content
+                        }));
+                    } else {
+                        // Assistant with tool calls
+                        let tool_calls: Vec<Value> = msg
+                            .tool_calls
+                            .iter()
+                            .map(|tc| {
+                                json!({
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.name,
+                                        "arguments": serde_json::to_string(&tc.arguments).unwrap_or_default()
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        messages.push(json!({
+                            "role": "assistant",
+                            "content": msg.content,
+                            "tool_calls": tool_calls
+                        }));
+                    }
+                }
+                Role::Tool => {
+                    if let Some(ref tool_result) = msg.tool_result {
+                        messages.push(json!({
+                            "role": "tool",
+                            "tool_call_id": tool_result.tool_call_id,
+                            "content": serde_json::to_string(&tool_result.content)
+                                .unwrap_or_else(|_| tool_result.content.to_string())
+                        }));
+                    }
+                }
+            }
+        }
+
+        // Build tools array for OpenAI format
+        let tools: Vec<Value> = tool_defs
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
+                    }
+                })
+            })
+            .collect();
+
+        // Build request body
+        let mut request_body = json!({
+            "model": self.config.model,
+            "messages": messages,
+            "tools": tools,
+            "temperature": self.config.temperature,
+            "top_p": self.config.top_p,
+            "max_tokens": self.config.max_tokens,
+            "stream": on_token.is_some()
+        });
+
+        // Add thinking mode for DeepSeek models
+        if self.config.use_thinking_mode() {
+            request_body["chat_template_kwargs"] = json!({
+                "thinking": true
+            });
+        }
+
+        // Add seed for reproducibility
+        request_body["seed"] = json!(42);
+
+        let url = format!("{}/chat/completions", self.api_url);
+
+        // Build request with auth header
+        let mut request = self.http_client.post(&url).json(&request_body);
+
+        if let Some(ref api_key) = self.api_key {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        if on_token.is_some() {
+            self.generate_openai_streaming(request, on_token).await
+        } else {
+            self.generate_openai_non_streaming(request).await
+        }
+    }
+
+    /// Non-streaming OpenAI-compatible generation
+    async fn generate_openai_non_streaming(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<LLMResponse> {
+        let response = request
+            .send()
+            .await
+            .map_err(|e| PawanError::Llm(format!("HTTP request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(PawanError::Llm(format!(
+                "API request failed ({}): {}",
+                status, text
+            )));
+        }
+
+        let response_json: Value = response
+            .json()
+            .await
+            .map_err(|e| PawanError::Llm(format!("Failed to parse response: {}", e)))?;
+
+        self.parse_openai_response(&response_json)
+    }
+
+    /// Streaming OpenAI-compatible generation
+    async fn generate_openai_streaming(
+        &self,
+        request: reqwest::RequestBuilder,
+        on_token: &Option<TokenCallback>,
+    ) -> Result<LLMResponse> {
+        let response = request
+            .send()
+            .await
+            .map_err(|e| PawanError::Llm(format!("HTTP request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(PawanError::Llm(format!(
+                "API request failed ({}): {}",
+                status, text
+            )));
+        }
+
+        let mut content = String::new();
+        let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
+        let mut finish_reason = "stop".to_string();
+
+        // Read streaming response (SSE format)
+        let mut stream = response.bytes_stream();
+        use futures::StreamExt;
+
+        let mut buffer = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| PawanError::Llm(format!("Stream error: {}", e)))?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            // Process complete SSE lines
+            while let Some(newline_pos) = buffer.find('\n') {
+                let line = buffer[..newline_pos].to_string();
+                buffer = buffer[newline_pos + 1..].to_string();
+
+                let line = line.trim();
+                if line.is_empty() || line == "data: [DONE]" {
+                    continue;
+                }
+
+                // Parse SSE data line
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if let Ok(json) = serde_json::from_str::<Value>(data) {
+                        if let Some(choices) = json.get("choices").and_then(|v| v.as_array()) {
+                            for choice in choices {
+                                // Extract delta content
+                                if let Some(delta) = choice.get("delta") {
+                                    if let Some(c) = delta.get("content").and_then(|v| v.as_str()) {
+                                        if let Some(ref callback) = on_token {
+                                            callback(c);
+                                        }
+                                        content.push_str(c);
+                                    }
+
+                                    // Check for tool calls in delta
+                                    if let Some(tc_array) =
+                                        delta.get("tool_calls").and_then(|v| v.as_array())
+                                    {
+                                        for tc in tc_array {
+                                            let index = tc
+                                                .get("index")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0)
+                                                as usize;
+
+                                            // Ensure we have enough tool call slots
+                                            while tool_calls.len() <= index {
+                                                tool_calls.push(ToolCallRequest {
+                                                    id: String::new(),
+                                                    name: String::new(),
+                                                    arguments: json!({}),
+                                                });
+                                            }
+
+                                            // Update tool call
+                                            if let Some(id) = tc.get("id").and_then(|v| v.as_str())
+                                            {
+                                                tool_calls[index].id = id.to_string();
+                                            }
+                                            if let Some(func) = tc.get("function") {
+                                                if let Some(name) =
+                                                    func.get("name").and_then(|v| v.as_str())
+                                                {
+                                                    tool_calls[index].name = name.to_string();
+                                                }
+                                                if let Some(args) =
+                                                    func.get("arguments").and_then(|v| v.as_str())
+                                                {
+                                                    // Arguments come as partial strings, concatenate
+                                                    let current = tool_calls[index]
+                                                        .arguments
+                                                        .as_str()
+                                                        .unwrap_or("");
+                                                    tool_calls[index].arguments =
+                                                        json!(format!("{}{}", current, args));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Check finish reason
+                                if let Some(reason) =
+                                    choice.get("finish_reason").and_then(|v| v.as_str())
+                                {
+                                    finish_reason = reason.to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Parse tool call arguments from JSON strings
+        for tc in &mut tool_calls {
+            if let Some(args_str) = tc.arguments.as_str() {
+                if let Ok(parsed) = serde_json::from_str::<Value>(args_str) {
+                    tc.arguments = parsed;
+                }
+            }
+            // Generate ID if not provided
+            if tc.id.is_empty() {
+                tc.id = uuid::Uuid::new_v4().to_string();
+            }
+        }
+
+        // Filter out empty tool calls
+        tool_calls.retain(|tc| !tc.name.is_empty());
+
+        if !tool_calls.is_empty() {
+            finish_reason = "tool_calls".to_string();
+        }
+
+        Ok(LLMResponse {
+            content,
+            tool_calls,
+            finish_reason,
+        })
+    }
+
+    /// Parse OpenAI-compatible response JSON
+    fn parse_openai_response(&self, json: &Value) -> Result<LLMResponse> {
+        let choices = json
+            .get("choices")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| PawanError::Llm("No choices in response".into()))?;
+
+        let choice = choices
+            .first()
+            .ok_or_else(|| PawanError::Llm("Empty choices array".into()))?;
+
+        let message = choice
+            .get("message")
+            .ok_or_else(|| PawanError::Llm("No message in choice".into()))?;
+
+        let content = message
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let mut tool_calls = Vec::new();
+        let finish_reason = choice
+            .get("finish_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("stop")
+            .to_string();
+
+        // Parse tool calls if present
+        if let Some(tc_array) = message.get("tool_calls").and_then(|v| v.as_array()) {
+            for tc in tc_array {
+                let id = tc
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                if let Some(func) = tc.get("function") {
+                    let name = func
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    // Arguments may be a string that needs parsing
+                    let arguments =
+                        if let Some(args_str) = func.get("arguments").and_then(|v| v.as_str()) {
+                            serde_json::from_str(args_str).unwrap_or(json!({}))
+                        } else {
+                            func.get("arguments").cloned().unwrap_or(json!({}))
+                        };
+
+                    tool_calls.push(ToolCallRequest {
+                        id: if id.is_empty() {
+                            uuid::Uuid::new_v4().to_string()
+                        } else {
+                            id
+                        },
+                        name,
+                        arguments,
+                    });
+                }
+            }
+        }
+
+        Ok(LLMResponse {
+            content,
+            tool_calls,
+            finish_reason,
+        })
+    }
+
+    /// Generate using Ollama API (for local models)
+    async fn generate_ollama(&self, on_token: &Option<TokenCallback>) -> Result<LLMResponse> {
         let tool_defs = self.get_tool_definitions();
 
         // Build messages for Ollama
@@ -379,7 +778,7 @@ impl PawanAgent {
             }
         });
 
-        let url = format!("{}/api/chat", self.ollama_url);
+        let url = format!("{}/api/chat", self.api_url);
 
         if on_token.is_some() {
             // Streaming response

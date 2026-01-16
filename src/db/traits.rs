@@ -28,7 +28,10 @@ pub enum DatabaseProvider {
     #[default]
     Memory,
     /// File-based SQLite database
-    SQLite { path: String },
+    SQLite {
+        /// Path to the SQLite database file
+        path: String,
+    },
     /// Remote Turso database (requires network access)
     #[cfg(feature = "turso")]
     Turso { url: String, auth_token: String },
@@ -91,10 +94,15 @@ pub use super::turso::User;
 /// Summary of a conversation (without full message history)
 #[derive(Debug, Clone)]
 pub struct ConversationSummary {
+    /// Unique conversation identifier
     pub id: String,
+    /// Conversation title
     pub title: String,
+    /// Unix timestamp of creation
     pub created_at: i64,
+    /// Unix timestamp of last update
     pub updated_at: i64,
+    /// Number of messages in conversation
     pub message_count: i64,
 }
 

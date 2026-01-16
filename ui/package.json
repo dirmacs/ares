@@ -1,12 +1,14 @@
 {
   "name": "ares-ui",
+  "version": "0.3.0",
+  "description": "A.R.E.S - Agentic Retrieval Enhanced Server Web UI",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "build:css": "tailwindcss -i ./input.css -o ./dist/output.css --minify",
     "watch:css": "tailwindcss -i ./input.css -o ./dist/output.css --watch"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.1.18",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.19"
   }

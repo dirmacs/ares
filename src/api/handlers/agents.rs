@@ -1,7 +1,10 @@
+//! Built-in agent listing handler.
+
 use crate::{types::AgentType, AppState};
 use axum::{extract::State, Json};
 use serde::Serialize;
 
+/// Lists all available built-in agents.
 pub async fn list_agents(State(_state): State<AppState>) -> Json<Vec<AgentInfo>> {
     Json(vec![
         AgentInfo {
@@ -32,9 +35,13 @@ pub async fn list_agents(State(_state): State<AppState>) -> Json<Vec<AgentInfo>>
     ])
 }
 
+/// Information about an available agent.
 #[derive(Serialize)]
 pub struct AgentInfo {
+    /// Type identifier for the agent
     pub agent_type: AgentType,
+    /// Display name
     pub name: String,
+    /// Description of agent capabilities
     pub description: String,
 }

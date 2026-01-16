@@ -7,9 +7,8 @@ use std::sync::Arc;
 use ares::{
     auth::jwt::AuthService,
     db::TursoClient,
-    llm::client::{LLMClientFactoryTrait, Provider},
-    llm::{LLMClient, LLMResponse},
-    types::{Result, ToolCall, ToolDefinition},
+    llm::LLMClient,
+    types::{ToolCall, ToolDefinition},
     utils::toml_config::{
         AgentConfig, AresConfig, AuthConfig as TomlAuthConfig,
         DatabaseConfig as TomlDatabaseConfig, DynamicConfigPaths, ModelConfig, ProviderConfig,
@@ -18,153 +17,15 @@ use ares::{
     AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
     ProviderRegistry, ToolRegistry,
 };
-use async_trait::async_trait;
-use futures::stream::{self, StreamExt};
+use futures::StreamExt;
 
-// ============= Mock LLM Clients =============
+// Import common test utilities
+mod common;
+use common::mocks::MockLLMClient;
 
-/// Mock LLM client for testing with configurable responses
-#[derive(Clone)]
-struct MockLLMClient {
-    response: String,
-    tool_calls: Vec<ToolCall>,
-    should_fail: bool,
-}
-
-impl MockLLMClient {
-    fn new(response: &str) -> Self {
-        Self {
-            response: response.to_string(),
-            tool_calls: vec![],
-            should_fail: false,
-        }
-    }
-
-    fn with_tool_calls(response: &str, tool_calls: Vec<ToolCall>) -> Self {
-        Self {
-            response: response.to_string(),
-            tool_calls,
-            should_fail: false,
-        }
-    }
-
-    fn failing() -> Self {
-        Self {
-            response: String::new(),
-            tool_calls: vec![],
-            should_fail: true,
-        }
-    }
-}
-
-#[async_trait]
-impl LLMClient for MockLLMClient {
-    async fn generate(&self, _prompt: &str) -> Result<String> {
-        if self.should_fail {
-            return Err(ares::types::AppError::LLM("Mock LLM failure".to_string()));
-        }
-        Ok(self.response.clone())
-    }
-
-    async fn generate_with_system(&self, _system: &str, _prompt: &str) -> Result<String> {
-        if self.should_fail {
-            return Err(ares::types::AppError::LLM("Mock LLM failure".to_string()));
-        }
-        Ok(self.response.clone())
-    }
-
-    async fn generate_with_history(&self, _messages: &[(String, String)]) -> Result<String> {
-        if self.should_fail {
-            return Err(ares::types::AppError::LLM("Mock LLM failure".to_string()));
-        }
-        Ok(self.response.clone())
-    }
-
-    async fn generate_with_tools(
-        &self,
-        _prompt: &str,
-        _tools: &[ToolDefinition],
-    ) -> Result<LLMResponse> {
-        if self.should_fail {
-            return Err(ares::types::AppError::LLM("Mock LLM failure".to_string()));
-        }
-
-        let finish_reason = if self.tool_calls.is_empty() {
-            "stop"
-        } else {
-            "tool_calls"
-        };
-
-        Ok(LLMResponse {
-            content: self.response.clone(),
-            tool_calls: self.tool_calls.clone(),
-            finish_reason: finish_reason.to_string(),
-        })
-    }
-
-    async fn stream(
-        &self,
-        _prompt: &str,
-    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
-        if self.should_fail {
-            return Err(ares::types::AppError::LLM("Mock LLM failure".to_string()));
-        }
-
-        let response = self.response.clone();
-        // Split response into chunks for streaming simulation
-        let chunks: Vec<String> = response
-            .chars()
-            .collect::<Vec<_>>()
-            .chunks(5)
-            .map(|c| c.iter().collect())
-            .collect();
-
-        let stream = stream::iter(chunks.into_iter().map(Ok));
-        Ok(Box::new(stream.boxed()))
-    }
-
-    fn model_name(&self) -> &str {
-        "mock-model"
-    }
-}
-
-// ============= Mock LLM Factory =============
-// This factory can be used for tests that need complete isolation from external services.
-// Currently unused but preserved for future test scenarios requiring mock LLM responses.
-
-#[allow(dead_code)]
-struct MockLLMFactory {
-    provider: Provider,
-    client: Arc<MockLLMClient>,
-}
-
-#[allow(dead_code)]
-impl MockLLMFactory {
-    fn new(client: MockLLMClient) -> Self {
-        Self {
-            provider: Provider::Ollama {
-                base_url: "http://localhost:11434".to_string(),
-                model: "mock".to_string(),
-            },
-            client: Arc::new(client),
-        }
-    }
-}
-
-#[async_trait]
-impl LLMClientFactoryTrait for MockLLMFactory {
-    fn default_provider(&self) -> &Provider {
-        &self.provider
-    }
-
-    async fn create_default(&self) -> Result<Box<dyn LLMClient>> {
-        Ok(Box::new((*self.client).clone()))
-    }
-
-    async fn create_with_provider(&self, _provider: Provider) -> Result<Box<dyn LLMClient>> {
-        Ok(Box::new((*self.client).clone()))
-    }
-}
+// MockLLMFactory is available from common::mocks if needed for future tests
+#[allow(unused_imports)]
+use common::mocks::MockLLMFactory;
 
 // ============= Test Helpers =============
 
@@ -246,6 +107,9 @@ async fn create_test_app() -> Router {
             host: "127.0.0.1".to_string(),
             port: 3000,
             log_level: "debug".to_string(),
+            cors_origins: vec!["*".to_string()],
+            rate_limit_per_second: 0, // Disabled for tests
+            rate_limit_burst: 0,
         },
         auth: TomlAuthConfig {
             jwt_secret_env: "TEST_JWT_SECRET".to_string(),

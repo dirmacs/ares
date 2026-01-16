@@ -105,10 +105,16 @@ pub async fn list_workflows(
 /// Information about a workflow
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct WorkflowInfo {
+    /// Workflow name
     pub name: String,
+    /// Agent that starts the workflow
     pub entry_agent: String,
+    /// Fallback agent if entry fails
     pub fallback_agent: Option<String>,
+    /// Maximum agent delegation depth
     pub max_depth: u8,
+    /// Maximum workflow iterations
     pub max_iterations: u8,
+    /// Whether subagents run in parallel
     pub parallel_subagents: bool,
 }

@@ -4,6 +4,10 @@ use crate::{
 };
 use tokio::task::JoinSet;
 
+/// Coordinates multi-step research tasks across multiple queries.
+///
+/// Decomposes research questions, executes parallel searches,
+/// and synthesizes findings into a coherent report.
 pub struct ResearchCoordinator {
     llm: Box<dyn LLMClient>,
     depth: u8,
@@ -11,6 +15,7 @@ pub struct ResearchCoordinator {
 }
 
 impl ResearchCoordinator {
+    /// Creates a new ResearchCoordinator.
     pub fn new(llm: Box<dyn LLMClient>, depth: u8, max_iterations: u8) -> Self {
         Self {
             llm,

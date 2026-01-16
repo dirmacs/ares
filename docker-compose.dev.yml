@@ -92,8 +92,10 @@ services:
       - QDRANT_API_KEY=
 
       # Authentication
-      - JWT_SECRET=${JWT_SECRET:-change-me-in-production-at-least-32-chars}
-      - API_KEY=${API_KEY:-dev-api-key}
+      # SECURITY: In production, set JWT_SECRET and API_KEY via environment or .env file
+      # For local development, you can use: JWT_SECRET=dev-secret-min-32-chars-long-here API_KEY=dev-api-key docker compose up
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET environment variable is required (min 32 chars)}
+      - API_KEY=${API_KEY:?API_KEY environment variable is required}
 
       # Logging
       - RUST_LOG=info,ares=debug

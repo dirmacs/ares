@@ -740,7 +740,10 @@ pub enum AccelerationBackend {
     #[default]
     Cpu,
     /// NVIDIA CUDA acceleration
-    Cuda { device_id: usize },
+    Cuda {
+        /// The CUDA device ID to use for computation.
+        device_id: usize,
+    },
     /// Apple Metal acceleration
     Metal,
     /// Vulkan GPU acceleration

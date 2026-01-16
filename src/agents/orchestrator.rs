@@ -18,6 +18,7 @@ pub struct OrchestratorAgent {
 }
 
 impl OrchestratorAgent {
+    /// Creates a new OrchestratorAgent with the given dependencies.
     pub fn new(
         llm: Box<dyn LLMClient>,
         state: AppState,

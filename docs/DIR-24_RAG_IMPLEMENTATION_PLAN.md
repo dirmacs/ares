@@ -3,10 +3,40 @@
 **Linear Issue**: [DIR-24](https://linear.app/dirmacs/issue/DIR-24/ai-native-protocols-vector-dbs-rag-and-search-strategies)  
 **Parent Issue**: DIR-12 (anyone make agent on ares)  
 **Related Issue**: DIR-25 (public GitHub issue)  
-**Status**: In Progress  
+**Status**: ✅ Complete (Core Implementation)  
 **Priority**: Urgent  
 **Created**: 2026-01-03  
-**Last Updated**: 2026-01-12  
+**Last Updated**: 2026-01-16  
+
+---
+
+## Implementation Status
+
+### Completed Features ✅
+
+| Feature | Status | Location |
+|---------|--------|----------|
+| **ares-vector crate** | ✅ Done | `crates/ares-vector/` |
+| **HNSW indexing** | ✅ Done | `crates/ares-vector/src/index.rs` |
+| **Embedding service** | ✅ Done | `src/rag/embeddings.rs` |
+| **Chunking strategies** | ✅ Done | `src/rag/chunker.rs` |
+| **Multi-strategy search** | ✅ Done | `src/rag/search.rs` |
+| **Reranking** | ✅ Done | `src/rag/reranker.rs` |
+| **RAG API endpoints** | ✅ Done | `src/api/handlers/rag.rs` |
+
+### API Endpoints (Live)
+
+- `POST /api/rag/ingest` - Ingest documents with chunking
+- `POST /api/rag/search` - Multi-strategy search (semantic, BM25, fuzzy, hybrid)
+- `GET /api/rag/collections` - List collections
+- `DELETE /api/rag/collection` - Delete collection
+
+### Deferred to Future Iterations
+
+- Additional vector DB providers (pgvector, ChromaDB, Pinecone)
+- GPU acceleration for embeddings
+- Embedding cache layer
+- AI-native protocols (ACP, AG-UI, ANP, A2A)
 
 ---
 

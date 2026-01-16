@@ -20,7 +20,7 @@ services:
       TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN:-}
       QDRANT_URL: http://qdrant:6334
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET environment variable is required}
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       qdrant:

@@ -5,11 +5,19 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Trait for implementing tools that agents can invoke.
+///
+/// Tools provide specific capabilities to agents, such as calculations,
+/// web searches, or API calls.
 #[async_trait]
 pub trait Tool: Send + Sync {
+    /// Returns the unique name of this tool.
     fn name(&self) -> &str;
+    /// Returns a description of what this tool does.
     fn description(&self) -> &str;
+    /// Returns the JSON schema for this tool's parameters.
     fn parameters_schema(&self) -> Value;
+    /// Executes the tool with the given arguments.
     async fn execute(&self, args: Value) -> Result<Value>;
 }
 
@@ -20,6 +28,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    /// Creates an empty tool registry.
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),

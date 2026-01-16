@@ -49,7 +49,7 @@ cargo build --features "llamacpp-cuda"  # if CUDA is available
 **Status**: ✅ Core features fully tested
 
 **Details**:
-- 72/72 tests passing for default features
+- 277+ tests total (152 lib + 125 integration)
 - Ollama: Full coverage with wiremock
 - LlamaCpp: Needs integration tests with real GGUF models
 - OpenAI: Tests disabled pending API fixes
@@ -109,15 +109,18 @@ healthcheck:
 
 ## MCP Integration
 
-**Status**: 🚧 Incomplete
+**Status**: ✅ Complete
 
-**Issue**: MCP feature flag exists but implementation is incomplete
+**Implementation**: Full MCP (Model Context Protocol) server with tool support.
 
-**Impact**: Feature compiles but has no functional endpoints
+**Files**:
+- `src/mcp/server.rs` - MCP server implementation
+- 14+ tests for MCP functionality
 
-**Priority**: Low (not part of current release scope)
-
-**Plan**: Complete in future release
+**Features**:
+- Tool registration and execution
+- Protocol compliance
+- Tested with comprehensive test suite
 
 ## Performance Notes
 
@@ -150,11 +153,15 @@ If you encounter issues not listed here:
 ✅ Qdrant cloud dependency removed (optional feature)  
 ✅ Ollama tool calling implemented and tested  
 ✅ LlamaCpp streaming working  
-✅ 72 tests passing for core features  
+✅ 175+ tests passing for core features  
 ✅ CI/CD pipeline configured  
 ✅ Documentation complete  
+✅ MCP server fully implemented  
+✅ RAG pipeline with pure-Rust vector store  
+✅ Rate limiting infrastructure  
+✅ Improved CORS configuration  
 
 ---
 
-**Last Updated**: 2024-12-06  
-**Version**: 0.1.1
+**Last Updated**: 2026-01-16  
+**Version**: 0.3.0

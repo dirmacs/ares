@@ -1,85 +1,10 @@
 use ares::llm::*;
-use ares::types::{Result, ToolCall, ToolDefinition};
-use async_trait::async_trait;
-use futures::stream::{self, StreamExt};
+use ares::types::{ToolCall, ToolDefinition};
+use futures::StreamExt;
 
-// ============= Mock LLM Client =============
-
-/// Mock LLM client for testing with configurable responses
-struct MockLLMClient {
-    response: String,
-    tool_calls: Vec<ToolCall>,
-}
-
-impl MockLLMClient {
-    fn new(response: &str) -> Self {
-        Self {
-            response: response.to_string(),
-            tool_calls: vec![],
-        }
-    }
-
-    fn with_tool_calls(response: &str, tool_calls: Vec<ToolCall>) -> Self {
-        Self {
-            response: response.to_string(),
-            tool_calls,
-        }
-    }
-}
-
-#[async_trait]
-impl LLMClient for MockLLMClient {
-    async fn generate(&self, _prompt: &str) -> Result<String> {
-        Ok(self.response.clone())
-    }
-
-    async fn generate_with_system(&self, _system: &str, _prompt: &str) -> Result<String> {
-        Ok(self.response.clone())
-    }
-
-    async fn generate_with_history(&self, _messages: &[(String, String)]) -> Result<String> {
-        Ok(self.response.clone())
-    }
-
-    async fn generate_with_tools(
-        &self,
-        _prompt: &str,
-        _tools: &[ToolDefinition],
-    ) -> Result<LLMResponse> {
-        let finish_reason = if self.tool_calls.is_empty() {
-            "stop"
-        } else {
-            "tool_calls"
-        };
-
-        Ok(LLMResponse {
-            content: self.response.clone(),
-            tool_calls: self.tool_calls.clone(),
-            finish_reason: finish_reason.to_string(),
-        })
-    }
-
-    async fn stream(
-        &self,
-        _prompt: &str,
-    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
-        let response = self.response.clone();
-        // Split response into chunks for streaming simulation
-        let chunks: Vec<String> = response
-            .chars()
-            .collect::<Vec<_>>()
-            .chunks(5)
-            .map(|c| c.iter().collect())
-            .collect();
-
-        let stream = stream::iter(chunks.into_iter().map(Ok));
-        Ok(Box::new(stream.boxed()))
-    }
-
-    fn model_name(&self) -> &str {
-        "mock-model"
-    }
-}
+// Import common test utilities
+mod common;
+use common::mocks::MockLLMClient;
 
 // ============= Basic LLM Client Tests =============
 

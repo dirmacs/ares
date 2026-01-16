@@ -60,6 +60,9 @@ impl Default for ToolCallingConfig {
     }
 }
 
+/// Ollama LLM client implementation.
+///
+/// Connects to a local or remote Ollama server for inference.
 pub struct OllamaClient {
     client: Ollama,
     model: String,
@@ -67,10 +70,12 @@ pub struct OllamaClient {
 }
 
 impl OllamaClient {
+    /// Creates a new OllamaClient with default tool configuration.
     pub async fn new(base_url: String, model: String) -> Result<Self> {
         Self::with_config(base_url, model, ToolCallingConfig::default()).await
     }
 
+    /// Creates a new OllamaClient with custom tool configuration.
     pub async fn with_config(
         base_url: String,
         model: String,
@@ -335,6 +340,7 @@ pub struct OllamaToolCoordinator {
 }
 
 impl OllamaToolCoordinator {
+    /// Creates a new coordinator with the default tool config from the client.
     pub fn new(client: Arc<OllamaClient>, registry: Arc<ToolRegistry>) -> Self {
         let config = client.tool_config().clone();
         Self {
@@ -344,6 +350,7 @@ impl OllamaToolCoordinator {
         }
     }
 
+    /// Sets a custom tool calling configuration.
     pub fn with_config(mut self, config: ToolCallingConfig) -> Self {
         self.config = config;
         self

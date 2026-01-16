@@ -159,6 +159,16 @@ async fn execute_agent(
 }
 
 /// Get user memory
+#[utoipa::path(
+    get,
+    path = "/api/memory",
+    responses(
+        (status = 200, description = "User memory retrieved successfully"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "chat",
+    security(("bearer" = []))
+)]
 pub async fn get_user_memory(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
@@ -232,17 +242,28 @@ pub async fn chat_stream(
     let stream = async_stream::stream! {
         // Setup conversation
         if !state_clone.turso.conversation_exists(&context_id_clone).await.unwrap_or(false) {
-            let _ = state_clone
+            if let Err(e) = state_clone
                 .turso
                 .create_conversation(&context_id_clone, &claims_clone.sub, None)
-                .await;
+                .await {
+                tracing::warn!("Failed to create conversation {}: {}", context_id_clone, e);
+            }
         }
 
-        let history = state_clone.turso.get_conversation_history(&context_id_clone).await.unwrap_or_default();
+        let history = state_clone.turso.get_conversation_history(&context_id_clone).await.unwrap_or_else(|e| {
+            tracing::warn!("Failed to get conversation history for {}: {}", context_id_clone, e);
+            vec![]
+        });
 
         // Load user memory
-        let memory_facts = state_clone.turso.get_user_memory(&claims_clone.sub).await.unwrap_or_default();
-        let preferences = state_clone.turso.get_user_preferences(&claims_clone.sub).await.unwrap_or_default();
+        let memory_facts = state_clone.turso.get_user_memory(&claims_clone.sub).await.unwrap_or_else(|e| {
+            tracing::warn!("Failed to get user memory for {}: {}", claims_clone.sub, e);
+            vec![]
+        });
+        let preferences = state_clone.turso.get_user_preferences(&claims_clone.sub).await.unwrap_or_else(|e| {
+            tracing::warn!("Failed to get user preferences for {}: {}", claims_clone.sub, e);
+            vec![]
+        });
         let user_memory = if !memory_facts.is_empty() || !preferences.is_empty() {
             Some(UserMemory {
                 user_id: claims_clone.sub.clone(),
@@ -419,16 +440,20 @@ pub async fn chat_stream(
 
         // Store messages in conversation
         let msg_id = Uuid::new_v4().to_string();
-        let _ = state_clone
+        if let Err(e) = state_clone
             .turso
             .add_message(&msg_id, &context_id_clone, MessageRole::User, &message)
-            .await;
+            .await {
+            tracing::error!("Failed to store user message in conversation {}: {}", context_id_clone, e);
+        }
 
         let resp_id = Uuid::new_v4().to_string();
-        let _ = state_clone
+        if let Err(e) = state_clone
             .turso
             .add_message(&resp_id, &context_id_clone, MessageRole::Assistant, &full_response)
-            .await;
+            .await {
+            tracing::error!("Failed to store assistant message in conversation {}: {}", context_id_clone, e);
+        }
 
         // Send done event
         let done_event = StreamEvent {

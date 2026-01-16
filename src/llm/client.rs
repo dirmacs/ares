@@ -112,7 +112,8 @@ impl Provider {
             Provider::LlamaCpp { model_path } => Ok(Box::new(
                 super::llamacpp::LlamaCppClient::new(model_path.clone())?,
             )),
-            _ => unreachable!("Provider variant not enabled"),        }
+            _ => unreachable!("Provider variant not enabled"),
+        }
     }
 
     /// Create a provider from environment variables

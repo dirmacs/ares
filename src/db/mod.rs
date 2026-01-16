@@ -1,8 +1,16 @@
-//! Database clients and vector stores.
+//! Database Clients and Vector Stores
 //!
 //! This module provides database abstractions for:
 //! - **Turso/SQLite**: Relational database for conversations, users, etc.
 //! - **Vector Stores**: Multi-provider vector database support
+//!
+//! # Relational Database
+//!
+//! The [`TursoClient`] provides async access to SQLite/Turso for:
+//! - User management (registration, authentication)
+//! - Conversation storage and retrieval
+//! - Message history
+//! - User memory (facts, preferences)
 //!
 //! # Vector Store Providers
 //!
@@ -18,8 +26,21 @@
 //! ```toml
 //! ares = { version = "*", features = ["ares-vector", "qdrant"] }
 //! ```
-
-#![allow(missing_docs)]
+//!
+//! # Example
+//!
+//! ```ignore
+//! use ares::db::{TursoClient, VectorStore, AresVectorStore};
+//!
+//! // Relational database
+//! let db = TursoClient::new("sqlite://ares.db").await?;
+//! let user = db.get_user_by_id(user_id).await?;
+//!
+//! // Vector store
+//! let vector_store = AresVectorStore::new("./vectors").await?;
+//! vector_store.upsert("docs", embeddings, metadata).await?;
+//! let results = vector_store.search("docs", query_embedding, 10).await?;
+//! ```
 
 // Vector store abstraction layer
 pub mod vectorstore;
@@ -39,7 +60,9 @@ pub mod pinecone;
 pub mod qdrant;
 
 // Relational database
+/// Database traits and common types shared across providers.
 pub mod traits;
+/// Turso/libSQL database client implementation.
 pub mod turso;
 
 // Re-exports

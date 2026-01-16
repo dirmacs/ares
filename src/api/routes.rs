@@ -7,6 +7,9 @@ use axum::{
 };
 use std::sync::Arc;
 
+/// Creates the main API router with all routes configured.
+///
+/// Routes are split into public (no auth) and protected (requires JWT).
 pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
     let public_routes = Router::new()
         // Public routes (no auth required)
@@ -69,6 +72,17 @@ pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
         .route(
             "/user/agents/{name}/export",
             get(crate::api::handlers::user_agents::export_agent_toon),
+        )
+        // Conversation routes
+        .route(
+            "/conversations",
+            get(crate::api::handlers::conversations::list_conversations),
+        )
+        .route(
+            "/conversations/{id}",
+            get(crate::api::handlers::conversations::get_conversation)
+                .put(crate::api::handlers::conversations::update_conversation)
+                .delete(crate::api::handlers::conversations::delete_conversation),
         )
         .layer(middleware::from_fn(move |req, next| {
             crate::auth::middleware::auth_middleware(auth_service.clone(), req, next)

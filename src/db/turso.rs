@@ -4,6 +4,27 @@ use libsql::{params, Builder, Connection, Database};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// Conversation record from the database
+#[derive(Debug, Clone)]
+pub struct Conversation {
+    /// Unique conversation identifier
+    pub id: String,
+    /// ID of the user who owns this conversation
+    pub user_id: String,
+    /// Optional conversation title
+    pub title: Option<String>,
+    /// Number of messages in the conversation
+    pub message_count: i32,
+    /// RFC3339 formatted creation timestamp
+    pub created_at: String,
+    /// RFC3339 formatted last update timestamp
+    pub updated_at: String,
+}
+
+/// Turso/libSQL database client for persistent storage
+///
+/// Supports both remote Turso databases and local SQLite files.
+/// Handles connection pooling and schema initialization automatically.
 pub struct TursoClient {
     db: Database,
     /// Cached connection for in-memory databases to ensure schema persists
@@ -76,6 +97,7 @@ impl TursoClient {
         }
     }
 
+    /// Get a raw database connection (prefer `operation_conn` for most uses)
     pub fn connection(&self) -> Result<Connection> {
         self.db
             .connect()
@@ -334,7 +356,13 @@ impl TursoClient {
         Ok(())
     }
 
-    // User operations
+    /// Creates a new user account
+    ///
+    /// # Arguments
+    /// * `id` - Unique user identifier
+    /// * `email` - User's email address (must be unique)
+    /// * `password_hash` - Argon2 hashed password
+    /// * `name` - User's display name
     pub async fn create_user(
         &self,
         id: &str,
@@ -356,6 +384,7 @@ impl TursoClient {
         Ok(())
     }
 
+    /// Retrieves a user by email address
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
         let conn = self.operation_conn().await?;
 
@@ -386,7 +415,13 @@ impl TursoClient {
         }
     }
 
-    // Session operations
+    /// Creates a new authentication session
+    ///
+    /// # Arguments
+    /// * `id` - Unique session identifier
+    /// * `user_id` - ID of the authenticated user
+    /// * `token_hash` - Hash of the JWT refresh token
+    /// * `expires_at` - Unix timestamp when session expires
     pub async fn create_session(
         &self,
         id: &str,
@@ -408,7 +443,7 @@ impl TursoClient {
         Ok(())
     }
 
-    // Conversation operations
+    /// Creates a new conversation for a user
     pub async fn create_conversation(
         &self,
         id: &str,
@@ -429,6 +464,7 @@ impl TursoClient {
         Ok(())
     }
 
+    /// Checks if a conversation exists by ID
     pub async fn conversation_exists(&self, conversation_id: &str) -> Result<bool> {
         let conn = self.operation_conn().await?;
 
@@ -447,6 +483,7 @@ impl TursoClient {
             .is_some())
     }
 
+    /// Adds a message to a conversation
     pub async fn add_message(
         &self,
         id: &str,
@@ -473,6 +510,7 @@ impl TursoClient {
         Ok(())
     }
 
+    /// Retrieves all messages in a conversation, ordered by timestamp
     pub async fn get_conversation_history(&self, conversation_id: &str) -> Result<Vec<Message>> {
         let conn = self.operation_conn().await?;
 
@@ -514,7 +552,128 @@ impl TursoClient {
         Ok(messages)
     }
 
-    // Memory operations
+    /// Get a conversation by ID
+    pub async fn get_conversation(&self, conversation_id: &str) -> Result<Conversation> {
+        let conn = self.operation_conn().await?;
+
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, title, created_at, updated_at FROM conversations WHERE id = ?",
+                [conversation_id],
+            )
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to query conversation: {}", e)))?;
+
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
+            let created_ts: i64 = row.get(3).map_err(|e| AppError::Database(e.to_string()))?;
+            let updated_ts: i64 = row.get(4).map_err(|e| AppError::Database(e.to_string()))?;
+
+            Ok(Conversation {
+                id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
+                user_id: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
+                title: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
+                message_count: 0, // Will be populated separately if needed
+                created_at: chrono::DateTime::from_timestamp(created_ts, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default(),
+                updated_at: chrono::DateTime::from_timestamp(updated_ts, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default(),
+            })
+        } else {
+            Err(AppError::NotFound(format!(
+                "Conversation {} not found",
+                conversation_id
+            )))
+        }
+    }
+
+    /// Get all conversations for a user
+    pub async fn get_user_conversations(&self, user_id: &str) -> Result<Vec<Conversation>> {
+        let conn = self.operation_conn().await?;
+
+        let mut rows = conn
+            .query(
+                "SELECT c.id, c.user_id, c.title, c.created_at, c.updated_at,
+                        (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) as msg_count
+                 FROM conversations c
+                 WHERE c.user_id = ?
+                 ORDER BY c.updated_at DESC",
+                [user_id],
+            )
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to query conversations: {}", e)))?;
+
+        let mut conversations = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
+            let created_ts: i64 = row.get(3).map_err(|e| AppError::Database(e.to_string()))?;
+            let updated_ts: i64 = row.get(4).map_err(|e| AppError::Database(e.to_string()))?;
+
+            conversations.push(Conversation {
+                id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
+                user_id: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
+                title: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
+                message_count: row.get::<i32>(5).unwrap_or(0),
+                created_at: chrono::DateTime::from_timestamp(created_ts, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default(),
+                updated_at: chrono::DateTime::from_timestamp(updated_ts, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default(),
+            });
+        }
+
+        Ok(conversations)
+    }
+
+    /// Update conversation title
+    pub async fn update_conversation_title(
+        &self,
+        conversation_id: &str,
+        title: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.operation_conn().await?;
+        let now = Utc::now().timestamp();
+
+        conn.execute(
+            "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+            (title, now, conversation_id),
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to update conversation: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Delete a conversation and all its messages
+    pub async fn delete_conversation(&self, conversation_id: &str) -> Result<()> {
+        let conn = self.operation_conn().await?;
+
+        // Delete messages first (foreign key constraint)
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ?",
+            [conversation_id],
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to delete messages: {}", e)))?;
+
+        // Delete conversation
+        conn.execute("DELETE FROM conversations WHERE id = ?", [conversation_id])
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to delete conversation: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Stores a memory fact for a user (upserts on id)
     pub async fn store_memory_fact(&self, fact: &MemoryFact) -> Result<()> {
         let conn = self.operation_conn().await?;
 
@@ -539,6 +698,7 @@ impl TursoClient {
         Ok(())
     }
 
+    /// Retrieves all memory facts for a user
     pub async fn get_user_memory(&self, user_id: &str) -> Result<Vec<MemoryFact>> {
         let conn = self.operation_conn().await?;
 
@@ -585,6 +745,7 @@ impl TursoClient {
         Ok(facts)
     }
 
+    /// Stores a user preference (upserts on user_id + category + key)
     pub async fn store_preference(&self, user_id: &str, preference: &Preference) -> Result<()> {
         let conn = self.operation_conn().await?;
         let now = Utc::now().timestamp();
@@ -610,6 +771,7 @@ impl TursoClient {
         Ok(())
     }
 
+    /// Retrieves all preferences for a user
     pub async fn get_user_preferences(&self, user_id: &str) -> Result<Vec<Preference>> {
         let conn = self.operation_conn().await?;
 
@@ -1001,13 +1163,20 @@ impl TursoClient {
     }
 }
 
+/// Registered user account
 #[derive(Debug, Clone)]
 pub struct User {
+    /// Unique user identifier (UUID)
     pub id: String,
+    /// User's email address
     pub email: String,
+    /// Argon2 hashed password
     pub password_hash: String,
+    /// User's display name
     pub name: String,
+    /// Unix timestamp of account creation
     pub created_at: i64,
+    /// Unix timestamp of last update
     pub updated_at: i64,
 }
 
@@ -1015,24 +1184,39 @@ pub struct User {
 /// This structure mirrors the TOON AgentConfig format for easy import/export
 #[derive(Debug, Clone)]
 pub struct UserAgent {
+    /// Unique agent identifier (UUID)
     pub id: String,
+    /// ID of the user who created this agent
     pub user_id: String,
+    /// Agent name (unique per user)
     pub name: String,
+    /// Human-readable display name
     pub display_name: Option<String>,
+    /// Agent description
     pub description: Option<String>,
+    /// LLM model identifier (e.g., "gpt-4", "llama3.2")
     pub model: String,
+    /// System prompt that defines agent behavior
     pub system_prompt: Option<String>,
     /// JSON array of tool names: ["calculator", "web_search"]
     pub tools: String,
+    /// Maximum iterations for tool use loops
     pub max_tool_iterations: i32,
+    /// Whether to execute tools in parallel
     pub parallel_tools: bool,
     /// JSON object for additional configuration
     pub extra: String,
+    /// Whether agent is visible in community marketplace
     pub is_public: bool,
+    /// Number of times this agent has been used
     pub usage_count: i32,
+    /// Sum of all ratings received
     pub rating_sum: i32,
+    /// Number of ratings received
     pub rating_count: i32,
+    /// Unix timestamp of creation
     pub created_at: i64,
+    /// Unix timestamp of last update
     pub updated_at: i64,
 }
 
@@ -1084,22 +1268,31 @@ impl UserAgent {
 /// Agent execution log entry for analytics
 #[derive(Debug, Clone)]
 pub struct AgentExecution {
+    /// Unique execution identifier (UUID)
     pub id: String,
     /// ID of user agent (None if system agent)
     pub agent_id: Option<String>,
     /// Name of the agent (always populated)
     pub agent_name: String,
+    /// ID of the user who triggered this execution
     pub user_id: String,
+    /// User's input message
     pub input: String,
+    /// Agent's response (None if failed)
     pub output: Option<String>,
     /// JSON array of tool invocations
     pub tool_calls: Option<String>,
+    /// Input token count
     pub tokens_input: Option<i32>,
+    /// Output token count
     pub tokens_output: Option<i32>,
+    /// Execution duration in milliseconds
     pub duration_ms: Option<i32>,
     /// Status: "success", "error", "timeout"
     pub status: String,
+    /// Error message if status is "error"
     pub error_message: Option<String>,
+    /// Unix timestamp of execution
     pub created_at: i64,
 }
 

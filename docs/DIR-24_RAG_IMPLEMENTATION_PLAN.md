@@ -35,7 +35,7 @@
 
 - Additional vector DB providers (pgvector, ChromaDB, Pinecone)
 - GPU acceleration for embeddings
-- Embedding cache layer
+- ~~Embedding cache layer~~ **✅ Implemented** (commit c6c25dd)
 - AI-native protocols (ACP, AG-UI, ANP, A2A)
 
 ---
@@ -885,55 +885,37 @@ pub enum AccelerationBackend {
 
 ### Embedding Cache
 
-**Status**: Trait stub only, no implementation.
+**Status**: ✅ **Implemented** (commit c6c25dd, 2026-01-28)
 
-**Reason**: Requires decisions on cache backend (Redis vs in-memory) and invalidation strategy.
+**Implementation**: In-memory LRU cache with TTL support.
 
-**Stub location**: `src/rag/cache.rs`
+**Location**: `src/rag/cache.rs`
 
+**Features**:
+- `EmbeddingCache` trait with `get/set/invalidate/clear/stats` methods
+- `LruEmbeddingCache` - Thread-safe in-memory LRU cache
+  - SHA-256 hashing for cache keys
+  - Configurable max entries (default 10,000)
+  - Optional TTL with automatic expiration
+  - Statistics tracking (hits, misses, evictions)
+- `CachedEmbeddingService` - Wrapper for any `EmbeddingService`
+- `NoOpCache` - For disabling caching
+- 12 comprehensive tests
+
+**Usage**:
 ```rust
-//! Embedding Cache (STUB)
-//!
-//! This module provides infrastructure for caching embeddings to avoid
-//! re-computation. Currently unimplemented.
-//!
-//! # Future Implementation
-//!
-//! Options under consideration:
-//! - In-memory LRU cache (fast, limited capacity)
-//! - Redis cache (distributed, persistent)
-//! - Disk-based cache (large capacity, slower)
-//!
-//! See docs/FUTURE_ENHANCEMENTS.md for roadmap.
+use ares_server::rag::cache::{LruEmbeddingCache, CacheConfig};
+use ares_server::rag::embeddings::CachedEmbeddingService;
 
-use async_trait::async_trait;
+let cache = LruEmbeddingCache::new(CacheConfig {
+    max_entries: 10_000,
+    ttl: Some(Duration::from_secs(3600)),
+});
 
-#[async_trait]
-pub trait EmbeddingCache: Send + Sync {
-    /// Get cached embedding for text hash
-    async fn get(&self, hash: &str) -> Option<Vec<f32>>;
-    
-    /// Store embedding with text hash
-    async fn set(&self, hash: &str, embedding: Vec<f32>) -> Result<(), CacheError>;
-    
-    /// Invalidate cached embedding
-    async fn invalidate(&self, hash: &str) -> Result<(), CacheError>;
-    
-    /// Clear all cached embeddings
-    async fn clear(&self) -> Result<(), CacheError>;
-}
-
-// Placeholder implementation that does nothing
-pub struct NoOpCache;
-
-#[async_trait]
-impl EmbeddingCache for NoOpCache {
-    async fn get(&self, _hash: &str) -> Option<Vec<f32>> { None }
-    async fn set(&self, _hash: &str, _embedding: Vec<f32>) -> Result<(), CacheError> { Ok(()) }
-    async fn invalidate(&self, _hash: &str) -> Result<(), CacheError> { Ok(()) }
-    async fn clear(&self) -> Result<(), CacheError> { Ok(()) }
-}
+let cached_service = CachedEmbeddingService::new(embedding_service, cache);
 ```
+
+See `docs/FUTURE_ENHANCEMENTS.md` for additional details.
 
 ### AI-Native Protocols
 
@@ -990,8 +972,15 @@ impl EmbeddingCache for NoOpCache {
 - Decision: LanceDB as default (local-first, serverless)
 - Decision: Use `spawn_blocking` for async embedding (fastembed is sync)
 - Decision: Use `runtime-tokio` for SQLx (confirmed compatible)
-- Decision: Defer GPU acceleration and embedding cache (stubs only)
+- Decision: Defer GPU acceleration (stubs only); embedding cache now implemented
 - Decision: Defer AI-native protocols (ACP, AG-UI, ANP, A2A)
+
+### 2026-01-28
+
+- Embedding cache implemented (commit c6c25dd)
+  - In-memory LRU cache with TTL support
+  - `CachedEmbeddingService` wrapper for any embedding service
+  - 12 comprehensive tests
 
 ---
 

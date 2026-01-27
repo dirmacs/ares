@@ -42,7 +42,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ares-server = "0.2"
+ares-server = "0.3"
 ```
 
 Basic usage:

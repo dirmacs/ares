@@ -162,22 +162,14 @@ If you encounter issues not listed here:
 ✅ Improved CORS configuration  
 ✅ **Vector persistence bug fixed** - Vectors now properly saved to disk (commit 354a771)  
 ✅ **Race condition in parallel model loading fixed** - Added per-model initialization locks (commit 354a771)  
+✅ **Fuzzy search query typo correction** - Query-level typo correction implemented (commit 1eda28b, closes #4)
+✅ **Embedding cache implemented** - In-memory LRU cache for embeddings (commit c6c25dd)
 
 ## Open Issues
 
-### Fuzzy Search with Query Typos (LOW)
-
-**Status**: ⚠️ Open (see GitHub issue #4)
-
-**Issue**: Fuzzy search only matches exact words in documents. When users make typos in their search query (e.g., "progamming languge"), the search returns 0 results.
-
-**Expected Behavior**: Query "progamming languge" should match documents containing "programming language".
-
-**Location**: `src/rag/search.rs`
-
-**Workaround**: Spell queries correctly, or use semantic search which handles conceptual matching better.
+*No major open issues at this time.*
 
 ---
 
-**Last Updated**: 2026-01-16  
+**Last Updated**: 2026-01-28  
 **Version**: 0.3.1

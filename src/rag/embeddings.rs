@@ -5,6 +5,7 @@
 //! - Sparse embeddings for hybrid search (SPLADE, BGE-M3)
 //! - Reranking models (BGE, Jina)
 //! - Async embedding via `spawn_blocking`
+//! - In-memory LRU caching to avoid recomputing embeddings
 //!
 //! # GPU Acceleration (TODO)
 //! GPU acceleration is planned for future iterations. See `docs/FUTURE_ENHANCEMENTS.md`.
@@ -13,8 +14,9 @@
 //! - Use ORT execution providers for ONNX models
 //! - Use Candle GPU features for Qwen3 models
 //!
-//! # Embedding Cache (TODO)
-//! Embedding caching is deferred. See `docs/FUTURE_ENHANCEMENTS.md`.
+//! # Embedding Cache
+//! Use `CachedEmbeddingService` to wrap the `EmbeddingService` with an LRU cache.
+//! See [`crate::rag::cache`] for cache configuration options.
 
 use crate::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
@@ -770,6 +772,190 @@ impl EmbeddingService {
         })
         .await
         .map_err(|e| AppError::Internal(format!("Blocking task failed: {}", e)))?
+    }
+}
+
+// ============================================================================
+// Cached Embedding Service
+// ============================================================================
+
+use crate::rag::cache::{CacheConfig, CacheStats, EmbeddingCache, LruEmbeddingCache, NoOpCache};
+
+/// An embedding service with integrated caching
+///
+/// Wraps an `EmbeddingService` with an `EmbeddingCache` to avoid recomputing
+/// embeddings for previously seen texts. The cache key is computed as a hash
+/// of the text content and model name.
+///
+/// # Example
+///
+/// ```ignore
+/// use ares::rag::embeddings::{CachedEmbeddingService, EmbeddingConfig};
+/// use ares::rag::cache::CacheConfig;
+///
+/// let service = CachedEmbeddingService::new(
+///     EmbeddingConfig::default(),
+///     CacheConfig::default(),
+/// )?;
+///
+/// // First call computes the embedding
+/// let emb1 = service.embed_text("hello world").await?;
+///
+/// // Second call returns cached result
+/// let emb2 = service.embed_text("hello world").await?;
+/// assert_eq!(emb1, emb2);
+/// ```
+pub struct CachedEmbeddingService {
+    /// The underlying embedding service
+    inner: EmbeddingService,
+    /// The embedding cache
+    cache: Box<dyn EmbeddingCache>,
+}
+
+impl CachedEmbeddingService {
+    /// Create a new cached embedding service
+    pub fn new(embedding_config: EmbeddingConfig, cache_config: CacheConfig) -> Result<Self> {
+        let inner = EmbeddingService::new(embedding_config)?;
+        let cache: Box<dyn EmbeddingCache> = if cache_config.enabled {
+            Box::new(LruEmbeddingCache::new(cache_config))
+        } else {
+            Box::new(NoOpCache::new())
+        };
+
+        Ok(Self { inner, cache })
+    }
+
+    /// Create with default configurations
+    pub fn with_defaults() -> Result<Self> {
+        Self::new(EmbeddingConfig::default(), CacheConfig::default())
+    }
+
+    /// Create with a specific model and default cache
+    pub fn with_model(model: EmbeddingModelType) -> Result<Self> {
+        Self::new(
+            EmbeddingConfig {
+                model,
+                ..Default::default()
+            },
+            CacheConfig::default(),
+        )
+    }
+
+    /// Create with caching disabled
+    pub fn without_cache(embedding_config: EmbeddingConfig) -> Result<Self> {
+        Self::new(
+            embedding_config,
+            CacheConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Get the model name for cache key computation
+    fn model_name(&self) -> String {
+        self.inner.model_type().to_string()
+    }
+
+    /// Embed a single text with caching
+    pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
+        let cache_key = self.cache.compute_key(text, &self.model_name());
+
+        // Check cache first
+        if let Some(cached) = self.cache.get(&cache_key) {
+            return Ok(cached);
+        }
+
+        // Compute embedding
+        let embedding = self.inner.embed_text(text).await?;
+
+        // Store in cache
+        self.cache.set(&cache_key, embedding.clone(), None)?;
+
+        Ok(embedding)
+    }
+
+    /// Embed multiple texts with caching
+    ///
+    /// Checks cache for each text individually, computes embeddings only
+    /// for uncached texts, and caches the new results.
+    pub async fn embed_texts<S: AsRef<str> + Send + Sync + 'static>(
+        &self,
+        texts: &[S],
+    ) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let model_name = self.model_name();
+        let mut results: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
+        let mut uncached_indices: Vec<usize> = Vec::new();
+        let mut uncached_texts: Vec<String> = Vec::new();
+
+        // Check cache for each text
+        for (i, text) in texts.iter().enumerate() {
+            let text_str = text.as_ref();
+            let cache_key = self.cache.compute_key(text_str, &model_name);
+
+            if let Some(cached) = self.cache.get(&cache_key) {
+                results[i] = Some(cached);
+            } else {
+                uncached_indices.push(i);
+                uncached_texts.push(text_str.to_string());
+            }
+        }
+
+        // Compute embeddings for uncached texts
+        if !uncached_texts.is_empty() {
+            let new_embeddings = self.inner.embed_texts(&uncached_texts).await?;
+
+            // Store results and cache them
+            for (j, embedding) in new_embeddings.into_iter().enumerate() {
+                let idx = uncached_indices[j];
+                let cache_key = self.cache.compute_key(&uncached_texts[j], &model_name);
+                self.cache.set(&cache_key, embedding.clone(), None)?;
+                results[idx] = Some(embedding);
+            }
+        }
+
+        // Unwrap all results (should all be Some at this point)
+        Ok(results.into_iter().flatten().collect())
+    }
+
+    /// Get the current model type
+    pub fn model_type(&self) -> EmbeddingModelType {
+        self.inner.model_type()
+    }
+
+    /// Get the embedding dimensions
+    pub fn dimensions(&self) -> usize {
+        self.inner.dimensions()
+    }
+
+    /// Get the embedding configuration
+    pub fn config(&self) -> &EmbeddingConfig {
+        self.inner.config()
+    }
+
+    /// Get cache statistics
+    pub fn cache_stats(&self) -> CacheStats {
+        self.cache.stats()
+    }
+
+    /// Clear the cache
+    pub fn clear_cache(&self) -> Result<()> {
+        self.cache.clear()
+    }
+
+    /// Invalidate a specific cache entry
+    pub fn invalidate(&self, text: &str) -> Result<()> {
+        let cache_key = self.cache.compute_key(text, &self.model_name());
+        self.cache.invalidate(&cache_key)
+    }
+
+    /// Check if caching is enabled
+    pub fn is_cache_enabled(&self) -> bool {
+        self.cache.is_enabled()
     }
 }
 

@@ -5,6 +5,38 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-01-28
+
+### Added
+
+- **Query-Level Typo Correction**: Fuzzy search now corrects typos in search queries
+  - `QueryCorrection` struct for vocabulary-based word correction
+  - `correct_word()` and `correct_query()` methods using Levenshtein distance
+  - `search_bm25_with_correction()` and `search_hybrid_with_correction()` methods
+  - Vocabulary built from indexed documents for domain-specific corrections
+  - Location: `src/rag/search.rs`
+  - Closes GitHub issue #4
+
+- **Embedding Cache**: In-memory LRU cache for embedding vectors
+  - `EmbeddingCache` trait with `get/set/invalidate/clear/stats` methods
+  - `LruEmbeddingCache` implementation with SHA-256 hashing, configurable max entries, optional TTL
+  - `CachedEmbeddingService` wrapper for transparent caching
+  - Thread-safe with `parking_lot` RwLock
+  - 12 comprehensive tests
+  - Location: `src/rag/cache.rs`
+
+### Changed
+
+- Updated documentation to reflect implemented features
+  - `KNOWN_ISSUES.md`: Marked fuzzy search typo issue as resolved
+  - `DIR-24_RAG_IMPLEMENTATION_PLAN.md`: Marked embedding cache as implemented
+  - `FUTURE_ENHANCEMENTS.md`: Updated embedding cache section
+  - `README.md`: Updated version reference
+
+### Removed
+
+- Stale session log file (`session-ses_43bd.md`)
+
 ## [0.3.1] - 2026-01-16
 
 ### Fixed
@@ -221,6 +253,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.3.2]: https://github.com/dirmacs/ares/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/dirmacs/ares/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/dirmacs/ares/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/dirmacs/ares/compare/v0.2.4...v0.2.5

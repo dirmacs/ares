@@ -81,6 +81,17 @@ pub struct SearchResult {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// A correction made to a query word during typo correction
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryCorrection {
+    /// Original (misspelled) word
+    pub original: String,
+    /// Corrected word from vocabulary
+    pub corrected: String,
+    /// Edit distance between original and corrected
+    pub distance: usize,
+}
+
 /// Search request configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchRequest {
@@ -336,6 +347,8 @@ impl Bm25Index {
 pub struct FuzzyIndex {
     /// Document ID -> content for fuzzy matching
     documents: HashMap<String, String>,
+    /// Vocabulary of all unique words in the index (for query correction)
+    vocabulary: HashSet<String>,
     /// Maximum edit distance for fuzzy matches
     max_distance: usize,
 }
@@ -357,15 +370,32 @@ impl FuzzyIndex {
         }
     }
 
+    /// Tokenize text into lowercase words
+    fn tokenize(text: &str) -> Vec<String> {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|s| !s.is_empty() && s.len() > 1)
+            .map(String::from)
+            .collect()
+    }
+
     /// Add a document to the index
     pub fn add_document(&mut self, id: &str, content: &str) {
-        self.documents
-            .insert(id.to_string(), content.to_lowercase());
+        let lower_content = content.to_lowercase();
+
+        // Add words to vocabulary
+        for word in Self::tokenize(&lower_content) {
+            self.vocabulary.insert(word);
+        }
+
+        self.documents.insert(id.to_string(), lower_content);
     }
 
     /// Remove a document from the index
     pub fn remove_document(&mut self, id: &str) {
         self.documents.remove(id);
+        // Note: We don't remove from vocabulary as words may be in other docs
+        // Vocabulary is rebuilt on clear()
     }
 
     /// Calculate Levenshtein distance between two strings
@@ -400,6 +430,67 @@ impl FuzzyIndex {
         }
 
         prev_row[len2]
+    }
+
+    /// Find the best matching word from vocabulary for a given query word
+    /// Returns the corrected word and the edit distance
+    pub fn correct_word(&self, word: &str) -> Option<(String, usize)> {
+        let word_lower = word.to_lowercase();
+
+        // If exact match exists, return it
+        if self.vocabulary.contains(&word_lower) {
+            return Some((word_lower, 0));
+        }
+
+        // Find best fuzzy match within max_distance
+        let mut best_match: Option<(String, usize)> = None;
+
+        for vocab_word in &self.vocabulary {
+            // Skip if length difference is too large (can't be within max_distance)
+            let len_diff = (word_lower.len() as isize - vocab_word.len() as isize).unsigned_abs();
+            if len_diff > self.max_distance {
+                continue;
+            }
+
+            let distance = Self::levenshtein_distance(&word_lower, vocab_word);
+            if distance <= self.max_distance {
+                match &best_match {
+                    None => best_match = Some((vocab_word.clone(), distance)),
+                    Some((_, best_dist)) if distance < *best_dist => {
+                        best_match = Some((vocab_word.clone(), distance));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        best_match
+    }
+
+    /// Correct a query by replacing typos with vocabulary words
+    /// Returns the corrected query and a list of corrections made
+    pub fn correct_query(&self, query: &str) -> (String, Vec<QueryCorrection>) {
+        let words = Self::tokenize(query);
+        let mut corrected_words = Vec::with_capacity(words.len());
+        let mut corrections = Vec::new();
+
+        for word in &words {
+            if let Some((corrected, distance)) = self.correct_word(word) {
+                if distance > 0 {
+                    corrections.push(QueryCorrection {
+                        original: word.clone(),
+                        corrected: corrected.clone(),
+                        distance,
+                    });
+                }
+                corrected_words.push(corrected);
+            } else {
+                // No match found, keep original
+                corrected_words.push(word.clone());
+            }
+        }
+
+        (corrected_words.join(" "), corrections)
     }
 
     /// Calculate fuzzy match score (1.0 - normalized distance)
@@ -477,6 +568,12 @@ impl FuzzyIndex {
     /// Clear the index
     pub fn clear(&mut self) {
         self.documents.clear();
+        self.vocabulary.clear();
+    }
+
+    /// Get the vocabulary size (number of unique words)
+    pub fn vocabulary_size(&self) -> usize {
+        self.vocabulary.len()
     }
 }
 
@@ -601,6 +698,44 @@ impl SearchEngine {
         let mut fused = self.rrf.fuse(&ranked_lists);
         fused.truncate(top_k);
         fused
+    }
+
+    /// Perform BM25 search with automatic query typo correction
+    ///
+    /// This corrects misspelled words in the query using the vocabulary
+    /// built from indexed documents, then performs BM25 search with the
+    /// corrected query.
+    ///
+    /// Returns a tuple of (results, corrected_query, corrections_made)
+    pub fn search_bm25_with_correction(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> (Vec<(String, f32)>, String, Vec<QueryCorrection>) {
+        let (corrected_query, corrections) = self.fuzzy.correct_query(query);
+        let results = self.bm25.search(&corrected_query, top_k);
+        (results, corrected_query, corrections)
+    }
+
+    /// Perform hybrid search with automatic query typo correction
+    ///
+    /// This corrects misspelled words in the query, then performs hybrid search
+    /// combining semantic, BM25, and fuzzy results.
+    ///
+    /// Note: semantic_results should be computed using the corrected query
+    /// for best results.
+    ///
+    /// Returns a tuple of (results, corrected_query, corrections_made)
+    pub fn search_hybrid_with_correction(
+        &self,
+        query: &str,
+        semantic_results: &[(String, f32)],
+        weights: &HybridWeights,
+        top_k: usize,
+    ) -> (Vec<(String, f32)>, String, Vec<QueryCorrection>) {
+        let (corrected_query, corrections) = self.fuzzy.correct_query(query);
+        let results = self.search_hybrid(&corrected_query, semantic_results, weights, top_k);
+        (results, corrected_query, corrections)
     }
 
     /// Clear all indices
@@ -824,5 +959,139 @@ mod tests {
         assert!((weights.semantic - 0.6).abs() < 0.001);
         assert!((weights.bm25 - 0.3).abs() < 0.001);
         assert!((weights.fuzzy - 0.1).abs() < 0.001);
+    }
+
+    // ========================================================================
+    // Typo Correction Tests
+    // ========================================================================
+
+    #[test]
+    fn test_correct_word_exact_match() {
+        let mut index = FuzzyIndex::new();
+        index.add_document("doc1", "programming language");
+
+        // Exact match should return the word with distance 0
+        let result = index.correct_word("programming");
+        assert!(result.is_some());
+        let (corrected, distance) = result.unwrap();
+        assert_eq!(corrected, "programming");
+        assert_eq!(distance, 0);
+    }
+
+    #[test]
+    fn test_correct_word_with_typo() {
+        let mut index = FuzzyIndex::new();
+        index.add_document("doc1", "programming language");
+
+        // "progamming" is 1 edit away from "programming" (missing 'r')
+        let result = index.correct_word("progamming");
+        assert!(result.is_some());
+        let (corrected, distance) = result.unwrap();
+        assert_eq!(corrected, "programming");
+        assert_eq!(distance, 1);
+    }
+
+    #[test]
+    fn test_correct_word_no_match() {
+        let mut index = FuzzyIndex::new();
+        index.add_document("doc1", "programming language");
+
+        // "xyz" is too far from any vocabulary word
+        let result = index.correct_word("xyz");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_correct_query_single_typo() {
+        let mut index = FuzzyIndex::new();
+        index.add_document("doc1", "rust programming language");
+
+        let (corrected, corrections) = index.correct_query("progamming");
+        assert_eq!(corrected, "programming");
+        assert_eq!(corrections.len(), 1);
+        assert_eq!(corrections[0].original, "progamming");
+        assert_eq!(corrections[0].corrected, "programming");
+        assert_eq!(corrections[0].distance, 1);
+    }
+
+    #[test]
+    fn test_correct_query_multiple_typos() {
+        let mut index = FuzzyIndex::new();
+        index.add_document("doc1", "rust programming language");
+
+        // "progamming languge" has typos in both words
+        let (corrected, corrections) = index.correct_query("progamming languge");
+        assert_eq!(corrected, "programming language");
+        assert_eq!(corrections.len(), 2);
+    }
+
+    #[test]
+    fn test_correct_query_no_typos() {
+        let mut index = FuzzyIndex::new();
+        index.add_document("doc1", "rust programming language");
+
+        // No typos - should return same query with empty corrections
+        let (corrected, corrections) = index.correct_query("programming language");
+        assert_eq!(corrected, "programming language");
+        assert!(corrections.is_empty());
+    }
+
+    #[test]
+    fn test_search_bm25_with_correction() {
+        let mut engine = SearchEngine::new();
+
+        let docs = vec![
+            Document {
+                id: "doc1".to_string(),
+                content: "Rust is a systems programming language".to_string(),
+                metadata: Default::default(),
+                embedding: None,
+            },
+            Document {
+                id: "doc2".to_string(),
+                content: "Python is popular for scripting".to_string(),
+                metadata: Default::default(),
+                embedding: None,
+            },
+        ];
+
+        engine.index_documents(&docs);
+
+        // Search with typo "progamming" (missing 'r')
+        let (results, corrected_query, corrections) =
+            engine.search_bm25_with_correction("progamming", 10);
+
+        // Should find doc1 after correcting to "programming"
+        assert!(!results.is_empty());
+        assert_eq!(results[0].0, "doc1");
+        assert_eq!(corrected_query, "programming");
+        assert_eq!(corrections.len(), 1);
+        assert_eq!(corrections[0].original, "progamming");
+        assert_eq!(corrections[0].corrected, "programming");
+    }
+
+    #[test]
+    fn test_vocabulary_cleared() {
+        let mut index = FuzzyIndex::new();
+        index.add_document("doc1", "programming language");
+
+        assert!(index.vocabulary_size() > 0);
+
+        index.clear();
+
+        assert_eq!(index.vocabulary_size(), 0);
+        assert!(index.is_empty());
+    }
+
+    #[test]
+    fn test_typo_correction_case_insensitive() {
+        let mut index = FuzzyIndex::new();
+        index.add_document("doc1", "Programming Language");
+
+        // Query in different case with typo
+        let result = index.correct_word("PROGAMMING");
+        assert!(result.is_some());
+        let (corrected, _) = result.unwrap();
+        assert_eq!(corrected, "programming"); // lowercase
     }
 }

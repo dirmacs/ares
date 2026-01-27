@@ -14,7 +14,7 @@
 //! - Use Candle GPU features for Qwen3 models
 //!
 //! # Embedding Cache (TODO)
-//! Embedding caching is deferred. See `docs/FUTURE_ENHANCEMENTS.md` and `src/rag/cache.rs`.
+//! Embedding caching is deferred. See `docs/FUTURE_ENHANCEMENTS.md`.
 
 use crate::types::{AppError, Result};
 use serde::{Deserialize, Serialize};

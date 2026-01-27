@@ -5,10 +5,10 @@
 //!
 //! # Module Structure
 //!
-//! - [`embeddings`] - Dense embedding models (fastembed, 38+ models)
-//! - [`search`] - Search strategies (semantic, BM25, fuzzy, hybrid)
-//! - [`reranker`] - Cross-encoder reranking for improved relevance
-//! - [`chunker`] - Text chunking for document processing
+//! - [`rag::embeddings`](crate::rag::embeddings) - Dense embedding models (fastembed, 38+ models)
+//! - [`rag::search`](crate::rag::search) - Search strategies (semantic, BM25, fuzzy, hybrid)
+//! - [`rag::reranker`](crate::rag::reranker) - Cross-encoder reranking for improved relevance
+//! - [`rag::chunker`](crate::rag::chunker) - Text chunking for document processing
 //!
 //! # RAG Pipeline
 //!

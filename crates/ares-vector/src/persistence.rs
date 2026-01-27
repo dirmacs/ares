@@ -133,20 +133,20 @@ pub async fn load_collection(base_path: &Path, name: &str) -> Result<Collection>
     Ok(collection)
 }
 
-/// Enhanced persistence with bincode (when serde feature is enabled).
+/// Enhanced persistence with postcard (when serde feature is enabled).
 #[cfg(feature = "serde")]
 #[allow(dead_code)]
-pub(crate) mod bincode_persistence {
+pub(crate) mod postcard_persistence {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    /// Save vectors using bincode for efficiency.
-    pub(crate) async fn save_vectors_bincode(
+    /// Save vectors using postcard for efficiency.
+    pub(crate) async fn save_vectors_postcard(
         path: &Path,
         vectors: &[StoredVectorData],
     ) -> Result<()> {
-        let data = bincode::serialize(vectors)
-            .map_err(|e| Error::Persistence(format!("Bincode serialize error: {}", e)))?;
+        let data = postcard::to_allocvec(vectors)
+            .map_err(|e| Error::Persistence(format!("Postcard serialize error: {}", e)))?;
 
         let mut file = tokio::fs::File::create(path).await?;
         file.write_all(&data).await?;
@@ -155,14 +155,14 @@ pub(crate) mod bincode_persistence {
         Ok(())
     }
 
-    /// Load vectors using bincode.
-    pub(crate) async fn load_vectors_bincode(path: &Path) -> Result<Vec<StoredVectorData>> {
+    /// Load vectors using postcard.
+    pub(crate) async fn load_vectors_postcard(path: &Path) -> Result<Vec<StoredVectorData>> {
         let mut file = tokio::fs::File::open(path).await?;
         let mut data = Vec::new();
         file.read_to_end(&mut data).await?;
 
-        let vectors: Vec<StoredVectorData> = bincode::deserialize(&data)
-            .map_err(|e| Error::Persistence(format!("Bincode deserialize error: {}", e)))?;
+        let vectors: Vec<StoredVectorData> = postcard::from_bytes(&data)
+            .map_err(|e| Error::Persistence(format!("Postcard deserialize error: {}", e)))?;
 
         Ok(vectors)
     }

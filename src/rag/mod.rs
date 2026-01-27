@@ -9,6 +9,7 @@
 //! - [`rag::search`](crate::rag::search) - Search strategies (semantic, BM25, fuzzy, hybrid)
 //! - [`rag::reranker`](crate::rag::reranker) - Cross-encoder reranking for improved relevance
 //! - [`rag::chunker`](crate::rag::chunker) - Text chunking for document processing
+//! - [`rag::cache`](crate::rag::cache) - Embedding cache for avoiding recomputation
 //!
 //! # RAG Pipeline
 //!
@@ -44,6 +45,7 @@
 //! - `BAAI/bge-base-en-v1.5` - Higher quality, slower
 //! - `sentence-transformers/all-MiniLM-L6-v2` - Lightweight
 
+pub mod cache;
 pub mod chunker;
 pub mod embeddings;
 pub mod reranker;

@@ -5,9 +5,9 @@
 //!
 //! # Module Structure
 //!
-//! - [`calculator`] - Mathematical expression evaluation
-//! - [`search`] - Web search integration (DuckDuckGo, Brave, etc.)
-//! - [`registry`] - Tool registration and discovery
+//! - [`calculator`](crate::tools::calculator) - Mathematical expression evaluation
+//! - [`search`](crate::tools::search) - Web search integration (DuckDuckGo, Brave, etc.)
+//! - [`registry`](crate::tools::registry) - Tool registration and discovery
 //!
 //! # Available Tools
 //!
@@ -28,7 +28,7 @@
 //!
 //! # Tool Registry
 //!
-//! The [`registry`] module manages tool discovery and execution:
+//! The [`registry`](crate::tools::registry) module manages tool discovery and execution:
 //! ```ignore
 //! let registry = ToolRegistry::default();
 //! let tools = registry.list_tools();  // Get available tool schemas

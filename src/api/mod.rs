@@ -4,8 +4,8 @@
 //!
 //! # Module Structure
 //!
-//! - [`handlers`] - Request handlers for each endpoint
-//! - [`routes`] - Route definitions and router configuration
+//! - [`api::handlers`](crate::api::handlers) - Request handlers for each endpoint
+//! - [`api::routes`](crate::api::routes) - Route definitions and router configuration
 //!
 //! # API Endpoints
 //!

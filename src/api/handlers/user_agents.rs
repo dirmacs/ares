@@ -16,11 +16,12 @@ use axum::{
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use toon_format::{decode_default, encode_default};
+use utoipa::{IntoParams, ToSchema};
 
 // ============= Request/Response Types =============
 
 /// Request to create a new user agent
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateAgentRequest {
     /// Unique agent name (alphanumeric, hyphens, underscores)
     pub name: String,
@@ -54,7 +55,7 @@ fn default_max_tool_iterations() -> i32 {
 }
 
 /// Response after creating an agent
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CreateAgentResponse {
     /// Unique agent identifier (UUID)
     pub id: String,
@@ -71,7 +72,7 @@ pub struct CreateAgentResponse {
 }
 
 /// Response for agent details
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AgentResponse {
     /// Unique agent identifier (UUID)
     pub id: String,
@@ -106,7 +107,7 @@ pub struct AgentResponse {
 }
 
 /// Query parameters for get agent
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, ToSchema, IntoParams)]
 pub struct GetAgentQuery {
     /// Format: "json" (default) or "toon"
     #[serde(default)]
@@ -114,7 +115,7 @@ pub struct GetAgentQuery {
 }
 
 /// Query parameters for listing agents
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, ToSchema, IntoParams)]
 pub struct ListAgentsQuery {
     /// Include public/community agents
     #[serde(default)]
@@ -132,7 +133,7 @@ fn default_limit() -> u32 {
 }
 
 /// Request to update an agent
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateAgentRequest {
     /// Human-readable display name
     #[serde(default)]
@@ -165,6 +166,19 @@ pub struct UpdateAgentRequest {
 /// Create a new user agent
 ///
 /// POST /api/user/agents
+#[utoipa::path(
+    post,
+    path = "/api/user/agents",
+    request_body = CreateAgentRequest,
+    responses(
+        (status = 200, description = "Agent created successfully", body = CreateAgentResponse),
+        (status = 400, description = "Invalid input"),
+        (status = 401, description = "Unauthorized"),
+        (status = 409, description = "Agent already exists")
+    ),
+    tag = "user_agents",
+    security(("bearer" = []))
+)]
 pub async fn create_agent(
     State(state): State<AppState>,
     user: AuthUser,
@@ -274,6 +288,18 @@ pub async fn create_agent(
 ///
 /// POST /api/user/agents/import
 /// Content-Type: text/x-toon
+#[utoipa::path(
+    post,
+    path = "/api/user/agents/import",
+    request_body(content = String, content_type = "text/x-toon"),
+    responses(
+        (status = 200, description = "Agent imported successfully", body = CreateAgentResponse),
+        (status = 400, description = "Invalid TOON format"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "user_agents",
+    security(("bearer" = []))
+)]
 pub async fn import_agent_toon(
     State(state): State<AppState>,
     user: AuthUser,
@@ -302,6 +328,22 @@ pub async fn import_agent_toon(
 /// Get a user agent by name
 ///
 /// GET /api/user/agents/:name
+#[utoipa::path(
+    get,
+    path = "/api/user/agents/{name}",
+    params(
+        ("name" = String, Path, description = "Agent name"),
+        GetAgentQuery
+    ),
+    responses(
+        (status = 200, description = "Agent details", body = AgentResponse),
+        (status = 200, description = "Agent in TOON format", content_type = "text/x-toon"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Agent not found")
+    ),
+    tag = "user_agents",
+    security(("bearer" = []))
+)]
 pub async fn get_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -357,6 +399,17 @@ pub async fn get_agent(
 /// List user agents
 ///
 /// GET /api/user/agents
+#[utoipa::path(
+    get,
+    path = "/api/user/agents",
+    params(ListAgentsQuery),
+    responses(
+        (status = 200, description = "List of agents", body = Vec<AgentResponse>),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "user_agents",
+    security(("bearer" = []))
+)]
 pub async fn list_agents(
     State(state): State<AppState>,
     Query(params): Query<ListAgentsQuery>,
@@ -393,6 +446,23 @@ pub async fn list_agents(
 /// Update a user agent
 ///
 /// PUT /api/user/agents/:name
+#[utoipa::path(
+    put,
+    path = "/api/user/agents/{name}",
+    params(
+        ("name" = String, Path, description = "Agent name")
+    ),
+    request_body = UpdateAgentRequest,
+    responses(
+        (status = 200, description = "Agent updated successfully", body = AgentResponse),
+        (status = 400, description = "Invalid input"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden - not owner"),
+        (status = 404, description = "Agent not found")
+    ),
+    tag = "user_agents",
+    security(("bearer" = []))
+)]
 pub async fn update_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -466,6 +536,20 @@ pub async fn update_agent(
 /// Delete a user agent
 ///
 /// DELETE /api/user/agents/:name
+#[utoipa::path(
+    delete,
+    path = "/api/user/agents/{name}",
+    params(
+        ("name" = String, Path, description = "Agent name")
+    ),
+    responses(
+        (status = 204, description = "Agent deleted successfully"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Agent not found")
+    ),
+    tag = "user_agents",
+    security(("bearer" = []))
+)]
 pub async fn delete_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -494,6 +578,20 @@ pub async fn delete_agent(
 /// Export agent as TOON file
 ///
 /// GET /api/user/agents/:name/export
+#[utoipa::path(
+    get,
+    path = "/api/user/agents/{name}/export",
+    params(
+        ("name" = String, Path, description = "Agent name")
+    ),
+    responses(
+        (status = 200, description = "Agent exported as TOON file", content_type = "text/x-toon"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Agent not found")
+    ),
+    tag = "user_agents",
+    security(("bearer" = []))
+)]
 pub async fn export_agent_toon(
     State(state): State<AppState>,
     Path(name): Path<String>,

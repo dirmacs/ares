@@ -83,7 +83,7 @@ pub struct ServerConfig {
     pub log_level: String,
 
     /// Allowed CORS origins (default: ["*"] for development, set explicitly for production).
-    /// Use specific origins like ["https://yourdomain.com"] in production.
+    /// Use specific origins like `["https://yourdomain.com"]` in production.
     #[serde(default = "default_cors_origins")]
     pub cors_origins: Vec<String>,
 

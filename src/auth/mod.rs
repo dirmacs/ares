@@ -5,8 +5,8 @@
 //!
 //! # Module Structure
 //!
-//! - [`jwt`] - JWT token encoding, decoding, and claims
-//! - [`middleware`] - Axum layers and extractors for authentication
+//! - [`auth::jwt`](crate::auth::jwt) - JWT token encoding, decoding, and claims
+//! - [`auth::middleware`](crate::auth::middleware) - Axum layers and extractors for authentication
 //!
 //! # Security Features
 //!

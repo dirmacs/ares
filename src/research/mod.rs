@@ -7,7 +7,7 @@
 //! # Architecture
 //!
 //! The research system uses a coordinator pattern:
-//! - [`coordinator::ResearchCoordinator`] - Orchestrates research tasks
+//! - [`research::coordinator::ResearchCoordinator`](crate::research::coordinator::ResearchCoordinator) - Orchestrates research tasks
 //! - Spawns specialized sub-agents for different research aspects
 //! - Aggregates and synthesizes results from multiple agents
 //!

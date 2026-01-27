@@ -98,39 +98,45 @@ directml = ["ort/directml"]
 
 ## Embedding Cache
 
-### Status: Trait Stub Only
+### Status: Implemented (In-Memory LRU)
 
-### Rationale
+The in-memory LRU embedding cache is now fully implemented. See `src/rag/cache.rs`.
 
-Caching embeddings avoids re-computing vectors for unchanged documents. This is especially valuable for:
+### Current Implementation
 
-- Large document re-indexing
-- Frequently accessed documents
-- Multi-collection setups with shared documents
+- **Backend**: In-memory LRU cache using `parking_lot::RwLock<HashMap>`
+- **Key Strategy**: SHA-256 hash of `text + model_name`
+- **Eviction Policy**: LRU (Least Recently Used) with configurable max size
+- **TTL Support**: Optional per-entry TTL with automatic expiry
+- **Thread-safe**: Uses atomic counters and `RwLock` for concurrent access
 
-However, implementation requires decisions on:
-
-1. Cache backend (in-memory vs Redis vs disk)
-2. Key generation strategy (content hash vs document ID)
-3. Invalidation policy (TTL, LRU, manual)
-4. Memory budget management
-
-### Implementation Considerations
-
-#### Cache Key Strategy
+### Usage
 
 ```rust
-use sha2::{Sha256, Digest};
+use ares::rag::embeddings::{CachedEmbeddingService, EmbeddingConfig};
+use ares::rag::cache::CacheConfig;
 
-fn compute_cache_key(text: &str, model: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    hasher.update(model.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
+// Create a cached embedding service
+let service = CachedEmbeddingService::new(
+    EmbeddingConfig::default(),
+    CacheConfig {
+        max_size_bytes: 512 * 1024 * 1024,  // 512 MB
+        default_ttl: None,  // No expiry
+        enabled: true,
+    },
+)?;
+
+// Embeddings are automatically cached
+let embedding = service.embed_text("hello world").await?;
+
+// Check cache stats
+let stats = service.cache_stats();
+println!("Hit rate: {:.1}%", stats.hit_rate());
 ```
 
-#### Backend Options
+### Future Backend Options
+
+Additional backends can be added by implementing the `EmbeddingCache` trait:
 
 | Backend | Pros | Cons |
 |---------|------|------|
@@ -139,32 +145,24 @@ fn compute_cache_key(text: &str, model: &str) -> String {
 | Disk (sled/rocksdb) | Large capacity, persistent | Slower than memory |
 | SQLite | Simple, persistent | May conflict with main DB |
 
-#### Proposed Interface
+### Configuration
 
 ```rust
-// src/rag/cache.rs
-#[async_trait]
-pub trait EmbeddingCache: Send + Sync {
-    async fn get(&self, key: &str) -> Option<Vec<f32>>;
-    async fn set(&self, key: &str, embedding: Vec<f32>, ttl: Option<Duration>) -> Result<()>;
-    async fn invalidate(&self, key: &str) -> Result<()>;
-    async fn clear(&self) -> Result<()>;
-    async fn stats(&self) -> CacheStats;
-}
+use ares::rag::cache::CacheConfig;
 
-pub struct CacheStats {
-    pub hits: u64,
-    pub misses: u64,
-    pub size_bytes: u64,
-    pub entry_count: usize,
-}
+let config = CacheConfig {
+    max_size_bytes: 256 * 1024 * 1024,  // 256 MB (default)
+    default_ttl: None,  // No expiry (default)
+    enabled: true,  // Enabled by default
+};
 ```
 
-### Stub Location
+### Implementation Location
 
-- `src/rag/cache.rs` - `EmbeddingCache` trait and `NoOpCache` implementation
+- `src/rag/cache.rs` - `EmbeddingCache` trait, `LruEmbeddingCache`, and `NoOpCache` implementations
+- `src/rag/embeddings.rs` - `CachedEmbeddingService` wrapper
 
-### Configuration (Proposed)
+### Future Configuration (Proposed TOML)
 
 ```toml
 [rag.cache]
@@ -348,7 +346,7 @@ impl QueryExpander {
 
 When resources become available, implement in this order:
 
-1. **Embedding Cache** (High impact, moderate effort)
+1. ~~**Embedding Cache** (High impact, moderate effort)~~ - **DONE**
 2. **GPU Acceleration** (High impact, high effort)
 3. **Advanced Search** (Medium impact, varies)
 4. **Migration Utility** (Low priority unless requested)
@@ -369,5 +367,5 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2026-01-12  
+**Last Updated**: 2026-01-28  
 **Related**: [DIR-24 Implementation Plan](./DIR-24_RAG_IMPLEMENTATION_PLAN.md)

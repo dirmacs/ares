@@ -34,7 +34,12 @@ pub enum DatabaseProvider {
     },
     /// Remote Turso database (requires network access)
     #[cfg(feature = "turso")]
-    Turso { url: String, auth_token: String },
+    Turso {
+        /// The Turso database URL (e.g., `libsql://your-db.turso.io`)
+        url: String,
+        /// Authentication token for the Turso database
+        auth_token: String,
+    },
 }
 
 impl DatabaseProvider {

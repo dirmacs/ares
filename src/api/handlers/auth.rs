@@ -3,7 +3,16 @@ use crate::{
     AppState,
 };
 use axum::{extract::State, Json};
+use serde::Deserialize;
+use utoipa::ToSchema;
 use uuid::Uuid;
+
+/// Request payload for refreshing an access token
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RefreshTokenRequest {
+    /// The refresh token issued during login or registration
+    pub refresh_token: String,
+}
 
 /// Register a new user
 #[utoipa::path(
@@ -119,14 +128,21 @@ pub async fn login(
 }
 
 /// Refresh access token
+#[utoipa::path(
+    post,
+    path = "/api/auth/refresh",
+    request_body = RefreshTokenRequest,
+    responses(
+        (status = 200, description = "Token refreshed successfully", body = TokenResponse),
+        (status = 401, description = "Invalid or expired refresh token")
+    ),
+    tag = "auth"
+)]
 pub async fn refresh_token(
     State(state): State<AppState>,
-    Json(payload): Json<serde_json::Value>,
+    Json(payload): Json<RefreshTokenRequest>,
 ) -> Result<Json<TokenResponse>> {
-    let refresh_token = payload
-        .get("refresh_token")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::InvalidInput("Refresh token required".to_string()))?;
+    let refresh_token = &payload.refresh_token;
 
     // Verify refresh token
     let claims = state.auth_service.verify_token(refresh_token)?;

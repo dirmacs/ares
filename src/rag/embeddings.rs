@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
+// Note: Arc is now used both for MODEL_INIT_LOCKS and for wrapping the embedding models
 use tokio::task::spawn_blocking;
 
 // Re-export fastembed types for convenience
@@ -584,11 +585,14 @@ impl Default for EmbeddingConfig {
 ///
 /// Uses `spawn_blocking` to run fastembed's synchronous operations
 /// without blocking the async runtime.
+///
+/// The model is wrapped in `Arc<Mutex<TextEmbedding>>` to allow safe
+/// reuse across async boundaries without recreating the model on each call.
 pub struct EmbeddingService {
-    #[allow(dead_code)]
-    model: TextEmbedding,
-    #[allow(dead_code)]
-    sparse_model: Option<fastembed::SparseTextEmbedding>,
+    /// The text embedding model, wrapped for thread-safe access
+    model: Arc<Mutex<TextEmbedding>>,
+    /// Optional sparse embedding model for hybrid search
+    sparse_model: Option<Arc<Mutex<fastembed::SparseTextEmbedding>>>,
     config: EmbeddingConfig,
 }
 
@@ -639,8 +643,8 @@ impl EmbeddingService {
         };
 
         Ok(Self {
-            model,
-            sparse_model,
+            model: Arc::new(Mutex::new(model)),
+            sparse_model: sparse_model.map(|m| Arc::new(Mutex::new(m))),
             config,
         })
     }
@@ -687,7 +691,7 @@ impl EmbeddingService {
     /// This is more efficient than calling `embed_text` multiple times
     /// as it batches the texts and processes them together.
     ///
-    /// Uses a per-model lock to prevent race conditions during model initialization.
+    /// The model is reused across calls via Arc<Mutex<TextEmbedding>>.
     pub async fn embed_texts<S: AsRef<str> + Send + Sync + 'static>(
         &self,
         texts: &[S],
@@ -700,30 +704,17 @@ impl EmbeddingService {
         let texts_owned: Vec<String> = texts.iter().map(|s| s.as_ref().to_string()).collect();
         let batch_size = self.config.batch_size;
 
-        // Clone the model config for the blocking task
-        let model_type = self.config.model.to_fastembed_model();
-        let show_progress = self.config.show_download_progress;
-
-        // Get the lock for this model type
-        let model_name = format!("{:?}", model_type);
-        let model_lock = get_model_lock(&model_name);
+        // Clone the Arc to move into the blocking task
+        let model = Arc::clone(&self.model);
 
         spawn_blocking(move || {
-            // Acquire lock to prevent concurrent model downloads
-            let _guard = model_lock
+            // Lock the model for use
+            let mut model_guard = model
                 .lock()
                 .map_err(|e| AppError::Internal(format!("Failed to acquire model lock: {}", e)))?;
 
-            // Create model in the blocking context
-            let mut model = TextEmbedding::try_new(
-                InitOptions::new(model_type).with_show_download_progress(show_progress),
-            )
-            .map_err(|e| {
-                AppError::Internal(format!("Failed to initialize embedding model: {}", e))
-            })?;
-
             let refs: Vec<&str> = texts_owned.iter().map(|s| s.as_str()).collect();
-            model
+            model_guard
                 .embed(refs, Some(batch_size))
                 .map_err(|e| AppError::Internal(format!("Embedding failed: {}", e)))
         })
@@ -733,40 +724,31 @@ impl EmbeddingService {
 
     /// Generate sparse embeddings for hybrid search
     ///
-    /// Uses a per-model lock to prevent race conditions during model initialization.
+    /// The sparse model is reused across calls via Arc<Mutex<SparseTextEmbedding>>.
     pub async fn embed_sparse<S: AsRef<str> + Send + Sync + 'static>(
         &self,
         texts: &[S],
     ) -> Result<Vec<fastembed::SparseEmbedding>> {
-        if self.sparse_model.is_none() {
-            return Err(AppError::Internal(
+        let sparse_model = self.sparse_model.as_ref().ok_or_else(|| {
+            AppError::Internal(
                 "Sparse embeddings not enabled. Set sparse_enabled: true in config.".to_string(),
-            ));
-        }
+            )
+        })?;
 
         let texts_owned: Vec<String> = texts.iter().map(|s| s.as_ref().to_string()).collect();
         let batch_size = self.config.batch_size;
-        let sparse_model_type = self.config.sparse_model.to_fastembed_model();
-        let show_progress = self.config.show_download_progress;
 
-        // Get the lock for this sparse model type
-        let model_name = format!("{:?}", sparse_model_type);
-        let model_lock = get_model_lock(&model_name);
+        // Clone the Arc to move into the blocking task
+        let model = Arc::clone(sparse_model);
 
         spawn_blocking(move || {
-            // Acquire lock to prevent concurrent model downloads
-            let _guard = model_lock.lock().map_err(|e| {
+            // Lock the model for use
+            let mut model_guard = model.lock().map_err(|e| {
                 AppError::Internal(format!("Failed to acquire sparse model lock: {}", e))
             })?;
 
-            let mut model = fastembed::SparseTextEmbedding::try_new(
-                fastembed::SparseInitOptions::new(sparse_model_type)
-                    .with_show_download_progress(show_progress),
-            )
-            .map_err(|e| AppError::Internal(format!("Failed to initialize sparse model: {}", e)))?;
-
             let refs: Vec<&str> = texts_owned.iter().map(|s| s.as_str()).collect();
-            model
+            model_guard
                 .embed(refs, Some(batch_size))
                 .map_err(|e| AppError::Internal(format!("Sparse embedding failed: {}", e)))
         })

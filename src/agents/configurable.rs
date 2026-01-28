@@ -91,16 +91,7 @@ impl ConfigurableAgent {
 
     /// Convert agent name to AgentType
     fn name_to_type(name: &str) -> AgentType {
-        match name.to_lowercase().as_str() {
-            "router" => AgentType::Router,
-            "orchestrator" => AgentType::Orchestrator,
-            "product" => AgentType::Product,
-            "invoice" => AgentType::Invoice,
-            "sales" => AgentType::Sales,
-            "finance" => AgentType::Finance,
-            "hr" => AgentType::HR,
-            _ => AgentType::Orchestrator, // Default to orchestrator for unknown types
-        }
+        AgentType::from_string(name)
     }
 
     /// Get default system prompt for an agent type
@@ -235,7 +226,7 @@ impl Agent for ConfigurableAgent {
     }
 
     fn agent_type(&self) -> AgentType {
-        self.agent_type
+        self.agent_type.clone()
     }
 }
 
@@ -253,10 +244,17 @@ mod tests {
             ConfigurableAgent::name_to_type("PRODUCT"),
             AgentType::Product
         ));
+        // Unknown types now return Custom variant
         assert!(matches!(
             ConfigurableAgent::name_to_type("unknown"),
-            AgentType::Orchestrator
+            AgentType::Custom(_)
         ));
+        // Verify the custom name is preserved
+        if let AgentType::Custom(name) = ConfigurableAgent::name_to_type("my-custom-agent") {
+            assert_eq!(name, "my-custom-agent");
+        } else {
+            panic!("Expected Custom variant");
+        }
     }
 
     #[test]
@@ -302,6 +300,21 @@ mod tests {
             async fn stream(
                 &self,
                 _: &str,
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+            {
+                Ok(Box::new(futures::stream::empty()))
+            }
+            async fn stream_with_system(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+            {
+                Ok(Box::new(futures::stream::empty()))
+            }
+            async fn stream_with_history(
+                &self,
+                _: &[(String, String)],
             ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
             {
                 Ok(Box::new(futures::stream::empty()))
@@ -365,6 +378,21 @@ mod tests {
             async fn stream(
                 &self,
                 _: &str,
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+            {
+                Ok(Box::new(futures::stream::empty()))
+            }
+            async fn stream_with_system(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+            {
+                Ok(Box::new(futures::stream::empty()))
+            }
+            async fn stream_with_history(
+                &self,
+                _: &[(String, String)],
             ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
             {
                 Ok(Box::new(futures::stream::empty()))

@@ -1,24 +1,38 @@
 //! Agent Registry for managing configurable agents
 //!
 //! This module provides a registry for creating and managing agents
-//! based on TOML configuration.
+//! based on both TOML and TOON configuration.
+//!
+//! ## Configuration Precedence
+//!
+//! When looking up an agent by name:
+//! 1. TOML config (`ares.toml` [agents.*]) is checked first
+//! 2. TOON config (`config/agents/*.toon`) is checked second
+//!
+//! This allows TOML to override TOON configs for specific deployments.
 
 use crate::agents::configurable::ConfigurableAgent;
 use crate::llm::ProviderRegistry;
 use crate::tools::registry::ToolRegistry;
 use crate::types::{AgentType, AppError, Result};
 use crate::utils::toml_config::{AgentConfig, AresConfig};
+use crate::utils::toon_config::{DynamicConfigManager, ToonAgentConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Registry for managing agent configurations and creating agent instances
+///
+/// Supports both TOML-based static config and TOON-based dynamic config.
+/// TOML configs take precedence over TOON configs when both exist.
 pub struct AgentRegistry {
-    /// Agent configurations keyed by name
+    /// Agent configurations from TOML keyed by name
     configs: HashMap<String, AgentConfig>,
     /// Provider registry for creating LLM clients
     provider_registry: Arc<ProviderRegistry>,
     /// Tool registry shared across agents
     tool_registry: Arc<ToolRegistry>,
+    /// Optional TOON-based dynamic config manager for hot-reloadable agents
+    dynamic_config: Option<Arc<DynamicConfigManager>>,
 }
 
 impl AgentRegistry {
@@ -28,6 +42,7 @@ impl AgentRegistry {
             configs: HashMap::new(),
             provider_registry,
             tool_registry,
+            dynamic_config: None,
         }
     }
 
@@ -41,7 +56,28 @@ impl AgentRegistry {
             configs: config.agents.clone(),
             provider_registry,
             tool_registry,
+            dynamic_config: None,
         }
+    }
+
+    /// Create an agent registry with both TOML and TOON config support
+    pub fn with_dynamic_config(
+        config: &AresConfig,
+        provider_registry: Arc<ProviderRegistry>,
+        tool_registry: Arc<ToolRegistry>,
+        dynamic_config: Arc<DynamicConfigManager>,
+    ) -> Self {
+        Self {
+            configs: config.agents.clone(),
+            provider_registry,
+            tool_registry,
+            dynamic_config: Some(dynamic_config),
+        }
+    }
+
+    /// Set the dynamic config manager for TOON support
+    pub fn set_dynamic_config(&mut self, dynamic_config: Arc<DynamicConfigManager>) {
+        self.dynamic_config = Some(dynamic_config);
     }
 
     /// Register an agent configuration
@@ -49,31 +85,115 @@ impl AgentRegistry {
         self.configs.insert(name.to_string(), config);
     }
 
-    /// Get an agent configuration by name
+    /// Get an agent configuration by name (TOML only)
+    ///
+    /// Note: For lookups that include TOON, use `get_config_any` instead.
     pub fn get_config(&self, name: &str) -> Option<&AgentConfig> {
         self.configs.get(name)
     }
 
-    /// Get all agent names
-    pub fn agent_names(&self) -> Vec<&str> {
-        self.configs.keys().map(|s| s.as_str()).collect()
+    /// Get TOON agent config by name
+    pub fn get_toon_config(&self, name: &str) -> Option<ToonAgentConfig> {
+        self.dynamic_config.as_ref().and_then(|dc| dc.agent(name))
     }
 
-    /// Check if an agent exists
-    pub fn has_agent(&self, name: &str) -> bool {
+    /// Check if an agent exists in TOML config
+    fn has_toml_agent(&self, name: &str) -> bool {
         self.configs.contains_key(name)
+    }
+
+    /// Check if an agent exists in TOON config
+    fn has_toon_agent(&self, name: &str) -> bool {
+        self.dynamic_config
+            .as_ref()
+            .map(|dc| dc.agent(name).is_some())
+            .unwrap_or(false)
+    }
+
+    /// Get all agent names (from both TOML and TOON)
+    pub fn agent_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.configs.keys().cloned().collect();
+
+        // Add TOON agent names that aren't already in TOML
+        if let Some(dc) = &self.dynamic_config {
+            for name in dc.agent_names() {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+
+        names
+    }
+
+    /// Check if an agent exists (in either TOML or TOON config)
+    pub fn has_agent(&self, name: &str) -> bool {
+        self.has_toml_agent(name) || self.has_toon_agent(name)
+    }
+
+    /// Convert ToonAgentConfig to AgentConfig for unified handling
+    fn toon_to_agent_config(toon: &ToonAgentConfig) -> AgentConfig {
+        AgentConfig {
+            model: toon.model.clone(),
+            system_prompt: toon.system_prompt.clone(),
+            tools: toon.tools.clone(),
+            max_tool_iterations: toon.max_tool_iterations,
+            parallel_tools: toon.parallel_tools,
+            // Convert serde_json::Value to toml::Value
+            // For extra fields we just convert to string representation
+            extra: toon
+                .extra
+                .iter()
+                .filter_map(|(k, v)| {
+                    // Convert JSON value to TOML value
+                    match v {
+                        serde_json::Value::String(s) => {
+                            Some((k.clone(), toml::Value::String(s.clone())))
+                        }
+                        serde_json::Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                Some((k.clone(), toml::Value::Integer(i)))
+                            } else if let Some(f) = n.as_f64() {
+                                Some((k.clone(), toml::Value::Float(f)))
+                            } else {
+                                None
+                            }
+                        }
+                        serde_json::Value::Bool(b) => Some((k.clone(), toml::Value::Boolean(*b))),
+                        _ => {
+                            // For arrays/objects, convert to string
+                            Some((k.clone(), toml::Value::String(v.to_string())))
+                        }
+                    }
+                })
+                .collect(),
+        }
     }
 
     /// Create an agent instance by name
     ///
     /// This creates a new ConfigurableAgent with the appropriate LLM client
     /// and tool registry based on the agent's configuration.
+    ///
+    /// Lookup order:
+    /// 1. TOML config (`ares.toml` [agents.*])
+    /// 2. TOON config (`config/agents/*.toon`)
     pub async fn create_agent(&self, name: &str) -> Result<ConfigurableAgent> {
-        let config = self.get_config(name).ok_or_else(|| {
-            AppError::Configuration(format!("Agent '{}' not found in configuration", name))
-        })?;
+        // First check TOML config
+        if let Some(config) = self.get_config(name) {
+            return self.create_agent_from_config(name, config).await;
+        }
 
-        self.create_agent_from_config(name, config).await
+        // Then check TOON config
+        if let Some(toon_config) = self.get_toon_config(name) {
+            let config = Self::toon_to_agent_config(&toon_config);
+            return self.create_agent_from_config(name, &config).await;
+        }
+
+        Err(AppError::Configuration(format!(
+            "Agent '{}' not found in TOML or TOON configuration",
+            name
+        )))
     }
 
     /// Create an agent instance from an explicit configuration
@@ -105,41 +225,45 @@ impl AgentRegistry {
 
     /// Create an agent instance for a specific AgentType
     pub async fn create_agent_by_type(&self, agent_type: AgentType) -> Result<ConfigurableAgent> {
-        let name = Self::type_to_name(agent_type);
+        let name = Self::type_to_name(&agent_type);
         self.create_agent(name).await
     }
 
     /// Convert AgentType to agent name
-    pub fn type_to_name(agent_type: AgentType) -> &'static str {
-        match agent_type {
-            AgentType::Router => "router",
-            AgentType::Orchestrator => "orchestrator",
-            AgentType::Product => "product",
-            AgentType::Invoice => "invoice",
-            AgentType::Sales => "sales",
-            AgentType::Finance => "finance",
-            AgentType::HR => "hr",
+    pub fn type_to_name(agent_type: &AgentType) -> &str {
+        agent_type.as_str()
+    }
+
+    /// Get the model name for an agent (checks both TOML and TOON)
+    pub fn get_agent_model(&self, name: &str) -> Option<String> {
+        // Check TOML first
+        if let Some(config) = self.configs.get(name) {
+            return Some(config.model.clone());
         }
+        // Check TOON
+        self.get_toon_config(name).map(|c| c.model)
     }
 
-    /// Get the model name for an agent
-    pub fn get_agent_model(&self, name: &str) -> Option<&str> {
-        self.configs.get(name).map(|c| c.model.as_str())
-    }
-
-    /// Get the tools for an agent
-    pub fn get_agent_tools(&self, name: &str) -> Vec<&str> {
-        self.configs
-            .get(name)
-            .map(|c| c.tools.iter().map(|s| s.as_str()).collect())
+    /// Get the tools for an agent (checks both TOML and TOON)
+    pub fn get_agent_tools(&self, name: &str) -> Vec<String> {
+        // Check TOML first
+        if let Some(config) = self.configs.get(name) {
+            return config.tools.clone();
+        }
+        // Check TOON
+        self.get_toon_config(name)
+            .map(|c| c.tools)
             .unwrap_or_default()
     }
 
-    /// Get the system prompt for an agent (if custom)
-    pub fn get_agent_system_prompt(&self, name: &str) -> Option<&str> {
-        self.configs
-            .get(name)
-            .and_then(|c| c.system_prompt.as_deref())
+    /// Get the system prompt for an agent (checks both TOML and TOON)
+    pub fn get_agent_system_prompt(&self, name: &str) -> Option<String> {
+        // Check TOML first
+        if let Some(config) = self.configs.get(name) {
+            return config.system_prompt.clone();
+        }
+        // Check TOON
+        self.get_toon_config(name).and_then(|c| c.system_prompt)
     }
 }
 
@@ -148,6 +272,7 @@ pub struct AgentRegistryBuilder {
     configs: HashMap<String, AgentConfig>,
     provider_registry: Option<Arc<ProviderRegistry>>,
     tool_registry: Option<Arc<ToolRegistry>>,
+    dynamic_config: Option<Arc<DynamicConfigManager>>,
 }
 
 impl AgentRegistryBuilder {
@@ -157,6 +282,7 @@ impl AgentRegistryBuilder {
             configs: HashMap::new(),
             provider_registry: None,
             tool_registry: None,
+            dynamic_config: None,
         }
     }
 
@@ -169,6 +295,12 @@ impl AgentRegistryBuilder {
     /// Set the tool registry
     pub fn with_tool_registry(mut self, registry: Arc<ToolRegistry>) -> Self {
         self.tool_registry = Some(registry);
+        self
+    }
+
+    /// Set the dynamic config manager for TOON support
+    pub fn with_dynamic_config(mut self, dynamic_config: Arc<DynamicConfigManager>) -> Self {
+        self.dynamic_config = Some(dynamic_config);
         self
     }
 
@@ -198,6 +330,7 @@ impl AgentRegistryBuilder {
             configs: self.configs,
             provider_registry,
             tool_registry,
+            dynamic_config: self.dynamic_config,
         })
     }
 }
@@ -307,8 +440,8 @@ mod tests {
 
         let names = registry.agent_names();
         assert_eq!(names.len(), 2);
-        assert!(names.contains(&"agent1"));
-        assert!(names.contains(&"agent2"));
+        assert!(names.contains(&"agent1".to_string()));
+        assert!(names.contains(&"agent2".to_string()));
     }
 
     #[test]
@@ -329,7 +462,10 @@ mod tests {
             },
         );
 
-        assert_eq!(registry.get_agent_model("test"), Some("default"));
+        assert_eq!(
+            registry.get_agent_model("test"),
+            Some("default".to_string())
+        );
         assert_eq!(registry.get_agent_model("nonexistent"), None);
     }
 
@@ -365,7 +501,7 @@ mod tests {
 
         let tools = registry.get_agent_tools("with_tools");
         assert_eq!(tools.len(), 2);
-        assert!(tools.contains(&"calculator"));
+        assert!(tools.contains(&"calculator".to_string()));
 
         let no_tools = registry.get_agent_tools("no_tools");
         assert!(no_tools.is_empty());

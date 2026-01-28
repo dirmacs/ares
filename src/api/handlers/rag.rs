@@ -29,6 +29,23 @@ use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 // ============================================================================
+// User Isolation
+// ============================================================================
+
+/// Prefix collection name with user ID for isolation.
+/// All RAG collections are scoped per-user to prevent data leakage.
+fn user_scoped_collection(user_id: &str, collection: &str) -> String {
+    format!("user_{}_{}", user_id, collection)
+}
+
+/// Extract user-friendly collection name from scoped name.
+/// Returns None if the collection doesn't belong to the user.
+fn extract_user_collection(user_id: &str, scoped_name: &str) -> Option<String> {
+    let prefix = format!("user_{}_", user_id);
+    scoped_name.strip_prefix(&prefix).map(|s| s.to_string())
+}
+
+// ============================================================================
 // Shared RAG Services
 // ============================================================================
 
@@ -89,7 +106,7 @@ async fn get_vector_store() -> Result<Arc<AresVectorStore>> {
 )]
 pub async fn ingest(
     State(_state): State<AppState>,
-    AuthUser(_claims): AuthUser,
+    AuthUser(claims): AuthUser,
     Json(payload): Json<RagIngestRequest>,
 ) -> Result<Json<RagIngestResponse>> {
     let start = Instant::now();
@@ -101,6 +118,9 @@ pub async fn ingest(
     if payload.content.is_empty() {
         return Err(AppError::InvalidInput("Content required".into()));
     }
+
+    // Scope collection to user for isolation
+    let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
     // Get services
     let embedding_service = get_embedding_service().await?;
@@ -118,7 +138,7 @@ pub async fn ingest(
     let chunker = match strategy {
         ChunkingStrategy::Word => TextChunker::with_word_chunking(200, 50),
         ChunkingStrategy::Semantic => TextChunker::with_semantic_chunking(500),
-        ChunkingStrategy::Character => TextChunker::with_word_chunking(200, 50),
+        ChunkingStrategy::Character => TextChunker::with_character_chunking(500, 100),
     };
 
     // Chunk the content
@@ -130,9 +150,9 @@ pub async fn ingest(
 
     // Ensure collection exists
     let dimensions = embedding_service.dimensions();
-    if !vector_store.collection_exists(&payload.collection).await? {
+    if !vector_store.collection_exists(&scoped_collection).await? {
         vector_store
-            .create_collection(&payload.collection, dimensions)
+            .create_collection(&scoped_collection, dimensions)
             .await?;
     }
 
@@ -163,10 +183,12 @@ pub async fn ingest(
     }
 
     // Upsert to vector store
-    let count = vector_store.upsert(&payload.collection, &documents).await?;
+    let count = vector_store.upsert(&scoped_collection, &documents).await?;
 
     tracing::info!(
+        user_id = %claims.sub,
         collection = %payload.collection,
+        scoped_collection = %scoped_collection,
         chunks = count,
         duration_ms = start.elapsed().as_millis() as u64,
         "Document ingested"
@@ -175,7 +197,7 @@ pub async fn ingest(
     Ok(Json(RagIngestResponse {
         chunks_created: count,
         document_ids,
-        collection: payload.collection,
+        collection: payload.collection, // Return user-facing name, not scoped
     }))
 }
 
@@ -202,7 +224,7 @@ pub async fn ingest(
 )]
 pub async fn search(
     State(_state): State<AppState>,
-    AuthUser(_claims): AuthUser,
+    AuthUser(claims): AuthUser,
     Json(payload): Json<RagSearchRequest>,
 ) -> Result<Json<RagSearchResponse>> {
     let start = Instant::now();
@@ -215,12 +237,15 @@ pub async fn search(
         return Err(AppError::InvalidInput("Query required".into()));
     }
 
+    // Scope collection to user for isolation
+    let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
+
     // Get services
     let embedding_service = get_embedding_service().await?;
     let vector_store = get_vector_store().await?;
 
     // Check collection exists
-    if !vector_store.collection_exists(&payload.collection).await? {
+    if !vector_store.collection_exists(&scoped_collection).await? {
         return Err(AppError::NotFound(format!(
             "Collection '{}' not found",
             payload.collection
@@ -241,7 +266,7 @@ pub async fn search(
     // Perform vector search
     let vector_results = vector_store
         .search(
-            &payload.collection,
+            &scoped_collection,
             &query_embedding,
             payload.limit * 2, // Fetch extra for filtering/reranking
             payload.threshold,
@@ -364,8 +389,8 @@ pub async fn search(
     let strategy_name = format!("{:?}", strategy).to_lowercase();
 
     tracing::info!(
+        user_id = %claims.sub,
         collection = %payload.collection,
-        query = %payload.query,
         strategy = %strategy_name,
         results = total,
         reranked = reranked,
@@ -403,7 +428,7 @@ pub async fn search(
 )]
 pub async fn delete_collection(
     State(_state): State<AppState>,
-    AuthUser(_claims): AuthUser,
+    AuthUser(claims): AuthUser,
     Json(payload): Json<RagDeleteCollectionRequest>,
 ) -> Result<Json<RagDeleteCollectionResponse>> {
     // Validate input
@@ -411,10 +436,13 @@ pub async fn delete_collection(
         return Err(AppError::InvalidInput("Collection name required".into()));
     }
 
+    // Scope collection to user for isolation
+    let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
+
     let vector_store = get_vector_store().await?;
 
     // Check collection exists
-    if !vector_store.collection_exists(&payload.collection).await? {
+    if !vector_store.collection_exists(&scoped_collection).await? {
         return Err(AppError::NotFound(format!(
             "Collection '{}' not found",
             payload.collection
@@ -422,13 +450,14 @@ pub async fn delete_collection(
     }
 
     // Get document count before deletion
-    let stats = vector_store.collection_stats(&payload.collection).await?;
+    let stats = vector_store.collection_stats(&scoped_collection).await?;
     let doc_count = stats.document_count;
 
     // Delete the collection
-    vector_store.delete_collection(&payload.collection).await?;
+    vector_store.delete_collection(&scoped_collection).await?;
 
     tracing::info!(
+        user_id = %claims.sub,
         collection = %payload.collection,
         documents = doc_count,
         "Collection deleted"
@@ -436,7 +465,7 @@ pub async fn delete_collection(
 
     Ok(Json(RagDeleteCollectionResponse {
         success: true,
-        collection: payload.collection,
+        collection: payload.collection, // Return user-facing name
         documents_deleted: doc_count,
     }))
 }
@@ -459,11 +488,23 @@ pub async fn delete_collection(
 )]
 pub async fn list_collections(
     State(_state): State<AppState>,
-    AuthUser(_claims): AuthUser,
+    AuthUser(claims): AuthUser,
 ) -> Result<Json<Vec<crate::db::CollectionInfo>>> {
     let vector_store = get_vector_store().await?;
-    let collections = vector_store.list_collections().await?;
-    Ok(Json(collections))
+    let all_collections = vector_store.list_collections().await?;
+
+    // Filter to only collections belonging to this user and unscope names
+    let user_collections: Vec<_> = all_collections
+        .into_iter()
+        .filter_map(|mut info| {
+            extract_user_collection(&claims.sub, &info.name).map(|user_name| {
+                info.name = user_name;
+                info
+            })
+        })
+        .collect();
+
+    Ok(Json(user_collections))
 }
 
 #[cfg(test)]

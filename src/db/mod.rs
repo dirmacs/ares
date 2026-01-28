@@ -73,5 +73,5 @@ pub use ares_vector::AresVectorStore;
 #[cfg(feature = "lancedb")]
 pub use lancedb::LanceDBStore;
 #[cfg(feature = "qdrant")]
-pub use qdrant::QdrantClient;
+pub use qdrant::QdrantVectorStore;
 pub use turso::TursoClient;

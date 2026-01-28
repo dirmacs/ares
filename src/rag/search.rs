@@ -6,8 +6,22 @@
 //! - **BM25 search**: Sparse lexical matching (TF-IDF variant)
 //! - **Fuzzy search**: Approximate string matching for typo tolerance
 //! - **Hybrid search**: Combines multiple strategies with RRF fusion
+//!
+//! # Persistence
+//!
+//! The BM25 and fuzzy indices support persistence via `save()` and `load()` methods.
+//! This allows the indices to survive server restarts without re-indexing.
+//!
+//! ```ignore
+//! // Save index to disk
+//! bm25_index.save("data/bm25_index.json")?;
+//!
+//! // Load index from disk
+//! let bm25_index = Bm25Index::load("data/bm25_index.json")?;
+//! ```
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -146,7 +160,9 @@ impl Default for HybridWeights {
 // ============================================================================
 
 /// BM25 search index for lexical matching
-#[derive(Debug, Clone, Default)]
+///
+/// This index supports persistence via `save()` and `load()` methods.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Bm25Index {
     /// Document ID -> tokenized content
     documents: HashMap<String, Vec<String>>,
@@ -336,6 +352,41 @@ impl Bm25Index {
         self.doc_count = 0;
         self.avg_doc_length = 0.0;
     }
+
+    /// Save the index to a file (JSON format)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written or serialization fails.
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let json = serde_json::to_string(self)
+            .map_err(|e| AppError::Internal(format!("Failed to serialize BM25 index: {}", e)))?;
+        std::fs::write(path, json)
+            .map_err(|e| AppError::Internal(format!("Failed to write BM25 index file: {}", e)))?;
+        Ok(())
+    }
+
+    /// Load the index from a file (JSON format)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or deserialization fails.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| AppError::Internal(format!("Failed to read BM25 index file: {}", e)))?;
+        let index: Self = serde_json::from_str(&json)
+            .map_err(|e| AppError::Internal(format!("Failed to deserialize BM25 index: {}", e)))?;
+        Ok(index)
+    }
+
+    /// Load the index from a file if it exists, otherwise return a new empty index
+    pub fn load_or_new<P: AsRef<Path>>(path: P) -> Self {
+        if path.as_ref().exists() {
+            Self::load(path).unwrap_or_else(|_| Self::new())
+        } else {
+            Self::new()
+        }
+    }
 }
 
 // ============================================================================
@@ -343,7 +394,9 @@ impl Bm25Index {
 // ============================================================================
 
 /// Fuzzy search using Levenshtein distance
-#[derive(Debug, Clone, Default)]
+///
+/// This index supports persistence via `save()` and `load()` methods.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FuzzyIndex {
     /// Document ID -> content for fuzzy matching
     documents: HashMap<String, String>,
@@ -575,6 +628,41 @@ impl FuzzyIndex {
     pub fn vocabulary_size(&self) -> usize {
         self.vocabulary.len()
     }
+
+    /// Save the index to a file (JSON format)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written or serialization fails.
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let json = serde_json::to_string(self)
+            .map_err(|e| AppError::Internal(format!("Failed to serialize fuzzy index: {}", e)))?;
+        std::fs::write(path, json)
+            .map_err(|e| AppError::Internal(format!("Failed to write fuzzy index file: {}", e)))?;
+        Ok(())
+    }
+
+    /// Load the index from a file (JSON format)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or deserialization fails.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| AppError::Internal(format!("Failed to read fuzzy index file: {}", e)))?;
+        let index: Self = serde_json::from_str(&json)
+            .map_err(|e| AppError::Internal(format!("Failed to deserialize fuzzy index: {}", e)))?;
+        Ok(index)
+    }
+
+    /// Load the index from a file if it exists, otherwise return a new empty index
+    pub fn load_or_new<P: AsRef<Path>>(path: P) -> Self {
+        if path.as_ref().exists() {
+            Self::load(path).unwrap_or_else(|_| Self::new())
+        } else {
+            Self::new()
+        }
+    }
 }
 
 // ============================================================================
@@ -631,6 +719,10 @@ impl RrfFusion {
 // ============================================================================
 
 /// Unified search engine combining multiple strategies
+///
+/// This engine supports persistence via `save()` and `load()` methods.
+/// The engine stores both BM25 and fuzzy indices in separate files within
+/// a directory.
 #[derive(Debug, Default)]
 pub struct SearchEngine {
     /// BM25 lexical index
@@ -752,6 +844,54 @@ impl SearchEngine {
     /// Check if the index is empty
     pub fn is_empty(&self) -> bool {
         self.bm25.is_empty()
+    }
+
+    /// Save all indices to a directory
+    ///
+    /// Creates the directory if it doesn't exist. Saves:
+    /// - `bm25_index.json` - BM25 lexical index
+    /// - `fuzzy_index.json` - Fuzzy search index
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory cannot be created or files cannot be written.
+    pub fn save<P: AsRef<Path>>(&self, dir: P) -> Result<()> {
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir).map_err(|e| {
+            AppError::Internal(format!("Failed to create search index directory: {}", e))
+        })?;
+
+        self.bm25.save(dir.join("bm25_index.json"))?;
+        self.fuzzy.save(dir.join("fuzzy_index.json"))?;
+
+        Ok(())
+    }
+
+    /// Load all indices from a directory
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the files cannot be read or deserialization fails.
+    pub fn load<P: AsRef<Path>>(dir: P) -> Result<Self> {
+        let dir = dir.as_ref();
+        let bm25 = Bm25Index::load(dir.join("bm25_index.json"))?;
+        let fuzzy = FuzzyIndex::load(dir.join("fuzzy_index.json"))?;
+
+        Ok(Self {
+            bm25,
+            fuzzy,
+            rrf: RrfFusion::default(),
+        })
+    }
+
+    /// Load indices from a directory if they exist, otherwise return a new empty engine
+    pub fn load_or_new<P: AsRef<Path>>(dir: P) -> Self {
+        let dir = dir.as_ref();
+        if dir.exists() {
+            Self::load(dir).unwrap_or_else(|_| Self::new())
+        } else {
+            Self::new()
+        }
     }
 }
 
@@ -1093,5 +1233,132 @@ mod tests {
         assert!(result.is_some());
         let (corrected, _) = result.unwrap();
         assert_eq!(corrected, "programming"); // lowercase
+    }
+
+    // ========================================================================
+    // Persistence Tests
+    // ========================================================================
+
+    #[test]
+    fn test_bm25_save_load() {
+        let temp_dir = std::env::temp_dir().join("ares_test_bm25");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let path = temp_dir.join("bm25_index.json");
+
+        // Create and populate index
+        let mut index = Bm25Index::new();
+        index.add_document("doc1", "The quick brown fox");
+        index.add_document("doc2", "A lazy dog sleeps");
+        assert_eq!(index.len(), 2);
+
+        // Save to disk
+        index.save(&path).unwrap();
+
+        // Load from disk
+        let loaded = Bm25Index::load(&path).unwrap();
+        assert_eq!(loaded.len(), 2);
+
+        // Verify search still works
+        let results = loaded.search("quick brown", 10);
+        assert!(!results.is_empty());
+        assert_eq!(results[0].0, "doc1");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_fuzzy_save_load() {
+        let temp_dir = std::env::temp_dir().join("ares_test_fuzzy");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let path = temp_dir.join("fuzzy_index.json");
+
+        // Create and populate index
+        let mut index = FuzzyIndex::new();
+        index.add_document("doc1", "machine learning algorithms");
+        index.add_document("doc2", "deep neural networks");
+        assert_eq!(index.len(), 2);
+
+        // Save to disk
+        index.save(&path).unwrap();
+
+        // Load from disk
+        let loaded = FuzzyIndex::load(&path).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded.vocabulary_size(), index.vocabulary_size());
+
+        // Verify search still works
+        let results = loaded.search("machine", 10);
+        assert!(!results.is_empty());
+        assert_eq!(results[0].0, "doc1");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_search_engine_save_load() {
+        let temp_dir = std::env::temp_dir().join("ares_test_engine");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        // Create and populate engine
+        let mut engine = SearchEngine::new();
+        let docs = vec![
+            Document {
+                id: "doc1".to_string(),
+                content: "Rust programming language".to_string(),
+                metadata: Default::default(),
+                embedding: None,
+            },
+            Document {
+                id: "doc2".to_string(),
+                content: "Python scripting language".to_string(),
+                metadata: Default::default(),
+                embedding: None,
+            },
+        ];
+        engine.index_documents(&docs);
+        assert_eq!(engine.len(), 2);
+
+        // Save to disk
+        engine.save(&temp_dir).unwrap();
+
+        // Load from disk
+        let loaded = SearchEngine::load(&temp_dir).unwrap();
+        assert_eq!(loaded.len(), 2);
+
+        // Verify BM25 search still works
+        let bm25_results = loaded.search_bm25("Rust programming", 10);
+        assert!(!bm25_results.is_empty());
+        assert_eq!(bm25_results[0].0, "doc1");
+
+        // Verify fuzzy search still works
+        let fuzzy_results = loaded.search_fuzzy("rust", 10);
+        assert!(!fuzzy_results.is_empty());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_load_or_new_missing_file() {
+        let path = std::env::temp_dir().join("nonexistent_bm25_index.json");
+        let _ = std::fs::remove_file(&path); // Ensure it doesn't exist
+
+        // Should return empty index
+        let index = Bm25Index::load_or_new(&path);
+        assert!(index.is_empty());
+    }
+
+    #[test]
+    fn test_search_engine_load_or_new() {
+        let temp_dir = std::env::temp_dir().join("ares_test_load_or_new");
+        let _ = std::fs::remove_dir_all(&temp_dir); // Ensure it doesn't exist
+
+        // Should return empty engine
+        let engine = SearchEngine::load_or_new(&temp_dir);
+        assert!(engine.is_empty());
     }
 }

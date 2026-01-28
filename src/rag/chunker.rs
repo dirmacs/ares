@@ -154,6 +154,16 @@ impl TextChunker {
         })
     }
 
+    /// Create with character-based chunking
+    pub fn with_character_chunking(chunk_size: usize, chunk_overlap: usize) -> Self {
+        Self::new(ChunkerConfig {
+            strategy: ChunkingStrategy::Character,
+            chunk_size,
+            chunk_overlap,
+            min_chunk_size: default_min_chunk_size(),
+        })
+    }
+
     /// Chunk text and return simple string vector (backward compatible)
     pub fn chunk(&self, text: &str) -> Vec<String> {
         self.chunk_with_metadata(text)

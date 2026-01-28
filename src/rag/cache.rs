@@ -14,6 +14,11 @@
 //! - Model-specific embeddings (different models produce different vectors)
 //! - Consistent keys across restarts
 //!
+//! # Implementation
+//!
+//! Uses the `lru` crate for O(1) get/put operations with proper LRU eviction.
+//! The cache is thread-safe via `parking_lot::Mutex`.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -36,11 +41,12 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::RwLock;
+use lru::LruCache;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -152,16 +158,11 @@ pub trait EmbeddingCache: Send + Sync {
 // LRU Cache Entry
 // ============================================================================
 
-/// A cache entry with metadata for LRU eviction
+/// A cache entry with metadata for expiration
 #[derive(Debug, Clone)]
 struct CacheEntry {
     /// The cached embedding vector
     embedding: Vec<f32>,
-    /// When this entry was created (kept for potential future use in stats/debugging)
-    #[allow(dead_code)]
-    created_at: Instant,
-    /// When this entry was last accessed
-    last_accessed: Instant,
     /// Optional expiry time
     expires_at: Option<Instant>,
     /// Size in bytes (approximate)
@@ -174,8 +175,6 @@ impl CacheEntry {
         let size_bytes = embedding.len() * std::mem::size_of::<f32>();
         Self {
             embedding,
-            created_at: now,
-            last_accessed: now,
             expires_at: ttl.map(|d| now + d),
             size_bytes,
         }
@@ -186,32 +185,31 @@ impl CacheEntry {
             .map(|exp| Instant::now() > exp)
             .unwrap_or(false)
     }
-
-    fn touch(&mut self) {
-        self.last_accessed = Instant::now();
-    }
 }
 
 // ============================================================================
 // LRU Embedding Cache
 // ============================================================================
 
+/// Default maximum number of entries in the LRU cache
+const DEFAULT_MAX_ENTRIES: usize = 10_000;
+
 /// In-memory LRU cache for embeddings
 ///
-/// Uses a HashMap with LRU eviction when the cache exceeds the configured
-/// maximum size. Thread-safe via `parking_lot::RwLock`.
+/// Uses the `lru` crate for O(1) get/put operations with proper LRU eviction.
+/// Thread-safe via `parking_lot::Mutex`.
 ///
 /// # Memory Management
 ///
-/// The cache tracks approximate memory usage based on embedding dimensions.
-/// When the cache exceeds `max_size_bytes`, the least recently used entries
-/// are evicted until the cache is under the limit.
+/// The cache limits entries by count (not bytes) for simplicity and O(1) operations.
+/// The `max_size_bytes` config is used to estimate max entries based on average
+/// embedding size (assuming 384-dimensional embeddings = 1536 bytes each).
 pub struct LruEmbeddingCache {
-    /// The cache storage
-    cache: RwLock<HashMap<String, CacheEntry>>,
+    /// The LRU cache storage (key -> CacheEntry)
+    cache: Mutex<LruCache<String, CacheEntry>>,
     /// Configuration
     config: CacheConfig,
-    /// Current size in bytes
+    /// Current size in bytes (approximate)
     current_size: AtomicU64,
     /// Cache hit counter
     hits: AtomicU64,
@@ -224,8 +222,15 @@ pub struct LruEmbeddingCache {
 impl LruEmbeddingCache {
     /// Create a new LRU embedding cache with the given configuration
     pub fn new(config: CacheConfig) -> Self {
+        // Estimate max entries from max_size_bytes
+        // Assume average embedding is 384 dimensions = 1536 bytes
+        let avg_entry_size = 384 * std::mem::size_of::<f32>(); // 1536 bytes
+        let max_entries = (config.max_size_bytes as usize / avg_entry_size).max(100);
+        let capacity = NonZeroUsize::new(max_entries)
+            .unwrap_or(NonZeroUsize::new(DEFAULT_MAX_ENTRIES).unwrap());
+
         Self {
-            cache: RwLock::new(HashMap::new()),
+            cache: Mutex::new(LruCache::new(capacity)),
             config,
             current_size: AtomicU64::new(0),
             hits: AtomicU64::new(0),
@@ -247,44 +252,35 @@ impl LruEmbeddingCache {
         })
     }
 
-    /// Evict least recently used entries until we're under the size limit
-    fn evict_lru(&self, needed_bytes: usize) {
-        let mut cache = self.cache.write();
-        let target_size = self
-            .config
-            .max_size_bytes
-            .saturating_sub(needed_bytes as u64);
-
-        while self.current_size.load(Ordering::Relaxed) > target_size && !cache.is_empty() {
-            // Find the least recently used entry
-            let lru_key = cache
-                .iter()
-                .min_by_key(|(_, entry)| entry.last_accessed)
-                .map(|(key, _)| key.clone());
-
-            if let Some(key) = lru_key {
-                if let Some(entry) = cache.remove(&key) {
-                    self.current_size
-                        .fetch_sub(entry.size_bytes as u64, Ordering::Relaxed);
-                    self.evictions.fetch_add(1, Ordering::Relaxed);
-                }
-            } else {
-                break;
-            }
+    /// Create a cache with a specific max entry count
+    pub fn with_max_entries(max_entries: usize) -> Self {
+        let capacity = NonZeroUsize::new(max_entries)
+            .unwrap_or(NonZeroUsize::new(DEFAULT_MAX_ENTRIES).unwrap());
+        Self {
+            cache: Mutex::new(LruCache::new(capacity)),
+            config: CacheConfig::default(),
+            current_size: AtomicU64::new(0),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            evictions: AtomicU64::new(0),
         }
     }
 
     /// Remove expired entries from the cache
     pub fn cleanup_expired(&self) {
-        let mut cache = self.cache.write();
-        let expired_keys: Vec<String> = cache
-            .iter()
-            .filter(|(_, entry)| entry.is_expired())
-            .map(|(key, _)| key.clone())
-            .collect();
+        let mut cache = self.cache.lock();
+        let mut expired_keys = Vec::new();
 
+        // Collect expired keys (can't remove while iterating)
+        for (key, entry) in cache.iter() {
+            if entry.is_expired() {
+                expired_keys.push(key.clone());
+            }
+        }
+
+        // Remove expired entries
         for key in expired_keys {
-            if let Some(entry) = cache.remove(&key) {
+            if let Some(entry) = cache.pop(&key) {
                 self.current_size
                     .fetch_sub(entry.size_bytes as u64, Ordering::Relaxed);
             }
@@ -298,12 +294,12 @@ impl LruEmbeddingCache {
 
     /// Get the number of entries in the cache
     pub fn len(&self) -> usize {
-        self.cache.read().len()
+        self.cache.lock().len()
     }
 
     /// Check if the cache is empty
     pub fn is_empty(&self) -> bool {
-        self.cache.read().is_empty()
+        self.cache.lock().is_empty()
     }
 }
 
@@ -313,30 +309,18 @@ impl EmbeddingCache for LruEmbeddingCache {
             return None;
         }
 
-        // First try with a read lock
-        {
-            let cache = self.cache.read();
-            if let Some(entry) = cache.get(key) {
-                if entry.is_expired() {
-                    self.misses.fetch_add(1, Ordering::Relaxed);
-                    return None;
-                }
-                // Need to update last_accessed, so we'll do it with a write lock below
-            } else {
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                return None;
-            }
-        }
+        let mut cache = self.cache.lock();
 
-        // Update last_accessed with write lock
-        let mut cache = self.cache.write();
-        if let Some(entry) = cache.get_mut(key) {
+        // get() in lru crate automatically promotes to most recently used
+        if let Some(entry) = cache.get(key) {
             if entry.is_expired() {
-                cache.remove(key);
+                // Remove expired entry
+                let entry = cache.pop(key).unwrap();
+                self.current_size
+                    .fetch_sub(entry.size_bytes as u64, Ordering::Relaxed);
                 self.misses.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
-            entry.touch();
             self.hits.fetch_add(1, Ordering::Relaxed);
             Some(entry.embedding.clone())
         } else {
@@ -353,32 +337,39 @@ impl EmbeddingCache for LruEmbeddingCache {
         let entry = CacheEntry::new(embedding, ttl.or(self.config.default_ttl));
         let entry_size = entry.size_bytes;
 
-        // Check if we need to evict
-        if self.current_size.load(Ordering::Relaxed) + entry_size as u64
-            > self.config.max_size_bytes
-        {
-            self.evict_lru(entry_size);
-        }
+        let mut cache = self.cache.lock();
 
-        let mut cache = self.cache.write();
-
-        // Remove old entry if exists
-        if let Some(old_entry) = cache.remove(key) {
+        // Remove old entry if exists (to update size tracking)
+        if let Some(old_entry) = cache.pop(key) {
             self.current_size
                 .fetch_sub(old_entry.size_bytes as u64, Ordering::Relaxed);
         }
 
-        // Insert new entry
+        // Check if cache is at capacity before push
+        let was_at_capacity = cache.len() == cache.cap().get();
+
+        // Push new entry (LRU eviction happens automatically if at capacity)
+        if let Some((_, evicted)) = cache.push(key.to_string(), entry) {
+            // An entry was evicted
+            self.current_size
+                .fetch_sub(evicted.size_bytes as u64, Ordering::Relaxed);
+            self.evictions.fetch_add(1, Ordering::Relaxed);
+        } else if was_at_capacity {
+            // We were at capacity but push didn't return evicted (shouldn't happen)
+            // but handle it just in case
+            self.evictions.fetch_add(1, Ordering::Relaxed);
+        }
+
+        // Update size
         self.current_size
             .fetch_add(entry_size as u64, Ordering::Relaxed);
-        cache.insert(key.to_string(), entry);
 
         Ok(())
     }
 
     fn invalidate(&self, key: &str) -> Result<()> {
-        let mut cache = self.cache.write();
-        if let Some(entry) = cache.remove(key) {
+        let mut cache = self.cache.lock();
+        if let Some(entry) = cache.pop(key) {
             self.current_size
                 .fetch_sub(entry.size_bytes as u64, Ordering::Relaxed);
         }
@@ -386,7 +377,7 @@ impl EmbeddingCache for LruEmbeddingCache {
     }
 
     fn clear(&self) -> Result<()> {
-        let mut cache = self.cache.write();
+        let mut cache = self.cache.lock();
         cache.clear();
         self.current_size.store(0, Ordering::Relaxed);
         Ok(())
@@ -397,7 +388,7 @@ impl EmbeddingCache for LruEmbeddingCache {
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
             size_bytes: self.current_size.load(Ordering::Relaxed),
-            entry_count: self.cache.read().len(),
+            entry_count: self.cache.lock().len(),
             evictions: self.evictions.load(Ordering::Relaxed),
         }
     }

@@ -48,6 +48,7 @@ async fn create_live_client() -> Box<dyn LLMClient> {
     let provider = Provider::Ollama {
         base_url: get_ollama_url(),
         model: get_model(),
+        params: Default::default(),
     };
     provider
         .create_client()
@@ -258,6 +259,7 @@ async fn test_live_ollama_invalid_model() {
     let provider = Provider::Ollama {
         base_url: get_ollama_url(),
         model: "nonexistent-model-that-does-not-exist-12345".to_string(),
+        params: Default::default(),
     };
 
     let client = provider

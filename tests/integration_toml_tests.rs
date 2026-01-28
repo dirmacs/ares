@@ -166,10 +166,10 @@ fn test_agent_registry_from_config() {
 
     // Verify agent configuration
     let model = agent_registry.get_agent_model("test-agent");
-    assert_eq!(model, Some("test-model"));
+    assert_eq!(model, Some("test-model".to_string()));
 
     let tools = agent_registry.get_agent_tools("test-agent");
-    assert!(tools.contains(&"calculator"));
+    assert!(tools.contains(&"calculator".to_string()));
 }
 
 #[test]
@@ -376,6 +376,6 @@ fn test_full_integration_config_to_agent() {
     // 5. Registry can provide agent model
     assert_eq!(
         agent_registry.get_agent_model("test-agent"),
-        Some("test-model")
+        Some("test-model".to_string())
     );
 }

@@ -19,6 +19,7 @@ pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
             "/auth/refresh",
             post(crate::api::handlers::auth::refresh_token),
         )
+        .route("/auth/logout", post(crate::api::handlers::auth::logout))
         .route("/agents", get(crate::api::handlers::agents::list_agents));
 
     let protected_routes = Router::new()

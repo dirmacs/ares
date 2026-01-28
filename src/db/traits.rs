@@ -148,8 +148,11 @@ pub trait DatabaseClient: Send + Sync {
     /// Validate and get session (returns user_id if valid)
     async fn validate_session(&self, token_hash: &str) -> Result<Option<String>>;
 
-    /// Delete a session
+    /// Delete a session by ID
     async fn delete_session(&self, id: &str) -> Result<()>;
+
+    /// Delete a session by token hash (for refresh token invalidation)
+    async fn delete_session_by_token_hash(&self, token_hash: &str) -> Result<()>;
 
     // ============== Conversation Operations ==============
 
@@ -296,6 +299,18 @@ impl DatabaseClient for super::turso::TursoClient {
         conn.execute("DELETE FROM sessions WHERE id = ?", [id])
             .await
             .map_err(|e| AppError::Database(format!("Failed to delete session: {}", e)))?;
+
+        Ok(())
+    }
+
+    async fn delete_session_by_token_hash(&self, token_hash: &str) -> Result<()> {
+        let conn = self.operation_conn().await?;
+
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", [token_hash])
+            .await
+            .map_err(|e| {
+                AppError::Database(format!("Failed to delete session by token hash: {}", e))
+            })?;
 
         Ok(())
     }

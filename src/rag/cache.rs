@@ -516,18 +516,17 @@ mod tests {
 
     #[test]
     fn test_cache_lru_eviction() {
-        // Create a small cache (32 bytes max)
-        let cache = LruEmbeddingCache::with_max_size(32);
+        // Create a small cache with exactly 2 entries to test LRU eviction
+        let cache = LruEmbeddingCache::with_max_entries(2);
 
-        // Each f32 is 4 bytes, so 8 floats = 32 bytes
-        let embedding1 = vec![1.0, 2.0, 3.0, 4.0]; // 16 bytes
-        let embedding2 = vec![5.0, 6.0, 7.0, 8.0]; // 16 bytes
-        let embedding3 = vec![9.0, 10.0, 11.0, 12.0]; // 16 bytes
+        let embedding1 = vec![1.0, 2.0, 3.0, 4.0];
+        let embedding2 = vec![5.0, 6.0, 7.0, 8.0];
+        let embedding3 = vec![9.0, 10.0, 11.0, 12.0];
 
         cache.set("key1", embedding1.clone(), None).unwrap();
         cache.set("key2", embedding2.clone(), None).unwrap();
 
-        // Both should fit (32 bytes total)
+        // Both should be present
         assert!(cache.get("key1").is_some());
         assert!(cache.get("key2").is_some());
 

@@ -125,7 +125,7 @@ impl LLMClient for OpenAIClient {
             builder.temperature(temp);
         }
         if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens as u32);
+            builder.max_completion_tokens(max_tokens);
         }
         if let Some(top_p) = self.params.top_p {
             builder.top_p(top_p);
@@ -178,7 +178,7 @@ impl LLMClient for OpenAIClient {
             builder.temperature(temp);
         }
         if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens as u32);
+            builder.max_completion_tokens(max_tokens);
         }
         if let Some(top_p) = self.params.top_p {
             builder.top_p(top_p);
@@ -258,7 +258,7 @@ impl LLMClient for OpenAIClient {
             builder.temperature(temp);
         }
         if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens as u32);
+            builder.max_completion_tokens(max_tokens);
         }
         if let Some(top_p) = self.params.top_p {
             builder.top_p(top_p);
@@ -310,7 +310,7 @@ impl LLMClient for OpenAIClient {
             builder.temperature(temp);
         }
         if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens as u32);
+            builder.max_completion_tokens(max_tokens);
         }
         if let Some(top_p) = self.params.top_p {
             builder.top_p(top_p);
@@ -378,7 +378,7 @@ impl LLMClient for OpenAIClient {
             builder.temperature(temp);
         }
         if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens as u32);
+            builder.max_completion_tokens(max_tokens);
         }
         if let Some(top_p) = self.params.top_p {
             builder.top_p(top_p);
@@ -448,7 +448,7 @@ impl LLMClient for OpenAIClient {
             builder.temperature(temp);
         }
         if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens as u32);
+            builder.max_completion_tokens(max_tokens);
         }
         if let Some(top_p) = self.params.top_p {
             builder.top_p(top_p);
@@ -544,7 +544,7 @@ impl LLMClient for OpenAIClient {
             builder.temperature(temp);
         }
         if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens as u32);
+            builder.max_completion_tokens(max_tokens);
         }
         if let Some(top_p) = self.params.top_p {
             builder.top_p(top_p);

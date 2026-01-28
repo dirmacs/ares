@@ -112,6 +112,48 @@ async fn test_mock_llm_client_streaming() {
     assert_eq!(collected, "Hello streaming world!");
 }
 
+#[tokio::test]
+async fn test_mock_llm_client_streaming_with_system() {
+    let client = MockLLMClient::new("System streaming response");
+    let result = client.stream_with_system("You are helpful", "test").await;
+    assert!(result.is_ok());
+
+    let mut stream = result.unwrap();
+    let mut collected = String::new();
+
+    while let Some(chunk_result) = stream.next().await {
+        match chunk_result {
+            Ok(chunk) => collected.push_str(&chunk),
+            Err(_) => break,
+        }
+    }
+
+    assert_eq!(collected, "System streaming response");
+}
+
+#[tokio::test]
+async fn test_mock_llm_client_streaming_with_history() {
+    let client = MockLLMClient::new("History streaming response");
+    let history = vec![
+        ("user".to_string(), "Hello".to_string()),
+        ("assistant".to_string(), "Hi!".to_string()),
+    ];
+    let result = client.stream_with_history(&history).await;
+    assert!(result.is_ok());
+
+    let mut stream = result.unwrap();
+    let mut collected = String::new();
+
+    while let Some(chunk_result) = stream.next().await {
+        match chunk_result {
+            Ok(chunk) => collected.push_str(&chunk),
+            Err(_) => break,
+        }
+    }
+
+    assert_eq!(collected, "History streaming response");
+}
+
 // ============= LLM Response Tests =============
 
 #[test]
@@ -224,6 +266,7 @@ fn test_llm_client_factory_creation() {
     let factory = LLMClientFactory::new(Provider::Ollama {
         base_url: "http://localhost:11434".to_string(),
         model: "ministral-3:3b".to_string(),
+        params: Default::default(),
     });
 
     // Factory should be created successfully

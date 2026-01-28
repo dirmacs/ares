@@ -5,6 +5,90 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-01-28
+
+### Fixed
+
+#### Critical (P0)
+
+- **Embedding Model Recreation**: Fixed bug where embedding model was recreated on every call
+  - Model now reused via `OnceLock` pattern, significantly improving performance
+  - Location: `src/rag/embeddings.rs`
+
+- **Rate Limiter Not Applied**: Fixed rate limiting middleware not being applied to routes
+  - Added `tower_governor` integration with proper state sharing
+  - Location: `src/main.rs`, `Cargo.toml`
+
+- **Character Chunking Bug**: Fixed chunker splitting in middle of UTF-8 characters
+  - Now uses `chars().count()` instead of byte length for character chunking
+  - Location: `src/rag/chunker.rs`
+
+#### High Priority (P1)
+
+- **Refresh Token Invalidation**: Fixed refresh tokens not being invalidated on logout
+  - Added `delete_refresh_token()` and `delete_all_user_refresh_tokens()` to `DbPool` trait
+  - Location: `src/api/handlers/auth.rs`, `src/db/traits.rs`
+
+- **Model Config Params Not Passed**: Fixed LLM clients ignoring temperature/top_p/max_tokens
+  - All LLM clients now properly apply model configuration parameters
+  - Location: `src/llm/ollama.rs`, `src/llm/openai.rs`, `src/llm/llamacpp.rs`
+
+- **RAG Collection User Isolation**: Added user isolation for RAG collections
+  - Collections now prefixed with user ID to prevent cross-user access
+  - Location: `src/api/handlers/rag.rs`
+
+- **TOON Agents Not in Registry**: Fixed TOON-defined agents not integrated with AgentRegistry
+  - Added `register_toon_agents()` to load agents from TOML config into registry
+  - Location: `src/agents/registry.rs`
+
+#### Medium Priority (P2)
+
+- **LRU Cache Not Evicting**: Fixed `LruEmbeddingCache` not properly evicting oldest entries
+  - Implemented proper LRU eviction with access ordering
+  - Location: `src/rag/cache.rs`
+
+- **BM25/Fuzzy Index Persistence**: Added persistent BM25 and fuzzy search indices
+  - Indices now saved to disk and loaded on startup
+  - Location: `src/rag/search.rs`
+
+- **Error Handling Inconsistent**: Standardized error handling across codebase
+  - Added structured `AppError` with consistent error codes and context
+  - Location: `src/types/mod.rs`
+
+- **Qdrant Missing get() Method**: Added missing `get()` method to Qdrant vector store
+  - Location: `src/db/qdrant.rs`
+
+#### Low Priority (P3)
+
+- **Health Endpoint**: Added `/health` endpoint for load balancer probes
+  - Returns JSON with status, version, and uptime
+  - Location: `src/main.rs`
+
+- **Logout Endpoint**: Added `/api/auth/logout` endpoint
+  - Properly invalidates refresh tokens and clears session
+  - Location: `src/api/handlers/auth.rs`, `src/api/routes.rs`
+
+- **AppError Structured Context**: Fixed `AppError` to include structured context
+  - Added `context` field for additional error metadata
+  - Location: `src/types/mod.rs`
+
+- **JWT Secret Validation**: Added minimum length validation for JWT secret
+  - Errors on startup if JWT_SECRET is less than 32 characters
+  - Location: `src/utils/toml_config.rs`
+
+- **Streaming Methods Missing**: Added `stream_with_system()` and `stream_with_history()` to `LLMClient` trait
+  - All LLM provider implementations now support streaming with system prompts and history
+  - Location: `src/llm/client.rs`, `src/llm/ollama.rs`, `src/llm/openai.rs`, `src/llm/llamacpp.rs`
+
+- **AgentType Extensibility**: Made `AgentType` enum extensible with `Custom(String)` variant
+  - Added `from_string()` method for parsing unknown agent types
+  - Location: `src/types/mod.rs`, `src/agents/*.rs`
+
+### Changed
+
+- Updated test mocks to include new `LLMClient` streaming methods
+- Removed obsolete vector store stubs (already completed in prior version)
+
 ## [0.3.2] - 2026-01-28
 
 ### Added
@@ -253,6 +337,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.3.3]: https://github.com/dirmacs/ares/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/dirmacs/ares/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/dirmacs/ares/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/dirmacs/ares/compare/v0.2.5...v0.3.0

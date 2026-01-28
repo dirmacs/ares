@@ -202,29 +202,25 @@ impl VectorStore for QdrantVectorStore {
         for col in collections.collections {
             // Get collection info for each
             if let Ok(info) = self.client.collection_info(&col.name).await {
-                let count = info
-                    .result
-                    .map(|r| r.points_count.unwrap_or(0) as usize)
-                    .unwrap_or(0);
-                let dims = info
-                    .result
-                    .and_then(|r| {
-                        r.config
-                            .and_then(|c| c.params)
-                            .and_then(|p| p.vectors_config)
-                            .and_then(|v| match v.config {
-                                Some(qdrant_client::qdrant::vectors_config::Config::Params(p)) => {
-                                    Some(p.size as usize)
-                                }
-                                _ => None,
-                            })
-                    })
-                    .unwrap_or(0);
-                result.push(CollectionInfo {
-                    name: col.name,
-                    document_count: count,
-                    dimensions: dims,
-                });
+                if let Some(collection_info) = info.result {
+                    let count = collection_info.points_count.unwrap_or(0) as usize;
+                    let dims = collection_info
+                        .config
+                        .and_then(|c| c.params)
+                        .and_then(|p| p.vectors_config)
+                        .and_then(|v| match v.config {
+                            Some(qdrant_client::qdrant::vectors_config::Config::Params(p)) => {
+                                Some(p.size as usize)
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    result.push(CollectionInfo {
+                        name: col.name,
+                        document_count: count,
+                        dimensions: dims,
+                    });
+                }
             }
         }
 
@@ -405,5 +401,90 @@ impl VectorStore for QdrantVectorStore {
             .map_err(|e| AppError::Database(format!("Failed to delete points: {}", e)))?;
 
         Ok(count)
+    }
+
+    async fn get(&self, collection: &str, id: &str) -> Result<Option<Document>> {
+        use qdrant_client::qdrant::{point_id::PointIdOptions, GetPointsBuilder, PointId};
+
+        // Try to parse the ID as a numeric ID first, otherwise use UUID
+        let point_id = if let Ok(num) = id.parse::<u64>() {
+            PointId {
+                point_id_options: Some(PointIdOptions::Num(num)),
+            }
+        } else {
+            PointId {
+                point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+            }
+        };
+
+        let result = self
+            .client
+            .get_points(
+                GetPointsBuilder::new(collection, vec![point_id])
+                    .with_payload(true)
+                    .with_vectors(true),
+            )
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to get point: {}", e)))?;
+
+        // Extract the first point if found
+        let point = match result.result.into_iter().next() {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // Parse the payload
+        let payload = point.payload;
+        let content = payload
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let title = payload
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let source = payload
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let created_at_ts = payload
+            .get("created_at")
+            .and_then(|v| v.as_integer())
+            .unwrap_or(0);
+        let tags: Vec<String> = payload
+            .get("tags")
+            .and_then(|v| serde_json::from_value(v.clone().into()).ok())
+            .unwrap_or_default();
+
+        // Get the ID string
+        let id_str = match point.id {
+            Some(pid) => match pid.point_id_options {
+                Some(PointIdOptions::Num(num)) => num.to_string(),
+                Some(PointIdOptions::Uuid(uuid)) => uuid,
+                None => return Ok(None),
+            },
+            None => return Ok(None),
+        };
+
+        // Extract embedding if available
+        // Note: For simplicity, we don't return the embedding when getting by ID.
+        // If embeddings are needed, use the search methods instead.
+        let embedding = None;
+
+        Ok(Some(Document {
+            id: id_str,
+            content,
+            metadata: crate::types::DocumentMetadata {
+                title,
+                source,
+                created_at: chrono::DateTime::from_timestamp(created_at_ts, 0)
+                    .unwrap_or_else(chrono::Utc::now),
+                tags,
+            },
+            embedding,
+        }))
     }
 }

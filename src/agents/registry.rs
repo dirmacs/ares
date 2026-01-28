@@ -373,14 +373,14 @@ mod tests {
 
     #[test]
     fn test_type_to_name() {
-        assert_eq!(AgentRegistry::type_to_name(AgentType::Router), "router");
-        assert_eq!(AgentRegistry::type_to_name(AgentType::Product), "product");
-        assert_eq!(AgentRegistry::type_to_name(AgentType::HR), "hr");
-        assert_eq!(AgentRegistry::type_to_name(AgentType::Invoice), "invoice");
-        assert_eq!(AgentRegistry::type_to_name(AgentType::Sales), "sales");
-        assert_eq!(AgentRegistry::type_to_name(AgentType::Finance), "finance");
+        assert_eq!(AgentRegistry::type_to_name(&AgentType::Router), "router");
+        assert_eq!(AgentRegistry::type_to_name(&AgentType::Product), "product");
+        assert_eq!(AgentRegistry::type_to_name(&AgentType::HR), "hr");
+        assert_eq!(AgentRegistry::type_to_name(&AgentType::Invoice), "invoice");
+        assert_eq!(AgentRegistry::type_to_name(&AgentType::Sales), "sales");
+        assert_eq!(AgentRegistry::type_to_name(&AgentType::Finance), "finance");
         assert_eq!(
-            AgentRegistry::type_to_name(AgentType::Orchestrator),
+            AgentRegistry::type_to_name(&AgentType::Orchestrator),
             "orchestrator"
         );
     }

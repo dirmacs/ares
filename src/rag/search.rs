@@ -396,7 +396,7 @@ impl Bm25Index {
 /// Fuzzy search using Levenshtein distance
 ///
 /// This index supports persistence via `save()` and `load()` methods.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FuzzyIndex {
     /// Document ID -> content for fuzzy matching
     documents: HashMap<String, String>,
@@ -406,13 +406,20 @@ pub struct FuzzyIndex {
     max_distance: usize,
 }
 
+impl Default for FuzzyIndex {
+    fn default() -> Self {
+        Self {
+            documents: HashMap::new(),
+            vocabulary: HashSet::new(),
+            max_distance: 2,
+        }
+    }
+}
+
 impl FuzzyIndex {
     /// Create a new fuzzy index
     pub fn new() -> Self {
-        Self {
-            max_distance: 2,
-            ..Default::default()
-        }
+        Self::default()
     }
 
     /// Create with custom max edit distance

@@ -150,15 +150,10 @@ impl AgentRegistry {
                         serde_json::Value::String(s) => {
                             Some((k.clone(), toml::Value::String(s.clone())))
                         }
-                        serde_json::Value::Number(n) => {
-                            if let Some(i) = n.as_i64() {
-                                Some((k.clone(), toml::Value::Integer(i)))
-                            } else if let Some(f) = n.as_f64() {
-                                Some((k.clone(), toml::Value::Float(f)))
-                            } else {
-                                None
-                            }
-                        }
+                        serde_json::Value::Number(n) => n
+                            .as_i64()
+                            .map(|i| (k.clone(), toml::Value::Integer(i)))
+                            .or_else(|| n.as_f64().map(|f| (k.clone(), toml::Value::Float(f)))),
                         serde_json::Value::Bool(b) => Some((k.clone(), toml::Value::Boolean(*b))),
                         _ => {
                             // For arrays/objects, convert to string

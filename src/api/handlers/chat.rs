@@ -120,7 +120,7 @@ async fn execute_agent(
     state: &AppState,
 ) -> Result<ChatResponse> {
     // Get agent name from type
-    let agent_name = AgentRegistry::type_to_name(agent_type);
+    let agent_name = AgentRegistry::type_to_name(&agent_type);
 
     if agent_type == AgentType::Router {
         return Err(AppError::InvalidInput(
@@ -332,11 +332,11 @@ pub async fn chat_stream(
         };
 
         // Send start event
-        let agent_name = AgentRegistry::type_to_name(agent_type);
+        let agent_name = AgentRegistry::type_to_name(&agent_type);
         let start_event = StreamEvent {
             event: "start".to_string(),
             content: None,
-            agent: Some(format!("{:?} (system)", agent_type)),
+            agent: Some(format!("{} (system)", agent_type)),
             context_id: Some(context_id_clone.clone()),
             error: None,
         };

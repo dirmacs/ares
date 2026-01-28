@@ -93,19 +93,11 @@ impl RouterAgent {
 
 #[async_trait]
 impl Agent for RouterAgent {
-    async fn execute(&self, input: &str, context: &AgentContext) -> Result<String> {
-        let agent_type = self.route(input, context).await?;
-        // Return lowercase agent name for workflow engine compatibility
-        let agent_name = match agent_type {
-            AgentType::Router => "router",
-            AgentType::Orchestrator => "orchestrator",
-            AgentType::Product => "product",
-            AgentType::Invoice => "invoice",
-            AgentType::Sales => "sales",
-            AgentType::Finance => "finance",
-            AgentType::HR => "hr",
-        };
-        Ok(agent_name.to_string())
+    async fn execute(&self, _input: &str, _context: &AgentContext) -> Result<String> {
+        // Note: RouterAgent.route() is called by the orchestrator/chat handler,
+        // not through the Agent trait execute() method. This is a placeholder.
+        // If called directly, return the router agent name.
+        Ok("router".to_string())
     }
 
     fn system_prompt(&self) -> String {

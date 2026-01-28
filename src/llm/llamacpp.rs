@@ -22,7 +22,7 @@
 //! let response = client.generate("Hello, world!").await?;
 //! ```
 
-use crate::llm::client::{LLMClient, LLMResponse};
+use crate::llm::client::{LLMClient, LLMResponse, ModelParams};
 use crate::types::{AppError, Result, ToolDefinition};
 use async_stream::stream;
 use async_trait::async_trait;
@@ -50,6 +50,10 @@ pub struct LlamaCppClient {
     n_threads: i32,
     /// Maximum tokens to generate
     max_tokens: u32,
+    /// Temperature for sampling
+    temperature: f32,
+    /// Top-p (nucleus sampling) parameter
+    top_p: f32,
 }
 
 impl LlamaCppClient {
@@ -63,7 +67,24 @@ impl LlamaCppClient {
     ///
     /// Returns an error if the model file doesn't exist or can't be loaded.
     pub fn new(model_path: String) -> Result<Self> {
-        Self::with_params(model_path, 4096, 4, 512)
+        Self::with_config_params(model_path, 4096, 4, 512, 0.7, 0.9)
+    }
+
+    /// Create a new LlamaCpp client with ModelParams
+    ///
+    /// # Arguments
+    ///
+    /// * `model_path` - Path to a GGUF model file
+    /// * `params` - Model inference parameters
+    pub fn with_params(model_path: String, params: ModelParams) -> Result<Self> {
+        Self::with_config_params(
+            model_path,
+            4096,
+            4,
+            params.max_tokens.unwrap_or(512),
+            params.temperature.unwrap_or(0.7),
+            params.top_p.unwrap_or(0.9),
+        )
     }
 
     /// Create a new LlamaCpp client with custom parameters
@@ -74,11 +95,32 @@ impl LlamaCppClient {
     /// * `n_ctx` - Context size (default: 4096)
     /// * `n_threads` - Number of CPU threads (default: 4)
     /// * `max_tokens` - Maximum tokens to generate (default: 512)
-    pub fn with_params(
+    pub fn with_params_legacy(
         model_path: String,
         n_ctx: u32,
         n_threads: i32,
         max_tokens: u32,
+    ) -> Result<Self> {
+        Self::with_config_params(model_path, n_ctx, n_threads, max_tokens, 0.7, 0.9)
+    }
+
+    /// Create a new LlamaCpp client with all configurable parameters
+    ///
+    /// # Arguments
+    ///
+    /// * `model_path` - Path to a GGUF model file
+    /// * `n_ctx` - Context size (default: 4096)
+    /// * `n_threads` - Number of CPU threads (default: 4)
+    /// * `max_tokens` - Maximum tokens to generate (default: 512)
+    /// * `temperature` - Sampling temperature (default: 0.7)
+    /// * `top_p` - Nucleus sampling parameter (default: 0.9)
+    pub fn with_config_params(
+        model_path: String,
+        n_ctx: u32,
+        n_threads: i32,
+        max_tokens: u32,
+        temperature: f32,
+        top_p: f32,
     ) -> Result<Self> {
         // Initialize the backend (must be done once)
         let backend = LlamaBackend::init()
@@ -100,6 +142,8 @@ impl LlamaCppClient {
             n_ctx,
             n_threads,
             max_tokens,
+            temperature,
+            top_p,
         })
     }
 
@@ -129,11 +173,22 @@ impl LlamaCppClient {
         let backend = self.backend.clone();
         let n_ctx = self.n_ctx;
         let n_threads = self.n_threads;
+        let temperature = self.temperature;
+        let top_p = self.top_p;
         let prompt = prompt.to_string();
 
         // Run blocking llama operations in a spawn_blocking task
         tokio::task::spawn_blocking(move || {
-            Self::generate_sync(&model, &backend, n_ctx, n_threads, &prompt, max_tokens)
+            Self::generate_sync(
+                &model,
+                &backend,
+                n_ctx,
+                n_threads,
+                &prompt,
+                max_tokens,
+                temperature,
+                top_p,
+            )
         })
         .await
         .map_err(|e| AppError::LLM(format!("Task join error: {}", e)))?
@@ -147,6 +202,8 @@ impl LlamaCppClient {
         n_threads: i32,
         prompt: &str,
         max_tokens: u32,
+        temperature: f32,
+        top_p: f32,
     ) -> Result<String> {
         // Create context parameters
         let ctx_params = LlamaContextParams::default()
@@ -183,10 +240,10 @@ impl LlamaCppClient {
         ctx.decode(&mut batch)
             .map_err(|e| AppError::LLM(format!("Failed to decode batch: {}", e)))?;
 
-        // Set up sampler for generation
+        // Set up sampler for generation with configured parameters
         let mut sampler = LlamaSampler::chain_simple([
-            LlamaSampler::temp(0.7),
-            LlamaSampler::top_p(0.9, 1),
+            LlamaSampler::temp(temperature),
+            LlamaSampler::top_p(top_p, 1),
             LlamaSampler::dist(42),
         ]);
 
@@ -242,6 +299,8 @@ impl LlamaCppClient {
         let backend = self.backend.clone();
         let n_ctx = self.n_ctx;
         let n_threads = self.n_threads;
+        let temperature = self.temperature;
+        let top_p = self.top_p;
         let prompt = prompt.to_string();
 
         // Create a channel for streaming tokens
@@ -256,6 +315,8 @@ impl LlamaCppClient {
                 n_threads,
                 &prompt,
                 max_tokens,
+                temperature,
+                top_p,
                 tx.clone(),
             );
             if let Err(e) = result {
@@ -282,6 +343,8 @@ impl LlamaCppClient {
         n_threads: i32,
         prompt: &str,
         max_tokens: u32,
+        temperature: f32,
+        top_p: f32,
         tx: mpsc::Sender<Result<String>>,
     ) -> Result<()> {
         // Create context parameters
@@ -319,10 +382,10 @@ impl LlamaCppClient {
         ctx.decode(&mut batch)
             .map_err(|e| AppError::LLM(format!("Failed to decode batch: {}", e)))?;
 
-        // Set up sampler for generation
+        // Set up sampler for generation with configured parameters
         let mut sampler = LlamaSampler::chain_simple([
-            LlamaSampler::temp(0.7),
-            LlamaSampler::top_p(0.9, 1),
+            LlamaSampler::temp(temperature),
+            LlamaSampler::top_p(top_p, 1),
             LlamaSampler::dist(42),
         ]);
 
@@ -397,25 +460,6 @@ impl LlamaCppClient {
         }
         prompt.push_str("<|im_start|>assistant\n");
         prompt
-    }
-
-    /// Stream with system prompt
-    pub async fn stream_with_system(
-        &self,
-        system: &str,
-        prompt: &str,
-    ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
-        let formatted = self.format_prompt(Some(system), prompt);
-        self.stream_internal(&formatted, self.max_tokens).await
-    }
-
-    /// Stream with conversation history
-    pub async fn stream_with_history(
-        &self,
-        messages: &[(String, String)],
-    ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
-        let formatted = self.format_history(messages);
-        self.stream_internal(&formatted, self.max_tokens).await
     }
 }
 
@@ -506,6 +550,23 @@ Otherwise, respond normally with text."#,
         prompt: &str,
     ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
         let formatted = self.format_prompt(None, prompt);
+        self.stream_internal(&formatted, self.max_tokens).await
+    }
+
+    async fn stream_with_system(
+        &self,
+        system: &str,
+        prompt: &str,
+    ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
+        let formatted = self.format_prompt(Some(system), prompt);
+        self.stream_internal(&formatted, self.max_tokens).await
+    }
+
+    async fn stream_with_history(
+        &self,
+        messages: &[(String, String)],
+    ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
+        let formatted = self.format_history(messages);
         self.stream_internal(&formatted, self.max_tokens).await
     }
 
@@ -692,13 +753,13 @@ mod tests {
     #[cfg(feature = "llamacpp")]
     #[test]
     fn test_llamacpp_client_with_params() {
+        use crate::llm::client::ModelParams;
         // Test parameter validation without loading
-        let result = LlamaCppClient::with_params(
-            "dummy.gguf".to_string(),
-            2048, // smaller context
-            2,    // fewer threads
-            256,  // fewer max tokens
-        );
+        let params = ModelParams {
+            max_tokens: Some(256),
+            ..Default::default()
+        };
+        let result = LlamaCppClient::with_params("dummy.gguf".to_string(), params);
         assert!(result.is_err()); // Should fail due to invalid path
     }
 }

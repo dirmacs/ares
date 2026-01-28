@@ -20,7 +20,7 @@
 //! let response = client.generate("Hello!").await?;
 //! ```
 
-use crate::llm::client::{LLMClient, LLMResponse};
+use crate::llm::client::{LLMClient, LLMResponse, ModelParams};
 use crate::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_openai::{
     config::OpenAIConfig,
@@ -39,6 +39,7 @@ use futures::StreamExt;
 pub struct OpenAIClient {
     client: Client<OpenAIConfig>,
     model: String,
+    params: ModelParams,
 }
 
 impl OpenAIClient {
@@ -50,6 +51,23 @@ impl OpenAIClient {
     /// * `api_base` - Base URL for the API (e.g., `https://api.openai.com/v1`)
     /// * `model` - Model identifier (e.g., "gpt-4", "gpt-3.5-turbo")
     pub fn new(api_key: String, api_base: String, model: String) -> Self {
+        Self::with_params(api_key, api_base, model, ModelParams::default())
+    }
+
+    /// Create a new OpenAI client with model parameters
+    ///
+    /// # Arguments
+    ///
+    /// * `api_key` - OpenAI API key
+    /// * `api_base` - Base URL for the API (e.g., `https://api.openai.com/v1`)
+    /// * `model` - Model identifier (e.g., "gpt-4", "gpt-3.5-turbo")
+    /// * `params` - Model inference parameters (temperature, max_tokens, etc.)
+    pub fn with_params(
+        api_key: String,
+        api_base: String,
+        model: String,
+        params: ModelParams,
+    ) -> Self {
         let config = OpenAIConfig::new()
             .with_api_key(api_key)
             .with_api_base(api_base);
@@ -57,6 +75,7 @@ impl OpenAIClient {
         Self {
             client: Client::with_config(config),
             model,
+            params,
         }
     }
 
@@ -97,9 +116,28 @@ impl LLMClient for OpenAIClient {
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build message: {}", e)))?;
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
-            .messages(vec![ChatCompletionRequestMessage::User(message)])
+        let mut builder = CreateChatCompletionRequestArgs::default();
+        builder.model(&self.model);
+        builder.messages(vec![ChatCompletionRequestMessage::User(message)]);
+
+        // Apply model parameters
+        if let Some(temp) = self.params.temperature {
+            builder.temperature(temp);
+        }
+        if let Some(max_tokens) = self.params.max_tokens {
+            builder.max_completion_tokens(max_tokens as u32);
+        }
+        if let Some(top_p) = self.params.top_p {
+            builder.top_p(top_p);
+        }
+        if let Some(freq_penalty) = self.params.frequency_penalty {
+            builder.frequency_penalty(freq_penalty);
+        }
+        if let Some(pres_penalty) = self.params.presence_penalty {
+            builder.presence_penalty(pres_penalty);
+        }
+
+        let request = builder
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
 
@@ -128,12 +166,31 @@ impl LLMClient for OpenAIClient {
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build user message: {}", e)))?;
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
-            .messages(vec![
-                ChatCompletionRequestMessage::System(system_message),
-                ChatCompletionRequestMessage::User(user_message),
-            ])
+        let mut builder = CreateChatCompletionRequestArgs::default();
+        builder.model(&self.model);
+        builder.messages(vec![
+            ChatCompletionRequestMessage::System(system_message),
+            ChatCompletionRequestMessage::User(user_message),
+        ]);
+
+        // Apply model parameters
+        if let Some(temp) = self.params.temperature {
+            builder.temperature(temp);
+        }
+        if let Some(max_tokens) = self.params.max_tokens {
+            builder.max_completion_tokens(max_tokens as u32);
+        }
+        if let Some(top_p) = self.params.top_p {
+            builder.top_p(top_p);
+        }
+        if let Some(freq_penalty) = self.params.frequency_penalty {
+            builder.frequency_penalty(freq_penalty);
+        }
+        if let Some(pres_penalty) = self.params.presence_penalty {
+            builder.presence_penalty(pres_penalty);
+        }
+
+        let request = builder
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
 
@@ -192,9 +249,28 @@ impl LLMClient for OpenAIClient {
                 })
                 .collect();
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
-            .messages(chat_messages?)
+        let mut builder = CreateChatCompletionRequestArgs::default();
+        builder.model(&self.model);
+        builder.messages(chat_messages?);
+
+        // Apply model parameters
+        if let Some(temp) = self.params.temperature {
+            builder.temperature(temp);
+        }
+        if let Some(max_tokens) = self.params.max_tokens {
+            builder.max_completion_tokens(max_tokens as u32);
+        }
+        if let Some(top_p) = self.params.top_p {
+            builder.top_p(top_p);
+        }
+        if let Some(freq_penalty) = self.params.frequency_penalty {
+            builder.frequency_penalty(freq_penalty);
+        }
+        if let Some(pres_penalty) = self.params.presence_penalty {
+            builder.presence_penalty(pres_penalty);
+        }
+
+        let request = builder
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
 
@@ -224,10 +300,29 @@ impl LLMClient for OpenAIClient {
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build user message: {}", e)))?;
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
-            .messages(vec![ChatCompletionRequestMessage::User(user_message)])
-            .tools(openai_tools)
+        let mut builder = CreateChatCompletionRequestArgs::default();
+        builder.model(&self.model);
+        builder.messages(vec![ChatCompletionRequestMessage::User(user_message)]);
+        builder.tools(openai_tools);
+
+        // Apply model parameters
+        if let Some(temp) = self.params.temperature {
+            builder.temperature(temp);
+        }
+        if let Some(max_tokens) = self.params.max_tokens {
+            builder.max_completion_tokens(max_tokens as u32);
+        }
+        if let Some(top_p) = self.params.top_p {
+            builder.top_p(top_p);
+        }
+        if let Some(freq_penalty) = self.params.frequency_penalty {
+            builder.frequency_penalty(freq_penalty);
+        }
+        if let Some(pres_penalty) = self.params.presence_penalty {
+            builder.presence_penalty(pres_penalty);
+        }
+
+        let request = builder
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
 
@@ -274,9 +369,194 @@ impl LLMClient for OpenAIClient {
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build user message: {}", e)))?;
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
-            .messages(vec![ChatCompletionRequestMessage::User(user_message)])
+        let mut builder = CreateChatCompletionRequestArgs::default();
+        builder.model(&self.model);
+        builder.messages(vec![ChatCompletionRequestMessage::User(user_message)]);
+
+        // Apply model parameters
+        if let Some(temp) = self.params.temperature {
+            builder.temperature(temp);
+        }
+        if let Some(max_tokens) = self.params.max_tokens {
+            builder.max_completion_tokens(max_tokens as u32);
+        }
+        if let Some(top_p) = self.params.top_p {
+            builder.top_p(top_p);
+        }
+        if let Some(freq_penalty) = self.params.frequency_penalty {
+            builder.frequency_penalty(freq_penalty);
+        }
+        if let Some(pres_penalty) = self.params.presence_penalty {
+            builder.presence_penalty(pres_penalty);
+        }
+
+        let request = builder
+            .build()
+            .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
+
+        let mut stream = self
+            .client
+            .chat()
+            .create_stream(request)
+            .await
+            .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e)))?;
+
+        let result_stream = async_stream::stream! {
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(response) => {
+                        for choice in response.choices {
+                            if let Some(content) = choice.delta.content {
+                                yield Ok(content);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        yield Err(AppError::LLM(format!("Stream error: {}", e)));
+                    }
+                }
+            }
+        };
+
+        Ok(Box::new(Box::pin(result_stream)))
+    }
+
+    async fn stream_with_system(
+        &self,
+        system: &str,
+        prompt: &str,
+    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+        let system_message = ChatCompletionRequestSystemMessageArgs::default()
+            .content(system)
+            .build()
+            .map_err(|e| AppError::LLM(format!("Failed to build system message: {}", e)))?;
+
+        let user_message = ChatCompletionRequestUserMessageArgs::default()
+            .content(prompt)
+            .build()
+            .map_err(|e| AppError::LLM(format!("Failed to build user message: {}", e)))?;
+
+        let mut builder = CreateChatCompletionRequestArgs::default();
+        builder.model(&self.model);
+        builder.messages(vec![
+            ChatCompletionRequestMessage::System(system_message),
+            ChatCompletionRequestMessage::User(user_message),
+        ]);
+
+        // Apply model parameters
+        if let Some(temp) = self.params.temperature {
+            builder.temperature(temp);
+        }
+        if let Some(max_tokens) = self.params.max_tokens {
+            builder.max_completion_tokens(max_tokens as u32);
+        }
+        if let Some(top_p) = self.params.top_p {
+            builder.top_p(top_p);
+        }
+        if let Some(freq_penalty) = self.params.frequency_penalty {
+            builder.frequency_penalty(freq_penalty);
+        }
+        if let Some(pres_penalty) = self.params.presence_penalty {
+            builder.presence_penalty(pres_penalty);
+        }
+
+        let request = builder
+            .build()
+            .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
+
+        let mut stream = self
+            .client
+            .chat()
+            .create_stream(request)
+            .await
+            .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e)))?;
+
+        let result_stream = async_stream::stream! {
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(response) => {
+                        for choice in response.choices {
+                            if let Some(content) = choice.delta.content {
+                                yield Ok(content);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        yield Err(AppError::LLM(format!("Stream error: {}", e)));
+                    }
+                }
+            }
+        };
+
+        Ok(Box::new(Box::pin(result_stream)))
+    }
+
+    async fn stream_with_history(
+        &self,
+        messages: &[(String, String)],
+    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+        let chat_messages: std::result::Result<Vec<ChatCompletionRequestMessage>, AppError> =
+            messages
+                .iter()
+                .map(|(role, content)| {
+                    match role.as_str() {
+                        "system" => {
+                            let msg = ChatCompletionRequestSystemMessageArgs::default()
+                                .content(content.as_str())
+                                .build()
+                                .map_err(|e| {
+                                    AppError::LLM(format!("Failed to build system message: {}", e))
+                                })?;
+                            Ok(ChatCompletionRequestMessage::System(msg))
+                        }
+                        "assistant" => {
+                            let msg = ChatCompletionRequestAssistantMessageArgs::default()
+                                .content(content.as_str())
+                                .build()
+                                .map_err(|e| {
+                                    AppError::LLM(format!(
+                                        "Failed to build assistant message: {}",
+                                        e
+                                    ))
+                                })?;
+                            Ok(ChatCompletionRequestMessage::Assistant(msg))
+                        }
+                        _ => {
+                            // Default to user message
+                            let msg = ChatCompletionRequestUserMessageArgs::default()
+                                .content(content.as_str())
+                                .build()
+                                .map_err(|e| {
+                                    AppError::LLM(format!("Failed to build user message: {}", e))
+                                })?;
+                            Ok(ChatCompletionRequestMessage::User(msg))
+                        }
+                    }
+                })
+                .collect();
+
+        let mut builder = CreateChatCompletionRequestArgs::default();
+        builder.model(&self.model);
+        builder.messages(chat_messages?);
+
+        // Apply model parameters
+        if let Some(temp) = self.params.temperature {
+            builder.temperature(temp);
+        }
+        if let Some(max_tokens) = self.params.max_tokens {
+            builder.max_completion_tokens(max_tokens as u32);
+        }
+        if let Some(top_p) = self.params.top_p {
+            builder.top_p(top_p);
+        }
+        if let Some(freq_penalty) = self.params.frequency_penalty {
+            builder.frequency_penalty(freq_penalty);
+        }
+        if let Some(pres_penalty) = self.params.presence_penalty {
+            builder.presence_penalty(pres_penalty);
+        }
+
+        let request = builder
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
 

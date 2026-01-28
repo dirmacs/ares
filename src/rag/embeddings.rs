@@ -691,7 +691,7 @@ impl EmbeddingService {
     /// This is more efficient than calling `embed_text` multiple times
     /// as it batches the texts and processes them together.
     ///
-    /// The model is reused across calls via Arc<Mutex<TextEmbedding>>.
+    /// The model is reused across calls via `Arc<Mutex<TextEmbedding>>`.
     pub async fn embed_texts<S: AsRef<str> + Send + Sync + 'static>(
         &self,
         texts: &[S],
@@ -724,7 +724,7 @@ impl EmbeddingService {
 
     /// Generate sparse embeddings for hybrid search
     ///
-    /// The sparse model is reused across calls via Arc<Mutex<SparseTextEmbedding>>.
+    /// The sparse model is reused across calls via `Arc<Mutex<SparseTextEmbedding>>`.
     pub async fn embed_sparse<S: AsRef<str> + Send + Sync + 'static>(
         &self,
         texts: &[S],

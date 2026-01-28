@@ -210,7 +210,7 @@ llama-cpp-2 = { version = "0.1.130", optional = true }
 fastembed = "5.5.0"
 rig-core = "0.27.0"
 text-splitter = { version = "0.19", features = ["tiktoken-rs"] }
-lru = "0.12"
+lru = "0.16"
 
 # Web scraping and search
 daedra = "0.1.4"

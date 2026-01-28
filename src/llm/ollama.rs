@@ -20,7 +20,7 @@
 //! let response = client.generate("Hello!").await?;
 //! ```
 
-use crate::llm::client::{LLMClient, LLMResponse};
+use crate::llm::client::{LLMClient, LLMResponse, ModelParams};
 use crate::tools::registry::ToolRegistry;
 use crate::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_stream::stream;
@@ -29,6 +29,7 @@ use futures::{future::join_all, Stream, StreamExt};
 use ollama_rs::{
     generation::chat::{request::ChatMessageRequest, ChatMessage},
     generation::tools::{ToolCall as OllamaToolCall, ToolFunctionInfo, ToolInfo, ToolType},
+    models::ModelOptions,
     Ollama,
 };
 use schemars::Schema;
@@ -67,12 +68,18 @@ pub struct OllamaClient {
     client: Ollama,
     model: String,
     tool_config: ToolCallingConfig,
+    params: ModelParams,
 }
 
 impl OllamaClient {
     /// Creates a new OllamaClient with default tool configuration.
     pub async fn new(base_url: String, model: String) -> Result<Self> {
-        Self::with_config(base_url, model, ToolCallingConfig::default()).await
+        Self::with_params(base_url, model, ModelParams::default()).await
+    }
+
+    /// Creates a new OllamaClient with model parameters.
+    pub async fn with_params(base_url: String, model: String, params: ModelParams) -> Result<Self> {
+        Self::with_config_and_params(base_url, model, ToolCallingConfig::default(), params).await
     }
 
     /// Creates a new OllamaClient with custom tool configuration.
@@ -80,6 +87,16 @@ impl OllamaClient {
         base_url: String,
         model: String,
         tool_config: ToolCallingConfig,
+    ) -> Result<Self> {
+        Self::with_config_and_params(base_url, model, tool_config, ModelParams::default()).await
+    }
+
+    /// Creates a new OllamaClient with custom tool configuration and model parameters.
+    pub async fn with_config_and_params(
+        base_url: String,
+        model: String,
+        tool_config: ToolCallingConfig,
+        params: ModelParams,
     ) -> Result<Self> {
         // ollama-rs' `Ollama::new(host, port)` parses `host` using reqwest's IntoUrl.
         // If `host` is something like "localhost" (no scheme), it panics with
@@ -134,7 +151,28 @@ impl OllamaClient {
             client,
             model,
             tool_config,
+            params,
         })
+    }
+
+    /// Build ModelOptions from the stored params
+    fn build_model_options(&self) -> ModelOptions {
+        let mut options = ModelOptions::default();
+        if let Some(temp) = self.params.temperature {
+            options = options.temperature(temp);
+        }
+        if let Some(max_tokens) = self.params.max_tokens {
+            options = options.num_predict(max_tokens as i32);
+        }
+        if let Some(top_p) = self.params.top_p {
+            options = options.top_p(top_p);
+        }
+        // Note: ollama-rs uses repeat_penalty instead of separate frequency/presence penalties
+        // We use presence_penalty as a fallback for repeat_penalty if set
+        if let Some(pres_penalty) = self.params.presence_penalty {
+            options = options.repeat_penalty(pres_penalty);
+        }
+        options
     }
 
     /// Get the tool calling configuration
@@ -199,7 +237,8 @@ impl LLMClient for OllamaClient {
     async fn generate(&self, prompt: &str) -> Result<String> {
         let messages = vec![ChatMessage::user(prompt.to_string())];
 
-        let request = ChatMessageRequest::new(self.model.clone(), messages);
+        let request = ChatMessageRequest::new(self.model.clone(), messages)
+            .options(self.build_model_options());
 
         let response = self
             .client
@@ -217,7 +256,8 @@ impl LLMClient for OllamaClient {
             ChatMessage::user(prompt.to_string()),
         ];
 
-        let request = ChatMessageRequest::new(self.model.clone(), messages);
+        let request = ChatMessageRequest::new(self.model.clone(), messages)
+            .options(self.build_model_options());
 
         let response = self
             .client
@@ -239,7 +279,8 @@ impl LLMClient for OllamaClient {
             })
             .collect();
 
-        let request = ChatMessageRequest::new(self.model.clone(), chat_messages);
+        let request = ChatMessageRequest::new(self.model.clone(), chat_messages)
+            .options(self.build_model_options());
 
         let response = self
             .client
@@ -260,8 +301,10 @@ impl LLMClient for OllamaClient {
 
         let messages = vec![ChatMessage::user(prompt.to_string())];
 
-        // Create request with tools
-        let request = ChatMessageRequest::new(self.model.clone(), messages).tools(ollama_tools);
+        // Create request with tools and model options
+        let request = ChatMessageRequest::new(self.model.clone(), messages)
+            .tools(ollama_tools)
+            .options(self.build_model_options());
 
         let response = self
             .client
@@ -297,7 +340,8 @@ impl LLMClient for OllamaClient {
         prompt: &str,
     ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
         let messages = vec![ChatMessage::user(prompt.to_string())];
-        let request = ChatMessageRequest::new(self.model.clone(), messages);
+        let request = ChatMessageRequest::new(self.model.clone(), messages)
+            .options(self.build_model_options());
 
         let mut stream_response = self
             .client
@@ -311,6 +355,87 @@ impl LLMClient for OllamaClient {
                 match chunk_result {
                     Ok(chunk) => {
                         // Each chunk has a message with content
+                        let content = chunk.message.content;
+                        if !content.is_empty() {
+                            yield Ok(content);
+                        }
+                    }
+                    Err(_) => {
+                        yield Err(AppError::LLM("Stream chunk error".to_string()));
+                        break;
+                    }
+                }
+            }
+        };
+
+        Ok(Box::new(Box::pin(output_stream)))
+    }
+
+    async fn stream_with_system(
+        &self,
+        system: &str,
+        prompt: &str,
+    ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
+        let messages = vec![
+            ChatMessage::system(system.to_string()),
+            ChatMessage::user(prompt.to_string()),
+        ];
+        let request = ChatMessageRequest::new(self.model.clone(), messages)
+            .options(self.build_model_options());
+
+        let mut stream_response = self
+            .client
+            .send_chat_messages_stream(request)
+            .await
+            .map_err(|e| AppError::LLM(format!("Ollama stream error: {}", e)))?;
+
+        let output_stream = stream! {
+            while let Some(chunk_result) = stream_response.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
+                        let content = chunk.message.content;
+                        if !content.is_empty() {
+                            yield Ok(content);
+                        }
+                    }
+                    Err(_) => {
+                        yield Err(AppError::LLM("Stream chunk error".to_string()));
+                        break;
+                    }
+                }
+            }
+        };
+
+        Ok(Box::new(Box::pin(output_stream)))
+    }
+
+    async fn stream_with_history(
+        &self,
+        messages: &[(String, String)],
+    ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
+        let chat_messages: Vec<ChatMessage> = messages
+            .iter()
+            .map(|(role, content)| match role.as_str() {
+                "system" => ChatMessage::system(content.clone()),
+                "user" => ChatMessage::user(content.clone()),
+                "assistant" => ChatMessage::assistant(content.clone()),
+                _ => ChatMessage::user(content.clone()),
+            })
+            .collect();
+
+        let request = ChatMessageRequest::new(self.model.clone(), chat_messages)
+            .options(self.build_model_options());
+
+        let mut stream_response = self
+            .client
+            .send_chat_messages_stream(request)
+            .await
+            .map_err(|e| AppError::LLM(format!("Ollama stream error: {}", e)))?;
+
+        let output_stream = stream! {
+            while let Some(chunk_result) = stream_response.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
                         let content = chunk.message.content;
                         if !content.is_empty() {
                             yield Ok(content);
@@ -777,87 +902,6 @@ impl OllamaClient {
             "Tool calling loop exceeded maximum iterations ({})",
             max_iterations
         )))
-    }
-
-    /// Stream a response with system prompt
-    pub async fn stream_with_system(
-        &self,
-        system: &str,
-        prompt: &str,
-    ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
-        let messages = vec![
-            ChatMessage::system(system.to_string()),
-            ChatMessage::user(prompt.to_string()),
-        ];
-        let request = ChatMessageRequest::new(self.model.clone(), messages);
-
-        let mut stream_response = self
-            .client
-            .send_chat_messages_stream(request)
-            .await
-            .map_err(|e| AppError::LLM(format!("Ollama stream error: {}", e)))?;
-
-        let output_stream = stream! {
-            while let Some(chunk_result) = stream_response.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        let content = chunk.message.content;
-                        if !content.is_empty() {
-                            yield Ok(content);
-                        }
-                    }
-                    Err(_) => {
-                        yield Err(AppError::LLM("Stream chunk error".to_string()));
-                        break;
-                    }
-                }
-            }
-        };
-
-        Ok(Box::new(Box::pin(output_stream)))
-    }
-
-    /// Stream a response with conversation history
-    pub async fn stream_with_history(
-        &self,
-        history: &[(String, String)],
-    ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
-        let chat_messages: Vec<ChatMessage> = history
-            .iter()
-            .map(|(role, content)| match role.as_str() {
-                "system" => ChatMessage::system(content.clone()),
-                "user" => ChatMessage::user(content.clone()),
-                "assistant" => ChatMessage::assistant(content.clone()),
-                _ => ChatMessage::user(content.clone()),
-            })
-            .collect();
-
-        let request = ChatMessageRequest::new(self.model.clone(), chat_messages);
-
-        let mut stream_response = self
-            .client
-            .send_chat_messages_stream(request)
-            .await
-            .map_err(|e| AppError::LLM(format!("Ollama stream error: {}", e)))?;
-
-        let output_stream = stream! {
-            while let Some(chunk_result) = stream_response.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        let content = chunk.message.content;
-                        if !content.is_empty() {
-                            yield Ok(content);
-                        }
-                    }
-                    Err(_) => {
-                        yield Err(AppError::LLM("Stream chunk error".to_string()));
-                        break;
-                    }
-                }
-            }
-        };
-
-        Ok(Box::new(Box::pin(output_stream)))
     }
 
     /// Check if the Ollama server is available

@@ -1081,10 +1081,30 @@ impl AresConfig {
         std::env::var(env_name).ok()
     }
 
+    /// Minimum length for JWT secret (256 bits = 32 bytes)
+    const JWT_SECRET_MIN_LENGTH: usize = 32;
+
     /// Get the JWT secret from the environment
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The environment variable is not set
+    /// - The secret is shorter than 32 characters (256 bits)
     pub fn jwt_secret(&self) -> Result<String, ConfigError> {
-        self.resolve_env(&self.auth.jwt_secret_env)
-            .ok_or_else(|| ConfigError::MissingEnvVar(self.auth.jwt_secret_env.clone()))
+        let secret = self
+            .resolve_env(&self.auth.jwt_secret_env)
+            .ok_or_else(|| ConfigError::MissingEnvVar(self.auth.jwt_secret_env.clone()))?;
+
+        if secret.len() < Self::JWT_SECRET_MIN_LENGTH {
+            return Err(ConfigError::ValidationError(format!(
+                "JWT_SECRET must be at least {} characters for security (current: {} chars). \
+                 Use a cryptographically random string, e.g.: openssl rand -base64 32",
+                Self::JWT_SECRET_MIN_LENGTH,
+                secret.len()
+            )));
+        }
+
+        Ok(secret)
     }
 
     /// Get the API key from the environment
@@ -1345,7 +1365,10 @@ max_iterations = 5
         // Set required env vars for validation
         // SAFETY: Tests are run single-threaded for env var safety
         unsafe {
-            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
+            std::env::set_var(
+                "TEST_JWT_SECRET",
+                "test-secret-at-least-32-characters-long-at-least-32-characters-long",
+            );
             std::env::set_var("TEST_API_KEY", "test-api-key");
         }
 
@@ -1363,7 +1386,7 @@ max_iterations = 5
     fn test_validation_missing_provider() {
         // SAFETY: Tests are run single-threaded for env var safety
         unsafe {
-            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
             std::env::set_var("TEST_API_KEY", "test-key");
         }
 
@@ -1388,7 +1411,7 @@ model = "test"
     fn test_validation_missing_model() {
         // SAFETY: Tests are run single-threaded for env var safety
         unsafe {
-            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
             std::env::set_var("TEST_API_KEY", "test-key");
         }
 
@@ -1415,7 +1438,7 @@ model = "nonexistent"
     fn test_validation_missing_tool() {
         // SAFETY: Tests are run single-threaded for env var safety
         unsafe {
-            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
             std::env::set_var("TEST_API_KEY", "test-key");
         }
 
@@ -1446,7 +1469,7 @@ tools = ["nonexistent_tool"]
     fn test_validation_missing_workflow_agent() {
         // SAFETY: Tests are run single-threaded for env var safety
         unsafe {
-            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
             std::env::set_var("TEST_API_KEY", "test-key");
         }
 
@@ -1571,7 +1594,7 @@ api_key_env = "TEST_API_KEY"
     fn test_circular_reference_detection() {
         // SAFETY: Tests are run single-threaded for env var safety
         unsafe {
-            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
             std::env::set_var("TEST_API_KEY", "test-key");
         }
 
@@ -1604,7 +1627,7 @@ fallback_agent = "agent_a"
     fn test_unused_provider_warning() {
         // SAFETY: Tests are run single-threaded for env var safety
         unsafe {
-            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
             std::env::set_var("TEST_API_KEY", "test-key");
         }
 
@@ -1639,7 +1662,7 @@ model = "default"
     fn test_unused_model_warning() {
         // SAFETY: Tests are run single-threaded for env var safety
         unsafe {
-            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
             std::env::set_var("TEST_API_KEY", "test-key");
         }
 
@@ -1674,7 +1697,7 @@ model = "used"
     fn test_unused_tool_warning() {
         // SAFETY: Tests are run single-threaded for env var safety
         unsafe {
-            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
             std::env::set_var("TEST_API_KEY", "test-key");
         }
 
@@ -1711,7 +1734,7 @@ tools = ["used_tool"]
     fn test_unused_agent_warning() {
         // SAFETY: Tests are run single-threaded for env var safety
         unsafe {
-            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
             std::env::set_var("TEST_API_KEY", "test-key");
         }
 
@@ -1747,7 +1770,7 @@ entry_agent = "router"
     fn test_no_warnings_for_fully_connected_config() {
         // SAFETY: Tests are run single-threaded for env var safety
         unsafe {
-            std::env::set_var("TEST_JWT_SECRET", "test-secret");
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
             std::env::set_var("TEST_API_KEY", "test-key");
         }
 

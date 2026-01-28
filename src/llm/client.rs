@@ -30,6 +30,19 @@ pub trait LLMClient: Send + Sync {
         prompt: &str,
     ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>;
 
+    /// Stream a completion with system prompt
+    async fn stream_with_system(
+        &self,
+        system: &str,
+        prompt: &str,
+    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>;
+
+    /// Stream a completion with conversation history
+    async fn stream_with_history(
+        &self,
+        messages: &[(String, String)], // (role, content) pairs
+    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>;
+
     /// Get the model name/identifier
     fn model_name(&self) -> &str;
 }
@@ -43,6 +56,34 @@ pub struct LLMResponse {
     pub tool_calls: Vec<ToolCall>,
     /// Reason the generation finished (e.g., "stop", "tool_calls", "length")
     pub finish_reason: String,
+}
+
+/// Model inference parameters
+#[derive(Debug, Clone, Default)]
+pub struct ModelParams {
+    /// Sampling temperature (0.0 = deterministic, 1.0+ = creative)
+    pub temperature: Option<f32>,
+    /// Maximum tokens to generate
+    pub max_tokens: Option<u32>,
+    /// Nucleus sampling parameter
+    pub top_p: Option<f32>,
+    /// Frequency penalty (-2.0 to 2.0)
+    pub frequency_penalty: Option<f32>,
+    /// Presence penalty (-2.0 to 2.0)
+    pub presence_penalty: Option<f32>,
+}
+
+impl ModelParams {
+    /// Create params from a ModelConfig
+    pub fn from_model_config(config: &ModelConfig) -> Self {
+        Self {
+            temperature: Some(config.temperature),
+            max_tokens: Some(config.max_tokens),
+            top_p: config.top_p,
+            frequency_penalty: config.frequency_penalty,
+            presence_penalty: config.presence_penalty,
+        }
+    }
 }
 
 /// LLM Provider configuration
@@ -61,6 +102,8 @@ pub enum Provider {
         api_base: String,
         /// Model identifier (e.g., "gpt-4", "gpt-3.5-turbo")
         model: String,
+        /// Model inference parameters
+        params: ModelParams,
     },
 
     /// Ollama local inference server
@@ -70,6 +113,8 @@ pub enum Provider {
         base_url: String,
         /// Model name (e.g., "ministral-3:3b", "mistral", "qwen3-vl:2b")
         model: String,
+        /// Model inference parameters
+        params: ModelParams,
     },
 
     /// LlamaCpp for direct GGUF model loading
@@ -77,6 +122,8 @@ pub enum Provider {
     LlamaCpp {
         /// Path to the GGUF model file
         model_path: String,
+        /// Model inference parameters
+        params: ModelParams,
     },
 }
 
@@ -97,20 +144,31 @@ impl Provider {
                 api_key,
                 api_base,
                 model,
-            } => Ok(Box::new(super::openai::OpenAIClient::new(
+                params,
+            } => Ok(Box::new(super::openai::OpenAIClient::with_params(
                 api_key.clone(),
                 api_base.clone(),
                 model.clone(),
+                params.clone(),
             ))),
 
             #[cfg(feature = "ollama")]
-            Provider::Ollama { base_url, model } => Ok(Box::new(
-                super::ollama::OllamaClient::new(base_url.clone(), model.clone()).await?,
+            Provider::Ollama {
+                base_url,
+                model,
+                params,
+            } => Ok(Box::new(
+                super::ollama::OllamaClient::with_params(
+                    base_url.clone(),
+                    model.clone(),
+                    params.clone(),
+                )
+                .await?,
             )),
 
             #[cfg(feature = "llamacpp")]
-            Provider::LlamaCpp { model_path } => Ok(Box::new(
-                super::llamacpp::LlamaCppClient::new(model_path.clone())?,
+            Provider::LlamaCpp { model_path, params } => Ok(Box::new(
+                super::llamacpp::LlamaCppClient::with_params(model_path.clone(), params.clone())?,
             )),
             _ => unreachable!("Provider variant not enabled"),
         }
@@ -156,7 +214,10 @@ impl Provider {
         #[cfg(feature = "llamacpp")]
         if let Ok(model_path) = std::env::var("LLAMACPP_MODEL_PATH") {
             if !model_path.is_empty() {
-                return Ok(Provider::LlamaCpp { model_path });
+                return Ok(Provider::LlamaCpp {
+                    model_path,
+                    params: ModelParams::default(),
+                });
             }
         }
 
@@ -171,6 +232,7 @@ impl Provider {
                     api_key,
                     api_base,
                     model,
+                    params: ModelParams::default(),
                 });
             }
         }
@@ -183,7 +245,11 @@ impl Provider {
                 .or_else(|_| std::env::var("OLLAMA_BASE_URL"))
                 .unwrap_or_else(|_| "http://localhost:11434".into());
             let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "ministral-3:3b".into());
-            return Ok(Provider::Ollama { base_url, model });
+            return Ok(Provider::Ollama {
+                base_url,
+                model,
+                params: ModelParams::default(),
+            });
         }
 
         // No provider available
@@ -261,6 +327,16 @@ impl Provider {
         provider_config: &ProviderConfig,
         model_override: Option<&str>,
     ) -> Result<Self> {
+        Self::from_config_with_params(provider_config, model_override, ModelParams::default())
+    }
+
+    /// Create a provider from TOML configuration with model parameters
+    #[allow(unused_variables)]
+    pub fn from_config_with_params(
+        provider_config: &ProviderConfig,
+        model_override: Option<&str>,
+        params: ModelParams,
+    ) -> Result<Self> {
         match provider_config {
             #[cfg(feature = "ollama")]
             ProviderConfig::Ollama {
@@ -271,6 +347,7 @@ impl Provider {
                 model: model_override
                     .map(String::from)
                     .unwrap_or_else(|| default_model.clone()),
+                params,
             }),
 
             #[cfg(not(feature = "ollama"))]
@@ -296,6 +373,7 @@ impl Provider {
                     model: model_override
                         .map(String::from)
                         .unwrap_or_else(|| default_model.clone()),
+                    params,
                 })
             }
 
@@ -307,6 +385,7 @@ impl Provider {
             #[cfg(feature = "llamacpp")]
             ProviderConfig::LlamaCpp { model_path, .. } => Ok(Provider::LlamaCpp {
                 model_path: model_path.clone(),
+                params,
             }),
 
             #[cfg(not(feature = "llamacpp"))]
@@ -324,7 +403,8 @@ impl Provider {
         model_config: &ModelConfig,
         provider_config: &ProviderConfig,
     ) -> Result<Self> {
-        Self::from_config(provider_config, Some(&model_config.model))
+        let params = ModelParams::from_model_config(model_config);
+        Self::from_config_with_params(provider_config, Some(&model_config.model), params)
     }
 }
 
@@ -447,6 +527,7 @@ mod tests {
             let factory = LLMClientFactory::new(Provider::Ollama {
                 base_url: "http://localhost:11434".to_string(),
                 model: "test".to_string(),
+                params: ModelParams::default(),
             });
             assert_eq!(factory.default_provider().name(), "ollama");
         }
@@ -458,6 +539,7 @@ mod tests {
         let provider = Provider::Ollama {
             base_url: "http://localhost:11434".to_string(),
             model: "ministral-3:3b".to_string(),
+            params: ModelParams::default(),
         };
 
         assert_eq!(provider.name(), "ollama");
@@ -472,6 +554,7 @@ mod tests {
             api_key: "sk-test".to_string(),
             api_base: "https://api.openai.com/v1".to_string(),
             model: "gpt-4".to_string(),
+            params: ModelParams::default(),
         };
 
         assert_eq!(provider.name(), "openai");
@@ -486,6 +569,7 @@ mod tests {
             api_key: "test".to_string(),
             api_base: "http://localhost:8000/v1".to_string(),
             model: "local-model".to_string(),
+            params: ModelParams::default(),
         };
 
         assert!(provider.is_local());
@@ -496,6 +580,7 @@ mod tests {
     fn test_llamacpp_provider_properties() {
         let provider = Provider::LlamaCpp {
             model_path: "/path/to/model.gguf".to_string(),
+            params: ModelParams::default(),
         };
 
         assert_eq!(provider.name(), "llamacpp");

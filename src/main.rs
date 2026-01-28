@@ -361,20 +361,6 @@ async fn run_server(
     );
 
     // =================================================================
-    // Initialize Agent Registry
-    // =================================================================
-    let agent_registry = AgentRegistry::from_config(
-        &config,
-        Arc::clone(&provider_registry),
-        Arc::clone(&tool_registry),
-    );
-    let agent_registry = Arc::new(agent_registry);
-    tracing::info!(
-        "Agent registry initialized with {} agents",
-        agent_registry.agent_names().len()
-    );
-
-    // =================================================================
     // Initialize Dynamic Configuration (TOON)
     // =================================================================
     let dynamic_config = match DynamicConfigManager::from_config(&config) {
@@ -407,6 +393,21 @@ async fn run_server(
     };
 
     // =================================================================
+    // Initialize Agent Registry (with TOON support)
+    // =================================================================
+    let agent_registry = AgentRegistry::with_dynamic_config(
+        &config,
+        Arc::clone(&provider_registry),
+        Arc::clone(&tool_registry),
+        Arc::clone(&dynamic_config),
+    );
+    let agent_registry = Arc::new(agent_registry);
+    tracing::info!(
+        "Agent registry initialized with {} agents (TOML + TOON)",
+        agent_registry.agent_names().len()
+    );
+
+    // =================================================================
     // Create Application State
     // =================================================================
     let state = AppState {
@@ -430,6 +431,8 @@ async fn run_server(
             // Auth endpoints
             ares::api::handlers::auth::register,
             ares::api::handlers::auth::login,
+            ares::api::handlers::auth::logout,
+            ares::api::handlers::auth::refresh_token,
             // Chat endpoints
             ares::api::handlers::chat::chat,
             ares::api::handlers::chat::chat_stream,
@@ -457,6 +460,9 @@ async fn run_server(
             ares::types::TokenResponse,
             ares::types::AgentType,
             ares::types::Source,
+            ares::api::handlers::auth::RefreshTokenRequest,
+            ares::api::handlers::auth::LogoutRequest,
+            ares::api::handlers::auth::LogoutResponse,
             ares::api::handlers::conversations::ConversationSummary,
             ares::api::handlers::conversations::ConversationDetails,
             ares::api::handlers::conversations::ConversationMessage,
@@ -482,8 +488,10 @@ async fn run_server(
     // =================================================================
     #[allow(unused_mut)]
     let mut app = Router::new()
-        // Health check
+        // Health check (simple - returns "OK")
         .route("/health", get(health_check))
+        // Detailed health check with component status
+        .route("/health/detailed", get(health_check_detailed))
         // Configuration info endpoint
         .route("/config/info", get(config_info))
         // API routes
@@ -515,29 +523,47 @@ async fn run_server(
     // Build CORS layer from configuration
     let cors = build_cors_layer(&config.server.cors_origins);
 
-    // Build rate limiting layer if enabled
+    // Build rate limiting layer if enabled (per-IP rate limiting using tower_governor)
     let app = if config.server.rate_limit_per_second > 0 {
-        use governor::{Quota, RateLimiter};
-        use std::num::NonZeroU32;
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 
-        let quota = Quota::per_second(
-            NonZeroU32::new(config.server.rate_limit_per_second)
-                .unwrap_or(NonZeroU32::new(100).unwrap()),
-        )
-        .allow_burst(
-            NonZeroU32::new(config.server.rate_limit_burst).unwrap_or(NonZeroU32::new(10).unwrap()),
+        // Configure per-IP rate limiting
+        let governor_conf = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(config.server.rate_limit_per_second as u64)
+                .burst_size(config.server.rate_limit_burst)
+                .use_headers() // Include x-ratelimit-* headers in responses
+                .finish()
+                .expect("Failed to build rate limiter configuration"),
         );
 
-        let _governor = RateLimiter::direct(quota);
+        // Clone the limiter for background cleanup task
+        let governor_limiter = governor_conf.limiter().clone();
+        let cleanup_interval = Duration::from_secs(60);
+
+        // Background task to periodically clean up old rate limiting entries
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(cleanup_interval);
+            loop {
+                interval.tick().await;
+                tracing::debug!(
+                    "Rate limiter storage size: {}, cleaning up old entries",
+                    governor_limiter.len()
+                );
+                governor_limiter.retain_recent();
+            }
+        });
+
         tracing::info!(
-            "Rate limiting enabled: {} req/sec with burst of {}",
+            "Rate limiting enabled: {} req/sec per IP with burst of {}",
             config.server.rate_limit_per_second,
             config.server.rate_limit_burst
         );
 
-        // Note: For production, consider using tower_governor for per-IP rate limiting
-        // Currently using a global rate limiter for simplicity
-        app.layer(cors)
+        app.layer(GovernorLayer::new(governor_conf))
+            .layer(cors)
             .layer(TraceLayer::new_for_http())
             .with_state(state)
     } else {
@@ -558,7 +584,12 @@ async fn run_server(
     #[cfg(feature = "ui")]
     tracing::info!("Web UI available at http://{}/", addr);
 
-    axum::serve(listener, app).await?;
+    // Use into_make_service_with_connect_info to provide peer IP for rate limiting
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }
@@ -620,6 +651,61 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
 /// Health check endpoint
 async fn health_check() -> &'static str {
     "OK"
+}
+
+/// Detailed health check endpoint with component status
+async fn health_check_detailed(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    use std::time::Instant;
+
+    let start = Instant::now();
+
+    // Check database connectivity
+    let db_status = match state.turso.operation_conn().await {
+        Ok(_) => serde_json::json!({ "status": "healthy" }),
+        Err(e) => serde_json::json!({ "status": "unhealthy", "error": e.to_string() }),
+    };
+
+    // Get provider info
+    let providers: Vec<String> = state
+        .config_manager
+        .config()
+        .providers
+        .keys()
+        .cloned()
+        .collect();
+
+    // Get agent info
+    let agents: Vec<String> = state
+        .config_manager
+        .config()
+        .agents
+        .keys()
+        .cloned()
+        .collect();
+
+    let elapsed_ms = start.elapsed().as_millis();
+
+    // Overall status is healthy if database is healthy
+    let db_healthy = db_status
+        .get("status")
+        .and_then(|s| s.as_str())
+        .map(|s| s == "healthy")
+        .unwrap_or(false);
+    let overall_status = if db_healthy { "healthy" } else { "degraded" };
+
+    axum::Json(serde_json::json!({
+        "status": overall_status,
+        "version": env!("CARGO_PKG_VERSION"),
+        "checks": {
+            "database": db_status,
+        },
+        "providers": providers,
+        "agents": agents,
+        "latency_ms": elapsed_ms,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
 }
 
 /// Configuration info endpoint (non-sensitive info only)

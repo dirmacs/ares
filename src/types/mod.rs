@@ -204,8 +204,12 @@ pub struct WorkflowRequest {
 // ============= Agent Types =============
 
 /// Available agent types in the system.
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+///
+/// This enum supports both built-in agent types and custom user-defined agents.
+/// The `Custom` variant allows for extensibility without modifying this enum.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum AgentType {
     /// Routes requests to appropriate specialized agents.
     Router,
@@ -220,7 +224,53 @@ pub enum AgentType {
     /// Handles financial queries and analysis.
     Finance,
     /// Handles HR and employee-related queries.
+    #[serde(rename = "hr")]
     HR,
+    /// Custom user-defined agent type.
+    /// The string contains the agent's unique identifier/name.
+    #[serde(untagged)]
+    Custom(String),
+}
+
+impl AgentType {
+    /// Returns the agent type name as a string slice.
+    pub fn as_str(&self) -> &str {
+        match self {
+            AgentType::Router => "router",
+            AgentType::Orchestrator => "orchestrator",
+            AgentType::Product => "product",
+            AgentType::Invoice => "invoice",
+            AgentType::Sales => "sales",
+            AgentType::Finance => "finance",
+            AgentType::HR => "hr",
+            AgentType::Custom(name) => name,
+        }
+    }
+
+    /// Creates an AgentType from a string, using built-in types when possible.
+    pub fn from_string(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "router" => AgentType::Router,
+            "orchestrator" => AgentType::Orchestrator,
+            "product" => AgentType::Product,
+            "invoice" => AgentType::Invoice,
+            "sales" => AgentType::Sales,
+            "finance" => AgentType::Finance,
+            "hr" => AgentType::HR,
+            _ => AgentType::Custom(s.to_string()),
+        }
+    }
+
+    /// Returns true if this is a built-in agent type.
+    pub fn is_builtin(&self) -> bool {
+        !matches!(self, AgentType::Custom(_))
+    }
+}
+
+impl std::fmt::Display for AgentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
 
 /// Context passed to agents during request processing.
@@ -450,6 +500,31 @@ pub struct Claims {
 
 // ============= Error Types =============
 
+/// Error codes for programmatic error handling.
+/// These are stable identifiers that clients can use to handle specific error cases.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ErrorCode {
+    /// Database operation failed
+    DatabaseError,
+    /// LLM/AI model operation failed
+    LlmError,
+    /// Authentication failed (invalid credentials)
+    AuthenticationFailed,
+    /// Authorization failed (valid credentials but insufficient permissions)
+    AuthorizationFailed,
+    /// Requested resource was not found
+    NotFound,
+    /// Input validation failed
+    InvalidInput,
+    /// Server configuration error
+    ConfigurationError,
+    /// External service (API, webhook, etc.) failed
+    ExternalServiceError,
+    /// Internal server error
+    InternalError,
+}
+
 /// Application-wide error type.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -486,21 +561,70 @@ pub enum AppError {
     Internal(String),
 }
 
+impl AppError {
+    /// Get the error code for this error type.
+    pub fn code(&self) -> ErrorCode {
+        match self {
+            AppError::Database(_) => ErrorCode::DatabaseError,
+            AppError::LLM(_) => ErrorCode::LlmError,
+            AppError::Auth(_) => ErrorCode::AuthenticationFailed,
+            AppError::NotFound(_) => ErrorCode::NotFound,
+            AppError::InvalidInput(_) => ErrorCode::InvalidInput,
+            AppError::Configuration(_) => ErrorCode::ConfigurationError,
+            AppError::External(_) => ErrorCode::ExternalServiceError,
+            AppError::Internal(_) => ErrorCode::InternalError,
+        }
+    }
+
+    /// Check if this is an internal error that should be logged.
+    fn is_internal(&self) -> bool {
+        matches!(
+            self,
+            AppError::Database(_)
+                | AppError::LLM(_)
+                | AppError::Configuration(_)
+                | AppError::Internal(_)
+        )
+    }
+}
+
+// ============= Error Conversions =============
+
+impl From<std::io::Error> for AppError {
+    fn from(err: std::io::Error) -> Self {
+        AppError::Internal(format!("IO error: {}", err))
+    }
+}
+
+impl From<serde_json::Error> for AppError {
+    fn from(err: serde_json::Error) -> Self {
+        AppError::InvalidInput(format!("JSON error: {}", err))
+    }
+}
+
 impl axum::response::IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        let (status, message) = match self {
-            AppError::Database(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg),
-            AppError::LLM(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg),
-            AppError::Auth(msg) => (axum::http::StatusCode::UNAUTHORIZED, msg),
-            AppError::NotFound(msg) => (axum::http::StatusCode::NOT_FOUND, msg),
-            AppError::InvalidInput(msg) => (axum::http::StatusCode::BAD_REQUEST, msg),
-            AppError::Configuration(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg),
-            AppError::External(msg) => (axum::http::StatusCode::BAD_GATEWAY, msg),
-            AppError::Internal(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg),
+        // Log internal errors before returning
+        if self.is_internal() {
+            tracing::error!(error = %self, code = ?self.code(), "Internal error occurred");
+        }
+
+        let (status, message) = match &self {
+            AppError::Database(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            AppError::LLM(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            AppError::Auth(msg) => (axum::http::StatusCode::UNAUTHORIZED, msg.clone()),
+            AppError::NotFound(msg) => (axum::http::StatusCode::NOT_FOUND, msg.clone()),
+            AppError::InvalidInput(msg) => (axum::http::StatusCode::BAD_REQUEST, msg.clone()),
+            AppError::Configuration(msg) => {
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
+            }
+            AppError::External(msg) => (axum::http::StatusCode::BAD_GATEWAY, msg.clone()),
+            AppError::Internal(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
 
         let body = serde_json::json!({
-            "error": message
+            "error": message,
+            "code": self.code()
         });
 
         (status, axum::Json(body)).into_response()

@@ -148,7 +148,7 @@ pub use llm::{
     ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, Provider, ProviderRegistry,
 };
 pub use tools::registry::ToolRegistry;
-pub use types::{AppError, Result};
+pub use types::{AppError, ErrorCode, Result};
 pub use utils::toml_config::{AresConfig, AresConfigManager};
 pub use utils::toon_config::DynamicConfigManager;
 pub use workflows::{WorkflowEngine, WorkflowOutput, WorkflowStep};

@@ -132,6 +132,47 @@ impl LLMClient for MockLLMClient {
         Ok(Box::new(stream.boxed()))
     }
 
+    async fn stream_with_system(
+        &self,
+        _system: &str,
+        _prompt: &str,
+    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+        if self.should_fail {
+            return Err(AppError::LLM("Mock LLM failure".to_string()));
+        }
+
+        let response = self.response.clone();
+        let chunks: Vec<String> = response
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(5)
+            .map(|c| c.iter().collect())
+            .collect();
+
+        let stream = stream::iter(chunks.into_iter().map(Ok));
+        Ok(Box::new(stream.boxed()))
+    }
+
+    async fn stream_with_history(
+        &self,
+        _messages: &[(String, String)],
+    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+        if self.should_fail {
+            return Err(AppError::LLM("Mock LLM failure".to_string()));
+        }
+
+        let response = self.response.clone();
+        let chunks: Vec<String> = response
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(5)
+            .map(|c| c.iter().collect())
+            .collect();
+
+        let stream = stream::iter(chunks.into_iter().map(Ok));
+        Ok(Box::new(stream.boxed()))
+    }
+
     fn model_name(&self) -> &str {
         "mock-model"
     }
@@ -153,6 +194,7 @@ impl MockLLMFactory {
             provider: Provider::Ollama {
                 base_url: "http://localhost:11434".to_string(),
                 model: "mock".to_string(),
+                params: Default::default(),
             },
             client: Arc::new(client),
         }

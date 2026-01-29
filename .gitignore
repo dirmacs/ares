@@ -37,3 +37,12 @@ data/vectors/
 # Node modules (UI)
 ui/node_modules/
 ui/dist/
+
+# Local cargo config
+.cargo/
+
+# Windows null device artifact
+nul
+
+# Session files
+session-*.md

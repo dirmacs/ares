@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### High Priority (P1)
 
 - **Refresh Token Invalidation**: Fixed refresh tokens not being invalidated on logout
-  - Added `delete_refresh_token()` and `delete_all_user_refresh_tokens()` to `DbPool` trait
+  - Added `delete_session_by_token_hash()` to `DbPool` trait for session cleanup on logout
   - Location: `src/api/handlers/auth.rs`, `src/db/traits.rs`
 
 - **Model Config Params Not Passed**: Fixed LLM clients ignoring temperature/top_p/max_tokens

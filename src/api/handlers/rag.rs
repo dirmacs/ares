@@ -65,19 +65,15 @@ async fn get_embedding_service() -> Result<Arc<EmbeddingService>> {
 }
 
 /// Global vector store (lazy initialized).
-/// NOTE: Uses default path "./data/vectors". For config-driven path, consider moving
-/// vector store initialization to AppState setup in lib.rs, similar to how
-/// config_manager and provider_registry are initialized at startup.
+/// Uses a Mutex to allow late initialization with config-driven path.
 static VECTOR_STORE: OnceCell<Arc<AresVectorStore>> = OnceCell::const_new();
 
-/// Get or create the vector store.
-/// Uses the default path. For proper config integration, the VectorStore should
-/// be initialized in AppState using config_manager.config().rag.vector_path.
-async fn get_vector_store() -> Result<Arc<AresVectorStore>> {
+/// Get or create the vector store with the configured path.
+/// The path is read from config on first initialization.
+async fn get_vector_store(vector_path: &str) -> Result<Arc<AresVectorStore>> {
     VECTOR_STORE
         .get_or_try_init(|| async {
-            // Default path matches ares.example.toml [rag] vector_path default
-            let store = AresVectorStore::new(Some("./data/vectors".to_string())).await?;
+            let store = AresVectorStore::new(Some(vector_path.to_string())).await?;
             Ok::<_, AppError>(Arc::new(store))
         })
         .await
@@ -105,7 +101,7 @@ async fn get_vector_store() -> Result<Arc<AresVectorStore>> {
     security(("bearer" = []))
 )]
 pub async fn ingest(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     AuthUser(claims): AuthUser,
     Json(payload): Json<RagIngestRequest>,
 ) -> Result<Json<RagIngestResponse>> {
@@ -124,7 +120,8 @@ pub async fn ingest(
 
     // Get services
     let embedding_service = get_embedding_service().await?;
-    let vector_store = get_vector_store().await?;
+    let vector_path = &state.config_manager.config().rag.vector_path;
+    let vector_store = get_vector_store(vector_path).await?;
 
     // Parse chunking strategy
     let strategy: ChunkingStrategy = payload
@@ -223,7 +220,7 @@ pub async fn ingest(
     security(("bearer" = []))
 )]
 pub async fn search(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     AuthUser(claims): AuthUser,
     Json(payload): Json<RagSearchRequest>,
 ) -> Result<Json<RagSearchResponse>> {
@@ -242,7 +239,8 @@ pub async fn search(
 
     // Get services
     let embedding_service = get_embedding_service().await?;
-    let vector_store = get_vector_store().await?;
+    let vector_path = &state.config_manager.config().rag.vector_path;
+    let vector_store = get_vector_store(vector_path).await?;
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
@@ -427,7 +425,7 @@ pub async fn search(
     security(("bearer" = []))
 )]
 pub async fn delete_collection(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     AuthUser(claims): AuthUser,
     Json(payload): Json<RagDeleteCollectionRequest>,
 ) -> Result<Json<RagDeleteCollectionResponse>> {
@@ -439,7 +437,8 @@ pub async fn delete_collection(
     // Scope collection to user for isolation
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
-    let vector_store = get_vector_store().await?;
+    let vector_path = &state.config_manager.config().rag.vector_path;
+    let vector_store = get_vector_store(vector_path).await?;
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
@@ -487,10 +486,11 @@ pub async fn delete_collection(
     security(("bearer" = []))
 )]
 pub async fn list_collections(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<Vec<crate::db::CollectionInfo>>> {
-    let vector_store = get_vector_store().await?;
+    let vector_path = &state.config_manager.config().rag.vector_path;
+    let vector_store = get_vector_store(vector_path).await?;
     let all_collections = vector_store.list_collections().await?;
 
     // Filter to only collections belonging to this user and unscope names

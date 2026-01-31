@@ -108,6 +108,7 @@ impl LLMClient for MockLLMClient {
             content: self.response.clone(),
             tool_calls: self.tool_calls.clone(),
             finish_reason: finish_reason.to_string(),
+            usage: None,
         })
     }
 

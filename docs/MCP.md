@@ -126,7 +126,7 @@ Get statistics about the MCP server.
 ```json
 {
   "server": "ARES MCP Server",
-  "version": "0.1.1",
+  "version": "0.3.3",
   "operation_count": 42,
   "available_tools": ["calculator", "web_search", "server_stats", "echo"]
 }

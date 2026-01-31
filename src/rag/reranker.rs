@@ -2,6 +2,16 @@
 //!
 //! This module provides reranking capabilities using cross-encoder models
 //! to improve the quality of retrieved documents after initial retrieval.
+//!
+//! # Feature Flag
+//!
+//! This module requires the `local-embeddings` feature to be enabled.
+//! Without it, local ONNX-based reranking is not available.
+//!
+//! ```toml
+//! [dependencies]
+//! ares-server = { version = "0.3", features = ["local-embeddings"] }
+//! ```
 
 use std::cmp::Ordering;
 use std::str::FromStr;

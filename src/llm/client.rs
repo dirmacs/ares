@@ -47,6 +47,28 @@ pub trait LLMClient: Send + Sync {
     fn model_name(&self) -> &str;
 }
 
+/// Token usage statistics from an LLM generation call
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    /// Number of tokens in the prompt/input
+    pub prompt_tokens: u32,
+    /// Number of tokens in the completion/output
+    pub completion_tokens: u32,
+    /// Total tokens used (prompt + completion)
+    pub total_tokens: u32,
+}
+
+impl TokenUsage {
+    /// Create a new TokenUsage with the given values
+    pub fn new(prompt_tokens: u32, completion_tokens: u32) -> Self {
+        Self {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+        }
+    }
+}
+
 /// Response from an LLM generation call
 #[derive(Debug, Clone)]
 pub struct LLMResponse {
@@ -56,6 +78,8 @@ pub struct LLMResponse {
     pub tool_calls: Vec<ToolCall>,
     /// Reason the generation finished (e.g., "stop", "tool_calls", "length")
     pub finish_reason: String,
+    /// Token usage statistics (if provided by the model)
+    pub usage: Option<TokenUsage>,
 }
 
 /// Model inference parameters
@@ -125,6 +149,17 @@ pub enum Provider {
         /// Model inference parameters
         params: ModelParams,
     },
+
+    /// Anthropic Claude API
+    #[cfg(feature = "anthropic")]
+    Anthropic {
+        /// API key for authentication
+        api_key: String,
+        /// Model identifier (e.g., "claude-3-5-sonnet-20241022")
+        model: String,
+        /// Model inference parameters
+        params: ModelParams,
+    },
 }
 
 impl Provider {
@@ -170,6 +205,17 @@ impl Provider {
             Provider::LlamaCpp { model_path, params } => Ok(Box::new(
                 super::llamacpp::LlamaCppClient::with_params(model_path.clone(), params.clone())?,
             )),
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic {
+                api_key,
+                model,
+                params,
+            } => Ok(Box::new(super::anthropic::AnthropicClient::with_params(
+                api_key.clone(),
+                model.clone(),
+                params.clone(),
+            ))),
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -237,6 +283,20 @@ impl Provider {
             }
         }
 
+        // Check for Anthropic (requires explicit API key configuration)
+        #[cfg(feature = "anthropic")]
+        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+            if !api_key.is_empty() {
+                let model = std::env::var("ANTHROPIC_MODEL")
+                    .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into());
+                return Ok(Provider::Anthropic {
+                    api_key,
+                    model,
+                    params: ModelParams::default(),
+                });
+            }
+        }
+
         // Ollama as default local inference (no API key required)
         #[cfg(feature = "ollama")]
         {
@@ -271,6 +331,9 @@ impl Provider {
 
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => "llamacpp",
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => "anthropic",
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -287,6 +350,9 @@ impl Provider {
 
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => false,
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => true,
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -307,6 +373,9 @@ impl Provider {
 
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => true,
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => false,
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -391,6 +460,31 @@ impl Provider {
             #[cfg(not(feature = "llamacpp"))]
             ProviderConfig::LlamaCpp { .. } => Err(AppError::Configuration(
                 "LlamaCpp provider configured but 'llamacpp' feature is not enabled".into(),
+            )),
+
+            #[cfg(feature = "anthropic")]
+            ProviderConfig::Anthropic {
+                api_key_env,
+                default_model,
+            } => {
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    AppError::Configuration(format!(
+                        "Anthropic API key environment variable '{}' is not set",
+                        api_key_env
+                    ))
+                })?;
+                Ok(Provider::Anthropic {
+                    api_key,
+                    model: model_override
+                        .map(String::from)
+                        .unwrap_or_else(|| default_model.clone()),
+                    params,
+                })
+            }
+
+            #[cfg(not(feature = "anthropic"))]
+            ProviderConfig::Anthropic { .. } => Err(AppError::Configuration(
+                "Anthropic provider configured but 'anthropic' feature is not enabled".into(),
             )),
         }
     }
@@ -485,11 +579,30 @@ mod tests {
             content: "Hello".to_string(),
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
+            usage: None,
         };
 
         assert_eq!(response.content, "Hello");
         assert!(response.tool_calls.is_empty());
         assert_eq!(response.finish_reason, "stop");
+        assert!(response.usage.is_none());
+    }
+
+    #[test]
+    fn test_llm_response_with_usage() {
+        let usage = TokenUsage::new(100, 50);
+        let response = LLMResponse {
+            content: "Hello".to_string(),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: Some(usage),
+        };
+
+        assert!(response.usage.is_some());
+        let usage = response.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 50);
+        assert_eq!(usage.total_tokens, 150);
     }
 
     #[test]
@@ -511,11 +624,13 @@ mod tests {
             content: "".to_string(),
             tool_calls,
             finish_reason: "tool_calls".to_string(),
+            usage: Some(TokenUsage::new(50, 25)),
         };
 
         assert_eq!(response.tool_calls.len(), 2);
         assert_eq!(response.tool_calls[0].name, "calculator");
         assert_eq!(response.finish_reason, "tool_calls");
+        assert_eq!(response.usage.as_ref().unwrap().total_tokens, 75);
     }
 
     #[test]
@@ -586,5 +701,19 @@ mod tests {
         assert_eq!(provider.name(), "llamacpp");
         assert!(!provider.requires_api_key());
         assert!(provider.is_local());
+    }
+
+    #[cfg(feature = "anthropic")]
+    #[test]
+    fn test_anthropic_provider_properties() {
+        let provider = Provider::Anthropic {
+            api_key: "sk-ant-test".to_string(),
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            params: ModelParams::default(),
+        };
+
+        assert_eq!(provider.name(), "anthropic");
+        assert!(provider.requires_api_key());
+        assert!(!provider.is_local());
     }
 }

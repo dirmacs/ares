@@ -11,6 +11,9 @@ pub mod chat;
 /// Conversation CRUD handlers.
 pub mod conversations;
 /// RAG (document ingestion/search) handlers.
+/// Requires the `local-embeddings` feature (for ONNX-based embeddings) and
+/// `ares-vector` feature (for the embedded vector database).
+#[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
 pub mod rag;
 /// Research coordination handlers.
 pub mod research;

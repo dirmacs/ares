@@ -22,7 +22,7 @@
 //! let response = client.generate("Hello, world!").await?;
 //! ```
 
-use crate::llm::client::{LLMClient, LLMResponse, ModelParams};
+use crate::llm::client::{LLMClient, LLMResponse, ModelParams, TokenUsage};
 use crate::types::{AppError, Result, ToolDefinition};
 use async_stream::stream;
 use async_trait::async_trait;
@@ -542,6 +542,8 @@ Otherwise, respond normally with text."#,
             content,
             tool_calls,
             finish_reason: finish_reason.to_string(),
+            // Note: llama-cpp-2 crate doesn't expose token counts in its API
+            usage: None,
         })
     }
 

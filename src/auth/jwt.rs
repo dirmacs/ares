@@ -14,6 +14,9 @@ pub struct AuthService {
     jwt_secret: String,
     access_expiry: i64,
     refresh_expiry: i64,
+    /// Leeway in seconds for token expiration validation (default: 60)
+    /// This accounts for clock skew between servers.
+    leeway: u64,
 }
 
 impl AuthService {
@@ -28,6 +31,28 @@ impl AuthService {
             jwt_secret,
             access_expiry,
             refresh_expiry,
+            leeway: 60, // Default 60-second leeway for clock skew
+        }
+    }
+
+    /// Creates a new AuthService with custom leeway for token validation.
+    ///
+    /// # Arguments
+    /// * `jwt_secret` - Secret key for signing JWTs (should be at least 32 chars)
+    /// * `access_expiry` - Access token validity in seconds
+    /// * `refresh_expiry` - Refresh token validity in seconds
+    /// * `leeway` - Leeway in seconds for expiration checks (0 for strict)
+    pub fn with_leeway(
+        jwt_secret: String,
+        access_expiry: i64,
+        refresh_expiry: i64,
+        leeway: u64,
+    ) -> Self {
+        Self {
+            jwt_secret,
+            access_expiry,
+            refresh_expiry,
+            leeway,
         }
     }
 
@@ -100,7 +125,16 @@ impl AuthService {
 
     /// Verifies a JWT token and returns the claims.
     pub fn verify_token(&self, token: &str) -> Result<Claims> {
-        let validation = Validation::new(Algorithm::HS256);
+        self.verify_token_with_leeway(token, self.leeway)
+    }
+
+    /// Verifies a JWT token with a custom leeway (in seconds) for expiration checks.
+    ///
+    /// The leeway accounts for clock skew between servers. Default is 60 seconds.
+    /// Use leeway of 0 for strict expiration checking (e.g., in tests).
+    pub fn verify_token_with_leeway(&self, token: &str, leeway: u64) -> Result<Claims> {
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.leeway = leeway;
 
         decode::<Claims>(
             token,

@@ -17,6 +17,9 @@
 //! This feature is optional because the ONNX runtime (`ort`) can have build issues on some platforms,
 //! particularly Windows with certain MSVC versions.
 //!
+//! **Note:** The `local-embeddings` feature is NOT supported on Windows MSVC due to linker errors
+//! in `ort-sys`. Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs.
+//!
 //! Without `local-embeddings`, you can still use:
 //! - Remote embedding APIs (OpenAI embeddings, Ollama embeddings, etc.)
 //! - The chunker and search modules
@@ -55,6 +58,21 @@
 //! - `BAAI/bge-small-en-v1.5` - Fast, good quality (default)
 //! - `BAAI/bge-base-en-v1.5` - Higher quality, slower
 //! - `sentence-transformers/all-MiniLM-L6-v2` - Lightweight
+
+// Compile-time error for unsupported platform + feature combination
+#[cfg(all(
+    feature = "local-embeddings",
+    target_os = "windows",
+    target_env = "msvc"
+))]
+compile_error!(
+    "The `local-embeddings` feature is not supported on Windows MSVC due to ort-sys linker errors. \
+    Please use one of the following alternatives:\n\
+    1. Use WSL (Windows Subsystem for Linux)\n\
+    2. Use remote embedding APIs (OpenAI, Ollama, etc.)\n\
+    3. Build on Linux or macOS\n\
+    4. Disable this feature: cargo build --no-default-features --features \"...\""
+);
 
 pub mod cache;
 pub mod chunker;

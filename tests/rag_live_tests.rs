@@ -10,13 +10,13 @@
 //!
 //! ```bash
 //! # Run all RAG live tests
-//! RAG_LIVE_TESTS=1 cargo test --features ares-vector --test rag_live_tests -- --ignored
+//! RAG_LIVE_TESTS=1 cargo test --features "ares-vector,local-embeddings" --test rag_live_tests -- --ignored
 //!
 //! # Run with specific embedding model
-//! RAG_EMBEDDING_MODEL=bge-small-en-v1.5 RAG_LIVE_TESTS=1 cargo test --features ares-vector --test rag_live_tests -- --ignored
+//! RAG_EMBEDDING_MODEL=bge-small-en-v1.5 RAG_LIVE_TESTS=1 cargo test --features "ares-vector,local-embeddings" --test rag_live_tests -- --ignored
 //!
 //! # Run with verbose output
-//! RAG_LIVE_TESTS=1 RUST_LOG=debug cargo test --features ares-vector --test rag_live_tests -- --ignored --nocapture
+//! RAG_LIVE_TESTS=1 RUST_LOG=debug cargo test --features "ares-vector,local-embeddings" --test rag_live_tests -- --ignored --nocapture
 //! ```
 //!
 //! # Environment Variables
@@ -25,8 +25,13 @@
 //! - `RAG_EMBEDDING_MODEL` - Embedding model to use (default: bge-small-en-v1.5)
 //! - `RAG_VECTOR_PATH` - Path for vector store persistence (default: temp dir)
 //! - `RAG_RERANKER_MODEL` - Reranker model to use (default: bge-reranker-base)
+//!
+//! # Required Features
+//!
+//! - `ares-vector` - Pure Rust vector store
+//! - `local-embeddings` - ONNX-based local embedding models
 
-#![cfg(feature = "ares-vector")]
+#![cfg(all(feature = "ares-vector", feature = "local-embeddings"))]
 
 use ares::{
     db::{AresVectorStore, VectorStore},

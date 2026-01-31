@@ -162,6 +162,7 @@ fn test_llm_response_struct() {
         content: "Test content".to_string(),
         tool_calls: vec![],
         finish_reason: "stop".to_string(),
+        usage: None,
     };
 
     assert_eq!(response.content, "Test content");
@@ -188,6 +189,7 @@ fn test_llm_response_with_tool_calls() {
         content: "".to_string(),
         tool_calls: tool_calls.clone(),
         finish_reason: "tool_calls".to_string(),
+        usage: None,
     };
 
     assert_eq!(response.tool_calls.len(), 2);

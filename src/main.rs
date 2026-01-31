@@ -424,7 +424,12 @@ async fn run_server(
     // =================================================================
     // Build OpenAPI Documentation (only when swagger-ui is enabled)
     // =================================================================
-    #[cfg(feature = "swagger-ui")]
+    // Version with RAG endpoints (requires both local-embeddings and ares-vector)
+    #[cfg(all(
+        feature = "swagger-ui",
+        feature = "local-embeddings",
+        feature = "ares-vector"
+    ))]
     #[derive(OpenApi)]
     #[openapi(
         paths(
@@ -474,6 +479,63 @@ async fn run_server(
             (name = "research", description = "Research endpoints"),
             (name = "conversations", description = "Conversation management endpoints"),
             (name = "rag", description = "RAG (Retrieval Augmented Generation) endpoints"),
+        ),
+        info(
+            title = "A.R.E.S - Agentic Retrieval Enhanced Server API",
+            version = "0.3.0",
+            description = "Production-grade agentic chatbot server with multi-provider LLM support"
+        )
+    )]
+    struct ApiDoc;
+
+    // Version without RAG endpoints (when local-embeddings is not available)
+    #[cfg(all(
+        feature = "swagger-ui",
+        not(all(feature = "local-embeddings", feature = "ares-vector"))
+    ))]
+    #[derive(OpenApi)]
+    #[openapi(
+        paths(
+            // Auth endpoints
+            ares::api::handlers::auth::register,
+            ares::api::handlers::auth::login,
+            ares::api::handlers::auth::logout,
+            ares::api::handlers::auth::refresh_token,
+            // Chat endpoints
+            ares::api::handlers::chat::chat,
+            ares::api::handlers::chat::chat_stream,
+            ares::api::handlers::chat::get_user_memory,
+            // Research endpoints
+            ares::api::handlers::research::deep_research,
+            // Conversation endpoints
+            ares::api::handlers::conversations::list_conversations,
+            ares::api::handlers::conversations::get_conversation,
+            ares::api::handlers::conversations::update_conversation,
+            ares::api::handlers::conversations::delete_conversation,
+        ),
+        components(schemas(
+            ares::types::ChatRequest,
+            ares::types::ChatResponse,
+            ares::types::ResearchRequest,
+            ares::types::ResearchResponse,
+            ares::types::LoginRequest,
+            ares::types::RegisterRequest,
+            ares::types::TokenResponse,
+            ares::types::AgentType,
+            ares::types::Source,
+            ares::api::handlers::auth::RefreshTokenRequest,
+            ares::api::handlers::auth::LogoutRequest,
+            ares::api::handlers::auth::LogoutResponse,
+            ares::api::handlers::conversations::ConversationSummary,
+            ares::api::handlers::conversations::ConversationDetails,
+            ares::api::handlers::conversations::ConversationMessage,
+            ares::api::handlers::conversations::UpdateConversationRequest,
+        )),
+        tags(
+            (name = "auth", description = "Authentication endpoints"),
+            (name = "chat", description = "Chat endpoints"),
+            (name = "research", description = "Research endpoints"),
+            (name = "conversations", description = "Conversation management endpoints"),
         ),
         info(
             title = "A.R.E.S - Agentic Retrieval Enhanced Server API",
@@ -584,14 +646,47 @@ async fn run_server(
     #[cfg(feature = "ui")]
     tracing::info!("Web UI available at http://{}/", addr);
 
-    // Use into_make_service_with_connect_info to provide peer IP for rate limiting
-    axum::serve(
+    // Use graceful shutdown with signal handling
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await?;
+    .with_graceful_shutdown(shutdown_signal());
 
+    server.await?;
+
+    tracing::info!("Server shut down gracefully");
     Ok(())
+}
+
+/// Signal handler for graceful shutdown.
+/// Listens for Ctrl+C (SIGINT) and SIGTERM on Unix systems.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("Received Ctrl+C, initiating graceful shutdown...");
+        }
+        _ = terminate => {
+            tracing::info!("Received SIGTERM, initiating graceful shutdown...");
+        }
+    }
 }
 
 /// Initialize local SQLite database

@@ -20,7 +20,7 @@
 //! let response = client.generate("Hello!").await?;
 //! ```
 
-use crate::llm::client::{LLMClient, LLMResponse, ModelParams};
+use crate::llm::client::{LLMClient, LLMResponse, ModelParams, TokenUsage};
 use crate::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_openai::{
     config::OpenAIConfig,
@@ -353,10 +353,16 @@ impl LLMClient for OpenAIClient {
             .map(|calls| Self::extract_tool_calls(calls))
             .unwrap_or_default();
 
+        // Extract token usage if available
+        let usage = response
+            .usage
+            .map(|u| TokenUsage::new(u.prompt_tokens, u.completion_tokens));
+
         Ok(LLMResponse {
             content,
             tool_calls,
             finish_reason,
+            usage,
         })
     }
 

@@ -20,7 +20,7 @@
 //! let response = client.generate("Hello!").await?;
 //! ```
 
-use crate::llm::client::{LLMClient, LLMResponse, ModelParams};
+use crate::llm::client::{LLMClient, LLMResponse, ModelParams, TokenUsage};
 use crate::tools::registry::ToolRegistry;
 use crate::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_stream::stream;
@@ -328,10 +328,17 @@ impl LLMClient for OllamaClient {
             "tool_calls"
         };
 
+        // Extract token usage from final_data if available
+        let usage = response
+            .final_data
+            .as_ref()
+            .map(|data| TokenUsage::new(data.prompt_eval_count as u32, data.eval_count as u32));
+
         Ok(LLMResponse {
             content,
             tool_calls,
             finish_reason: finish_reason.to_string(),
+            usage,
         })
     }
 
@@ -881,6 +888,8 @@ impl OllamaClient {
                     content: response.message.content,
                     tool_calls: vec![],
                     finish_reason: "stop".to_string(),
+                    // Token usage not available in tool loop iterations
+                    usage: None,
                 });
             }
 

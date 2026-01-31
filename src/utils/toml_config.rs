@@ -268,6 +268,13 @@ pub enum ProviderConfig {
         #[serde(default = "default_max_tokens")]
         max_tokens: u32,
     },
+    /// Anthropic Claude API.
+    Anthropic {
+        /// Environment variable containing API key.
+        api_key_env: String,
+        /// Default model to use with this provider.
+        default_model: String,
+    },
 }
 
 fn default_ollama_url() -> String {
@@ -844,6 +851,9 @@ impl AresConfig {
         for (name, provider) in &self.providers {
             match provider {
                 ProviderConfig::OpenAI { api_key_env, .. } => {
+                    self.validate_env_var(api_key_env)?;
+                }
+                ProviderConfig::Anthropic { api_key_env, .. } => {
                     self.validate_env_var(api_key_env)?;
                 }
                 ProviderConfig::LlamaCpp { model_path, .. } => {

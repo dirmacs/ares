@@ -7,6 +7,16 @@
 //! - Async embedding via `spawn_blocking`
 //! - In-memory LRU caching to avoid recomputing embeddings
 //!
+//! # Feature Flag
+//!
+//! This module requires the `local-embeddings` feature to be enabled.
+//! Without it, local ONNX-based embeddings are not available.
+//!
+//! ```toml
+//! [dependencies]
+//! ares-server = { version = "0.3", features = ["local-embeddings"] }
+//! ```
+//!
 //! # GPU Acceleration (TODO)
 //! GPU acceleration is planned for future iterations. See `docs/FUTURE_ENHANCEMENTS.md`.
 //! Potential approach:

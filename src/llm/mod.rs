@@ -50,5 +50,8 @@ pub mod ollama;
 #[cfg(feature = "openai")]
 pub mod openai;
 
+#[cfg(feature = "anthropic")]
+pub mod anthropic;
+
 pub use client::{LLMClient, LLMClientFactory, LLMResponse, Provider};
 pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};

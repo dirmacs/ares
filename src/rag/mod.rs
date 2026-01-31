@@ -5,11 +5,22 @@
 //!
 //! # Module Structure
 //!
-//! - [`rag::embeddings`](crate::rag::embeddings) - Dense embedding models (fastembed, 38+ models)
+//! - `rag::embeddings` - Dense embedding models (fastembed, 38+ models) **[requires `local-embeddings` feature]**
 //! - [`rag::search`](crate::rag::search) - Search strategies (semantic, BM25, fuzzy, hybrid)
-//! - [`rag::reranker`](crate::rag::reranker) - Cross-encoder reranking for improved relevance
+//! - `rag::reranker` - Cross-encoder reranking for improved relevance **[requires `local-embeddings` feature]**
 //! - [`rag::chunker`](crate::rag::chunker) - Text chunking for document processing
 //! - [`rag::cache`](crate::rag::cache) - Embedding cache for avoiding recomputation
+//!
+//! # Feature Flags
+//!
+//! The `local-embeddings` feature enables ONNX-based local embedding and reranking models.
+//! This feature is optional because the ONNX runtime (`ort`) can have build issues on some platforms,
+//! particularly Windows with certain MSVC versions.
+//!
+//! Without `local-embeddings`, you can still use:
+//! - Remote embedding APIs (OpenAI embeddings, Ollama embeddings, etc.)
+//! - The chunker and search modules
+//! - The cache module (if you have embeddings from elsewhere)
 //!
 //! # RAG Pipeline
 //!
@@ -47,6 +58,8 @@
 
 pub mod cache;
 pub mod chunker;
+#[cfg(feature = "local-embeddings")]
 pub mod embeddings;
+#[cfg(feature = "local-embeddings")]
 pub mod reranker;
 pub mod search;

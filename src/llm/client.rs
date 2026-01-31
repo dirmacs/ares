@@ -47,6 +47,28 @@ pub trait LLMClient: Send + Sync {
     fn model_name(&self) -> &str;
 }
 
+/// Token usage statistics from an LLM generation call
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    /// Number of tokens in the prompt/input
+    pub prompt_tokens: u32,
+    /// Number of tokens in the completion/output
+    pub completion_tokens: u32,
+    /// Total tokens used (prompt + completion)
+    pub total_tokens: u32,
+}
+
+impl TokenUsage {
+    /// Create a new TokenUsage with the given values
+    pub fn new(prompt_tokens: u32, completion_tokens: u32) -> Self {
+        Self {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+        }
+    }
+}
+
 /// Response from an LLM generation call
 #[derive(Debug, Clone)]
 pub struct LLMResponse {
@@ -56,6 +78,8 @@ pub struct LLMResponse {
     pub tool_calls: Vec<ToolCall>,
     /// Reason the generation finished (e.g., "stop", "tool_calls", "length")
     pub finish_reason: String,
+    /// Token usage statistics (if provided by the model)
+    pub usage: Option<TokenUsage>,
 }
 
 /// Model inference parameters
@@ -485,11 +509,30 @@ mod tests {
             content: "Hello".to_string(),
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
+            usage: None,
         };
 
         assert_eq!(response.content, "Hello");
         assert!(response.tool_calls.is_empty());
         assert_eq!(response.finish_reason, "stop");
+        assert!(response.usage.is_none());
+    }
+
+    #[test]
+    fn test_llm_response_with_usage() {
+        let usage = TokenUsage::new(100, 50);
+        let response = LLMResponse {
+            content: "Hello".to_string(),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: Some(usage),
+        };
+
+        assert!(response.usage.is_some());
+        let usage = response.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 50);
+        assert_eq!(usage.total_tokens, 150);
     }
 
     #[test]
@@ -511,11 +554,13 @@ mod tests {
             content: "".to_string(),
             tool_calls,
             finish_reason: "tool_calls".to_string(),
+            usage: Some(TokenUsage::new(50, 25)),
         };
 
         assert_eq!(response.tool_calls.len(), 2);
         assert_eq!(response.tool_calls[0].name, "calculator");
         assert_eq!(response.finish_reason, "tool_calls");
+        assert_eq!(response.usage.as_ref().unwrap().total_tokens, 75);
     }
 
     #[test]

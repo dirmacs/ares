@@ -295,6 +295,7 @@ mod tests {
                     content: "mock".to_string(),
                     tool_calls: vec![],
                     finish_reason: "stop".to_string(),
+                    usage: None,
                 })
             }
             async fn stream(
@@ -373,6 +374,7 @@ mod tests {
                     content: "mock".to_string(),
                     tool_calls: vec![],
                     finish_reason: "stop".to_string(),
+                    usage: None,
                 })
             }
             async fn stream(

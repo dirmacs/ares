@@ -149,6 +149,17 @@ pub enum Provider {
         /// Model inference parameters
         params: ModelParams,
     },
+
+    /// Anthropic Claude API
+    #[cfg(feature = "anthropic")]
+    Anthropic {
+        /// API key for authentication
+        api_key: String,
+        /// Model identifier (e.g., "claude-3-5-sonnet-20241022")
+        model: String,
+        /// Model inference parameters
+        params: ModelParams,
+    },
 }
 
 impl Provider {
@@ -194,6 +205,17 @@ impl Provider {
             Provider::LlamaCpp { model_path, params } => Ok(Box::new(
                 super::llamacpp::LlamaCppClient::with_params(model_path.clone(), params.clone())?,
             )),
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic {
+                api_key,
+                model,
+                params,
+            } => Ok(Box::new(super::anthropic::AnthropicClient::with_params(
+                api_key.clone(),
+                model.clone(),
+                params.clone(),
+            ))),
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -261,6 +283,20 @@ impl Provider {
             }
         }
 
+        // Check for Anthropic (requires explicit API key configuration)
+        #[cfg(feature = "anthropic")]
+        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+            if !api_key.is_empty() {
+                let model = std::env::var("ANTHROPIC_MODEL")
+                    .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into());
+                return Ok(Provider::Anthropic {
+                    api_key,
+                    model,
+                    params: ModelParams::default(),
+                });
+            }
+        }
+
         // Ollama as default local inference (no API key required)
         #[cfg(feature = "ollama")]
         {
@@ -295,6 +331,9 @@ impl Provider {
 
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => "llamacpp",
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => "anthropic",
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -311,6 +350,9 @@ impl Provider {
 
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => false,
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => true,
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -331,6 +373,9 @@ impl Provider {
 
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => true,
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => false,
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -415,6 +460,31 @@ impl Provider {
             #[cfg(not(feature = "llamacpp"))]
             ProviderConfig::LlamaCpp { .. } => Err(AppError::Configuration(
                 "LlamaCpp provider configured but 'llamacpp' feature is not enabled".into(),
+            )),
+
+            #[cfg(feature = "anthropic")]
+            ProviderConfig::Anthropic {
+                api_key_env,
+                default_model,
+            } => {
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    AppError::Configuration(format!(
+                        "Anthropic API key environment variable '{}' is not set",
+                        api_key_env
+                    ))
+                })?;
+                Ok(Provider::Anthropic {
+                    api_key,
+                    model: model_override
+                        .map(String::from)
+                        .unwrap_or_else(|| default_model.clone()),
+                    params,
+                })
+            }
+
+            #[cfg(not(feature = "anthropic"))]
+            ProviderConfig::Anthropic { .. } => Err(AppError::Configuration(
+                "Anthropic provider configured but 'anthropic' feature is not enabled".into(),
             )),
         }
     }
@@ -631,5 +701,19 @@ mod tests {
         assert_eq!(provider.name(), "llamacpp");
         assert!(!provider.requires_api_key());
         assert!(provider.is_local());
+    }
+
+    #[cfg(feature = "anthropic")]
+    #[test]
+    fn test_anthropic_provider_properties() {
+        let provider = Provider::Anthropic {
+            api_key: "sk-ant-test".to_string(),
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            params: ModelParams::default(),
+        };
+
+        assert_eq!(provider.name(), "anthropic");
+        assert!(provider.requires_api_key());
+        assert!(!provider.is_local());
     }
 }

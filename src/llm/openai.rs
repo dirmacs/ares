@@ -356,7 +356,7 @@ impl LLMClient for OpenAIClient {
         // Extract token usage if available
         let usage = response
             .usage
-            .map(|u| TokenUsage::new(u.prompt_tokens, u.completion_tokens));
+            .map(|u| TokenUsage::new(u.prompt_tokens as u32, u.completion_tokens as u32));
 
         Ok(LLMResponse {
             content,

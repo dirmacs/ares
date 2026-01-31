@@ -354,6 +354,7 @@ impl LLMClient for OpenAIClient {
             .unwrap_or_default();
 
         // Extract token usage if available
+        #[allow(clippy::unnecessary_cast)]
         let usage = response
             .usage
             .map(|u| TokenUsage::new(u.prompt_tokens as u32, u.completion_tokens as u32));

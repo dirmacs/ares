@@ -206,11 +206,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_middleware_expired_token() {
-        // Create auth service with very short expiry (1 second)
-        let auth_service = Arc::new(AuthService::new(
+        // Create auth service with very short expiry (1 second) and zero leeway
+        // Zero leeway ensures strict expiration checking for reliable testing
+        let auth_service = Arc::new(AuthService::with_leeway(
             "test-secret-key-that-is-at-least-32-chars".to_string(),
             1, // 1 second access token expiry
             1, // 1 second refresh token expiry
+            0, // Zero leeway for strict expiration checking
         ));
         let tokens = auth_service
             .generate_tokens("user-123", "test@example.com")

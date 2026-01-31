@@ -114,6 +114,10 @@ pinecone = ["dep:pinecone-sdk"]
 # MCP (Model Context Protocol) server support
 mcp = ["dep:rmcp"]
 
+# Local embeddings - fastembed-based ONNX embedding models
+# Disable this feature on Windows if you encounter ort_sys linker errors
+local-embeddings = ["dep:fastembed"]
+
 # ============= UI =============
 # Embedded UI - serves the Leptos frontend from the backend
 ui = ["dep:rust-embed", "dep:mime_guess"]
@@ -135,7 +139,7 @@ all-vectorstores = ["ares-vector", "qdrant", "pgvector", "chromadb", "pinecone"]
 local-vectorstores = ["ares-vector"]
 
 # Full feature set for development/testing (uses ares-vector instead of lancedb)
-full = ["ollama", "openai", "llamacpp", "anthropic", "turso", "qdrant", "ares-vector", "mcp", "swagger-ui"]
+full = ["ollama", "openai", "llamacpp", "anthropic", "turso", "qdrant", "ares-vector", "mcp", "swagger-ui", "local-embeddings"]
 
 # Full feature set with UI
 full-ui = ["full", "ui"]
@@ -211,8 +215,8 @@ claude-sdk = { version = "1.0.0", optional = true }
 
 
 # Embeddings and RAG
-fastembed = "5.5.0"
-rig-core = "0.27.0"
+fastembed = { version = "5.5.0", optional = true }
+# rig-core removed - was unused in codebase
 text-splitter = { version = "0.19", features = ["tiktoken-rs"] }
 lru = "0.16"
 

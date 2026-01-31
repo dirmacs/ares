@@ -1,8 +1,10 @@
 use crate::auth::jwt::AuthService;
 use crate::AppState;
+#[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
+use axum::routing::delete;
 use axum::{
     middleware,
-    routing::{delete, get, post},
+    routing::{get, post},
     Router,
 };
 use std::sync::Arc;
@@ -22,7 +24,8 @@ pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
         .route("/auth/logout", post(crate::api::handlers::auth::logout))
         .route("/agents", get(crate::api::handlers::agents::list_agents));
 
-    let protected_routes = Router::new()
+    #[allow(unused_mut)]
+    let mut protected_routes = Router::new()
         // Protected routes (auth required)
         .route("/chat", post(crate::api::handlers::chat::chat))
         .route(
@@ -42,17 +45,6 @@ pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
         .route(
             "/workflows/{workflow_name}",
             post(crate::api::handlers::workflows::execute_workflow),
-        )
-        // RAG routes
-        .route("/rag/ingest", post(crate::api::handlers::rag::ingest))
-        .route("/rag/search", post(crate::api::handlers::rag::search))
-        .route(
-            "/rag/collection",
-            delete(crate::api::handlers::rag::delete_collection),
-        )
-        .route(
-            "/rag/collections",
-            get(crate::api::handlers::rag::list_collections),
         )
         // User agent routes
         .route(
@@ -84,10 +76,27 @@ pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
             get(crate::api::handlers::conversations::get_conversation)
                 .put(crate::api::handlers::conversations::update_conversation)
                 .delete(crate::api::handlers::conversations::delete_conversation),
-        )
-        .layer(middleware::from_fn(move |req, next| {
-            crate::auth::middleware::auth_middleware(auth_service.clone(), req, next)
-        }));
+        );
+
+    // RAG routes (requires local-embeddings feature for ONNX-based embeddings and ares-vector for vector storage)
+    #[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
+    {
+        protected_routes = protected_routes
+            .route("/rag/ingest", post(crate::api::handlers::rag::ingest))
+            .route("/rag/search", post(crate::api::handlers::rag::search))
+            .route(
+                "/rag/collection",
+                delete(crate::api::handlers::rag::delete_collection),
+            )
+            .route(
+                "/rag/collections",
+                get(crate::api::handlers::rag::list_collections),
+            );
+    }
+
+    let protected_routes = protected_routes.layer(middleware::from_fn(move |req, next| {
+        crate::auth::middleware::auth_middleware(auth_service.clone(), req, next)
+    }));
 
     public_routes.merge(protected_routes)
 }

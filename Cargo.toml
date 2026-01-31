@@ -115,7 +115,8 @@ pinecone = ["dep:pinecone-sdk"]
 mcp = ["dep:rmcp"]
 
 # Local embeddings - fastembed-based ONNX embedding models
-# Disable this feature on Windows if you encounter ort_sys linker errors
+# WARNING: This feature does NOT work on Windows MSVC due to ort-sys linker errors.
+# Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs instead.
 local-embeddings = ["dep:fastembed"]
 
 # ============= UI =============
@@ -138,11 +139,18 @@ all-vectorstores = ["ares-vector", "qdrant", "pgvector", "chromadb", "pinecone"]
 # Local-first vector stores (no external server required)
 local-vectorstores = ["ares-vector"]
 
-# Full feature set for development/testing (uses ares-vector instead of lancedb)
-full = ["ollama", "openai", "llamacpp", "anthropic", "turso", "qdrant", "ares-vector", "mcp", "swagger-ui", "local-embeddings"]
+# Full feature set for development/testing (Windows-compatible)
+# Note: local-embeddings excluded due to ort-sys linker issues on Windows MSVC
+full = ["ollama", "openai", "llamacpp", "anthropic", "turso", "qdrant", "ares-vector", "mcp", "swagger-ui"]
+
+# Full feature set with local embeddings (Linux/macOS only - NOT Windows MSVC)
+full-local-embeddings = ["full", "local-embeddings"]
 
 # Full feature set with UI
 full-ui = ["full", "ui"]
+
+# Full feature set with UI and local embeddings (Linux/macOS only)
+full-ui-local-embeddings = ["full-ui", "local-embeddings"]
 
 # Minimal build - no optional features
 minimal = []
@@ -218,7 +226,7 @@ claude-sdk = { version = "1.0.0", optional = true }
 fastembed = { version = "5.5.0", optional = true }
 # rig-core removed - was unused in codebase
 text-splitter = { version = "0.19", features = ["tiktoken-rs"] }
-lru = "0.16"
+lru = "0.16.3"  # 0.16.3+ fixes RUSTSEC-2026-0002 (stacked borrows unsound in IterMut)
 
 # Web scraping and search
 daedra = "0.1.4"

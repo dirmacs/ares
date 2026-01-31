@@ -5,9 +5,9 @@
 //!
 //! # Module Structure
 //!
-//! - [`rag::embeddings`](crate::rag::embeddings) - Dense embedding models (fastembed, 38+ models) **[requires `local-embeddings` feature]**
+//! - `rag::embeddings` - Dense embedding models (fastembed, 38+ models) **[requires `local-embeddings` feature]**
 //! - [`rag::search`](crate::rag::search) - Search strategies (semantic, BM25, fuzzy, hybrid)
-//! - [`rag::reranker`](crate::rag::reranker) - Cross-encoder reranking for improved relevance **[requires `local-embeddings` feature]**
+//! - `rag::reranker` - Cross-encoder reranking for improved relevance **[requires `local-embeddings` feature]**
 //! - [`rag::chunker`](crate::rag::chunker) - Text chunking for document processing
 //! - [`rag::cache`](crate::rag::cache) - Embedding cache for avoiding recomputation
 //!

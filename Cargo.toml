@@ -226,7 +226,7 @@ claude-sdk = { version = "1.0.0", optional = true }
 fastembed = { version = "5.5.0", optional = true }
 # rig-core removed - was unused in codebase
 text-splitter = { version = "0.19", features = ["tiktoken-rs"] }
-lru = "0.16"
+lru = "0.16.3"  # 0.16.3+ fixes RUSTSEC-2026-0002 (stacked borrows unsound in IterMut)
 
 # Web scraping and search
 daedra = "0.1.4"

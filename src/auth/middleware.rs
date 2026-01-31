@@ -183,4 +183,114 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+
+    #[tokio::test]
+    async fn test_middleware_empty_bearer_token() {
+        let auth_service = create_test_auth_service();
+        let app = create_test_app(auth_service);
+
+        // Bearer prefix but empty token
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header("Authorization", "Bearer ")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_middleware_expired_token() {
+        // Create auth service with very short expiry (1 second)
+        let auth_service = Arc::new(AuthService::new(
+            "test-secret-key-that-is-at-least-32-chars".to_string(),
+            1, // 1 second access token expiry
+            1, // 1 second refresh token expiry
+        ));
+        let tokens = auth_service
+            .generate_tokens("user-123", "test@example.com")
+            .expect("should generate tokens");
+
+        // Wait for token to expire
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+        let app = create_test_app(auth_service);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header("Authorization", format!("Bearer {}", tokens.access_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_middleware_wrong_secret() {
+        // Create token with one secret
+        let auth_service_a = Arc::new(AuthService::new(
+            "secret-a-that-is-at-least-32-characters".to_string(),
+            900,
+            604800,
+        ));
+        let tokens = auth_service_a
+            .generate_tokens("user-123", "test@example.com")
+            .expect("should generate tokens");
+
+        // Try to verify with different secret
+        let auth_service_b = Arc::new(AuthService::new(
+            "secret-b-that-is-at-least-32-characters".to_string(),
+            900,
+            604800,
+        ));
+        let app = create_test_app(auth_service_b);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header("Authorization", format!("Bearer {}", tokens.access_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_middleware_lowercase_bearer() {
+        let auth_service = create_test_auth_service();
+        let tokens = auth_service
+            .generate_tokens("user-123", "test@example.com")
+            .expect("should generate tokens");
+
+        let app = create_test_app(auth_service);
+
+        // Use lowercase "bearer" instead of "Bearer"
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header("Authorization", format!("bearer {}", tokens.access_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Should be unauthorized - we require exact "Bearer " prefix
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
 }

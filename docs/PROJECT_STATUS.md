@@ -1039,7 +1039,7 @@ All objectives from the five iterations have been successfully completed:
   - Works with any `LLMClient` implementation (OpenAI, Anthropic, Ollama, LlamaCpp)
   - `ToolCallingConfig` for configuring max iterations, parallel execution, timeouts
   - New `generate_with_tools_and_history()` method added to `LLMClient` trait
-  - Deprecates `OllamaToolCoordinator` (still available for backward compatibility)
+  - **Breaking**: `OllamaToolCoordinator` removed - migrate to `ToolCoordinator`
 
 ### What's New in v0.4.0
 - **Anthropic Claude Provider**: Full support for Claude models via the Anthropic API
@@ -1079,7 +1079,7 @@ All objectives from the five iterations have been successfully completed:
 
 ### Next Immediate Actions
 1. Review and merge the implementation
-2. Create a release tag (v0.3.0)
+2. Create a release tag (v0.5.0)
 3. Consider publishing to crates.io
 
 ### For Questions or Issues

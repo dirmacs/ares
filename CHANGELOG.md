@@ -5,6 +5,44 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-02-01
+
+### Added
+
+- **Anthropic Claude API Provider**: Full support for Claude models via the Anthropic API
+  - New `anthropic` feature flag
+  - Supports Claude 3.5 Sonnet, Claude 3 Opus, Haiku, and all Claude model variants
+  - Streaming support with tool calling
+  - Implements full `LLMClient` trait
+  - Location: `src/llm/anthropic.rs`
+
+- **Token Usage Tracking**: LLM responses now include token usage statistics
+  - New `TokenUsage` struct with `prompt_tokens`, `completion_tokens`, `total_tokens`
+  - Added `usage` field to `LLMResponse`
+  - Tracked across all LLM providers
+  - Location: `src/llm/types.rs`
+
+- **New Feature Bundles for Local Embeddings**:
+  - `full-local-embeddings` - Full features with local embeddings (Linux/macOS only)
+  - `full-ui-local-embeddings` - Full features with UI and local embeddings
+
+### Changed
+
+- **`full` feature no longer includes `local-embeddings`**: The `local-embeddings` feature has been removed from the `full` feature bundle due to ort-sys linker errors on Windows MSVC. Use `full-local-embeddings` on Linux/macOS if you need local embeddings.
+
+### Fixed
+
+- **ort-sys Windows MSVC Linker Error**: Added compile-time error for `local-embeddings` feature on Windows MSVC targets
+  - Prevents cryptic linker errors by failing fast with a helpful message
+  - Users on Windows should use WSL, remote embedding APIs, or Linux/macOS
+  - Location: `src/rag/embeddings.rs`
+
+- **lru security advisory**: Updated `lru` to 0.16.3 to fix RUSTSEC-2026-0002 (stacked borrows unsound in IterMut)
+
+### Security
+
+- **RUSTSEC-2026-0002**: Fixed by updating `lru` crate to 0.16.3
+
 ## [0.3.3] - 2026-01-28
 
 ### Fixed
@@ -337,6 +375,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.4.0]: https://github.com/dirmacs/ares/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/dirmacs/ares/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/dirmacs/ares/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/dirmacs/ares/compare/v0.3.0...v0.3.1

@@ -18,6 +18,7 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 - 🔄 **Workflow Engine**: Declarative workflow execution with agent routing
 - 🏠 **Local-First Development**: Runs entirely locally with Ollama and SQLite by default
 - 🔧 **Tool Calling**: Type-safe function calling with automatic schema generation
+- 🔄 **Unified ToolCoordinator**: Provider-agnostic multi-turn tool calling for all LLM clients
 - 🎯 **Per-Agent Tool Filtering**: Restrict which tools each agent can access
 - 📡 **Streaming**: Real-time streaming responses from all providers
 - 🔐 **Authentication**: JWT-based auth with Argon2 password hashing
@@ -796,23 +797,61 @@ curl http://localhost:3000/api/rag/collections \
 
 ## Tool Calling
 
-A.R.E.S supports tool calling with Ollama models that support function calling (ministral-3:3b+, mistral, etc.):
+A.R.E.S supports tool calling with all LLM providers that support function calling (OpenAI, Anthropic, Ollama with ministral-3:3b+, etc.):
 
 ### Built-in Tools
 
 - **calculator**: Basic arithmetic operations
 - **web_search**: Web search via DuckDuckGo (no API key required)
 
-### Tool Calling Example
+### Unified ToolCoordinator
+
+The `ToolCoordinator` provides a provider-agnostic way to handle multi-turn tool calling with any `LLMClient`:
 
 ```rust
-use ares::llm::{OllamaClient, OllamaToolCoordinator};
-use ares::tools::registry::ToolRegistry;
-use ares::tools::{Calculator, WebSearch};
+use ares::llm::{Provider, ToolCoordinator, ToolCallingConfig};
+use ares::tools::ToolRegistry;
+use std::sync::Arc;
 
-// Set up tools
-let mut registry = ToolRegistry::new();
-registry.register
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create an LLM client (works with any provider)
+    let provider = Provider::from_env()?;
+    let client = provider.create_client().await?;
+
+    // Set up tool registry with built-in tools
+    let registry = Arc::new(ToolRegistry::new());
+
+    // Create the unified coordinator
+    let coordinator = ToolCoordinator::new(
+        client,
+        registry,
+        ToolCallingConfig::default(),
+    );
+
+    // Execute a tool-calling conversation
+    let result = coordinator.execute(
+        Some("You are a helpful assistant with access to tools."),
+        "What is 25 * 4?"
+    ).await?;
+
+    println!("Response: {}", result.content);
+    println!("Tool calls made: {}", result.tool_calls.len());
+    println!("Iterations: {}", result.iterations);
+
+    Ok(())
+}
+```
+
+### ToolCallingConfig Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `max_iterations` | 10 | Maximum LLM round-trips before stopping |
+| `parallel_execution` | true | Execute multiple tool calls in parallel |
+| `tool_timeout` | 30s | Timeout for individual tool execution |
+| `include_tool_results` | true | Include tool results in final context |
+| `stop_on_error` | false | Stop on first tool error vs continue |
 
 ## Testing
 

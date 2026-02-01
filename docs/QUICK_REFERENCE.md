@@ -366,6 +366,9 @@ LLAMACPP_MODEL_PATH=/path/to/model.gguf
 # OpenAI
 OPENAI_API_KEY=sk-...
 
+# Anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+
 # Auth
 JWT_SECRET=<32+ chars>
 API_KEY=<your-key>

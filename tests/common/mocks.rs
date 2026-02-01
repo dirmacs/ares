@@ -177,6 +177,29 @@ impl LLMClient for MockLLMClient {
     fn model_name(&self) -> &str {
         "mock-model"
     }
+
+    async fn generate_with_tools_and_history(
+        &self,
+        _messages: &[ares::llm::ConversationMessage],
+        _tools: &[ToolDefinition],
+    ) -> Result<LLMResponse> {
+        if self.should_fail {
+            return Err(AppError::LLM("Mock LLM failure".to_string()));
+        }
+
+        let finish_reason = if self.tool_calls.is_empty() {
+            "stop"
+        } else {
+            "tool_calls"
+        };
+
+        Ok(LLMResponse {
+            content: self.response.clone(),
+            tool_calls: self.tool_calls.clone(),
+            finish_reason: finish_reason.to_string(),
+            usage: None,
+        })
+    }
 }
 
 /// Mock LLM factory for tests requiring complete isolation from external services.

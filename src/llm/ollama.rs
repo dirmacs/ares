@@ -21,6 +21,7 @@
 //! ```
 
 use crate::llm::client::{LLMClient, LLMResponse, ModelParams, TokenUsage};
+use crate::llm::coordinator::{ConversationMessage, MessageRole};
 use crate::tools::registry::ToolRegistry;
 use crate::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_stream::stream;
@@ -230,6 +231,22 @@ impl OllamaClient {
         }))
         .unwrap_or_else(|_| format!("Result: {:?}", result))
     }
+
+    /// Convert a ConversationMessage to Ollama's ChatMessage
+    fn convert_conversation_message(&self, msg: &ConversationMessage) -> ChatMessage {
+        match msg.role {
+            MessageRole::System => ChatMessage::system(msg.content.clone()),
+            MessageRole::User => ChatMessage::user(msg.content.clone()),
+            MessageRole::Assistant => {
+                // Assistant messages - content only (tool calls are handled by context)
+                ChatMessage::assistant(msg.content.clone())
+            }
+            MessageRole::Tool => {
+                // For tool result messages, use Ollama's native tool message type
+                ChatMessage::tool(msg.content.clone())
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -305,6 +322,64 @@ impl LLMClient for OllamaClient {
         let request = ChatMessageRequest::new(self.model.clone(), messages)
             .tools(ollama_tools)
             .options(self.build_model_options());
+
+        let response = self
+            .client
+            .send_chat_messages(request)
+            .await
+            .map_err(|e| AppError::LLM(format!("Ollama error: {}", e)))?;
+
+        // Extract content and tool calls from the message
+        let content = response.message.content.clone();
+        let tool_calls: Vec<ToolCall> = response
+            .message
+            .tool_calls
+            .iter()
+            .map(Self::convert_tool_call)
+            .collect();
+
+        // Determine finish reason based on whether tools were called
+        let finish_reason = if tool_calls.is_empty() {
+            "stop"
+        } else {
+            "tool_calls"
+        };
+
+        // Extract token usage from final_data if available
+        let usage = response
+            .final_data
+            .as_ref()
+            .map(|data| TokenUsage::new(data.prompt_eval_count as u32, data.eval_count as u32));
+
+        Ok(LLMResponse {
+            content,
+            tool_calls,
+            finish_reason: finish_reason.to_string(),
+            usage,
+        })
+    }
+
+    async fn generate_with_tools_and_history(
+        &self,
+        messages: &[ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<LLMResponse> {
+        // Convert our tool definitions to ollama-rs format
+        let ollama_tools: Vec<ToolInfo> = tools.iter().map(Self::convert_tool_definition).collect();
+
+        // Convert ConversationMessage to Ollama ChatMessage
+        let chat_messages: Vec<ChatMessage> = messages
+            .iter()
+            .map(|msg| self.convert_conversation_message(msg))
+            .collect();
+
+        // Create request with tools and model options
+        let mut request = ChatMessageRequest::new(self.model.clone(), chat_messages)
+            .options(self.build_model_options());
+
+        if !ollama_tools.is_empty() {
+            request = request.tools(ollama_tools);
+        }
 
         let response = self
             .client
@@ -465,12 +540,37 @@ impl LLMClient for OllamaClient {
 }
 
 /// Ollama Tool Coordinator - manages multi-turn tool calling conversations
+///
+/// # Deprecated
+///
+/// This struct is deprecated in favor of the generic [`crate::llm::coordinator::ToolCoordinator`]
+/// which works with any `LLMClient` implementation.
+///
+/// ## Migration
+///
+/// Replace:
+/// ```rust,ignore
+/// let coordinator = OllamaToolCoordinator::new(client, registry);
+/// let result = coordinator.execute(Some("system prompt"), "user prompt").await?;
+/// ```
+///
+/// With:
+/// ```rust,ignore
+/// use ares::llm::coordinator::ToolCoordinator;
+/// let coordinator = ToolCoordinator::new(client, registry, ToolCallingConfig::default());
+/// let result = coordinator.execute(Some("system prompt"), "user prompt").await?;
+/// ```
+#[deprecated(
+    since = "0.4.0",
+    note = "Use ares::llm::coordinator::ToolCoordinator instead, which works with any LLMClient"
+)]
 pub struct OllamaToolCoordinator {
     client: Arc<OllamaClient>,
     registry: Arc<ToolRegistry>,
     config: ToolCallingConfig,
 }
 
+#[allow(deprecated)]
 impl OllamaToolCoordinator {
     /// Creates a new coordinator with the default tool config from the client.
     pub fn new(client: Arc<OllamaClient>, registry: Arc<ToolRegistry>) -> Self {

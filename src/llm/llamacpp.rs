@@ -23,6 +23,7 @@
 //! ```
 
 use crate::llm::client::{LLMClient, LLMResponse, ModelParams, TokenUsage};
+use crate::llm::coordinator::{ConversationMessage, MessageRole};
 use crate::types::{AppError, Result, ToolDefinition};
 use async_stream::stream;
 use async_trait::async_trait;
@@ -543,6 +544,107 @@ Otherwise, respond normally with text."#,
             tool_calls,
             finish_reason: finish_reason.to_string(),
             // Note: llama-cpp-2 crate doesn't expose token counts in its API
+            usage: None,
+        })
+    }
+
+    async fn generate_with_tools_and_history(
+        &self,
+        messages: &[ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<LLMResponse> {
+        // Format tools as JSON for the system prompt
+        let tools_system = if !tools.is_empty() {
+            let tools_json = serde_json::to_string_pretty(tools)
+                .map_err(|e| AppError::LLM(format!("Failed to serialize tools: {}", e)))?;
+            format!(
+                r#"You have access to the following tools:
+
+{}
+
+When you need to use a tool, respond ONLY with a JSON object in this exact format:
+{{"tool_call": {{"name": "tool_name", "arguments": {{...}}}}}}
+
+Otherwise, respond normally with text."#,
+                tools_json
+            )
+        } else {
+            String::new()
+        };
+
+        // Convert ConversationMessage to (role, content) pairs for format_history
+        let mut history: Vec<(String, String)> = Vec::new();
+
+        // If we have a tools system, prepend it
+        if !tools_system.is_empty() {
+            history.push(("system".to_string(), tools_system));
+        }
+
+        for msg in messages {
+            let role = match msg.role {
+                MessageRole::System => "system",
+                MessageRole::User => "user",
+                MessageRole::Assistant => "assistant",
+                MessageRole::Tool => "user", // Format tool results as user messages
+            };
+
+            // For tool result messages, format specially
+            let content = if msg.role == MessageRole::Tool {
+                format!(
+                    "[Tool Result{}]: {}",
+                    msg.tool_call_id
+                        .as_ref()
+                        .map(|id| format!(" for {}", id))
+                        .unwrap_or_default(),
+                    msg.content
+                )
+            } else {
+                msg.content.clone()
+            };
+
+            history.push((role.to_string(), content));
+        }
+
+        // Format and generate
+        let formatted = self.format_history(&history);
+        let content = self.generate_internal(&formatted, self.max_tokens).await?;
+
+        // Try to parse tool calls from the response (same logic as generate_with_tools)
+        let tool_calls = if content.contains("\"tool_call\"") {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(tool_call) = parsed.get("tool_call") {
+                    vec![crate::types::ToolCall {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        name: tool_call
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        arguments: tool_call
+                            .get("arguments")
+                            .cloned()
+                            .unwrap_or(serde_json::json!({})),
+                    }]
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        let finish_reason = if tool_calls.is_empty() {
+            "stop"
+        } else {
+            "tool_calls"
+        };
+
+        Ok(LLMResponse {
+            content,
+            tool_calls,
+            finish_reason: finish_reason.to_string(),
             usage: None,
         })
     }

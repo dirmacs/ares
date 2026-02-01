@@ -986,40 +986,6 @@ pub enum AccelerationBackend {
 }
 
 // ============================================================================
-// Legacy API Compatibility
-// ============================================================================
-
-/// Legacy embedding service for backward compatibility
-///
-/// This preserves the original API for existing code.
-#[deprecated(note = "Use EmbeddingService instead")]
-pub struct LegacyEmbeddingService {
-    inner: EmbeddingService,
-}
-
-#[allow(deprecated)]
-impl LegacyEmbeddingService {
-    /// Create a new legacy embedding service
-    pub fn new(_model_name: &str) -> Result<Self> {
-        Ok(Self {
-            inner: EmbeddingService::with_default_model()?,
-        })
-    }
-
-    /// Embed texts (synchronous API)
-    pub fn embed(&mut self, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
-        let model_type = self.inner.config.model.to_fastembed_model();
-        let mut model =
-            TextEmbedding::try_new(InitOptions::new(model_type).with_show_download_progress(true))
-                .map_err(|e| AppError::Internal(e.to_string()))?;
-
-        model
-            .embed(texts, None)
-            .map_err(|e| AppError::Internal(e.to_string()))
-    }
-}
-
-// ============================================================================
 // Tests
 // ============================================================================
 

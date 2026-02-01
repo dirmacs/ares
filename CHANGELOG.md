@@ -5,6 +5,62 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- **OllamaToolCoordinator**: Removed in favor of the unified `ToolCoordinator`
+  - `OllamaToolCoordinator` struct
+  - `ToolCoordinatorResult` struct (ollama-specific)
+  - `ToolCallRecord` struct
+  - `ToolCallingConfig` struct (ollama-specific)
+  - `OllamaClient::with_config()` and `with_config_and_params()` constructors
+  - `OllamaClient::tool_config()` and `set_tool_config()` methods
+  - `OllamaClient::generate_with_tool_loop()` method
+  - `execute_tool_call()` and `format_tool_result()` helper functions
+  - Related tests
+
+- **LegacyEmbeddingService**: Removed deprecated wrapper struct from `src/rag/embeddings.rs`
+  - Use `EmbeddingService` directly instead
+
+- **LlamaCppClient::with_params_legacy()**: Removed legacy constructor
+  - Use `with_config_params()` or `with_params()` instead
+
+- **Legacy Environment Variables documentation**: Removed from README.md
+  - Use the standard environment variables documented in the Configuration section
+
+### Migration Guide
+
+If you were using any of the removed APIs:
+
+1. **OllamaToolCoordinator** → Use `ToolCoordinator` from `src/llm/coordinator.rs`
+   ```rust
+   // Old
+   let coordinator = OllamaToolCoordinator::new(client, registry);
+   
+   // New
+   use ares::llm::coordinator::{ToolCoordinator, ToolCallingConfig};
+   let coordinator = ToolCoordinator::new(client, registry, ToolCallingConfig::default());
+   ```
+
+2. **LegacyEmbeddingService** → Use `EmbeddingService`
+   ```rust
+   // Old
+   let service = LegacyEmbeddingService::new("model")?;
+   
+   // New
+   let service = EmbeddingService::with_default_model()?;
+   ```
+
+3. **LlamaCppClient::with_params_legacy()** → Use `with_config_params()`
+   ```rust
+   // Old
+   let client = LlamaCppClient::with_params_legacy(path, ctx, threads, max_tokens)?;
+   
+   // New
+   let client = LlamaCppClient::with_config_params(path, ctx, threads, max_tokens, 0.7, 0.9)?;
+   ```
+
 ## [0.5.0] - 2026-02-01
 
 ### Added
@@ -20,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 
 - **OllamaToolCoordinator**: Deprecated in favor of the new unified `ToolCoordinator`
-  - The Ollama-specific coordinator still works but will be removed in a future version
+  - **Note**: Removed in v0.6.0 - see migration guide above
   - Migrate to `ToolCoordinator` for cross-provider compatibility
 
 ## [0.4.0] - 2026-02-01

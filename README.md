@@ -12,7 +12,7 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 
 ## Features
 
-- 🤖 **Multi-Provider LLM Support**: Ollama, OpenAI, LlamaCpp (direct GGUF loading)
+- 🤖 **Multi-Provider LLM Support**: Ollama, OpenAI, Anthropic Claude, LlamaCpp (direct GGUF loading)
 - ⚙️ **TOML Configuration**: Declarative configuration with hot-reloading
 - 🎭 **Configurable Agents**: Define agents via [TOON (Token Oriented Object Notation)](https://toonformat.dev) with custom models, tools, and prompts
 - 🔄 **Workflow Engine**: Declarative workflow execution with agent routing
@@ -187,6 +187,7 @@ A.R.E.S uses Cargo features for conditional compilation:
 |---------|-------------|---------|
 | `ollama` | Ollama local inference | ✅ Yes |
 | `openai` | OpenAI API (and compatible) | No |
+| `anthropic` | Anthropic Claude API | No |
 | `llamacpp` | Direct GGUF model loading | No |
 | `llamacpp-cuda` | LlamaCpp with CUDA | No |
 | `llamacpp-metal` | LlamaCpp with Metal (macOS) | No |
@@ -210,15 +211,27 @@ A.R.E.S uses Cargo features for conditional compilation:
 
 > **Note:** `swagger-ui` was made optional in v0.2.5 to reduce binary size and build time. The feature requires network access during build to download Swagger UI assets.
 
+### Embeddings
+
+| Feature | Description | Default |
+|---------|-------------|---------|
+| `local-embeddings` | Local ONNX embedding models via fastembed | No |
+
+> **Warning:** The `local-embeddings` feature does **NOT** work on Windows MSVC due to `ort-sys` linker errors. Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs instead.
+
 ### Feature Bundles
 
 | Feature | Includes |
 |---------|----------|
-| `all-llm` | ollama + openai + llamacpp |
+| `all-llm` | ollama + openai + llamacpp + anthropic |
 | `all-db` | local-db + turso + qdrant |
-| `full` | All optional features (except UI): ollama, openai, llamacpp, turso, qdrant, mcp, swagger-ui |
-| `full-ui` | All optional features + UI |
+| `full` | All optional features (except UI and local-embeddings): ollama, openai, llamacpp, anthropic, turso, qdrant, ares-vector, mcp, swagger-ui |
+| `full-ui` | All optional features + UI (except local-embeddings) |
+| `full-local-embeddings` | Full + local-embeddings (Linux/macOS only) |
+| `full-ui-local-embeddings` | Full + UI + local-embeddings (Linux/macOS only) |
 | `minimal` | No optional features |
+
+> **Note:** `local-embeddings` is excluded from `full` and `full-ui` bundles due to Windows MSVC compatibility issues. Use `full-local-embeddings` or `full-ui-local-embeddings` on Linux/macOS.
 
 ### Building with Features
 
@@ -552,9 +565,9 @@ system_prompt: |
 │  ┌────────┐ ┌────────┐      │                                               │
 │  │Ollama  │ │OpenAI  │      │                                               │
 │  └────────┘ └────────┘      │                                               │
-│  ┌────────┐                 │                                               │
-│  │LlamaCpp│                 │                                               │
-│  └────────┘                 │                                               │
+│  ┌────────┐ ┌────────┐      │                                               │
+│  │LlamaCpp│ │Anthropic│     │                                               │
+│  └────────┘ └────────┘      │                                               │
 └─────────────────────────────┼───────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────▼───────────────────────────────────────────────┐

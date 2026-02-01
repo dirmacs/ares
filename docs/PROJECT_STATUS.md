@@ -3,7 +3,7 @@
 **Date**: 2024-12-15  
 **Updated**: 2026-01-29  
 **Status**: ✅ All Core Features Implemented and Tested  
-**Version**: 0.3.3
+**Version**: 0.4.0
 
 ---
 
@@ -179,6 +179,7 @@ llamacpp-vulkan # Vulkan API
 1. **LLM Providers** (mutually inclusive)
    - `ollama` (default)
    - `openai`
+   - `anthropic`
    - `llamacpp`
    - `llamacpp-cuda`
    - `llamacpp-metal`
@@ -193,9 +194,12 @@ llamacpp-vulkan # Vulkan API
    - `mcp` (Model Context Protocol)
 
 4. **Convenience Bundles**
-   - `all-llm` = ollama + openai + llamacpp
+   - `all-llm` = ollama + openai + anthropic + llamacpp
    - `all-db` = local-db + turso + qdrant
-   - `full` = all features
+   - `full` = all features (except local-embeddings on Windows)
+   - `full-local-embeddings` = full + local-embeddings (Linux/macOS only)
+   - `full-ui` = full + UI
+   - `full-ui-local-embeddings` = full + UI + local-embeddings (Linux/macOS only)
    - `minimal` = no optional features
 
 **Design Principles**:
@@ -547,6 +551,7 @@ ares/
 | **Ollama** | ⭐ Easy | ⭐⭐⭐ Fast | Free | ✅ Excellent | ✅ |
 | **LlamaCpp** | ⭐⭐ Medium | ⭐⭐⭐⭐ Very Fast | Free | ⚠️ Basic | ✅ |
 | **OpenAI** | ⭐ Easy | ⭐⭐⭐⭐⭐ Excellent | $$$ | ✅ Excellent | ✅ |
+| **Anthropic** | ⭐ Easy | ⭐⭐⭐⭐⭐ Excellent | $$$ | ✅ Excellent | ✅ |
 
 **Recommendations**:
 - **Development**: Ollama (easy setup, good tools)
@@ -597,8 +602,9 @@ ares/
 3. Add metrics and monitoring (Prometheus/OpenTelemetry)
 
 **Low Priority**:
-1. Support more LLM providers (Anthropic, Cohere)
+1. ~~Support more LLM providers (Anthropic, Cohere)~~ Anthropic added in v0.4.0
 2. Add voice input/output support
+3. Add Cohere provider
 
 ---
 
@@ -1026,6 +1032,18 @@ All objectives from the five iterations have been successfully completed:
 ✅ **Iteration 5**: Pure-Rust vector store, RAG pipeline, multi-strategy search, reranking  
 
 **The A.R.E.S project is production-ready for local-first LLM applications with excellent developer experience, RAG capabilities, and comprehensive testing.**
+
+### What's New in v0.4.0
+- **Anthropic Claude Provider**: Full support for Claude models via the Anthropic API
+  - New `anthropic` feature flag
+  - Supports Claude 3.5 Sonnet, Claude 3 Opus, Haiku, and all Claude model variants
+  - Streaming and tool calling support
+  - Token usage tracking via `TokenUsage` in `LLMResponse`
+- **Windows MSVC Fix**: Fixed ort-sys linker errors on Windows MSVC
+  - Added compile-time error for `local-embeddings` on Windows MSVC
+  - Removed `local-embeddings` from `full` feature bundle
+  - New bundles: `full-local-embeddings`, `full-ui-local-embeddings` for Linux/macOS
+- **Security**: Updated `lru` to 0.16.3 (fixes RUSTSEC-2026-0002)
 
 ### What's New in v0.3.1
 - **Vector Persistence Fix**: Fixed critical bug where vectors were not saved to disk on server shutdown

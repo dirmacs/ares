@@ -39,11 +39,10 @@ A.R.E.S can be used as a **standalone server** or as a **library** in your Rust 
 
 ### As a Library
 
-Add to your `Cargo.toml`:
+Add to your project:
 
-```toml
-[dependencies]
-ares-server = "0.3"
+```bash
+cargo add ares-server
 ```
 
 Basic usage:

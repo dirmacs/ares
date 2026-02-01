@@ -5,6 +5,24 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-02-01
+
+### Added
+
+- **Unified ToolCoordinator**: Provider-agnostic multi-turn tool calling orchestration
+  - New `ToolCoordinator` struct for managing tool calling across all LLM providers
+  - `ToolCallingConfig` for configuring max iterations, parallel tool calls, and timeouts
+  - `ConversationMessage` enum for unified message representation
+  - New `generate_with_tools_and_history()` method added to `LLMClient` trait
+  - Implemented for all 4 providers: OpenAI, Anthropic, Ollama, LlamaCpp
+  - Location: `src/llm/coordinator.rs`
+
+### Deprecated
+
+- **OllamaToolCoordinator**: Deprecated in favor of the new unified `ToolCoordinator`
+  - The Ollama-specific coordinator still works but will be removed in a future version
+  - Migrate to `ToolCoordinator` for cross-provider compatibility
+
 ## [0.4.0] - 2026-02-01
 
 ### Added
@@ -375,6 +393,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.5.0]: https://github.com/dirmacs/ares/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/dirmacs/ares/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/dirmacs/ares/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/dirmacs/ares/compare/v0.3.1...v0.3.2

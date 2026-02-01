@@ -1,9 +1,9 @@
 # A.R.E.S Project Status & Completion Summary
 
 **Date**: 2024-12-15  
-**Updated**: 2026-01-29  
+**Updated**: 2026-02-01  
 **Status**: ✅ All Core Features Implemented and Tested  
-**Version**: 0.4.0
+**Version**: 0.5.0
 
 ---
 
@@ -1032,6 +1032,14 @@ All objectives from the five iterations have been successfully completed:
 ✅ **Iteration 5**: Pure-Rust vector store, RAG pipeline, multi-strategy search, reranking  
 
 **The A.R.E.S project is production-ready for local-first LLM applications with excellent developer experience, RAG capabilities, and comprehensive testing.**
+
+### What's New in v0.5.0
+- **Unified ToolCoordinator**: Provider-agnostic multi-turn tool calling orchestration
+  - New `ToolCoordinator` struct in `src/llm/coordinator.rs`
+  - Works with any `LLMClient` implementation (OpenAI, Anthropic, Ollama, LlamaCpp)
+  - `ToolCallingConfig` for configuring max iterations, parallel execution, timeouts
+  - New `generate_with_tools_and_history()` method added to `LLMClient` trait
+  - Deprecates `OllamaToolCoordinator` (still available for backward compatibility)
 
 ### What's New in v0.4.0
 - **Anthropic Claude Provider**: Full support for Claude models via the Anthropic API

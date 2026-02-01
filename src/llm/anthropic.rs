@@ -21,6 +21,7 @@
 //! ```
 
 use crate::llm::client::{LLMClient, LLMResponse, ModelParams, TokenUsage};
+use crate::llm::coordinator::{ConversationMessage, MessageRole};
 use crate::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_trait::async_trait;
 use claude_sdk::{
@@ -148,6 +149,70 @@ impl AnthropicClient {
 
         request
     }
+
+    /// Convert a ConversationMessage to Claude's Message format
+    ///
+    /// Claude handles system prompts separately, so they are extracted to the system_prompt parameter.
+    /// Tool results are sent as user messages with tool_result content blocks.
+    fn convert_conversation_message(
+        &self,
+        msg: &ConversationMessage,
+        system_prompt: &mut Option<String>,
+    ) -> Option<Message> {
+        match msg.role {
+            MessageRole::System => {
+                // Claude handles system prompts separately
+                *system_prompt = Some(msg.content.clone());
+                None
+            }
+            MessageRole::User => Some(Message::user(msg.content.clone())),
+            MessageRole::Assistant => {
+                // For assistant messages with tool calls, we need to include the tool_use blocks
+                if !msg.tool_calls.is_empty() {
+                    let mut content_blocks: Vec<ContentBlock> = Vec::new();
+
+                    // If there's also text content, prepend it
+                    if !msg.content.is_empty() {
+                        content_blocks.push(ContentBlock::Text {
+                            text: msg.content.clone(),
+                            cache_control: None,
+                            citations: None,
+                        });
+                    }
+
+                    // Add tool use blocks
+                    for tc in &msg.tool_calls {
+                        content_blocks.push(ContentBlock::ToolUse {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            input: tc.arguments.clone(),
+                            cache_control: None,
+                        });
+                    }
+
+                    Some(Message {
+                        role: claude_sdk::Role::Assistant,
+                        content: content_blocks,
+                    })
+                } else {
+                    Some(Message::assistant(msg.content.clone()))
+                }
+            }
+            MessageRole::Tool => {
+                // Tool results are sent as user messages with tool_result content blocks
+                let tool_call_id = msg.tool_call_id.clone().unwrap_or_default();
+
+                Some(Message {
+                    role: claude_sdk::Role::User,
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: tool_call_id,
+                        content: Some(msg.content.clone()),
+                        is_error: None,
+                    }],
+                })
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -212,6 +277,60 @@ impl LLMClient for AnthropicClient {
         let claude_tools: Vec<Tool> = tools.iter().map(Self::convert_tool).collect();
         let messages = vec![Message::user(prompt.to_string())];
         let request = self.build_request(messages, Some(claude_tools), None);
+
+        let response = self
+            .client
+            .send_message(request)
+            .await
+            .map_err(|e| AppError::LLM(format!("Anthropic API error: {}", e)))?;
+
+        let content = Self::extract_text_content(&response.content);
+        let tool_calls = Self::extract_tool_calls(&response.content);
+
+        // Determine finish reason based on stop_reason
+        let finish_reason = Self::stop_reason_to_string(response.stop_reason);
+
+        // Extract token usage
+        let usage = Some(TokenUsage::new(
+            response.usage.input_tokens as u32,
+            response.usage.output_tokens as u32,
+        ));
+
+        Ok(LLMResponse {
+            content,
+            tool_calls,
+            finish_reason,
+            usage,
+        })
+    }
+
+    async fn generate_with_tools_and_history(
+        &self,
+        messages: &[ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<LLMResponse> {
+        let claude_tools: Vec<Tool> = if tools.is_empty() {
+            vec![]
+        } else {
+            tools.iter().map(Self::convert_tool).collect()
+        };
+
+        // Extract system prompt and convert messages
+        let mut system_prompt: Option<String> = None;
+        let claude_messages: Vec<Message> = messages
+            .iter()
+            .filter_map(|msg| self.convert_conversation_message(msg, &mut system_prompt))
+            .collect();
+
+        let request = self.build_request(
+            claude_messages,
+            if claude_tools.is_empty() {
+                None
+            } else {
+                Some(claude_tools)
+            },
+            system_prompt.as_deref(),
+        );
 
         let response = self
             .client

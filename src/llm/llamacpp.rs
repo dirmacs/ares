@@ -88,23 +88,6 @@ impl LlamaCppClient {
         )
     }
 
-    /// Create a new LlamaCpp client with custom parameters
-    ///
-    /// # Arguments
-    ///
-    /// * `model_path` - Path to a GGUF model file
-    /// * `n_ctx` - Context size (default: 4096)
-    /// * `n_threads` - Number of CPU threads (default: 4)
-    /// * `max_tokens` - Maximum tokens to generate (default: 512)
-    pub fn with_params_legacy(
-        model_path: String,
-        n_ctx: u32,
-        n_threads: i32,
-        max_tokens: u32,
-    ) -> Result<Self> {
-        Self::with_config_params(model_path, n_ctx, n_threads, max_tokens, 0.7, 0.9)
-    }
-
     /// Create a new LlamaCpp client with all configurable parameters
     ///
     /// # Arguments

@@ -412,43 +412,6 @@ API_KEY=your-api-key
 OPENAI_API_KEY=sk-...
 ```
 
-### Legacy Environment Variables
-
-For backward compatibility, these environment variables can also be used:
-
-```bash
-# Server
-HOST=127.0.0.1
-PORT=3000
-
-# Database (local-first)
-# Examples: ./data/ares.db | file:./data/ares.db | :memory:
-DATABASE_URL=./data/ares.db
-
-# Optional: Turso cloud (set both to enable)
-# TURSO_URL=libsql://<your-db>-<your-org>.turso.io
-# TURSO_AUTH_TOKEN=...
-
-# LLM Provider - Ollama (default)
-OLLAMA_URL=http://localhost:11434
-
-# LLM Provider - OpenAI (optional)
-# OPENAI_API_KEY=sk-...
-# OPENAI_API_BASE=https://api.openai.com/v1
-# OPENAI_MODEL=gpt-4
-
-# LLM Provider - LlamaCpp (optional, highest priority if set)
-# LLAMACPP_MODEL_PATH=/path/to/model.gguf
-
-# Authentication
-JWT_SECRET=your-secret-key-at-least-32-characters
-API_KEY=your-api-key
-
-# Optional: Qdrant for vector search
-# QDRANT_URL=http://localhost:6334
-# QDRANT_API_KEY=
-```
-
 ### Provider Priority
 
 When multiple providers are configured, they are selected in this order:

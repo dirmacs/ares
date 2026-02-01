@@ -54,6 +54,26 @@
 //! let tool_definitions = registry.definitions();
 //! ```
 //!
+//! ### Multi-Turn Tool Calling with ToolCoordinator
+//!
+//! ```rust,ignore
+//! use ares::llm::{Provider, ToolCoordinator, ToolCallingConfig};
+//! use ares::tools::ToolRegistry;
+//! use std::sync::Arc;
+//!
+//! let provider = Provider::from_env()?;
+//! let client = provider.create_client().await?;
+//! let registry = Arc::new(ToolRegistry::new());
+//!
+//! // Create a unified coordinator that works with any LLM provider
+//! let coordinator = ToolCoordinator::new(client, registry, ToolCallingConfig::default());
+//!
+//! // Execute a tool-calling conversation
+//! let result = coordinator.execute(Some("You are a helpful assistant."), "What is 25 * 4?").await?;
+//! println!("Response: {}", result.content);
+//! println!("Tool calls made: {}", result.tool_calls.len());
+//! ```
+//!
 //! ### Configuration-Driven Setup
 //!
 //! ```rust,ignore

@@ -11,7 +11,7 @@
 //! - [`LLMClientFactory`] - Factory trait for creating provider clients
 //! - [`ProviderRegistry`] - Registry for managing multiple providers
 //! - [`ConfigBasedLLMFactory`] - Creates clients based on `ares.toml` configuration
-//! - [`ToolCoordinator`] - Generic multi-turn tool calling coordinator
+//! - [`ToolCoordinator`](crate::llm::coordinator::ToolCoordinator) - Generic multi-turn tool calling coordinator
 //!
 //! # Supported Providers
 //!
@@ -35,7 +35,7 @@
 //!
 //! # Tool Calling
 //!
-//! Use the [`ToolCoordinator`] for multi-turn tool calling with any provider:
+//! Use the [`ToolCoordinator`](crate::llm::coordinator::ToolCoordinator) for multi-turn tool calling with any provider:
 //!
 //! ```ignore
 //! use ares::llm::coordinator::{ToolCoordinator, ToolCallingConfig};

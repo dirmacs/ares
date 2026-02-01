@@ -171,5 +171,5 @@ If you encounter issues not listed here:
 
 ---
 
-**Last Updated**: 2026-01-28  
-**Version**: 0.3.2
+**Last Updated**: 2026-02-01  
+**Version**: 0.5.0

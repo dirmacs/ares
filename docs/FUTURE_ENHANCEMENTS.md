@@ -367,5 +367,5 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2026-01-28  
+**Last Updated**: 2026-02-01  
 **Related**: [DIR-24 Implementation Plan](./DIR-24_RAG_IMPLEMENTATION_PLAN.md)

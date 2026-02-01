@@ -490,6 +490,7 @@ Then access at: `http://localhost:3000/swagger-ui/`
 ### LLM Providers
 - `ollama` (default) - Local Ollama inference
 - `openai` - OpenAI API
+- `anthropic` - Anthropic Claude API
 - `llamacpp` - Direct GGUF loading
 - `llamacpp-cuda` - GGUF with NVIDIA GPU
 - `llamacpp-metal` - GGUF with Apple GPU
@@ -500,6 +501,11 @@ Then access at: `http://localhost:3000/swagger-ui/`
 - `turso` - Remote Turso database
 - `qdrant` - Vector database
 
+### Embeddings
+- `local-embeddings` - Local embedding models via ort (ONNX Runtime)
+
+> ⚠️ **Windows MSVC:** The `local-embeddings` feature does NOT work on Windows with the MSVC toolchain due to ort-sys linker errors. Use WSL2 or the GNU toolchain instead.
+
 ### UI & Documentation
 - `ui` - Embedded Leptos web UI served from backend
 - `swagger-ui` - Interactive Swagger UI API documentation at `/swagger-ui/`
@@ -507,11 +513,15 @@ Then access at: `http://localhost:3000/swagger-ui/`
 > **Note:** `swagger-ui` was made optional in v0.2.5 to reduce binary size and build time. It requires network access during build to download Swagger UI assets.
 
 ### Bundles
-- `all-llm` - All LLM providers
+- `all-llm` - All LLM providers (ollama, openai, anthropic, llamacpp)
 - `all-db` - All databases
-- `full` - Everything (except UI): ollama, openai, llamacpp, turso, qdrant, mcp, swagger-ui
-- `full-ui` - Everything including UI
+- `full` - Everything except UI and local-embeddings: ollama, openai, anthropic, llamacpp, turso, qdrant, mcp, swagger-ui
+- `full-ui` - Everything including UI (excludes local-embeddings)
+- `full-local-embeddings` - Full + local-embeddings (Linux/macOS only)
+- `full-ui-local-embeddings` - Full + UI + local-embeddings (Linux/macOS only)
 - `minimal` - Nothing optional
+
+> **Note:** `local-embeddings` was removed from `full` and `full-ui` bundles in v0.4.0 due to Windows MSVC compatibility issues. Use `full-local-embeddings` or `full-ui-local-embeddings` on Linux/macOS if you need local embedding support.
 
 ## 🐛 Troubleshooting
 
@@ -653,6 +663,15 @@ OPENAI_MODEL=gpt-4
 # Comment out LlamaCpp
 
 cargo run --features openai
+```
+
+**To Anthropic:**
+```bash
+# .env
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
+
+cargo run --features anthropic
 ```
 
 ## 🔐 Security Checklist

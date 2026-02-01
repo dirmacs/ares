@@ -16,7 +16,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ares-server = "0.2"
+//! ares-server = "0.5"
 //! ```
 //!
 //! ### Basic Example

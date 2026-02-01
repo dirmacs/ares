@@ -21,14 +21,16 @@
 //! ```
 
 use crate::llm::client::{LLMClient, LLMResponse, ModelParams, TokenUsage};
+use crate::llm::coordinator::{ConversationMessage, MessageRole};
 use crate::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_openai::{
     config::OpenAIConfig,
     types::chat::{
-        ChatCompletionMessageToolCalls, ChatCompletionRequestAssistantMessageArgs,
-        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
+        ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
+        ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+        ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestToolMessageArgs,
         ChatCompletionRequestUserMessageArgs, ChatCompletionTool, ChatCompletionTools,
-        CreateChatCompletionRequestArgs, FunctionObject,
+        CreateChatCompletionRequestArgs, FunctionCall, FunctionObject,
     },
     Client,
 };
@@ -105,6 +107,74 @@ impl OpenAIClient {
                 ChatCompletionMessageToolCalls::Custom(_) => None,
             })
             .collect()
+    }
+
+    /// Convert a ConversationMessage to OpenAI's ChatCompletionRequestMessage
+    fn convert_conversation_message(
+        &self,
+        msg: &ConversationMessage,
+    ) -> Result<ChatCompletionRequestMessage> {
+        match msg.role {
+            MessageRole::System => {
+                let system_msg = ChatCompletionRequestSystemMessageArgs::default()
+                    .content(msg.content.clone())
+                    .build()
+                    .map_err(|e| AppError::LLM(format!("Failed to build system message: {}", e)))?;
+                Ok(ChatCompletionRequestMessage::System(system_msg))
+            }
+            MessageRole::User => {
+                let user_msg = ChatCompletionRequestUserMessageArgs::default()
+                    .content(msg.content.clone())
+                    .build()
+                    .map_err(|e| AppError::LLM(format!("Failed to build user message: {}", e)))?;
+                Ok(ChatCompletionRequestMessage::User(user_msg))
+            }
+            MessageRole::Assistant => {
+                let mut builder = ChatCompletionRequestAssistantMessageArgs::default();
+
+                if !msg.content.is_empty() {
+                    builder.content(msg.content.clone());
+                }
+
+                // Convert tool calls if present
+                if !msg.tool_calls.is_empty() {
+                    let openai_tool_calls: Vec<ChatCompletionMessageToolCalls> = msg
+                        .tool_calls
+                        .iter()
+                        .map(|tc| {
+                            ChatCompletionMessageToolCalls::Function(
+                                ChatCompletionMessageToolCall {
+                                    id: tc.id.clone(),
+                                    function: FunctionCall {
+                                        name: tc.name.clone(),
+                                        arguments: serde_json::to_string(&tc.arguments)
+                                            .unwrap_or_else(|_| "{}".to_string()),
+                                    },
+                                },
+                            )
+                        })
+                        .collect();
+                    builder.tool_calls(openai_tool_calls);
+                }
+
+                let assistant_msg = builder.build().map_err(|e| {
+                    AppError::LLM(format!("Failed to build assistant message: {}", e))
+                })?;
+                Ok(ChatCompletionRequestMessage::Assistant(assistant_msg))
+            }
+            MessageRole::Tool => {
+                let tool_call_id = msg.tool_call_id.clone().ok_or_else(|| {
+                    AppError::LLM("Tool message must have a tool_call_id".to_string())
+                })?;
+
+                let tool_msg = ChatCompletionRequestToolMessageArgs::default()
+                    .tool_call_id(tool_call_id)
+                    .content(msg.content.clone())
+                    .build()
+                    .map_err(|e| AppError::LLM(format!("Failed to build tool message: {}", e)))?;
+                Ok(ChatCompletionRequestMessage::Tool(tool_msg))
+            }
+        }
     }
 }
 
@@ -354,6 +424,89 @@ impl LLMClient for OpenAIClient {
             .unwrap_or_default();
 
         // Extract token usage if available
+        #[allow(clippy::unnecessary_cast)]
+        let usage = response
+            .usage
+            .map(|u| TokenUsage::new(u.prompt_tokens as u32, u.completion_tokens as u32));
+
+        Ok(LLMResponse {
+            content,
+            tool_calls,
+            finish_reason,
+            usage,
+        })
+    }
+
+    async fn generate_with_tools_and_history(
+        &self,
+        messages: &[ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<LLMResponse> {
+        // Convert ConversationMessage to OpenAI format
+        let openai_messages: Vec<ChatCompletionRequestMessage> = messages
+            .iter()
+            .map(|msg| self.convert_conversation_message(msg))
+            .collect::<Result<Vec<_>>>()?;
+
+        // Convert tools to OpenAI format
+        let openai_tools: Vec<ChatCompletionTools> = tools.iter().map(Self::convert_tool).collect();
+
+        let mut builder = CreateChatCompletionRequestArgs::default();
+        builder.model(&self.model);
+        builder.messages(openai_messages);
+
+        if !openai_tools.is_empty() {
+            builder.tools(openai_tools);
+        }
+
+        // Apply model parameters
+        if let Some(temp) = self.params.temperature {
+            builder.temperature(temp);
+        }
+        if let Some(max_tokens) = self.params.max_tokens {
+            builder.max_completion_tokens(max_tokens);
+        }
+        if let Some(top_p) = self.params.top_p {
+            builder.top_p(top_p);
+        }
+        if let Some(freq_penalty) = self.params.frequency_penalty {
+            builder.frequency_penalty(freq_penalty);
+        }
+        if let Some(pres_penalty) = self.params.presence_penalty {
+            builder.presence_penalty(pres_penalty);
+        }
+
+        let request = builder
+            .build()
+            .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
+
+        let response = self
+            .client
+            .chat()
+            .create(request)
+            .await
+            .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e)))?;
+
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| AppError::LLM("No response from OpenAI".to_string()))?;
+
+        let content = choice.message.content.clone().unwrap_or_default();
+
+        let finish_reason = choice
+            .finish_reason
+            .as_ref()
+            .map(|r| format!("{:?}", r).to_lowercase())
+            .unwrap_or_else(|| "stop".to_string());
+
+        let tool_calls = choice
+            .message
+            .tool_calls
+            .as_ref()
+            .map(|calls| Self::extract_tool_calls(calls))
+            .unwrap_or_default();
+
         #[allow(clippy::unnecessary_cast)]
         let usage = response
             .usage

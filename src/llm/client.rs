@@ -24,6 +24,26 @@ pub trait LLMClient: Send + Sync {
         tools: &[ToolDefinition],
     ) -> Result<LLMResponse>;
 
+    /// Generate with conversation history AND tool definitions.
+    ///
+    /// This is the core method for multi-turn tool calling, combining:
+    /// - `generate_with_history()` - conversation context
+    /// - `generate_with_tools()` - tool calling capability
+    ///
+    /// # Arguments
+    ///
+    /// * `messages` - Conversation history as ConversationMessage structs
+    /// * `tools` - Available tool definitions
+    ///
+    /// # Returns
+    ///
+    /// An LLMResponse containing the model's reply and any tool calls requested.
+    async fn generate_with_tools_and_history(
+        &self,
+        messages: &[crate::llm::coordinator::ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<LLMResponse>;
+
     /// Stream a completion
     async fn stream(
         &self,
@@ -48,7 +68,7 @@ pub trait LLMClient: Send + Sync {
 }
 
 /// Token usage statistics from an LLM generation call
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TokenUsage {
     /// Number of tokens in the prompt/input
     pub prompt_tokens: u32,

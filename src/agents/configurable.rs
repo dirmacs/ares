@@ -323,6 +323,18 @@ mod tests {
             fn model_name(&self) -> &str {
                 "mock"
             }
+            async fn generate_with_tools_and_history(
+                &self,
+                _: &[crate::llm::coordinator::ConversationMessage],
+                _: &[ToolDefinition],
+            ) -> Result<LLMResponse> {
+                Ok(LLMResponse {
+                    content: "mock".to_string(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".to_string(),
+                    usage: None,
+                })
+            }
         }
 
         let config = AgentConfig {
@@ -401,6 +413,18 @@ mod tests {
             }
             fn model_name(&self) -> &str {
                 "mock"
+            }
+            async fn generate_with_tools_and_history(
+                &self,
+                _: &[crate::llm::coordinator::ConversationMessage],
+                _: &[ToolDefinition],
+            ) -> Result<LLMResponse> {
+                Ok(LLMResponse {
+                    content: "mock".to_string(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".to_string(),
+                    usage: None,
+                })
             }
         }
 

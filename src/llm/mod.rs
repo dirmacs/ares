@@ -49,6 +49,8 @@
 //! All providers support streaming responses via the `generate_stream` method,
 //! which returns a `Pin<Box<dyn Stream<Item = Result<String>>>>`.
 
+/// Model capabilities and requirement matching (DIR-43).
+pub mod capabilities;
 /// Core LLM client trait and streaming response types.
 pub mod client;
 /// Generic tool coordinator for multi-turn tool calling.
@@ -68,6 +70,9 @@ pub mod openai;
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
 
+pub use capabilities::{
+    CapabilityRequirements, CapabilityRequirementsBuilder, ModelCapabilities, ModelWithCapabilities,
+};
 pub use client::{LLMClient, LLMClientFactory, LLMResponse, Provider};
 pub use coordinator::{
     ConversationMessage, CoordinatorResult, FinishReason, MessageRole, ToolCallRecord,

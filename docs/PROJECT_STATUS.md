@@ -1,9 +1,9 @@
 # A.R.E.S Project Status & Completion Summary
 
 **Date**: 2024-12-15  
-**Updated**: 2026-02-01  
+**Updated**: 2026-02-03  
 **Status**: ✅ All Core Features Implemented and Tested  
-**Version**: 0.5.0
+**Version**: 0.6.0
 
 ---
 
@@ -22,6 +22,7 @@ A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed in
 ✅ **Workflow Engine**: Multi-agent orchestration with declarative workflows  
 ✅ **ConfigurableAgent**: Dynamic agent creation from TOON files (legacy agents removed)  
 ✅ **RAG System**: Pure-Rust ares-vector store, multi-strategy search, reranking  
+✅ **Model Capabilities (DIR-43)**: Intelligent model selection based on task requirements  
 ✅ **458 Passing Tests**: Unit, integration, mocked network tests, RAG, and MCP tests  
 ✅ **CI/CD Pipeline**: Multi-platform testing with GitHub Actions  
 ✅ **Developer Documentation**: Setup guides, contributing guidelines, GGUF usage  
@@ -1030,8 +1031,22 @@ All objectives from the five iterations have been successfully completed:
 ✅ **Iteration 3**: Documentation, developer experience, setup automation  
 ✅ **Iteration 4**: Workflow engine, ConfigurableAgent, router improvements, legacy agent removal  
 ✅ **Iteration 5**: Pure-Rust vector store, RAG pipeline, multi-strategy search, reranking  
+✅ **Iteration 6**: Model Capabilities (DIR-43), intelligent model selection
 
 **The A.R.E.S project is production-ready for local-first LLM applications with excellent developer experience, RAG capabilities, and comprehensive testing.**
+
+### What's New in v0.6.0
+- **Model Capabilities (DIR-43)**: Intelligent model selection based on task requirements
+  - New `ModelCapabilities` struct with auto-detection for popular models
+  - `CapabilityRequirements` builder for specifying task needs (tools, vision, context, etc.)
+  - `ProviderRegistry::find_models()` returns models matching requirements, sorted by score
+  - `ProviderRegistry::find_best_model()` returns the optimal model for a task
+  - `ProviderRegistry::create_client_for_requirements()` creates client for best-matching model
+  - Preset requirements: `for_agent()`, `for_vision()`, `for_coding()`, `for_local()`
+  - Capability tiers: cost (free→premium), speed (slow→realtime), quality (basic→premium)
+  - Auto-detected capabilities for Claude, GPT-4, Llama, Mistral, Qwen, DeepSeek models
+  - Scoring system considers cost, speed, quality, locality, and capability fit
+- **Location**: `src/llm/capabilities.rs`, extended `src/llm/provider_registry.rs`
 
 ### What's New in v0.5.0
 - **Unified ToolCoordinator**: Provider-agnostic multi-turn tool calling orchestration

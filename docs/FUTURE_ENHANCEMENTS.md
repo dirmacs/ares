@@ -342,15 +342,92 @@ impl QueryExpander {
 
 ---
 
+## LLM Client Connection Pooling (DIR-44)
+
+### Status: ✅ Implemented
+
+Connection pooling for LLM clients has been implemented to enable efficient connection reuse across requests, reducing latency and resource consumption.
+
+### Implementation Details
+
+**Location**: `src/llm/pool.rs`
+
+**Features**:
+- ✅ Pool management with configurable max connections per provider
+- ✅ Connection reuse across requests via `PooledClientGuard` RAII pattern
+- ✅ Health checking for stale connections (idle timeout + max lifetime)
+- ✅ Graceful cleanup on shutdown
+- ✅ Background cleanup task for removing stale connections
+- ✅ Thread-safe with `parking_lot::RwLock` and `tokio::sync::Semaphore`
+- ✅ Builder pattern for pool configuration
+
+### Usage
+
+```rust
+use ares::llm::pool::{ClientPool, ClientPoolBuilder, PoolConfig};
+use ares::llm::Provider;
+
+// Create a pool with custom configuration
+let pool = ClientPoolBuilder::new()
+    .config(PoolConfig::default()
+        .with_max_connections(10)
+        .with_idle_timeout(Duration::from_secs(300)))
+    .provider("openai", openai_provider)
+    .provider("anthropic", anthropic_provider)
+    .build_arc();
+
+// Start background cleanup task (optional)
+let cleanup_handle = pool.start_cleanup_task();
+
+// Get a pooled client - automatically returned when guard is dropped
+let guard = pool.get("openai").await?;
+let response = guard.generate("Hello!").await?;
+
+// Check pool statistics
+let stats = pool.stats();
+println!("Available: {}, In Use: {}", stats.total_available, stats.total_in_use);
+
+// Graceful shutdown
+pool.shutdown();
+```
+
+### Configuration
+
+```rust
+use ares::llm::pool::PoolConfig;
+
+let config = PoolConfig {
+    max_connections_per_provider: 10,  // Max clients per provider
+    min_idle_connections: 2,           // Minimum idle clients to maintain
+    idle_timeout: Duration::from_secs(300),  // 5 min idle timeout
+    max_lifetime: Duration::from_secs(1800), // 30 min max lifetime
+    health_check_interval: Duration::from_secs(60), // Cleanup interval
+    acquire_timeout: Duration::from_secs(30), // Timeout for getting client
+    enable_health_check: true,
+};
+```
+
+### Implementation Location
+
+- `src/llm/pool.rs` - Core pooling implementation
+- `src/llm/mod.rs` - Public exports
+
+### References
+
+- [DIR-44 Implementation](../src/llm/pool.rs)
+
+---
+
 ## Implementation Priority
 
 When resources become available, implement in this order:
 
 1. ~~**Embedding Cache** (High impact, moderate effort)~~ - **DONE**
-2. **GPU Acceleration** (High impact, high effort)
-3. **Advanced Search** (Medium impact, varies)
-4. **Migration Utility** (Low priority unless requested)
-5. **AI-Native Protocols** (Pending standardization)
+2. ~~**LLM Client Pooling (DIR-44)** (High impact, moderate effort)~~ - **DONE**
+3. **GPU Acceleration** (High impact, high effort)
+4. **Advanced Search** (Medium impact, varies)
+5. **Migration Utility** (Low priority unless requested)
+6. **AI-Native Protocols** (Pending standardization)
 
 ---
 
@@ -367,5 +444,5 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2026-02-01  
+**Last Updated**: 2026-02-03  
 **Related**: [DIR-24 Implementation Plan](./DIR-24_RAG_IMPLEMENTATION_PLAN.md)

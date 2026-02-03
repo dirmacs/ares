@@ -12,6 +12,7 @@
 //! - [`ProviderRegistry`] - Registry for managing multiple providers
 //! - [`ConfigBasedLLMFactory`] - Creates clients based on `ares.toml` configuration
 //! - [`ToolCoordinator`](crate::llm::coordinator::ToolCoordinator) - Generic multi-turn tool calling coordinator
+//! - [`ClientPool`](crate::llm::pool::ClientPool) - Connection pooling for efficient client reuse (DIR-44)
 //!
 //! # Supported Providers
 //!
@@ -31,6 +32,21 @@
 //!
 //! let response = client.generate("What is 2+2?", None).await?;
 //! println!("{}", response.content);
+//! ```
+//!
+//! # Connection Pooling (DIR-44)
+//!
+//! Use the [`ClientPool`](crate::llm::pool::ClientPool) for efficient connection reuse:
+//!
+//! ```ignore
+//! use ares::llm::pool::{ClientPool, PoolConfig};
+//!
+//! let pool = ClientPool::new(PoolConfig::default());
+//! pool.register_provider("openai", provider);
+//!
+//! // Get a pooled client - automatically returned when guard is dropped
+//! let guard = pool.get("openai").await?;
+//! let response = guard.generate("Hello!").await?;
 //! ```
 //!
 //! # Tool Calling
@@ -55,6 +71,8 @@ pub mod capabilities;
 pub mod client;
 /// Generic tool coordinator for multi-turn tool calling.
 pub mod coordinator;
+/// Connection pooling for LLM clients (DIR-44).
+pub mod pool;
 /// Registry for managing multiple LLM provider instances.
 pub mod provider_registry;
 
@@ -78,4 +96,5 @@ pub use coordinator::{
     ConversationMessage, CoordinatorResult, FinishReason, MessageRole, ToolCallRecord,
     ToolCallingConfig, ToolCoordinator,
 };
+pub use pool::{ClientPool, ClientPoolBuilder, PoolConfig, PoolStats, PooledClientGuard};
 pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};

@@ -182,7 +182,7 @@ tower-sessions = "0.14.0"
 tower_governor = "0.8"
 
 # HTTP client
-reqwest = { version = "0.12.26", features = ["json"] }
+reqwest = { version = "0.12.26", default-features = false, features = ["json", "rustls-tls"] }
 
 # Authentication
 argon2 = "0.5.3"
@@ -231,6 +231,9 @@ lru = "0.16.3"  # 0.16.3+ fixes RUSTSEC-2026-0002 (stacked borrows unsound in It
 # Web scraping and search
 daedra = "0.1.4"
 scraper = "0.25.0"
+
+# OpenSSL vendored build (for systems without pkg-config/libssl-dev)
+openssl = { version = "0.10", features = ["vendored"] }
 
 # Schema and documentation
 schemars = { version = "1.1.0", features = ["derive"] }

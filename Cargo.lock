@@ -242,6 +242,7 @@ dependencies = [
  "dotenvy",
  "fastembed",
  "futures",
+ "hex",
  "jsonwebtoken 10.3.0",
  "lance",
  "lancedb",

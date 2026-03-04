@@ -2,7 +2,7 @@
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
     "builder": "NIXPACKS",
-    "buildCommand": "cargo build --release --bin ares-server",
+    "buildCommand": "cargo build --release --features openai --bin ares-server",
     "startCommand": "./target/release/ares-server",
     "nixpacksJson": {
       "rust": {

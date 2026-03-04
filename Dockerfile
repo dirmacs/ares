@@ -2,7 +2,8 @@
 # =============================================================================
 # Build with: docker build -t ares-server .
 # Build with UI: docker build --build-arg FEATURES="ui" -t ares-server .
-# Build with all features: docker build --build-arg FEATURES="full" -t ares-server .
+# Build with all features: docker build --build-arg FEATURES="openai" -t ares-server .
+# Build with UI: docker build --build-arg FEATURES="ui,openai" -t ares-server .
 
 # -----------------------------------------------------------------------------
 # Stage 1: UI Build (optional, only if UI feature is enabled)

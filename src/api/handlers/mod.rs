@@ -4,6 +4,8 @@
 
 /// Agent listing and info handlers.
 pub mod agents;
+/// Admin tenant management handlers.
+pub mod admin;
 /// Authentication handlers (login, register).
 pub mod auth;
 /// Chat and streaming handlers.

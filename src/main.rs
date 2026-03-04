@@ -410,9 +410,12 @@ async fn run_server(
     // =================================================================
     // Create Application State
     // =================================================================
+    let tenant_db = Arc::new(ares::TenantDb::new(Arc::new(turso.clone())));
+    
     let state = AppState {
         config_manager: Arc::clone(&config_manager),
         turso: Arc::new(turso),
+        tenant_db,
         llm_factory,
         provider_registry,
         agent_registry,

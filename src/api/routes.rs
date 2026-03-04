@@ -4,14 +4,14 @@ use crate::AppState;
 use axum::routing::delete;
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use std::sync::Arc;
 
 /// Creates the main API router with all routes configured.
 ///
-/// Routes are split into public (no auth) and protected (requires JWT).
+/// Routes are split into public (no auth), protected (requires JWT), and admin (requires admin secret).
 pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
     let public_routes = Router::new()
         // Public routes (no auth required)
@@ -98,5 +98,33 @@ pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
         crate::auth::middleware::auth_middleware(auth_service.clone(), req, next)
     }));
 
-    public_routes.merge(protected_routes)
+    // Admin routes (protected by X-Admin-Secret header)
+    let admin_routes = Router::new()
+        .route(
+            "/admin/tenants",
+            post(crate::api::handlers::admin::create_tenant)
+                .get(crate::api::handlers::admin::list_tenants),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}",
+            get(crate::api::handlers::admin::get_tenant),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/api-keys",
+            post(crate::api::handlers::admin::create_api_key)
+                .get(crate::api::handlers::admin::list_api_keys),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/usage",
+            get(crate::api::handlers::admin::get_tenant_usage),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/quota",
+            put(crate::api::handlers::admin::update_tenant_quota),
+        )
+        .layer(middleware::from_fn(
+            crate::api::handlers::admin::admin_middleware,
+        ));
+
+    public_routes.merge(protected_routes).merge(admin_routes)
 }

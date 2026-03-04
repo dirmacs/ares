@@ -353,6 +353,99 @@ impl TursoClient {
             AppError::Database(format!("Failed to create executions_agent index: {}", e))
         })?;
 
+        // Multi-tenant tables for ARES
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                tier TEXT NOT NULL DEFAULT 'free',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            (),
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to create tenants table: {}", e)))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS api_keys (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                key_hash TEXT NOT NULL,
+                key_prefix TEXT NOT NULL,
+                name TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+            )",
+            (),
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to create api_keys table: {}", e)))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id)",
+            (),
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to create api_keys_tenant index: {}", e)))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix)",
+            (),
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to create api_keys_prefix index: {}", e)))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS usage_events (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 1,
+                token_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+            )",
+            (),
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to create usage_events table: {}", e)))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_events_tenant ON usage_events(tenant_id, created_at DESC)",
+            (),
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to create usage_events_tenant index: {}", e)))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS monthly_usage_cache (
+                tenant_id TEXT NOT NULL,
+                usage_month INTEGER NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                token_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (tenant_id, usage_month),
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+            )",
+            (),
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to create monthly_usage_cache table: {}", e)))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS daily_rate_limits (
+                tenant_id TEXT NOT NULL,
+                usage_date INTEGER NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (tenant_id, usage_date),
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+            )",
+            (),
+        )
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to create daily_rate_limits table: {}", e)))?;
+
         Ok(())
     }
 

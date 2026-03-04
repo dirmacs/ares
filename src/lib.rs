@@ -147,6 +147,10 @@ pub mod llm;
 pub mod mcp;
 /// Conversation memory and context management.
 pub mod memory;
+/// Multi-tenant models (Tenant, ApiKey, Quota).
+pub mod models;
+/// Middleware for API key auth and usage tracking.
+pub mod middleware;
 /// Retrieval Augmented Generation (RAG) components.
 pub mod rag;
 /// Multi-agent research coordination.
@@ -162,11 +166,13 @@ pub mod workflows;
 
 // Re-export commonly used types
 pub use agents::{AgentRegistry, AgentRegistryBuilder};
+pub use db::tenants::TenantDb;
 pub use db::TursoClient;
 pub use llm::client::LLMClientFactoryTrait;
 pub use llm::{
     ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, Provider, ProviderRegistry,
 };
+pub use models::{ApiKey, Tenant, TenantContext, TenantQuota, TenantTier};
 pub use tools::registry::ToolRegistry;
 pub use types::{AppError, ErrorCode, Result};
 pub use utils::toml_config::{AresConfig, AresConfigManager};
@@ -185,6 +191,8 @@ pub struct AppState {
     pub dynamic_config: Arc<DynamicConfigManager>,
     /// Database client
     pub turso: Arc<TursoClient>,
+    /// Multi-tenant database
+    pub tenant_db: Arc<TenantDb>,
     /// LLM client factory (config-based)
     pub llm_factory: Arc<ConfigBasedLLMFactory>,
     /// Provider registry for model/provider management

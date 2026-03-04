@@ -64,6 +64,8 @@ pub mod qdrant;
 pub mod traits;
 /// Turso/libSQL database client implementation.
 pub mod turso;
+/// Multi-tenant tenant management.
+pub mod tenants;
 
 // Re-exports
 pub use vectorstore::{CollectionInfo, CollectionStats, VectorStore, VectorStoreProvider};
@@ -75,3 +77,4 @@ pub use lancedb::LanceDBStore;
 #[cfg(feature = "qdrant")]
 pub use qdrant::QdrantVectorStore;
 pub use turso::TursoClient;
+pub use tenants::{TenantDb, UsageSummary};

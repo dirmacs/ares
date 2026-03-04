@@ -9,7 +9,7 @@ use crate::{
     utils::toml_config::AgentConfig,
     AppState,
 };
-use axum::{extract::State, Json};
+use axum::{extract::State, response::Response, Json};
 use uuid::Uuid;
 
 /// Chat with the AI assistant
@@ -29,7 +29,7 @@ pub async fn chat(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
     Json(payload): Json<ChatRequest>,
-) -> Result<Json<ChatResponse>> {
+) -> Result<Response> {
     // Get or create conversation
     let context_id = payload
         .context_id
@@ -110,7 +110,22 @@ pub async fn chat(
         )
         .await?;
 
-    Ok(Json(response))
+    // Estimate token counts from content (fallback when LLM doesn't return usage)
+    let input_tokens = (payload.message.len() / 4) as u32;
+    let output_tokens = (response.response.len() / 4) as u32;
+
+    let body = Json(response);
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        axum::http::HeaderName::from_static("x-input-tokens"),
+        axum::http::HeaderValue::from(input_tokens),
+    );
+    response.headers_mut().insert(
+        axum::http::HeaderName::from_static("x-output-tokens"),
+        axum::http::HeaderValue::from(output_tokens),
+    );
+
+    Ok(response)
 }
 
 async fn execute_agent(

@@ -46,3 +46,7 @@ nul
 
 # Session files
 session-*.md
+
+# Production configuration (keep public template ares.example.toml)
+ares.toml
+agents/private/

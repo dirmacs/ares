@@ -1,0 +1,34 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "cargo build --release --bin ares-server",
+    "startCommand": "./target/release/ares-server",
+    "nixpacksJson": {
+      "rust": {
+        "version": "1.91"
+      }
+    }
+  },
+  "deploy": {
+    "numReplicas": 1,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  },
+  "env": {
+    "required": [
+      "DATABASE_URL",
+      "JWT_SECRET",
+      "ADMIN_API_KEY"
+    ],
+    "optional": [
+      "TURSO_URL",
+      "TURSO_AUTH_TOKEN",
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "OLLAMA_URL"
+    ]
+  },
+  "name": "ares-server",
+  "region": "ap-south-1"
+}

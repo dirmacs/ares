@@ -367,9 +367,9 @@ RUST_LOG=info,ares=debug
 # Optional: OpenAI API key (if using OpenAI provider)
 # OPENAI_API_KEY=sk-...
 
-# Optional: Turso cloud database (if using remote database)
-# TURSO_URL=libsql://your-db.turso.io
-# TURSO_AUTH_TOKEN=your-token
+# Optional: Remote PostgreSQL database
+# DATABASE_URL=postgres://user:pass@host:5432/ares
+# PGSSLMODE=require
 
 # Optional: Qdrant vector database
 # QDRANT_URL=http://localhost:6334

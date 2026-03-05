@@ -150,7 +150,14 @@ struct PooledClient {
     meta: PooledClientMeta,
 }
 
+impl std::fmt::Debug for PooledClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PooledClient").field("meta", &self.meta).finish()
+    }
+}
+
 /// Pool of clients for a single provider
+#[derive(Debug)]
 struct ProviderPool {
     /// The provider configuration for creating new clients
     provider: Provider,
@@ -295,6 +302,15 @@ pub struct PooledClientGuard {
     client: Option<Box<dyn LLMClient>>,
     pool: Arc<ProviderPool>,
     _permit: OwnedSemaphorePermit,
+}
+
+impl std::fmt::Debug for PooledClientGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PooledClientGuard")
+            .field("has_client", &self.client.is_some())
+            .field("pool", &self.pool)
+            .finish()
+    }
 }
 
 impl PooledClientGuard {

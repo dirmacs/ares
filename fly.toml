@@ -1,0 +1,40 @@
+app = "kasino-dirmacs"
+primary_region = "bom"  # Mumbai for India latency
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "3000"
+  RUST_LOG = "info"
+  # Database path inside container
+  DATABASE_URL = "/app/data/kasino.db"
+
+[[services]]
+  internal_port = 3000
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+    
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "5s"
+
+[mounts]
+  source = "kasino_data"
+  destination = "/app/data"
+
+[[vm]]
+  size = "shared-cpu-2x"  # 2 shared CPUs, 512MB RAM
+  memory = "512mb"

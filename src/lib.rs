@@ -101,8 +101,7 @@
 //! | `ollama` | Ollama local inference (default) |
 //! | `openai` | OpenAI API support |
 //! | `llamacpp` | Direct GGUF model loading |
-//! | `local-db` | Local SQLite database (default) |
-//! | `turso` | Remote Turso database |
+//! | `postgres` | PostgreSQL database (default) |
 //! | `qdrant` | Qdrant vector database |
 //! | `mcp` | Model Context Protocol support |
 //!
@@ -111,7 +110,7 @@
 //! - [`agents`] - Agent framework for multi-agent orchestration
 //! - [`api`] - REST API handlers and routes
 //! - [`auth`] - JWT authentication and middleware
-//! - [`db`] - Database abstraction (SQLite, Turso)
+//! - [`db`] - Database abstraction (PostgreSQL)
 //! - [`llm`] - LLM client implementations
 //! - [`tools`] - Tool definitions and registry
 //! - [`workflows`] - Declarative workflow engine
@@ -167,7 +166,7 @@ pub mod workflows;
 // Re-export commonly used types
 pub use agents::{AgentRegistry, AgentRegistryBuilder};
 pub use db::tenants::TenantDb;
-pub use db::TursoClient;
+pub use db::PostgresClient;
 pub use llm::client::LLMClientFactoryTrait;
 pub use llm::{
     ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, Provider, ProviderRegistry,
@@ -190,7 +189,7 @@ pub struct AppState {
     /// TOON-based dynamic behavioral configuration with hot-reload support
     pub dynamic_config: Arc<DynamicConfigManager>,
     /// Database client
-    pub turso: Arc<TursoClient>,
+    pub db: Arc<dyn crate::db::traits::DatabaseClient>,
     /// Multi-tenant database
     pub tenant_db: Arc<TenantDb>,
     /// LLM client factory (config-based)

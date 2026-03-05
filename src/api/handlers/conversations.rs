@@ -4,7 +4,7 @@
 
 use crate::{
     auth::middleware::AuthUser,
-    db::turso::Conversation,
+    db::postgres::Conversation,
     types::{AppError, Result},
     AppState,
 };
@@ -92,11 +92,11 @@ pub async fn list_conversations(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<Vec<ConversationSummary>>> {
-    let conversations = state.turso.get_user_conversations(&claims.sub).await?;
+    let conversations = state.db.get_user_conversations(&claims.sub).await?;
 
     let summaries: Vec<ConversationSummary> = conversations
         .into_iter()
-        .map(ConversationSummary::from)
+        .map(|c| ConversationSummary { id: c.id, title: Some(c.title), message_count: c.message_count, created_at: c.created_at, updated_at: c.updated_at })
         .collect();
 
     Ok(Json(summaries))
@@ -123,7 +123,7 @@ pub async fn get_conversation(
     Path(id): Path<String>,
 ) -> Result<Json<ConversationDetails>> {
     // Verify conversation belongs to user
-    let conversation = state.turso.get_conversation(&id).await?;
+    let conversation = state.db.get_conversation(&id).await?;
 
     if conversation.user_id != claims.sub {
         return Err(AppError::Auth(
@@ -131,7 +131,7 @@ pub async fn get_conversation(
         ));
     }
 
-    let messages = state.turso.get_conversation_history(&id).await?;
+    let messages = state.db.get_conversation_history(&id).await?;
 
     let message_details: Vec<ConversationMessage> = messages
         .into_iter()
@@ -176,7 +176,7 @@ pub async fn update_conversation(
     Json(payload): Json<UpdateConversationRequest>,
 ) -> Result<Json<serde_json::Value>> {
     // Verify conversation belongs to user
-    let conversation = state.turso.get_conversation(&id).await?;
+    let conversation = state.db.get_conversation(&id).await?;
 
     if conversation.user_id != claims.sub {
         return Err(AppError::Auth(
@@ -185,7 +185,7 @@ pub async fn update_conversation(
     }
 
     state
-        .turso
+        .db
         .update_conversation_title(&id, payload.title.as_deref())
         .await?;
 
@@ -213,7 +213,7 @@ pub async fn delete_conversation(
     Path(id): Path<String>,
 ) -> Result<axum::http::StatusCode> {
     // Verify conversation belongs to user
-    let conversation = state.turso.get_conversation(&id).await?;
+    let conversation = state.db.get_conversation(&id).await?;
 
     if conversation.user_id != claims.sub {
         return Err(AppError::Auth(
@@ -221,7 +221,7 @@ pub async fn delete_conversation(
         ));
     }
 
-    state.turso.delete_conversation(&id).await?;
+    state.db.delete_conversation(&id).await?;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

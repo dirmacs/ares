@@ -1,32 +1,24 @@
-use crate::db::tenants::TenantDb;
-use crate::models::TenantContext;
 use axum::{
-    body::Body,
     extract::Request,
-    http::HeaderMap,
     middleware::Next,
     response::Response,
 };
 use std::sync::Arc;
+use crate::db::tenants::TenantDb;
 
-pub async fn usage_tracking_middleware(
+pub async fn track_usage(
     req: Request,
     next: Next,
 ) -> Response {
-    let extensions = req.extensions();
-    let tenant_ctx: Option<&TenantContext> = extensions.get();
-    let tenant_db: Option<Arc<TenantDb>> = extensions.get();
+    let tenant_id = req.extensions().get::<crate::models::TenantContext>().map(|c| c.tenant_id.clone());
+    let tenant_db = req.extensions().get::<Arc<TenantDb>>().cloned();
 
     let response = next.run(req).await;
 
-    if let (Some(ctx), Some(db)) = (tenant_ctx, tenant_db) {
-        let tenant_id = ctx.tenant_id.clone();
-        let response_headers = response.headers().clone();
-
+    if let (Some(tid), Some(db)) = (tenant_id, tenant_db) {
+        let headers = response.headers().clone();
         tokio::spawn(async move {
-            if let Err(e) = record_usage(&tenant_id, &response_headers, db.as_ref().await).await {
-                tracing::error!("Failed to record usage: {}", e);
-            }
+            let _ = crate::middleware::usage::record_usage(&tid, &headers, db.as_ref()).await;
         });
     }
 
@@ -35,72 +27,13 @@ pub async fn usage_tracking_middleware(
 
 async fn record_usage(
     tenant_id: &str,
-    headers: &HeaderMap,
+    headers: &axum::http::HeaderMap,
     db: &TenantDb,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let input_tokens = extract_token_header(headers, "x-input-tokens")
-        .or_else(|| extract_token_header(headers, "x-gpt-input-tokens"))
-        .unwrap_or(0);
-
-    let output_tokens = extract_token_header(headers, "x-output-tokens")
-        .or_else(|| extract_token_header(headers, "x-gpt-output-tokens"))
-        .unwrap_or(0);
-
-    let total_tokens = input_tokens + output_tokens;
-
-    let input_estimate = if total_tokens == 0 {
-        estimate_tokens_from_headers(headers)
-    } else {
-        total_tokens
-    };
-
-    if input_estimate > 0 {
-        if let Err(e) = db.record_usage_event(tenant_id, 1, input_estimate).await {
-            tracing::error!("Failed to record usage event: {}", e);
-        }
-    }
-
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut tokens = 0;
+    if let Some(t) = headers.get("x-input-tokens").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<i32>().ok()) { tokens += t; }
+    if let Some(t) = headers.get("x-output-tokens").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<i32>().ok()) { tokens += t; }
+    
+    db.record_usage_event(tenant_id, 1, tokens as u64).await?;
     Ok(())
-}
-
-fn extract_token_header(headers: &HeaderMap, name: &str) -> Option<u64> {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
-}
-
-fn estimate_tokens_from_headers(headers: &HeaderMap) -> u64 {
-    if let Some(content_length) = headers.get("content-length") {
-        if let Ok(cl) = content_length.to_str() {
-            if let Ok(bytes) = cl.parse::<u64>() {
-                return bytes / 4;
-            }
-        }
-    }
-    0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_token_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-input-tokens", "100".parse().unwrap());
-        headers.insert("x-output-tokens", "50".parse().unwrap());
-
-        assert_eq!(extract_token_header(&headers, "x-input-tokens"), Some(100));
-        assert_eq!(extract_token_header(&headers, "x-output-tokens"), Some(50));
-        assert_eq!(extract_token_header(&headers, "x-missing"), None);
-    }
-
-    #[test]
-    fn test_estimate_tokens() {
-        let mut headers = HeaderMap::new();
-        headers.insert("content-length", "400".parse().unwrap());
-
-        assert_eq!(estimate_tokens_from_headers(&headers), 100);
-    }
 }

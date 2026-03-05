@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PostgreSQL Database Support**: Migrated from SQLite/libsql to PostgreSQL
+  - New `PostgresClient` with `sqlx::PgPool` for connection pooling
+  - Multi-tenant database support via `TenantDb`
+  - Automatic database migrations on startup
+  - Support for PostgreSQL `$1, $2, ...` query placeholders
+  - Added `#[derive(sqlx::FromRow)]` for database models
+  - Updated all SQL queries for PostgreSQL syntax
+  - New `init_postgres_db()` function for simplified initialization
+  - Location: `src/db/postgres.rs`, `src/db/tenants.rs`
+
+### Changed
+
+- **BREAKING**: Database backend changed from SQLite to PostgreSQL
+  - Connection strings now use PostgreSQL format: `postgres://user:pass@host:5432/dbname`
+  - Removed `turso_url_env` and `turso_token_env` from configuration
+  - Default database URL: `postgres://postgres:postgres@localhost:5432/ares`
+  - See Migration Guide below for upgrade instructions
+
 ### Removed
+
+- **libsql/SQLite**: Complete removal of SQLite backend
+  - Removed `libsql` dependency
+  - Removed `TursoClient` and `src/db/turso.rs`
+  - Removed `turso` feature flag
+  - Removed `hnsw_rs` dependency (moved to pgvector)
 
 - **OllamaToolCoordinator**: Removed in favor of the unified `ToolCoordinator`
   - `OllamaToolCoordinator` struct
@@ -28,6 +54,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Legacy Environment Variables documentation**: Removed from README.md
   - Use the standard environment variables documented in the Configuration section
+
+### PostgreSQL Migration Guide
+
+#### For Local Development
+
+1. **Install PostgreSQL**:
+   ```bash
+   # Ubuntu/Debian
+   sudo apt install postgresql postgresql-contrib
+   
+   # macOS
+   brew install postgresql
+   
+   # Windows
+   # Download from https://www.postgresql.org/download/windows/
+   ```
+
+2. **Create database and user**:
+   ```bash
+   sudo -u postgres psql -c "CREATE DATABASE ares;"
+   sudo -u postgres psql -c "CREATE USER ares WITH PASSWORD 'your_password';"
+   sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ares TO ares;"
+   ```
+
+3. **Set environment variable**:
+   ```bash
+   export DATABASE_URL="postgres://ares:your_password@localhost:5432/ares"
+   ```
+
+4. **Run ARES**: Migrations run automatically on startup
+
+#### For Production (Contabo VPS)
+
+See `sops/deployment-checklist.md` for complete VPS deployment instructions.
+
+### PostgreSQL Migration Guide
+
+#### For Local Development
+
+1. **Install PostgreSQL**:
+   ```bash
+   # Ubuntu/Debian
+   sudo apt install postgresql postgresql-contrib
+   
+   # macOS
+   brew install postgresql
+   
+   # Windows
+   # Download from https://www.postgresql.org/download/windows/
+   ```
+
+2. **Create database and user**:
+   ```bash
+   sudo -u postgres psql -c "CREATE DATABASE ares;"
+   sudo -u postgres psql -c "CREATE USER ares WITH PASSWORD 'your_password';"
+   sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ares TO ares;"
+   ```
+
+3. **Set environment variable**:
+   ```bash
+   export DATABASE_URL="postgres://ares:your_password@localhost:5432/ares"
+   ```
+
+4. **Run ARES**: Migrations run automatically on startup
+
+#### For Production (Contabo VPS)
+
+See `sops/deployment-checklist.md` for complete VPS deployment instructions.
 
 ### Migration Guide
 

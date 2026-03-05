@@ -40,7 +40,7 @@ pub async fn register(
 
     // Check if user exists
     if state
-        .turso
+        .db
         .get_user_by_email(&payload.email)
         .await?
         .is_some()
@@ -54,7 +54,7 @@ pub async fn register(
     // Create user
     let user_id = Uuid::new_v4().to_string();
     state
-        .turso
+        .db
         .create_user(&user_id, &payload.email, &password_hash, &payload.name)
         .await?;
 
@@ -67,7 +67,7 @@ pub async fn register(
     let token_hash = state.auth_service.hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
     state
-        .turso
+        .db
         .create_session(
             &session_id,
             &user_id,
@@ -96,7 +96,7 @@ pub async fn login(
 ) -> Result<Json<TokenResponse>> {
     // Get user
     let user = state
-        .turso
+        .db
         .get_user_by_email(&payload.email)
         .await?
         .ok_or_else(|| AppError::Auth("Invalid credentials".to_string()))?;
@@ -116,7 +116,7 @@ pub async fn login(
     let token_hash = state.auth_service.hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
     state
-        .turso
+        .db
         .create_session(
             &session_id,
             &user.id,
@@ -163,7 +163,7 @@ pub async fn logout(
     // Attempt to delete the session - we don't error if it doesn't exist
     // (token may already be expired/revoked, which is fine for logout)
     state
-        .turso
+        .db
         .delete_session_by_token_hash(&token_hash)
         .await?;
 
@@ -195,7 +195,7 @@ pub async fn refresh_token(
     // Hash the refresh token and validate it exists in the database
     let token_hash = state.auth_service.hash_token(refresh_token);
     let user_id = state
-        .turso
+        .db
         .validate_session(&token_hash)
         .await?
         .ok_or_else(|| AppError::Auth("Refresh token has been revoked or expired".to_string()))?;
@@ -207,7 +207,7 @@ pub async fn refresh_token(
 
     // Invalidate the old refresh token (one-time use)
     state
-        .turso
+        .db
         .delete_session_by_token_hash(&token_hash)
         .await?;
 
@@ -220,7 +220,7 @@ pub async fn refresh_token(
     let new_token_hash = state.auth_service.hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
     state
-        .turso
+        .db
         .create_session(
             &session_id,
             &claims.sub,

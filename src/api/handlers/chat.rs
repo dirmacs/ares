@@ -1,3 +1,5 @@
+
+
 use crate::{
     agents::{registry::AgentRegistry, router::RouterAgent, Agent},
     api::handlers::user_agents::resolve_agent,
@@ -36,17 +38,17 @@ pub async fn chat(
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     // Check if conversation exists, create if not
-    if !state.turso.conversation_exists(&context_id).await? {
+    if !state.db.conversation_exists(&context_id).await? {
         state
-            .turso
+            .db
             .create_conversation(&context_id, &claims.sub, None)
             .await?;
     }
-    let history = state.turso.get_conversation_history(&context_id).await?;
+    let history = state.db.get_conversation_history(&context_id).await?;
 
     // Load user memory
-    let memory_facts = state.turso.get_user_memory(&claims.sub).await?;
-    let preferences = state.turso.get_user_preferences(&claims.sub).await?;
+    let memory_facts = state.db.get_user_memory(&claims.sub).await?;
+    let preferences = state.db.get_user_preferences(&claims.sub).await?;
     let user_memory = if !memory_facts.is_empty() || !preferences.is_empty() {
         Some(UserMemory {
             user_id: claims.sub.clone(),
@@ -95,13 +97,13 @@ pub async fn chat(
     // Store messages in conversation
     let msg_id = Uuid::new_v4().to_string();
     state
-        .turso
+        .db
         .add_message(&msg_id, &context_id, MessageRole::User, &payload.message)
         .await?;
 
     let resp_id = Uuid::new_v4().to_string();
     state
-        .turso
+        .db
         .add_message(
             &resp_id,
             &context_id,
@@ -144,7 +146,7 @@ async fn execute_agent(
     }
 
     // Resolve agent using the 3-tier hierarchy (User -> Community -> System)
-    let (user_agent, source) = resolve_agent(state, &context.user_id, agent_name).await?;
+    let (user_agent, source) = resolve_agent(state, &context.user_id, agent_name.to_string()).await?;
 
     // Convert UserAgent to AgentConfig for the registry
     let config = AgentConfig {
@@ -188,8 +190,8 @@ pub async fn get_user_memory(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<UserMemory>> {
-    let facts = state.turso.get_user_memory(&claims.sub).await?;
-    let preferences = state.turso.get_user_preferences(&claims.sub).await?;
+    let facts = state.db.get_user_memory(&claims.sub).await?;
+    let preferences = state.db.get_user_preferences(&claims.sub).await?;
 
     Ok(Json(UserMemory {
         user_id: claims.sub,
@@ -256,26 +258,26 @@ pub async fn chat_stream(
 
     let stream = async_stream::stream! {
         // Setup conversation
-        if !state_clone.turso.conversation_exists(&context_id_clone).await.unwrap_or(false) {
+        if !state_clone.db.conversation_exists(&context_id_clone).await.unwrap_or(false) {
             if let Err(e) = state_clone
-                .turso
+                .db
                 .create_conversation(&context_id_clone, &claims_clone.sub, None)
                 .await {
                 tracing::warn!("Failed to create conversation {}: {}", context_id_clone, e);
             }
         }
 
-        let history = state_clone.turso.get_conversation_history(&context_id_clone).await.unwrap_or_else(|e| {
+        let history = state_clone.db.get_conversation_history(&context_id_clone).await.unwrap_or_else(|e| {
             tracing::warn!("Failed to get conversation history for {}: {}", context_id_clone, e);
             vec![]
         });
 
         // Load user memory
-        let memory_facts = state_clone.turso.get_user_memory(&claims_clone.sub).await.unwrap_or_else(|e| {
+        let memory_facts = state_clone.db.get_user_memory(&claims_clone.sub).await.unwrap_or_else(|e| {
             tracing::warn!("Failed to get user memory for {}: {}", claims_clone.sub, e);
             vec![]
         });
-        let preferences = state_clone.turso.get_user_preferences(&claims_clone.sub).await.unwrap_or_else(|e| {
+        let preferences = state_clone.db.get_user_preferences(&claims_clone.sub).await.unwrap_or_else(|e| {
             tracing::warn!("Failed to get user preferences for {}: {}", claims_clone.sub, e);
             vec![]
         });
@@ -361,7 +363,7 @@ pub async fn chat_stream(
         let (user_agent, source) = match crate::api::handlers::user_agents::resolve_agent(
             &state_clone,
             &claims_clone.sub,
-            agent_name,
+            agent_name.to_string(),
         ).await {
             Ok(r) => r,
             Err(e) => {
@@ -456,7 +458,7 @@ pub async fn chat_stream(
         // Store messages in conversation
         let msg_id = Uuid::new_v4().to_string();
         if let Err(e) = state_clone
-            .turso
+            .db
             .add_message(&msg_id, &context_id_clone, MessageRole::User, &message)
             .await {
             tracing::error!("Failed to store user message in conversation {}: {}", context_id_clone, e);
@@ -464,7 +466,7 @@ pub async fn chat_stream(
 
         let resp_id = Uuid::new_v4().to_string();
         if let Err(e) = state_clone
-            .turso
+            .db
             .add_message(&resp_id, &context_id_clone, MessageRole::Assistant, &full_response)
             .await {
             tracing::error!("Failed to store assistant message in conversation {}: {}", context_id_clone, e);
@@ -487,3 +489,4 @@ pub async fn chat_stream(
             .text("keep-alive"),
     )
 }
+use axum::response::IntoResponse;

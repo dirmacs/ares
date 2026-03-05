@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use ares::{
     auth::jwt::AuthService,
-    db::TursoClient,
+    db::PostgresClient,
     llm::LLMClient,
     types::{ToolCall, ToolDefinition},
     utils::toml_config::{
@@ -29,15 +29,15 @@ use common::mocks::MockLLMFactory;
 
 // ============= Test Helpers =============
 
-/// Create a test app with in-memory database
+/// Create a test app with PostgreSQL database
 async fn create_test_app() -> Router {
-    // Create in-memory database
-    let turso = TursoClient::new_memory()
+    // Create database connection (uses DATABASE_URL env var)
+    let db = PostgresClient::new_memory()
         .await
-        .expect("Failed to create in-memory database");
+        .expect("Failed to create database connection");
 
     // Create a test user for auth middleware
-    turso
+    db
         .create_user(
             "test-user",
             "testuser@example.com",
@@ -118,9 +118,7 @@ async fn create_test_app() -> Router {
             api_key_env: "TEST_API_KEY".to_string(),
         },
         database: TomlDatabaseConfig {
-            url: ":memory:".to_string(),
-            turso_url_env: None,
-            turso_token_env: None,
+            url: "postgres://postgres:postgres@localhost:5432/ares_test".to_string(),
             qdrant: None,
         },
         config: DynamicConfigPaths::default(),
@@ -177,7 +175,8 @@ async fn create_test_app() -> Router {
 
     let state = AppState {
         config_manager,
-        turso: Arc::new(turso),
+        db: Arc::new(db),
+        tenant_db: Arc::new(ares::db::TenantDb::new(Arc::new(db.clone()))),
         llm_factory,
         provider_registry,
         agent_registry,

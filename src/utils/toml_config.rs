@@ -177,30 +177,22 @@ impl Default for AuthConfig {
 /// Database configuration settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConfig {
-    /// Local database URL/path (default: "./data/ares.db").
+    /// PostgreSQL database URL (default: "postgres://postgres:postgres@localhost:5432/ares").
     #[serde(default = "default_database_url")]
     pub url: String,
-
-    /// Environment variable for Turso URL (optional cloud config).
-    pub turso_url_env: Option<String>,
-
-    /// Environment variable for Turso auth token.
-    pub turso_token_env: Option<String>,
 
     /// Qdrant vector database configuration (optional).
     pub qdrant: Option<QdrantConfig>,
 }
 
 fn default_database_url() -> String {
-    "./data/ares.db".to_string()
+    "postgres://postgres:postgres@localhost:5432/ares".to_string()
 }
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             url: default_database_url(),
-            turso_url_env: None,
-            turso_token_env: None,
             qdrant: None,
         }
     }
@@ -835,12 +827,6 @@ impl AresConfig {
         self.validate_env_var(&self.auth.api_key_env)?;
 
         // Validate database env vars if specified
-        if let Some(ref env) = self.database.turso_url_env {
-            self.validate_env_var(env)?;
-        }
-        if let Some(ref env) = self.database.turso_token_env {
-            self.validate_env_var(env)?;
-        }
         if let Some(ref qdrant) = self.database.qdrant {
             if let Some(ref env) = qdrant.api_key_env {
                 self.validate_env_var(env)?;

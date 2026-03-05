@@ -1,4 +1,4 @@
-use crate::db::tenants::{TenantDb, UsageSummary};
+use crate::db::tenants::UsageSummary;
 use crate::models::{Tenant, TenantTier};
 use crate::types::{AppError, Result};
 use crate::AppState;
@@ -10,7 +10,6 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 pub async fn admin_middleware(
     req: axum::extract::Request,

@@ -1,8 +1,5 @@
 use crate::db::tenants::TenantDb;
-use crate::models::{TenantContext, TenantTier};
-use crate::types::{AppError, Result};
 use axum::{
-    body::Body,
     extract::Request,
     http::StatusCode,
     middleware::Next,

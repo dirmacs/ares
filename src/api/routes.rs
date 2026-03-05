@@ -4,7 +4,7 @@ use crate::AppState;
 use axum::routing::delete;
 use axum::{
     middleware,
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
     Router,
 };
 use std::sync::Arc;

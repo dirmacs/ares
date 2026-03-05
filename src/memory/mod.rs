@@ -5,7 +5,7 @@
 //! - Formatting memory for LLM prompts
 //! - Managing conversation history windows
 //!
-//! User memory facts and preferences are stored in the database (TursoClient).
+//! User memory facts and preferences are stored in the database (PostgresClient).
 //! This module provides utilities for working with that stored memory.
 
 use crate::types::{AgentContext, MemoryFact, Message, Preference, UserMemory};

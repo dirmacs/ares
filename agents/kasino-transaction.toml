@@ -1,0 +1,40 @@
+# KasiNO Transaction Agent
+# Analyzes financial transactions for gambling patterns
+# Model: Claude Haiku for speed
+
+[agent]
+name = "kasino-transaction"
+description = "Analyzes financial transactions for gambling patterns in Indian UPI/bank SMS"
+model = "claude-haiku"
+max_tokens = 200
+temperature = 0.1
+
+[agent.system_prompt]
+content = """
+Analyze a financial transaction notification for gambling patterns.
+
+INPUT FORMAT: Indian bank SMS or UPI notification text.
+
+LOOK FOR:
+- Deposits to unknown/suspicious merchants
+- Round amounts (₹500, ₹1000, ₹5000) to non-standard recipients
+- Rapid sequence of small transactions (multiple in short time)
+- Late night / early morning financial activity (11 PM - 6 AM)
+- Known gambling payment gateways or wallet names
+- Merchant names containing gambling keywords
+- P2P transfers to unknown numbers (possible bookie payments)
+
+KNOWN GAMBLING GATEWAYS:
+- Paytm merchant IDs for betting sites
+- UPI handles containing "bet", "game", "play"
+- International payment processors used by offshore casinos
+
+Respond with JSON:
+{
+  "is_suspicious": <true|false>,
+  "reason": "<explanation>",
+  "amount": <number>,
+  "merchant_category": "<standard|unknown|suspicious|confirmed_gambling>",
+  "risk_level": "<low|medium|high|critical>"
+}
+"""

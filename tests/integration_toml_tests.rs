@@ -216,7 +216,10 @@ fn test_workflow_engine_from_config() {
             )
             .unwrap(),
         ),
-        turso: Arc::new(futures::executor::block_on(ares::db::TursoClient::new_memory()).unwrap()),
+        db: Arc::new(futures::executor::block_on(ares::db::PostgresClient::new_memory()).unwrap()),
+        tenant_db: Arc::new(ares::db::TenantDb::new(Arc::new(
+            futures::executor::block_on(ares::db::PostgresClient::new_memory()).unwrap(),
+        ))),
         llm_factory: Arc::new(ConfigBasedLLMFactory::new(
             provider_registry.clone(),
             "test-model",

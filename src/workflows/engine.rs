@@ -137,7 +137,7 @@ impl WorkflowEngine {
 
             // Resolve agent using the 3-tier hierarchy
             let (user_agent, _source) =
-                match resolve_agent(&self.state, &context.user_id, &current_agent_name).await {
+                match resolve_agent(&self.state, &context.user_id, current_agent_name.clone()).await {
                     Ok(res) => res,
                     Err(e) => {
                         // Try fallback agent if available
@@ -148,7 +148,7 @@ impl WorkflowEngine {
                                 fallback
                             );
                             current_agent_name = fallback.clone();
-                            resolve_agent(&self.state, &context.user_id, fallback).await?
+                            resolve_agent(&self.state, &context.user_id, fallback.clone()).await?
                         } else {
                             return Err(e);
                         }
@@ -197,7 +197,7 @@ impl WorkflowEngine {
 
                 if let Some(ref agent_name) = next_agent {
                     // Validate the routed agent exists (check hierarchy)
-                    if resolve_agent(&self.state, &context.user_id, agent_name)
+                    if resolve_agent(&self.state, &context.user_id, agent_name.clone())
                         .await
                         .is_ok()
                     {
@@ -406,9 +406,12 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            turso: Arc::new(
-                futures::executor::block_on(crate::db::TursoClient::new_memory()).unwrap(),
+            db: Arc::new(
+                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
             ),
+            tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
+                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
+            ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
                 "default",
@@ -455,9 +458,12 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            turso: Arc::new(
-                futures::executor::block_on(crate::db::TursoClient::new_memory()).unwrap(),
+            db: Arc::new(
+                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
             ),
+            tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
+                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
+            ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
                 "default",
@@ -504,9 +510,12 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            turso: Arc::new(
-                futures::executor::block_on(crate::db::TursoClient::new_memory()).unwrap(),
+            db: Arc::new(
+                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
             ),
+            tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
+                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
+            ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
                 "default",

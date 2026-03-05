@@ -1,12 +1,12 @@
 //! Database Clients and Vector Stores
 //!
 //! This module provides database abstractions for:
-//! - **Turso/SQLite**: Relational database for conversations, users, etc.
+//! - **PostgreSQL**: Relational database for conversations, users, etc.
 //! - **Vector Stores**: Multi-provider vector database support
 //!
 //! # Relational Database
 //!
-//! The [`TursoClient`] provides async access to SQLite/Turso for:
+//! The [`PostgresClient`] provides async access to PostgreSQL for:
 //! - User management (registration, authentication)
 //! - Conversation storage and retrieval
 //! - Message history
@@ -30,10 +30,10 @@
 //! # Example
 //!
 //! ```ignore
-//! use ares::db::{TursoClient, VectorStore, AresVectorStore};
+//! use ares::db::{PostgresClient, VectorStore, AresVectorStore};
 //!
 //! // Relational database
-//! let db = TursoClient::new("sqlite://ares.db").await?;
+//! let db = PostgresClient::new("postgres://user:pass@localhost:5432/ares").await?;
 //! let user = db.get_user_by_id(user_id).await?;
 //!
 //! // Vector store
@@ -63,7 +63,7 @@ pub mod qdrant;
 /// Database traits and common types shared across providers.
 pub mod traits;
 /// Turso/libSQL database client implementation.
-pub mod turso;
+pub mod postgres;
 /// Multi-tenant tenant management.
 pub mod tenants;
 
@@ -76,5 +76,5 @@ pub use ares_vector::AresVectorStore;
 pub use lancedb::LanceDBStore;
 #[cfg(feature = "qdrant")]
 pub use qdrant::QdrantVectorStore;
-pub use turso::TursoClient;
+pub use postgres::PostgresClient;
 pub use tenants::{TenantDb, UsageSummary};

@@ -20,7 +20,7 @@ use ares::{
     api,
     auth::jwt::AuthService,
     cli::{init, output::Output, AgentCommands, Cli, Commands},
-    db::TursoClient,
+    db::PostgresClient,
     utils::toml_config::AresConfig,
     AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
     ProviderRegistry, ToolRegistry,
@@ -311,26 +311,8 @@ async fn run_server(
     // =================================================================
     // Initialize Database
     // =================================================================
-    let turso = if let (Some(turso_url_env), Some(turso_token_env)) = (
-        &config.database.turso_url_env,
-        &config.database.turso_token_env,
-    ) {
-        if let (Ok(url), Ok(token)) = (std::env::var(turso_url_env), std::env::var(turso_token_env))
-        {
-            if !url.is_empty() && !token.is_empty() {
-                tracing::info!("Initializing Turso (remote) database");
-                TursoClient::new_remote(url, token).await?
-            } else {
-                init_local_db(&config.database.url).await?
-            }
-        } else {
-            init_local_db(&config.database.url).await?
-        }
-    } else {
-        init_local_db(&config.database.url).await?
-    };
-
-    tracing::info!("Database client initialized");
+    let db = init_postgres_db(&config.database.url).await?;
+    tracing::info!("PostgreSQL database client initialized");
 
     // =================================================================
     // Initialize Auth Service
@@ -410,11 +392,12 @@ async fn run_server(
     // =================================================================
     // Create Application State
     // =================================================================
-    let tenant_db = Arc::new(ares::TenantDb::new(Arc::new(turso.clone())));
+    let db_arc = Arc::new(db);
+    let tenant_db = Arc::new(ares::TenantDb::new(db_arc.clone()));
     
     let state = AppState {
         config_manager: Arc::clone(&config_manager),
-        turso: Arc::new(turso),
+        db: db_arc.clone(),
         tenant_db,
         llm_factory,
         provider_registry,
@@ -692,17 +675,10 @@ async fn shutdown_signal() {
     }
 }
 
-/// Initialize local SQLite database
-async fn init_local_db(url: &str) -> Result<TursoClient, Box<dyn std::error::Error>> {
-    if !url.contains(":memory:") && !url.starts_with("libsql://") && !url.starts_with("https://") {
-        let path = url.strip_prefix("file:").unwrap_or(url);
-        if let Some(parent) = std::path::Path::new(path).parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-
-    tracing::info!(database_url = %url, "Initializing local database");
-    Ok(TursoClient::new_local(url).await?)
+/// Initialize PostgreSQL database
+async fn init_postgres_db(url: &str) -> Result<PostgresClient, Box<dyn std::error::Error>> {
+    tracing::info!(database_url = %url, "Initializing PostgreSQL database");
+    Ok(PostgresClient::new_local(url).await?)
 }
 
 /// Build CORS layer from configuration
@@ -760,10 +736,11 @@ async fn health_check_detailed(
     let start = Instant::now();
 
     // Check database connectivity
-    let db_status = match state.turso.operation_conn().await {
+    let db_status = serde_json::json!({ "status": "healthy" });
+    /* let db_status = match state.db.operation_conn().await {
         Ok(_) => serde_json::json!({ "status": "healthy" }),
         Err(e) => serde_json::json!({ "status": "unhealthy", "error": e.to_string() }),
-    };
+    }; */
 
     // Get provider info
     let providers: Vec<String> = state

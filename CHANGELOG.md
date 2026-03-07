@@ -5,6 +5,22 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-03-08
+
+### Security
+
+- **Config split**: Removed all Dirmacs-specific production configs from public repo
+  - `ares.toml` (23 agents), `kasino.toml`, `agents/kasino-*.toml` moved to private `dirmacs/ares-config`
+  - Public repo retains `ares.example.toml` as generic template
+  - Updated `.gitignore` to prevent re-tracking of `ares.toml`, `kasino.toml`, `agents/*.toml`
+
+### Added
+
+- **Compliance auditor agent** (`compliance-auditor.toon`) in ares-config — audits projects against Dirmacs Engineering Standards
+- **Dirmacs Engineering Standards SOP** — covers repo structure, config architecture, deployment, security, agent quality, and scaling
+
+---
+
 ## [0.6.1] - 2026-03-07
 
 ### Changed

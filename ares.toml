@@ -1,0 +1,408 @@
+# A.R.E.S Configuration Example
+# ==============================
+# Copy this file to 'ares.toml' and customize for your deployment.
+#
+# REQUIRED: Set these environment variables before starting:
+#   - JWT_SECRET: A secret key for JWT signing (min 32 characters)
+#   - API_KEY: API key for service-to-service authentication
+#
+# This file demonstrates all available configuration options.
+# The server will NOT start without ares.toml present.
+#
+# Hot Reloading: Changes to ares.toml are automatically detected and applied
+# without restarting the server.
+
+# =============================================================================
+# Server Configuration
+# =============================================================================
+[server]
+host = "127.0.0.1"                 # Bind address
+port = 3000                         # HTTP port
+log_level = "info"                  # debug, info, warn, error
+
+# =============================================================================
+# Authentication Configuration
+# =============================================================================
+# For security, secrets are stored in environment variables.
+# The config references the ENV VAR NAME, not the actual secret.
+[auth]
+jwt_secret_env = "JWT_SECRET"       # Name of env var containing JWT secret
+jwt_access_expiry = 900             # Access token lifetime (seconds)
+jwt_refresh_expiry = 604800         # Refresh token lifetime (seconds)
+api_key_env = "API_KEY"             # Name of env var containing API key
+
+# =============================================================================
+# Database Configuration
+# =============================================================================
+[database]
+# Local SQLite database (default)
+url = "./data/ares.db"
+
+# Turso cloud database (optional - uncomment to enable)
+# When both turso_url_env and turso_token_env are set and the env vars exist,
+# the server will use Turso instead of local SQLite.
+# turso_url_env = "TURSO_URL"
+# turso_token_env = "TURSO_AUTH_TOKEN"
+
+# Qdrant vector database for semantic search (optional)
+# [database.qdrant]
+# url = "http://localhost:6334"
+# api_key_env = "QDRANT_API_KEY"    # Optional if Qdrant has no auth
+
+# =============================================================================
+# LLM Providers
+# =============================================================================
+# Define named provider configurations. These are referenced by [models].
+# Each provider type requires its Cargo feature to be enabled:
+#   - ollama: default
+#   - openai: cargo build --features openai
+#   - llamacpp: cargo build --features llamacpp
+
+# Ollama - Local inference (no API key required)
+[providers.ollama-local]
+type = "ollama"
+base_url = "http://localhost:11434"
+default_model = "ministral-3:3b"
+
+# Multiple Ollama configs with different models
+[providers.ollama-fast]
+type = "ollama"
+base_url = "http://localhost:11434"
+default_model = "ministral-3:3b"
+
+[providers.ollama-vision]
+type = "ollama"
+base_url = "http://localhost:11434"
+default_model = "qwen3-vl:2b"
+
+[providers.ollama-code]
+type = "ollama"
+base_url = "http://localhost:11434"
+default_model = "ministral-3:3b"
+
+# Granite model (IBM)
+[providers.ollama-granite]
+type = "ollama"
+base_url = "http://localhost:11434"
+default_model = "ministral-3:3b"
+
+# OpenAI API (requires 'openai' feature and OPENAI_API_KEY env var)
+# [providers.openai]
+# type = "openai"
+# api_key_env = "OPENAI_API_KEY"
+# api_base = "https://api.openai.com/v1"
+# default_model = "gpt-4"
+
+# OpenAI-compatible endpoint (e.g., Azure, local vLLM, Anyscale)
+# [providers.azure-openai]
+# type = "openai"
+# api_key_env = "AZURE_OPENAI_KEY"
+# api_base = "https://your-resource.openai.azure.com"
+# default_model = "gpt-4-deployment"
+
+# LlamaCpp - Direct GGUF model loading (requires 'llamacpp' feature)
+# [providers.llamacpp]
+# type = "llamacpp"
+# model_path = "./models/granite4-tiny-h.gguf"
+# n_ctx = 4096                       # Context window size
+# n_threads = 4                       # CPU threads to use
+# max_tokens = 512                    # Default max tokens
+
+# =============================================================================
+# Model Configurations
+# =============================================================================
+# Named model configs that reference providers. Agents reference these by name.
+# This allows easy model swapping without changing agent configurations.
+
+# Fast model for quick routing decisions
+[models.fast]
+provider = "ollama-fast"
+model = "ministral-3:3b"
+temperature = 0.7
+max_tokens = 256
+
+# Balanced model for most tasks
+[models.balanced]
+provider = "ollama-local"
+model = "ministral-3:3b"
+temperature = 0.7
+max_tokens = 512
+
+# Powerful model for complex reasoning
+[models.powerful]
+provider = "ollama-local"
+model = "qwen3-vl:2b"
+temperature = 0.5
+max_tokens = 1024
+# top_p = 0.9
+# frequency_penalty = 0.0
+# presence_penalty = 0.0
+
+# Granite model (alternative)
+[models.granite]
+provider = "ollama-granite"
+model = "ministral-3:3b"
+temperature = 0.7
+max_tokens = 1024
+
+# Vision model for multimodal
+[models.vision]
+provider = "ollama-vision"
+model = "qwen3-vl:2b"
+temperature = 0.7
+max_tokens = 512
+
+# Coding model
+[models.coding]
+provider = "ollama-code"
+model = "ministral-3:3b"
+temperature = 0.3
+max_tokens = 2048
+
+# =============================================================================
+# Tools Configuration
+# =============================================================================
+# Define available tools and their settings.
+# Agents reference tools by name in their 'tools' array.
+
+[tools.calculator]
+enabled = true
+description = "Performs basic arithmetic operations (+, -, *, /)"
+timeout_secs = 10
+
+[tools.web_search]
+enabled = true
+description = "Search the web using DuckDuckGo (no API key required)"
+timeout_secs = 30
+
+# Example: Database query tool (not implemented by default)
+# [tools.database_query]
+# enabled = false
+# description = "Execute read-only database queries"
+# timeout_secs = 60
+
+# =============================================================================
+# Agent Configurations
+# =============================================================================
+# Each agent has a model, optional tools, and a system prompt.
+# The system_prompt can be customized to change agent behavior.
+
+[agents.router]
+model = "fast"
+tools = []
+max_tool_iterations = 1
+parallel_tools = false
+system_prompt = """
+You are a routing agent that classifies user queries.
+
+Available agents:
+- product: Product information, catalog, inventory
+- invoice: Billing, payments, invoices
+- sales: Sales metrics, revenue, customers
+- finance: Financial analysis, budgets, expenses
+- hr: HR policies, employees, benefits
+- orchestrator: Complex multi-domain queries
+
+Respond with ONLY the agent name (one word, lowercase).
+"""
+
+[agents.orchestrator]
+model = "powerful"
+tools = ["calculator", "web_search"]
+max_tool_iterations = 10
+parallel_tools = false
+system_prompt = """
+You are an orchestrator agent for complex queries.
+
+Capabilities:
+- Break down complex requests
+- Delegate to specialized agents
+- Perform web searches
+- Execute calculations
+- Synthesize multiple results
+
+Provide comprehensive, well-structured answers.
+"""
+
+[agents.product]
+model = "balanced"
+tools = []
+max_tool_iterations = 5
+system_prompt = """
+You are a Product Agent for product-related queries.
+
+Capabilities:
+- Product catalog and search
+- Specifications and details
+- Inventory and availability
+- Comparisons and recommendations
+- Pricing information
+"""
+
+[agents.invoice]
+model = "balanced"
+tools = ["calculator"]
+max_tool_iterations = 5
+system_prompt = """
+You are an Invoice Agent for billing queries.
+
+Capabilities:
+- Invoice lookup and status
+- Payment processing
+- Billing history
+- Payment terms
+- Discrepancy resolution
+"""
+
+[agents.sales]
+model = "balanced"
+tools = ["calculator"]
+max_tool_iterations = 5
+system_prompt = """
+You are a Sales Agent for sales analytics.
+
+Capabilities:
+- Sales performance metrics
+- Revenue analysis
+- Customer acquisition
+- Pipeline insights
+- Commission calculations
+"""
+
+[agents.finance]
+model = "balanced"
+tools = ["calculator"]
+max_tool_iterations = 5
+system_prompt = """
+You are a Finance Agent for financial analysis.
+
+Capabilities:
+- Financial statements
+- Budget tracking
+- Expense management
+- Cash flow analysis
+- Cost accounting
+"""
+
+[agents.hr]
+model = "balanced"
+tools = []
+max_tool_iterations = 5
+system_prompt = """
+You are an HR Agent for human resources queries.
+
+Capabilities:
+- Employee information
+- Company policies
+- Benefits and compensation
+- Leave management
+- Recruitment
+"""
+
+# =============================================================================
+# Workflow Configurations
+# =============================================================================
+# Define how requests flow through agents.
+
+[workflows.default]
+entry_agent = "router"              # First agent to handle requests
+fallback_agent = "orchestrator"     # Fallback if routing fails
+max_depth = 3                       # Max recursive depth
+max_iterations = 5                  # Max iterations per workflow
+
+[workflows.research]
+entry_agent = "orchestrator"
+max_depth = 3
+max_iterations = 10
+parallel_subagents = true           # Execute subagents in parallel
+
+# =============================================================================
+# RAG (Retrieval Augmented Generation) Configuration
+# =============================================================================
+# Full configuration for the RAG pipeline including vector store, embeddings,
+# chunking, search strategies, and reranking.
+
+[rag]
+# Vector Store Configuration
+# --------------------------
+# Provider: "ares-vector" (default, pure Rust), "qdrant", "lancedb", "pgvector"
+vector_store = "ares-vector"
+vector_path = "./data/vectors"      # Path for persistent storage
+
+# Embedding Configuration
+# -----------------------
+# Model for generating vector embeddings. Available models:
+#   Dense models (fastembed):
+#   - bge-small-en-v1.5 (384 dims, fast, English)
+#   - bge-base-en-v1.5 (768 dims, balanced)
+#   - bge-large-en-v1.5 (1024 dims, best quality)
+#   - all-minilm-l6-v2 (384 dims, very fast)
+#   - nomic-embed-text-v1.5 (768 dims, 8K context)
+#   - multilingual-e5-small (384 dims, 100+ languages)
+embedding_model = "bge-small-en-v1.5"
+
+# Sparse embeddings for hybrid search (optional)
+sparse_embeddings = false            # Enable sparse embeddings
+sparse_model = "splade-pp-en-v1"    # Sparse model to use
+
+# Chunking Configuration
+# ----------------------
+# Strategy: "word" (default), "semantic", "character"
+# - word: Simple word-based chunking with overlap
+# - semantic: Sentence/paragraph aware chunking (best for retrieval)
+# - character: Fixed character count chunking
+chunking_strategy = "word"
+chunk_size = 200                     # Words (or chars for character strategy)
+chunk_overlap = 50                   # Overlap for context continuity
+min_chunk_size = 20                  # Minimum chunk size to keep
+
+# Search Configuration
+# --------------------
+# Strategy: "semantic" (default), "bm25", "fuzzy", "hybrid"
+# - semantic: Pure vector similarity search
+# - bm25: Traditional keyword search with TF-IDF
+# - fuzzy: Typo-tolerant keyword matching
+# - hybrid: Combines semantic + bm25 + fuzzy with RRF fusion
+search_strategy = "semantic"
+search_limit = 10                    # Default results to return
+search_threshold = 0.0               # Minimum similarity score (0.0-1.0)
+
+# Hybrid search weights (used when search_strategy = "hybrid")
+[rag.hybrid_weights]
+semantic = 0.5                       # Weight for vector similarity
+bm25 = 0.3                           # Weight for BM25 keyword matching
+fuzzy = 0.2                          # Weight for fuzzy matching
+
+# Reranking Configuration
+# -----------------------
+# Cross-encoder models for improved relevance ranking.
+# Models: bge-reranker-base, bge-reranker-v2-m3,
+#         jina-reranker-v1-turbo-en, jina-reranker-v2-base-multilingual
+[rag]
+rerank_enabled = false               # Enable reranking (slower but better)
+reranker_model = "bge-reranker-base"
+rerank_weight = 0.6                  # Weight for rerank score vs retrieval
+
+# =============================================================================
+# Dynamic Configuration Paths (TOON Files)
+# =============================================================================
+# ARES uses a hybrid TOML + TOON configuration approach:
+# - TOML (this file): Static infrastructure config (server, auth, database, providers)
+# - TOON (config/*.toon): Dynamic behavioral config (agents, workflows, models, tools, MCPs)
+#
+# Benefits of TOON format:
+# - 30-60% token savings when sending to LLMs
+# - Hot-reloadable without server restart
+# - One file per entity for easy management
+# - LLM-friendly format optimized for AI consumption
+#
+# See docs/TOON.md for more information on the TOON format.
+
+[config]
+agents_dir = "config/agents"       # Agent definitions (*.toon)
+workflows_dir = "config/workflows" # Workflow definitions (*.toon)
+models_dir = "config/models"       # Model configurations (*.toon)
+tools_dir = "config/tools"         # Tool configurations (*.toon)
+mcps_dir = "config/mcps"           # MCP server configurations (*.toon)
+hot_reload = true                  # Watch for changes and reload
+watch_interval_ms = 1000           # How often to check for changes

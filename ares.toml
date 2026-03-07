@@ -30,7 +30,14 @@ url = "./data/ares.db"
 # LLM Providers
 # =============================================================================
 
-# Anthropic Claude via OpenAI-compatible API
+# Groq — free tier, OpenAI-compatible, Llama 3.3 70B
+[providers.groq]
+type = "openai"
+api_key_env = "GROQ_API_KEY"
+api_base = "https://api.groq.com/openai/v1"
+default_model = "llama-3.3-70b-versatile"
+
+# Anthropic Claude via OpenAI-compatible API (kept for reference)
 [providers.anthropic]
 type = "openai"
 api_key_env = "ANTHROPIC_API_KEY"
@@ -55,39 +62,39 @@ default_model = "ministral-3:3b"
 # =============================================================================
 
 [tier-fast]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+provider = "groq"
+model = "llama-3.1-8b-instant"
 temperature = 0.2
 max_tokens = 500
 
 [tier-balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+provider = "groq"
+model = "llama-3.3-70b-versatile"
 temperature = 0.5
 max_tokens = 4000
 
 [tier-powerful]
-provider = "anthropic"
-model = "claude-opus-4-6"
+provider = "groq"
+model = "llama-3.3-70b-versatile"
 temperature = 0.7
 max_tokens = 8000
 
 # Legacy model names (for compatibility)
 [models.fast]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+provider = "groq"
+model = "llama-3.1-8b-instant"
 temperature = 0.2
 max_tokens = 500
 
 [models.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+provider = "groq"
+model = "llama-3.3-70b-versatile"
 temperature = 0.5
 max_tokens = 4000
 
 [models.powerful]
-provider = "anthropic"
-model = "claude-opus-4-6"
+provider = "groq"
+model = "llama-3.3-70b-versatile"
 temperature = 0.7
 max_tokens = 8000
 

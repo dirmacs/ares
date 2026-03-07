@@ -5,6 +5,29 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-03-07
+
+### Changed
+
+- **LLM Provider**: Switched default provider from Anthropic to Groq (free tier)
+  - Provider: `groq` at `https://api.groq.com/openai/v1` (OpenAI-compatible)
+  - `fast` tier: `llama-3.1-8b-instant` (14,400 req/day free)
+  - `balanced` + `powerful` tiers: `llama-3.3-70b-versatile` (GPT-4 class, 6,000 req/day free)
+  - Env var: `GROQ_API_KEY` replaces `ANTHROPIC_API_KEY`
+  - Anthropic provider kept in `ares.toml` — switch back by changing tier `provider` fields
+
+- **VPS build flags**: `--no-default-features --features openai,postgres,mcp`
+  - Avoids dev-only defaults (`local-db`, `ollama`, `ares-vector`)
+
+### Infrastructure
+
+- First production deployment: Contabo VPS 217.216.78.38
+- Caddy reverse proxy: `api.ares.dirmacs.com` → `localhost:8080`
+- systemd service: `/etc/systemd/system/ares.service`
+- PostgreSQL: `ares` database, user `dirmacs`
+
+---
+
 ## [Unreleased]
 
 ### Added

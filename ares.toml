@@ -378,7 +378,7 @@ fuzzy = 0.2                          # Weight for fuzzy matching
 # Cross-encoder models for improved relevance ranking.
 # Models: bge-reranker-base, bge-reranker-v2-m3,
 #         jina-reranker-v1-turbo-en, jina-reranker-v2-base-multilingual
-[rag]
+[rag.rerank]
 rerank_enabled = false               # Enable reranking (slower but better)
 reranker_model = "bge-reranker-base"
 rerank_weight = 0.6                  # Weight for rerank score vs retrieval

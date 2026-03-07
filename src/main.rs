@@ -21,6 +21,7 @@ use ares::{
     auth::jwt::AuthService,
     cli::{init, output::Output, AgentCommands, Cli, Commands},
     db::PostgresClient,
+    mcp::McpRegistry,
     utils::toml_config::AresConfig,
     AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
     ProviderRegistry, ToolRegistry,
@@ -390,6 +391,23 @@ async fn run_server(
     );
 
     // =================================================================
+    // Initialize MCP Registry (Eruka, etc.)
+    // =================================================================
+    #[cfg(feature = "mcp")]
+    let mcp_registry: Option<Arc<McpRegistry>> = match McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref()) {
+        Ok(registry) => {
+            tracing::info!("MCP registry initialized with {} clients", registry.client_names().len());
+            Some(Arc::new(registry))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize MCP registry: {}", e);
+            None
+        }
+    };
+    #[cfg(not(feature = "mcp"))]
+    let mcp_registry = None;
+
+    // =================================================================
     // Create Application State
     // =================================================================
     let db_arc = Arc::new(db);
@@ -405,6 +423,7 @@ async fn run_server(
         tool_registry,
         auth_service: Arc::new(auth_service),
         dynamic_config,
+        mcp_registry,
     };
 
     // =================================================================

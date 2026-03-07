@@ -202,4 +202,7 @@ pub struct AppState {
     pub tool_registry: Arc<ToolRegistry>,
     /// Authentication service
     pub auth_service: Arc<AuthService>,
+    /// MCP client registry for external services like Eruka
+    #[cfg(feature = "mcp")]
+    pub mcp_registry: Option<Arc<crate::mcp::McpRegistry>>,
 }

@@ -49,4 +49,6 @@ session-*.md
 
 # Production configuration (keep public template ares.example.toml)
 ares.toml
+kasino.toml
+agents/*.toml
 agents/private/

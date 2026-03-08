@@ -1,6 +1,6 @@
 name = "eruka"
 enabled = true
-endpoint = "https://eruka.dirmacs.com/mcp"
+endpoint = "https://your-eruka-instance.example.com/mcp"
 transport = "http"
 timeout_secs = 30
 

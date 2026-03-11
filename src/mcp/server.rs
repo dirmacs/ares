@@ -53,8 +53,8 @@ use tokio::sync::RwLock;
 pub struct AresMcpServer {
     /// Database for auth and queries
     tenant_db: Arc<TenantDb>,
-    /// Database pool for raw queries
-    pool: Arc<sqlx::PgPool>,
+    /// Database pool for raw queries (PgPool is Arc internally — cheap to clone)
+    pool: sqlx::PgPool,
     /// Authenticated session (set after successful auth)
     session: Arc<RwLock<Option<McpSession>>>,
     /// Eruka proxy client for eruka_read/write/search tools
@@ -75,7 +75,7 @@ impl AresMcpServer {
     /// - `eruka_api_url`: Base URL of Eruka API (e.g., "https://eruka.dirmacs.com")
     pub fn new(
         tenant_db: Arc<TenantDb>,
-        pool: Arc<sqlx::PgPool>,
+        pool: sqlx::PgPool,
         ares_api_url: &str,
         eruka_api_url: &str,
     ) -> Self {
@@ -314,7 +314,7 @@ impl AresMcpServer {
         )
         .bind(&input.context_id)
         .bind(session.tenant_id())
-        .fetch_optional(self.pool.as_ref())
+        .fetch_optional(&self.pool)
         .await
         .map_err(|e| format!("DB error: {}", e))?;
 
@@ -487,7 +487,7 @@ impl AresMcpServer {
         .bind(&tenant_id)
         .bind(&from)
         .bind(&to)
-        .fetch_one(self.pool.as_ref())
+        .fetch_one(&self.pool)
         .await
         .unwrap_or((0, 0, 0));
 
@@ -495,7 +495,7 @@ impl AresMcpServer {
             "SELECT COUNT(*) FROM user_agents WHERE tenant_id = $1",
         )
         .bind(&tenant_id)
-        .fetch_one(self.pool.as_ref())
+        .fetch_one(&self.pool)
         .await
         .unwrap_or((0,));
 
@@ -1021,7 +1021,7 @@ impl ServerHandler for AresMcpServer {
 /// ```
 pub async fn start_mcp_server(
     tenant_db: Arc<TenantDb>,
-    pool: Arc<sqlx::PgPool>,
+    pool: sqlx::PgPool,
     ares_api_url: &str,
     eruka_api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {

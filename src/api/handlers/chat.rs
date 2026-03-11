@@ -112,8 +112,14 @@ pub async fn chat(
         )
         .await?;
 
-    // Estimate token counts from content (fallback when LLM doesn't return usage)
-    let input_tokens = (payload.message.len() / 4) as u32;
+    // Estimate token counts: ~4 chars per token (tiktoken average for English).
+    // Input includes full context: conversation history + current message.
+    // Real token counts require changing Agent::execute() to return TokenUsage — tracked separately.
+    let history_chars: usize = history
+        .iter()
+        .map(|m| m.content.len())
+        .sum();
+    let input_tokens = ((history_chars + payload.message.len()) / 4) as u32;
     let output_tokens = (response.response.len() / 4) as u32;
 
     let body = Json(response);

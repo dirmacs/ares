@@ -3,7 +3,7 @@
 // This feeds into the same usage/billing system as HTTP API calls.
 
 use crate::types::AppError;
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 use uuid::Uuid;
 
 /// The type of MCP operation being tracked.
@@ -151,10 +151,16 @@ pub async fn check_quota(
         _ => 10_000,              // default to free tier
     };
 
-    // Sum effective_tokens for this month
-    let start_of_month = Utc::now()
-        .format("%Y-%m-01T00:00:00Z")
-        .to_string();
+    // Sum effective_tokens for this month (created_at is a Unix BIGINT timestamp)
+    let now = Utc::now();
+    let start_of_month = now
+        .date_naive()
+        .with_day(1)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp();
 
     let row: (i64,) = sqlx::query_as(
         r#"
@@ -164,7 +170,7 @@ pub async fn check_quota(
         "#,
     )
     .bind(tenant_id)
-    .bind(&start_of_month)
+    .bind(start_of_month)
     .fetch_one(pool)
     .await
     .map_err(|e| AppError::Database(format!("Failed to check quota: {}", e)))?;

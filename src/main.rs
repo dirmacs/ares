@@ -234,6 +234,18 @@ fn handle_agent_command(
     Ok(())
 }
 
+/// Initialize tracing with the given log filter.
+/// Falls back to `log_filter` if RUST_LOG is not set.
+fn init_tracing(log_filter: &str) {
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| log_filter.into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+}
+
 /// Run the A.R.E.S server
 async fn run_server(
     config_path: &std::path::Path,
@@ -244,14 +256,7 @@ async fn run_server(
 
     // Initialize tracing
     let log_filter = if verbose { "debug,ares=trace" } else { "info" };
-
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| log_filter.into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    init_tracing(log_filter);
 
     tracing::info!("Starting A.R.E.S - Agentic Retrieval Enhanced Server");
 
@@ -706,23 +711,11 @@ async fn run_mcp_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load .env file for secrets
     dotenvy::dotenv().ok();
-
-    // Initialize tracing
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    init_tracing("info");
 
     tracing::info!("Starting A.R.E.S MCP Server");
 
-    // Load configuration
-    if !config_path.exists() {
-        return Err(format!("Configuration file '{}' not found", config_path.display()).into());
-    }
-
+    // Load configuration (load_unchecked returns a clear error if the file is missing)
     let config_path_str = config_path.to_str().unwrap_or("ares.toml");
     let config = AresConfig::load_unchecked(config_path_str)?;
 
@@ -743,7 +736,7 @@ async fn run_mcp_server(
     // Start MCP server
     ares::mcp::start_mcp_server(
         tenant_db,
-        Arc::new(pool),
+        pool,
         &ares_api_url,
         &eruka_api_url,
     )

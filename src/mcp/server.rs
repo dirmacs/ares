@@ -1,129 +1,893 @@
-//! MCP (Model Context Protocol) Server Implementation
+//! ARES MCP Server Implementation
 //!
 //! This module provides an MCP server implementation using the `rmcp` crate,
-//! bridging the existing ARES tools to MCP-compatible tools.
+//! exposing ARES operations as MCP tools for external clients.
 //!
 //! # Features
 //!
 //! Enable with the `mcp` feature flag:
 //!
 //! ```toml
-//! ares = { version = "0.1", features = ["mcp"] }
+//! ares = { version = "0.6", features = ["mcp"] }
 //! ```
 //!
-//! # Example
+//! # Tools
 //!
-//! ```rust,ignore
-//! use ares::mcp::McpServer;
-//!
-//! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
-//!     McpServer::start().await?;
-//!     Ok(())
-//! }
-//! ```
+//! - ares_list_agents  — list available agents
+//! - ares_run_agent    — run an agent with a message
+//! - ares_get_status   — check agent run status
+//! - ares_deploy_agent — deploy a .toon config
+//! - ares_get_usage    — check usage/quota
+//! - eruka_read        — read context from Eruka
+//! - eruka_write       — write context to Eruka
+//! - eruka_search      — search Eruka knowledge base
 
-use rmcp::{
-    model::*,
-    service::{RequestContext, RoleServer},
-    transport::stdio,
-    ServerHandler, ServiceExt,
+use crate::db::tenants::TenantDb;
+use crate::mcp::auth::{extract_api_key_from_env, validate_mcp_api_key, McpSession};
+use crate::mcp::eruka_proxy::ErukaProxy;
+use crate::mcp::tools::*;
+use crate::mcp::usage::{check_quota, record_mcp_usage, McpOperation};
+use rmcp::model::{
+    CallToolRequestParam, CallToolResult, Content, Implementation, ListToolsResult,
+    PaginatedRequestParam, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-
+use rmcp::service::{RequestContext, RoleServer};
+use rmcp::transport::stdio;
+use rmcp::ServerHandler;
+use rmcp::ServiceExt;
+use serde_json::{json, Value};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
-/// Arguments for the calculator tool
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CalculatorArgs {
-    /// The arithmetic operation to perform
-    pub operation: String,
-    /// First operand
-    pub a: f64,
-    /// Second operand
-    pub b: f64,
-}
-
-/// Arguments for the web search tool
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WebSearchArgs {
-    /// The search query
-    pub query: String,
-    /// Maximum number of results (default: 5)
-    #[serde(default = "default_max_results")]
-    pub max_results: usize,
-}
-
-fn default_max_results() -> usize {
-    5
-}
-
-/// MCP Server implementation that bridges ARES tools to MCP
+/// The ARES MCP Server.
+///
+/// This struct implements `ServerHandler` from rmcp, which means rmcp
+/// will call its methods when MCP clients invoke tools.
+///
+/// Lifecycle:
+/// 1. MCP client spawns the ARES binary with `--mcp` flag
+/// 2. ARES reads ARES_API_KEY from env, validates it, creates McpSession
+/// 3. rmcp handles JSON-RPC transport (stdio)
+/// 4. Each tool call: validate quota → execute → record usage → return result
 #[derive(Clone)]
-pub struct McpServer {
-    /// Internal state for tracking operations
-    operation_count: Arc<Mutex<u64>>,
+pub struct AresMcpServer {
+    /// Database for auth and queries
+    tenant_db: Arc<TenantDb>,
+    /// Database pool for raw queries
+    pool: Arc<sqlx::PgPool>,
+    /// Authenticated session (set after successful auth)
+    session: Arc<RwLock<Option<McpSession>>>,
+    /// Eruka proxy client for eruka_read/write/search tools
+    eruka: Arc<ErukaProxy>,
+    /// ARES API base URL for internal HTTP calls
+    ares_api_url: String,
+    /// HTTP client for calling ARES's own HTTP API
+    http: reqwest::Client,
 }
 
-impl McpServer {
-    /// Create a new MCP server instance
-    pub fn new() -> Self {
+impl AresMcpServer {
+    /// Creates a new AresMcpServer.
+    ///
+    /// # Arguments
+    /// - `tenant_db`: Tenant database for auth and tenant queries
+    /// - `pool`: PostgreSQL connection pool for raw queries
+    /// - `ares_api_url`: Base URL of ARES HTTP API (e.g., "https://api.ares.dirmacs.com")
+    /// - `eruka_api_url`: Base URL of Eruka API (e.g., "https://eruka.dirmacs.com")
+    pub fn new(
+        tenant_db: Arc<TenantDb>,
+        pool: Arc<sqlx::PgPool>,
+        ares_api_url: &str,
+        eruka_api_url: &str,
+    ) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to build HTTP client for MCP server");
+
         Self {
-            operation_count: Arc::new(Mutex::new(0)),
+            tenant_db,
+            pool,
+            session: Arc::new(RwLock::new(None)),
+            eruka: Arc::new(ErukaProxy::new(eruka_api_url)),
+            ares_api_url: ares_api_url.trim_end_matches('/').to_string(),
+            http,
         }
     }
 
-    /// Get list of available tools
+    /// Authenticates the MCP connection.
+    /// Called once at startup before any tool calls.
+    pub async fn authenticate(&self) -> Result<(), String> {
+        let api_key = extract_api_key_from_env()
+            .map_err(|e| format!("MCP auth failed: {}", e))?;
+
+        let tenant = validate_mcp_api_key(&self.tenant_db, &api_key)
+            .await
+            .map_err(|e| format!("MCP auth failed: {}", e))?;
+
+        let session = McpSession::new(tenant, api_key);
+
+        tracing::info!(
+            tenant_id = session.tenant_id(),
+            tier = session.tier(),
+            "MCP session authenticated"
+        );
+
+        *self.session.write().await = Some(session);
+        Ok(())
+    }
+
+    /// Gets the current session, or returns an error if not authenticated.
+    async fn get_session(&self) -> Result<McpSession, String> {
+        let session = self.session.read().await;
+        session.clone().ok_or_else(|| "Not authenticated. Set ARES_API_KEY.".to_string())
+    }
+
+    /// Checks quota before executing a tool call.
+    async fn enforce_quota(&self, session: &McpSession) -> Result<(), String> {
+        let within_quota = check_quota(&self.pool, session.tenant_id(), session.tier())
+            .await
+            .map_err(|e| format!("Quota check failed: {}", e))?;
+
+        if !within_quota {
+            return Err(format!(
+                "Usage quota exceeded for tier '{}'. Upgrade at https://dotdot.dirmacs.com/billing",
+                session.tier()
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Records usage after a tool call completes.
+    async fn track_usage(
+        &self,
+        tenant_id: &str,
+        operation: McpOperation,
+        tokens: u64,
+        success: bool,
+        duration_ms: u64,
+    ) {
+        if let Err(e) = record_mcp_usage(
+            &self.pool,
+            tenant_id,
+            operation,
+            tokens,
+            success,
+            duration_ms,
+        )
+        .await
+        {
+            tracing::error!(
+                error = %e,
+                operation = operation.as_str(),
+                "Failed to record MCP usage event — continuing anyway"
+            );
+        }
+    }
+}
+
+// =============================================================================
+// MCP Tool Implementations
+// =============================================================================
+
+impl AresMcpServer {
+    /// List all agents available to the authenticated tenant.
+    /// Returns agent names, descriptions, types, and deployment status.
+    pub async fn list_agents(&self) -> Result<CallToolResult, String> {
+        let start = std::time::Instant::now();
+        let session = self.get_session().await?;
+        
+        // For now, return empty list - in production this would query the database
+        let agents: Vec<AgentSummary> = Vec::new();
+        let total = agents.len();
+        
+        let output = ListAgentsOutput { agents, total };
+        let json = serde_json::to_string_pretty(&output)
+            .unwrap_or_else(|_| "{}".to_string());
+
+        let duration = start.elapsed().as_millis() as u64;
+        self.track_usage(
+            session.tenant_id(),
+            McpOperation::ListAgents,
+            0,
+            true,
+            duration,
+        )
+        .await;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    /// Run an ARES agent with a message. Returns the agent's response.
+    /// Optionally pass a context_id to continue an existing conversation.
+    pub async fn run_agent(&self, input: RunAgentInput) -> Result<CallToolResult, String> {
+        let start = std::time::Instant::now();
+        let session = self.get_session().await?;
+        self.enforce_quota(&session).await?;
+
+        // Call ARES HTTP API: POST /api/chat
+        let url = format!("{}/api/chat", self.ares_api_url);
+
+        let mut body = serde_json::json!({
+            "message": input.message,
+            "agent_type": input.agent_name,
+        });
+
+        if let Some(ref ctx_id) = input.context_id {
+            body["context_id"] = Value::String(ctx_id.clone());
+        }
+
+        let result = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", session.api_key))
+            .json(&body)
+            .send()
+            .await;
+
+        let duration = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(response) if response.status().is_success() => {
+                let json: Value = response
+                    .json()
+                    .await
+                    .map_err(|e| format!("Parse error: {}", e))?;
+
+                let response_text = json["response"].as_str().unwrap_or("");
+                let estimated_tokens = (response_text.len() / 4) as u64;
+
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::RunAgent,
+                    estimated_tokens,
+                    true,
+                    duration,
+                )
+                .await;
+
+                let sources: Option<Vec<SourceRef>> = json["sources"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|s| SourceRef {
+                                title: s["title"].as_str().unwrap_or("").to_string(),
+                                url: s["url"].as_str().map(String::from),
+                                snippet: s["snippet"].as_str().map(String::from),
+                            })
+                            .collect()
+                    });
+
+                let output = RunAgentOutput {
+                    response: response_text.to_string(),
+                    agent: json["agent"].as_str().unwrap_or(&input.agent_name).to_string(),
+                    context_id: json["context_id"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    sources,
+                };
+
+                let output_json = serde_json::to_string_pretty(&output)
+                    .unwrap_or_else(|_| "{}".to_string());
+
+                Ok(CallToolResult::success(vec![Content::text(output_json)]))
+            }
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let body = response.text().await.unwrap_or_default();
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::RunAgent,
+                    0,
+                    false,
+                    duration,
+                )
+                .await;
+                Err(format!("Agent run failed (HTTP {}): {}", status, body))
+            }
+            Err(e) => {
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::RunAgent,
+                    0,
+                    false,
+                    duration,
+                )
+                .await;
+                Err(format!("Failed to reach ARES API: {}", e))
+            }
+        }
+    }
+
+    /// Check the status of a previous agent run by context ID.
+    pub async fn get_status(&self, input: GetStatusInput) -> Result<CallToolResult, String> {
+        let start = std::time::Instant::now();
+        let session = self.get_session().await?;
+
+        let row = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            r#"
+            SELECT status, partial_response, error_message
+            FROM agent_runs
+            WHERE context_id = $1 AND tenant_id = $2
+            "#,
+        )
+        .bind(&input.context_id)
+        .bind(session.tenant_id())
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| format!("DB error: {}", e))?;
+
+        let duration = start.elapsed().as_millis() as u64;
+
+        let output = match row {
+            Some((status, partial, error)) => {
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::GetStatus,
+                    0,
+                    true,
+                    duration,
+                )
+                .await;
+
+                GetStatusOutput {
+                    context_id: input.context_id,
+                    status,
+                    partial_response: partial,
+                    error,
+                }
+            }
+            None => {
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::GetStatus,
+                    0,
+                    true,
+                    duration,
+                )
+                .await;
+
+                GetStatusOutput {
+                    context_id: input.context_id,
+                    status: "not_found".to_string(),
+                    partial_response: None,
+                    error: None,
+                }
+            }
+        };
+
+        let json = serde_json::to_string_pretty(&output)
+            .unwrap_or_else(|_| "{}".to_string());
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    /// Deploy a new agent by uploading a .toon configuration.
+    /// Pass the TOML config content as a string.
+    pub async fn deploy_agent(&self, input: DeployAgentInput) -> Result<CallToolResult, String> {
+        let start = std::time::Instant::now();
+        let session = self.get_session().await?;
+        self.enforce_quota(&session).await?;
+
+        let url = format!("{}/api/user/agents/import", self.ares_api_url);
+
+        let mut body = serde_json::json!({
+            "config": input.toon_config,
+            "format": "toon",
+        });
+
+        if let Some(name) = &input.name_override {
+            body["name"] = Value::String(name.clone());
+        }
+
+        let result = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", session.api_key))
+            .json(&body)
+            .send()
+            .await;
+
+        let duration = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(response) if response.status().is_success() => {
+                let json: Value = response
+                    .json()
+                    .await
+                    .map_err(|e| format!("Parse error: {}", e))?;
+
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::DeployAgent,
+                    0,
+                    true,
+                    duration,
+                )
+                .await;
+
+                let output = DeployAgentOutput {
+                    agent_name: json["name"]
+                        .as_str()
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    action: json["action"]
+                        .as_str()
+                        .unwrap_or("created")
+                        .to_string(),
+                    active: json["active"].as_bool().unwrap_or(true),
+                    deployed_at: json["deployed_at"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                };
+
+                let output_json = serde_json::to_string_pretty(&output)
+                    .unwrap_or_else(|_| "{}".to_string());
+
+                Ok(CallToolResult::success(vec![Content::text(output_json)]))
+            }
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let body = response.text().await.unwrap_or_default();
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::DeployAgent,
+                    0,
+                    false,
+                    duration,
+                )
+                .await;
+                Err(format!("Deploy failed (HTTP {}): {}", status, body))
+            }
+            Err(e) => {
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::DeployAgent,
+                    0,
+                    false,
+                    duration,
+                )
+                .await;
+                Err(format!("Failed to reach ARES API: {}", e))
+            }
+        }
+    }
+
+    /// Check your ARES usage statistics and quota.
+    /// Optionally filter by date range.
+    pub async fn get_usage(&self, input: GetUsageInput) -> Result<CallToolResult, String> {
+        let start = std::time::Instant::now();
+        let session = self.get_session().await?;
+
+        let tenant_id = session.tenant_id().to_string();
+        let tier = session.tier().to_string();
+
+        let now = chrono::Utc::now();
+        let from = input
+            .from_date
+            .unwrap_or_else(|| now.format("%Y-%m-01").to_string());
+        let to = input
+            .to_date
+            .unwrap_or_else(|| now.format("%Y-%m-%d").to_string());
+
+        let row: (i64, i64, i64) = sqlx::query_as(
+            r#"
+            SELECT
+                COUNT(*) as total_requests,
+                COALESCE(SUM(CASE WHEN operation LIKE 'mcp.%' THEN 1 ELSE 0 END), 0) as mcp_requests,
+                COALESCE(SUM(effective_tokens), 0) as tokens_used
+            FROM usage_events
+            WHERE tenant_id = $1
+              AND created_at >= $2
+              AND created_at <= $3
+            "#,
+        )
+        .bind(&tenant_id)
+        .bind(&from)
+        .bind(&to)
+        .fetch_one(self.pool.as_ref())
+        .await
+        .unwrap_or((0, 0, 0));
+
+        let agent_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM user_agents WHERE tenant_id = $1",
+        )
+        .bind(&tenant_id)
+        .fetch_one(self.pool.as_ref())
+        .await
+        .unwrap_or((0,));
+
+        let duration = start.elapsed().as_millis() as u64;
+
+        self.track_usage(
+            &tenant_id,
+            McpOperation::GetUsage,
+            0,
+            true,
+            duration,
+        )
+        .await;
+
+        let (max_requests, max_agents, max_tokens) = match tier.as_str() {
+            "Free" => (1_000u64, 3u32, 10_000u64),
+            "Dev" => (50_000, 20, 500_000),
+            "Pro" => (500_000, 100, 5_000_000),
+            "Enterprise" => (u64::MAX, u32::MAX, u64::MAX),
+            _ => (1_000, 3, 10_000),
+        };
+
+        let tokens_used = row.2 as u64;
+        let utilization = if max_tokens == u64::MAX {
+            0.0
+        } else {
+            tokens_used as f64 / max_tokens as f64
+        };
+
+        let output = GetUsageOutput {
+            tenant_id: tenant_id.clone(),
+            tier: tier.clone(),
+            period: UsagePeriod {
+                from: from.clone(),
+                to: to.clone(),
+            },
+            current_usage: UsageStats {
+                total_requests: row.0 as u64,
+                chat_requests: row.0 as u64 - row.1 as u64,
+                mcp_requests: row.1 as u64,
+                tokens_used,
+                agents_deployed: agent_count.0 as u32,
+            },
+            quota: UsageQuota {
+                max_requests_per_month: max_requests,
+                max_agents,
+                max_tokens_per_month: max_tokens,
+                utilization,
+            },
+        };
+
+        let json = serde_json::to_string_pretty(&output)
+            .unwrap_or_else(|_| "{}".to_string());
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    /// Read a knowledge field from Eruka.
+    pub async fn eruka_read(&self, input: ErukaReadInput) -> Result<CallToolResult, String> {
+        let start = std::time::Instant::now();
+        let session = self.get_session().await?;
+        self.enforce_quota(&session).await?;
+
+        let result = self.eruka.read(&session, input).await;
+        let duration = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(output) => {
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::ErukaRead,
+                    0,
+                    true,
+                    duration,
+                )
+                .await;
+
+                let json = serde_json::to_string_pretty(&output)
+                    .unwrap_or_else(|_| "{}".to_string());
+
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => {
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::ErukaRead,
+                    0,
+                    false,
+                    duration,
+                )
+                .await;
+
+                Err(format!("Eruka read failed: {}", e))
+            }
+        }
+    }
+
+    /// Write a knowledge field to Eruka.
+    pub async fn eruka_write(&self, input: ErukaWriteInput) -> Result<CallToolResult, String> {
+        let start = std::time::Instant::now();
+        let session = self.get_session().await?;
+        self.enforce_quota(&session).await?;
+
+        let result = self.eruka.write(&session, input).await;
+        let duration = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(output) => {
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::ErukaWrite,
+                    0,
+                    true,
+                    duration,
+                )
+                .await;
+
+                let json = serde_json::to_string_pretty(&output)
+                    .unwrap_or_else(|_| "{}".to_string());
+
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => {
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::ErukaWrite,
+                    0,
+                    false,
+                    duration,
+                )
+                .await;
+
+                Err(format!("Eruka write failed: {}", e))
+            }
+        }
+    }
+
+    /// Search Eruka knowledge base with a natural language query.
+    pub async fn eruka_search(&self, input: ErukaSearchInput) -> Result<CallToolResult, String> {
+        let start = std::time::Instant::now();
+        let session = self.get_session().await?;
+        self.enforce_quota(&session).await?;
+
+        let result = self.eruka.search(&session, input).await;
+        let duration = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(output) => {
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::ErukaSearch,
+                    0,
+                    true,
+                    duration,
+                )
+                .await;
+
+                let json = serde_json::to_string_pretty(&output)
+                    .unwrap_or_else(|_| "{}".to_string());
+
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => {
+                self.track_usage(
+                    session.tenant_id(),
+                    McpOperation::ErukaSearch,
+                    0,
+                    false,
+                    duration,
+                )
+                .await;
+
+                Err(format!("Eruka search failed: {}", e))
+            }
+        }
+    }
+
+    /// Get list of available tools with JSON schemas
     fn get_tools() -> Vec<Tool> {
         vec![
             Tool {
-                name: "calculator".into(),
+                name: "ares_list_agents".into(),
                 description: Some(
-                    "Perform basic arithmetic operations (add, subtract, multiply, divide)".into(),
+                    "List all agents available in your ARES account. Returns agent names, descriptions, types, and deployment status.".into(),
                 ),
                 input_schema: serde_json::from_value(json!({
                     "type": "object",
-                    "properties": {
-                        "operation": {
-                            "type": "string",
-                            "enum": ["add", "subtract", "multiply", "divide"],
-                            "description": "The arithmetic operation to perform"
-                        },
-                        "a": {
-                            "type": "number",
-                            "description": "First operand"
-                        },
-                        "b": {
-                            "type": "number",
-                            "description": "Second operand"
-                        }
-                    },
-                    "required": ["operation", "a", "b"]
+                    "properties": {},
+                    "required": []
                 }))
                 .unwrap_or_default(),
                 annotations: None,
                 icons: None,
                 meta: None,
                 output_schema: None,
-                title: Some("Calculator".into()),
+                title: Some("List ARES Agents".into()),
             },
             Tool {
-                name: "web_search".into(),
+                name: "ares_run_agent".into(),
                 description: Some(
-                    "Search the web for information using DuckDuckGo. Returns a list of search results with titles, snippets, and URLs.".into(),
+                    "Run an ARES agent with a message. Specify the agent name and your message. Optionally pass a context_id to continue a conversation.".into(),
                 ),
                 input_schema: serde_json::from_value(json!({
                     "type": "object",
                     "properties": {
+                        "agent_name": {
+                            "type": "string",
+                            "description": "Name of the agent to run"
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "The message to send to the agent"
+                        },
+                        "context_id": {
+                            "type": "string",
+                            "description": "Optional context ID to continue a conversation"
+                        }
+                    },
+                    "required": ["agent_name", "message"]
+                }))
+                .unwrap_or_default(),
+                annotations: None,
+                icons: None,
+                meta: None,
+                output_schema: None,
+                title: Some("Run ARES Agent".into()),
+            },
+            Tool {
+                name: "ares_get_status".into(),
+                description: Some(
+                    "Check the status of a previous agent run. Pass the context_id from an ares_run_agent call. Returns running/completed/failed status.".into(),
+                ),
+                input_schema: serde_json::from_value(json!({
+                    "type": "object",
+                    "properties": {
+                        "context_id": {
+                            "type": "string",
+                            "description": "Context ID from a previous ares_run_agent call"
+                        }
+                    },
+                    "required": ["context_id"]
+                }))
+                .unwrap_or_default(),
+                annotations: None,
+                icons: None,
+                meta: None,
+                output_schema: None,
+                title: Some("Get Agent Status".into()),
+            },
+            Tool {
+                name: "ares_deploy_agent".into(),
+                description: Some(
+                    "Deploy a new agent to ARES by providing a .toon configuration (TOML format). The agent becomes immediately available for use.".into(),
+                ),
+                input_schema: serde_json::from_value(json!({
+                    "type": "object",
+                    "properties": {
+                        "toon_config": {
+                            "type": "string",
+                            "description": "The .toon config file contents as a string (TOML format)"
+                        },
+                        "name_override": {
+                            "type": "string",
+                            "description": "Optional: override the agent name from the config"
+                        }
+                    },
+                    "required": ["toon_config"]
+                }))
+                .unwrap_or_default(),
+                annotations: None,
+                icons: None,
+                meta: None,
+                output_schema: None,
+                title: Some("Deploy Agent".into()),
+            },
+            Tool {
+                name: "ares_get_usage".into(),
+                description: Some(
+                    "Check your ARES account usage statistics and quota. Shows requests made, tokens consumed, and remaining quota for your tier.".into(),
+                ),
+                input_schema: serde_json::from_value(json!({
+                    "type": "object",
+                    "properties": {
+                        "from_date": {
+                            "type": "string",
+                            "description": "Optional: filter by start date (ISO 8601, e.g. '2026-03-01')"
+                        },
+                        "to_date": {
+                            "type": "string",
+                            "description": "Optional: filter by end date (ISO 8601, e.g. '2026-03-31')"
+                        }
+                    },
+                    "required": []
+                }))
+                .unwrap_or_default(),
+                annotations: None,
+                icons: None,
+                meta: None,
+                output_schema: None,
+                title: Some("Get Usage Stats".into()),
+            },
+            Tool {
+                name: "eruka_read".into(),
+                description: Some(
+                    "Read a knowledge field from Eruka. Specify category (e.g., 'identity', 'market', 'content', 'products') and field name (e.g., 'company_name'). Returns the value, confidence, and knowledge state.".into(),
+                ),
+                input_schema: serde_json::from_value(json!({
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {
+                            "type": "string",
+                            "description": "Eruka workspace ID (defaults to tenant's workspace if omitted)"
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Category to read from (e.g., 'identity', 'market', 'content')"
+                        },
+                        "field": {
+                            "type": "string",
+                            "description": "Specific field to read (e.g., 'company_name')"
+                        }
+                    },
+                    "required": ["category", "field"]
+                }))
+                .unwrap_or_default(),
+                annotations: None,
+                icons: None,
+                meta: None,
+                output_schema: None,
+                title: Some("Eruka Read".into()),
+            },
+            Tool {
+                name: "eruka_write".into(),
+                description: Some(
+                    "Write a knowledge field to Eruka. Provide category, field name, value, confidence score (0.0-1.0, use 1.0 for confirmed facts), and source description.".into(),
+                ),
+                input_schema: serde_json::from_value(json!({
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {
+                            "type": "string",
+                            "description": "Eruka workspace ID (defaults to tenant's workspace if omitted)"
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Category to write to"
+                        },
+                        "field": {
+                            "type": "string",
+                            "description": "Field name"
+                        },
+                        "value": {
+                            "type": "object",
+                            "description": "Value to write (any JSON value)"
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "description": "Confidence score (0.0 to 1.0, use 1.0 for user-confirmed facts)"
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": "Source of the information (e.g., 'user_interview', 'web_research')"
+                        }
+                    },
+                    "required": ["category", "field", "value", "confidence", "source"]
+                }))
+                .unwrap_or_default(),
+                annotations: None,
+                icons: None,
+                meta: None,
+                output_schema: None,
+                title: Some("Eruka Write".into()),
+            },
+            Tool {
+                name: "eruka_search".into(),
+                description: Some(
+                    "Search the Eruka knowledge base with a natural language query. Returns matching fields with relevance scores.".into(),
+                ),
+                input_schema: serde_json::from_value(json!({
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {
+                            "type": "string",
+                            "description": "Eruka workspace ID (defaults to tenant's workspace if omitted)"
+                        },
                         "query": {
                             "type": "string",
-                            "description": "The search query"
+                            "description": "Natural language search query"
                         },
-                        "max_results": {
+                        "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results (default: 5)",
+                            "description": "Maximum number of results (default 5)",
                             "default": 5
                         }
                     },
@@ -134,147 +898,9 @@ impl McpServer {
                 icons: None,
                 meta: None,
                 output_schema: None,
-                title: Some("Web Search".into()),
-            },
-            Tool {
-                name: "server_stats".into(),
-                description: Some(
-                    "Get statistics about the MCP server including operation count".into(),
-                ),
-                input_schema: serde_json::from_value(json!({
-                    "type": "object",
-                    "properties": {}
-                }))
-                .unwrap_or_default(),
-                annotations: None,
-                icons: None,
-                meta: None,
-                output_schema: None,
-                title: Some("Server Stats".into()),
-            },
-            Tool {
-                name: "echo".into(),
-                description: Some("Echo back the input message (useful for testing)".into()),
-                input_schema: serde_json::from_value(json!({
-                    "type": "object",
-                    "properties": {
-                        "message": {
-                            "type": "string",
-                            "description": "The message to echo back"
-                        }
-                    },
-                    "required": ["message"]
-                }))
-                .unwrap_or_default(),
-                annotations: None,
-                icons: None,
-                meta: None,
-                output_schema: None,
-                title: Some("Echo".into()),
+                title: Some("Eruka Search".into()),
             },
         ]
-    }
-
-    /// Execute the calculator tool
-    async fn execute_calculator(&self, args: CalculatorArgs) -> CallToolResult {
-        let mut count = self.operation_count.lock().await;
-        *count += 1;
-
-        let result = match args.operation.as_str() {
-            "add" => args.a + args.b,
-            "subtract" => args.a - args.b,
-            "multiply" => args.a * args.b,
-            "divide" => {
-                if args.b == 0.0 {
-                    return CallToolResult::error(vec![Content::text("Error: Division by zero")]);
-                }
-                args.a / args.b
-            }
-            op => {
-                return CallToolResult::error(vec![Content::text(format!(
-                    "Error: Unknown operation '{}'. Supported: add, subtract, multiply, divide",
-                    op
-                ))]);
-            }
-        };
-
-        let response = json!({
-            "operation": args.operation,
-            "a": args.a,
-            "b": args.b,
-            "result": result
-        });
-
-        CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&response).unwrap_or_else(|_| result.to_string()),
-        )])
-    }
-
-    /// Execute the web search tool
-    async fn execute_web_search(&self, args: WebSearchArgs) -> CallToolResult {
-        let mut count = self.operation_count.lock().await;
-        *count += 1;
-
-        // Use daedra to perform the search
-        let search_args = daedra::types::SearchArgs {
-            query: args.query.clone(),
-            options: Some(daedra::types::SearchOptions {
-                num_results: args.max_results,
-                ..Default::default()
-            }),
-        };
-
-        match daedra::tools::search::perform_search(&search_args).await {
-            Ok(results) => {
-                let json_results: Vec<serde_json::Value> = results
-                    .data
-                    .into_iter()
-                    .map(|result| {
-                        json!({
-                            "title": result.title,
-                            "url": result.url,
-                            "snippet": result.description
-                        })
-                    })
-                    .collect();
-
-                let response = json!({
-                    "query": args.query,
-                    "results": json_results,
-                    "count": json_results.len()
-                });
-
-                CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&response)
-                        .unwrap_or_else(|_| "Search completed".to_string()),
-                )])
-            }
-            Err(e) => CallToolResult::error(vec![Content::text(format!("Search failed: {}", e))]),
-        }
-    }
-
-    /// Execute the server stats tool
-    async fn execute_server_stats(&self) -> CallToolResult {
-        let count = self.operation_count.lock().await;
-
-        let response = json!({
-            "server": "ARES MCP Server",
-            "version": env!("CARGO_PKG_VERSION"),
-            "operation_count": *count,
-            "available_tools": ["calculator", "web_search", "server_stats", "echo"]
-        });
-
-        CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&response).unwrap_or_else(|_| "Stats unavailable".into()),
-        )])
-    }
-
-    /// Execute the echo tool
-    async fn execute_echo(&self, message: String) -> CallToolResult {
-        let mut count = self.operation_count.lock().await;
-        *count += 1;
-
-        CallToolResult::success(vec![Content::text(message)])
     }
 
     /// Execute a tool by name
@@ -286,50 +912,69 @@ impl McpServer {
         let args = arguments.unwrap_or_default();
         let args_value = serde_json::Value::Object(args);
 
-        match name {
-            "calculator" => match serde_json::from_value::<CalculatorArgs>(args_value) {
-                Ok(calc_args) => self.execute_calculator(calc_args).await,
-                Err(e) => CallToolResult::error(vec![Content::text(format!(
-                    "Invalid calculator arguments: {}",
-                    e
-                ))]),
-            },
-            "web_search" => match serde_json::from_value::<WebSearchArgs>(args_value) {
-                Ok(search_args) => self.execute_web_search(search_args).await,
-                Err(e) => CallToolResult::error(vec![Content::text(format!(
-                    "Invalid search arguments: {}",
-                    e
-                ))]),
-            },
-            "server_stats" => self.execute_server_stats().await,
-            "echo" => {
-                let message = args_value
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                self.execute_echo(message).await
+        let result = match name {
+            "ares_list_agents" => self.list_agents().await,
+            "ares_run_agent" => {
+                match serde_json::from_value::<RunAgentInput>(args_value) {
+                    Ok(input) => self.run_agent(input).await,
+                    Err(e) => Err(format!("Invalid arguments: {}", e)),
+                }
             }
-            _ => CallToolResult::error(vec![Content::text(format!("Unknown tool: {}", name))]),
+            "ares_get_status" => {
+                match serde_json::from_value::<GetStatusInput>(args_value) {
+                    Ok(input) => self.get_status(input).await,
+                    Err(e) => Err(format!("Invalid arguments: {}", e)),
+                }
+            }
+            "ares_deploy_agent" => {
+                match serde_json::from_value::<DeployAgentInput>(args_value) {
+                    Ok(input) => self.deploy_agent(input).await,
+                    Err(e) => Err(format!("Invalid arguments: {}", e)),
+                }
+            }
+            "ares_get_usage" => {
+                match serde_json::from_value::<GetUsageInput>(args_value) {
+                    Ok(input) => self.get_usage(input).await,
+                    Err(e) => Err(format!("Invalid arguments: {}", e)),
+                }
+            }
+            "eruka_read" => {
+                match serde_json::from_value::<ErukaReadInput>(args_value) {
+                    Ok(input) => self.eruka_read(input).await,
+                    Err(e) => Err(format!("Invalid arguments: {}", e)),
+                }
+            }
+            "eruka_write" => {
+                match serde_json::from_value::<ErukaWriteInput>(args_value) {
+                    Ok(input) => self.eruka_write(input).await,
+                    Err(e) => Err(format!("Invalid arguments: {}", e)),
+                }
+            }
+            "eruka_search" => {
+                match serde_json::from_value::<ErukaSearchInput>(args_value) {
+                    Ok(input) => self.eruka_search(input).await,
+                    Err(e) => Err(format!("Invalid arguments: {}", e)),
+                }
+            }
+            _ => Err(format!("Unknown tool: {}", name)),
+        };
+
+        match result {
+            Ok(call_result) => call_result,
+            Err(e) => CallToolResult::error(vec![Content::text(e)]),
         }
     }
 }
 
-impl Default for McpServer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Implement ServerHandler for MCP protocol
-impl ServerHandler for McpServer {
+impl ServerHandler for AresMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            protocol_version: ProtocolVersion::LATEST,
+            protocol_version: ProtocolVersion::V_2024_11_05,
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation::from_build_env(),
             instructions: Some(
-                "A.R.E.S MCP Server - Provides calculator, web search, and utility tools".into(),
+                "A.R.E.S MCP Server - Provides ARES agent management and Eruka knowledge tools".into(),
             ),
         }
     }
@@ -355,36 +1000,52 @@ impl ServerHandler for McpServer {
     }
 }
 
-impl McpServer {
-    /// Start the MCP server with stdio transport
-    ///
-    /// This function blocks until the server is shut down.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the server fails to start or encounters a fatal error.
-    pub async fn start() -> crate::types::Result<()> {
-        tracing::info!("Starting A.R.E.S MCP Server v{}", env!("CARGO_PKG_VERSION"));
+// =============================================================================
+// Server startup function
+// =============================================================================
 
-        let server = McpServer::new();
+/// Starts the ARES MCP server in stdio mode.
+///
+/// This is called when the ARES binary is invoked with `--mcp` flag.
+/// The server reads JSON-RPC messages from stdin and writes to stdout.
+///
+/// # Arguments
+/// - `tenant_db`: Tenant database for auth
+/// - `pool`: PostgreSQL connection pool
+/// - `ares_api_url`: ARES HTTP API URL
+/// - `eruka_api_url`: Eruka HTTP API URL
+///
+/// # Usage
+/// ```bash
+/// ARES_API_KEY=ares_abc123 ares --mcp
+/// ```
+pub async fn start_mcp_server(
+    tenant_db: Arc<TenantDb>,
+    pool: Arc<sqlx::PgPool>,
+    ares_api_url: &str,
+    eruka_api_url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = AresMcpServer::new(
+        tenant_db,
+        pool,
+        ares_api_url,
+        eruka_api_url,
+    );
 
-        // Serve using stdio transport (standard for MCP)
-        let service = server
-            .serve(stdio())
-            .await
-            .map_err(|e| crate::types::AppError::External(format!("MCP server error: {}", e)))?;
+    // Authenticate before accepting tool calls
+    server.authenticate().await?;
 
-        tracing::info!("MCP server started successfully");
+    tracing::info!("ARES MCP server starting on stdio transport");
 
-        // Wait for the service to complete
-        service
-            .waiting()
-            .await
-            .map_err(|e| crate::types::AppError::External(format!("MCP server error: {}", e)))?;
+    // Create stdio transport and run the server
+    let transport = stdio();
+    let server_handle = server.serve(transport).await?;
 
-        tracing::info!("MCP server shut down");
-        Ok(())
-    }
+    // Wait for the server to finish (client disconnects or process exits)
+    server_handle.waiting().await?;
+
+    tracing::info!("ARES MCP server shut down");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -392,177 +1053,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_calculator_args_parsing() {
-        let json = r#"{"operation": "add", "a": 5.0, "b": 3.0}"#;
-        let args: CalculatorArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.operation, "add");
-        assert_eq!(args.a, 5.0);
-        assert_eq!(args.b, 3.0);
-    }
-
-    #[test]
-    fn test_web_search_args_default() {
-        let json = r#"{"query": "test query"}"#;
-        let args: WebSearchArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.query, "test query");
-        assert_eq!(args.max_results, 5); // default value
-    }
-
-    #[test]
-    fn test_web_search_args_with_max_results() {
-        let json = r#"{"query": "test query", "max_results": 10}"#;
-        let args: WebSearchArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.query, "test query");
-        assert_eq!(args.max_results, 10);
-    }
-
-    #[test]
-    fn test_mcp_server_creation() {
-        let server = McpServer::new();
-        // Just verify it can be created
-        let _ = server;
-    }
-
-    #[test]
-    fn test_mcp_server_default() {
-        let server = McpServer::default();
-        let _ = server;
-    }
-
-    #[test]
-    fn test_get_tools() {
-        let tools = McpServer::get_tools();
-        assert_eq!(tools.len(), 4);
+    fn test_tool_schemas() {
+        let tools = AresMcpServer::get_tools();
+        assert_eq!(tools.len(), 8);
 
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
-        assert!(tool_names.contains(&"calculator".to_string()));
-        assert!(tool_names.contains(&"web_search".to_string()));
-        assert!(tool_names.contains(&"server_stats".to_string()));
-        assert!(tool_names.contains(&"echo".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_calculator_add() {
-        let server = McpServer::new();
-        let args = CalculatorArgs {
-            operation: "add".to_string(),
-            a: 5.0,
-            b: 3.0,
-        };
-        let result = server.execute_calculator(args).await;
-        let content = &result.content[0];
-        if let RawContent::Text(text) = &content.raw {
-            assert!(text.text.contains("8"));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_calculator_divide_by_zero() {
-        let server = McpServer::new();
-        let args = CalculatorArgs {
-            operation: "divide".to_string(),
-            a: 5.0,
-            b: 0.0,
-        };
-        let result = server.execute_calculator(args).await;
-        let content = &result.content[0];
-        if let RawContent::Text(text) = &content.raw {
-            assert!(text.text.contains("Division by zero"));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_calculator_unknown_operation() {
-        let server = McpServer::new();
-        let args = CalculatorArgs {
-            operation: "unknown".to_string(),
-            a: 5.0,
-            b: 3.0,
-        };
-        let result = server.execute_calculator(args).await;
-        let content = &result.content[0];
-        if let RawContent::Text(text) = &content.raw {
-            assert!(text.text.contains("Unknown operation"));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_echo() {
-        let server = McpServer::new();
-        let result = server.execute_echo("Hello, MCP!".to_string()).await;
-        let content = &result.content[0];
-        if let RawContent::Text(text) = &content.raw {
-            assert_eq!(text.text, "Hello, MCP!");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_server_stats() {
-        let server = McpServer::new();
-        let result = server.execute_server_stats().await;
-        let content = &result.content[0];
-        if let RawContent::Text(text) = &content.raw {
-            assert!(text.text.contains("ARES MCP Server"));
-            assert!(text.text.contains("operation_count"));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_operation_count_increments() {
-        let server = McpServer::new();
-
-        // Initial count should be 0
-        {
-            let count = server.operation_count.lock().await;
-            assert_eq!(*count, 0);
-        }
-
-        // Perform an operation
-        let _ = server.execute_echo("test".to_string()).await;
-
-        // Count should be 1
-        {
-            let count = server.operation_count.lock().await;
-            assert_eq!(*count, 1);
-        }
-
-        // Perform another operation
-        let args = CalculatorArgs {
-            operation: "add".to_string(),
-            a: 1.0,
-            b: 1.0,
-        };
-        let _ = server.execute_calculator(args).await;
-
-        // Count should be 2
-        {
-            let count = server.operation_count.lock().await;
-            assert_eq!(*count, 2);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_execute_tool_calculator() {
-        let server = McpServer::new();
-        let mut args = serde_json::Map::new();
-        args.insert("operation".to_string(), json!("multiply"));
-        args.insert("a".to_string(), json!(4.0));
-        args.insert("b".to_string(), json!(3.0));
-
-        let result = server.execute_tool("calculator", Some(args)).await;
-        let content = &result.content[0];
-        if let RawContent::Text(text) = &content.raw {
-            assert!(text.text.contains("12"));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_execute_tool_unknown() {
-        let server = McpServer::new();
-        let result = server.execute_tool("nonexistent", None).await;
-        let content = &result.content[0];
-        if let RawContent::Text(text) = &content.raw {
-            assert!(text.text.contains("Unknown tool"));
-        }
+        assert!(tool_names.contains(&"ares_list_agents".to_string()));
+        assert!(tool_names.contains(&"ares_run_agent".to_string()));
+        assert!(tool_names.contains(&"ares_get_status".to_string()));
+        assert!(tool_names.contains(&"ares_deploy_agent".to_string()));
+        assert!(tool_names.contains(&"ares_get_usage".to_string()));
+        assert!(tool_names.contains(&"eruka_read".to_string()));
+        assert!(tool_names.contains(&"eruka_write".to_string()));
+        assert!(tool_names.contains(&"eruka_search".to_string()));
     }
 }

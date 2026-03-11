@@ -41,6 +41,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_color: bool,
 
+    /// Start in MCP server mode (stdio transport for Claude Desktop, Cursor, etc.)
+    #[arg(long, global = true)]
+    pub mcp: bool,
+
     /// Subcommand to execute
     #[command(subcommand)]
     pub command: Option<Commands>,

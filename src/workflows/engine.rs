@@ -424,6 +424,7 @@ mod tests {
                 900,
                 604800,
             )),
+            mcp_registry: None,
         };
 
         let engine = WorkflowEngine::new(state);
@@ -476,6 +477,7 @@ mod tests {
                 900,
                 604800,
             )),
+            mcp_registry: None,
         };
 
         let engine = WorkflowEngine::new(state);
@@ -528,6 +530,7 @@ mod tests {
                 900,
                 604800,
             )),
+            mcp_registry: None,
         };
 
         let engine = WorkflowEngine::new(state);

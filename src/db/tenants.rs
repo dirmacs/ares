@@ -272,7 +272,7 @@ impl TenantDb {
         let month_start = now.date_naive().with_day(1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
 
         sqlx::query(
-            "INSERT INTO usage_events (id, tenant_id, request_count, token_count, created_at) VALUES ($1, $2, $3, $4, $5)"
+            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, created_at) VALUES ($1, $2, 'http', $3, $4, $5)"
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(tenant_id)

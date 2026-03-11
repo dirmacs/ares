@@ -87,7 +87,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         None => {
             // No subcommand - run the server
-            run_server(&cli.config, cli.verbose).await?;
+            if cli.mcp {
+                // MCP server mode
+                run_mcp_server(&cli.config).await?;
+            } else {
+                // HTTP server mode (default)
+                run_server(&cli.config, cli.verbose).await?;
+            }
         }
     }
 
@@ -564,7 +570,7 @@ async fn run_server(
         // API routes
         .nest(
             "/api",
-            api::routes::create_router(state.auth_service.clone()),
+            api::routes::create_router(state.auth_service.clone(), state.tenant_db.clone()),
         );
 
     // Swagger UI (optional - requires network during build)
@@ -692,6 +698,58 @@ async fn shutdown_signal() {
             tracing::info!("Received SIGTERM, initiating graceful shutdown...");
         }
     }
+}
+
+/// Run the A.R.E.S MCP server
+async fn run_mcp_server(
+    config_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Load .env file for secrets
+    dotenvy::dotenv().ok();
+
+    // Initialize tracing
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
+    tracing::info!("Starting A.R.E.S MCP Server");
+
+    // Load configuration
+    if !config_path.exists() {
+        return Err(format!("Configuration file '{}' not found", config_path.display()).into());
+    }
+
+    let config_path_str = config_path.to_str().unwrap_or("ares.toml");
+    let config = AresConfig::load_unchecked(config_path_str)?;
+
+    // Initialize database
+    let db = init_postgres_db(&config.database.url).await?;
+    let pool = db.pool.clone();
+    let tenant_db = Arc::new(ares::TenantDb::new(Arc::new(db)));
+
+    // Get API URLs from environment or config
+    let ares_api_url = std::env::var("ARES_API_URL")
+        .unwrap_or_else(|_| "https://api.ares.dirmacs.com".to_string());
+    let eruka_api_url = std::env::var("ERUKA_API_URL")
+        .unwrap_or_else(|_| "https://eruka.dirmacs.com".to_string());
+
+    tracing::info!("ARES API URL: {}", ares_api_url);
+    tracing::info!("Eruka API URL: {}", eruka_api_url);
+
+    // Start MCP server
+    ares::mcp::start_mcp_server(
+        tenant_db,
+        Arc::new(pool),
+        &ares_api_url,
+        &eruka_api_url,
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Initialize PostgreSQL database

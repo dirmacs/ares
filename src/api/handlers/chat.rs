@@ -4,6 +4,7 @@ use crate::{
     agents::{registry::AgentRegistry, router::RouterAgent, Agent},
     api::handlers::user_agents::resolve_agent,
     auth::middleware::AuthUser,
+    memory::estimate_tokens,
     types::{
         AgentContext, AgentType, AppError, ChatRequest, ChatResponse, MessageRole, Result,
         UserMemory,
@@ -45,6 +46,8 @@ pub async fn chat(
             .await?;
     }
     let history = state.db.get_conversation_history(&context_id).await?;
+    // Compute history token estimate in the same pass (before clone into AgentContext)
+    let history_input_tokens: usize = history.iter().map(|m| estimate_tokens(&m.content)).sum();
 
     // Load user memory
     let memory_facts = state.db.get_user_memory(&claims.sub).await?;
@@ -112,15 +115,11 @@ pub async fn chat(
         )
         .await?;
 
-    // Estimate token counts: ~4 chars per token (tiktoken average for English).
+    // Estimate token counts using the shared heuristic (~4 chars/token).
     // Input includes full context: conversation history + current message.
-    // Real token counts require changing Agent::execute() to return TokenUsage — tracked separately.
-    let history_chars: usize = history
-        .iter()
-        .map(|m| m.content.len())
-        .sum();
-    let input_tokens = ((history_chars + payload.message.len()) / 4) as u32;
-    let output_tokens = (response.response.len() / 4) as u32;
+    // Real counts require Agent::execute() → TokenUsage (tracked as future work).
+    let input_tokens = (history_input_tokens + estimate_tokens(&payload.message)) as u32;
+    let output_tokens = estimate_tokens(&response.response) as u32;
 
     let body = Json(response);
     let mut response = body.into_response();

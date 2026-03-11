@@ -1,9 +1,11 @@
 use crate::auth::jwt::AuthService;
+use crate::db::tenants::TenantDb;
 use crate::AppState;
 #[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
 use axum::routing::delete;
 use axum::{
-    middleware,
+    extract::Request,
+    middleware::{self, Next},
     routing::{get, post, put},
     Router,
 };
@@ -12,7 +14,8 @@ use std::sync::Arc;
 /// Creates the main API router with all routes configured.
 ///
 /// Routes are split into public (no auth), protected (requires JWT), and admin (requires admin secret).
-pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
+/// `tenant_db` is injected into request extensions so `track_usage` middleware can record billing events.
+pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -> Router<AppState> {
     let public_routes = Router::new()
         // Public routes (no auth required)
         .route("/auth/register", post(crate::api::handlers::auth::register))
@@ -94,9 +97,24 @@ pub fn create_router(auth_service: Arc<AuthService>) -> Router<AppState> {
             );
     }
 
-    let protected_routes = protected_routes.layer(middleware::from_fn(move |req, next| {
-        crate::auth::middleware::auth_middleware(auth_service.clone(), req, next)
-    }));
+    // Layer order: last added = outermost = runs first.
+    // Request flow: jwt_auth → inject_tenant_db → track_usage → handler → track_usage (reads response)
+    let tenant_db_inject = tenant_db.clone();
+    let protected_routes = protected_routes
+        // Innermost: wraps handler, reads tenant info from extensions, records token usage from response headers
+        .layer(middleware::from_fn(crate::middleware::usage::track_usage))
+        // Middle: injects Arc<TenantDb> into extensions so track_usage and api_key_auth can read it
+        .layer(middleware::from_fn(move |mut req: Request, next: Next| {
+            let db = tenant_db_inject.clone();
+            async move {
+                req.extensions_mut().insert(db);
+                next.run(req).await
+            }
+        }))
+        // Outermost: validates JWT, rejects unauthorized requests early
+        .layer(middleware::from_fn(move |req, next| {
+            crate::auth::middleware::auth_middleware(auth_service.clone(), req, next)
+        }));
 
     // Admin routes (protected by X-Admin-Secret header)
     let admin_routes = Router::new()

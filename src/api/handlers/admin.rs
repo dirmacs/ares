@@ -6,7 +6,6 @@ use crate::db::tenant_agents::{
     list_tenant_agents as db_list_tenant_agents,
     update_tenant_agent as db_update_tenant_agent,
 };
-use crate::db::product_schema::{ensure_product_schema, ProductType};
 use crate::llm::provider_registry::ModelInfo;
 use crate::models::{Tenant, TenantTier};
 use crate::types::{AppError, Result};
@@ -234,22 +233,20 @@ pub async fn provision_client(
     State(state): State<AppState>,
     Json(req): Json<ProvisionClientRequest>,
 ) -> Result<Json<ProvisionClientResponse>> {
-    let product_type = ProductType::from_str(&req.product_type).ok_or_else(|| {
-        AppError::InvalidInput(format!("Invalid product_type '{}'. Must be: generic, kasino, ehb", req.product_type))
-    })?;
-
     let tier = TenantTier::from_str(&req.tier).ok_or_else(|| {
         AppError::InvalidInput("Invalid tier. Must be: free, dev, pro, or enterprise".to_string())
     })?;
 
-    let tenant = state.tenant_db.create_tenant(req.name, tier).await?;
+    // product_type is used only to select which agent templates to clone into tenant_agents.
+    // It does NOT create product-specific DB tables — client domain data lives in the client's own backend.
+    let product_type = req.product_type.to_lowercase();
 
-    ensure_product_schema(state.tenant_db.pool(), &product_type).await?;
+    let tenant = state.tenant_db.create_tenant(req.name, tier).await?;
 
     let agents = clone_templates_for_tenant(
         state.tenant_db.pool(),
         &tenant.id,
-        product_type.as_str(),
+        &product_type,
     ).await?;
 
     let (api_key, raw_key) = state.tenant_db.create_api_key(&tenant.id, req.api_key_name).await?;
@@ -258,7 +255,7 @@ pub async fn provision_client(
         tenant_id: tenant.id,
         tenant_name: tenant.name,
         tier: tenant.tier.as_str().to_string(),
-        product_type: product_type.as_str().to_string(),
+        product_type,
         api_key_id: api_key.id,
         api_key_prefix: api_key.key_prefix,
         raw_api_key: raw_key,

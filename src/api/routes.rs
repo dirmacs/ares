@@ -71,24 +71,6 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/user/agents/{name}/export",
             get(crate::api::handlers::user_agents::export_agent_toon),
         )
-        // Kasino routes (protected by JWT)
-        .route("/kasino/classify", post(crate::api::handlers::kasno::classify_domain))
-        .route("/kasino/analyze-transaction", post(crate::api::handlers::kasno::analyze_transaction))
-        .route("/kasino/event", post(crate::api::handlers::kasno::log_event))
-        .route("/kasino/events", post(crate::api::handlers::kasno::log_events_bulk)
-            .get(crate::api::handlers::kasno::query_events))
-        .route("/kasino/risk-score/{device_id}", get(crate::api::handlers::kasno::get_risk_score))
-        .route("/kasino/dashboard", get(crate::api::handlers::kasno::get_dashboard))
-        .route("/kasino/device/command", post(crate::api::handlers::kasno::send_device_command))
-        .route("/kasino/rules", get(crate::api::handlers::kasno::list_rules)
-            .post(crate::api::handlers::kasno::create_rule))
-        .route("/kasino/rules/{id}", put(crate::api::handlers::kasno::update_rule)
-            .delete(crate::api::handlers::kasno::delete_rule))
-        .route("/kasino/report/weekly", get(crate::api::handlers::kasno::get_weekly_report))
-        .route("/kasino/devices", get(crate::api::handlers::kasno::list_devices)
-            .post(crate::api::handlers::kasno::register_device))
-        .route("/kasino/devices/{id}", get(crate::api::handlers::kasno::get_device)
-            .put(crate::api::handlers::kasno::update_device))
         // Conversation routes
         .route(
             "/conversations",
@@ -188,25 +170,12 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             crate::api::handlers::admin::admin_middleware,
         ));
 
-    // External API: authenticated via API key (for Android devices, CLI, MCP clients)
+    // External API: authenticated via API key (for client apps, CLI, MCP)
+    // Client-specific business logic lives in the client's own portal backend, not here.
+    // ARES provides generic agent execution — clients call /v1/chat with their API key.
     let v1_routes = Router::new()
-        .route("/kasino/classify", post(crate::api::handlers::kasno::classify_domain))
-        .route("/kasino/analyze-transaction", post(crate::api::handlers::kasno::analyze_transaction))
-        .route("/kasino/event", post(crate::api::handlers::kasno::log_event))
-        .route("/kasino/events", post(crate::api::handlers::kasno::log_events_bulk)
-            .get(crate::api::handlers::kasno::query_events))
-        .route("/kasino/risk-score/{device_id}", get(crate::api::handlers::kasno::get_risk_score))
-        .route("/kasino/dashboard", get(crate::api::handlers::kasno::get_dashboard))
-        .route("/kasino/device/command", post(crate::api::handlers::kasno::send_device_command))
-        .route("/kasino/rules", get(crate::api::handlers::kasno::list_rules)
-            .post(crate::api::handlers::kasno::create_rule))
-        .route("/kasino/rules/{id}", put(crate::api::handlers::kasno::update_rule)
-            .delete(crate::api::handlers::kasno::delete_rule))
-        .route("/kasino/report/weekly", get(crate::api::handlers::kasno::get_weekly_report))
-        .route("/kasino/devices", get(crate::api::handlers::kasno::list_devices)
-            .post(crate::api::handlers::kasno::register_device))
-        .route("/kasino/devices/{id}", get(crate::api::handlers::kasno::get_device)
-            .put(crate::api::handlers::kasno::update_device))
+        .route("/chat", post(crate::api::handlers::chat::chat))
+        .route("/chat/stream", post(crate::api::handlers::chat::chat_stream))
         .layer(middleware::from_fn(crate::middleware::api_key_auth::api_key_auth_middleware))
         .layer(middleware::from_fn(move |mut req: Request, next: Next| {
             let db = tenant_db_for_v1.clone();

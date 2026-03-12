@@ -1,7 +1,12 @@
--- Migration 002: Kasino Schema
+-- Migration 002: Kasino Schema — DEPRECATED, DO NOT RUN ON NEW INSTALLS
 --
--- Kasino-specific tables for device monitoring, event tracking,
--- risk scoring, and blocking rules.
+-- ARCHITECTURE NOTE: Client domain data does NOT belong in ARES.
+-- ARES is a generic AI agent runtime. Kasino's device/event data
+-- belongs in the kasino portal's own backend.
+--
+-- These tables exist on the production VPS from an earlier mistake.
+-- They are harmless but unused. New installs should skip this file.
+-- Future: drop these tables with a 005_drop_kasino.sql migration.
 --
 -- Run: psql -U postgres -d ares -f migrations/002_kasino.sql
 

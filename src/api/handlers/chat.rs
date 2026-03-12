@@ -13,7 +13,7 @@ use crate::{
     utils::toml_config::AgentConfig,
     AppState,
 };
-use axum::{extract::State, response::Response, Json};
+use axum::{extract::State, response::Response, Extension, Json};
 use uuid::Uuid;
 
 /// Chat with the AI assistant
@@ -32,6 +32,7 @@ use uuid::Uuid;
 pub async fn chat(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
+    tenant_ctx: Option<Extension<crate::models::TenantContext>>,
     Json(payload): Json<ChatRequest>,
 ) -> Result<Response> {
     // Get or create conversation
@@ -130,11 +131,14 @@ pub async fn chat(
         let pool = state.tenant_db.pool().clone();
         let agent_name = agent_name_for_run;
         let user_id = claims.sub.clone();
+        let tenant_id_for_run = tenant_ctx
+            .map(|Extension(tc)| tc.tenant_id.clone())
+            .unwrap_or_else(|| "system".to_string());
         let itok = input_tokens as i64;
         let otok = output_tokens as i64;
         tokio::spawn(async move {
             let _ = agent_runs::insert_agent_run(
-                &pool, "system", &agent_name, Some(&user_id),
+                &pool, &tenant_id_for_run, &agent_name, Some(&user_id),
                 "completed", itok, otok, duration_ms, None,
             ).await;
         });

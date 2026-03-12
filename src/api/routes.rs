@@ -1,12 +1,11 @@
 use crate::auth::jwt::AuthService;
 use crate::db::tenants::TenantDb;
 use crate::AppState;
-#[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
-use axum::routing::delete;
+
 use axum::{
     extract::Request,
     middleware::{self, Next},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 use std::sync::Arc;
@@ -159,6 +158,31 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .route(
             "/admin/tenants/{tenant_id}/quota",
             put(crate::api::handlers::admin::update_tenant_quota),
+        )
+        // Provisioning
+        .route(
+            "/admin/provision-client",
+            post(crate::api::handlers::admin::provision_client),
+        )
+        // Tenant agents CRUD
+        .route(
+            "/admin/tenants/{tenant_id}/agents",
+            get(crate::api::handlers::admin::list_tenant_agents_handler)
+                .post(crate::api::handlers::admin::create_tenant_agent_handler),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/agents/{agent_name}",
+            put(crate::api::handlers::admin::update_tenant_agent_handler)
+                .delete(crate::api::handlers::admin::delete_tenant_agent_handler),
+        )
+        // Templates and models
+        .route(
+            "/admin/agent-templates",
+            get(crate::api::handlers::admin::list_agent_templates_handler),
+        )
+        .route(
+            "/admin/models",
+            get(crate::api::handlers::admin::list_models_handler),
         )
         .layer(middleware::from_fn(
             crate::api::handlers::admin::admin_middleware,

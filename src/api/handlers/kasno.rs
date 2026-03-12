@@ -1,6 +1,7 @@
 //! Kasino (Guardian) API Handlers
 //! Device monitoring, classification, and family dashboard endpoints
 
+use crate::agents::tenant_agent::create_tenant_agent;
 use crate::agents::Agent;
 use crate::auth::middleware::AuthUser;
 use crate::models::tenant::TenantContext;
@@ -256,16 +257,17 @@ pub async fn classify_domain(
     let gambling_score = score;
     
     if gambling_score > 40.0 {
-        let agent_registry = state.agent_registry.clone();
-        let domain = payload.domain.clone();
-        let tenant_id_clone = tenant_id.clone();
-        
+        let pool = state.tenant_db.pool().clone();
+        let registry = state.agent_registry.clone();
+        let tid = tenant_id.clone();
+        let domain_clone = payload.domain.clone();
+
         tokio::spawn(async move {
-            if let Ok(agent) = agent_registry.create_agent("kasino-classifier").await {
-                let input = format!("Classify domain: {}", domain);
+            if let Some(agent) = create_tenant_agent(&pool, &registry, &tid, "classifier").await {
+                let input = format!("Classify domain: {}", domain_clone);
                 let context = default_agent_context();
                 if let Ok(result) = agent.execute(&input, &context).await {
-                    tracing::info!("Kasino classifier result for {}: {}", domain, result);
+                    tracing::info!("Tenant {} classifier result for {}: {}", tid, domain_clone, result);
                 }
             }
         });
@@ -291,18 +293,20 @@ pub async fn analyze_transaction(
     
     let risk_level = if is_suspicious { "high" } else { "low" };
     
-    let agent_registry = state.agent_registry.clone();
+    let pool = state.tenant_db.pool().clone();
+    let registry = state.agent_registry.clone();
+    let tid = _tenant_id.clone();
     let device_id = payload.device_id.clone();
     let amount = payload.amount;
     let merchant = payload.merchant.clone();
     let method = payload.method.clone();
-    
+
     tokio::spawn(async move {
-        if let Ok(agent) = agent_registry.create_agent("kasino-transaction").await {
+        if let Some(agent) = create_tenant_agent(&pool, &registry, &tid, "transaction").await {
             let input = format!("Analyze transaction: {} {} from {}", amount, method, merchant);
             let context = default_agent_context();
             if let Ok(result) = agent.execute(&input, &context).await {
-                tracing::info!("Kasino transaction analysis for device {}: {}", device_id, result);
+                tracing::info!("Tenant {} transaction analysis for device {}: {}", tid, device_id, result);
             }
         }
     });

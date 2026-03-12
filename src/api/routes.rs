@@ -16,6 +16,9 @@ use std::sync::Arc;
 /// Routes are split into public (no auth), protected (requires JWT), and admin (requires admin secret).
 /// `tenant_db` is injected into request extensions so `track_usage` middleware can record billing events.
 pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -> Router<AppState> {
+    // Clone for v1 routes (API key auth)
+    let tenant_db_for_v1 = tenant_db.clone();
+
     let public_routes = Router::new()
         // Public routes (no auth required)
         .route("/auth/register", post(crate::api::handlers::auth::register))
@@ -69,6 +72,24 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/user/agents/{name}/export",
             get(crate::api::handlers::user_agents::export_agent_toon),
         )
+        // Kasino routes (protected by JWT)
+        .route("/kasino/classify", post(crate::api::handlers::kasno::classify_domain))
+        .route("/kasino/analyze-transaction", post(crate::api::handlers::kasno::analyze_transaction))
+        .route("/kasino/event", post(crate::api::handlers::kasno::log_event))
+        .route("/kasino/events", post(crate::api::handlers::kasno::log_events_bulk)
+            .get(crate::api::handlers::kasno::query_events))
+        .route("/kasino/risk-score/:device_id", get(crate::api::handlers::kasno::get_risk_score))
+        .route("/kasino/dashboard", get(crate::api::handlers::kasno::get_dashboard))
+        .route("/kasino/device/command", post(crate::api::handlers::kasno::send_device_command))
+        .route("/kasino/rules", get(crate::api::handlers::kasno::list_rules)
+            .post(crate::api::handlers::kasno::create_rule))
+        .route("/kasino/rules/:id", put(crate::api::handlers::kasno::update_rule)
+            .delete(crate::api::handlers::kasno::delete_rule))
+        .route("/kasino/report/weekly", get(crate::api::handlers::kasno::get_weekly_report))
+        .route("/kasino/devices", get(crate::api::handlers::kasno::list_devices)
+            .post(crate::api::handlers::kasno::register_device))
+        .route("/kasino/devices/:id", get(crate::api::handlers::kasno::get_device)
+            .put(crate::api::handlers::kasno::update_device))
         // Conversation routes
         .route(
             "/conversations",
@@ -143,5 +164,33 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             crate::api::handlers::admin::admin_middleware,
         ));
 
-    public_routes.merge(protected_routes).merge(admin_routes)
+    // External API: authenticated via API key (for Android devices, CLI, MCP clients)
+    let v1_routes = Router::new()
+        .route("/kasino/classify", post(crate::api::handlers::kasno::classify_domain))
+        .route("/kasino/analyze-transaction", post(crate::api::handlers::kasno::analyze_transaction))
+        .route("/kasino/event", post(crate::api::handlers::kasno::log_event))
+        .route("/kasino/events", post(crate::api::handlers::kasno::log_events_bulk)
+            .get(crate::api::handlers::kasno::query_events))
+        .route("/kasino/risk-score/:device_id", get(crate::api::handlers::kasno::get_risk_score))
+        .route("/kasino/dashboard", get(crate::api::handlers::kasno::get_dashboard))
+        .route("/kasino/device/command", post(crate::api::handlers::kasno::send_device_command))
+        .route("/kasino/rules", get(crate::api::handlers::kasno::list_rules)
+            .post(crate::api::handlers::kasno::create_rule))
+        .route("/kasino/rules/:id", put(crate::api::handlers::kasno::update_rule)
+            .delete(crate::api::handlers::kasno::delete_rule))
+        .route("/kasino/report/weekly", get(crate::api::handlers::kasno::get_weekly_report))
+        .route("/kasino/devices", get(crate::api::handlers::kasno::list_devices)
+            .post(crate::api::handlers::kasno::register_device))
+        .route("/kasino/devices/:id", get(crate::api::handlers::kasno::get_device)
+            .put(crate::api::handlers::kasno::update_device))
+        .layer(middleware::from_fn(crate::middleware::api_key_auth::api_key_auth_middleware))
+        .layer(middleware::from_fn(move |mut req: Request, next: Next| {
+            let db = tenant_db_for_v1.clone();
+            async move {
+                req.extensions_mut().insert(db);
+                next.run(req).await
+            }
+        }));
+
+    public_routes.merge(protected_routes).merge(admin_routes).nest("/v1", v1_routes)
 }

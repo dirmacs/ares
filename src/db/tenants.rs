@@ -23,6 +23,10 @@ impl TenantDb {
         }
     }
 
+    pub fn pool(&self) -> &sqlx::PgPool {
+        &self.postgres.pool
+    }
+
     pub async fn create_tenant(&self, name: String, tier: TenantTier) -> Result<Tenant> {
         let id = uuid::Uuid::new_v4().to_string();
         let tenant = Tenant::new(id.clone(), name, tier);

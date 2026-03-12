@@ -368,6 +368,22 @@ impl TenantDb {
         })
     }
 
+    pub async fn revoke_api_key(&self, tenant_id: &str, key_id: &str) -> Result<()> {
+        let result = sqlx::query(
+            "UPDATE api_keys SET is_active = 0 WHERE id = $1 AND tenant_id = $2"
+        )
+        .bind(key_id)
+        .bind(tenant_id)
+        .execute(&self.postgres.pool)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to revoke API key: {}", e)))?;
+
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!("API key '{}' not found for tenant '{}'", key_id, tenant_id)));
+        }
+        Ok(())
+    }
+
     pub async fn update_tenant_quota(&self, tenant_id: &str, tier: TenantTier) -> Result<()> {
         sqlx::query(
             "UPDATE tenants SET tier = $1, updated_at = $2 WHERE id = $3"

@@ -21,5 +21,7 @@ pub mod rag;
 pub mod research;
 /// User-created agent management handlers.
 pub mod user_agents;
+/// V1 API key-authenticated tenant-scoped handlers.
+pub mod v1;
 /// Workflow execution handlers.
 pub mod workflows;

@@ -166,6 +166,44 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/admin/models",
             get(crate::api::handlers::admin::list_models_handler),
         )
+        // Alerts
+        .route(
+            "/admin/alerts",
+            get(crate::api::handlers::admin::list_alerts),
+        )
+        .route(
+            "/admin/alerts/{alert_id}/resolve",
+            post(crate::api::handlers::admin::resolve_alert),
+        )
+        // Audit log
+        .route(
+            "/admin/audit-log",
+            get(crate::api::handlers::admin::list_audit_log),
+        )
+        // Daily usage per tenant
+        .route(
+            "/admin/tenants/{tenant_id}/usage/daily",
+            get(crate::api::handlers::admin::get_daily_usage),
+        )
+        // Agent runs per tenant+agent
+        .route(
+            "/admin/tenants/{tenant_id}/agents/{agent_name}/runs",
+            get(crate::api::handlers::admin::list_agent_runs_handler),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/agents/{agent_name}/stats",
+            get(crate::api::handlers::admin::get_agent_stats_handler),
+        )
+        // Cross-tenant agent list
+        .route(
+            "/admin/agents",
+            get(crate::api::handlers::admin::list_all_agents_handler),
+        )
+        // Platform stats
+        .route(
+            "/admin/stats",
+            get(crate::api::handlers::admin::get_platform_stats),
+        )
         .layer(middleware::from_fn(
             crate::api::handlers::admin::admin_middleware,
         ));
@@ -176,6 +214,14 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
     let v1_routes = Router::new()
         .route("/chat", post(crate::api::handlers::chat::chat))
         .route("/chat/stream", post(crate::api::handlers::chat::chat_stream))
+        .route("/agents", get(crate::api::handlers::v1::list_agents))
+        .route("/agents/{name}", get(crate::api::handlers::v1::get_agent))
+        .route("/agents/{name}/run", post(crate::api::handlers::v1::run_agent))
+        .route("/agents/{name}/runs", get(crate::api::handlers::v1::list_agent_runs))
+        .route("/agents/{name}/logs", get(crate::api::handlers::v1::list_agent_logs))
+        .route("/usage", get(crate::api::handlers::v1::get_usage))
+        .route("/api-keys", get(crate::api::handlers::v1::list_api_keys).post(crate::api::handlers::v1::create_api_key))
+        .route("/api-keys/{id}", delete(crate::api::handlers::v1::revoke_api_key))
         .layer(middleware::from_fn(crate::middleware::api_key_auth::api_key_auth_middleware))
         .layer(middleware::from_fn(move |mut req: Request, next: Next| {
             let db = tenant_db_for_v1.clone();

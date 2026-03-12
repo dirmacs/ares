@@ -4,6 +4,7 @@ use crate::{
     agents::{registry::AgentRegistry, router::RouterAgent, Agent},
     api::handlers::user_agents::resolve_agent,
     auth::middleware::AuthUser,
+    db::agent_runs,
     memory::estimate_tokens,
     types::{
         AgentContext, AgentType, AppError, ChatRequest, ChatResponse, MessageRole, Result,
@@ -94,8 +95,11 @@ pub async fn chat(
         router.route(&payload.message, &agent_context).await?
     };
 
-    // Execute agent
+    // Execute agent with timing
+    let agent_name_for_run = AgentRegistry::type_to_name(&agent_type).to_string();
+    let start = std::time::Instant::now();
     let response = execute_agent(agent_type, &payload.message, &agent_context, &state).await?;
+    let duration_ms = start.elapsed().as_millis() as i64;
 
     // Store messages in conversation
     let msg_id = Uuid::new_v4().to_string();
@@ -120,6 +124,21 @@ pub async fn chat(
     // Real counts require Agent::execute() → TokenUsage (tracked as future work).
     let input_tokens = (history_input_tokens + estimate_tokens(&payload.message)) as u32;
     let output_tokens = estimate_tokens(&response.response) as u32;
+
+    // Record agent run (fire-and-forget)
+    {
+        let pool = state.tenant_db.pool().clone();
+        let agent_name = agent_name_for_run;
+        let user_id = claims.sub.clone();
+        let itok = input_tokens as i64;
+        let otok = output_tokens as i64;
+        tokio::spawn(async move {
+            let _ = agent_runs::insert_agent_run(
+                &pool, "system", &agent_name, Some(&user_id),
+                "completed", itok, otok, duration_ms, None,
+            ).await;
+        });
+    }
 
     let body = Json(response);
     let mut response = body.into_response();

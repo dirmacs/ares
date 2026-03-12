@@ -803,6 +803,7 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
             header::CONTENT_TYPE,
             header::ACCEPT,
             header::ORIGIN,
+            axum::http::HeaderName::from_static("x-admin-secret"),
         ])
         .allow_credentials(allow_credentials)
 }

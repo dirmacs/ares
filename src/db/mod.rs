@@ -68,6 +68,12 @@ pub mod postgres;
 pub mod tenants;
 /// Per-tenant agent instance management.
 pub mod tenant_agents;
+/// Agent run tracking (execution history).
+pub mod agent_runs;
+/// Platform alerts (health, quota, errors).
+pub mod alerts;
+/// Admin audit log (mutation tracking).
+pub mod audit_log;
 
 // Re-exports
 pub use vectorstore::{CollectionInfo, CollectionStats, VectorStore, VectorStoreProvider};

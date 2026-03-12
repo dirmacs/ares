@@ -12,6 +12,8 @@ pub mod auth;
 pub mod chat;
 /// Conversation CRUD handlers.
 pub mod conversations;
+/// Kasino (Guardian) device monitoring and classification handlers.
+pub mod kasno;
 /// RAG (document ingestion/search) handlers.
 /// Requires the `local-embeddings` feature (for ONNX-based embeddings) and
 /// `ares-vector` feature (for the embedded vector database).

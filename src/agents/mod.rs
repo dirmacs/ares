@@ -34,6 +34,8 @@ pub mod orchestrator;
 pub mod registry;
 /// Request routing to specialized agents.
 pub mod router;
+/// Per-tenant agent creation from DB-stored configs.
+pub mod tenant_agent;
 
 use crate::types::{AgentContext, AgentType, Result};
 use async_trait::async_trait;

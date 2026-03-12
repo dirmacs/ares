@@ -327,6 +327,21 @@ async fn run_server(
     tracing::info!("PostgreSQL database client initialized");
 
     // =================================================================
+    // Run Database Migrations
+    // =================================================================
+    sqlx::migrate!("./migrations")
+        .run(&db.pool)
+        .await
+        .expect("Failed to run database migrations");
+    tracing::info!("Database migrations applied");
+
+    // Seed default agent templates (idempotent)
+    ares::db::tenant_agents::seed_default_templates(&db.pool)
+        .await
+        .expect("Failed to seed agent templates");
+    tracing::info!("Agent templates seeded");
+
+    // =================================================================
     // Initialize Auth Service
     // =================================================================
     let jwt_secret = config

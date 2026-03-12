@@ -66,6 +66,10 @@ pub mod traits;
 pub mod postgres;
 /// Multi-tenant tenant management.
 pub mod tenants;
+/// Product-specific schema provisioning.
+pub mod product_schema;
+/// Per-tenant agent instance management.
+pub mod tenant_agents;
 
 // Re-exports
 pub use vectorstore::{CollectionInfo, CollectionStats, VectorStore, VectorStoreProvider};

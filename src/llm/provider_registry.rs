@@ -277,6 +277,23 @@ impl ProviderRegistry {
     pub fn find_local_models(&self) -> Vec<ModelWithCapabilities> {
         self.find_models(&CapabilityRequirements::for_local())
     }
+
+    /// List all registered models with their provider info.
+    pub fn list_models(&self) -> Vec<ModelInfo> {
+        self.models.iter().map(|(name, config)| ModelInfo {
+            name: name.clone(),
+            provider: config.provider.clone(),
+            model: config.model.clone(),
+        }).collect()
+    }
+}
+
+/// Model info for listing available models via API.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModelInfo {
+    pub name: String,
+    pub provider: String,
+    pub model: String,
 }
 
 impl Default for ProviderRegistry {

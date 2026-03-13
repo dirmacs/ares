@@ -205,4 +205,6 @@ pub struct AppState {
     /// MCP client registry for external services like Eruka
     #[cfg(feature = "mcp")]
     pub mcp_registry: Option<Arc<crate::mcp::McpRegistry>>,
+    /// Deploy registry for tracking deployment operations
+    pub deploy_registry: crate::api::handlers::deploy::DeployRegistry,
 }

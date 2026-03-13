@@ -425,6 +425,7 @@ mod tests {
                 604800,
             )),
             mcp_registry: None,
+            deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -478,6 +479,7 @@ mod tests {
                 604800,
             )),
             mcp_registry: None,
+            deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -531,6 +533,7 @@ mod tests {
                 604800,
             )),
             mcp_registry: None,
+            deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
         };
 
         let engine = WorkflowEngine::new(state);

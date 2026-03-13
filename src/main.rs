@@ -450,6 +450,7 @@ async fn run_server(
         auth_service: Arc::new(auth_service),
         dynamic_config,
         mcp_registry,
+        deploy_registry: ares::api::handlers::deploy::new_deploy_registry(),
     };
 
     // =================================================================

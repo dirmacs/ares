@@ -10,6 +10,8 @@ use axum::{
 };
 use std::sync::Arc;
 
+use crate::api::handlers::deploy;
+
 /// Creates the main API router with all routes configured.
 ///
 /// Routes are split into public (no auth), protected (requires JWT), and admin (requires admin secret).
@@ -203,6 +205,27 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .route(
             "/admin/stats",
             get(crate::api::handlers::admin::get_platform_stats),
+        )
+        // Deployment automation
+        .route(
+            "/admin/deploy",
+            post(deploy::trigger_deploy),
+        )
+        .route(
+            "/admin/deploy/{deploy_id}",
+            get(deploy::get_deploy_status),
+        )
+        .route(
+            "/admin/deploys",
+            get(deploy::list_deploys),
+        )
+        .route(
+            "/admin/services",
+            get(deploy::get_services_health),
+        )
+        .route(
+            "/admin/services/{service_name}/logs",
+            get(deploy::get_service_logs),
         )
         .layer(middleware::from_fn(
             crate::api::handlers::admin::admin_middleware,

@@ -53,3 +53,6 @@ kasino.toml
 agents/*.toml
 agents/private/
 eruka.toon
+
+# mdBook build output
+docs/book/

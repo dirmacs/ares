@@ -711,6 +711,62 @@ curl -X POST http://localhost:3000/api/workflows/default \
   }'
 ```
 
+### Admin & Deployment API
+
+Admin endpoints require the `X-Admin-Secret` header.
+
+#### Trigger Deploy
+
+```bash
+curl -X POST https://api.ares.dirmacs.com/api/admin/deploy \
+  -H "X-Admin-Secret: $ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"target": "ares"}'
+```
+
+Response:
+```json
+{"id": "deploy-abc123", "status": "running", "message": "Deploy started"}
+```
+
+#### Check Deploy Status
+
+```bash
+curl https://api.ares.dirmacs.com/api/admin/deploy/deploy-abc123 \
+  -H "X-Admin-Secret: $ADMIN_SECRET"
+```
+
+#### List Recent Deploys
+
+```bash
+curl https://api.ares.dirmacs.com/api/admin/deploys \
+  -H "X-Admin-Secret: $ADMIN_SECRET"
+```
+
+#### Service Health
+
+```bash
+curl https://api.ares.dirmacs.com/api/admin/services \
+  -H "X-Admin-Secret: $ADMIN_SECRET"
+```
+
+Response:
+```json
+{
+  "ares": {"status": "active", "pid": "12345", "port": 3000},
+  "eruka": {"status": "active", "pid": "12346", "port": 8081},
+  "caddy": {"status": "active", "pid": "789", "port": 443},
+  "postgresql": {"status": "active", "pid": "456", "port": 5432}
+}
+```
+
+#### Service Logs
+
+```bash
+curl https://api.ares.dirmacs.com/api/admin/services/ares/logs \
+  -H "X-Admin-Secret: $ADMIN_SECRET"
+```
+
 ### RAG (Retrieval Augmented Generation)
 
 A.R.E.S includes a comprehensive RAG system with a pure-Rust vector store. Requires the `ares-vector` feature.

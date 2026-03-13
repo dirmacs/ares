@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Compliance auditor agent** (`compliance-auditor.toon`) in ares-config — audits projects against Dirmacs Engineering Standards
 - **Dirmacs Engineering Standards SOP** — covers repo structure, config architecture, deployment, security, agent quality, and scaling
 
+## [0.6.3] - 2026-03-13
+
+### Added
+
+- **Deploy automation API**: `POST /api/admin/deploy`, `GET /api/admin/deploy/{id}`, `GET /api/admin/deploys` for triggering and tracking deployments
+- **Service health monitoring**: `GET /api/admin/services` returns status, PID, and port for all VPS services
+- **Service log viewer**: `GET /api/admin/services/{name}/logs` returns recent journalctl output
+- **Deploy registry**: In-memory deploy tracking in AppState with status polling
+
+### Fixed
+
+- **Chat handler tenant_id**: Fixed tenant_id extraction in chat handler for metered requests
+- **Migration 002 checksum**: Fixed checksum mismatch after migration edit
+
 ---
 
 ## [0.6.1] - 2026-03-07
@@ -582,6 +596,7 @@ If you were using any of the removed APIs:
 
 ---
 
+[0.6.3]: https://github.com/dirmacs/ares/compare/v0.6.2...v0.6.3
 [0.5.0]: https://github.com/dirmacs/ares/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/dirmacs/ares/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/dirmacs/ares/compare/v0.3.2...v0.3.3

@@ -1,0 +1,26 @@
+[book]
+title = "ARES Documentation"
+authors = ["Dirmacs"]
+description = "A.R.E.S — Agentic Retrieval Enhanced Server. Multi-provider LLM platform with tool calling, RAG, and multi-tenant enterprise support."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/dirmacs/ares"
+edit-url-template = "https://github.com/dirmacs/ares/edit/main/docs/{path}"
+site-url = "/ares/"
+no-section-label = false
+
+[output.html.search]
+enable = true
+limit-results = 30
+boost-hierarchy = 2
+
+[output.html.fold]
+enable = true
+level = 1

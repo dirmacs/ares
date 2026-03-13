@@ -1,22 +1,5 @@
-name = "eruka"
-enabled = true
-endpoint = "https://your-eruka-instance.example.com/mcp"
-transport = "http"
-timeout_secs = 30
-
-# Eruka MCP tools available to ARES agents
-tools = [
-    "eruka_get_context",
-    "eruka_search_context",
-    "eruka_get_completeness",
-    "eruka_get_gaps",
-    "eruka_write_context",
-    "eruka_get_voice",
-    "eruka_detect_gaps",
-    "eruka_get_constraint",
-    "eruka_get_related",
-    "eruka_add_relationship",
-    "eruka_get_context_compressed",
-    "eruka_query_temporal",
-    "eruka_research_gap"
-]
+name: eruka
+enabled: true
+command: eruka-mcp
+args[2]: "--endpoint","https://your-eruka-instance.example.com/mcp"
+timeout_secs: 30

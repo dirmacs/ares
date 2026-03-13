@@ -21,11 +21,12 @@ use ares::{
     auth::jwt::AuthService,
     cli::{init, output::Output, AgentCommands, Cli, Commands},
     db::PostgresClient,
-    mcp::McpRegistry,
     utils::toml_config::AresConfig,
     AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
     ProviderRegistry, ToolRegistry,
 };
+#[cfg(feature = "mcp")]
+use ares::mcp::McpRegistry;
 use axum::{routing::get, Router};
 use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -87,11 +88,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         None => {
             // No subcommand - run the server
+            #[cfg(feature = "mcp")]
             if cli.mcp {
                 // MCP server mode
                 run_mcp_server(&cli.config).await?;
             } else {
                 // HTTP server mode (default)
+                run_server(&cli.config, cli.verbose).await?;
+            }
+            #[cfg(not(feature = "mcp"))]
+            {
+                if cli.mcp {
+                    eprintln!("MCP feature is not enabled. Rebuild with --features mcp");
+                    std::process::exit(1);
+                }
                 run_server(&cli.config, cli.verbose).await?;
             }
         }
@@ -430,9 +440,6 @@ async fn run_server(
             None
         }
     };
-    #[cfg(not(feature = "mcp"))]
-    let mcp_registry = None;
-
     // =================================================================
     // Create Application State
     // =================================================================
@@ -449,6 +456,7 @@ async fn run_server(
         tool_registry,
         auth_service: Arc::new(auth_service),
         dynamic_config,
+        #[cfg(feature = "mcp")]
         mcp_registry,
         deploy_registry: ares::api::handlers::deploy::new_deploy_registry(),
     };
@@ -722,6 +730,7 @@ async fn shutdown_signal() {
 }
 
 /// Run the A.R.E.S MCP server
+#[cfg(feature = "mcp")]
 async fn run_mcp_server(
     config_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {

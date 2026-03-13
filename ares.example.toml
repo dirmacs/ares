@@ -19,6 +19,7 @@
 host = "127.0.0.1"                 # Bind address
 port = 3000                         # HTTP port
 log_level = "info"                  # debug, info, warn, error
+cors_origins = ["https://admin.dirmacs.com", "https://eruka.dirmacs.com"]  # Allowed CORS origins
 
 # =============================================================================
 # Authentication Configuration

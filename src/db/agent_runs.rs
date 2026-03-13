@@ -150,8 +150,8 @@ pub async fn get_agent_run_stats(
             COUNT(*) FILTER (WHERE status = 'completed') as success_count,
             COUNT(*) FILTER (WHERE status = 'failed') as failed_count,
             COALESCE(AVG(duration_ms), 0)::BIGINT as avg_duration_ms,
-            COALESCE(SUM(input_tokens), 0) as total_input_tokens,
-            COALESCE(SUM(output_tokens), 0) as total_output_tokens
+            COALESCE(SUM(input_tokens), 0)::BIGINT as total_input_tokens,
+            COALESCE(SUM(output_tokens), 0)::BIGINT as total_output_tokens
          FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2"
     )
     .bind(tenant_id)
@@ -181,7 +181,7 @@ pub async fn get_platform_stats(pool: &PgPool) -> Result<PlatformStats> {
             (SELECT COUNT(*) FROM tenants) as total_tenants,
             (SELECT COUNT(*) FROM tenant_agents) as total_agents,
             (SELECT COUNT(*) FROM agent_runs WHERE created_at >= $1) as total_runs_today,
-            (SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM agent_runs WHERE created_at >= $1) as total_tokens_today,
+            (SELECT COALESCE(SUM(input_tokens + output_tokens), 0)::BIGINT FROM agent_runs WHERE created_at >= $1) as total_tokens_today,
             (SELECT COUNT(*) FROM alerts WHERE resolved = FALSE) as active_alerts"
     )
     .bind(today_start)

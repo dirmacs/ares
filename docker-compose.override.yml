@@ -8,14 +8,13 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=3000
-      - TURSO_URL=file:local.db
-      - TURSO_AUTH_TOKEN=
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
       - OLLAMA_URL=http://host.docker.internal:11434
       - OLLAMA_MODEL=llama3:latest
-      - JWT_SECRET=43w1ITm8Zq0uxCivkYeBoLA9KPNaDlcz
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
       - JWT_ACCESS_EXPIRY=900
       - JWT_REFRESH_EXPIRY=604800
-      - API_KEY=a3b05dc72689e41f
+      - API_KEY=${API_KEY:?API_KEY is required}
       - RUST_LOG=info
     extra_hosts:
       - "host.docker.internal:host-gateway"

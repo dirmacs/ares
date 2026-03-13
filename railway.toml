@@ -22,8 +22,6 @@
       "ADMIN_API_KEY"
     ],
     "optional": [
-      "TURSO_URL",
-      "TURSO_AUTH_TOKEN",
       "OPENAI_API_KEY",
       "ANTHROPIC_API_KEY",
       "OLLAMA_URL"

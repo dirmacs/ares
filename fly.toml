@@ -1,4 +1,4 @@
-app = "kasino-dirmacs"
+app = "ares-dirmacs"
 primary_region = "bom"  # Mumbai for India latency
 
 [build]
@@ -8,8 +8,7 @@ primary_region = "bom"  # Mumbai for India latency
   HOST = "0.0.0.0"
   PORT = "3000"
   RUST_LOG = "info"
-  # Database path inside container
-  DATABASE_URL = "/app/data/kasino.db"
+  # DATABASE_URL must be set as a Fly secret (fly secrets set DATABASE_URL=...)
 
 [[services]]
   internal_port = 3000
@@ -32,7 +31,7 @@ primary_region = "bom"  # Mumbai for India latency
     grace_period = "5s"
 
 [mounts]
-  source = "kasino_data"
+  source = "ares_data"
   destination = "/app/data"
 
 [[vm]]

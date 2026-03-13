@@ -79,9 +79,8 @@ services:
       - HOST=0.0.0.0
       - PORT=3000
 
-      # Database (local SQLite)
-      - TURSO_URL=file:/data/local.db
-      - TURSO_AUTH_TOKEN=
+      # Database (PostgreSQL)
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
 
       # Ollama (default provider)
       - OLLAMA_BASE_URL=http://ollama:11434

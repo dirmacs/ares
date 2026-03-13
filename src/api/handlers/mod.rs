@@ -23,5 +23,7 @@ pub mod research;
 pub mod user_agents;
 /// V1 API key-authenticated tenant-scoped handlers.
 pub mod v1;
+/// Deployment automation handlers.
+pub mod deploy;
 /// Workflow execution handlers.
 pub mod workflows;

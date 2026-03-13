@@ -109,7 +109,10 @@ fn default_log_level() -> String {
 }
 
 fn default_cors_origins() -> Vec<String> {
-    vec!["*".to_string()]
+    vec![
+        "https://admin.dirmacs.com".to_string(),
+        "https://eruka.dirmacs.com".to_string(),
+    ]
 }
 
 fn default_rate_limit() -> u32 {

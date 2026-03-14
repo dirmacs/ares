@@ -1,0 +1,52 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [holy]
+
+# Only one deploy at a time
+concurrency:
+  group: deploy-ares
+  cancel-in-progress: false
+
+jobs:
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: deploy-check
+      - name: Build (VPS features)
+        run: cargo build --release --no-default-features --features openai,postgres,mcp
+
+  deploy:
+    name: Deploy to VPS
+    needs: build-check
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: /opt/holy-doc/scripts/deploy.sh --service ares
+          command_timeout: 20m
+
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Deploy failed: ${context.sha.slice(0, 7)}`,
+              body: `Deploy to VPS failed for commit ${context.sha}\n\nRun: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              labels: ['deploy-failure']
+            })

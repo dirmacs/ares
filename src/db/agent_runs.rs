@@ -1,6 +1,6 @@
-use sqlx::{PgPool, Row};
 use crate::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
+use sqlx::{PgPool, Row};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ts() -> i64 {
@@ -123,20 +123,22 @@ pub async fn list_agent_runs(
     }
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    rows.iter().map(|row| {
-        Ok(AgentRun {
-            id: row.get("id"),
-            tenant_id: row.get("tenant_id"),
-            agent_name: row.get("agent_name"),
-            user_id: row.get("user_id"),
-            status: row.get("status"),
-            input_tokens: row.get("input_tokens"),
-            output_tokens: row.get("output_tokens"),
-            duration_ms: row.get("duration_ms"),
-            error: row.get("error"),
-            created_at: row.get("created_at"),
+    rows.iter()
+        .map(|row| {
+            Ok(AgentRun {
+                id: row.get("id"),
+                tenant_id: row.get("tenant_id"),
+                agent_name: row.get("agent_name"),
+                user_id: row.get("user_id"),
+                status: row.get("status"),
+                input_tokens: row.get("input_tokens"),
+                output_tokens: row.get("output_tokens"),
+                duration_ms: row.get("duration_ms"),
+                error: row.get("error"),
+                created_at: row.get("created_at"),
+            })
         })
-    }).collect()
+        .collect()
 }
 
 pub async fn get_agent_run_stats(
@@ -152,7 +154,7 @@ pub async fn get_agent_run_stats(
             COALESCE(AVG(duration_ms), 0)::BIGINT as avg_duration_ms,
             COALESCE(SUM(input_tokens), 0)::BIGINT as total_input_tokens,
             COALESCE(SUM(output_tokens), 0)::BIGINT as total_output_tokens
-         FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2"
+         FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2",
     )
     .bind(tenant_id)
     .bind(agent_name)
@@ -215,22 +217,24 @@ pub async fn list_all_agents(pool: &PgPool) -> Result<Vec<AllAgentsEntry>> {
             SELECT tenant_id, agent_name, COUNT(*) as total_runs, MAX(created_at) as last_run_at
             FROM agent_runs GROUP BY tenant_id, agent_name
          ) ar ON ar.tenant_id = ta.tenant_id AND ar.agent_name = ta.agent_name
-         ORDER BY t.name, ta.agent_name"
+         ORDER BY t.name, ta.agent_name",
     )
     .fetch_all(pool)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    rows.iter().map(|row| {
-        Ok(AllAgentsEntry {
-            tenant_id: row.get("tenant_id"),
-            tenant_name: row.get("tenant_name"),
-            agent_name: row.get("agent_name"),
-            display_name: row.get("display_name"),
-            model: row.get("model"),
-            enabled: row.get("enabled"),
-            total_runs: row.get("total_runs"),
-            last_run_at: row.get("last_run_at"),
+    rows.iter()
+        .map(|row| {
+            Ok(AllAgentsEntry {
+                tenant_id: row.get("tenant_id"),
+                tenant_name: row.get("tenant_name"),
+                agent_name: row.get("agent_name"),
+                display_name: row.get("display_name"),
+                model: row.get("model"),
+                enabled: row.get("enabled"),
+                total_runs: row.get("total_runs"),
+                last_run_at: row.get("last_run_at"),
+            })
         })
-    }).collect()
+        .collect()
 }

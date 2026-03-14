@@ -57,12 +57,12 @@ impl McpClient {
     pub async fn get_context(&self, path: &str) -> Result<Value, McpError> {
         let base_url = self.get_base_url()?;
         let url = format!("{}/api/v1/context?path={}", base_url, path);
-        
+
         let mut request = self.http.get(&url);
         if let Some(ref key) = self.config.api_key {
             request = request.header("Authorization", format!("Bearer {}", key));
         }
-        
+
         let response = request.send().await?;
         self.handle_response(response).await
     }
@@ -70,25 +70,30 @@ impl McpClient {
     pub async fn write_context(&self, path: &str, value: &str) -> Result<Value, McpError> {
         let base_url = self.get_base_url()?;
         let url = format!("{}/api/v1/context", base_url);
-        
+
         let body = serde_json::json!({
             "path": path,
             "value": value
         });
-        
+
         let mut request = self.http.post(&url).json(&body);
         if let Some(ref key) = self.config.api_key {
             request = request.header("Authorization", format!("Bearer {}", key));
         }
-        
+
         let response = request.send().await?;
         self.handle_response(response).await
     }
 
-    pub async fn search_context(&self, query: &str, scope: Option<&str>, max_results: Option<usize>) -> Result<Value, McpError> {
+    pub async fn search_context(
+        &self,
+        query: &str,
+        scope: Option<&str>,
+        max_results: Option<usize>,
+    ) -> Result<Value, McpError> {
         let base_url = self.get_base_url()?;
         let url = format!("{}/api/v1/context/search", base_url);
-        
+
         let mut body = serde_json::json!({
             "query": query
         });
@@ -98,12 +103,12 @@ impl McpClient {
         if let Some(m) = max_results {
             body["max_results"] = serde_json::json!(m);
         }
-        
+
         let mut request = self.http.post(&url).json(&body);
         if let Some(ref key) = self.config.api_key {
             request = request.header("Authorization", format!("Bearer {}", key));
         }
-        
+
         let response = request.send().await?;
         self.handle_response(response).await
     }
@@ -112,25 +117,29 @@ impl McpClient {
         let base_url = self.get_base_url()?;
         let scope_part = scope.unwrap_or("*");
         let url = format!("{}/api/v1/completeness/{}", base_url, scope_part);
-        
+
         let mut request = self.http.get(&url);
         if let Some(ref key) = self.config.api_key {
             request = request.header("Authorization", format!("Bearer {}", key));
         }
-        
+
         let response = request.send().await?;
         self.handle_response(response).await
     }
 
-    pub async fn get_gaps(&self, status: Option<&str>, category: Option<&str>) -> Result<Value, McpError> {
+    pub async fn get_gaps(
+        &self,
+        status: Option<&str>,
+        category: Option<&str>,
+    ) -> Result<Value, McpError> {
         let base_url = self.get_base_url()?;
         let url = format!("{}/api/v1/gaps", base_url);
-        
+
         let mut request = self.http.get(&url);
         if let Some(ref key) = self.config.api_key {
             request = request.header("Authorization", format!("Bearer {}", key));
         }
-        
+
         let response = request.send().await?;
         self.handle_response(response).await
     }
@@ -138,27 +147,24 @@ impl McpClient {
     pub async fn detect_gaps(&self, category: Option<&str>) -> Result<Value, McpError> {
         let base_url = self.get_base_url()?;
         let url = format!("{}/api/v1/gaps/detect", base_url);
-        
+
         let body = if let Some(cat) = category {
             serde_json::json!({ "category": cat })
         } else {
             serde_json::json!({})
         };
-        
+
         let mut request = self.http.post(&url).json(&body);
         if let Some(ref key) = self.config.api_key {
             request = request.header("Authorization", format!("Bearer {}", key));
         }
-        
+
         let response = request.send().await?;
         self.handle_response(response).await
     }
 
     fn get_base_url(&self) -> Result<String, McpError> {
-        self.config
-            .endpoint
-            .clone()
-            .ok_or(McpError::NoEndpoint)
+        self.config.endpoint.clone().ok_or(McpError::NoEndpoint)
     }
 
     async fn handle_response(&self, response: reqwest::Response) -> Result<Value, McpError> {

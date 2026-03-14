@@ -1,4 +1,5 @@
 name: ehb-moderator
+version: 1.0.0
 model: fast
 max_tool_iterations: 2
 parallel_tools: false

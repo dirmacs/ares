@@ -1,4 +1,5 @@
 name: kasino-risk
+version: 1.0.0
 model: balanced
 max_tool_iterations: 3
 parallel_tools: false

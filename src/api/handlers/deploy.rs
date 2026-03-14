@@ -185,9 +185,7 @@ pub async fn get_deploy_status(
 }
 
 /// GET /api/admin/deploys — list recent deploys
-pub async fn list_deploys(
-    State(state): State<AppState>,
-) -> Json<Vec<DeployStatus>> {
+pub async fn list_deploys(State(state): State<AppState>) -> Json<Vec<DeployStatus>> {
     let deploys = state.deploy_registry.read().await;
     let mut list: Vec<DeployStatus> = deploys.values().cloned().collect();
     list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
@@ -206,7 +204,10 @@ pub async fn get_services_health() -> Result<Json<HashMap<String, ServiceHealth>
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: HashMap<String, serde_json::Value> =
         serde_json::from_str(&stdout).map_err(|e| {
-            AppError::Internal(format!("Failed to parse health output: {} — raw: {}", e, stdout))
+            AppError::Internal(format!(
+                "Failed to parse health output: {} — raw: {}",
+                e, stdout
+            ))
         })?;
 
     let mut result = HashMap::new();
@@ -221,10 +222,7 @@ pub async fn get_services_health() -> Result<Json<HashMap<String, ServiceHealth>
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
-        let port = val
-            .get("port")
-            .and_then(|v| v.as_u64())
-            .map(|p| p as u16);
+        let port = val.get("port").and_then(|v| v.as_u64()).map(|p| p as u16);
         result.insert(name, ServiceHealth { status, pid, port });
     }
 
@@ -232,9 +230,7 @@ pub async fn get_services_health() -> Result<Json<HashMap<String, ServiceHealth>
 }
 
 /// GET /api/admin/services/{service_name}/logs — recent journalctl logs for a service
-pub async fn get_service_logs(
-    Path(service_name): Path<String>,
-) -> Result<Json<serde_json::Value>> {
+pub async fn get_service_logs(Path(service_name): Path<String>) -> Result<Json<serde_json::Value>> {
     if !["ares", "eruka", "caddy", "postgresql"].contains(&service_name.as_str()) {
         return Err(AppError::InvalidInput(format!(
             "Unknown service: {}",
@@ -243,7 +239,15 @@ pub async fn get_service_logs(
     }
 
     let output = tokio::process::Command::new("journalctl")
-        .args(["-u", &service_name, "-n", "100", "--no-pager", "-o", "short-iso"])
+        .args([
+            "-u",
+            &service_name,
+            "-n",
+            "100",
+            "--no-pager",
+            "-o",
+            "short-iso",
+        ])
         .output()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to read logs: {}", e)))?;

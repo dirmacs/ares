@@ -1,4 +1,5 @@
 name: orchestrator
+version: 1.0.0
 model: powerful
 max_tool_iterations: 10
 parallel_tools: false

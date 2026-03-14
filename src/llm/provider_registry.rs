@@ -280,11 +280,14 @@ impl ProviderRegistry {
 
     /// List all registered models with their provider info.
     pub fn list_models(&self) -> Vec<ModelInfo> {
-        self.models.iter().map(|(name, config)| ModelInfo {
-            name: name.clone(),
-            provider: config.provider.clone(),
-            model: config.model.clone(),
-        }).collect()
+        self.models
+            .iter()
+            .map(|(name, config)| ModelInfo {
+                name: name.clone(),
+                provider: config.provider.clone(),
+                model: config.model.clone(),
+            })
+            .collect()
     }
 }
 

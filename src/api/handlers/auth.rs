@@ -39,12 +39,7 @@ pub async fn register(
     }
 
     // Check if user exists
-    if state
-        .db
-        .get_user_by_email(&payload.email)
-        .await?
-        .is_some()
-    {
+    if state.db.get_user_by_email(&payload.email).await?.is_some() {
         return Err(AppError::InvalidInput("User already exists".to_string()));
     }
 
@@ -162,10 +157,7 @@ pub async fn logout(
 
     // Attempt to delete the session - we don't error if it doesn't exist
     // (token may already be expired/revoked, which is fine for logout)
-    state
-        .db
-        .delete_session_by_token_hash(&token_hash)
-        .await?;
+    state.db.delete_session_by_token_hash(&token_hash).await?;
 
     Ok(Json(LogoutResponse {
         message: "Logged out successfully".to_string(),
@@ -206,10 +198,7 @@ pub async fn refresh_token(
     }
 
     // Invalidate the old refresh token (one-time use)
-    state
-        .db
-        .delete_session_by_token_hash(&token_hash)
-        .await?;
+    state.db.delete_session_by_token_hash(&token_hash).await?;
 
     // Generate new tokens
     let tokens = state

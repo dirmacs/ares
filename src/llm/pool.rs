@@ -73,8 +73,8 @@ impl Default for PoolConfig {
         Self {
             max_connections_per_provider: 10,
             min_idle_connections: 2,
-            idle_timeout: Duration::from_secs(300),       // 5 minutes
-            max_lifetime: Duration::from_secs(1800),      // 30 minutes
+            idle_timeout: Duration::from_secs(300), // 5 minutes
+            max_lifetime: Duration::from_secs(1800), // 30 minutes
             health_check_interval: Duration::from_secs(60),
             acquire_timeout: Duration::from_secs(30),
             enable_health_check: true,
@@ -152,7 +152,9 @@ struct PooledClient {
 
 impl std::fmt::Debug for PooledClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PooledClient").field("meta", &self.meta).finish()
+        f.debug_struct("PooledClient")
+            .field("meta", &self.meta)
+            .finish()
     }
 }
 
@@ -407,7 +409,10 @@ impl ClientPool {
         let pool = {
             let providers = self.providers.read();
             providers.get(provider_name).cloned().ok_or_else(|| {
-                AppError::Configuration(format!("Provider '{}' not registered in pool", provider_name))
+                AppError::Configuration(format!(
+                    "Provider '{}' not registered in pool",
+                    provider_name
+                ))
             })?
         };
 

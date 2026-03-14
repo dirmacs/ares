@@ -8,27 +8,18 @@ use axum::{
 };
 use std::sync::Arc;
 
-pub async fn api_key_auth_middleware(
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn api_key_auth_middleware(req: Request, next: Next) -> Response {
     let auth_header = match req.headers().get("authorization") {
         Some(h) => h,
         None => {
-            return error_response(
-                StatusCode::UNAUTHORIZED,
-                "Missing Authorization header",
-            );
+            return error_response(StatusCode::UNAUTHORIZED, "Missing Authorization header");
         }
     };
 
     let auth_str = match auth_header.to_str() {
         Ok(s) => s,
         Err(_) => {
-            return error_response(
-                StatusCode::UNAUTHORIZED,
-                "Invalid Authorization header",
-            );
+            return error_response(StatusCode::UNAUTHORIZED, "Invalid Authorization header");
         }
     };
 
@@ -77,10 +68,7 @@ pub async fn api_key_auth_middleware(
     let monthly_usage = match tenant_db.get_monthly_requests(&tenant_ctx.tenant_id).await {
         Ok(m) => m,
         Err(_) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to check usage",
-            );
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to check usage");
         }
     };
 
@@ -102,10 +90,7 @@ pub async fn api_key_auth_middleware(
             );
         }
         if daily_usage >= tenant_ctx.quota.requests_per_day {
-            return error_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                "Daily rate limit exceeded",
-            );
+            return error_response(StatusCode::TOO_MANY_REQUESTS, "Daily rate limit exceeded");
         }
     }
 

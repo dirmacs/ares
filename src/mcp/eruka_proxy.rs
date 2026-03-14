@@ -3,9 +3,8 @@
 
 use crate::mcp::auth::McpSession;
 use crate::mcp::tools::{
-    ErukaReadInput, ErukaReadOutput,
+    ErukaReadInput, ErukaReadOutput, ErukaSearchInput, ErukaSearchOutput, ErukaSearchResult,
     ErukaWriteInput, ErukaWriteOutput,
-    ErukaSearchInput, ErukaSearchOutput, ErukaSearchResult,
 };
 use crate::types::AppError;
 use serde_json::Value;
@@ -94,15 +93,9 @@ impl ErukaProxy {
         let json: Value = response.json().await?;
 
         Ok(ErukaReadOutput {
-            field: json["field"]
-                .as_str()
-                .unwrap_or(&input.field)
-                .to_string(),
+            field: json["field"].as_str().unwrap_or(&input.field).to_string(),
             value: json["value"].clone(),
-            state: json["state"]
-                .as_str()
-                .unwrap_or("UNKNOWN")
-                .to_string(),
+            state: json["state"].as_str().unwrap_or("UNKNOWN").to_string(),
             confidence: json["confidence"].as_f64().unwrap_or(0.0),
             last_updated: json["last_updated"].as_str().map(String::from),
         })
@@ -121,10 +114,7 @@ impl ErukaProxy {
             .as_deref()
             .unwrap_or(&session.eruka_workspace_id);
 
-        let url = format!(
-            "{}/api/workspaces/{}/context",
-            self.base_url, workspace_id
-        );
+        let url = format!("{}/api/workspaces/{}/context", self.base_url, workspace_id);
 
         let body = serde_json::json!({
             "category": input.category,
@@ -173,10 +163,7 @@ impl ErukaProxy {
             .as_deref()
             .unwrap_or(&session.eruka_workspace_id);
 
-        let url = format!(
-            "{}/api/workspaces/{}/search",
-            self.base_url, workspace_id
-        );
+        let url = format!("{}/api/workspaces/{}/search", self.base_url, workspace_id);
 
         let body = serde_json::json!({
             "query": input.query,

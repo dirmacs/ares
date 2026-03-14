@@ -459,9 +459,15 @@ impl LLMClient for LlamaCppClient {
         self.generate_internal(&formatted, self.max_tokens).await
     }
 
-    async fn generate_with_history(&self, messages: &[(String, String)]) -> Result<String> {
+    async fn generate_with_history(&self, messages: &[(String, String)]) -> Result<LLMResponse> {
         let formatted = self.format_history(messages);
-        self.generate_internal(&formatted, self.max_tokens).await
+        let content = self.generate_internal(&formatted, self.max_tokens).await?;
+        Ok(LLMResponse {
+            content,
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: None,
+        })
     }
 
     async fn generate_with_tools(

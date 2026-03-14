@@ -55,6 +55,11 @@ pub struct ToonAgentConfig {
     /// Unique identifier for the agent
     pub name: String,
 
+    /// Semantic version of this config (e.g. "1.0.0")
+    /// Increment on any behavior-changing edit. Stored in agent_config_versions on every change.
+    #[serde(default = "default_version")]
+    pub version: String,
+
     /// Reference to a model name defined in `config/models/`
     pub model: String,
 
@@ -79,6 +84,10 @@ pub struct ToonAgentConfig {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+fn default_version() -> String {
+    "0.1.0".to_string()
+}
+
 fn default_max_tool_iterations() -> usize {
     10
 }
@@ -88,6 +97,7 @@ impl ToonAgentConfig {
     pub fn new(name: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            version: default_version(),
             model: model.into(),
             system_prompt: None,
             tools: Vec::new(),
@@ -748,6 +758,10 @@ pub struct DynamicConfigManager {
     workflows_dir: PathBuf,
     mcps_dir: PathBuf,
     _watcher: Option<RecommendedWatcher>,
+    /// Shared sender for version change events. Populated via `set_version_tx`.
+    /// The watcher closure holds a clone of this Arc, so setting it after construction
+    /// is visible inside the watcher.
+    version_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<ToonAgentConfig>>>>>,
 }
 
 impl DynamicConfigManager {
@@ -802,6 +816,10 @@ impl DynamicConfigManager {
 
         let config = Arc::new(ArcSwap::from_pointee(initial_config));
 
+        // Shared version channel — populated after construction via set_version_tx
+        let version_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<ToonAgentConfig>>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+
         // Set up file watcher if hot reload is enabled
         let watcher = if hot_reload {
             Some(Self::setup_watcher(
@@ -811,6 +829,7 @@ impl DynamicConfigManager {
                 tools_dir.clone(),
                 workflows_dir.clone(),
                 mcps_dir.clone(),
+                version_tx.clone(),
             )?)
         } else {
             None
@@ -824,7 +843,16 @@ impl DynamicConfigManager {
             workflows_dir,
             mcps_dir,
             _watcher: watcher,
+            version_tx,
         })
+    }
+
+    /// Attach a version tracking sender. After this call, every hot-reload emits the
+    /// updated agent list to this channel for a background task to persist to DB.
+    pub fn set_version_tx(&self, tx: tokio::sync::mpsc::UnboundedSender<Vec<ToonAgentConfig>>) {
+        if let Ok(mut guard) = self.version_tx.lock() {
+            *guard = Some(tx);
+        }
     }
 
     /// Set up file watcher for hot-reload
@@ -835,6 +863,7 @@ impl DynamicConfigManager {
         tools_dir: PathBuf,
         workflows_dir: PathBuf,
         mcps_dir: PathBuf,
+        version_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<ToonAgentConfig>>>>>,
     ) -> Result<RecommendedWatcher, ToonConfigError> {
         let agents_dir_clone = agents_dir.clone();
         let models_dir_clone = models_dir.clone();
@@ -867,6 +896,14 @@ impl DynamicConfigManager {
                                     Ok(warnings) => {
                                         for warning in warnings {
                                             warn!("Config warning: {}", warning);
+                                        }
+                                        // Emit version change event before swapping
+                                        let agents: Vec<ToonAgentConfig> =
+                                            new_config.agents.values().cloned().collect();
+                                        if let Ok(guard) = version_tx.lock() {
+                                            if let Some(tx) = guard.as_ref() {
+                                                let _ = tx.send(agents);
+                                            }
                                         }
                                         config.store(Arc::new(new_config));
                                         info!("Config reloaded successfully");

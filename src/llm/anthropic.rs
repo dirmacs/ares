@@ -243,7 +243,7 @@ impl LLMClient for AnthropicClient {
         Ok(Self::extract_text_content(&response.content))
     }
 
-    async fn generate_with_history(&self, messages: &[(String, String)]) -> Result<String> {
+    async fn generate_with_history(&self, messages: &[(String, String)]) -> Result<LLMResponse> {
         let mut system_prompt: Option<String> = None;
         let claude_messages: Vec<Message> = messages
             .iter()
@@ -266,7 +266,12 @@ impl LLMClient for AnthropicClient {
             .await
             .map_err(|e| AppError::LLM(format!("Anthropic API error: {}", e)))?;
 
-        Ok(Self::extract_text_content(&response.content))
+        Ok(LLMResponse {
+            content: Self::extract_text_content(&response.content),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: None,
+        })
     }
 
     async fn generate_with_tools(

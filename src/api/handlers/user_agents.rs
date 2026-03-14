@@ -1,6 +1,6 @@
 use crate::{
-    db::traits::DatabaseClient,
     db::postgres::UserAgent,
+    db::traits::DatabaseClient,
     types::{AppError, Result},
     AppState,
 };
@@ -75,15 +75,45 @@ pub async fn resolve_agent(
     user_id: &str,
     agent_name: String,
 ) -> Result<(UserAgent, String)> {
-    if let Some(agent) = state.db.get_user_agent_by_name(user_id, &agent_name).await? {
+    if let Some(agent) = state
+        .db
+        .get_user_agent_by_name(user_id, &agent_name)
+        .await?
+    {
         return Ok((agent, "user".to_string()));
     }
-    
+
     if let Some(agent) = state.db.get_public_agent_by_name(&agent_name).await? {
         return Ok((agent, "community".to_string()));
     }
 
-    Err(AppError::NotFound("Not implemented".into()))
+    // Tier 3: fall back to system agents from TOON/TOML config
+    let config = state.config_manager.config();
+    if let Some(agent_cfg) = config.get_agent(&agent_name) {
+        let now = chrono::Utc::now().timestamp();
+        let system_agent = crate::db::postgres::UserAgent {
+            id: format!("system-{}", agent_name),
+            user_id: "system".to_string(),
+            name: agent_name.clone(),
+            display_name: None,
+            description: None,
+            model: agent_cfg.model.clone(),
+            system_prompt: agent_cfg.system_prompt.clone(),
+            tools: serde_json::to_string(&agent_cfg.tools).unwrap_or_else(|_| "[]".to_string()),
+            max_tool_iterations: agent_cfg.max_tool_iterations as i32,
+            parallel_tools: agent_cfg.parallel_tools,
+            extra: "{}".to_string(),
+            is_public: true,
+            usage_count: 0,
+            rating_sum: 0,
+            rating_count: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        return Ok((system_agent, "system".to_string()));
+    }
+
+    Err(AppError::NotFound(format!("Agent '{}' not found", agent_name)))
 }
 
 // Dummy stubs to fix routing

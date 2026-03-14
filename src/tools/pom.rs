@@ -354,3 +354,152 @@ impl Tool for PomListDissuesTool {
         Ok(json)
     }
 }
+
+// ─── pom_create_sprint ────────────────────────────────────────────────────────
+
+pub struct PomCreateSprintTool {
+    client: reqwest::Client,
+}
+
+impl PomCreateSprintTool {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        }
+    }
+}
+
+impl Default for PomCreateSprintTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Tool for PomCreateSprintTool {
+    fn name(&self) -> &str {
+        "pom_create_sprint"
+    }
+
+    fn description(&self) -> &str {
+        "Create a new sprint in POM. Use this to propose a new sprint plan for DIRMACS. The sprint will be created in 'pending' status for human review."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "number": {
+                    "type": "integer",
+                    "description": "Sprint number (must be unique)"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short title for the sprint (e.g. 'Deploy GTM Outreach Agent')"
+                },
+                "layer": {
+                    "type": "integer",
+                    "description": "DTrain layer (1=infrastructure, 2=platform, 3=agents, 4=integration, 5=intelligence)",
+                    "default": 5
+                }
+            },
+            "required": ["number", "title"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let url = format!("{}/api/sprints", pom_base_url());
+        let body = json!({
+            "number": args.get("number").and_then(|v| v.as_i64()).unwrap_or(0),
+            "title": args.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+            "layer": args.get("layer").and_then(|v| v.as_i64()).unwrap_or(5),
+        });
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| crate::types::AppError::Internal(e.to_string()))?;
+        let status = resp.status();
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| crate::types::AppError::Internal(e.to_string()))?;
+        if status.is_success() {
+            Ok(json!({ "success": true, "sprint": json }))
+        } else {
+            Ok(json!({ "success": false, "error": json }))
+        }
+    }
+}
+
+// ─── pom_list_sprints ─────────────────────────────────────────────────────────
+
+pub struct PomListSprintsTool {
+    client: reqwest::Client,
+}
+
+impl PomListSprintsTool {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        }
+    }
+}
+
+impl Default for PomListSprintsTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Tool for PomListSprintsTool {
+    fn name(&self) -> &str {
+        "pom_list_sprints"
+    }
+
+    fn description(&self) -> &str {
+        "List sprints from POM with optional status filter. Returns sprint number, title, status, and layer."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "active", "completed", "blocked"],
+                    "description": "Filter by status (optional)"
+                }
+            },
+            "required": []
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let mut params = vec!["per_page=50".to_string()];
+        if let Some(s) = args.get("status").and_then(|v| v.as_str()) {
+            params.push(format!("status={}", s));
+        }
+        let url = format!("{}/api/sprints?{}", pom_base_url(), params.join("&"));
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| crate::types::AppError::Internal(e.to_string()))?;
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| crate::types::AppError::Internal(e.to_string()))?;
+        Ok(json)
+    }
+}

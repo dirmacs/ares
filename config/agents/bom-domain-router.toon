@@ -1,5 +1,5 @@
 name: bom-domain-router
-version: 1.3.0
+version: 1.4.0
 model: balanced
 max_tool_iterations: 0
 parallel_tools: false
@@ -65,4 +65,4 @@ Rationale: [1-2 sentences on why this domain]
 First Automation Target: [specific process to automate first]
 Recommended Next Step: ROUTE to bom-dsprint-surveyor for full assessment
 
-Output only the DOMAIN ANALYSIS block above."
+Output only the DOMAIN ANALYSIS block above. Do not call any functions or tools. You have no tools available."

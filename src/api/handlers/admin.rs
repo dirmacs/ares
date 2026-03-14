@@ -1,4 +1,5 @@
 use crate::db::agent_runs;
+use crate::db::agent_versions;
 use crate::db::alerts as db_alerts;
 use crate::db::audit_log;
 use crate::db::tenant_agents::{
@@ -583,4 +584,128 @@ pub async fn get_platform_stats(
 ) -> Result<Json<agent_runs::PlatformStats>> {
     let stats = agent_runs::get_platform_stats(state.tenant_db.pool()).await?;
     Ok(Json(stats))
+}
+
+// =============================================================================
+// Agent Versioning — Rollback + Kill Switch (Sprint 12)
+// =============================================================================
+
+/// GET /api/admin/agents/{agent_id}/versions
+/// List all recorded versions for a TOON agent (most recent first).
+pub async fn list_agent_versions_handler(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
+    let records = agent_versions::get_agent_version_history(
+        state.tenant_db.pool(),
+        &agent_id,
+        50,
+    )
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    Ok(Json(records))
+}
+
+/// POST /api/admin/agents/{agent_id}/rollback/{version}
+/// Restore a TOON agent to a specific previously-recorded version.
+/// Hot-swaps the in-memory config; writes a new "rollback" row to agent_config_versions.
+pub async fn rollback_agent_handler(
+    State(state): State<AppState>,
+    Path((agent_id, version)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    // Fetch the target version from DB
+    let history = agent_versions::get_agent_version_history(
+        state.tenant_db.pool(),
+        &agent_id,
+        100,
+    )
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let record = history
+        .into_iter()
+        .find(|r| r.version == version)
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "No version '{}' found for agent '{}'",
+                version, agent_id
+            ))
+        })?;
+
+    // Deserialize config_json back to ToonAgentConfig
+    let agent_config: crate::utils::toon_config::ToonAgentConfig =
+        serde_json::from_value(record.config_json).map_err(|e| {
+            AppError::InvalidInput(format!("Failed to deserialize agent config: {}", e))
+        })?;
+
+    // Hot-swap into the in-memory DynamicConfigManager
+    state.dynamic_config.upsert_agent(agent_config.clone());
+
+    // Record the rollback as a new version entry
+    let pool = state.tenant_db.pool().clone();
+    let _ = agent_versions::record_agent_versions(&pool, &[agent_config], "rollback").await;
+
+    // Audit log
+    let pool2 = state.tenant_db.pool().clone();
+    let aid = agent_id.clone();
+    let ver = version.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool2,
+            "agent_rollback",
+            "agent",
+            &aid,
+            Some(&format!("Rolled back to version {}", ver)),
+            None,
+        )
+        .await;
+    });
+
+    tracing::info!(agent_id = %agent_id, version = %version, "Agent rolled back");
+
+    Ok(Json(serde_json::json!({
+        "agent_id": agent_id,
+        "version": version,
+        "status": "rolled_back"
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmergencyStopRequest {
+    pub active: bool,
+}
+
+/// POST /api/admin/agents/emergency-stop
+/// Enable or disable the global emergency stop.
+/// When active, ALL /api/v1/chat requests are rejected with 503.
+pub async fn emergency_stop_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<EmergencyStopRequest>,
+) -> Result<Json<serde_json::Value>> {
+    state
+        .emergency_stop
+        .store(payload.active, std::sync::atomic::Ordering::Relaxed);
+
+    let action = if payload.active {
+        "emergency_stop_enabled"
+    } else {
+        "emergency_stop_disabled"
+    };
+    tracing::warn!(active = payload.active, "Emergency stop toggled");
+
+    let pool = state.tenant_db.pool().clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(&pool, action, "platform", "all_agents", None, None)
+            .await;
+    });
+
+    Ok(Json(serde_json::json!({
+        "emergency_stop": payload.active,
+        "message": if payload.active {
+            "All agents are now in emergency stop mode. /api/v1/chat requests will return 503."
+        } else {
+            "Emergency stop cleared. Agents are operational."
+        }
+    })))
 }

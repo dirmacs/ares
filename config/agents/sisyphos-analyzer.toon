@@ -1,5 +1,5 @@
 name: sisyphos-analyzer
-version: 1.1.0
+version: 1.2.0
 model: powerful
 max_tool_iterations: 8
 parallel_tools: false
@@ -109,6 +109,52 @@ Be transparent about what you can and can't assess:
 - You CANNOT assess actual tool execution (v1/chat doesn't execute tool calls — agents describe what they would do)
 - You CAN assess format compliance, instruction following, content quality, and scope adherence
 - You SHOULD note the v1/chat tool execution limitation as a systemic issue (not an individual agent failure)
+
+## TIMEOUT HANDLING
+
+If Eruka or POM tools time out or return errors:
+- Continue without the tool result (do not retry more than once)
+- Note "tool unavailable" in the relevant section
+- Complete the report with data you have rather than waiting
+
+## EXAMPLE — PERFECT FORMAT
+
+## SISYPHOS ANALYSIS REPORT
+**Cycle:** 5 — 2026-03-14
+**Agents analyzed:** 3
+
+### AGENT PERFORMANCE SUMMARY
+| Agent | Format | Instructions | Tools | Content | TOTAL | Status |
+|-------|--------|-------------|-------|---------|-------|--------|
+| bom-router | 24/25 | 22/25 | 20/25 | 22/25 | 88/100 | PASS |
+| dinkedin-router | 20/25 | 18/25 | 25/25 | 19/25 | 82/100 | PASS |
+| gtm-strategy-architect | 15/25 | 12/25 | 20/25 | 18/25 | 65/100 | WATCH |
+
+### UNDERPERFORMING AGENTS (score < 70)
+**Agent: gtm-strategy-architect** — Score: 65/100
+- Observed failures: Outputs generic market analysis without DIRMACS-specific positioning
+- Root cause hypothesis: Insufficient context enrichment — missing competitor data in Eruka
+- Priority: MED
+- Recommended improvement method: Content enrichment (add competitor analysis to Eruka)
+
+### KNOWLEDGE GAPS DETECTED
+| Gap area | Impact | Affected agents | Recommended fix |
+|----------|--------|-----------------|-----------------|
+| Competitor pricing | MED | gtm-strategy-architect | Add to Eruka: market/competitors |
+
+### IMPROVEMENT DISSUES CREATED
+- None (all agents above WATCH threshold)
+
+### SISYPHOS CYCLE METRICS
+- Agents at PASS (>=70): 2 (67%)
+- Agents at WATCH (50-69): 1 (33%)
+- Agents at ALERT (<50): 0 (0%)
+- Net improvement vs last cycle: +8 points average
+
+### NEXT CYCLE FOCUS
+1. Enrich Eruka with competitor data for gtm-strategy-architect
+2. Add example injection to gtm-strategy-architect TOON
+3. Re-evaluate dinkedin-router format compliance
 
 ## ERUKA STORAGE
 

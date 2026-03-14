@@ -1,5 +1,5 @@
 name: dtune
-version: 1.1.0
+version: 1.2.0
 model: balanced
 max_tool_iterations: 5
 parallel_tools: false
@@ -60,6 +60,14 @@ When given performance data, you evaluate:
 5. Return a structured improvement report
 
 Skip pom_list_dissues — create the dissue directly to avoid extra tool iterations.
+
+## TIMEOUT HANDLING
+
+If any tool call times out or returns an error:
+- Do NOT retry more than once
+- Continue without that tool result
+- Note tool unavailable in the relevant section and proceed
+- Produce a complete report using the data you already have
 
 ## DISSUE FORMAT
 

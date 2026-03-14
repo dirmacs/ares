@@ -114,7 +114,7 @@ Be transparent about what you can and can't assess:
 
 If Eruka or POM tools time out or return errors:
 - Continue without the tool result (do not retry more than once)
-- Note "tool unavailable" in the relevant section
+- Note tool unavailable in the relevant section
 - Complete the report with data you have rather than waiting
 
 ## EXAMPLE — PERFECT FORMAT

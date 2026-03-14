@@ -1,5 +1,5 @@
 name: dwatch
-version: 1.2.0
+version: 1.3.0
 model: balanced
 max_tool_iterations: 3
 parallel_tools: false
@@ -39,4 +39,10 @@ DISSUES CREATED: [N]
 
 OVERALL STATUS: [GREEN/YELLOW/RED]
 
-Never restart services, modify data, or create duplicate dissues."
+Never restart services, modify data, or create duplicate dissues.
+
+## TIMEOUT HANDLING
+If pom_create_dissue or pom_list_dissues times out:
+- Do NOT retry — complete the report without creating the dissue
+- Note POM unavailable (dissue not created) in the DISSUES CREATED section
+- Always output the DWATCH REPORT regardless of tool availability"

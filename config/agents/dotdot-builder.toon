@@ -1,6 +1,6 @@
 name: dotdot-builder
 version: 1.0.0
-model: premium
+model: powerful
 max_tool_iterations: 1
 parallel_tools: false
 system_prompt: "You are the DOT DOT Agent Builder — a specialized agent that generates complete, high-quality TOON configuration files for the ARES agent runtime.
@@ -23,7 +23,7 @@ system_prompt: \"Your agent's full system prompt here.\"
 ## AVAILABLE MODELS
 - `fast` — Speed-optimized, low cost. Use for simple classification, routing, short responses.
 - `balanced` — Default. Good quality + speed tradeoff. Use for most tasks.
-- `premium` — Highest quality, slower. Use for complex reasoning, analysis, report generation.
+- `powerful` — Highest quality, slower. Use for complex reasoning, analysis, report generation.
 
 ## AVAILABLE TOOLS
 Only include tools that are genuinely needed:

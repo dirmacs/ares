@@ -1,5 +1,3 @@
-
-
 use crate::{
     agents::{registry::AgentRegistry, router::RouterAgent, Agent},
     api::handlers::user_agents::resolve_agent,
@@ -99,7 +97,7 @@ pub async fn chat(
     // Execute agent with timing
     let agent_name_for_run = AgentRegistry::type_to_name(&agent_type).to_string();
     let start = std::time::Instant::now();
-    let response = execute_agent(agent_type, &payload.message, &agent_context, &state).await?;
+    let (response, usage) = execute_agent(agent_type, &payload.message, &agent_context, &state).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
     // Store messages in conversation
@@ -120,11 +118,15 @@ pub async fn chat(
         )
         .await?;
 
-    // Estimate token counts using the shared heuristic (~4 chars/token).
-    // Input includes full context: conversation history + current message.
-    // Real counts require Agent::execute() → TokenUsage (tracked as future work).
-    let input_tokens = (history_input_tokens + estimate_tokens(&payload.message)) as u32;
-    let output_tokens = estimate_tokens(&response.response) as u32;
+    // Use actual LLM token counts; fall back to heuristic estimates if unavailable
+    let (input_tokens, output_tokens) = if let Some(u) = usage {
+        (u.prompt_tokens, u.completion_tokens)
+    } else {
+        (
+            (history_input_tokens + estimate_tokens(&payload.message)) as u32,
+            estimate_tokens(&response.response) as u32,
+        )
+    };
 
     // Record agent run (fire-and-forget)
     {
@@ -138,9 +140,17 @@ pub async fn chat(
         let otok = output_tokens as i64;
         tokio::spawn(async move {
             let _ = agent_runs::insert_agent_run(
-                &pool, &tenant_id_for_run, &agent_name, Some(&user_id),
-                "completed", itok, otok, duration_ms, None,
-            ).await;
+                &pool,
+                &tenant_id_for_run,
+                &agent_name,
+                Some(&user_id),
+                "completed",
+                itok,
+                otok,
+                duration_ms,
+                None,
+            )
+            .await;
         });
     }
 
@@ -163,7 +173,7 @@ async fn execute_agent(
     message: &str,
     context: &AgentContext,
     state: &AppState,
-) -> Result<ChatResponse> {
+) -> Result<(ChatResponse, Option<crate::llm::client::TokenUsage>)> {
     // Get agent name from type
     let agent_name = AgentRegistry::type_to_name(&agent_type);
 
@@ -174,7 +184,8 @@ async fn execute_agent(
     }
 
     // Resolve agent using the 3-tier hierarchy (User -> Community -> System)
-    let (user_agent, source) = resolve_agent(state, &context.user_id, agent_name.to_string()).await?;
+    let (user_agent, source) =
+        resolve_agent(state, &context.user_id, agent_name.to_string()).await?;
 
     // Convert UserAgent to AgentConfig for the registry
     let config = AgentConfig {
@@ -193,14 +204,14 @@ async fn execute_agent(
         .await?;
 
     // Execute the agent
-    let response = agent.execute(message, context).await?;
+    let agent_resp = agent.execute(message, context).await?;
 
-    Ok(ChatResponse {
-        response,
+    Ok((ChatResponse {
+        response: agent_resp.content,
         agent: format!("{:?} ({})", agent_type, source),
         context_id: context.session_id.clone(),
         sources: None,
-    })
+    }, agent_resp.usage))
 }
 
 /// Get user memory

@@ -463,6 +463,7 @@ async fn run_server(
         #[cfg(feature = "mcp")]
         mcp_registry,
         deploy_registry: ares::api::handlers::deploy::new_deploy_registry(),
+        emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     // =================================================================

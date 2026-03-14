@@ -206,6 +206,19 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/admin/stats",
             get(crate::api::handlers::admin::get_platform_stats),
         )
+        // Agent versioning (Sprint 12): version history, rollback, kill switch
+        .route(
+            "/admin/agents/{agent_id}/versions",
+            get(crate::api::handlers::admin::list_agent_versions_handler),
+        )
+        .route(
+            "/admin/agents/{agent_id}/rollback/{version}",
+            post(crate::api::handlers::admin::rollback_agent_handler),
+        )
+        .route(
+            "/admin/agents/emergency-stop",
+            post(crate::api::handlers::admin::emergency_stop_handler),
+        )
         // Deployment automation
         .route("/admin/deploy", post(deploy::trigger_deploy))
         .route("/admin/deploy/{deploy_id}", get(deploy::get_deploy_status))

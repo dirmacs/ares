@@ -559,6 +559,10 @@ pub enum AppError {
     /// Internal server error.
     #[error("Internal error: {0}")]
     Internal(String),
+
+    /// Service temporarily unavailable (emergency stop, maintenance).
+    #[error("Service unavailable: {0}")]
+    Unavailable(String),
 }
 
 impl AppError {
@@ -573,6 +577,7 @@ impl AppError {
             AppError::Configuration(_) => ErrorCode::ConfigurationError,
             AppError::External(_) => ErrorCode::ExternalServiceError,
             AppError::Internal(_) => ErrorCode::InternalError,
+            AppError::Unavailable(_) => ErrorCode::InternalError,
         }
     }
 
@@ -620,6 +625,7 @@ impl axum::response::IntoResponse for AppError {
             }
             AppError::External(msg) => (axum::http::StatusCode::BAD_GATEWAY, msg.clone()),
             AppError::Internal(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            AppError::Unavailable(msg) => (axum::http::StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
         };
 
         let body = serde_json::json!({

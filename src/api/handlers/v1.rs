@@ -186,6 +186,13 @@ pub async fn v1_chat(
 ) -> Result<axum::response::Response> {
     let tc = extract_tenant(ctx)?;
 
+    // Emergency stop — kill switch for all agents
+    if state.emergency_stop.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(crate::types::AppError::Unavailable(
+            "All agents are currently under human review. Please try again later.".to_string(),
+        ));
+    }
+
     // Build a minimal agent context (no user-level conversation/memory)
     let agent_context = AgentContext {
         user_id: tc.tenant_id.clone(),

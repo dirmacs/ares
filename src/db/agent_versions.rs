@@ -94,7 +94,7 @@ pub async fn get_agent_version_history(
 }
 
 /// A row from agent_config_versions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AgentVersionRecord {
     pub id: String,
     pub agent_id: String,

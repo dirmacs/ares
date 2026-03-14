@@ -207,22 +207,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             get(crate::api::handlers::admin::get_platform_stats),
         )
         // Deployment automation
-        .route(
-            "/admin/deploy",
-            post(deploy::trigger_deploy),
-        )
-        .route(
-            "/admin/deploy/{deploy_id}",
-            get(deploy::get_deploy_status),
-        )
-        .route(
-            "/admin/deploys",
-            get(deploy::list_deploys),
-        )
-        .route(
-            "/admin/services",
-            get(deploy::get_services_health),
-        )
+        .route("/admin/deploy", post(deploy::trigger_deploy))
+        .route("/admin/deploy/{deploy_id}", get(deploy::get_deploy_status))
+        .route("/admin/deploys", get(deploy::list_deploys))
+        .route("/admin/services", get(deploy::get_services_health))
         .route(
             "/admin/services/{service_name}/logs",
             get(deploy::get_service_logs),
@@ -235,17 +223,35 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
     // Client-specific business logic lives in the client's own portal backend, not here.
     // ARES provides generic agent execution — clients call /v1/chat with their API key.
     let v1_routes = Router::new()
-        .route("/chat", post(crate::api::handlers::chat::chat))
-        .route("/chat/stream", post(crate::api::handlers::chat::chat_stream))
+        .route("/chat", post(crate::api::handlers::v1::v1_chat))
         .route("/agents", get(crate::api::handlers::v1::list_agents))
         .route("/agents/{name}", get(crate::api::handlers::v1::get_agent))
-        .route("/agents/{name}/run", post(crate::api::handlers::v1::run_agent))
-        .route("/agents/{name}/runs", get(crate::api::handlers::v1::list_agent_runs))
-        .route("/agents/{name}/logs", get(crate::api::handlers::v1::list_agent_logs))
+        .route(
+            "/agents/{name}/run",
+            post(crate::api::handlers::v1::run_agent),
+        )
+        .route(
+            "/agents/{name}/runs",
+            get(crate::api::handlers::v1::list_agent_runs),
+        )
+        .route(
+            "/agents/{name}/logs",
+            get(crate::api::handlers::v1::list_agent_logs),
+        )
         .route("/usage", get(crate::api::handlers::v1::get_usage))
-        .route("/api-keys", get(crate::api::handlers::v1::list_api_keys).post(crate::api::handlers::v1::create_api_key))
-        .route("/api-keys/{id}", delete(crate::api::handlers::v1::revoke_api_key))
-        .layer(middleware::from_fn(crate::middleware::api_key_auth::api_key_auth_middleware))
+        .route(
+            "/api-keys",
+            get(crate::api::handlers::v1::list_api_keys)
+                .post(crate::api::handlers::v1::create_api_key),
+        )
+        .route(
+            "/api-keys/{id}",
+            delete(crate::api::handlers::v1::revoke_api_key),
+        )
+        .layer(middleware::from_fn(crate::middleware::usage::track_usage))
+        .layer(middleware::from_fn(
+            crate::middleware::api_key_auth::api_key_auth_middleware,
+        ))
         .layer(middleware::from_fn(move |mut req: Request, next: Next| {
             let db = tenant_db_for_v1.clone();
             async move {
@@ -254,5 +260,8 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             }
         }));
 
-    public_routes.merge(protected_routes).merge(admin_routes).nest("/v1", v1_routes)
+    public_routes
+        .merge(protected_routes)
+        .merge(admin_routes)
+        .nest("/v1", v1_routes)
 }

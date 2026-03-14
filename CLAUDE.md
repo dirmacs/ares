@@ -1,97 +1,51 @@
-# CLAUDE.md — Development Guide for AI Assistants
+# ARES — Build & Deploy Instructions
 
-## Project Overview
+*Copy this file to `/opt/ares/CLAUDE.md` on the VPS.*
 
-**A.R.E.S** (Agentic Retrieval Enhanced Server) is a production Rust server for multi-agent AI orchestration. It provides LLM-agnostic chat, RAG, tool calling, research workflows, and MCP integration. Published to crates.io as `ares-server`.
+## Critical Rule
 
-- **Language:** Rust (edition 2021, MSRV 1.91)
-- **Framework:** Axum 0.8 (async HTTP)
-- **Database:** PostgreSQL 16 via sqlx 0.8
-- **Deployed at:** api.ares.dirmacs.com (VPS, systemd)
+ARES is a **GENERIC** multi-tenant AI agent runtime. It has ZERO client-specific code. No client routes, no client tables, no client business logic. Kasino and eHB are CLIENTS that call `/v1/chat` with their tenant API keys.
 
-## Build & Run
+## Build
 
 ```bash
-cargo build --release                          # Default features: postgres, ollama, ares-vector
-cargo build --release --features full          # All providers + qdrant + mcp + swagger-ui
-cargo run --release -- serve                   # Start server (reads ares.toml)
-cargo run --release -- init                    # Initialize project structure
-cargo test                                     # Run all tests
+cargo build --release --no-default-features --features openai,postgres,mcp
 ```
 
-Key feature flags: `postgres`, `ollama`, `openai`, `anthropic`, `llamacpp`, `mcp`, `ares-vector`, `qdrant`, `pgvector`, `local-embeddings`, `ui`, `swagger-ui`, `full`, `minimal`.
+If cargo runs out of memory: `CARGO_BUILD_JOBS=1 cargo build --release --no-default-features --features openai,postgres,mcp`
 
-Default features are `postgres`, `ollama`, `ares-vector`.
+## After Rebuild
 
-## Project Structure
-
+```bash
+sudo systemctl restart ares
+curl -s localhost:3000/health  # verify it's up
 ```
-src/
-├── main.rs                  # Binary entry point, CLI, server startup
-├── lib.rs                   # Library root, re-exports
-├── agents/                  # Agent trait, configurable agents, orchestrator, router
-├── api/handlers/            # Axum route handlers (admin, auth, chat, rag, research, etc.)
-├── api/routes.rs            # Route tree
-├── auth/                    # JWT auth, password hashing, middleware
-├── cli/                     # CLI subcommands, init, colored output
-├── db/                      # Database layer (postgres.rs, traits.rs, vector stores)
-├── llm/                     # LLM provider abstraction (ollama, openai, anthropic, llamacpp)
-├── mcp/                     # MCP server + client (feature-gated)
-├── memory/                  # User context & personalization
-├── middleware/               # API key auth, usage tracking
-├── models/                  # Serde/Utoipa schema definitions
-├── rag/                     # RAG pipeline (chunking, embeddings, search, reranking)
-├── research/                # Multi-step research coordinator
-├── tools/                   # Built-in tools (calculator, web_search)
-├── types/                   # Shared types, AppError
-├── utils/                   # Config parsing (TOML + TOON), helpers
-└── workflows/               # Declarative workflow engine
-crates/
-├── ares-vector/             # Embedded HNSW vector DB (pure Rust)
-└── pawan/                   # CLI agent tool
+
+## Route Parameters
+
+Axum 0.7 uses matchit 0.7 which requires **`:param`** syntax. Do NOT use `{param}` — that's Axum 0.8 / matchit 0.8 only. Using `{param}` silently fails (404).
+
+Verify before touching routes:
+```bash
+grep -rn "param\|:id\|{id}" src/api/routes.rs | head -20
 ```
+
+## Middleware
+
+Use **`.route_layer()`** not `.layer()` for route-specific middleware. `.layer()` wraps the fallback too, leaking middleware to unmatched routes.
+
+## Config
+
+`/opt/ares/ares.toml` is a **symlink** → `/opt/ares-config/ares.toml`
+
+To update config: `cd /opt/ares-config && git pull && sudo systemctl restart ares`
 
 ## Database
 
-PostgreSQL with 7 migrations in `migrations/`. Schema covers tenants, API keys, usage events, agent runs, alerts, audit log.
-
-`SUM()` queries must cast to `::BIGINT` — sqlx maps SQL NUMERIC to Rust `Decimal`, not `i64`.
-
-## Configuration
-
-- `ares.toml` — runtime config (gitignored, production secrets). See `ares.example.toml` for template.
-- `config/agents/*.toon` — agent definitions in TOON format
-- `config/models/*.toon` — model tier definitions
-- `config/tools/*.toon` — tool specs
-- `config/workflows/*.toon` — workflow orchestration
-- `config/mcps/*.toon` — MCP server integrations
-
-### TOON format rules
-- Strings starting with `-` must be quoted: `"--endpoint"`
-- Arrays use indexed syntax: `args[2]: "--endpoint","https://example.com/mcp"`
-- Line-oriented, one key-value per line
-
-## Testing
-
 ```bash
-cargo test                                # Unit + integration tests
-hurl --test hurl/cases/*.hurl             # HTTP API tests (requires running server)
+sudo -u postgres psql -d ares
+\dt  # list tables
+SELECT count(*) FROM usage_events;  # check metering data
 ```
 
-Integration tests in `tests/`, HTTP tests in `hurl/cases/`.
-
-## Key Conventions
-
-- Feature-gated modules: MCP is behind `#[cfg(feature = "mcp")]` — guard all MCP imports and usage
-- Error type: `AppError` in `src/types/` — use it consistently
-- All DB queries use `sqlx::query()` with `.bind()` pattern (no macros)
-- Auth: JWT Bearer tokens for user routes, `X-Admin-Secret` header for admin routes, API keys for tenant routes
-- Commits as: `Baalateja Kataru <baalateja.k@gmail.com>`
-
-## What NOT to Do
-
-- Don't add `use ares::mcp::*` without `#[cfg(feature = "mcp")]` guard
-- Don't use `SUM()` in SQL without `::BIGINT` cast
-- Don't commit `ares.toml` (production config with secrets) — it's gitignored
-- Don't set CORS origins to `*` in production — use explicit origins in `src/utils/toml_config.rs`
-- Don't use `.unwrap()` in production code paths
+Tables owned by `dirmacs` user. If permission errors, check ownership with `\dt`.

@@ -4,6 +4,8 @@
 
 /// Admin tenant management handlers.
 pub mod admin;
+/// Public (no auth) handlers — e.g. lead capture.
+pub mod public;
 /// Agent listing and info handlers.
 pub mod agents;
 /// Authentication handlers (login, register).

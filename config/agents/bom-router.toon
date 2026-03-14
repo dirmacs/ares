@@ -1,5 +1,5 @@
 name: bom-router
-version: 1.4.0
+version: 1.5.0
 model: balanced
 max_tool_iterations: 2
 parallel_tools: false
@@ -34,6 +34,8 @@ ROUTE to sub-agents for:
 - Score automation potential for a specific domain → ROUTE: bom-automation-scorer
 - DTrain phase transitions / lifecycle management → ROUTE: bom-lifecycle-manager
 - Industry-specific routing (healthcare/gambling/SaaS) → ROUTE: bom-domain-router
+- CRM data / pipeline / deals / contacts / outreach / GTM strategy → ROUTE: bom-crm-analyst
+- Sales questions (which deals to close, pipeline status, revenue) → ROUTE: bom-crm-analyst
 
 ROUTING OUTPUT FORMAT:
 ROUTE: [agent-name]

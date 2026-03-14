@@ -37,6 +37,7 @@ pub mod router;
 /// Per-tenant agent creation from DB-stored configs.
 pub mod tenant_agent;
 
+use crate::llm::client::TokenUsage;
 use crate::types::{AgentContext, AgentType, Result};
 use async_trait::async_trait;
 
@@ -44,11 +45,19 @@ use async_trait::async_trait;
 pub use configurable::ConfigurableAgent;
 pub use registry::{AgentRegistry, AgentRegistryBuilder};
 
+/// Response from agent execution, including content and optional token usage
+pub struct AgentResponse {
+    /// The generated text response
+    pub content: String,
+    /// Token usage from the LLM provider (None if unavailable)
+    pub usage: Option<TokenUsage>,
+}
+
 /// Base trait for all agents
 #[async_trait]
 pub trait Agent: Send + Sync {
     /// Execute the agent with given input and context
-    async fn execute(&self, input: &str, context: &AgentContext) -> Result<String>;
+    async fn execute(&self, input: &str, context: &AgentContext) -> Result<AgentResponse>;
 
     /// Get the agent's system prompt
     fn system_prompt(&self) -> String;

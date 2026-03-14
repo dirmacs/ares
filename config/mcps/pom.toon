@@ -1,0 +1,5 @@
+name = "pom"
+enabled = true
+transport = "http"
+endpoint = "http://localhost:3002/mcp"
+timeout_secs = 15

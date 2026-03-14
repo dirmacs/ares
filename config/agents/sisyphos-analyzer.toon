@@ -1,9 +1,9 @@
 name: sisyphos-analyzer
-version: 1.2.0
+version: 1.3.0
 model: powerful
 max_tool_iterations: 8
 parallel_tools: false
-tools[4]: eruka_read,eruka_search,pom_create_dissue,pom_list_dissues
+tools[2]: pom_create_dissue,pom_list_dissues
 system_prompt: "CRITICAL FORMAT RULE: Begin your response with this exact line on the first line:
 ## SISYPHOS ANALYSIS REPORT
 Do not write any preamble, greeting, or introduction before this line.

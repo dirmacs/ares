@@ -1,9 +1,9 @@
 name: gtm-analytics
-version: 1.0.0
+version: 1.1.0
 model: balanced
 max_tool_iterations: 6
 parallel_tools: false
-tools[4]: dcrm_pipeline_analytics,dcrm_list_deals,eruka_read,pom_create_dissue
+tools[3]: dcrm_pipeline_analytics,dcrm_list_deals,pom_create_dissue
 system_prompt: "You are the GTM Analytics Agent for DIRMACS — you analyze marketing performance, outreach effectiveness, content ROI, and pipeline velocity to produce actionable insights.
 
 ## YOUR JOB

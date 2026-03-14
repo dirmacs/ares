@@ -29,12 +29,23 @@ pub async fn record_agent_versions(
         let config_json = serde_json::to_value(agent)
             .unwrap_or_else(|_| serde_json::json!({"name": agent.name}));
 
-        match sqlx::query(
+        // For rollback events we need the row to be updated even if the version
+        // already exists (so the rollback is durably recorded). For startup /
+        // hot-reload we keep DO NOTHING to avoid noisy duplicates.
+        let sql = if change_source == "rollback" {
             "INSERT INTO agent_config_versions \
              (agent_id, version, config_json, is_active, change_source) \
              VALUES ($1, $2, $3, true, $4) \
-             ON CONFLICT (agent_id, version) DO NOTHING",
-        )
+             ON CONFLICT (agent_id, version) DO UPDATE \
+             SET change_source = EXCLUDED.change_source, is_active = true"
+        } else {
+            "INSERT INTO agent_config_versions \
+             (agent_id, version, config_json, is_active, change_source) \
+             VALUES ($1, $2, $3, true, $4) \
+             ON CONFLICT (agent_id, version) DO NOTHING"
+        };
+
+        match sqlx::query(sql)
         .bind(&agent.name)
         .bind(&agent.version)
         .bind(&config_json)

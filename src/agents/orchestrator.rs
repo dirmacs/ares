@@ -1,5 +1,5 @@
 use crate::{
-    agents::{Agent, AgentRegistry},
+    agents::{Agent, AgentRegistry, AgentResponse},
     llm::LLMClient,
     types::{AgentContext, AgentType, AppError, Result},
     AppState,
@@ -89,18 +89,20 @@ Only respond with valid JSON."#,
     ) -> Result<String> {
         // Create agent from registry (handles model and tool configuration)
         let agent = self.agent_registry.create_agent(agent_name).await?;
-        agent.execute(task, context).await
+        let resp = agent.execute(task, context).await?;
+        Ok(resp.content)
     }
 }
 
 #[async_trait]
 impl Agent for OrchestratorAgent {
-    async fn execute(&self, input: &str, context: &AgentContext) -> Result<String> {
+    async fn execute(&self, input: &str, context: &AgentContext) -> Result<AgentResponse> {
         // Decompose the task into subtasks
         let subtasks = self.decompose_task(input).await?;
 
         if subtasks.is_empty() {
-            return self.llm.generate(input).await;
+            let content = self.llm.generate(input).await?;
+            return Ok(AgentResponse { content, usage: None });
         }
 
         // Execute subtasks sequentially (could be parallelized in future)
@@ -117,7 +119,8 @@ impl Agent for OrchestratorAgent {
             results.join("\n\n")
         );
 
-        self.llm.generate(&synthesis_prompt).await
+        let content = self.llm.generate(&synthesis_prompt).await?;
+        Ok(AgentResponse { content, usage: None })
     }
 
     fn system_prompt(&self) -> String {

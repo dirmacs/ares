@@ -278,7 +278,7 @@ impl LLMClient for OpenAIClient {
             .ok_or_else(|| AppError::LLM("No response from OpenAI".to_string()))
     }
 
-    async fn generate_with_history(&self, messages: &[(String, String)]) -> Result<String> {
+    async fn generate_with_history(&self, messages: &[(String, String)]) -> Result<LLMResponse> {
         let chat_messages: std::result::Result<Vec<ChatCompletionRequestMessage>, AppError> =
             messages
                 .iter()
@@ -351,11 +351,23 @@ impl LLMClient for OpenAIClient {
             .await
             .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e)))?;
 
-        response
+        let content = response
             .choices
             .first()
             .and_then(|choice| choice.message.content.clone())
-            .ok_or_else(|| AppError::LLM("No response from OpenAI".to_string()))
+            .ok_or_else(|| AppError::LLM("No response from OpenAI".to_string()))?;
+
+        #[allow(clippy::unnecessary_cast)]
+        let usage = response
+            .usage
+            .map(|u| TokenUsage::new(u.prompt_tokens as u32, u.completion_tokens as u32));
+
+        Ok(LLMResponse {
+            content,
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage,
+        })
     }
 
     async fn generate_with_tools(

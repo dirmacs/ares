@@ -11,11 +11,11 @@ pub trait LLMClient: Send + Sync {
     /// Generate with system prompt
     async fn generate_with_system(&self, system: &str, prompt: &str) -> Result<String>;
 
-    /// Generate with conversation history
+    /// Generate with conversation history, returning full response with token usage
     async fn generate_with_history(
         &self,
         messages: &[(String, String)], // (role, content) pairs
-    ) -> Result<String>;
+    ) -> Result<LLMResponse>;
 
     /// Generate with tool calling support
     async fn generate_with_tools(

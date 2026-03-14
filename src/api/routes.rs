@@ -29,7 +29,11 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             post(crate::api::handlers::auth::refresh_token),
         )
         .route("/auth/logout", post(crate::api::handlers::auth::logout))
-        .route("/agents", get(crate::api::handlers::agents::list_agents));
+        .route("/agents", get(crate::api::handlers::agents::list_agents))
+        .route(
+            "/public/inquire",
+            post(crate::api::handlers::public::public_inquire),
+        );
 
     #[allow(unused_mut)]
     let mut protected_routes = Router::new()

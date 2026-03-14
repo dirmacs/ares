@@ -1,0 +1,4 @@
+name: dcrm_list_contacts
+enabled: true
+description: DCRM integration tool — dcrm_list_contacts
+timeout_secs: 10

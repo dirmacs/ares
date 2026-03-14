@@ -1,0 +1,4 @@
+name: dcrm_list_deals
+enabled: true
+description: DCRM integration tool — dcrm_list_deals
+timeout_secs: 10

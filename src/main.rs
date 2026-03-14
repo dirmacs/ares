@@ -379,6 +379,12 @@ async fn run_server(
     tool_registry.register(Arc::new(ares::tools::pom::PomGetCurrentSprintTool::new()));
     tool_registry.register(Arc::new(ares::tools::pom::PomListDissuesTool::new()));
 
+    // Register DCRM tools (calls dcrm-api at DCRM_BASE_URL or localhost:3001)
+    tool_registry.register(Arc::new(ares::tools::dcrm::DcrmListContactsTool::new()));
+    tool_registry.register(Arc::new(ares::tools::dcrm::DcrmCreateContactTool::new()));
+    tool_registry.register(Arc::new(ares::tools::dcrm::DcrmListDealsTool::new()));
+    tool_registry.register(Arc::new(ares::tools::dcrm::DcrmPipelineAnalyticsTool::new()));
+
     // Register Eruka tools (calls Eruka API at ERUKA_API_URL or localhost:8081)
     tool_registry.register(Arc::new(ares::tools::eruka::ErukaRead));
     tool_registry.register(Arc::new(ares::tools::eruka::ErukaSearch));

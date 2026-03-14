@@ -1,6 +1,6 @@
 name: bom-router
-version: 1.3.0
-model: anthropic-balanced
+version: 1.4.0
+model: balanced
 max_tool_iterations: 2
 parallel_tools: false
 tools[1]: pom_get_current_sprint

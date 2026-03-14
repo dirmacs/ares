@@ -136,24 +136,29 @@ impl WorkflowEngine {
             let timestamp = Utc::now().timestamp();
 
             // Resolve agent using the 3-tier hierarchy
-            let (user_agent, _source) =
-                match resolve_agent(&self.state, &context.user_id, current_agent_name.clone()).await {
-                    Ok(res) => res,
-                    Err(e) => {
-                        // Try fallback agent if available
-                        if let Some(ref fallback) = workflow.fallback_agent {
-                            tracing::warn!(
-                                "Failed to resolve agent '{}', using fallback '{}'",
-                                current_agent_name,
-                                fallback
-                            );
-                            current_agent_name = fallback.clone();
-                            resolve_agent(&self.state, &context.user_id, fallback.clone()).await?
-                        } else {
-                            return Err(e);
-                        }
+            let (user_agent, _source) = match resolve_agent(
+                &self.state,
+                &context.user_id,
+                current_agent_name.clone(),
+            )
+            .await
+            {
+                Ok(res) => res,
+                Err(e) => {
+                    // Try fallback agent if available
+                    if let Some(ref fallback) = workflow.fallback_agent {
+                        tracing::warn!(
+                            "Failed to resolve agent '{}', using fallback '{}'",
+                            current_agent_name,
+                            fallback
+                        );
+                        current_agent_name = fallback.clone();
+                        resolve_agent(&self.state, &context.user_id, fallback.clone()).await?
+                    } else {
+                        return Err(e);
                     }
-                };
+                }
+            };
 
             // Convert UserAgent to AgentConfig
             let agent_config = AgentConfig {
@@ -173,7 +178,8 @@ impl WorkflowEngine {
                 .await?;
 
             // Execute the agent
-            let output = agent.execute(&current_input, context).await?;
+            let agent_resp = agent.execute(&current_input, context).await?;
+            let output = agent_resp.content;
             let duration_ms = step_start.elapsed().as_millis() as u64;
 
             // Record this step

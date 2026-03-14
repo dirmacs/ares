@@ -1,0 +1,4 @@
+name: pom_create_dissue
+enabled: true
+description: Create a new Dissue in the POM project tracking system
+timeout_secs: 10

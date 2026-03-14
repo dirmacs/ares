@@ -1,0 +1,4 @@
+name: pom_update_dissue
+enabled: true
+description: Update an existing Dissue in POM by ID
+timeout_secs: 10

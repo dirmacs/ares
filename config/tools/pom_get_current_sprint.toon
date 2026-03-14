@@ -1,0 +1,4 @@
+name: pom_get_current_sprint
+enabled: true
+description: Get the current active sprint from POM in markdown format
+timeout_secs: 10

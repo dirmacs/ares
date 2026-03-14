@@ -1,0 +1,4 @@
+name: pom_list_dissues
+enabled: true
+description: List dissues from POM with optional filters
+timeout_secs: 10

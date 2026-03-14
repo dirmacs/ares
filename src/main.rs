@@ -373,6 +373,12 @@ async fn run_server(
     tool_registry.register(Arc::new(ares::tools::calculator::Calculator));
     tool_registry.register(Arc::new(ares::tools::search::WebSearch::new()));
 
+    // Register POM tools (calls pom-api at POM_BASE_URL or localhost:3002)
+    tool_registry.register(Arc::new(ares::tools::pom::PomCreateDissueTool::new()));
+    tool_registry.register(Arc::new(ares::tools::pom::PomUpdateDissueTool::new()));
+    tool_registry.register(Arc::new(ares::tools::pom::PomGetCurrentSprintTool::new()));
+    tool_registry.register(Arc::new(ares::tools::pom::PomListDissuesTool::new()));
+
     let tool_registry = Arc::new(tool_registry);
     tracing::info!(
         "Tool registry initialized with {} tools",

@@ -60,20 +60,22 @@ pub mod pinecone;
 pub mod qdrant;
 
 // Relational database
-/// Database traits and common types shared across providers.
-pub mod traits;
-/// Turso/libSQL database client implementation.
-pub mod postgres;
-/// Multi-tenant tenant management.
-pub mod tenants;
-/// Per-tenant agent instance management.
-pub mod tenant_agents;
 /// Agent run tracking (execution history).
 pub mod agent_runs;
 /// Platform alerts (health, quota, errors).
 pub mod alerts;
 /// Admin audit log (mutation tracking).
 pub mod audit_log;
+/// Turso/libSQL database client implementation.
+pub mod postgres;
+/// Per-tenant agent instance management.
+pub mod tenant_agents;
+/// Multi-tenant tenant management.
+pub mod tenants;
+/// Database traits and common types shared across providers.
+pub mod traits;
+/// Agent config version history (Sprint 11).
+pub mod agent_versions;
 
 // Re-exports
 pub use vectorstore::{CollectionInfo, CollectionStats, VectorStore, VectorStoreProvider};
@@ -82,7 +84,7 @@ pub use vectorstore::{CollectionInfo, CollectionStats, VectorStore, VectorStoreP
 pub use ares_vector::AresVectorStore;
 #[cfg(feature = "lancedb")]
 pub use lancedb::LanceDBStore;
+pub use postgres::PostgresClient;
 #[cfg(feature = "qdrant")]
 pub use qdrant::QdrantVectorStore;
-pub use postgres::PostgresClient;
 pub use tenants::{TenantDb, UsageSummary};

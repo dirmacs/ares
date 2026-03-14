@@ -16,6 +16,8 @@
 //! ares-server --config my-config.toml
 //! ```
 
+#[cfg(feature = "mcp")]
+use ares::mcp::McpRegistry;
 use ares::{
     api,
     auth::jwt::AuthService,
@@ -25,8 +27,6 @@ use ares::{
     AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
     ProviderRegistry, ToolRegistry,
 };
-#[cfg(feature = "mcp")]
-use ares::mcp::McpRegistry;
 use axum::{routing::get, Router};
 use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -430,22 +430,26 @@ async fn run_server(
     // Initialize MCP Registry (Eruka, etc.)
     // =================================================================
     #[cfg(feature = "mcp")]
-    let mcp_registry: Option<Arc<McpRegistry>> = match McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref()) {
-        Ok(registry) => {
-            tracing::info!("MCP registry initialized with {} clients", registry.client_names().len());
-            Some(Arc::new(registry))
-        }
-        Err(e) => {
-            tracing::warn!("Failed to initialize MCP registry: {}", e);
-            None
-        }
-    };
+    let mcp_registry: Option<Arc<McpRegistry>> =
+        match McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref()) {
+            Ok(registry) => {
+                tracing::info!(
+                    "MCP registry initialized with {} clients",
+                    registry.client_names().len()
+                );
+                Some(Arc::new(registry))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize MCP registry: {}", e);
+                None
+            }
+        };
     // =================================================================
     // Create Application State
     // =================================================================
     let db_arc = Arc::new(db);
     let tenant_db = Arc::new(ares::TenantDb::new(db_arc.clone()));
-    
+
     let state = AppState {
         config_manager: Arc::clone(&config_manager),
         db: db_arc.clone(),
@@ -460,6 +464,51 @@ async fn run_server(
         mcp_registry,
         deploy_registry: ares::api::handlers::deploy::new_deploy_registry(),
     };
+
+    // =================================================================
+    // Agent Config Versioning (Sprint 11)
+    // =================================================================
+    {
+        let pool = state.tenant_db.pool().clone();
+
+        // Startup snapshot: record all currently loaded agent configs
+        let startup_agents = state.dynamic_config.agents();
+        if !startup_agents.is_empty() {
+            if let Err(e) = ares::db::agent_versions::record_agent_versions(
+                &pool,
+                &startup_agents,
+                "startup",
+            )
+            .await
+            {
+                tracing::warn!("Failed to snapshot agent versions on startup: {}", e);
+            } else {
+                tracing::info!(
+                    count = startup_agents.len(),
+                    "Agent configs snapshotted to agent_config_versions"
+                );
+            }
+        }
+
+        // Hot-reload version tracking: background task drains mpsc channel
+        let (version_tx, mut version_rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<ares::utils::toon_config::ToonAgentConfig>>();
+        state.dynamic_config.set_version_tx(version_tx);
+
+        tokio::spawn(async move {
+            while let Some(agents) = version_rx.recv().await {
+                if let Err(e) = ares::db::agent_versions::record_agent_versions(
+                    &pool,
+                    &agents,
+                    "hot_reload",
+                )
+                .await
+                {
+                    tracing::warn!("Failed to record hot-reload agent versions: {}", e);
+                }
+            }
+        });
+    }
 
     // =================================================================
     // Build OpenAPI Documentation (only when swagger-ui is enabled)
@@ -731,9 +780,7 @@ async fn shutdown_signal() {
 
 /// Run the A.R.E.S MCP server
 #[cfg(feature = "mcp")]
-async fn run_mcp_server(
-    config_path: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     // Load .env file for secrets
     dotenvy::dotenv().ok();
     init_tracing("info");
@@ -752,20 +799,14 @@ async fn run_mcp_server(
     // Get API URLs from environment or config
     let ares_api_url = std::env::var("ARES_API_URL")
         .unwrap_or_else(|_| "https://api.ares.dirmacs.com".to_string());
-    let eruka_api_url = std::env::var("ERUKA_API_URL")
-        .unwrap_or_else(|_| "https://eruka.dirmacs.com".to_string());
+    let eruka_api_url =
+        std::env::var("ERUKA_API_URL").unwrap_or_else(|_| "https://eruka.dirmacs.com".to_string());
 
     tracing::info!("ARES API URL: {}", ares_api_url);
     tracing::info!("Eruka API URL: {}", eruka_api_url);
 
     // Start MCP server
-    ares::mcp::start_mcp_server(
-        tenant_db,
-        pool,
-        &ares_api_url,
-        &eruka_api_url,
-    )
-    .await?;
+    ares::mcp::start_mcp_server(tenant_db, pool, &ares_api_url, &eruka_api_url).await?;
 
     Ok(())
 }

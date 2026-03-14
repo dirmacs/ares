@@ -146,10 +146,10 @@ pub mod llm;
 pub mod mcp;
 /// Conversation memory and context management.
 pub mod memory;
-/// Multi-tenant models (Tenant, ApiKey, Quota).
-pub mod models;
 /// Middleware for API key auth and usage tracking.
 pub mod middleware;
+/// Multi-tenant models (Tenant, ApiKey, Quota).
+pub mod models;
 /// Retrieval Augmented Generation (RAG) components.
 pub mod rag;
 /// Multi-agent research coordination.

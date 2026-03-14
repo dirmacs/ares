@@ -206,7 +206,7 @@ impl LLMClient for OllamaClient {
         Ok(response.message.content)
     }
 
-    async fn generate_with_history(&self, messages: &[(String, String)]) -> Result<String> {
+    async fn generate_with_history(&self, messages: &[(String, String)]) -> Result<LLMResponse> {
         let chat_messages: Vec<ChatMessage> = messages
             .iter()
             .map(|(role, content)| match role.as_str() {
@@ -226,7 +226,12 @@ impl LLMClient for OllamaClient {
             .await
             .map_err(|e| AppError::LLM(format!("Ollama error: {}", e)))?;
 
-        Ok(response.message.content)
+        Ok(LLMResponse {
+            content: response.message.content,
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: None,
+        })
     }
 
     async fn generate_with_tools(

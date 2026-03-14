@@ -2,16 +2,18 @@
 //!
 //! This module contains all HTTP request handlers organized by functionality.
 
-/// Agent listing and info handlers.
-pub mod agents;
 /// Admin tenant management handlers.
 pub mod admin;
+/// Agent listing and info handlers.
+pub mod agents;
 /// Authentication handlers (login, register).
 pub mod auth;
 /// Chat and streaming handlers.
 pub mod chat;
 /// Conversation CRUD handlers.
 pub mod conversations;
+/// Deployment automation handlers.
+pub mod deploy;
 /// RAG (document ingestion/search) handlers.
 /// Requires the `local-embeddings` feature (for ONNX-based embeddings) and
 /// `ares-vector` feature (for the embedded vector database).
@@ -23,7 +25,5 @@ pub mod research;
 pub mod user_agents;
 /// V1 API key-authenticated tenant-scoped handlers.
 pub mod v1;
-/// Deployment automation handlers.
-pub mod deploy;
 /// Workflow execution handlers.
 pub mod workflows;

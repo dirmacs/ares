@@ -1,4 +1,5 @@
 name: router
+version: 1.0.0
 model: fast
 max_tool_iterations: 1
 parallel_tools: false

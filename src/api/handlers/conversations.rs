@@ -96,7 +96,13 @@ pub async fn list_conversations(
 
     let summaries: Vec<ConversationSummary> = conversations
         .into_iter()
-        .map(|c| ConversationSummary { id: c.id, title: Some(c.title), message_count: c.message_count, created_at: c.created_at, updated_at: c.updated_at })
+        .map(|c| ConversationSummary {
+            id: c.id,
+            title: Some(c.title),
+            message_count: c.message_count,
+            created_at: c.created_at,
+            updated_at: c.updated_at,
+        })
         .collect();
 
     Ok(Json(summaries))

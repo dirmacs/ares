@@ -1,5 +1,5 @@
-use crate::agents::registry::AgentRegistry;
 use crate::agents::configurable::ConfigurableAgent;
+use crate::agents::registry::AgentRegistry;
 use crate::utils::toml_config::AgentConfig;
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
@@ -11,7 +11,11 @@ fn json_to_agent_config(json: &serde_json::Value) -> AgentConfig {
         system_prompt: json["system_prompt"].as_str().map(|s| s.to_string()),
         tools: json["tools"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default(),
         max_tool_iterations: json["max_tool_iterations"].as_u64().unwrap_or(5) as usize,
         parallel_tools: json["parallel_tools"].as_bool().unwrap_or(false),
@@ -39,5 +43,8 @@ pub async fn create_tenant_agent(
     let config_json: serde_json::Value = row.get("config");
     let agent_config = json_to_agent_config(&config_json);
 
-    agent_registry.create_agent_from_config(agent_name, &agent_config).await.ok()
+    agent_registry
+        .create_agent_from_config(agent_name, &agent_config)
+        .await
+        .ok()
 }

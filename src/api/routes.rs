@@ -265,6 +265,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/api-keys/{id}",
             delete(crate::api::handlers::v1::revoke_api_key),
         )
+        .route(
+            "/tenant/data",
+            delete(crate::api::handlers::v1::delete_tenant_data),
+        )
         .layer(middleware::from_fn(crate::middleware::usage::track_usage))
         .layer(middleware::from_fn(
             crate::middleware::api_key_auth::api_key_auth_middleware,

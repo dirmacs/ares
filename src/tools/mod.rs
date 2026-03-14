@@ -42,6 +42,8 @@
 
 /// Calculator tool for arithmetic operations.
 pub mod calculator;
+/// POM (Project Operations Manager) tools for dissue tracking.
+pub mod pom;
 /// Tool registry for managing available tools.
 pub mod registry;
 /// Web search tool using DuckDuckGo.

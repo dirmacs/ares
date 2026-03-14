@@ -1,4 +1,4 @@
 name: eruka_read
 enabled: true
-description: Read structured business knowledge from the Eruka context engine
+description: Read structured business knowledge from the Eruka context engine. Required parameter: path (string) — the knowledge path to read, e.g. "operations/vps_services", "content/platform_architecture", "market/competitors", "products/pricing", "operations/sprint_management"
 timeout_secs: 10

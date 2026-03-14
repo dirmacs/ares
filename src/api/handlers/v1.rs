@@ -506,3 +506,58 @@ pub async fn revoke_api_key(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// GDPR: DELETE /v1/tenant/data — purge all tenant data (usage_events, agent_runs, api_keys)
+/// The tenant account itself is NOT deleted; only operational data is purged.
+pub async fn delete_tenant_data(
+    State(state): State<AppState>,
+    ctx: Option<Extension<TenantContext>>,
+) -> Result<Json<serde_json::Value>> {
+    let tc = extract_tenant(ctx)?;
+    let tid = &tc.tenant_id;
+
+    let pool = state.tenant_db.pool();
+
+    let usage_rows: Vec<i64> = sqlx::query_scalar(
+        "DELETE FROM usage_events WHERE tenant_id = $1 RETURNING 1"
+    )
+    .bind(tid)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let usage_deleted = usage_rows.len() as i64;
+
+    let run_rows: Vec<i64> = sqlx::query_scalar(
+        "DELETE FROM agent_runs WHERE tenant_id = $1 RETURNING 1"
+    )
+    .bind(tid)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let runs_deleted = run_rows.len() as i64;
+
+    // Revoke all API keys (keeps account, deletes keys)
+    let key_rows: Vec<i64> = sqlx::query_scalar(
+        "DELETE FROM api_keys WHERE tenant_id = $1 RETURNING 1"
+    )
+    .bind(tid)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let keys_deleted = key_rows.len() as i64;
+
+    // Also clear monthly cache
+    let _ = sqlx::query("DELETE FROM monthly_usage_cache WHERE tenant_id = $1")
+        .bind(tid)
+        .execute(pool)
+        .await;
+
+    Ok(Json(serde_json::json!({
+        "status": "purged",
+        "tenant_id": tid,
+        "usage_events_deleted": usage_deleted,
+        "agent_runs_deleted": runs_deleted,
+        "api_keys_revoked": keys_deleted,
+        "note": "Tenant account retained. All operational data purged per GDPR Article 17."
+    })))
+}
+

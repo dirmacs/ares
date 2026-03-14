@@ -96,7 +96,7 @@ pub async fn record_mcp_usage(
     )
     .bind(Uuid::new_v4().to_string())
     .bind(tenant_id)
-    .bind(effective_tokens as i64)   // token_count = effective_tokens for quota tracking
+    .bind(effective_tokens as i64) // token_count = effective_tokens for quota tracking
     .bind(op_name)
     .bind(tokens_used as i64)
     .bind(effective_tokens as i64)
@@ -164,7 +164,7 @@ pub async fn check_quota(
 
     let row: (i64,) = sqlx::query_as(
         r#"
-        SELECT COALESCE(SUM(effective_tokens), 0)
+        SELECT COALESCE(SUM(effective_tokens)::bigint, 0)
         FROM usage_events
         WHERE tenant_id = $1 AND created_at >= $2
         "#,

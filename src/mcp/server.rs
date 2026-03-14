@@ -97,8 +97,7 @@ impl AresMcpServer {
     /// Authenticates the MCP connection.
     /// Called once at startup before any tool calls.
     pub async fn authenticate(&self) -> Result<(), String> {
-        let api_key = extract_api_key_from_env()
-            .map_err(|e| format!("MCP auth failed: {}", e))?;
+        let api_key = extract_api_key_from_env().map_err(|e| format!("MCP auth failed: {}", e))?;
 
         let tenant = validate_mcp_api_key(&self.tenant_db, &api_key)
             .await
@@ -119,7 +118,9 @@ impl AresMcpServer {
     /// Gets the current session, or returns an error if not authenticated.
     async fn get_session(&self) -> Result<McpSession, String> {
         let session = self.session.read().await;
-        session.clone().ok_or_else(|| "Not authenticated. Set ARES_API_KEY.".to_string())
+        session
+            .clone()
+            .ok_or_else(|| "Not authenticated. Set ARES_API_KEY.".to_string())
     }
 
     /// Checks quota before executing a tool call.
@@ -176,14 +177,13 @@ impl AresMcpServer {
     pub async fn list_agents(&self) -> Result<CallToolResult, String> {
         let start = std::time::Instant::now();
         let session = self.get_session().await?;
-        
+
         // For now, return empty list - in production this would query the database
         let agents: Vec<AgentSummary> = Vec::new();
         let total = agents.len();
-        
+
         let output = ListAgentsOutput { agents, total };
-        let json = serde_json::to_string_pretty(&output)
-            .unwrap_or_else(|_| "{}".to_string());
+        let json = serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
         let duration = start.elapsed().as_millis() as u64;
         self.track_usage(
@@ -246,30 +246,28 @@ impl AresMcpServer {
                 )
                 .await;
 
-                let sources: Option<Vec<SourceRef>> = json["sources"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .map(|s| SourceRef {
-                                title: s["title"].as_str().unwrap_or("").to_string(),
-                                url: s["url"].as_str().map(String::from),
-                                snippet: s["snippet"].as_str().map(String::from),
-                            })
-                            .collect()
-                    });
+                let sources: Option<Vec<SourceRef>> = json["sources"].as_array().map(|arr| {
+                    arr.iter()
+                        .map(|s| SourceRef {
+                            title: s["title"].as_str().unwrap_or("").to_string(),
+                            url: s["url"].as_str().map(String::from),
+                            snippet: s["snippet"].as_str().map(String::from),
+                        })
+                        .collect()
+                });
 
                 let output = RunAgentOutput {
                     response: response_text.to_string(),
-                    agent: json["agent"].as_str().unwrap_or(&input.agent_name).to_string(),
-                    context_id: json["context_id"]
+                    agent: json["agent"]
                         .as_str()
-                        .unwrap_or("")
+                        .unwrap_or(&input.agent_name)
                         .to_string(),
+                    context_id: json["context_id"].as_str().unwrap_or("").to_string(),
                     sources,
                 };
 
-                let output_json = serde_json::to_string_pretty(&output)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let output_json =
+                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
                 Ok(CallToolResult::success(vec![Content::text(output_json)]))
             }
@@ -357,8 +355,7 @@ impl AresMcpServer {
             }
         };
 
-        let json = serde_json::to_string_pretty(&output)
-            .unwrap_or_else(|_| "{}".to_string());
+        let json = serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
@@ -408,23 +405,14 @@ impl AresMcpServer {
                 .await;
 
                 let output = DeployAgentOutput {
-                    agent_name: json["name"]
-                        .as_str()
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    action: json["action"]
-                        .as_str()
-                        .unwrap_or("created")
-                        .to_string(),
+                    agent_name: json["name"].as_str().unwrap_or("unknown").to_string(),
+                    action: json["action"].as_str().unwrap_or("created").to_string(),
                     active: json["active"].as_bool().unwrap_or(true),
-                    deployed_at: json["deployed_at"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string(),
+                    deployed_at: json["deployed_at"].as_str().unwrap_or("").to_string(),
                 };
 
-                let output_json = serde_json::to_string_pretty(&output)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let output_json =
+                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
                 Ok(CallToolResult::success(vec![Content::text(output_json)]))
             }
@@ -476,8 +464,8 @@ impl AresMcpServer {
             r#"
             SELECT
                 COUNT(*) as total_requests,
-                COALESCE(SUM(CASE WHEN operation LIKE 'mcp.%' THEN 1 ELSE 0 END), 0) as mcp_requests,
-                COALESCE(SUM(effective_tokens), 0) as tokens_used
+                COALESCE(SUM(CASE WHEN operation LIKE 'mcp.%' THEN 1 ELSE 0 END)::bigint, 0) as mcp_requests,
+                COALESCE(SUM(effective_tokens)::bigint, 0) as tokens_used
             FROM usage_events
             WHERE tenant_id = $1
               AND created_at >= $2
@@ -491,24 +479,17 @@ impl AresMcpServer {
         .await
         .unwrap_or((0, 0, 0));
 
-        let agent_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM user_agents WHERE tenant_id = $1",
-        )
-        .bind(&tenant_id)
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or((0,));
+        let agent_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM user_agents WHERE tenant_id = $1")
+                .bind(&tenant_id)
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or((0,));
 
         let duration = start.elapsed().as_millis() as u64;
 
-        self.track_usage(
-            &tenant_id,
-            McpOperation::GetUsage,
-            0,
-            true,
-            duration,
-        )
-        .await;
+        self.track_usage(&tenant_id, McpOperation::GetUsage, 0, true, duration)
+            .await;
 
         let (max_requests, max_agents, max_tokens) = match tier.as_str() {
             "Free" => (1_000u64, 3u32, 10_000u64),
@@ -547,8 +528,7 @@ impl AresMcpServer {
             },
         };
 
-        let json = serde_json::to_string_pretty(&output)
-            .unwrap_or_else(|_| "{}".to_string());
+        let json = serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
@@ -573,8 +553,8 @@ impl AresMcpServer {
                 )
                 .await;
 
-                let json = serde_json::to_string_pretty(&output)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let json =
+                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
@@ -613,8 +593,8 @@ impl AresMcpServer {
                 )
                 .await;
 
-                let json = serde_json::to_string_pretty(&output)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let json =
+                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
@@ -653,8 +633,8 @@ impl AresMcpServer {
                 )
                 .await;
 
-                let json = serde_json::to_string_pretty(&output)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let json =
+                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
@@ -914,48 +894,34 @@ impl AresMcpServer {
 
         let result = match name {
             "ares_list_agents" => self.list_agents().await,
-            "ares_run_agent" => {
-                match serde_json::from_value::<RunAgentInput>(args_value) {
-                    Ok(input) => self.run_agent(input).await,
-                    Err(e) => Err(format!("Invalid arguments: {}", e)),
-                }
-            }
-            "ares_get_status" => {
-                match serde_json::from_value::<GetStatusInput>(args_value) {
-                    Ok(input) => self.get_status(input).await,
-                    Err(e) => Err(format!("Invalid arguments: {}", e)),
-                }
-            }
-            "ares_deploy_agent" => {
-                match serde_json::from_value::<DeployAgentInput>(args_value) {
-                    Ok(input) => self.deploy_agent(input).await,
-                    Err(e) => Err(format!("Invalid arguments: {}", e)),
-                }
-            }
-            "ares_get_usage" => {
-                match serde_json::from_value::<GetUsageInput>(args_value) {
-                    Ok(input) => self.get_usage(input).await,
-                    Err(e) => Err(format!("Invalid arguments: {}", e)),
-                }
-            }
-            "eruka_read" => {
-                match serde_json::from_value::<ErukaReadInput>(args_value) {
-                    Ok(input) => self.eruka_read(input).await,
-                    Err(e) => Err(format!("Invalid arguments: {}", e)),
-                }
-            }
-            "eruka_write" => {
-                match serde_json::from_value::<ErukaWriteInput>(args_value) {
-                    Ok(input) => self.eruka_write(input).await,
-                    Err(e) => Err(format!("Invalid arguments: {}", e)),
-                }
-            }
-            "eruka_search" => {
-                match serde_json::from_value::<ErukaSearchInput>(args_value) {
-                    Ok(input) => self.eruka_search(input).await,
-                    Err(e) => Err(format!("Invalid arguments: {}", e)),
-                }
-            }
+            "ares_run_agent" => match serde_json::from_value::<RunAgentInput>(args_value) {
+                Ok(input) => self.run_agent(input).await,
+                Err(e) => Err(format!("Invalid arguments: {}", e)),
+            },
+            "ares_get_status" => match serde_json::from_value::<GetStatusInput>(args_value) {
+                Ok(input) => self.get_status(input).await,
+                Err(e) => Err(format!("Invalid arguments: {}", e)),
+            },
+            "ares_deploy_agent" => match serde_json::from_value::<DeployAgentInput>(args_value) {
+                Ok(input) => self.deploy_agent(input).await,
+                Err(e) => Err(format!("Invalid arguments: {}", e)),
+            },
+            "ares_get_usage" => match serde_json::from_value::<GetUsageInput>(args_value) {
+                Ok(input) => self.get_usage(input).await,
+                Err(e) => Err(format!("Invalid arguments: {}", e)),
+            },
+            "eruka_read" => match serde_json::from_value::<ErukaReadInput>(args_value) {
+                Ok(input) => self.eruka_read(input).await,
+                Err(e) => Err(format!("Invalid arguments: {}", e)),
+            },
+            "eruka_write" => match serde_json::from_value::<ErukaWriteInput>(args_value) {
+                Ok(input) => self.eruka_write(input).await,
+                Err(e) => Err(format!("Invalid arguments: {}", e)),
+            },
+            "eruka_search" => match serde_json::from_value::<ErukaSearchInput>(args_value) {
+                Ok(input) => self.eruka_search(input).await,
+                Err(e) => Err(format!("Invalid arguments: {}", e)),
+            },
             _ => Err(format!("Unknown tool: {}", name)),
         };
 
@@ -974,7 +940,8 @@ impl ServerHandler for AresMcpServer {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation::from_build_env(),
             instructions: Some(
-                "A.R.E.S MCP Server - Provides ARES agent management and Eruka knowledge tools".into(),
+                "A.R.E.S MCP Server - Provides ARES agent management and Eruka knowledge tools"
+                    .into(),
             ),
         }
     }
@@ -1025,12 +992,7 @@ pub async fn start_mcp_server(
     ares_api_url: &str,
     eruka_api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let server = AresMcpServer::new(
-        tenant_db,
-        pool,
-        ares_api_url,
-        eruka_api_url,
-    );
+    let server = AresMcpServer::new(tenant_db, pool, ares_api_url, eruka_api_url);
 
     // Authenticate before accepting tool calls
     server.authenticate().await?;

@@ -4,14 +4,16 @@
 //! using `Authorization: Bearer ares_xxx`. The `api_key_auth_middleware`
 //! injects `TenantContext` into request extensions before these handlers run.
 
-use crate::db::tenant_agents::{self, TenantAgent};
 use crate::db::agent_runs;
+use crate::db::tenant_agents::{self, TenantAgent};
+use crate::memory::estimate_tokens;
 use crate::models::TenantContext;
-use crate::types::{AppError, Result};
+use crate::types::{AgentContext, AgentType, AppError, ChatRequest, ChatResponse, Result};
 use crate::AppState;
 use axum::{
     extract::{Extension, Path, Query, State},
     http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use chrono::{DateTime, Datelike, TimeZone, Utc};
@@ -175,6 +177,85 @@ fn extract_tenant(ctx: Option<Extension<TenantContext>>) -> Result<TenantContext
 // Handlers
 // =============================================================================
 
+/// POST /v1/chat — tenant-scoped chat (API key auth, no conversation history)
+pub async fn v1_chat(
+    State(state): State<AppState>,
+    ctx: Option<Extension<TenantContext>>,
+    Json(payload): Json<ChatRequest>,
+) -> Result<axum::response::Response> {
+    let tc = extract_tenant(ctx)?;
+
+    // Build a minimal agent context (no user-level conversation/memory)
+    let agent_context = AgentContext {
+        user_id: tc.tenant_id.clone(),
+        session_id: uuid::Uuid::new_v4().to_string(),
+        conversation_history: vec![],
+        user_memory: None,
+    };
+
+    // Determine agent type
+    let agent_type = if let Some(at) = payload.agent_type {
+        at
+    } else {
+        AgentType::Orchestrator
+    };
+
+    // Execute agent with timing
+    let agent_name = crate::agents::registry::AgentRegistry::type_to_name(&agent_type).to_string();
+    let start = std::time::Instant::now();
+
+    use crate::agents::Agent;
+    let agent = state.agent_registry.create_agent(&agent_name).await?;
+    let response_text = agent.execute(&payload.message, &agent_context).await?;
+    let duration_ms = start.elapsed().as_millis() as i64;
+
+    let input_tokens = estimate_tokens(&payload.message) as u32;
+    let output_tokens = estimate_tokens(&response_text) as u32;
+
+    // Record agent run
+    {
+        let pool = state.tenant_db.pool().clone();
+        let tid = tc.tenant_id.clone();
+        let aname = agent_name;
+        let itok = input_tokens as i64;
+        let otok = output_tokens as i64;
+        tokio::spawn(async move {
+            let _ = agent_runs::insert_agent_run(
+                &pool,
+                &tid,
+                &aname,
+                None,
+                "completed",
+                itok,
+                otok,
+                duration_ms,
+                None,
+            )
+            .await;
+        });
+    }
+
+    let chat_response = ChatResponse {
+        response: response_text,
+        agent: format!("{:?} (system)", agent_type),
+        context_id: agent_context.session_id,
+        sources: None,
+    };
+
+    let body = Json(chat_response);
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        axum::http::HeaderName::from_static("x-input-tokens"),
+        axum::http::HeaderValue::from(input_tokens),
+    );
+    response.headers_mut().insert(
+        axum::http::HeaderName::from_static("x-output-tokens"),
+        axum::http::HeaderValue::from(output_tokens),
+    );
+
+    Ok(response)
+}
+
 /// GET /v1/agents — list all agents for this tenant
 pub async fn list_agents(
     State(state): State<AppState>,
@@ -213,7 +294,8 @@ pub async fn get_agent(
     Path(name): Path<String>,
 ) -> Result<Json<V1Agent>> {
     let tc = extract_tenant(ctx)?;
-    let agent = tenant_agents::get_tenant_agent(state.tenant_db.pool(), &tc.tenant_id, &name).await?;
+    let agent =
+        tenant_agents::get_tenant_agent(state.tenant_db.pool(), &tc.tenant_id, &name).await?;
     Ok(Json(V1Agent::from(agent)))
 }
 
@@ -226,7 +308,8 @@ pub async fn run_agent(
 ) -> Result<Json<V1AgentRun>> {
     let tc = extract_tenant(ctx)?;
     // Verify the agent exists for this tenant
-    let _agent = tenant_agents::get_tenant_agent(state.tenant_db.pool(), &tc.tenant_id, &name).await?;
+    let _agent =
+        tenant_agents::get_tenant_agent(state.tenant_db.pool(), &tc.tenant_id, &name).await?;
 
     // Return a stub run for now — actual execution would proxy through the chat handler
     Ok(Json(V1AgentRun {
@@ -261,20 +344,24 @@ pub async fn list_agent_runs(
         Some(&name),
         per_page as i64,
         offset,
-    ).await?;
+    )
+    .await?;
 
-    let items: Vec<V1AgentRun> = runs.into_iter().map(|r| V1AgentRun {
-        id: r.id,
-        agent_id: r.agent_name,
-        status: r.status,
-        input: serde_json::json!({"tokens": r.input_tokens}),
-        output: Some(serde_json::json!({"tokens": r.output_tokens})),
-        error: r.error,
-        started_at: ts_to_dt(r.created_at),
-        finished_at: Some(ts_to_dt(r.created_at + (r.duration_ms / 1000))),
-        duration_ms: Some(r.duration_ms as u64),
-        tokens_used: Some((r.input_tokens + r.output_tokens) as u64),
-    }).collect();
+    let items: Vec<V1AgentRun> = runs
+        .into_iter()
+        .map(|r| V1AgentRun {
+            id: r.id,
+            agent_id: r.agent_name,
+            status: r.status,
+            input: serde_json::json!({"tokens": r.input_tokens}),
+            output: Some(serde_json::json!({"tokens": r.output_tokens})),
+            error: r.error,
+            started_at: ts_to_dt(r.created_at),
+            finished_at: Some(ts_to_dt(r.created_at + (r.duration_ms / 1000))),
+            duration_ms: Some(r.duration_ms as u64),
+            tokens_used: Some((r.input_tokens + r.output_tokens) as u64),
+        })
+        .collect();
 
     let total = items.len() as u64;
     Ok(Json(Paginated {
@@ -402,3 +489,4 @@ pub async fn revoke_api_key(
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
+

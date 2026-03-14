@@ -20,7 +20,7 @@ jobs:
         with:
           key: deploy-check
       - name: Build (VPS features)
-        run: cargo build --release --no-default-features --features openai,postgres,mcp
+        run: cargo build --release --no-default-features --features openai,postgres,mcp,swagger-ui
 
   deploy:
     name: Deploy to VPS

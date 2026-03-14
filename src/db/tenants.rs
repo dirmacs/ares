@@ -48,7 +48,7 @@ impl TenantDb {
 
     pub async fn list_tenants(&self) -> Result<Vec<Tenant>> {
         let rows = sqlx::query(
-            "SELECT id, name, tier, created_at, updated_at FROM tenants ORDER BY created_at DESC"
+            "SELECT id, name, tier, created_at, updated_at FROM tenants ORDER BY created_at DESC",
         )
         .fetch_all(&self.postgres.pool)
         .await
@@ -71,13 +71,12 @@ impl TenantDb {
     }
 
     pub async fn get_tenant(&self, tenant_id: &str) -> Result<Option<Tenant>> {
-        let row = sqlx::query(
-            "SELECT id, name, tier, created_at, updated_at FROM tenants WHERE id = $1"
-        )
-        .bind(tenant_id)
-        .fetch_optional(&self.postgres.pool)
-        .await
-        .map_err(|e| AppError::Database(format!("Failed to get tenant: {}", e)))?;
+        let row =
+            sqlx::query("SELECT id, name, tier, created_at, updated_at FROM tenants WHERE id = $1")
+                .bind(tenant_id)
+                .fetch_optional(&self.postgres.pool)
+                .await
+                .map_err(|e| AppError::Database(format!("Failed to get tenant: {}", e)))?;
 
         if let Some(row) = row {
             let tier_str: String = row.get(2);
@@ -94,11 +93,7 @@ impl TenantDb {
         }
     }
 
-    pub async fn create_api_key(
-        &self,
-        tenant_id: &str,
-        name: String,
-    ) -> Result<(ApiKey, String)> {
+    pub async fn create_api_key(&self, tenant_id: &str, name: String) -> Result<(ApiKey, String)> {
         let id = uuid::Uuid::new_v4().to_string();
         let raw_key = generate_api_key();
         let key_prefix = format!("ares_{}", &raw_key[..8]);
@@ -158,7 +153,7 @@ impl TenantDb {
             "SELECT ak.id, ak.tenant_id, ak.key_hash, ak.is_active, ak.expires_at, t.tier 
              FROM api_keys ak 
              JOIN tenants t ON ak.tenant_id = t.id 
-             WHERE ak.key_prefix = $1"
+             WHERE ak.key_prefix = $1",
         )
         .bind(key_prefix)
         .fetch_optional(&self.postgres.pool)
@@ -181,7 +176,9 @@ impl TenantDb {
                 }
             }
 
-            let input_hash = hash_api_key(raw_key);
+            // Strip "ares_" prefix before hashing to match what create_api_key hashes
+            let key_without_prefix = raw_key.strip_prefix("ares_").unwrap_or(raw_key);
+            let input_hash = hash_api_key(key_without_prefix);
             if input_hash != key_hash {
                 return Ok(None);
             }
@@ -198,7 +195,14 @@ impl TenantDb {
     pub async fn get_monthly_requests(&self, tenant_id: &str) -> Result<u64> {
         let cache_key = tenant_id.to_string();
         let now = Utc::now();
-        let month_start = now.date_naive().with_day(1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+        let month_start = now
+            .date_naive()
+            .with_day(1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
 
         {
             let cache = self.monthly_cache.read().await;
@@ -210,19 +214,15 @@ impl TenantDb {
         }
 
         let row = sqlx::query(
-            "SELECT COALESCE(SUM(request_count), 0) FROM monthly_usage_cache WHERE tenant_id = $1 AND usage_month >= $2"
+            "SELECT COALESCE(SUM(request_count)::bigint, 0) FROM monthly_usage_cache WHERE tenant_id = $1 AND usage_month >= $2"
         )
         .bind(tenant_id)
         .bind(month_start)
-        .fetch_optional(&self.postgres.pool)
+        .fetch_one(&self.postgres.pool)
         .await
         .map_err(|e| AppError::Database(format!("Failed to get monthly requests: {}", e)))?;
 
-        let count: i64 = if let Some(row) = row {
-            row.get(0)
-        } else {
-            0
-        };
+        let count: i64 = row.try_get::<i64, _>(0).unwrap_or(0);
         let count = count as u64;
 
         {
@@ -235,7 +235,12 @@ impl TenantDb {
 
     pub async fn get_daily_requests(&self, tenant_id: &str) -> Result<u64> {
         let cache_key = tenant_id.to_string();
-        let today = Utc::now().date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+        let today = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
 
         {
             let cache = self.daily_cache.read().await;
@@ -247,19 +252,15 @@ impl TenantDb {
         }
 
         let row = sqlx::query(
-            "SELECT COALESCE(SUM(request_count), 0) FROM daily_rate_limits WHERE tenant_id = $1 AND usage_date >= $2"
+            "SELECT COALESCE(SUM(request_count)::bigint, 0) FROM daily_rate_limits WHERE tenant_id = $1 AND usage_date >= $2"
         )
         .bind(tenant_id)
         .bind(today)
-        .fetch_optional(&self.postgres.pool)
+        .fetch_one(&self.postgres.pool)
         .await
         .map_err(|e| AppError::Database(format!("Failed to get daily requests: {}", e)))?;
 
-        let count: i64 = if let Some(row) = row {
-            row.get(0)
-        } else {
-            0
-        };
+        let count: i64 = row.try_get::<i64, _>(0).unwrap_or(0);
         let count = count as u64;
 
         {
@@ -270,10 +271,27 @@ impl TenantDb {
         Ok(count)
     }
 
-    pub async fn record_usage_event(&self, tenant_id: &str, requests: u64, tokens: u64) -> Result<()> {
+    pub async fn record_usage_event(
+        &self,
+        tenant_id: &str,
+        requests: u64,
+        tokens: u64,
+    ) -> Result<()> {
         let now = Utc::now();
-        let today = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
-        let month_start = now.date_naive().with_day(1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+        let today = now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        let month_start = now
+            .date_naive()
+            .with_day(1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
 
         sqlx::query(
             "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, created_at) VALUES ($1, $2, 'http', $3, $4, $5)"
@@ -336,30 +354,30 @@ impl TenantDb {
         Ok(())
     }
 
-    pub async fn get_usage_summary(
-        &self,
-        tenant_id: &str,
-    ) -> Result<UsageSummary> {
+    pub async fn get_usage_summary(&self, tenant_id: &str) -> Result<UsageSummary> {
         let monthly_requests = self.get_monthly_requests(tenant_id).await?;
         let daily_requests = self.get_daily_requests(tenant_id).await?;
 
         let now = Utc::now();
-        let month_start = now.date_naive().with_day(1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+        let month_start = now
+            .date_naive()
+            .with_day(1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
 
         let row = sqlx::query(
-            "SELECT COALESCE(SUM(token_count), 0) FROM monthly_usage_cache WHERE tenant_id = $1 AND usage_month >= $2"
+            "SELECT COALESCE(SUM(token_count)::bigint, 0) FROM monthly_usage_cache WHERE tenant_id = $1 AND usage_month >= $2"
         )
         .bind(tenant_id)
         .bind(month_start)
-        .fetch_optional(&self.postgres.pool)
+        .fetch_one(&self.postgres.pool)
         .await
         .map_err(|e| AppError::Database(format!("Failed to get monthly tokens: {}", e)))?;
 
-        let monthly_tokens: i64 = if let Some(row) = row {
-            row.get(0)
-        } else {
-            0
-        };
+        let monthly_tokens: i64 = row.try_get::<i64, _>(0).unwrap_or(0);
 
         Ok(UsageSummary {
             monthly_requests,
@@ -369,31 +387,31 @@ impl TenantDb {
     }
 
     pub async fn revoke_api_key(&self, tenant_id: &str, key_id: &str) -> Result<()> {
-        let result = sqlx::query(
-            "UPDATE api_keys SET is_active = 0 WHERE id = $1 AND tenant_id = $2"
-        )
-        .bind(key_id)
-        .bind(tenant_id)
-        .execute(&self.postgres.pool)
-        .await
-        .map_err(|e| AppError::Database(format!("Failed to revoke API key: {}", e)))?;
+        let result =
+            sqlx::query("UPDATE api_keys SET is_active = 0 WHERE id = $1 AND tenant_id = $2")
+                .bind(key_id)
+                .bind(tenant_id)
+                .execute(&self.postgres.pool)
+                .await
+                .map_err(|e| AppError::Database(format!("Failed to revoke API key: {}", e)))?;
 
         if result.rows_affected() == 0 {
-            return Err(AppError::NotFound(format!("API key '{}' not found for tenant '{}'", key_id, tenant_id)));
+            return Err(AppError::NotFound(format!(
+                "API key '{}' not found for tenant '{}'",
+                key_id, tenant_id
+            )));
         }
         Ok(())
     }
 
     pub async fn update_tenant_quota(&self, tenant_id: &str, tier: TenantTier) -> Result<()> {
-        sqlx::query(
-            "UPDATE tenants SET tier = $1, updated_at = $2 WHERE id = $3"
-        )
-        .bind(tier.as_str())
-        .bind(Utc::now().timestamp())
-        .bind(tenant_id)
-        .execute(&self.postgres.pool)
-        .await
-        .map_err(|e| AppError::Database(format!("Failed to update tenant quota: {}", e)))?;
+        sqlx::query("UPDATE tenants SET tier = $1, updated_at = $2 WHERE id = $3")
+            .bind(tier.as_str())
+            .bind(Utc::now().timestamp())
+            .bind(tenant_id)
+            .execute(&self.postgres.pool)
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to update tenant quota: {}", e)))?;
 
         Ok(())
     }

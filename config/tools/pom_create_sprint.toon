@@ -1,0 +1,4 @@
+name: pom_create_sprint
+enabled: true
+description: POM sprint management tool — pom_create_sprint
+timeout_secs: 10

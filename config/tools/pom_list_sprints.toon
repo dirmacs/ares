@@ -1,0 +1,4 @@
+name: pom_list_sprints
+enabled: true
+description: POM sprint management tool — pom_list_sprints
+timeout_secs: 10

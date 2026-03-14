@@ -379,6 +379,10 @@ async fn run_server(
     tool_registry.register(Arc::new(ares::tools::pom::PomGetCurrentSprintTool::new()));
     tool_registry.register(Arc::new(ares::tools::pom::PomListDissuesTool::new()));
 
+    // Register Eruka tools (calls Eruka API at ERUKA_API_URL or localhost:8081)
+    tool_registry.register(Arc::new(ares::tools::eruka::ErukaRead));
+    tool_registry.register(Arc::new(ares::tools::eruka::ErukaSearch));
+
     let tool_registry = Arc::new(tool_registry);
     tracing::info!(
         "Tool registry initialized with {} tools",

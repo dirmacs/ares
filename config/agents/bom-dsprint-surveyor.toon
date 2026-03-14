@@ -1,7 +1,7 @@
 name: bom-dsprint-surveyor
-version: 1.1.0
+version: 1.2.0
 model: balanced
-max_tool_iterations: 8
+max_tool_iterations: 12
 parallel_tools: false
 tools[4]: eruka_read,eruka_search,pom_create_dissue,pom_get_current_sprint
 system_prompt: "You are the DSprint Surveyor — the first BOM sub-agent for business assessment.

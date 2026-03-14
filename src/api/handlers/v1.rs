@@ -4,6 +4,7 @@
 //! using `Authorization: Bearer ares_xxx`. The `api_key_auth_middleware`
 //! injects `TenantContext` into request extensions before these handlers run.
 
+use crate::agents::AgentResponse;
 use crate::db::agent_runs;
 use crate::db::tenant_agents::{self, TenantAgent};
 use crate::memory::estimate_tokens;
@@ -206,11 +207,19 @@ pub async fn v1_chat(
 
     use crate::agents::Agent;
     let agent = state.agent_registry.create_agent(&agent_name).await?;
-    let response_text = agent.execute(&payload.message, &agent_context).await?;
+    let AgentResponse { content: response_text, usage } =
+        agent.execute(&payload.message, &agent_context).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
-    let input_tokens = estimate_tokens(&payload.message) as u32;
-    let output_tokens = estimate_tokens(&response_text) as u32;
+    // Use actual LLM token counts; fall back to heuristic estimates if unavailable
+    let (input_tokens, output_tokens) = if let Some(u) = usage {
+        (u.prompt_tokens, u.completion_tokens)
+    } else {
+        (
+            estimate_tokens(&payload.message) as u32,
+            estimate_tokens(&response_text) as u32,
+        )
+    };
 
     // Record agent run
     {

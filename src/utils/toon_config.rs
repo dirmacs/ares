@@ -1050,6 +1050,22 @@ impl DynamicConfigManager {
             .collect()
     }
 
+    /// Hot-swap a single agent config in the in-memory cache (used for rollback).
+    /// Does not write to disk — disk files are the canonical source on next restart.
+    pub fn upsert_agent(&self, agent: ToonAgentConfig) {
+        let current = self.config.load();
+        let mut new_agents = current.agents.clone();
+        new_agents.insert(agent.name.clone(), agent);
+        let new_config = DynamicConfig {
+            agents: new_agents,
+            models: current.models.clone(),
+            tools: current.tools.clone(),
+            workflows: current.workflows.clone(),
+            mcps: current.mcps.clone(),
+        };
+        self.config.store(Arc::new(new_config));
+    }
+
     /// Manually reload configuration
     pub fn reload(&self) -> Result<Vec<ConfigWarning>, ToonConfigError> {
         let new_config = DynamicConfig::load(

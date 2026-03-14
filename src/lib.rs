@@ -207,4 +207,7 @@ pub struct AppState {
     pub mcp_registry: Option<Arc<crate::mcp::McpRegistry>>,
     /// Deploy registry for tracking deployment operations
     pub deploy_registry: crate::api::handlers::deploy::DeployRegistry,
+    /// Emergency stop flag — when true, all agent requests are rejected with 503.
+    /// Set/cleared via POST /api/admin/agents/emergency-stop.
+    pub emergency_stop: Arc<std::sync::atomic::AtomicBool>,
 }

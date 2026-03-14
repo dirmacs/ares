@@ -1,5 +1,5 @@
 use crate::{
-    agents::Agent,
+    agents::{Agent, AgentResponse},
     llm::LLMClient,
     types::{AgentContext, AgentType, Result},
 };
@@ -93,11 +93,13 @@ impl RouterAgent {
 
 #[async_trait]
 impl Agent for RouterAgent {
-    async fn execute(&self, _input: &str, _context: &AgentContext) -> Result<String> {
+    async fn execute(&self, _input: &str, _context: &AgentContext) -> Result<AgentResponse> {
         // Note: RouterAgent.route() is called by the orchestrator/chat handler,
         // not through the Agent trait execute() method. This is a placeholder.
-        // If called directly, return the router agent name.
-        Ok("router".to_string())
+        Ok(AgentResponse {
+            content: "router".to_string(),
+            usage: None,
+        })
     }
 
     fn system_prompt(&self) -> String {

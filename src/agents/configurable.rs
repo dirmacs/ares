@@ -4,7 +4,7 @@
 //! It replaces the hardcoded agent implementations with a flexible,
 //! configuration-driven approach.
 
-use crate::agents::Agent;
+use crate::agents::{Agent, AgentResponse};
 use crate::llm::LLMClient;
 use crate::tools::registry::ToolRegistry;
 use crate::types::{AgentContext, AgentType, Result, ToolDefinition};
@@ -188,7 +188,7 @@ Handle employee info, policies, and benefits."#
 
 #[async_trait]
 impl Agent for ConfigurableAgent {
-    async fn execute(&self, input: &str, context: &AgentContext) -> Result<String> {
+    async fn execute(&self, input: &str, context: &AgentContext) -> Result<AgentResponse> {
         // Build context with conversation history if available
         let mut messages = vec![("system".to_string(), self.system_prompt.clone())];
 
@@ -218,7 +218,11 @@ impl Agent for ConfigurableAgent {
 
         messages.push(("user".to_string(), input.to_string()));
 
-        self.llm.generate_with_history(&messages).await
+        let llm_response = self.llm.generate_with_history(&messages).await?;
+        Ok(AgentResponse {
+            content: llm_response.content,
+            usage: llm_response.usage,
+        })
     }
 
     fn system_prompt(&self) -> String {

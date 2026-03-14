@@ -1,0 +1,4 @@
+name: eruka_read
+enabled: true
+description: Read structured business knowledge from the Eruka context engine
+timeout_secs: 10

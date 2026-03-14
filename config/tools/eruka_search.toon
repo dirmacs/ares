@@ -1,0 +1,4 @@
+name: eruka_search
+enabled: true
+description: Search the Eruka knowledge base for relevant context
+timeout_secs: 10

@@ -37,15 +37,14 @@ async fn create_test_app() -> Router {
         .expect("Failed to create database connection");
 
     // Create a test user for auth middleware
-    db
-        .create_user(
-            "test-user",
-            "testuser@example.com",
-            "dummy_hash",
-            "Test User",
-        )
-        .await
-        .expect("Failed to create test user");
+    db.create_user(
+        "test-user",
+        "testuser@example.com",
+        "dummy_hash",
+        "Test User",
+    )
+    .await
+    .expect("Failed to create test user");
 
     // Create auth service with test secret
     let auth_service = AuthService::new(

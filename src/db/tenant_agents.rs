@@ -1,6 +1,6 @@
-use sqlx::{PgPool, Row};
 use crate::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
+use sqlx::{PgPool, Row};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ts() -> i64 {
@@ -68,22 +68,28 @@ pub async fn list_tenant_agents(pool: &PgPool, tenant_id: &str) -> Result<Vec<Te
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    rows.iter().map(|row| {
-        Ok(TenantAgent {
-            id: row.get("id"),
-            tenant_id: row.get("tenant_id"),
-            agent_name: row.get("agent_name"),
-            display_name: row.get("display_name"),
-            description: row.get("description"),
-            config: row.get::<serde_json::Value, _>("config"),
-            enabled: row.get("enabled"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
+    rows.iter()
+        .map(|row| {
+            Ok(TenantAgent {
+                id: row.get("id"),
+                tenant_id: row.get("tenant_id"),
+                agent_name: row.get("agent_name"),
+                display_name: row.get("display_name"),
+                description: row.get("description"),
+                config: row.get::<serde_json::Value, _>("config"),
+                enabled: row.get("enabled"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
         })
-    }).collect()
+        .collect()
 }
 
-pub async fn get_tenant_agent(pool: &PgPool, tenant_id: &str, agent_name: &str) -> Result<TenantAgent> {
+pub async fn get_tenant_agent(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+) -> Result<TenantAgent> {
     let row = sqlx::query(
         "SELECT id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at
          FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2"
@@ -108,7 +114,11 @@ pub async fn get_tenant_agent(pool: &PgPool, tenant_id: &str, agent_name: &str) 
     })
 }
 
-pub async fn create_tenant_agent(pool: &PgPool, tenant_id: &str, req: CreateTenantAgentRequest) -> Result<TenantAgent> {
+pub async fn create_tenant_agent(
+    pool: &PgPool,
+    tenant_id: &str,
+    req: CreateTenantAgentRequest,
+) -> Result<TenantAgent> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_ts();
 
@@ -130,7 +140,12 @@ pub async fn create_tenant_agent(pool: &PgPool, tenant_id: &str, req: CreateTena
     get_tenant_agent(pool, tenant_id, &req.agent_name).await
 }
 
-pub async fn update_tenant_agent(pool: &PgPool, tenant_id: &str, agent_name: &str, req: UpdateTenantAgentRequest) -> Result<TenantAgent> {
+pub async fn update_tenant_agent(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+    req: UpdateTenantAgentRequest,
+) -> Result<TenantAgent> {
     let now = now_ts();
 
     // Fetch current state
@@ -160,17 +175,18 @@ pub async fn update_tenant_agent(pool: &PgPool, tenant_id: &str, agent_name: &st
 }
 
 pub async fn delete_tenant_agent(pool: &PgPool, tenant_id: &str, agent_name: &str) -> Result<()> {
-    let result = sqlx::query(
-        "DELETE FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2"
-    )
-    .bind(tenant_id)
-    .bind(agent_name)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    let result = sqlx::query("DELETE FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2")
+        .bind(tenant_id)
+        .bind(agent_name)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("Agent '{}' not found for tenant '{}'", agent_name, tenant_id)));
+        return Err(AppError::NotFound(format!(
+            "Agent '{}' not found for tenant '{}'",
+            agent_name, tenant_id
+        )));
     }
     Ok(())
 }
@@ -179,11 +195,14 @@ pub async fn delete_tenant_agent(pool: &PgPool, tenant_id: &str, agent_name: &st
 // Template operations
 // =============================================================================
 
-pub async fn list_agent_templates(pool: &PgPool, product_type: Option<&str>) -> Result<Vec<AgentTemplate>> {
+pub async fn list_agent_templates(
+    pool: &PgPool,
+    product_type: Option<&str>,
+) -> Result<Vec<AgentTemplate>> {
     let rows = if let Some(pt) = product_type {
         sqlx::query(
             "SELECT id, product_type, agent_name, display_name, description, config, created_at
-             FROM agent_templates WHERE product_type = $1 ORDER BY agent_name"
+             FROM agent_templates WHERE product_type = $1 ORDER BY agent_name",
         )
         .bind(pt)
         .fetch_all(pool)
@@ -192,24 +211,26 @@ pub async fn list_agent_templates(pool: &PgPool, product_type: Option<&str>) -> 
     } else {
         sqlx::query(
             "SELECT id, product_type, agent_name, display_name, description, config, created_at
-             FROM agent_templates ORDER BY product_type, agent_name"
+             FROM agent_templates ORDER BY product_type, agent_name",
         )
         .fetch_all(pool)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?
     };
 
-    rows.iter().map(|row| {
-        Ok(AgentTemplate {
-            id: row.get("id"),
-            product_type: row.get("product_type"),
-            agent_name: row.get("agent_name"),
-            display_name: row.get("display_name"),
-            description: row.get("description"),
-            config: row.get::<serde_json::Value, _>("config"),
-            created_at: row.get("created_at"),
+    rows.iter()
+        .map(|row| {
+            Ok(AgentTemplate {
+                id: row.get("id"),
+                product_type: row.get("product_type"),
+                agent_name: row.get("agent_name"),
+                display_name: row.get("display_name"),
+                description: row.get("description"),
+                config: row.get::<serde_json::Value, _>("config"),
+                created_at: row.get("created_at"),
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// Clones all agent templates for a product type into a tenant's agent list.

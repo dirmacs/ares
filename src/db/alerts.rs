@@ -1,6 +1,6 @@
-use sqlx::{PgPool, Row};
 use crate::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
+use sqlx::{PgPool, Row};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ts() -> i64 {
@@ -35,7 +35,7 @@ pub async fn create_alert(
 
     sqlx::query(
         "INSERT INTO alerts (id, severity, source, title, message, resolved, created_at)
-         VALUES ($1, $2, $3, $4, $5, FALSE, $6)"
+         VALUES ($1, $2, $3, $4, $5, FALSE, $6)",
     )
     .bind(&id)
     .bind(severity)
@@ -133,19 +133,21 @@ pub async fn list_alerts(
     }
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    rows.iter().map(|row| {
-        Ok(Alert {
-            id: row.get("id"),
-            severity: row.get("severity"),
-            source: row.get("source"),
-            title: row.get("title"),
-            message: row.get("message"),
-            resolved: row.get("resolved"),
-            created_at: row.get("created_at"),
-            resolved_at: row.get("resolved_at"),
-            resolved_by: row.get("resolved_by"),
+    rows.iter()
+        .map(|row| {
+            Ok(Alert {
+                id: row.get("id"),
+                severity: row.get("severity"),
+                source: row.get("source"),
+                title: row.get("title"),
+                message: row.get("message"),
+                resolved: row.get("resolved"),
+                created_at: row.get("created_at"),
+                resolved_at: row.get("resolved_at"),
+                resolved_by: row.get("resolved_by"),
+            })
         })
-    }).collect()
+        .collect()
 }
 
 pub async fn resolve_alert(pool: &PgPool, alert_id: &str, resolved_by: Option<&str>) -> Result<()> {
@@ -162,7 +164,9 @@ pub async fn resolve_alert(pool: &PgPool, alert_id: &str, resolved_by: Option<&s
     .map_err(|e| AppError::Database(e.to_string()))?;
 
     if result.rows_affected() == 0 {
-        return Err(AppError::NotFound("Alert not found or already resolved".to_string()));
+        return Err(AppError::NotFound(
+            "Alert not found or already resolved".to_string(),
+        ));
     }
 
     Ok(())

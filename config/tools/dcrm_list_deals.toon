@@ -1,4 +1,4 @@
 name: dcrm_list_deals
 enabled: true
-description: DCRM integration tool — dcrm_list_deals
+description: DCRM dcrm list deals tool for BOM agents
 timeout_secs: 10

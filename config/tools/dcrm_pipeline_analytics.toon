@@ -1,4 +1,4 @@
 name: dcrm_pipeline_analytics
 enabled: true
-description: DCRM integration tool — dcrm_pipeline_analytics
+description: DCRM dcrm pipeline analytics tool for BOM agents
 timeout_secs: 10

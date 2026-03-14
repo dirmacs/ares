@@ -5,6 +5,7 @@
 //! configuration-driven approach.
 
 use crate::agents::{Agent, AgentResponse};
+use crate::llm::coordinator::ConversationMessage;
 use crate::llm::LLMClient;
 use crate::tools::registry::ToolRegistry;
 use crate::types::{AgentContext, AgentType, Result, ToolDefinition};
@@ -184,11 +185,104 @@ Handle employee info, policies, and benefits."#
                 .map(|r| r.is_enabled(tool_name))
                 .unwrap_or(false)
     }
+
+    /// Execute the agent with tool-calling support (multi-turn loop).
+    async fn execute_with_tools(
+        &self,
+        input: &str,
+        context: &AgentContext,
+    ) -> Result<AgentResponse> {
+        use crate::llm::client::TokenUsage;
+
+        let tools = self.get_filtered_tool_definitions();
+        tracing::debug!(
+            agent = %self.name,
+            allowed_tools = ?self.allowed_tools,
+            tool_count = tools.len(),
+            "execute_with_tools: tool definitions loaded"
+        );
+        let registry = self.tool_registry.as_ref().unwrap();
+
+        let mut messages: Vec<ConversationMessage> = Vec::new();
+        messages.push(ConversationMessage::system(&self.system_prompt));
+
+        // Add recent conversation history (last 5 messages)
+        for msg in context.conversation_history.iter().rev().take(5).rev() {
+            let cm = match msg.role {
+                crate::types::MessageRole::User => ConversationMessage::user(&msg.content),
+                crate::types::MessageRole::Assistant => {
+                    ConversationMessage::assistant(&msg.content, vec![])
+                }
+                _ => ConversationMessage::system(&msg.content),
+            };
+            messages.push(cm);
+        }
+
+        messages.push(ConversationMessage::user(input));
+
+        let mut total_usage = TokenUsage::default();
+
+        for _ in 0..self.max_tool_iterations {
+            let response = self
+                .llm
+                .generate_with_tools_and_history(&messages, &tools)
+                .await?;
+
+            if let Some(usage) = &response.usage {
+                total_usage = TokenUsage::new(
+                    total_usage.prompt_tokens + usage.prompt_tokens,
+                    total_usage.completion_tokens + usage.completion_tokens,
+                );
+            }
+
+            if response.tool_calls.is_empty() {
+                return Ok(AgentResponse {
+                    content: response.content,
+                    usage: Some(total_usage),
+                });
+            }
+
+            // Add assistant message with tool calls
+            messages.push(ConversationMessage::assistant(
+                &response.content,
+                response.tool_calls.clone(),
+            ));
+
+            // Execute each tool call and add results
+            for tc in &response.tool_calls {
+                let result = registry.execute(&tc.name, tc.arguments.clone()).await;
+                let result_value = match result {
+                    Ok(v) => v,
+                    Err(e) => serde_json::json!({"error": e.to_string()}),
+                };
+                messages.push(ConversationMessage::tool_result(&tc.id, &result_value));
+            }
+        }
+
+        // Max iterations reached — return last assistant content
+        let last = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == crate::llm::coordinator::MessageRole::Assistant)
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+
+        Ok(AgentResponse {
+            content: last,
+            usage: Some(total_usage),
+        })
+    }
 }
 
 #[async_trait]
 impl Agent for ConfigurableAgent {
     async fn execute(&self, input: &str, context: &AgentContext) -> Result<AgentResponse> {
+        if self.has_tools() {
+            tracing::debug!(agent = %self.name, "execute: using tool-calling path");
+            return self.execute_with_tools(input, context).await;
+        }
+        tracing::debug!(agent = %self.name, "execute: no tools, using simple path");
+
         // Build context with conversation history if available
         let mut messages = vec![("system".to_string(), self.system_prompt.clone())];
 

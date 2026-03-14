@@ -1,4 +1,4 @@
 name: dcrm_create_contact
 enabled: true
-description: DCRM integration tool — dcrm_create_contact
+description: DCRM dcrm create contact tool for BOM agents
 timeout_secs: 10

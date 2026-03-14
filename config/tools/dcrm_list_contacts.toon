@@ -1,4 +1,4 @@
 name: dcrm_list_contacts
 enabled: true
-description: DCRM integration tool — dcrm_list_contacts
+description: DCRM dcrm list contacts tool for BOM agents
 timeout_secs: 10

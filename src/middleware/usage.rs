@@ -1,16 +1,12 @@
-use axum::{
-    extract::Request,
-    middleware::Next,
-    response::Response,
-};
-use std::sync::Arc;
 use crate::db::tenants::TenantDb;
+use axum::{extract::Request, middleware::Next, response::Response};
+use std::sync::Arc;
 
-pub async fn track_usage(
-    req: Request,
-    next: Next,
-) -> Response {
-    let tenant_id = req.extensions().get::<crate::models::TenantContext>().map(|c| c.tenant_id.clone());
+pub async fn track_usage(req: Request, next: Next) -> Response {
+    let tenant_id = req
+        .extensions()
+        .get::<crate::models::TenantContext>()
+        .map(|c| c.tenant_id.clone());
     let tenant_db = req.extensions().get::<Arc<TenantDb>>().cloned();
 
     let response = next.run(req).await;
@@ -31,9 +27,21 @@ async fn record_usage(
     db: &TenantDb,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut tokens = 0;
-    if let Some(t) = headers.get("x-input-tokens").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<i32>().ok()) { tokens += t; }
-    if let Some(t) = headers.get("x-output-tokens").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<i32>().ok()) { tokens += t; }
-    
+    if let Some(t) = headers
+        .get("x-input-tokens")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i32>().ok())
+    {
+        tokens += t;
+    }
+    if let Some(t) = headers
+        .get("x-output-tokens")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i32>().ok())
+    {
+        tokens += t;
+    }
+
     db.record_usage_event(tenant_id, 1, tokens as u64).await?;
     Ok(())
 }

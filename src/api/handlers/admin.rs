@@ -1,14 +1,13 @@
-use crate::db::tenants::UsageSummary;
-use crate::db::tenant_agents::{
-    AgentTemplate, CreateTenantAgentRequest, TenantAgent, UpdateTenantAgentRequest,
-    clone_templates_for_tenant, create_tenant_agent as db_create_tenant_agent,
-    delete_tenant_agent as db_delete_tenant_agent, list_agent_templates,
-    list_tenant_agents as db_list_tenant_agents,
-    update_tenant_agent as db_update_tenant_agent,
-};
 use crate::db::agent_runs;
 use crate::db::alerts as db_alerts;
 use crate::db::audit_log;
+use crate::db::tenant_agents::{
+    clone_templates_for_tenant, create_tenant_agent as db_create_tenant_agent,
+    delete_tenant_agent as db_delete_tenant_agent, list_agent_templates,
+    list_tenant_agents as db_list_tenant_agents, update_tenant_agent as db_update_tenant_agent,
+    AgentTemplate, CreateTenantAgentRequest, TenantAgent, UpdateTenantAgentRequest,
+};
+use crate::db::tenants::UsageSummary;
 use crate::llm::provider_registry::ModelInfo;
 use crate::models::{Tenant, TenantTier};
 use crate::types::{AppError, Result};
@@ -23,10 +22,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub async fn admin_middleware(
-    req: axum::extract::Request,
-    next: Next,
-) -> Response {
+pub async fn admin_middleware(req: axum::extract::Request, next: Next) -> Response {
     let admin_secret = std::env::var("ADMIN_API_KEY").ok();
 
     let header_secret = req
@@ -35,16 +31,12 @@ pub async fn admin_middleware(
         .and_then(|v| v.to_str().ok());
 
     match (admin_secret, header_secret) {
-        (Some(expected), Some(given)) if expected == given => {
-            next.run(req).await
-        }
-        _ => {
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("Content-Type", "application/json")
-                .body(r#"{"error":"Invalid or missing X-Admin-Secret header"}"#.into())
-                .unwrap()
-        }
+        (Some(expected), Some(given)) if expected == given => next.run(req).await,
+        _ => Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header("Content-Type", "application/json")
+            .body(r#"{"error":"Invalid or missing X-Admin-Secret header"}"#.into())
+            .unwrap(),
     }
 }
 
@@ -136,15 +128,14 @@ pub async fn create_tenant(
     let pool = state.tenant_db.pool().clone();
     let tid = tenant.id.clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "create_tenant", "tenant", &tid, None, None).await;
+        let _ =
+            audit_log::log_admin_action(&pool, "create_tenant", "tenant", &tid, None, None).await;
     });
 
     Ok(Json(TenantResponse::from(tenant)))
 }
 
-pub async fn list_tenants(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<TenantResponse>>> {
+pub async fn list_tenants(State(state): State<AppState>) -> Result<Json<Vec<TenantResponse>>> {
     let tenants = state.tenant_db.list_tenants().await?;
     let response: Vec<TenantResponse> = tenants.into_iter().map(|t| t.into()).collect();
 
@@ -155,7 +146,10 @@ pub async fn get_tenant(
     State(state): State<AppState>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<TenantResponse>> {
-    let tenant = state.tenant_db.get_tenant(&tenant_id).await?
+    let tenant = state
+        .tenant_db
+        .get_tenant(&tenant_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("Tenant not found".to_string()))?;
 
     Ok(Json(TenantResponse::from(tenant)))
@@ -166,12 +160,16 @@ pub async fn create_api_key(
     Path(tenant_id): Path<String>,
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let (api_key, raw_key) = state.tenant_db.create_api_key(&tenant_id, payload.name).await?;
+    let (api_key, raw_key) = state
+        .tenant_db
+        .create_api_key(&tenant_id, payload.name)
+        .await?;
 
     let pool = state.tenant_db.pool().clone();
     let kid = api_key.id.clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "create_api_key", "api_key", &kid, None, None).await;
+        let _ =
+            audit_log::log_admin_action(&pool, "create_api_key", "api_key", &kid, None, None).await;
     });
 
     Ok(Json(serde_json::json!({
@@ -195,7 +193,10 @@ pub async fn get_tenant_usage(
     State(state): State<AppState>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<UsageResponse>> {
-    let _ = state.tenant_db.get_tenant(&tenant_id).await?
+    let _ = state
+        .tenant_db
+        .get_tenant(&tenant_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("Tenant not found".to_string()))?;
 
     let usage = state.tenant_db.get_usage_summary(&tenant_id).await?;
@@ -212,16 +213,30 @@ pub async fn update_tenant_quota(
         AppError::InvalidInput("Invalid tier. Must be: free, dev, pro, or enterprise".to_string())
     })?;
 
-    state.tenant_db.update_tenant_quota(&tenant_id, tier).await?;
+    state
+        .tenant_db
+        .update_tenant_quota(&tenant_id, tier)
+        .await?;
 
-    let tenant = state.tenant_db.get_tenant(&tenant_id).await?
+    let tenant = state
+        .tenant_db
+        .get_tenant(&tenant_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("Tenant not found".to_string()))?;
 
     let pool = state.tenant_db.pool().clone();
     let tid = tenant_id.clone();
     let details = format!("{{\"new_tier\":\"{}\"}}", payload.tier);
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "update_quota", "tenant", &tid, Some(&details), None).await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "update_quota",
+            "tenant",
+            &tid,
+            Some(&details),
+            None,
+        )
+        .await;
     });
 
     Ok(Json(TenantResponse::from(tenant)))
@@ -265,19 +280,31 @@ pub async fn provision_client(
 
     let tenant = state.tenant_db.create_tenant(req.name, tier).await?;
 
-    let agents = clone_templates_for_tenant(
-        state.tenant_db.pool(),
-        &tenant.id,
-        &product_type,
-    ).await?;
+    let agents =
+        clone_templates_for_tenant(state.tenant_db.pool(), &tenant.id, &product_type).await?;
 
-    let (api_key, raw_key) = state.tenant_db.create_api_key(&tenant.id, req.api_key_name).await?;
+    let (api_key, raw_key) = state
+        .tenant_db
+        .create_api_key(&tenant.id, req.api_key_name)
+        .await?;
 
     let pool = state.tenant_db.pool().clone();
     let tid = tenant.id.clone();
-    let details = format!("{{\"product_type\":\"{}\",\"tier\":\"{}\"}}", product_type, tenant.tier.as_str());
+    let details = format!(
+        "{{\"product_type\":\"{}\",\"tier\":\"{}\"}}",
+        product_type,
+        tenant.tier.as_str()
+    );
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "provision_client", "tenant", &tid, Some(&details), None).await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "provision_client",
+            "tenant",
+            &tid,
+            Some(&details),
+            None,
+        )
+        .await;
     });
 
     Ok(Json(ProvisionClientResponse {
@@ -325,7 +352,8 @@ pub async fn update_tenant_agent_handler(
     Path((tenant_id, agent_name)): Path<(String, String)>,
     Json(req): Json<UpdateTenantAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
-    let agent = db_update_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name, req).await?;
+    let agent =
+        db_update_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name, req).await?;
 
     let pool = state.tenant_db.pool().clone();
     let aid = agent.id.clone();
@@ -345,7 +373,9 @@ pub async fn delete_tenant_agent_handler(
     let pool = state.tenant_db.pool().clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "delete_agent", "agent", &resource_id, None, None).await;
+        let _ =
+            audit_log::log_admin_action(&pool, "delete_agent", "agent", &resource_id, None, None)
+                .await;
     });
 
     Ok(StatusCode::NO_CONTENT)
@@ -364,9 +394,7 @@ pub async fn list_agent_templates_handler(
     Ok(Json(templates))
 }
 
-pub async fn list_models_handler(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<ModelInfo>>> {
+pub async fn list_models_handler(State(state): State<AppState>) -> Result<Json<Vec<ModelInfo>>> {
     Ok(Json(state.provider_registry.list_models()))
 }
 
@@ -391,7 +419,8 @@ pub async fn list_alerts(
         q.severity.as_deref(),
         q.resolved,
         limit,
-    ).await?;
+    )
+    .await?;
     Ok(Json(alerts))
 }
 
@@ -409,13 +438,13 @@ pub async fn resolve_alert(
         state.tenant_db.pool(),
         &alert_id,
         payload.resolved_by.as_deref(),
-    ).await?;
+    )
+    .await?;
 
     let pool = state.tenant_db.pool().clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool, "resolve_alert", "alert", &alert_id, None, None,
-        ).await;
+        let _ = audit_log::log_admin_action(&pool, "resolve_alert", "alert", &alert_id, None, None)
+            .await;
     });
 
     Ok(StatusCode::OK)
@@ -473,10 +502,10 @@ pub async fn get_daily_usage(
         "SELECT
             (created_at / 86400) * 86400 as day_ts,
             COUNT(*) as requests,
-            COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
+            COALESCE(SUM(input_tokens + output_tokens)::bigint, 0) as tokens
          FROM agent_runs
          WHERE tenant_id = $1 AND created_at >= $2
-         GROUP BY day_ts ORDER BY day_ts"
+         GROUP BY day_ts ORDER BY day_ts",
     )
     .bind(&tenant_id)
     .bind(start_ts)
@@ -485,13 +514,14 @@ pub async fn get_daily_usage(
     .map_err(|e| AppError::Database(e.to_string()))?;
 
     use sqlx::Row;
-    let entries: Vec<DailyUsageEntry> = rows.iter().map(|row| {
-        DailyUsageEntry {
+    let entries: Vec<DailyUsageEntry> = rows
+        .iter()
+        .map(|row| DailyUsageEntry {
             date: row.get("day_ts"),
             requests: row.get("requests"),
             tokens: row.get("tokens"),
-        }
-    }).collect();
+        })
+        .collect();
 
     Ok(Json(entries))
 }
@@ -519,7 +549,8 @@ pub async fn list_agent_runs_handler(
         Some(&agent_name),
         limit,
         offset,
-    ).await?;
+    )
+    .await?;
     Ok(Json(runs))
 }
 
@@ -527,11 +558,8 @@ pub async fn get_agent_stats_handler(
     State(state): State<AppState>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<Json<agent_runs::AgentRunStats>> {
-    let stats = agent_runs::get_agent_run_stats(
-        state.tenant_db.pool(),
-        &tenant_id,
-        &agent_name,
-    ).await?;
+    let stats =
+        agent_runs::get_agent_run_stats(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
     Ok(Json(stats))
 }
 

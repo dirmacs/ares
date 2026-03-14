@@ -378,6 +378,8 @@ async fn run_server(
     tool_registry.register(Arc::new(ares::tools::pom::PomUpdateDissueTool::new()));
     tool_registry.register(Arc::new(ares::tools::pom::PomGetCurrentSprintTool::new()));
     tool_registry.register(Arc::new(ares::tools::pom::PomListDissuesTool::new()));
+    tool_registry.register(Arc::new(ares::tools::pom::PomCreateSprintTool::new()));
+    tool_registry.register(Arc::new(ares::tools::pom::PomListSprintsTool::new()));
 
     // Register DCRM tools (calls dcrm-api at DCRM_BASE_URL or localhost:3001)
     tool_registry.register(Arc::new(ares::tools::dcrm::DcrmListContactsTool::new()));

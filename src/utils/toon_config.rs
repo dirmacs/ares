@@ -342,8 +342,9 @@ pub struct ToonMcpConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Command to run the MCP server (e.g., "npx", "python")
-    pub command: String,
+    /// Command to run the MCP server (e.g., "npx", "python"). Optional for HTTP transport.
+    #[serde(default)]
+    pub command: Option<String>,
 
     /// Arguments to pass to the command
     #[serde(default)]
@@ -364,7 +365,7 @@ impl ToonMcpConfig {
         Self {
             name: name.into(),
             enabled: default_true(),
-            command: command.into(),
+            command: Some(command.into()),
             args: Vec::new(),
             env: HashMap::new(),
             timeout_secs: default_timeout(),

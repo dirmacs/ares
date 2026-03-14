@@ -42,6 +42,8 @@
 
 /// Calculator tool for arithmetic operations.
 pub mod calculator;
+/// DCRM (Dirmacs CRM) tools for contact and deal management.
+pub mod dcrm;
 /// Eruka context read/search tools.
 pub mod eruka;
 /// POM (Project Operations Manager) tools for dissue tracking.

@@ -466,6 +466,7 @@ impl LLMClient for LlamaCppClient {
             content,
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
+            // Note: llama-cpp-2 crate doesn't expose token counts in its API
             usage: None,
         })
     }
@@ -527,12 +528,11 @@ Otherwise, respond normally with text."#,
         } else {
             "tool_calls"
         };
-
+        // Note: llama-cpp-2 crate doesn't expose token counts in its API
         Ok(LLMResponse {
             content,
             tool_calls,
             finish_reason: finish_reason.to_string(),
-            // Note: llama-cpp-2 crate doesn't expose token counts in its API
             usage: None,
         })
     }
@@ -629,7 +629,7 @@ Otherwise, respond normally with text."#,
         } else {
             "tool_calls"
         };
-
+        // Note: llama-cpp-2 crate doesn't expose token counts in its API
         Ok(LLMResponse {
             content,
             tool_calls,

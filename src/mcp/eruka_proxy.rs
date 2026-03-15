@@ -8,6 +8,7 @@ use crate::mcp::tools::{
 };
 use crate::types::AppError;
 use serde_json::Value;
+use anyhow::Result;
 
 /// Error type for Eruka proxy operations.
 #[derive(Debug, thiserror::Error)]
@@ -204,5 +205,113 @@ impl ErukaProxy {
             results,
             total_results: total,
         })
+    }
+    /// Creates a new workspace.
+    ///
+    /// POST /api/v1/workspaces
+    pub async fn create_workspace(&self, name: &str, owner_email: &str) -> anyhow::Result<serde_json::Value> {
+        let url = format!("{}/api/v1/workspaces", self.base_url);
+        let body = serde_json::json!({"name": name, "owner_email": owner_email});
+        let response = self.http.post(&url).json(&body).send().await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Eruka API error {}: {}", status, body_text));
+        }
+        let json: serde_json::Value = response.json().await?;
+        Ok(json)
+    }
+
+    /// Sends a chat message to Sisyphos.
+    ///
+    /// POST /api/v1/sisyphos/sessions/{session_id}/chat
+    pub async fn sisyphos_chat(&self, session_id: &str, message: &str, workspace_id: &str) -> anyhow::Result<serde_json::Value> {
+        let url = format!("{}/api/v1/sisyphos/sessions/{}/chat", self.base_url, session_id);
+        let body = serde_json::json!({"message": message, "workspace_id": workspace_id});
+        let response = self.http.post(&url).json(&body).send().await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Eruka API error {}: {}", status, body_text));
+        }
+        let json: serde_json::Value = response.json().await?;
+        Ok(json)
+    }
+
+    /// Creates a new Sisyphos session.
+    ///
+    /// POST /api/v1/sisyphos/sessions
+    pub async fn sisyphos_create_session(&self, user_id: &str) -> anyhow::Result<serde_json::Value> {
+        let url = format!("{}/api/v1/sisyphos/sessions", self.base_url);
+        let body = serde_json::json!({"user_id": user_id});
+        let response = self.http.post(&url).json(&body).send().await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Eruka API error {}: {}", status, body_text));
+        }
+        let json: serde_json::Value = response.json().await?;
+        Ok(json)
+    }
+
+    /// Retrieves gaps for a user.
+    ///
+    /// GET /api/v1/gaps?user_id=...
+    pub async fn get_gaps(&self, user_id: &str) -> anyhow::Result<serde_json::Value> {
+        let url = format!("{}/api/v1/gaps", self.base_url);
+        let response = self.http.get(&url).query(&[("user_id", user_id)]).send().await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Eruka API error {}: {}", status, body_text));
+        }
+        let json: serde_json::Value = response.json().await?;
+        Ok(json)
+    }
+
+    /// Retrieves completeness for a user and scope.
+    ///
+    /// GET /api/v1/completeness/{scope}?user_id=...
+    pub async fn get_completeness(&self, user_id: &str, scope: &str) -> anyhow::Result<serde_json::Value> {
+        let url = format!("{}/api/v1/completeness/{}", self.base_url, scope);
+        let response = self.http.get(&url).query(&[("user_id", user_id)]).send().await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Eruka API error {}: {}", status, body_text));
+        }
+        let json: serde_json::Value = response.json().await?;
+        Ok(json)
+    }
+
+    /// Links a tenant to a workspace.
+    ///
+    /// PUT /api/v1/workspaces/{workspace_id}/tenant
+    pub async fn link_tenant(&self, workspace_id: &str, tenant_id: &str) -> anyhow::Result<serde_json::Value> {
+        let url = format!("{}/api/v1/workspaces/{}/tenant", self.base_url, workspace_id);
+        let body = serde_json::json!({"tenant_id": tenant_id});
+        let response = self.http.put(&url).json(&body).send().await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Eruka API error {}: {}", status, body_text));
+        }
+        let json: serde_json::Value = response.json().await?;
+        Ok(json)
+    }
+
+    /// Retrieves a workspace by ID.
+    ///
+    /// GET /api/v1/workspaces/{workspace_id}
+    pub async fn get_workspace(&self, workspace_id: &str) -> anyhow::Result<serde_json::Value> {
+        let url = format!("{}/api/v1/workspaces/{}", self.base_url, workspace_id);
+        let response = self.http.get(&url).send().await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Eruka API error {}: {}", status, body_text));
+        }
+        let json: serde_json::Value = response.json().await?;
+        Ok(json)
     }
 }

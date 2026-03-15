@@ -270,7 +270,7 @@ impl LLMClient for AnthropicClient {
             content: Self::extract_text_content(&response.content),
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
-            usage: None,
+            usage: Some(TokenUsage::new(response.usage.input_tokens as u32, response.usage.output_tokens as u32)),
         })
     }
 

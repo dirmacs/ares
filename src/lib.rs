@@ -141,6 +141,8 @@ pub mod cli;
 pub mod db;
 /// DCRM HTTP client for DSprint survey pipeline.
 pub mod dcrm;
+/// DSprint agent recommendation engine (deterministic, no LLM).
+pub mod dsprint;
 /// LLM provider clients and abstractions.
 pub mod llm;
 /// Model Context Protocol (MCP) server integration.

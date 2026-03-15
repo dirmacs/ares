@@ -139,6 +139,8 @@ pub mod auth;
 pub mod cli;
 /// Database clients (Turso/SQLite, Qdrant).
 pub mod db;
+/// DCRM HTTP client for DSprint survey pipeline.
+pub mod dcrm;
 /// LLM provider clients and abstractions.
 pub mod llm;
 /// Model Context Protocol (MCP) server integration.

@@ -226,11 +226,17 @@ impl LLMClient for OllamaClient {
             .await
             .map_err(|e| AppError::LLM(format!("Ollama error: {}", e)))?;
 
+        // Extract token usage from final_data if available
+        let usage = response
+            .final_data
+            .as_ref()
+            .map(|data| TokenUsage::new(data.prompt_eval_count as u32, data.eval_count as u32));
+
         Ok(LLMResponse {
             content: response.message.content,
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
-            usage: None,
+            usage,
         })
     }
 

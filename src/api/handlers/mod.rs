@@ -29,3 +29,5 @@ pub mod user_agents;
 pub mod v1;
 /// Workflow execution handlers.
 pub mod workflows;
+/// DSprint survey handlers (public, no auth).
+pub mod dsprint;

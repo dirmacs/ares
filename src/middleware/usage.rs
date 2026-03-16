@@ -13,8 +13,9 @@ pub async fn track_usage(req: Request, next: Next) -> Response {
 
     if let (Some(tid), Some(db)) = (tenant_id, tenant_db) {
         let headers = response.headers().clone();
+        let pool = db.pool().clone();
         tokio::spawn(async move {
-            let _ = crate::middleware::usage::record_usage(&tid, &headers, db.as_ref()).await;
+            let _ = crate::middleware::usage::record_usage(&tid, &headers, &pool).await;
         });
     }
 
@@ -24,7 +25,7 @@ pub async fn track_usage(req: Request, next: Next) -> Response {
 async fn record_usage(
     tenant_id: &str,
     headers: &axum::http::HeaderMap,
-    db: &TenantDb,
+    pool: &sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut tokens = 0;
     if let Some(t) = headers
@@ -42,6 +43,20 @@ async fn record_usage(
         tokens += t;
     }
 
-    db.record_usage_event(tenant_id, 1, tokens as u64).await?;
+    // Record usage event
+    sqlx::query!(
+        "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, created_at) VALUES ($1, $2, 'http', $3, $4, $5)",
+        uuid::Uuid::new_v4().to_string(),
+        tenant_id,
+        1,
+        tokens as i64,
+        chrono::Utc::now().timestamp()
+    )
+    .execute(pool)
+    .await?;
+
+    // Track first usage for DCRM stage updates
+    crate::dsprint::stage_tracker::track_first_usage(tenant_id, pool).await;
+
     Ok(())
 }

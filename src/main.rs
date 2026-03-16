@@ -670,11 +670,32 @@ async fn run_server(
             api::routes::create_router(state.auth_service.clone(), state.tenant_db.clone()),
         );
 
-    // DSprint survey routes (public, no auth)
-    app = app.route("/v1/dsprint/submit", post(ares::api::handlers::dsprint::submit));
-    app = app.route("/v1/dsprint/results/{workspace_id}", axum::routing::get(ares::api::handlers::dsprint::results));
-    app = app.route("/v1/dsprint/upload", post(ares::api::handlers::dsprint::upload));
-    app = app.route("/v1/dsprint/chat", post(ares::api::handlers::dsprint::chat));
+    // DSprint survey routes (public, no auth) with IP-based rate limiting
+    {
+        use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+
+        // 30 requests/minute per IP (1 token per 2 seconds, burst of 30)
+        let dsprint_governor = std::sync::Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(2)
+                .burst_size(30)
+                .use_headers()
+                .finish()
+                .expect("Failed to build DSprint rate limiter"),
+        );
+
+        let dsprint_routes = Router::new()
+            .route("/submit", post(ares::api::handlers::dsprint::submit))
+            .route("/results/{workspace_id}", axum::routing::get(ares::api::handlers::dsprint::results))
+            .route("/upload", post(ares::api::handlers::dsprint::upload))
+            .route("/chat", post(ares::api::handlers::dsprint::chat))
+            .route_layer(GovernorLayer::new(dsprint_governor))
+            .with_state(state.clone());
+
+        app = app.nest("/v1/dsprint", dsprint_routes);
+
+        tracing::info!("DSprint rate limiting enabled: 30 req/min per IP");
+    }
 
     // Swagger UI (optional - requires network during build)
     #[cfg(feature = "swagger-ui")]

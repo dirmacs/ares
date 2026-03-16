@@ -86,8 +86,10 @@ impl ErukaProxy {
     /// Auto-login to Eruka and cache token
     pub async fn ensure_authenticated(&mut self) -> anyhow::Result<()> {
         if self.auth_token.is_some() { return Ok(()); }
-        let email = std::env::var("ERUKA_SERVICE_EMAIL").unwrap_or_else(|_| "bom@dirmacs.com".to_string());
-        let password = std::env::var("ERUKA_SERVICE_PASSWORD").unwrap_or_else(|_| "REDACTED_SERVICE_PASSWORD".to_string());
+        let email = std::env::var("ERUKA_SERVICE_EMAIL")
+            .map_err(|_| anyhow::anyhow!("ERUKA_SERVICE_EMAIL env var is required"))?;
+        let password = std::env::var("ERUKA_SERVICE_PASSWORD")
+            .map_err(|_| anyhow::anyhow!("ERUKA_SERVICE_PASSWORD env var is required"))?;
         let url = format!("{}/api/v1/auth/login", self.base_url);
         let body = serde_json::json!({"email": email, "password": password});
         let resp = self.http.post(&url).json(&body).send().await?;

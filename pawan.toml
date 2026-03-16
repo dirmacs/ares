@@ -1,0 +1,7 @@
+model = "minimaxai/minimax-m2.5"
+temperature = 0.6
+
+[mcp.daedra]
+command = "daedra"
+args = ["serve", "--transport", "stdio", "--quiet"]
+

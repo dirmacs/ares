@@ -1,7 +1,3 @@
-model = "minimaxai/minimax-m2.5"
+model = "stepfun-ai/step-3.5-flash"
 temperature = 0.6
-
-[mcp.daedra]
-command = "daedra"
-args = ["serve", "--transport", "stdio", "--quiet"]
 

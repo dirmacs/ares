@@ -690,6 +690,7 @@ async fn run_server(
             .route("/upload", post(ares::api::handlers::dsprint::upload))
             .route("/chat", post(ares::api::handlers::dsprint::chat))
             .route("/activate", post(ares::api::handlers::dsprint::activate))
+            .route("/analytics/funnel", axum::routing::get(ares::api::handlers::dsprint::funnel_analytics))
             .route_layer(GovernorLayer::new(dsprint_governor))
             .with_state(state.clone());
 

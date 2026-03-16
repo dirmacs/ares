@@ -9,6 +9,7 @@ use reqwest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
+use chrono::Utc;
 
 #[derive(Debug, Deserialize)]
 pub struct SubmitPayload {
@@ -623,7 +624,7 @@ pub async fn chat(
     // 2. Forward message to Eruka Sisyphos
     let chat_result = eruka.sisyphos_chat(&session_id, &payload.message, &payload.workspace_id).await;
 
-    match chat_result {
+    return match chat_result {
         Ok(v) => {
             let reply = v["response"].as_str().unwrap_or("").to_string();
             let extracted = v["extracted_fields"].as_array().cloned().unwrap_or_default();
@@ -648,5 +649,137 @@ pub async fn chat(
             tracing::warn!("Sisyphos chat failed: {e}");
             Err(AppError::External(format!("Chat service unavailable: {e}")))
         }
+    };
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActivatePayload {
+    pub workspace_id: String,
+    pub email: String,
+    pub tier: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivateResponse {
+    pub tenant_id: String,
+    pub api_key: String,
+    pub agents_provisioned: Vec<String>,
+    pub portal_url: String,
+    pub mcp_url: String,
+    pub workspace_id: String,
+}
+
+/// POST /v1/dsprint/activate — create tenant from survey results
+pub async fn activate(
+    State(app): State<AppState>,
+    Json(payload): Json<ActivatePayload>,
+) -> Result<Json<ActivateResponse>> {
+    let tenant_id = uuid::Uuid::new_v4().to_string();
+    let api_key = format!("ares_{}_{}", payload.email.split('@').next().unwrap_or("user"), &tenant_id[..8]);
+
+    let pool = app.tenant_db.pool();
+    let now = chrono::Utc::now().timestamp();
+
+    // 1. Create tenant in DB (name = company email, tier from payload)
+    let _ = sqlx::query!(
+        r#"INSERT INTO tenants (id, name, tier, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (name) DO UPDATE SET tier = $3, updated_at = $5"#,
+        tenant_id,
+        payload.email,
+        payload.tier,
+        now,
+        now
+    ).execute(pool).await.map_err(|e| {
+        tracing::warn!("Tenant creation failed: {e}");
+        AppError::External(format!("Failed to create tenant: {e}"))
+    })?;
+
+    // 2. Generate API key
+    let key_id = uuid::Uuid::new_v4().to_string();
+    let key_hash = format!("hash_{}", &api_key[..16]);
+    let key_prefix = &api_key[..12];
+    let _ = sqlx::query!(
+        r#"INSERT INTO api_keys (id, tenant_id, key_hash, key_prefix, name, is_active, created_at, expires_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#,
+        key_id,
+        tenant_id,
+        key_hash,
+        key_prefix,
+        "dsprint-auto",
+        1i32,
+        now,
+        None::<i64>
+    ).execute(pool).await.map_err(|e| {
+        tracing::warn!("API key creation failed: {e}");
+        AppError::External(format!("Failed to create API key: {e}"))
+    })?;
+
+    // 3. Provision recommended agents (based on tier)
+    let agents = match payload.tier.as_str() {
+        "growth" => vec!["deployment-monitor", "meeting-summarizer", "dinkedin-post-creator", "lead-qualifier", "ticket-router"],
+        "pro" => vec!["deployment-monitor", "meeting-summarizer", "dinkedin-post-creator", "lead-qualifier", "ticket-router", "document-qa", "gtm-pipeline", "invoice-processor"],
+        _ => vec!["deployment-monitor", "meeting-summarizer", "dinkedin-post-creator"],
+    };
+
+    for agent_name in &agents {
+        let agent_id = uuid::Uuid::new_v4().to_string();
+        let display_name = agent_name.to_string();
+        let description = format!("Auto-provisioned agent for {}", agent_name);
+        let config = serde_json::json!({
+            "model": "fast",
+            "system_prompt": "",
+            "tools": [],
+            "max_tool_iterations": 3
+        });
+        let _ = sqlx::query!(
+            r#"INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               ON CONFLICT (tenant_id, agent_name) DO NOTHING"#,
+            agent_id,
+            tenant_id,
+            agent_name,
+            display_name,
+            description,
+            config,
+            true,
+            now,
+            now
+        ).execute(pool).await;
     }
+
+    // 4. Link workspace to tenant via Eruka (async)
+    let eruka_url = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
+    let ws_id = payload.workspace_id.clone();
+    let tid = tenant_id.clone();
+    tokio::spawn(async move {
+        let eruka = ErukaProxy::new(&eruka_url);
+        if let Err(e) = eruka.link_tenant(&ws_id, &tid).await {
+            tracing::warn!("Failed to link workspace to tenant: {e}");
+        }
+    });
+
+    // 5. Update DCRM deal stage (async)
+    let dcrm_url = env::var("DCRM_BASE_URL").unwrap_or_else(|_| "http://localhost:3001".to_string());
+    let email_dcrm = payload.email.clone();
+    let tier_dcrm = payload.tier.clone();
+    tokio::spawn(async move {
+        let dcrm = DcrmClient::new(&dcrm_url);
+        let _ = dcrm.log_activity(&ActivityCreate {
+            contact_id: None,
+            deal_id: None,
+            activity_type: "dsprint_activated".to_string(),
+            description: format!("Tenant activated for {}", email_dcrm),
+            metadata: serde_json::json!({"tier": tier_dcrm}),
+        }).await;
+    });
+
+    Ok(Json(ActivateResponse {
+        tenant_id,
+        api_key,
+        agents_provisioned: agents.iter().map(|s| s.to_string()).collect(),
+        portal_url: "portal.dirmacs.com".to_string(),
+        mcp_url: "eruka.dirmacs.com/mcp".to_string(),
+        workspace_id: payload.workspace_id,
+    }))
 }

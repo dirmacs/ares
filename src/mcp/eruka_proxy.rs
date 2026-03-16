@@ -46,6 +46,7 @@ impl From<ErukaProxyError> for AppError {
 pub struct ErukaProxy {
     http: reqwest::Client,
     base_url: String,
+    auth_token: Option<String>,
 }
 
 impl ErukaProxy {
@@ -59,10 +60,48 @@ impl ErukaProxy {
             .build()
             .expect("Failed to build Eruka proxy HTTP client");
 
+        // Try to get auth token from env
+        let auth_token = std::env::var("ERUKA_AUTH_TOKEN").ok();
+
         Self {
             http,
             base_url: eruka_base_url.trim_end_matches('/').to_string(),
+            auth_token,
         }
+    }
+
+    /// Create with explicit token
+    pub fn with_token(eruka_base_url: &str, token: &str) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("Failed to build Eruka proxy HTTP client");
+        Self {
+            http,
+            base_url: eruka_base_url.trim_end_matches('/').to_string(),
+            auth_token: Some(token.to_string()),
+        }
+    }
+
+    /// Auto-login to Eruka and cache token
+    pub async fn ensure_authenticated(&mut self) -> anyhow::Result<()> {
+        if self.auth_token.is_some() { return Ok(()); }
+        let email = std::env::var("ERUKA_SERVICE_EMAIL").unwrap_or_else(|_| "bom@dirmacs.com".to_string());
+        let password = std::env::var("ERUKA_SERVICE_PASSWORD").unwrap_or_else(|_| "REDACTED_SERVICE_PASSWORD".to_string());
+        let url = format!("{}/api/v1/auth/login", self.base_url);
+        let body = serde_json::json!({"email": email, "password": password});
+        let resp = self.http.post(&url).json(&body).send().await?;
+        if resp.status().is_success() {
+            let json: serde_json::Value = resp.json().await?;
+            if let Some(token) = json["token"].as_str() {
+                self.auth_token = Some(token.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    fn auth_header(&self) -> Option<String> {
+        self.auth_token.as_ref().map(|t| format!("Bearer {}", t))
     }
 
     /// Reads a single field from Eruka.
@@ -83,7 +122,11 @@ impl ErukaProxy {
             self.base_url, workspace_id, input.category, input.field
         );
 
-        let response = self.http.get(&url).send().await?;
+        let mut req = self.http.get(&url);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let response = req.send().await?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -117,7 +160,7 @@ impl ErukaProxy {
 
         let url = format!("{}/api/workspaces/{}/context", self.base_url, workspace_id);
 
-        let body = serde_json::json!({
+        let body = serde_json::json!( {
             "category": input.category,
             "field": input.field,
             "value": input.value,
@@ -125,7 +168,11 @@ impl ErukaProxy {
             "source": input.source
         });
 
-        let response = self.http.post(&url).json(&body).send().await?;
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let response = req.send().await?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -166,12 +213,16 @@ impl ErukaProxy {
 
         let url = format!("{}/api/workspaces/{}/search", self.base_url, workspace_id);
 
-        let body = serde_json::json!({
+        let body = serde_json::json!( {
             "query": input.query,
             "limit": input.limit
         });
 
-        let response = self.http.post(&url).json(&body).send().await?;
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let response = req.send().await?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -206,13 +257,18 @@ impl ErukaProxy {
             total_results: total,
         })
     }
+
     /// Creates a new workspace.
     ///
     /// POST /api/v1/workspaces
     pub async fn create_workspace(&self, name: &str, owner_email: &str) -> anyhow::Result<serde_json::Value> {
         let url = format!("{}/api/v1/workspaces", self.base_url);
         let body = serde_json::json!({"name": name, "owner_email": owner_email});
-        let response = self.http.post(&url).json(&body).send().await?;
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let response = req.send().await?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body_text = response.text().await.unwrap_or_default();
@@ -228,7 +284,11 @@ impl ErukaProxy {
     pub async fn sisyphos_chat(&self, session_id: &str, message: &str, workspace_id: &str) -> anyhow::Result<serde_json::Value> {
         let url = format!("{}/api/v1/sisyphos/sessions/{}/chat", self.base_url, session_id);
         let body = serde_json::json!({"message": message, "workspace_id": workspace_id});
-        let response = self.http.post(&url).json(&body).send().await?;
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let response = req.send().await?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body_text = response.text().await.unwrap_or_default();
@@ -244,7 +304,11 @@ impl ErukaProxy {
     pub async fn sisyphos_create_session(&self, user_id: &str) -> anyhow::Result<serde_json::Value> {
         let url = format!("{}/api/v1/sisyphos/sessions", self.base_url);
         let body = serde_json::json!({"user_id": user_id});
-        let response = self.http.post(&url).json(&body).send().await?;
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let response = req.send().await?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body_text = response.text().await.unwrap_or_default();
@@ -259,7 +323,11 @@ impl ErukaProxy {
     /// GET /api/v1/gaps?user_id=...
     pub async fn get_gaps(&self, user_id: &str) -> anyhow::Result<serde_json::Value> {
         let url = format!("{}/api/v1/gaps", self.base_url);
-        let response = self.http.get(&url).query(&[("user_id", user_id)]).send().await?;
+        let mut req = self.http.get(&url).query(&[("user_id", user_id)]);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let response = req.send().await?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body_text = response.text().await.unwrap_or_default();
@@ -274,7 +342,11 @@ impl ErukaProxy {
     /// GET /api/v1/completeness/{scope}?user_id=...
     pub async fn get_completeness(&self, user_id: &str, scope: &str) -> anyhow::Result<serde_json::Value> {
         let url = format!("{}/api/v1/completeness/{}", self.base_url, scope);
-        let response = self.http.get(&url).query(&[("user_id", user_id)]).send().await?;
+        let mut req = self.http.get(&url).query(&[("user_id", user_id)]);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let response = req.send().await?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body_text = response.text().await.unwrap_or_default();
@@ -290,7 +362,11 @@ impl ErukaProxy {
     pub async fn link_tenant(&self, workspace_id: &str, tenant_id: &str) -> anyhow::Result<serde_json::Value> {
         let url = format!("{}/api/v1/workspaces/{}/tenant", self.base_url, workspace_id);
         let body = serde_json::json!({"tenant_id": tenant_id});
-        let response = self.http.put(&url).json(&body).send().await?;
+        let mut req = self.http.put(&url).json(&body);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let response = req.send().await?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body_text = response.text().await.unwrap_or_default();
@@ -305,7 +381,11 @@ impl ErukaProxy {
     /// GET /api/v1/workspaces/{workspace_id}
     pub async fn get_workspace(&self, workspace_id: &str) -> anyhow::Result<serde_json::Value> {
         let url = format!("{}/api/v1/workspaces/{}", self.base_url, workspace_id);
-        let response = self.http.get(&url).send().await?;
+        let mut req = self.http.get(&url);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let response = req.send().await?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body_text = response.text().await.unwrap_or_default();

@@ -674,28 +674,45 @@ pub async fn activate(
     State(app): State<AppState>,
     Json(payload): Json<ActivatePayload>,
 ) -> Result<Json<ActivateResponse>> {
-    let tenant_id = uuid::Uuid::new_v4().to_string();
-    let api_key = format!("ares_{}_{}", payload.email.split('@').next().unwrap_or("user"), &tenant_id[..8]);
-
     let pool = app.tenant_db.pool();
     let now = chrono::Utc::now().timestamp();
 
-    // 1. Create tenant in DB (name = company email, tier from payload)
-    let _ = sqlx::query!(
-        r#"INSERT INTO tenants (id, name, tier, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (name) DO UPDATE SET tier = $3, updated_at = $5"#,
-        tenant_id,
-        payload.email,
-        payload.tier,
-        now,
-        now
-    ).execute(pool).await.map_err(|e| {
-        tracing::warn!("Tenant creation failed: {e}");
-        AppError::External(format!("Failed to create tenant: {e}"))
+    // 1. Check if tenant already exists for this email (stored in name column)
+    let existing = sqlx::query_scalar!(
+        r#"SELECT id FROM tenants WHERE name = $1"#,
+        payload.email
+    ).fetch_optional(pool).await.map_err(|e| {
+        tracing::warn!("Tenant lookup failed: {e}");
+        AppError::External(format!("Database error: {e}"))
     })?;
 
-    // 2. Generate API key
+    let tenant_id = if let Some(existing_id) = existing {
+        // Update existing tenant
+        let _ = sqlx::query!(
+            r#"UPDATE tenants SET tier = $1, updated_at = $2 WHERE id = $3"#,
+            payload.tier, now, existing_id
+        ).execute(pool).await.map_err(|e| {
+            tracing::warn!("Tenant update failed: {e}");
+            AppError::External(format!("Failed to update tenant: {e}"))
+        })?;
+        existing_id
+    } else {
+        // Insert new tenant
+        let new_id = uuid::Uuid::new_v4().to_string();
+        let _ = sqlx::query!(
+            r#"INSERT INTO tenants (id, name, tier, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5)"#,
+            new_id, payload.email, payload.tier, now, now
+        ).execute(pool).await.map_err(|e| {
+            tracing::warn!("Tenant creation failed: {e}");
+            AppError::External(format!("Failed to create tenant: {e}"))
+        })?;
+        new_id
+    };
+
+    // Generate API key
+    let api_key = format!("ares_{}_{}", payload.email.split('@').next().unwrap_or("user"), &tenant_id[..8]);
+
     let key_id = uuid::Uuid::new_v4().to_string();
     let key_hash = format!("hash_{}", &api_key[..16]);
     let key_prefix = &api_key[..12];

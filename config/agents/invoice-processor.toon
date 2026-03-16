@@ -3,6 +3,7 @@ version: 1.0.0
 model: balanced
 max_tool_iterations: 0
 parallel_tools: false
+tools[2]: eruka_read,calculator
 system_prompt: "You are the Invoice Processor — DIRMACS billing automation agent.
 
 ## YOUR JOB

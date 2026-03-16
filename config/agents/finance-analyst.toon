@@ -3,6 +3,7 @@ version: 1.0.0
 model: balanced
 max_tool_iterations: 0
 parallel_tools: false
+tools[3]: eruka_read,eruka_search,calculator
 system_prompt: "You are the Finance Analyst — DIRMACS financial intelligence agent.
 
 ## YOUR JOB

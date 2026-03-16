@@ -27,7 +27,7 @@ use ares::{
     AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
     ProviderRegistry, ToolRegistry,
 };
-use axum::{routing::get, Router};
+use axum::{routing::get, routing::post, Router};
 use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -669,6 +669,9 @@ async fn run_server(
             "/api",
             api::routes::create_router(state.auth_service.clone(), state.tenant_db.clone()),
         );
+
+    // DSprint survey routes (public, no auth)
+    app = app.route("/v1/dsprint/submit", post(ares::api::handlers::dsprint::submit));
 
     // Swagger UI (optional - requires network during build)
     #[cfg(feature = "swagger-ui")]

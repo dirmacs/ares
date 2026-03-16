@@ -3,8 +3,9 @@
 
 use anyhow::Result;
 use lettre::{
-    transport::smtp::authentication::Credentials, message::Mailbox, Message, SmtpTransport,
-    Transport,
+    message::{Mailbox, SinglePart},
+    transport::smtp::authentication::Credentials,
+    Message, SmtpTransport, Transport,
 };
 use std::env;
 
@@ -65,8 +66,7 @@ pub async fn send_email(
         .from(from)
         .to(to)
         .subject(subject)
-        .text(body)
-        .build()?;
+        .singlepart(SinglePart::plain(body.to_string()))?;
 
     // Build SMTP transport
     let mut builder = SmtpTransport::builder_dangerous(&smtp_host)

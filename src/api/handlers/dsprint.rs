@@ -58,7 +58,8 @@ pub async fn submit(
 ) -> Result<Json<SubmitResponse>> {
     // 1. Create ErukaProxy from env
     let eruka_url = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
-    let eruka = ErukaProxy::new(&eruka_url);
+    let mut eruka = ErukaProxy::new(&eruka_url);
+    let _ = eruka.ensure_authenticated().await;
 
     // 2. Create workspace via Eruka (graceful failure)
     let ws = eruka.create_workspace(&payload.company_name, &payload.email).await;
@@ -332,7 +333,8 @@ pub async fn results(
     Path(workspace_id): Path<String>,
 ) -> Result<Json<ResultsResponse>> {
     let eruka_url = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
-    let eruka = ErukaProxy::new(&eruka_url);
+    let mut eruka = ErukaProxy::new(&eruka_url);
+    let _ = eruka.ensure_authenticated().await;
 
     // 1. Get workspace data from Eruka
     let ws_data = eruka.get_workspace(&workspace_id).await;
@@ -604,7 +606,8 @@ pub async fn chat(
     Json(payload): Json<ChatPayload>,
 ) -> Result<Json<ChatResponse>> {
     let eruka_url = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
-    let eruka = ErukaProxy::new(&eruka_url);
+    let mut eruka = ErukaProxy::new(&eruka_url);
+    let _ = eruka.ensure_authenticated().await;
 
     // 1. Get or create session
     let session_id = match payload.session_id {
@@ -770,7 +773,8 @@ pub async fn activate(
     let ws_id = payload.workspace_id.clone();
     let tid = tenant_id.clone();
     tokio::spawn(async move {
-        let eruka = ErukaProxy::new(&eruka_url);
+        let mut eruka = ErukaProxy::new(&eruka_url);
+        let _ = eruka.ensure_authenticated().await;
         if let Err(e) = eruka.link_tenant(&ws_id, &tid).await {
             tracing::warn!("Failed to link workspace to tenant: {e}");
         }

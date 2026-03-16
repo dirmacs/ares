@@ -3,7 +3,7 @@ use crate::mcp::eruka_proxy::ErukaProxy;
 use crate::dsprint::recommend::{recommend_agents, RecommendationRequest, DomainScore};
 use crate::types::{AppError, Result};
 use crate::AppState;
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::Json;
 use reqwest;
 use serde::{Deserialize, Serialize};
@@ -424,5 +424,108 @@ fn compute_total_savings(recommendations: &[crate::dsprint::recommend::AgentReco
     TotalSavings {
         hours_per_week: format!("{}-{}", total_min_hrs, total_max_hrs),
         inr_per_month: format!("Rs.{}K-{}K", min_inr / 1000, max_inr / 1000),
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct UploadResponse {
+    pub fields_extracted: u32,
+    pub fields_confirmed: u32,
+    pub fields_inferred: u32,
+    pub gaps_remaining: u32,
+    pub follow_up_questions: Vec<String>,
+}
+
+/// POST /v1/dsprint/upload — multipart file upload for document extraction
+pub async fn upload(
+    State(_app): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<UploadResponse>> {
+    let eruka_url = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
+    let mut workspace_id = String::new();
+    let mut file_data: Option<(String, Vec<u8>)> = None;
+
+    // Parse multipart fields
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        AppError::InvalidInput(format!("Failed to read multipart field: {}", e))
+    })? {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "workspace_id" => {
+                workspace_id = field.text().await.map_err(|e| {
+                    AppError::InvalidInput(format!("Failed to read workspace_id: {}", e))
+                })?;
+            }
+            "file" => {
+                let filename = field.file_name().unwrap_or("document").to_string();
+                let data = field.bytes().await.map_err(|e| {
+                    AppError::InvalidInput(format!("Failed to read file: {}", e))
+                })?;
+                file_data = Some((filename, data.to_vec()));
+            }
+            _ => {}
+        }
+    }
+
+    if workspace_id.is_empty() {
+        return Err(AppError::InvalidInput("workspace_id is required".to_string()));
+    }
+
+    let (filename, data) = match file_data {
+        Some(fd) => fd,
+        None => return Err(AppError::InvalidInput("file is required".to_string())),
+    };
+
+    // Forward file to Eruka Sisyphos upload endpoint
+    let http = reqwest::Client::new();
+    let upload_url = format!("{}/api/v1/sisyphos/sessions/{}/upload", eruka_url, workspace_id);
+
+    let part = reqwest::multipart::Part::bytes(data)
+        .file_name(filename.clone())
+        .mime_str("application/octet-stream")
+        .unwrap_or_else(|_| reqwest::multipart::Part::bytes(vec![]));
+    let form = reqwest::multipart::Form::new()
+        .text("workspace_id", workspace_id.clone())
+        .part("file", part);
+
+    let eruka_response = http.post(&upload_url).multipart(form).send().await;
+
+    match eruka_response {
+        Ok(resp) if resp.status().is_success() => {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            Ok(Json(UploadResponse {
+                fields_extracted: body["fields_extracted"].as_u64().unwrap_or(0) as u32,
+                fields_confirmed: body["fields_confirmed"].as_u64().unwrap_or(0) as u32,
+                fields_inferred: body["fields_inferred"].as_u64().unwrap_or(0) as u32,
+                gaps_remaining: body["gaps_remaining"].as_u64().unwrap_or(0) as u32,
+                follow_up_questions: body["follow_up_questions"]
+                    .as_array()
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default(),
+            }))
+        }
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            tracing::warn!("Eruka upload failed: {} {}", status, body);
+            // Return graceful response — Eruka may not have the upload endpoint yet
+            Ok(Json(UploadResponse {
+                fields_extracted: 0,
+                fields_confirmed: 0,
+                fields_inferred: 0,
+                gaps_remaining: 0,
+                follow_up_questions: vec!["Document processing is not yet available. Please answer the questions manually.".to_string()],
+            }))
+        }
+        Err(e) => {
+            tracing::warn!("Eruka upload request failed: {}", e);
+            Ok(Json(UploadResponse {
+                fields_extracted: 0,
+                fields_confirmed: 0,
+                fields_inferred: 0,
+                gaps_remaining: 0,
+                follow_up_questions: vec!["Document processing is temporarily unavailable.".to_string()],
+            }))
+        }
     }
 }

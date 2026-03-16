@@ -3,7 +3,7 @@ use crate::mcp::eruka_proxy::ErukaProxy;
 use crate::dsprint::recommend::{recommend_agents, RecommendationRequest, DomainScore};
 use crate::types::{AppError, Result};
 use crate::AppState;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::Json;
 use reqwest;
 use serde::{Deserialize, Serialize};
@@ -235,4 +235,194 @@ fn compute_domain_scores(answers: &HashMap<String, serde_json::Value>) -> Domain
     let overall = (sales + marketing + operations + customer_service + finance) / 5;
 
     DomainScores { overall, sales, marketing, operations, customer_service, finance }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResultsResponse {
+    pub company_name: String,
+    pub overall_score: u32,
+    pub domains: HashMap<String, DomainDetail>,
+    pub recommendations: Vec<crate::dsprint::recommend::AgentRecommendation>,
+    pub recommended_tier: String,
+    pub recommended_price: String,
+    pub total_savings: TotalSavings,
+    pub gaps_to_fill: Vec<GapInfo>,
+    pub tree_summary: TreeSummary,
+    pub mcp_available: bool,
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DomainDetail {
+    pub score: u32,
+    pub completeness: u32,
+    pub gaps: u32,
+    pub potential_savings_hrs: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TotalSavings {
+    pub hours_per_week: String,
+    pub inr_per_month: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GapInfo {
+    pub field: String,
+    pub impact: String,
+    pub question: String,
+    pub unlocks: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TreeSummary {
+    pub roots: u32,
+    pub trunk: u32,
+    pub branches: HashMap<String, u32>,
+    pub leaves: u32,
+    pub total_nodes: u32,
+    pub coverage: String,
+}
+
+pub async fn results(
+    State(_app): State<AppState>,
+    Path(workspace_id): Path<String>,
+) -> Result<Json<ResultsResponse>> {
+    let eruka_url = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
+    let eruka = ErukaProxy::new(&eruka_url);
+
+    // 1. Get workspace data from Eruka
+    let ws_data = eruka.get_workspace(&workspace_id).await;
+    let company_name = match &ws_data {
+        Ok(v) => v["name"].as_str().unwrap_or("Unknown").to_string(),
+        Err(e) => {
+            tracing::warn!("Eruka get_workspace failed: {e}");
+            "Unknown".to_string()
+        }
+    };
+
+    // 2. Get gaps from Eruka
+    let gaps_data = eruka.get_gaps(&workspace_id).await;
+    let gaps_list: Vec<GapInfo> = match &gaps_data {
+        Ok(v) => v["gaps"].as_array().map(|arr| {
+            arr.iter().map(|g| GapInfo {
+                field: g["field"].as_str().unwrap_or("").to_string(),
+                impact: g["impact"].as_str().unwrap_or("medium").to_string(),
+                question: g["question"].as_str().unwrap_or("").to_string(),
+                unlocks: g["unlocks"].as_str().unwrap_or("").to_string(),
+            }).collect()
+        }).unwrap_or_default(),
+        Err(_) => vec![],
+    };
+
+    // 3. Get completeness from Eruka
+    let completeness = eruka.get_completeness(&workspace_id, "overall").await;
+    let overall_completeness = match &completeness {
+        Ok(v) => v["completeness"].as_f64().unwrap_or(0.5),
+        Err(_) => 0.5,
+    };
+
+    // 4. Build domain details with static defaults (will be refined as Eruka data improves)
+    let domains = build_domain_details(overall_completeness, &gaps_list);
+
+    // 5. Compute overall score
+    let overall_score = domains.values().map(|d| d.score).sum::<u32>() / domains.len().max(1) as u32;
+
+    // 6. Run recommendation engine
+    let rec_request = RecommendationRequest {
+        domain_scores: domains.iter().map(|(name, detail)| DomainScore {
+            domain: name.clone(),
+            score: detail.score,
+            completeness: detail.completeness as f64 / 100.0,
+            gaps: detail.gaps,
+        }).collect(),
+        pain_points: vec![],
+        team_size: "11-50".to_string(), // Default, would come from workspace data
+        industry: "General".to_string(),
+        current_tools: vec![],
+    };
+    let recommendations = recommend_agents(&rec_request);
+
+    // 7. Determine tier and price
+    let recommended_tier = if recommendations.iter().any(|r| r.tier_required == "growth") {
+        "growth".to_string()
+    } else {
+        "starter".to_string()
+    };
+    let recommended_price = match recommended_tier.as_str() {
+        "growth" => "Rs.15,000/mo".to_string(),
+        _ => "Rs.5,000/mo".to_string(),
+    };
+
+    // 8. Compute total savings from recommendations
+    let total_savings = compute_total_savings(&recommendations);
+
+    // 9. Build tree summary
+    let _total_gaps: u32 = domains.values().map(|d| d.gaps).sum();
+    let total_nodes: u32 = domains.values().map(|d| d.score / 10).sum();
+    let tree_summary = TreeSummary {
+        roots: domains.len() as u32,
+        trunk: 0,
+        branches: domains.iter().map(|(name, detail)| (name.clone(), detail.score / 20)).collect(),
+        leaves: 0,
+        total_nodes,
+        coverage: format!("{}%", (overall_completeness * 100.0) as u32),
+    };
+
+    Ok(Json(ResultsResponse {
+        company_name,
+        overall_score,
+        domains,
+        recommendations,
+        recommended_tier,
+        recommended_price,
+        total_savings,
+        gaps_to_fill: gaps_list,
+        tree_summary,
+        mcp_available: true,
+        workspace_id,
+    }))
+}
+
+fn build_domain_details(overall_completeness: f64, gaps: &[GapInfo]) -> HashMap<String, DomainDetail> {
+    let mut domains = HashMap::new();
+    let base_completeness = (overall_completeness * 100.0) as u32;
+
+    for (name, base_score, savings) in [
+        ("sales", 55u32, "20-30"),
+        ("marketing", 45u32, "14-21"),
+        ("operations", 65u32, "30-50"),
+        ("customer_service", 40u32, "12-18"),
+        ("finance", 35u32, "10-16"),
+    ] {
+        let domain_gaps = gaps.iter().filter(|g| g.field.starts_with(name) || g.field.starts_with(&name[..3.min(name.len())])).count() as u32;
+        domains.insert(name.to_string(), DomainDetail {
+            score: base_score,
+            completeness: base_completeness,
+            gaps: domain_gaps,
+            potential_savings_hrs: savings.to_string(),
+        });
+    }
+    domains
+}
+
+fn compute_total_savings(recommendations: &[crate::dsprint::recommend::AgentRecommendation]) -> TotalSavings {
+    let mut total_min_hrs: u32 = 0;
+    let mut total_max_hrs: u32 = 0;
+
+    for rec in recommendations {
+        let parts: Vec<&str> = rec.savings_hours.split('-').collect();
+        if parts.len() == 2 {
+            total_min_hrs += parts[0].parse::<u32>().unwrap_or(0);
+            total_max_hrs += parts[1].parse::<u32>().unwrap_or(0);
+        }
+    }
+
+    let min_inr = total_min_hrs as u64 * 2000;
+    let max_inr = total_max_hrs as u64 * 2000;
+
+    TotalSavings {
+        hours_per_week: format!("{}-{}", total_min_hrs, total_max_hrs),
+        inr_per_month: format!("Rs.{}K-{}K", min_inr / 1000, max_inr / 1000),
+    }
 }

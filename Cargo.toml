@@ -115,6 +115,9 @@ mcp = ["dep:rmcp"]
 # Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs instead.
 local-embeddings = ["dep:fastembed"]
 
+# Email sending via SMTP
+# lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
+
 # ============= UI =============
 # Embedded UI - serves the Leptos frontend from the backend
 ui = ["dep:rust-embed", "dep:mime_guess"]
@@ -236,6 +239,9 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
 
 # MCP support (optional)
 rmcp = { version = "0.12.0", features = ["server", "client", "transport-io", "macros"], optional = true }
+
+# Email sending via SMTP
+lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
 
 # UI embedding (optional)
 rust-embed = { version = "8.9", optional = true }

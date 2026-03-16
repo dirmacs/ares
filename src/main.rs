@@ -672,6 +672,7 @@ async fn run_server(
 
     // DSprint survey routes (public, no auth)
     app = app.route("/v1/dsprint/submit", post(ares::api::handlers::dsprint::submit));
+    app = app.route("/v1/dsprint/results/{workspace_id}", axum::routing::get(ares::api::handlers::dsprint::results));
 
     // Swagger UI (optional - requires network during build)
     #[cfg(feature = "swagger-ui")]

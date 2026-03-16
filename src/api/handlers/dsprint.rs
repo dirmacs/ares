@@ -532,9 +532,9 @@ pub async fn upload(
 
 #[derive(Debug, Deserialize)]
 pub struct ChatPayload {
+    pub workspace_id: String,
     pub session_id: Option<String>,
     pub message: String,
-    pub workspace_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -542,19 +542,20 @@ pub struct ChatResponse {
     pub reply: String,
     pub extracted_fields: Vec<serde_json::Value>,
     pub inferred_fields: Vec<serde_json::Value>,
-    pub completeness: CompletenessInfo,
+    pub completeness: CompletenessChange,
     pub phase: String,
     pub next_gap: Option<String>,
     pub ui_schema: Option<serde_json::Value>,
+    pub session_id: String,
 }
 
 #[derive(Debug, Serialize)]
-pub struct CompletenessInfo {
+pub struct CompletenessChange {
     pub before: f64,
     pub after: f64,
 }
 
-/// POST /v1/dsprint/chat — Proxy to Eruka Sisyphos for adaptive chat
+/// POST /v1/dsprint/chat — adaptive chat with Sisyphos
 pub async fn chat(
     State(_app): State<AppState>,
     Json(payload): Json<ChatPayload>,
@@ -562,46 +563,48 @@ pub async fn chat(
     let eruka_url = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
     let eruka = ErukaProxy::new(&eruka_url);
 
-    // Create session if not provided
+    // 1. Get or create session
     let session_id = match payload.session_id {
-        Some(id) if !id.is_empty() => id,
-        _ => {
-            // Create new Sisyphos session
+        Some(sid) => sid,
+        None => {
             let session = eruka.sisyphos_create_session(&payload.workspace_id).await;
             match session {
                 Ok(v) => v["session_id"].as_str().unwrap_or("unknown").to_string(),
                 Err(e) => {
                     tracing::warn!("Failed to create Sisyphos session: {e}");
-                    return Err(AppError::External(format!("Failed to create chat session: {e}")));
+                    uuid::Uuid::new_v4().to_string()
                 }
             }
         }
     };
 
-    // Proxy chat message to Eruka Sisyphos
+    // 2. Forward message to Eruka Sisyphos
     let chat_result = eruka.sisyphos_chat(&session_id, &payload.message, &payload.workspace_id).await;
 
     match chat_result {
-        Ok(body) => {
+        Ok(v) => {
+            let reply = v["response"].as_str().unwrap_or("").to_string();
+            let extracted = v["extracted_fields"].as_array().cloned().unwrap_or_default();
+            let inferred = v["inferred_fields"].as_array().cloned().unwrap_or_default();
+            let before = v["completeness_before"].as_f64().unwrap_or(0.0);
+            let after = v["completeness_after"].as_f64().unwrap_or(0.0);
+            let phase = v["phase"].as_str().unwrap_or("ActiveExtraction").to_string();
+            let next_gap = v["next_suggested_gap"].as_str().map(|s| s.to_string());
+
             Ok(Json(ChatResponse {
-                reply: body["response"].as_str()
-                    .or(body["reply"].as_str())
-                    .unwrap_or("I'm processing your response.")
-                    .to_string(),
-                extracted_fields: body["extracted_fields"].as_array().cloned().unwrap_or_default(),
-                inferred_fields: body["inferred_fields"].as_array().cloned().unwrap_or_default(),
-                completeness: CompletenessInfo {
-                    before: body["completeness_before"].as_f64().unwrap_or(0.0),
-                    after: body["completeness_after"].as_f64().unwrap_or(0.0),
-                },
-                phase: body["phase"].as_str().unwrap_or("ActiveExtraction").to_string(),
-                next_gap: body["next_suggested_gap"].as_str().map(String::from),
-                ui_schema: body.get("ui_schema").cloned(),
+                reply,
+                extracted_fields: extracted,
+                inferred_fields: inferred,
+                completeness: CompletenessChange { before, after },
+                phase,
+                next_gap,
+                ui_schema: None, // Will be populated by generative UI (T21+)
+                session_id,
             }))
         }
         Err(e) => {
             tracing::warn!("Sisyphos chat failed: {e}");
-            Err(AppError::External(format!("Chat service error: {e}")))
+            Err(AppError::External(format!("Chat service unavailable: {e}")))
         }
     }
 }

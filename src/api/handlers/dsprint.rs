@@ -52,7 +52,7 @@ pub struct TreeStats {
 }
 
 pub async fn submit(
-    State(_app): State<AppState>,
+    State(app): State<AppState>,
     Json(payload): Json<SubmitPayload>,
 ) -> Result<Json<SubmitResponse>> {
     // 1. Create ErukaProxy from env
@@ -180,8 +180,50 @@ pub async fn submit(
             }).await;
         }
     });
+    // 10. Async: fire BOM surveyor agent
+    {
+        let agent_reg = app.agent_registry.clone();
+        let eruka_url_bom = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
+        let ws_id_bom = workspace_id.clone();
+        let company_bom = payload.company_name.clone();
+        let industry_bom = payload.industry.clone();
+        tokio::spawn(async move {
+            use crate::agents::Agent;
+            use crate::types::AgentContext;
+            let ctx = AgentContext {
+                user_id: "dsprint-system".to_string(),
+                session_id: ws_id_bom.clone(),
+                conversation_history: vec![],
+                user_memory: None,
+            };
+            match agent_reg.create_agent("bom-dsprint-surveyor").await {
+                Ok(agent) => {
+                    let prompt = format!(
+                        "Analyze workspace {} for company '{}' in industry '{}'. Provide automation recommendations.",
+                        ws_id_bom, company_bom, industry_bom
+                    );
+                    match agent.execute(&prompt, &ctx).await {
+                        Ok(response) => {
+                            let http = reqwest::Client::new();
+                            let url = format!("{}/api/v1/context", eruka_url_bom);
+                            let body = serde_json::json!({
+                                "path": format!("workspaces/{}/metadata/dsprint_analysis", ws_id_bom),
+                                "value": response.content,
+                                "knowledge_state": "CONFIRMED",
+                                "confidence": 0.8
+                            });
+                            let _ = http.post(&url).json(&body).send().await;
+                            tracing::info!("BOM surveyor completed for workspace {}", ws_id_bom);
+                        }
+                        Err(e) => tracing::warn!("BOM surveyor execution failed: {e}"),
+                    }
+                }
+                Err(e) => tracing::warn!("BOM surveyor agent not available: {e}"),
+            }
+        });
+    }
 
-    // 10. Return response
+    // 11. Return response
     let tree_stats = TreeStats {
         roots_planted: payload.answers.keys().filter(|k| k.contains('.')).map(|k| k.split('.').next().unwrap_or("")).collect::<std::collections::HashSet<_>>().len() as u32,
         branches_initialized: payload.answers.len() as u32,

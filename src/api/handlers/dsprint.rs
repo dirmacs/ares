@@ -783,3 +783,57 @@ pub async fn activate(
         workspace_id: payload.workspace_id,
     }))
 }
+
+/// GET /v1/dsprint/analytics/funnel — conversion funnel metrics
+pub async fn funnel_analytics(
+    State(_app): State<AppState>,
+) -> Result<Json<serde_json::Value>> {
+    let dcrm_url = env::var("DCRM_BASE_URL").unwrap_or_else(|_| "http://localhost:3001".to_string());
+    let http = reqwest::Client::new();
+
+    // Query DCRM for deal counts by stage
+    let deals_resp = http.get(format!("{}/api/deals", dcrm_url))
+        .send().await
+        .map_err(|e| AppError::External(format!("DCRM unavailable: {e}")))?;
+
+    let deals: Vec<serde_json::Value> = deals_resp.json().await.unwrap_or_default();
+
+    // Count deals at each DSprint PLG stage
+    let mut funnel = serde_json::json!({
+        "survey_submitted": 0,
+        "results_viewed": 0,
+        "activated": 0,
+        "first_agent_run": 0,
+        "total_dsprint_deals": 0,
+    });
+
+    for deal in &deals {
+        let stage = deal["stage"].as_str().unwrap_or("");
+        let pipeline = deal["pipeline"].as_str().unwrap_or("");
+        if pipeline == "dsprint" || stage.starts_with("dsprint") || stage == "first_agent_run" {
+            funnel["total_dsprint_deals"] = serde_json::json!(
+                funnel["total_dsprint_deals"].as_u64().unwrap_or(0) + 1
+            );
+            match stage {
+                "dsprint_submitted" => funnel["survey_submitted"] = serde_json::json!(funnel["survey_submitted"].as_u64().unwrap_or(0) + 1),
+                "dsprint_activated" => funnel["activated"] = serde_json::json!(funnel["activated"].as_u64().unwrap_or(0) + 1),
+                "first_agent_run" => funnel["first_agent_run"] = serde_json::json!(funnel["first_agent_run"].as_u64().unwrap_or(0) + 1),
+                _ => {}
+            }
+        }
+    }
+
+    // Compute conversion rates
+    let total = funnel["total_dsprint_deals"].as_f64().unwrap_or(1.0).max(1.0);
+    let activated = funnel["activated"].as_f64().unwrap_or(0.0);
+
+    Ok(Json(serde_json::json!({
+        "funnel": funnel,
+        "conversion_rates": {
+            "submit_to_activate": format!("{:.1}%", (activated / total) * 100.0),
+            "activate_to_first_run": format!("{:.1}%",
+                (funnel["first_agent_run"].as_f64().unwrap_or(0.0) / activated.max(1.0)) * 100.0),
+        },
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    })))
+}

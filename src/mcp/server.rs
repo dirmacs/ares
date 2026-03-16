@@ -77,7 +77,7 @@ impl AresMcpServer {
         tenant_db: Arc<TenantDb>,
         pool: sqlx::PgPool,
         ares_api_url: &str,
-        eruka_api_url: &str,
+        eruka: Arc<ErukaProxy>,
     ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -88,7 +88,7 @@ impl AresMcpServer {
             tenant_db,
             pool,
             session: Arc::new(RwLock::new(None)),
-            eruka: Arc::new(ErukaProxy::new(eruka_api_url)),
+            eruka,
             ares_api_url: ares_api_url.trim_end_matches('/').to_string(),
             http,
         }
@@ -967,10 +967,6 @@ impl ServerHandler for AresMcpServer {
     }
 }
 
-// =============================================================================
-// Server startup function
-// =============================================================================
-
 /// Starts the ARES MCP server in stdio mode.
 ///
 /// This is called when the ARES binary is invoked with `--mcp` flag.
@@ -992,7 +988,12 @@ pub async fn start_mcp_server(
     ares_api_url: &str,
     eruka_api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let server = AresMcpServer::new(tenant_db, pool, ares_api_url, eruka_api_url);
+    // Create ErukaProxy and authenticate
+    let mut eruka_proxy = ErukaProxy::new(eruka_api_url);
+    let _ = eruka_proxy.ensure_authenticated().await;
+    let eruka = Arc::new(eruka_proxy);
+
+    let server = AresMcpServer::new(tenant_db, pool, ares_api_url, eruka);
 
     // Authenticate before accepting tool calls
     server.authenticate().await?;

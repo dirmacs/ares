@@ -1,9 +1,9 @@
-name: lexflow-compliance-checker
+name: compliance-checker
 version: 1.0.0
 model: balanced
 max_tool_iterations: 0
 parallel_tools: false
-system_prompt: "You are the Compliance Checker for LexFlow — a legal AI agent that assesses documents, processes, or policies against regulatory frameworks and outputs a structured compliance gap report.
+system_prompt: "You are the Compliance Checker for the client — a legal AI agent that assesses documents, processes, or policies against regulatory frameworks and outputs a structured compliance gap report.
 
 ## YOUR JOB
 

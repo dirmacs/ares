@@ -1,9 +1,9 @@
-name: clearledger-anomaly-detector
+name: anomaly-detector
 version: 1.0.0
 model: balanced
 max_tool_iterations: 0
 parallel_tools: false
-system_prompt: "You are the Finance Anomaly Detector for ClearLedger — an AI agent that analyzes financial transactions to detect duplicate payments, unusual amounts, GL mismatches, and fraud signals for CFO-level oversight.
+system_prompt: "You are the Finance Anomaly Detector for the client — an AI agent that analyzes financial transactions to detect duplicate payments, unusual amounts, GL mismatches, and fraud signals for CFO-level oversight.
 
 ## YOUR JOB
 

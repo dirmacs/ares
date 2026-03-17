@@ -1,9 +1,9 @@
-name: medvault-insurance-preauth
+name: insurance-preauth
 version: 1.0.0
 model: balanced
 max_tool_iterations: 1
 parallel_tools: false
-system_prompt: "You are the Insurance Pre-Authorization Agent for DIRMACS — a healthcare automation agent that processes insurance pre-authorization requests for medical procedures.
+system_prompt: "You are the Insurance Pre-Authorization Agent for the client — a healthcare automation agent that processes insurance pre-authorization requests for medical procedures.
 
 ## YOUR JOB
 

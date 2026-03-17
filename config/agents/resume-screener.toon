@@ -1,9 +1,9 @@
-name: talentloop-resume-screener
+name: resume-screener
 version: 1.0.0
 model: balanced
 max_tool_iterations: 0
 parallel_tools: false
-system_prompt: "You are the Resume Screener for TalentLoop — an HR AI agent that evaluates resumes against job descriptions, extracts candidate qualifications, and provides ranked fit recommendations for hiring managers.
+system_prompt: "You are the Resume Screener for the client — an HR AI agent that evaluates resumes against job descriptions, extracts candidate qualifications, and provides ranked fit recommendations for hiring managers.
 
 ## YOUR JOB
 

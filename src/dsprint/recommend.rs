@@ -236,7 +236,7 @@ static AGENT_CATALOG: LazyLock<Vec<AgentCatalogEntry>> = LazyLock::new(|| {
         },
         // VERTICAL (6)
         AgentCatalogEntry {
-            id: "lexflow-contract-analyzer",
+            id: "contract-analyzer",
             name: "Contract Analyzer",
             domain: "legal",
             base_hours_min: 8,
@@ -246,7 +246,7 @@ static AGENT_CATALOG: LazyLock<Vec<AgentCatalogEntry>> = LazyLock::new(|| {
             min_score: 50,
         },
         AgentCatalogEntry {
-            id: "lexflow-compliance-checker",
+            id: "compliance-checker",
             name: "Compliance Checker",
             domain: "legal",
             base_hours_min: 6,
@@ -256,7 +256,7 @@ static AGENT_CATALOG: LazyLock<Vec<AgentCatalogEntry>> = LazyLock::new(|| {
             min_score: 45,
         },
         AgentCatalogEntry {
-            id: "talentloop-resume-screener",
+            id: "resume-screener",
             name: "Resume Screener",
             domain: "hr",
             base_hours_min: 5,
@@ -266,7 +266,7 @@ static AGENT_CATALOG: LazyLock<Vec<AgentCatalogEntry>> = LazyLock::new(|| {
             min_score: 40,
         },
         AgentCatalogEntry {
-            id: "talentloop-onboarding-assistant",
+            id: "onboarding-assistant",
             name: "Onboarding Assistant",
             domain: "hr",
             base_hours_min: 4,

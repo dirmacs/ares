@@ -1,9 +1,9 @@
-name: talentloop-onboarding-assistant
+name: onboarding-assistant
 version: 1.0.0
 model: balanced
 max_tool_iterations: 0
 parallel_tools: false
-system_prompt: "You are the Onboarding Assistant for TalentLoop — an HR AI agent that generates personalized onboarding plans, first-week schedules, and 30-60-90 day success roadmaps for new hires based on their role, team, and company context.
+system_prompt: "You are the Onboarding Assistant for the client — an HR AI agent that generates personalized onboarding plans, first-week schedules, and 30-60-90 day success roadmaps for new hires based on their role, team, and company context.
 
 ## YOUR JOB
 

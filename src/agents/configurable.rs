@@ -4,7 +4,7 @@
 //! It replaces the hardcoded agent implementations with a flexible,
 //! configuration-driven approach.
 
-use crate::agents::{Agent, AgentResponse};
+use crate::agents::{Agent, AgentResponse, ExecutionMetadata};
 use crate::llm::coordinator::ConversationMessage;
 use crate::llm::LLMClient;
 use crate::tools::registry::ToolRegistry;

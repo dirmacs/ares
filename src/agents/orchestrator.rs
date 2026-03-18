@@ -102,7 +102,7 @@ impl Agent for OrchestratorAgent {
 
         if subtasks.is_empty() {
             let content = self.llm.generate(input).await?;
-            return Ok(AgentResponse { content, usage: None });
+            return Ok(AgentResponse { content, usage: None, metadata: None });
         }
 
         // Execute subtasks sequentially (could be parallelized in future)
@@ -120,7 +120,7 @@ impl Agent for OrchestratorAgent {
         );
 
         let content = self.llm.generate(&synthesis_prompt).await?;
-        Ok(AgentResponse { content, usage: None })
+        Ok(AgentResponse { content, usage: None, metadata: None })
     }
 
     fn system_prompt(&self) -> String {

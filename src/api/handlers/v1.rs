@@ -214,12 +214,19 @@ pub async fn v1_chat(
 
     use crate::agents::Agent;
     let agent = state.agent_registry.create_agent(&agent_name).await?;
-    let AgentResponse { content: response_text, usage, metadata: _ } =
-        agent.execute(&payload.message, &agent_context).await?;
+    let response = agent.execute(&payload.message, &agent_context).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
+    let response_text = response.content;
+    let model_name = response.metadata.as_ref()
+        .map(|m| m.model_name.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let provider_name = response.metadata.as_ref()
+        .map(|m| m.provider_name.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
     // Use actual LLM token counts; fall back to heuristic estimates if unavailable
-    let (input_tokens, output_tokens) = if let Some(u) = usage {
+    let (input_tokens, output_tokens) = if let Some(u) = response.usage {
         (u.prompt_tokens, u.completion_tokens)
     } else {
         (
@@ -228,13 +235,15 @@ pub async fn v1_chat(
         )
     };
 
-    // Record agent run
+    // Record agent run with real model/provider
     {
         let pool = state.tenant_db.pool().clone();
         let tid = tc.tenant_id.clone();
         let aname = agent_name;
         let itok = input_tokens as i64;
         let otok = output_tokens as i64;
+        let mname = model_name.clone();
+        let pname = provider_name.clone();
         tokio::spawn(async move {
             let _ = agent_runs::insert_agent_run(
                 &pool,
@@ -246,8 +255,8 @@ pub async fn v1_chat(
                 otok,
                 duration_ms,
                 None,
-                "unknown",
-                "unknown",
+                &mname,
+                &pname,
                 false,
             )
             .await;
@@ -271,6 +280,16 @@ pub async fn v1_chat(
         axum::http::HeaderName::from_static("x-output-tokens"),
         axum::http::HeaderValue::from(output_tokens),
     );
+    if let Ok(v) = axum::http::HeaderValue::from_str(&model_name) {
+        response.headers_mut().insert(
+            axum::http::HeaderName::from_static("x-model-name"), v,
+        );
+    }
+    if let Ok(v) = axum::http::HeaderValue::from_str(&provider_name) {
+        response.headers_mut().insert(
+            axum::http::HeaderName::from_static("x-provider-name"), v,
+        );
+    }
 
     Ok(response)
 }

@@ -51,6 +51,16 @@ pub struct AgentResponse {
     pub content: String,
     /// Token usage from the LLM provider (None if unavailable)
     pub usage: Option<TokenUsage>,
+    /// Metadata about the execution (model, provider, etc.)
+    pub metadata: Option<ExecutionMetadata>,
+}
+
+/// Metadata about the execution of an agent
+pub struct ExecutionMetadata {
+    /// The name of the model used
+    pub model_name: String,
+    /// The name of the provider used
+    pub provider_name: String,
 }
 
 /// Base trait for all agents

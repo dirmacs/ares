@@ -239,6 +239,10 @@ Handle employee info, policies, and benefits."#
                 return Ok(AgentResponse {
                     content: response.content,
                     usage: Some(total_usage),
+                    metadata: Some(ExecutionMetadata {
+                        model_name: self.llm.model_name().to_string(),
+                        provider_name: "openai".to_string(),
+                    }),
                 });
             }
 
@@ -270,6 +274,10 @@ Handle employee info, policies, and benefits."#
         Ok(AgentResponse {
             content: last,
             usage: Some(total_usage),
+            metadata: Some(ExecutionMetadata {
+                model_name: self.llm.model_name().to_string(),
+                provider_name: "openai".to_string(),
+            }),
         })
     }
 }
@@ -316,6 +324,10 @@ impl Agent for ConfigurableAgent {
         Ok(AgentResponse {
             content: llm_response.content,
             usage: llm_response.usage,
+            metadata: Some(ExecutionMetadata {
+                model_name: self.llm.model_name().to_string(),
+                provider_name: "openai".to_string(),
+            }),
         })
     }
 

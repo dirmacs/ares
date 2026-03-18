@@ -318,7 +318,7 @@ pub async fn get_agent(
     Ok(Json(V1Agent::from(agent)))
 }
 
-/// POST /v1/agents/{name}/run — trigger an agent run (proxies to chat)
+/// POST /v1/agents/{name}/run — execute a named agent with real LLM call
 pub async fn run_agent(
     State(state): State<AppState>,
     ctx: Option<Extension<TenantContext>>,
@@ -326,23 +326,129 @@ pub async fn run_agent(
     Json(input): Json<serde_json::Value>,
 ) -> Result<Json<V1AgentRun>> {
     let tc = extract_tenant(ctx)?;
-    // Verify the agent exists for this tenant
+
+    // Emergency stop
+    if state.emergency_stop.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(crate::types::AppError::Unavailable(
+            "All agents are currently under human review. Please try again later.".to_string(),
+        ));
+    }
+
+    // Verify agent exists for this tenant
     let _agent =
         tenant_agents::get_tenant_agent(state.tenant_db.pool(), &tc.tenant_id, &name).await?;
 
-    // Return a stub run for now — actual execution would proxy through the chat handler
-    Ok(Json(V1AgentRun {
-        id: uuid::Uuid::new_v4().to_string(),
-        agent_id: name,
-        status: "completed".to_string(),
-        input,
-        output: Some(serde_json::json!({"message": "Agent run queued"})),
-        error: None,
-        started_at: Utc::now(),
-        finished_at: Some(Utc::now()),
-        duration_ms: Some(0),
-        tokens_used: Some(0),
-    }))
+    // Extract message from input JSON
+    let message = input
+        .get("message")
+        .or_else(|| input.get("input"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| serde_json::to_string(&input).unwrap_or_default());
+
+    // Build agent context
+    let agent_context = AgentContext {
+        user_id: tc.tenant_id.clone(),
+        session_id: uuid::Uuid::new_v4().to_string(),
+        conversation_history: vec![],
+        user_memory: None,
+    };
+
+    // Execute agent with timing
+    let start = std::time::Instant::now();
+    use crate::agents::Agent;
+    let agent = state.agent_registry.create_agent(&name).await?;
+    let result = agent.execute(&message, &agent_context).await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    match result {
+        Ok(response) => {
+            let (input_tokens, output_tokens) = if let Some(ref u) = response.usage {
+                (u.prompt_tokens as u64, u.completion_tokens as u64)
+            } else {
+                (
+                    estimate_tokens(&message) as u64,
+                    estimate_tokens(&response.content) as u64,
+                )
+            };
+
+            let model_name = response
+                .metadata
+                .as_ref()
+                .map(|m| m.model_name.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+            let provider_name = response
+                .metadata
+                .as_ref()
+                .map(|m| m.provider_name.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            // Record agent run
+            let run_id = uuid::Uuid::new_v4().to_string();
+            {
+                let pool = state.tenant_db.pool().clone();
+                let tid = tc.tenant_id.clone();
+                let aname = name.clone();
+                let rid = run_id.clone();
+                let itok = input_tokens as i64;
+                let otok = output_tokens as i64;
+                let dur = duration_ms as i64;
+                let mname = model_name.clone();
+                let pname = provider_name.clone();
+                tokio::spawn(async move {
+                    let _ = agent_runs::insert_agent_run(
+                        &pool, &tid, &aname, None, "completed", itok, otok, dur, None,
+                        &mname, &pname, false,
+                    )
+                    .await;
+                });
+            }
+
+            Ok(Json(V1AgentRun {
+                id: run_id,
+                agent_id: name,
+                status: "completed".to_string(),
+                input,
+                output: Some(serde_json::json!({"response": response.content})),
+                error: None,
+                started_at: Utc::now(),
+                finished_at: Some(Utc::now()),
+                duration_ms: Some(duration_ms),
+                tokens_used: Some(input_tokens + output_tokens),
+            }))
+        }
+        Err(e) => {
+            // Record failed run
+            let run_id = uuid::Uuid::new_v4().to_string();
+            {
+                let pool = state.tenant_db.pool().clone();
+                let tid = tc.tenant_id.clone();
+                let aname = name.clone();
+                let err_msg = e.to_string();
+                let dur = duration_ms as i64;
+                tokio::spawn(async move {
+                    let _ = agent_runs::insert_agent_run(
+                        &pool, &tid, &aname, None, "failed", 0, 0, dur,
+                        Some(&err_msg), "unknown", "unknown", false,
+                    )
+                    .await;
+                });
+            }
+
+            Ok(Json(V1AgentRun {
+                id: run_id,
+                agent_id: name,
+                status: "failed".to_string(),
+                input,
+                output: None,
+                error: Some(e.to_string()),
+                started_at: Utc::now(),
+                finished_at: Some(Utc::now()),
+                duration_ms: Some(duration_ms),
+                tokens_used: Some(0),
+            }))
+        }
+    }
 }
 
 /// GET /v1/agents/{name}/runs — list runs for an agent

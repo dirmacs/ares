@@ -246,6 +246,9 @@ pub async fn v1_chat(
                 otok,
                 duration_ms,
                 None,
+                "unknown",
+                "unknown",
+                false,
             )
             .await;
         });

@@ -514,6 +514,23 @@ pub async fn chat_stream(
             tracing::error!("Failed to store assistant message in conversation {}: {}", context_id_clone, e);
         }
 
+        // Record agent run for billing (streaming calls were previously invisible)
+        {
+            let pool = state_clone.tenant_db.pool().clone();
+            let tid = claims_clone.sub.clone();
+            let aname = agent_name.to_string();
+            let itok = crate::memory::estimate_tokens(&message) as i64;
+            let otok = crate::memory::estimate_tokens(&full_response) as i64;
+            let model = user_agent.model.clone();
+            tokio::spawn(async move {
+                let _ = crate::db::agent_runs::insert_agent_run(
+                    &pool, &tid, &aname, Some(&tid), "completed",
+                    itok, otok, 0, None, &model, "unknown", true,
+                )
+                .await;
+            });
+        }
+
         // Send done event
         let done_event = StreamEvent {
             event: "done".to_string(),

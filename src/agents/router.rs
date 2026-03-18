@@ -99,6 +99,7 @@ impl Agent for RouterAgent {
         Ok(AgentResponse {
             content: "router".to_string(),
             usage: None,
+            metadata: None,
         })
     }
 

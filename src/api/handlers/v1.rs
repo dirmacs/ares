@@ -214,7 +214,7 @@ pub async fn v1_chat(
 
     use crate::agents::Agent;
     let agent = state.agent_registry.create_agent(&agent_name).await?;
-    let AgentResponse { content: response_text, usage } =
+    let AgentResponse { content: response_text, usage, metadata: _ } =
         agent.execute(&payload.message, &agent_context).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 

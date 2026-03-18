@@ -65,13 +65,16 @@ pub async fn insert_agent_run(
     output_tokens: i64,
     duration_ms: i64,
     error: Option<&str>,
+    model_name: &str,
+    provider_name: &str,
+    is_streaming: bool,
 ) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_ts();
 
     sqlx::query(
-        "INSERT INTO agent_runs (id, tenant_id, agent_name, user_id, status, input_tokens, output_tokens, duration_ms, error, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+        "INSERT INTO agent_runs (id, tenant_id, agent_name, user_id, status, input_tokens, output_tokens, duration_ms, error, created_at, model_name, provider_name, is_streaming)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
     )
     .bind(&id)
     .bind(tenant_id)
@@ -83,6 +86,9 @@ pub async fn insert_agent_run(
     .bind(duration_ms)
     .bind(error)
     .bind(now)
+    .bind(model_name)
+    .bind(provider_name)
+    .bind(is_streaming)
     .execute(pool)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;

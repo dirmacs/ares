@@ -50,5 +50,6 @@ pub mod eruka;
 pub mod pom;
 /// Tool registry for managing available tools.
 pub mod registry;
-/// Web search tool using DuckDuckGo.
+/// Web search tool using DuckDuckGo (requires `search-tools` feature).
+#[cfg(feature = "search-tools")]
 pub mod search;

@@ -1,7 +1,7 @@
 # Cargo workspace configuration
 [workspace]
-members = [".", "crates/*"]
-exclude = ["ui"]
+members = [".", "crates/ares-vector"]
+exclude = ["ui", "crates/pawan"]
 resolver = "2"
 
 [workspace.package]
@@ -14,7 +14,7 @@ authors = ["Dirmacs <build@dirmacs.com>"]
 [workspace.dependencies]
 # Shared dependencies across workspace
 ares-vector = { version = "0.1.1", path = "crates/ares-vector" }
-tokio = { version = "1.48", features = ["full"] }
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "signal", "fs"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
@@ -115,8 +115,11 @@ mcp = ["dep:rmcp"]
 # Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs instead.
 local-embeddings = ["dep:fastembed"]
 
-# Email sending via SMTP
-# lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
+# Email sending via SMTP (opt-in, requires lettre feature)
+email = ["dep:lettre"]
+
+# Web search and scraping tools (opt-in, daedra + scraper)
+search-tools = ["dep:daedra", "dep:scraper"]
 
 # ============= UI =============
 # Embedded UI - serves the Leptos frontend from the backend
@@ -168,15 +171,15 @@ futures = "0.3.31"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 thiserror = "2.0.17"
-tokio = { version = "1.48.0", features = ["full"] }
+tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "signal", "fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
 uuid = { version = "1.19.0", features = ["v4", "serde"] }
 
 # Web framework
 axum = { version = "0.8.7", features = ["macros", "multipart"] }
-tower = { version = "0.5.2", features = ["full"] }
-tower-http = { version = "0.6.8", features = ["trace", "cors", "compression-gzip", "limit"] }
+tower = { version = "0.5.2", features = ["util", "timeout"] }
+tower-http = { version = "0.6.8", features = ["trace", "cors", "limit"] }
 tower-sessions = "0.14.0"
 tower_governor = "0.8"
 
@@ -185,7 +188,7 @@ reqwest = { version = "0.12.26", default-features = false, features = ["json", "
 
 # Authentication
 argon2 = "0.5.3"
-jsonwebtoken = { version = "10.3.0", features = ["use_pem"] }
+jsonwebtoken = { version = "10.3.0", features = ["use_pem", "rust_crypto"] }
 sha2 = "0.10.9"
 rand = "0.9.2"
 hex = "0.4"
@@ -194,8 +197,8 @@ hex = "0.4"
 config = "0.15.19"
 dotenvy = "0.15.7"
 toml = "0.9.8"
-toon-format = "0.4.1"
-notify = { version = "8.2.0", features = ["macos_fsevent"] }
+toon-format = { version = "0.4.1", default-features = false }  # cli feature drags in tiktoken-rs, syntect, arboard, ratatui
+notify = "8.2.0"
 parking_lot = "0.12.5"
 arc-swap = "1.7.1"
 
@@ -207,7 +210,7 @@ qdrant-client = { version = "1.16.0", optional = true }
 lancedb = { version = "0.23.1", optional = true }
 # Lance with protoc feature compiles protobuf compiler from source - may have issues on Windows
 lance = { version = "1.0.1", features = ["protoc"], default-features = false, optional = true }
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "tls-rustls", "runtime-tokio-rustls", "uuid", "chrono", "json", "migrate"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "tls-rustls", "uuid", "chrono", "json", "migrate"] }
 chromadb = { version = "2.3.0", optional = true }
 pinecone-sdk = { version = "0.1.2", optional = true }
 
@@ -222,12 +225,12 @@ claude-sdk = { version = "1.0.0", optional = true }
 # Embeddings and RAG
 fastembed = { version = "5.5.0", optional = true }
 # rig-core removed - was unused in codebase
-text-splitter = { version = "0.19", features = ["tiktoken-rs"] }
+text-splitter = "0.19"  # char-based only — tiktoken-rs removed (unused, was ~35s of compile)
 lru = "0.16.3"  # 0.16.3+ fixes RUSTSEC-2026-0002 (stacked borrows unsound in IterMut)
 
-# Web scraping and search
-daedra = "0.1.4"
-scraper = "0.25.0"
+# Web scraping and search (optional — gated by search-tools feature)
+daedra = { version = "0.1.4", optional = true }
+scraper = { version = "0.25.0", optional = true }
 
 # OpenSSL vendored build (for systems without pkg-config/libssl-dev)
 # openssl = { version = "0.10", features = ["vendored"] }
@@ -240,8 +243,8 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
 # MCP support (optional)
 rmcp = { version = "0.12.0", features = ["server", "client", "transport-io", "macros"], optional = true }
 
-# Email sending via SMTP
-lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
+# Email sending via SMTP (optional — gated by email feature)
+lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"], optional = true }
 
 # UI embedding (optional)
 rust-embed = { version = "8.9", optional = true }
@@ -259,9 +262,10 @@ wiremock = "0.6.5"
 # Install with: cargo install cargo-llvm-cov
 
 [profile.dev]
-# Faster compile times for development
 opt-level = 0
 debug = true
+incremental = true
+split-debuginfo = "unpacked"  # faster incremental link on Linux
 
 [profile.release]
 opt-level = 3
@@ -269,9 +273,17 @@ lto = true
 codegen-units = 1
 strip = true
 
+# Fast iteration release — skips LTO for quicker deploy builds
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+opt-level = 2
+
 [profile.test]
 opt-level = 0
 debug = true
+incremental = true
 
 # Documentation settings
 [package.metadata.docs.rs]

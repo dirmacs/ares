@@ -269,8 +269,8 @@ split-debuginfo = "unpacked"  # faster incremental link on Linux
 
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+lto = "thin"    # full LTO OOMs on 8GB VPS; thin LTO is ~80% of the gains at 30% of the memory
+codegen-units = 4
 strip = true
 
 # Fast iteration release — skips LTO for quicker deploy builds

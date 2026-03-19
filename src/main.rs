@@ -371,6 +371,7 @@ async fn run_server(
 
     // Register built-in tools
     tool_registry.register(Arc::new(ares::tools::calculator::Calculator));
+    #[cfg(feature = "search-tools")]
     tool_registry.register(Arc::new(ares::tools::search::WebSearch::new()));
 
     // Register POM tools (calls pom-api at POM_BASE_URL or localhost:3002)

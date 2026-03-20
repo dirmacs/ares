@@ -741,6 +741,7 @@ pub struct ActivateResponse {
     pub portal_url: String,
     pub mcp_url: String,
     pub workspace_id: String,
+    pub eruka_password: Option<String>,
 }
 
 /// POST /v1/dsprint/activate — create tenant from survey results
@@ -850,6 +851,20 @@ pub async fn activate(
         }
     });
 
+    // 4b. Create Eruka user account (async — one DIRMACS account)
+    let eruka_url2 = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
+    let signup_email = payload.email.clone();
+    let signup_name = payload.workspace_id.clone(); // Will be replaced with company_name from workspace
+    let auto_password = format!("dirmacs-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("temp"));
+    let password_for_response = auto_password.clone();
+    tokio::spawn(async move {
+        let eruka = ErukaProxy::new(&eruka_url2);
+        match eruka.signup_user(&signup_email, &auto_password, &signup_name).await {
+            Ok(_) => tracing::info!("Created Eruka user for {}", signup_email),
+            Err(e) => tracing::warn!("Eruka signup failed (may already exist): {e}"),
+        }
+    });
+
     // 5. Update DCRM deal stage (async)
     let dcrm_url = env::var("DCRM_BASE_URL").unwrap_or_else(|_| "http://localhost:3001".to_string());
     let email_dcrm = payload.email.clone();
@@ -872,6 +887,7 @@ pub async fn activate(
         portal_url: "portal.dirmacs.com".to_string(),
         mcp_url: "eruka.dirmacs.com/mcp".to_string(),
         workspace_id: payload.workspace_id,
+        eruka_password: Some(password_for_response),
     }))
 }
 

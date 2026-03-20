@@ -102,7 +102,7 @@ impl ErukaProxy {
         Ok(())
     }
 
-    fn auth_header(&self) -> Option<String> {
+    pub fn auth_header(&self) -> Option<String> {
         self.auth_token.as_ref().map(|t| format!("Bearer {}", t))
     }
 

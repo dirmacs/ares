@@ -110,6 +110,9 @@ pinecone = ["dep:pinecone-sdk"]
 # MCP (Model Context Protocol) server support
 mcp = ["dep:rmcp"]
 
+# Eruka context injection - fetches per-agent context from Eruka with caching
+eruka-context = ["dep:toml"]
+
 # Local embeddings - fastembed-based ONNX embedding models
 # WARNING: This feature does NOT work on Windows MSVC due to ort-sys linker errors.
 # Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs instead.
@@ -196,7 +199,7 @@ hex = "0.4"
 # Configuration
 config = "0.15.19"
 dotenvy = "0.15.7"
-toml = "0.9.8"
+toml = { version = "0.9.8", optional = true }
 toon-format = { version = "0.4.1", default-features = false }  # cli feature drags in tiktoken-rs, syntect, arboard, ratatui
 notify = "8.2.0"
 parking_lot = "0.12.5"

@@ -338,7 +338,10 @@ impl ErukaProxy {
     pub async fn get_gaps(&self, user_id: &str) -> anyhow::Result<serde_json::Value> {
         let url = format!("{}/api/v1/gaps", self.base_url);
         let mut req = self.http.get(&url).query(&[("user_id", user_id)]);
-        if let Some(auth) = self.auth_header() {
+        if let Ok(service_key) = std::env::var("ERUKA_SERVICE_KEY") {
+            req = req.header("X-Service-Key", &service_key);
+            req = req.header("X-Workspace-Id", user_id);
+        } else if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }
         let response = req.send().await?;
@@ -469,7 +472,10 @@ impl ErukaProxy {
     pub async fn get_workspace(&self, workspace_id: &str) -> anyhow::Result<serde_json::Value> {
         let url = format!("{}/api/v1/workspaces/{}", self.base_url, workspace_id);
         let mut req = self.http.get(&url);
-        if let Some(auth) = self.auth_header() {
+        if let Ok(service_key) = std::env::var("ERUKA_SERVICE_KEY") {
+            req = req.header("X-Service-Key", &service_key);
+            req = req.header("X-Workspace-Id", workspace_id);
+        } else if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }
         let response = req.send().await?;

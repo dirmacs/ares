@@ -204,7 +204,16 @@ Handle employee info, policies, and benefits."#
         let registry = self.tool_registry.as_ref().unwrap();
 
         let mut messages: Vec<ConversationMessage> = Vec::new();
-        messages.push(ConversationMessage::system(&self.system_prompt));
+
+        // Inject Eruka context if available (set by eruka_context_middleware via task-local)
+        let effective_prompt = match crate::middleware::eruka_context::get_current_eruka_context() {
+            Some(eruka_ctx) if !eruka_ctx.is_empty() => {
+                tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "Eruka context injected into system prompt");
+                format!("{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.", eruka_ctx, self.system_prompt)
+            }
+            _ => self.system_prompt.clone(),
+        };
+        messages.push(ConversationMessage::system(&effective_prompt));
 
         // Add recent conversation history (last 5 messages)
         for msg in context.conversation_history.iter().rev().take(5).rev() {
@@ -292,7 +301,15 @@ impl Agent for ConfigurableAgent {
         tracing::debug!(agent = %self.name, "execute: no tools, using simple path");
 
         // Build context with conversation history if available
-        let mut messages = vec![("system".to_string(), self.system_prompt.clone())];
+        // Inject Eruka context if available (set by eruka_context_middleware via task-local)
+        let effective_prompt = match crate::middleware::eruka_context::get_current_eruka_context() {
+            Some(eruka_ctx) if !eruka_ctx.is_empty() => {
+                tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "Eruka context injected into system prompt (simple path)");
+                format!("{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.", eruka_ctx, self.system_prompt)
+            }
+            _ => self.system_prompt.clone(),
+        };
+        let mut messages = vec![("system".to_string(), effective_prompt)];
 
         // Add user memory if available
         if let Some(memory) = &context.user_memory {

@@ -19,6 +19,17 @@ use std::path::Path;
 #[derive(Clone)]
 pub struct ErukaContext(pub String);
 
+// Task-local storage so agents can read Eruka context without modifying AgentContext.
+// The middleware sets this; configurable.rs reads it.
+tokio::task_local! {
+    pub static ERUKA_CONTEXT: String;
+}
+
+/// Get the current Eruka context if available (called from agent execute methods).
+pub fn get_current_eruka_context() -> Option<String> {
+    ERUKA_CONTEXT.try_with(|ctx| ctx.clone()).ok()
+}
+
 /// Cache entry: context string and timestamp
 #[derive(Clone)]
 struct CacheEntry {
@@ -346,5 +357,6 @@ pub async fn eruka_context_middleware(mut req: Request, next: Next) -> Response 
         "Eruka context middleware completed"
     );
 
-    next.run(req).await
+    // Set the task-local so agent execute() can read it without modifying AgentContext
+    ERUKA_CONTEXT.scope(final_context, next.run(req)).await
 }

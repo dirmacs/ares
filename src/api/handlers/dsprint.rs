@@ -116,6 +116,46 @@ pub async fn submit(
 		}
 	};
 
+    // 4b. Store lead in OUR Eruka (bom's context) for pipeline tracking
+    {
+        let eruka_url2 = eruka_url.clone();
+        let lead_company = payload.company_name.clone();
+        let lead_email = payload.email.clone();
+        let lead_industry = payload.industry.clone();
+        let lead_team = payload.team_size.clone();
+        let lead_entity = payload.entity_type.clone();
+        let lead_ws = workspace_id.clone();
+        tokio::spawn(async move {
+            let mut bom_eruka = ErukaProxy::new(&eruka_url2);
+            let _ = bom_eruka.ensure_authenticated().await; // bom auth — for OUR lead tracking only
+            let slug = lead_company.to_lowercase().replace(' ', "-").chars().filter(|c| c.is_alphanumeric() || *c == '-').collect::<String>();
+            let lead_data = serde_json::json!({
+                "company_name": lead_company,
+                "email": lead_email,
+                "industry": lead_industry,
+                "team_size": lead_team,
+                "entity_type": lead_entity.unwrap_or_else(|| "company".to_string()),
+                "workspace_id": lead_ws,
+                "status": "survey_completed",
+                "submitted_at": chrono::Utc::now().to_rfc3339(),
+            });
+            let write_body = serde_json::json!({
+                "path": format!("products/clients/leads/{}", slug),
+                "value": lead_data,
+                "source": "dsprint_survey",
+                "confidence": 1.0,
+            });
+            let url = format!("{}/api/v1/context", eruka_url2);
+            let mut req = reqwest::Client::new().post(&url).json(&write_body);
+            if let Some(auth) = bom_eruka.auth_header() {
+                req = req.header("Authorization", auth);
+            }
+            if let Err(e) = req.send().await {
+                tracing::warn!("Failed to store lead in Eruka: {e}");
+            }
+        });
+    }
+
     // 5. Get gaps + completeness (graceful failure)
     let gaps = eruka.get_gaps(&payload.email).await;
     let gaps_count = match &gaps {

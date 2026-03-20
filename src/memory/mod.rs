@@ -99,13 +99,22 @@ pub fn truncate_history(history: &[Message], window_size: usize) -> Vec<Message>
     }
 }
 
-/// Estimates token count for a message (rough approximation).
+/// Estimates token count for a message.
 ///
-/// Uses a simple heuristic of ~4 characters per token for English text.
-/// This is an approximation and may vary by tokenizer.
+/// Uses an improved heuristic combining word count and character count:
+/// - ~1.3 tokens per word for typical English text
+/// - ~4 characters per token as a fallback floor
+///
+/// This provides a safer (higher) estimate for billing purposes.
+/// Actual token counts vary by tokenizer (GPT-3/4, Claude, etc.).
 pub fn estimate_tokens(text: &str) -> usize {
-    // Rough approximation: ~4 chars per token for English
-    text.len().div_ceil(4)
+    let words = text.split_whitespace().count();
+    let chars = text.len();
+    // Heuristic: ~1.3 tokens per word for English, with floor from char count
+    let word_estimate = (words as f64 * 1.3) as usize;
+    let char_estimate = chars.div_ceil(4);
+    // Use the higher estimate for safety (billing should overcount not undercount)
+    word_estimate.max(char_estimate).max(1)
 }
 
 /// Truncates history to fit within a token budget.

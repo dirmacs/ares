@@ -378,6 +378,63 @@ impl ErukaProxy {
         Ok(json)
     }
 
+    /// Batch import fields into a workspace and optionally build the tree.
+    ///
+    /// POST /api/v1/workspaces/{workspace_id}/import
+    pub async fn import_workspace_fields(
+        &self,
+        workspace_id: &str,
+        fields: &[serde_json::Value],
+        build_tree: bool,
+    ) -> anyhow::Result<serde_json::Value> {
+        let url = format!("{}/api/v1/workspaces/{}/import", self.base_url, workspace_id);
+        let body = serde_json::json!({
+            "fields": fields,
+            "build_tree": build_tree,
+            "source": "dsprint_survey"
+        });
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        // Service-to-service auth
+        if let Ok(service_key) = std::env::var("ERUKA_SERVICE_KEY") {
+            req = req.header("X-Service-Key", service_key);
+            req = req.header("X-Workspace-Id", workspace_id);
+        }
+        let response = req.send().await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Eruka import error {}: {}", status, body_text));
+        }
+        let json: serde_json::Value = response.json().await?;
+        Ok(json)
+    }
+
+    /// Build the tree for a workspace.
+    ///
+    /// POST /api/v1/tree/build (with service auth using workspace_id)
+    pub async fn build_workspace_tree(&self, workspace_id: &str) -> anyhow::Result<serde_json::Value> {
+        let url = format!("{}/api/v1/tree/build", self.base_url);
+        let mut req = self.http.post(&url);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        if let Ok(service_key) = std::env::var("ERUKA_SERVICE_KEY") {
+            req = req.header("X-Service-Key", service_key);
+            req = req.header("X-Workspace-Id", workspace_id);
+        }
+        let response = req.send().await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Eruka tree build error {}: {}", status, body_text));
+        }
+        let json: serde_json::Value = response.json().await?;
+        Ok(json)
+    }
+
     /// Retrieves a workspace by ID.
     ///
     /// GET /api/v1/workspaces/{workspace_id}

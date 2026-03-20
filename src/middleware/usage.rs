@@ -23,40 +23,53 @@ pub async fn track_usage(req: Request, next: Next) -> Response {
 }
 
 async fn record_usage(
-    tenant_id: &str,
-    headers: &axum::http::HeaderMap,
-    pool: &sqlx::PgPool,
+	tenant_id: &str,
+	headers: &axum::http::HeaderMap,
+	pool: &sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut tokens = 0;
-    if let Some(t) = headers
-        .get("x-input-tokens")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<i32>().ok())
-    {
-        tokens += t;
-    }
-    if let Some(t) = headers
-        .get("x-output-tokens")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<i32>().ok())
-    {
-        tokens += t;
-    }
+	let input_tokens: i64 = headers
+		.get("x-input-tokens")
+		.and_then(|v| v.to_str().ok())
+		.and_then(|v| v.parse::<i64>().ok())
+		.unwrap_or(0);
+	let output_tokens: i64 = headers
+		.get("x-output-tokens")
+		.and_then(|v| v.to_str().ok())
+		.and_then(|v| v.parse::<i64>().ok())
+		.unwrap_or(0);
+	let token_count = input_tokens + output_tokens;
 
-    // Record usage event
-    sqlx::query!(
-        "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, created_at) VALUES ($1, $2, 'http', $3, $4, $5)",
-        uuid::Uuid::new_v4().to_string(),
-        tenant_id,
-        1,
-        tokens as i64,
-        chrono::Utc::now().timestamp()
-    )
-    .execute(pool)
-    .await?;
+	let model_name: Option<String> = headers
+		.get("x-model-name")
+		.and_then(|v| v.to_str().ok())
+		.map(|v| v.to_string());
+	let agent_name: Option<String> = headers
+		.get("x-agent-name")
+		.and_then(|v| v.to_str().ok())
+		.map(|v| v.to_string());
+	let provider_name: Option<String> = headers
+		.get("x-provider-name")
+		.and_then(|v| v.to_str().ok())
+		.map(|v| v.to_string());
 
-    // Track first usage for DCRM stage updates
-    crate::dsprint::stage_tracker::track_first_usage(tenant_id, pool).await;
+	// Record usage event
+	sqlx::query!(
+		"INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'http', $3, $4, $5, $6, $7, $8, $9, $10)",
+		uuid::Uuid::new_v4().to_string(),
+		tenant_id,
+		1,
+		token_count,
+		input_tokens,
+		output_tokens,
+		model_name,
+		agent_name,
+		provider_name,
+		chrono::Utc::now().timestamp()
+	)
+	.execute(pool)
+	.await?;
+	// Track first usage for DCRM stage updates
+	crate::dsprint::stage_tracker::track_first_usage(tenant_id, pool).await;
 
-    Ok(())
+	Ok(())
 }

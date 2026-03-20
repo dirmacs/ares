@@ -1,4 +1,4 @@
-model = "stepfun-ai/step-3.5-flash"
+model = "minimaxai/minimax-m2.5"
 temperature = 0.6
 
 [mcp.eruka]

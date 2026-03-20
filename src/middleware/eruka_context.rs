@@ -1,6 +1,6 @@
 use axum::{
-    body::to_bytes,
     body::Body,
+    body::BodyExt,
     extract::Request,
     middleware::Next,
     response::Response,
@@ -150,7 +150,7 @@ pub async fn eruka_context_middleware(mut req: Request, next: Next) -> Response 
     let mut agent_type = "default".to_string();
 
     // Buffer the request body to extract agent_type
-    let body_bytes = match to_bytes(req.body(), 1_048_576).await {
+    let body_bytes = match to_bytes(req.body_mut(), 1_048_576).await {
         Ok(bytes) => bytes,
         Err(e) => {
             warn!("Failed to buffer request body: {}", e);

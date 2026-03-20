@@ -447,6 +447,22 @@ impl ErukaProxy {
         Ok(json)
     }
 
+    /// Creates an Eruka user account (for DSprint activate).
+    ///
+    /// POST /api/v1/auth/signup — public endpoint, no auth needed
+    pub async fn signup_user(&self, email: &str, password: &str, name: &str) -> anyhow::Result<serde_json::Value> {
+        let url = format!("{}/api/v1/auth/signup", self.base_url);
+        let body = serde_json::json!({"email": email, "password": password, "name": name});
+        let response = self.http.post(&url).json(&body).send().await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Eruka signup error {}: {}", status, body_text));
+        }
+        let json: serde_json::Value = response.json().await?;
+        Ok(json)
+    }
+
     /// Retrieves a workspace by ID.
     ///
     /// GET /api/v1/workspaces/{workspace_id}

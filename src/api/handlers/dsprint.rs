@@ -393,16 +393,6 @@ pub async fn results(
     }
     };
 
-    // Old code replaced above - keeping for reference:
-    /*
-    let company_name = match &ws_data {
-        Ok(v) => v["name"].as_str().unwrap_or("Unknown").to_string(),
-        Err(e) => {
-            tracing::warn!("Eruka get_workspace failed: {e}");
-            "Unknown".to_string()
-        }
-    };
-
     // 2. Get gaps from Eruka
     let gaps_data = eruka.get_gaps(&workspace_id).await;
     let gaps_list: Vec<GapInfo> = match &gaps_data {
@@ -438,9 +428,9 @@ pub async fn results(
             completeness: detail.completeness as f64 / 100.0,
             gaps: detail.gaps,
         }).collect(),
-        pain_points: vec![],
-        team_size: "11-50".to_string(), // Default, would come from workspace data
-        industry: "General".to_string(),
+    pain_points,
+    team_size,
+    industry,
         current_tools: vec![],
     };
     let recommendations = recommend_agents(&rec_request);

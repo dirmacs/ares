@@ -81,25 +81,31 @@ pub async fn submit(
         }
     };
 
-    // 4. Write answer fields to Eruka (fire-and-forget, log errors)
-    let fields_confirmed = payload.answers.len() as u32;
-    for (path, value) in &payload.answers {
-        let parts: Vec<&str> = path.splitn(2, '.').collect();
-        if parts.len() == 2 {
-            let http = reqwest::Client::new();
-            let url = format!("{}/api/workspaces/{}/context", eruka_url, workspace_id);
-            let body = serde_json::json!({
-                "category": parts[0],
-                "field": parts[1],
-                "value": value,
-                "confidence": 1.0,
-                "source": "dsprint_survey"
-            });
-            if let Err(e) = http.post(&url).json(&body).send().await {
-                tracing::warn!("Eruka write field {path} failed: {e}");
-            }
-        }
-    }
+	// 4. Write answer fields to Eruka using batch import
+	let import_fields: Vec<serde_json::Value> = payload.answers.iter()
+		.filter_map(|(path, value)| {
+			let parts: Vec<&str> = path.splitn(2, '.').collect();
+			if parts.len() == 2 {
+				Some(serde_json::json!({
+					"category": parts[0],
+					"field": parts[1],
+					"value": value,
+					"confidence": 1.0,
+					"source": "dsprint_survey"
+				}))
+			} else {
+				None
+			}
+		})
+		.collect();
+	let import_result = eruka.import_workspace_fields(&workspace_id, &import_fields, true).await;
+	let fields_confirmed = match &import_result {
+		Ok(v) => v["fields_written"].as_u64().unwrap_or(0) as u32,
+		Err(e) => {
+			tracing::warn!("Eruka batch import failed: {e}");
+			payload.answers.len() as u32
+		}
+	};
 
     // 5. Get gaps + completeness (graceful failure)
     let gaps = eruka.get_gaps(&payload.email).await;
@@ -225,14 +231,14 @@ pub async fn submit(
         });
     }
 
-    // 11. Return response
-    let tree_stats = TreeStats {
-        roots_planted: payload.answers.keys().filter(|k| k.contains('.')).map(|k| k.split('.').next().unwrap_or("")).collect::<std::collections::HashSet<_>>().len() as u32,
-        branches_initialized: payload.answers.len() as u32,
-        fields_confirmed,
-        fields_inferred: 0,
-        gaps_identified: gaps_count,
-    };
+	// 11. Return response
+	let tree_stats = TreeStats {
+		roots_planted: import_result.as_ref().ok().and_then(|v| v["tree"]["root"].as_u64()).unwrap_or(0) as u32,
+		branches_initialized: import_result.as_ref().ok().and_then(|v| v["tree"]["total"].as_u64()).unwrap_or(0) as u32,
+		fields_confirmed,
+		fields_inferred: 0,
+		gaps_identified: gaps_count,
+	};
 
     Ok(Json(SubmitResponse {
         workspace_id,
@@ -402,16 +408,37 @@ pub async fn results(
     // 8. Compute total savings from recommendations
     let total_savings = compute_total_savings(&recommendations);
 
-    // 9. Build tree summary
-    let _total_gaps: u32 = domains.values().map(|d| d.gaps).sum();
-    let total_nodes: u32 = domains.values().map(|d| d.score / 10).sum();
-    let tree_summary = TreeSummary {
-        roots: domains.len() as u32,
-        trunk: 0,
-        branches: domains.iter().map(|(name, detail)| (name.clone(), detail.score / 20)).collect(),
-        leaves: 0,
-        total_nodes,
-        coverage: format!("{}%", (overall_completeness * 100.0) as u32),
+    // 9. Build tree summary from real Eruka data (fall back to heuristic if unavailable)
+    let tree_data = eruka.build_workspace_tree(&workspace_id).await;
+    let tree_summary = match &tree_data {
+        Ok(v) => {
+            let nodes = v["nodes"].as_array();
+            let root_count = nodes.map(|n| n.iter().filter(|node| node["tier"] == "root").count()).unwrap_or(0) as u32;
+            let trunk_count = nodes.map(|n| n.iter().filter(|node| node["tier"] == "trunk").count()).unwrap_or(0) as u32;
+            let branch_count = nodes.map(|n| n.iter().filter(|node| node["tier"] == "branch").count()).unwrap_or(0) as u32;
+            let leaf_count = nodes.map(|n| n.iter().filter(|node| node["tier"] == "leaf").count()).unwrap_or(0) as u32;
+            let total = root_count + trunk_count + branch_count + leaf_count;
+            TreeSummary {
+                roots: root_count,
+                trunk: trunk_count,
+                branches: domains.iter().map(|(name, _)| (name.clone(), branch_count / domains.len().max(1) as u32)).collect(),
+                leaves: leaf_count,
+                total_nodes: total,
+                coverage: format!("{}%", if total > 0 { ((root_count + trunk_count) as f64 / total as f64 * 100.0) as u32 } else { 0 }),
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Tree build for results failed: {e}");
+            let total_nodes: u32 = domains.values().map(|d| d.score / 10).sum();
+            TreeSummary {
+                roots: domains.len() as u32,
+                trunk: 0,
+                branches: domains.iter().map(|(name, detail)| (name.clone(), detail.score / 20)).collect(),
+                leaves: 0,
+                total_nodes,
+                coverage: format!("{}%", (overall_completeness * 100.0) as u32),
+            }
+        }
     };
 
     Ok(Json(ResultsResponse {

@@ -1,0 +1,20 @@
+[agent_context]
+# eHB agents
+ehb-assessment = ["client/ehb/assessment_rubric", "client/ehb/spectrum_dimensions"]
+ehb-listener = ["client/ehb/crisis_resources", "client/ehb/exchange_limit", "client/ehb/pathway_options"]
+ehb-moderator = ["client/ehb/safety_rules", "client/ehb/blocked_terms"]
+ehb-recommender = ["client/ehb/pathway_options", "client/ehb/assessment_rubric"]
+
+# Kasino agents
+kasino-classifier = ["client/kasino/risk_categories", "client/kasino/regulatory_rules"]
+kasino-risk = ["client/kasino/risk_categories", "client/kasino/thresholds"]
+kasino-transaction = ["client/kasino/transaction_rules"]
+kasino-report = ["client/kasino/report_templates"]
+
+# Dinkedin agents
+dinkedin-post-creator = ["client/dinkedin/brand_voice", "client/dinkedin/content_pillars", "domain/linkedin/post_performance"]
+dinkedin-business-analyst = ["client/dinkedin/icp", "client/dinkedin/positioning", "market/competitors"]
+dinkedin-strategy-architect = ["client/dinkedin/content_pillars", "client/dinkedin/icp", "market/competitors"]
+
+# Default for unregistered agents
+default = ["operations/framework_versions", "operations/guardrails"]

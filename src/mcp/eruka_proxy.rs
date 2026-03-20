@@ -360,7 +360,10 @@ impl ErukaProxy {
     pub async fn get_completeness(&self, user_id: &str, scope: &str) -> anyhow::Result<serde_json::Value> {
         let url = format!("{}/api/v1/completeness/{}", self.base_url, scope);
         let mut req = self.http.get(&url).query(&[("user_id", user_id)]);
-        if let Some(auth) = self.auth_header() {
+        if let Ok(service_key) = std::env::var("ERUKA_SERVICE_KEY") {
+            req = req.header("X-Service-Key", &service_key);
+            req = req.header("X-Workspace-Id", user_id);
+        } else if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }
         let response = req.send().await?;

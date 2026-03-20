@@ -57,10 +57,11 @@ pub async fn submit(
     State(app): State<AppState>,
     Json(payload): Json<SubmitPayload>,
 ) -> Result<Json<SubmitResponse>> {
-    // 1. Create ErukaProxy from env
+    // 1. Create ErukaProxy from env — NO bom auth for DSprint
+    // All DSprint Eruka calls use X-Service-Key + X-Workspace-Id
+    // so workspaces + sessions are scoped to the visitor, not bom@dirmacs.com
     let eruka_url = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
-    let mut eruka = ErukaProxy::new(&eruka_url);
-    let _ = eruka.ensure_authenticated().await;
+    let eruka = ErukaProxy::new(&eruka_url);
 
     // 2. Create workspace via Eruka (graceful failure)
     let ws = eruka.create_workspace(&payload.company_name, &payload.email).await;
@@ -674,8 +675,9 @@ pub async fn chat(
     Json(payload): Json<ChatPayload>,
 ) -> Result<Json<ChatResponse>> {
     let eruka_url = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
-    let mut eruka = ErukaProxy::new(&eruka_url);
-    let _ = eruka.ensure_authenticated().await;
+    // DO NOT call ensure_authenticated() — we use X-Service-Key + X-Workspace-Id
+    // so Sisyphos reads the VISITOR's workspace context, not bom@dirmacs.com's
+    let eruka = ErukaProxy::new(&eruka_url);
 
     // 1. Get or create session
     let session_id = match payload.session_id {

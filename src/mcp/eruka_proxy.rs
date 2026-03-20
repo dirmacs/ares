@@ -267,7 +267,11 @@ impl ErukaProxy {
         let url = format!("{}/api/v1/workspaces", self.base_url);
         let body = serde_json::json!({"name": name, "owner_email": owner_email});
         let mut req = self.http.post(&url).json(&body);
-        if let Some(auth) = self.auth_header() {
+        // Prefer service auth for DSprint (no bom JWT needed)
+        if let Ok(service_key) = std::env::var("ERUKA_SERVICE_KEY") {
+            req = req.header("X-Service-Key", &service_key);
+            req = req.header("X-Workspace-Id", "system");
+        } else if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }
         let response = req.send().await?;

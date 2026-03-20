@@ -19,7 +19,8 @@ pub struct SubmitPayload {
     pub email: String,
     pub answers: HashMap<String, serde_json::Value>,
     #[serde(rename = "ref")]
-    pub referral: Option<String>,
+ pub referral: Option<String>,
+ pub entity_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,8 +82,14 @@ pub async fn submit(
         }
     };
 
+	// Add entity_type to answers if provided
+	let mut answers = payload.answers.clone();
+	if let Some(ref entity_type) = payload.entity_type {
+		answers.insert("identity.entity_type".to_string(), serde_json::json!(entity_type));
+	}
+
 	// 4. Write answer fields to Eruka using batch import
-	let import_fields: Vec<serde_json::Value> = payload.answers.iter()
+	let import_fields: Vec<serde_json::Value> = answers.iter()
 		.filter_map(|(path, value)| {
 			let parts: Vec<&str> = path.splitn(2, '.').collect();
 			if parts.len() == 2 {
@@ -344,6 +351,50 @@ pub async fn results(
 
     // 1. Get workspace data from Eruka
     let ws_data = eruka.get_workspace(&workspace_id).await;
+    let (company_name, team_size, industry, pain_points) = match &ws_data {
+    Ok(v) => {
+    let name = v["name"].as_str().unwrap_or("Unknown").to_string();
+    
+    // Extract team_size from workspace metadata (identity.company_size or defaults)
+    let team_size = v["metadata"]["identity"]["company_size"]
+    .as_str()
+    .or_else(|| v["metadata"]["team_size"].as_str())
+    .unwrap_or("11-50")
+    .to_string();
+    
+    // Extract industry from workspace metadata (identity.industry or defaults)
+    let industry = v["metadata"]["identity"]["industry"]
+    .as_str()
+    .or_else(|| v["metadata"]["industry"].as_str())
+    .unwrap_or("General")
+    .to_string();
+    
+    // Extract pain_points from workspace metadata (goals.* or market.* fields)
+    let pain_points: Vec<String> = v["metadata"]["goals"]
+    .as_object()
+    .map(|goals| {
+    goals.iter()
+    .filter_map(|(k, v)| {
+    if k.starts_with("pain_") || k.contains("challenge") {
+    v.as_str().map(|s| s.to_string())
+    } else {
+    None
+    }
+    })
+    .collect()
+    })
+    .unwrap_or_default();
+    
+    (name, team_size, industry, pain_points)
+    }
+    Err(e) => {
+    tracing::warn!("Eruka get_workspace failed: {e}");
+    ("Unknown".to_string(), "11-50".to_string(), "General".to_string(), vec![])
+    }
+    };
+
+    // Old code replaced above - keeping for reference:
+    /*
     let company_name = match &ws_data {
         Ok(v) => v["name"].as_str().unwrap_or("Unknown").to_string(),
         Err(e) => {

@@ -88,11 +88,16 @@ impl Tool for ErukaRead {
         })
     }
 
-    async fn execute(&self, args: Value) -> Result<Value> {
-        let path = args["path"].as_str()
-            .ok_or_else(|| crate::types::AppError::InvalidInput("path required".into()))?;
-        eruka_get(path).await
-    }
+async fn execute(&self, args: Value) -> Result<Value> {
+ let path = if let Some(p) = args["path"].as_str() {
+  p.to_string()
+ } else if let (Some(cat), Some(field)) = (args["category"].as_str(), args["field"].as_str()) {
+  format!("{}/{}", cat, field)
+ } else {
+  return Err(crate::types::AppError::InvalidInput("path or category+field required".into()));
+ };
+ eruka_get(&path).await
+ }
 }
 
 // ─── eruka_search ─────────────────────────────────────────────────────────────

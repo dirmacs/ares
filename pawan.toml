@@ -1,4 +1,4 @@
-model = "mistralai/devstral-2-123b-instruct-2512"
+model = "moonshotai/kimi-k2.5"
 temperature = 0.6
 
 [mcp.eruka]

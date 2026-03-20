@@ -73,8 +73,9 @@ pub async fn submit(
         }
     };
 
-    // 3. Create Sisyphos session (graceful failure)
-    let session = eruka.sisyphos_create_session(&payload.email).await;
+    // 3. Create Sisyphos session scoped to workspace (NOT email)
+    tracing::info!("DSprint submit: creating Sisyphos session for workspace_id={}", workspace_id);
+    let session = eruka.sisyphos_create_session(&workspace_id).await;
     let session_id = match &session {
         Ok(v) => v["id"].as_str().or(v["session_id"].as_str()).unwrap_or("unknown").to_string(),
         Err(e) => {

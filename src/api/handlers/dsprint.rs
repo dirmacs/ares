@@ -348,8 +348,8 @@ pub async fn results(
     Path(workspace_id): Path<String>,
 ) -> Result<Json<ResultsResponse>> {
     let eruka_url = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
-    let mut eruka = ErukaProxy::new(&eruka_url);
-    let _ = eruka.ensure_authenticated().await;
+    // Service auth — read workspace context, not bom's
+    let eruka = ErukaProxy::new(&eruka_url);
 
     // 1. Get workspace data from Eruka
     let ws_data = eruka.get_workspace(&workspace_id).await;
@@ -839,13 +839,12 @@ pub async fn activate(
         ).execute(pool).await;
     }
 
-    // 4. Link workspace to tenant via Eruka (async)
+    // 4. Link workspace to tenant via Eruka (async, service auth)
     let eruka_url = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
     let ws_id = payload.workspace_id.clone();
     let tid = tenant_id.clone();
     tokio::spawn(async move {
-        let mut eruka = ErukaProxy::new(&eruka_url);
-        let _ = eruka.ensure_authenticated().await;
+        let eruka = ErukaProxy::new(&eruka_url);
         if let Err(e) = eruka.link_tenant(&ws_id, &tid).await {
             tracing::warn!("Failed to link workspace to tenant: {e}");
         }

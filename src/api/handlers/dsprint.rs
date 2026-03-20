@@ -100,7 +100,7 @@ pub async fn submit(
 					"field": parts[1],
 					"value": value,
 					"confidence": 1.0,
-					"source": "dsprint_survey"
+					"source": "user_input"
 				}))
 			} else {
 				None

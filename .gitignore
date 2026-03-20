@@ -64,3 +64,5 @@ docs/book/
 
 # IDE workspace files
 *.code-workspace
+.fastembed_cache/
+data/

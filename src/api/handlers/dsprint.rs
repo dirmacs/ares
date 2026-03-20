@@ -905,6 +905,47 @@ pub async fn activate(
         }
     });
 
+    // 4c. Create platform_roles for new user (async)
+    {
+        let eruka_url3 = env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
+        let role_email = payload.email.clone();
+        let role_tenant = tenant_id.clone();
+        tokio::spawn(async move {
+            // Wait for Eruka user creation to complete
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            let http = reqwest::Client::new();
+            if let Ok(service_key) = std::env::var("ERUKA_SERVICE_KEY") {
+                // Call Eruka's role assignment endpoint
+                let body = serde_json::json!({
+                    "email": role_email,
+                    "roles": [
+                        {"product": "ares", "role": "user", "resource_id": role_tenant},
+                        {"product": "portal", "role": "user"}
+                    ]
+                });
+                let url = format!("{}/api/v1/auth/roles", eruka_url3);
+                match http.post(&url)
+                    .json(&body)
+                    .header("X-Service-Key", &service_key)
+                    .header("X-Workspace-Id", "system")
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        tracing::info!("Platform roles created for {} (tenant {})", role_email, role_tenant);
+                    }
+                    Ok(resp) => {
+                        tracing::warn!("Platform roles creation returned {}", resp.status());
+                    }
+                    Err(e) => {
+                        tracing::warn!("Platform roles creation failed: {e}");
+                    }
+                }
+            }
+        });
+    }
+
     // 5. Update DCRM deal stage (async)
     let dcrm_url = env::var("DCRM_BASE_URL").unwrap_or_else(|_| "http://localhost:3001".to_string());
     let email_dcrm = payload.email.clone();

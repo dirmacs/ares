@@ -287,7 +287,11 @@ impl ErukaProxy {
         let url = format!("{}/api/v1/sisyphos/sessions/{}/chat", self.base_url, session_id);
         let body = serde_json::json!({"message": message, "workspace_id": workspace_id});
         let mut req = self.http.post(&url).json(&body);
-        if let Some(auth) = self.auth_header() {
+        // Use service auth with workspace_id so Sisyphos reads visitor's context, not bom's
+        if let Ok(service_key) = std::env::var("ERUKA_SERVICE_KEY") {
+            req = req.header("X-Service-Key", &service_key);
+            req = req.header("X-Workspace-Id", workspace_id);
+        } else if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }
         let response = req.send().await?;
@@ -307,7 +311,11 @@ impl ErukaProxy {
         let url = format!("{}/api/v1/sisyphos/sessions", self.base_url);
         let body = serde_json::json!({"user_id": user_id});
         let mut req = self.http.post(&url).json(&body);
-        if let Some(auth) = self.auth_header() {
+        // Use service auth with workspace_id so Sisyphos reads the correct context
+        if let Ok(service_key) = std::env::var("ERUKA_SERVICE_KEY") {
+            req = req.header("X-Service-Key", &service_key);
+            req = req.header("X-Workspace-Id", user_id);
+        } else if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }
         let response = req.send().await?;

@@ -1,20 +1,20 @@
 [agent_context]
 # eHB agents
-ehb-assessment = ["client/ehb/assessment_rubric", "client/ehb/spectrum_dimensions"]
-ehb-listener = ["client/ehb/crisis_resources", "client/ehb/exchange_limit", "client/ehb/pathway_options"]
-ehb-moderator = ["client/ehb/safety_rules", "client/ehb/blocked_terms"]
-ehb-recommender = ["client/ehb/pathway_options", "client/ehb/assessment_rubric"]
+ehb-assessment = ["products/clients/ehb/assessment_rubric", "products/clients/ehb/spectrum_dimensions"]
+ehb-listener = ["products/clients/ehb/crisis_resources", "products/clients/ehb/exchange_limit", "products/clients/ehb/pathway_options"]
+ehb-moderator = ["products/clients/ehb/safety_rules", "products/clients/ehb/blocked_terms"]
+ehb-recommender = ["products/clients/ehb/pathway_options", "products/clients/ehb/assessment_rubric"]
 
 # Kasino agents
-kasino-classifier = ["client/kasino/risk_categories", "client/kasino/regulatory_rules"]
-kasino-risk = ["client/kasino/risk_categories", "client/kasino/thresholds"]
-kasino-transaction = ["client/kasino/transaction_rules"]
-kasino-report = ["client/kasino/report_templates"]
+kasino-classifier = ["products/clients/kasino/risk_categories", "products/clients/kasino/regulatory_rules"]
+kasino-risk = ["products/clients/kasino/risk_categories", "products/clients/kasino/thresholds"]
+kasino-transaction = ["products/clients/kasino/transaction_rules"]
+kasino-report = ["products/clients/kasino/report_templates"]
 
 # Dinkedin agents
-dinkedin-post-creator = ["client/dinkedin/brand_voice", "client/dinkedin/content_pillars", "domain/linkedin/post_performance"]
-dinkedin-business-analyst = ["client/dinkedin/icp", "client/dinkedin/positioning", "market/competitors"]
-dinkedin-strategy-architect = ["client/dinkedin/content_pillars", "client/dinkedin/icp", "market/competitors"]
+dinkedin-post-creator = ["products/clients/dinkedin/brand_voice", "products/clients/dinkedin/content_pillars", "domain/linkedin/post_performance"]
+dinkedin-business-analyst = ["products/clients/dinkedin/icp", "products/clients/dinkedin/positioning", "market/competitors"]
+dinkedin-strategy-architect = ["products/clients/dinkedin/content_pillars", "products/clients/dinkedin/icp", "market/competitors"]
 
 # Default for unregistered agents
 default = ["operations/framework_versions", "operations/guardrails"]

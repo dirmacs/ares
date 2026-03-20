@@ -271,6 +271,9 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         )
         .layer(middleware::from_fn(crate::middleware::usage::track_usage))
         .layer(middleware::from_fn(
+            crate::middleware::eruka_context::eruka_context_middleware,
+        ))
+        .layer(middleware::from_fn(
             crate::middleware::api_key_auth::api_key_auth_middleware,
         ))
         .layer(middleware::from_fn(move |mut req: Request, next: Next| {

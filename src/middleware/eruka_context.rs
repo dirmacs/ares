@@ -150,13 +150,17 @@ pub async fn eruka_context_middleware(mut req: Request, next: Next) -> Response 
     let mut agent_type = "default".to_string();
 
     // Buffer the request body to extract agent_type
-    let body_bytes = match to_bytes(req.body(), 1_048_576).await {
+    let (parts, body) = req.into_parts();
+    let body_bytes = match to_bytes(body, 1_048_576).await {
         Ok(bytes) => bytes,
         Err(e) => {
             warn!("Failed to buffer request body: {}", e);
+            let req = Request::from_parts(parts, Body::empty());
             return next.run(req).await;
         }
     };
+    // Reconstruct request with buffered body for downstream use
+    let mut req = Request::from_parts(parts, Body::from(body_bytes.clone()));
 
     // Parse body as JSON to extract agent_type
     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {

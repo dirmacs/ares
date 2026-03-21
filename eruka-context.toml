@@ -12,7 +12,7 @@ kasino-transaction = ["products/clients/kasino/transaction_rules"]
 kasino-report = ["products/clients/kasino/report_templates"]
 
 # Dinkedin agents
-dinkedin-post-creator = ["products/clients/dinkedin/brand_voice", "products/clients/dinkedin/content_pillars", "domain/linkedin/post_performance"]
+dinkedin-post-creator = ["products/clients/dinkedin/brand_voice", "products/clients/dinkedin/content_pillars", "market/linkedin_post_performance"]
 dinkedin-business-analyst = ["products/clients/dinkedin/icp", "products/clients/dinkedin/positioning", "market/competitors"]
 dinkedin-strategy-architect = ["products/clients/dinkedin/content_pillars", "products/clients/dinkedin/icp", "market/competitors"]
 

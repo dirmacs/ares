@@ -205,14 +205,18 @@ Handle employee info, policies, and benefits."#
 
         let mut messages: Vec<ConversationMessage> = Vec::new();
 
-        // Inject Eruka context if available (set by eruka_context_middleware via task-local)
+        // Inject external context if a ContextProvider is configured
+        // OSS: NoOpContextProvider returns None. Managed: ErukaContextProvider returns knowledge states.
+        #[cfg(feature = "eruka-context")]
         let effective_prompt = match crate::middleware::eruka_context::get_current_eruka_context() {
             Some(eruka_ctx) if !eruka_ctx.is_empty() => {
-                tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "Eruka context injected into system prompt");
+                tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "External context injected into system prompt");
                 format!("{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.", eruka_ctx, self.system_prompt)
             }
             _ => self.system_prompt.clone(),
         };
+        #[cfg(not(feature = "eruka-context"))]
+        let effective_prompt = self.system_prompt.clone();
         messages.push(ConversationMessage::system(&effective_prompt));
 
         // Add recent conversation history (last 5 messages)
@@ -301,14 +305,17 @@ impl Agent for ConfigurableAgent {
         tracing::debug!(agent = %self.name, "execute: no tools, using simple path");
 
         // Build context with conversation history if available
-        // Inject Eruka context if available (set by eruka_context_middleware via task-local)
+        // Inject external context if a ContextProvider is configured
+        #[cfg(feature = "eruka-context")]
         let effective_prompt = match crate::middleware::eruka_context::get_current_eruka_context() {
             Some(eruka_ctx) if !eruka_ctx.is_empty() => {
-                tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "Eruka context injected into system prompt (simple path)");
+                tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "External context injected into system prompt (simple path)");
                 format!("{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.", eruka_ctx, self.system_prompt)
             }
             _ => self.system_prompt.clone(),
         };
+        #[cfg(not(feature = "eruka-context"))]
+        let effective_prompt = self.system_prompt.clone();
         let mut messages = vec![("system".to_string(), effective_prompt)];
 
         // Add user memory if available

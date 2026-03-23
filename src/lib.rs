@@ -214,4 +214,7 @@ pub struct AppState {
     /// Emergency stop flag — when true, all agent requests are rejected with 503.
     /// Set/cleared via POST /api/admin/agents/emergency-stop.
     pub emergency_stop: Arc<std::sync::atomic::AtomicBool>,
+    /// External context provider for agent calls.
+    /// OSS: NoOpContextProvider. Managed: ErukaContextProvider (from dirmacs-core).
+    pub context_provider: Arc<dyn crate::agents::context_provider::ContextProvider>,
 }

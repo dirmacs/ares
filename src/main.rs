@@ -483,6 +483,7 @@ async fn run_server(
         mcp_registry,
         deploy_registry: ares::api::handlers::deploy::new_deploy_registry(),
         emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        context_provider: Arc::new(ares::agents::NoOpContextProvider),
     };
 
     // =================================================================

@@ -47,3 +47,5 @@ pub mod registry;
 /// Web search tool using DuckDuckGo (requires `search-tools` feature).
 #[cfg(feature = "search-tools")]
 pub mod search;
+/// LinkedIn post mechanical scorer.
+pub mod dinkedin;

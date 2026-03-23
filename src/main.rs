@@ -374,23 +374,8 @@ async fn run_server(
     #[cfg(feature = "search-tools")]
     tool_registry.register(Arc::new(ares::tools::search::WebSearch::new()));
 
-    // Register POM tools (calls pom-api at POM_BASE_URL or localhost:3002)
-    tool_registry.register(Arc::new(ares::tools::pom::PomCreateDissueTool::new()));
-    tool_registry.register(Arc::new(ares::tools::pom::PomUpdateDissueTool::new()));
-    tool_registry.register(Arc::new(ares::tools::pom::PomGetCurrentSprintTool::new()));
-    tool_registry.register(Arc::new(ares::tools::pom::PomListDissuesTool::new()));
-    tool_registry.register(Arc::new(ares::tools::pom::PomCreateSprintTool::new()));
-    tool_registry.register(Arc::new(ares::tools::pom::PomListSprintsTool::new()));
-
-    // Register DCRM tools (calls dcrm-api at DCRM_BASE_URL or localhost:3001)
-    tool_registry.register(Arc::new(ares::tools::dcrm::DcrmListContactsTool::new()));
-    tool_registry.register(Arc::new(ares::tools::dcrm::DcrmCreateContactTool::new()));
-    tool_registry.register(Arc::new(ares::tools::dcrm::DcrmListDealsTool::new()));
-    tool_registry.register(Arc::new(ares::tools::dcrm::DcrmPipelineAnalyticsTool::new()));
-
-    // Register Eruka tools (calls Eruka API at ERUKA_API_URL or localhost:8081)
-    tool_registry.register(Arc::new(ares::tools::eruka::ErukaRead));
-    tool_registry.register(Arc::new(ares::tools::eruka::ErukaSearch));
+    // Proprietary tools (POM, DCRM, Eruka) are registered by ares-dirmacs, not here.
+    // Extension crates call tool_registry.register() in their own main.rs.
 
     let tool_registry = Arc::new(tool_registry);
     tracing::info!(
@@ -672,34 +657,8 @@ async fn run_server(
             api::routes::create_router(state.auth_service.clone(), state.tenant_db.clone()),
         );
 
-    // DSprint survey routes (public, no auth) with IP-based rate limiting
-    {
-        use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
-
-        // 30 requests/minute per IP (1 token per 2 seconds, burst of 30)
-        let dsprint_governor = std::sync::Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(2)
-                .burst_size(30)
-                .use_headers()
-                .finish()
-                .expect("Failed to build DSprint rate limiter"),
-        );
-
-        let dsprint_routes = Router::new()
-            .route("/submit", post(ares::api::handlers::dsprint::submit))
-            .route("/results/{workspace_id}", axum::routing::get(ares::api::handlers::dsprint::results))
-            .route("/upload", post(ares::api::handlers::dsprint::upload))
-            .route("/chat", post(ares::api::handlers::dsprint::chat))
-            .route("/activate", post(ares::api::handlers::dsprint::activate))
-            .route("/analytics/funnel", axum::routing::get(ares::api::handlers::dsprint::funnel_analytics))
-            .route_layer(GovernorLayer::new(dsprint_governor))
-            .with_state(state.clone());
-
-        app = app.nest("/v1/dsprint", dsprint_routes);
-
-        tracing::info!("DSprint rate limiting enabled: 30 req/min per IP");
-    }
+    // DSprint, DCRM, POM routes are registered by ares-dirmacs, not here.
+    // Extension crates call app.nest("/v1/dsprint", ...) in their own main.rs.
 
     // Swagger UI (optional - requires network during build)
     #[cfg(feature = "swagger-ui")]
@@ -848,9 +807,9 @@ async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std
 
     // Get API URLs from environment or config
     let ares_api_url = std::env::var("ARES_API_URL")
-        .unwrap_or_else(|_| "https://api.ares.dirmacs.com".to_string());
+        .unwrap_or_else(|_| "http://localhost:3000".to_string());
     let eruka_api_url =
-        std::env::var("ERUKA_API_URL").unwrap_or_else(|_| "https://eruka.dirmacs.com".to_string());
+        std::env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
 
     tracing::info!("ARES API URL: {}", ares_api_url);
     tracing::info!("Eruka API URL: {}", eruka_api_url);

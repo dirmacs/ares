@@ -14,6 +14,9 @@ pub mod auth;
 pub mod usage;
 
 #[cfg(feature = "mcp")]
+pub mod eruka_proxy;
+
+#[cfg(feature = "mcp")]
 pub mod client;
 
 #[cfg(feature = "mcp")]

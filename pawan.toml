@@ -4,5 +4,5 @@ temperature = 0.6
 [mcp.eruka]
 command = "/opt/eruka/target/release/eruka-mcp"
 args = ["--transport", "stdio", "--user-id", "REDACTED_USER_UUID"]
-env = { DATABASE_URL = "postgres://dirmacs:REDACTED_DB_PASSWORD@localhost/eruka" }
+env = { DATABASE_URL = "postgres://dirmacs:33d7b47b112be9af35d6d49f461da186@localhost/eruka" }
 

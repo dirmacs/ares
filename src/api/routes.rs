@@ -269,11 +269,13 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/tenant/data",
             delete(crate::api::handlers::v1::delete_tenant_data),
         )
-        .layer(middleware::from_fn(crate::middleware::usage::track_usage))
-        .layer(middleware::from_fn(
+        .layer(middleware::from_fn(crate::middleware::usage::track_usage));
+        // Eruka context middleware — only when eruka-context feature is enabled
+        #[cfg(feature = "eruka-context")]
+        let v1_routes = v1_routes.layer(middleware::from_fn(
             crate::middleware::eruka_context::eruka_context_middleware,
-        ))
-        .layer(middleware::from_fn(
+        ));
+        let v1_routes = v1_routes.layer(middleware::from_fn(
             crate::middleware::api_key_auth::api_key_auth_middleware,
         ))
         .layer(middleware::from_fn(move |mut req: Request, next: Next| {

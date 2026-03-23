@@ -68,8 +68,5 @@ async fn record_usage(
 	)
 	.execute(pool)
 	.await?;
-	// Track first usage for DCRM stage updates
-	crate::dsprint::stage_tracker::track_first_usage(tenant_id, pool).await;
-
 	Ok(())
 }

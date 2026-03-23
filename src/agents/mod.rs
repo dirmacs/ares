@@ -29,6 +29,8 @@
 //! ```
 
 pub mod configurable;
+/// External context injection trait (OSS: NoOp, Managed: Eruka/custom).
+pub mod context_provider;
 /// Multi-agent orchestration for complex tasks.
 pub mod orchestrator;
 pub mod registry;
@@ -43,6 +45,7 @@ use async_trait::async_trait;
 
 // Re-export commonly used types
 pub use configurable::ConfigurableAgent;
+pub use context_provider::{ContextProvider, NoOpContextProvider};
 pub use registry::{AgentRegistry, AgentRegistryBuilder};
 
 /// Response from agent execution, including content and optional token usage

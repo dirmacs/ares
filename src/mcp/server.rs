@@ -24,7 +24,6 @@
 
 use crate::db::tenants::TenantDb;
 use crate::mcp::auth::{extract_api_key_from_env, validate_mcp_api_key, McpSession};
-use crate::mcp::eruka_proxy::ErukaProxy;
 use crate::mcp::tools::*;
 use crate::mcp::usage::{check_quota, record_mcp_usage, McpOperation};
 use rmcp::model::{

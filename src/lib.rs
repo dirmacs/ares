@@ -218,3 +218,27 @@ pub struct AppState {
     /// OSS: NoOpContextProvider. Managed: ErukaContextProvider (from dirmacs-core).
     pub context_provider: Arc<dyn crate::agents::context_provider::ContextProvider>,
 }
+
+/// Returns the base ARES router with all generic endpoints.
+///
+/// Extension crates can `.merge()` additional routes and `.layer()` middleware
+/// on top of this to build managed platform binaries.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ares::{base_router, AppState};
+///
+/// let app = base_router(state.clone())
+///     .merge(my_custom_routes(state.clone()))
+///     .layer(my_custom_middleware());
+/// ```
+pub fn base_router(state: AppState) -> axum::Router {
+    axum::Router::new()
+        .route("/health", axum::routing::get(|| async { "OK" }))
+        .nest(
+            "/api",
+            api::routes::create_router(state.auth_service.clone(), state.tenant_db.clone()),
+        )
+        .with_state(state)
+}

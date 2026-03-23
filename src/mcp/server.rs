@@ -131,7 +131,7 @@ impl AresMcpServer {
 
         if !within_quota {
             return Err(format!(
-                "Usage quota exceeded for tier '{}'. Upgrade at https://dotdot.dirmacs.com/billing",
+                "Usage quota exceeded for tier '{}'. Contact your administrator to upgrade.",
                 session.tier()
             ));
         }

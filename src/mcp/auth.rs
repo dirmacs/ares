@@ -4,7 +4,6 @@
 
 use crate::db::tenants::TenantDb;
 use crate::models::TenantContext;
-use std::sync::Arc;
 
 /// Error type for MCP authentication.
 #[derive(Debug, thiserror::Error)]

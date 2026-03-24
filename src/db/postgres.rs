@@ -337,3 +337,33 @@ impl UserAgent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test: new_test() must not block or hang.
+    /// Previously, tests used new_memory() which called connect()
+    /// and hung for 30s+ trying to reach a non-existent database.
+    /// connect_lazy() fixes this by not establishing TCP connections.
+    #[tokio::test]
+    async fn test_new_test_does_not_block() {
+        let start = std::time::Instant::now();
+        let _client = PostgresClient::new_test();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 100,
+            "new_test() should complete instantly, took {}ms",
+            elapsed.as_millis()
+        );
+    }
+
+    /// Regression test: new_test() must work inside #[tokio::test].
+    /// Previously, mixing futures::executor::block_on with #[tokio::test]
+    /// caused a nested runtime deadlock.
+    #[tokio::test]
+    async fn test_new_test_in_tokio_context() {
+        let _client = PostgresClient::new_test();
+        // If we get here without hanging, the deadlock is fixed
+    }
+}

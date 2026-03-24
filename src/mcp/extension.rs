@@ -44,3 +44,21 @@ impl McpToolExtension for NoOpMcpExtension {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_noop_extension_returns_empty_tools() {
+        let ext = NoOpMcpExtension;
+        assert!(ext.tools().is_empty(), "NoOp should provide no tools");
+    }
+
+    #[tokio::test]
+    async fn test_noop_extension_returns_none() {
+        let ext = NoOpMcpExtension;
+        let result = ext.execute("any_tool", serde_json::json!({}), "tenant_1").await;
+        assert!(result.is_none(), "NoOp should not handle any tool");
+    }
+}

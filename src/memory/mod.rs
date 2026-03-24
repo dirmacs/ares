@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_estimate_tokens() {
-        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens(""), 1); // floors at 1 for billing safety
         assert_eq!(estimate_tokens("test"), 1);
         assert_eq!(estimate_tokens("this is a longer test string"), 7);
     }

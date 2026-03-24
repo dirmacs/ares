@@ -19,7 +19,7 @@
 
 **A.R.E.S** is a production-grade agentic AI server built in Rust. Multi-provider LLM routing, structured tool calling, RAG, MCP integration, multi-tenant auth, and workflow orchestration. Extensible via `ContextProvider` trait and `base_router()` for building managed platforms on top.
 
-Built by [DIRMACS](https://dirmacs.com).
+Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.github.io/ares)**
 
 ## Features
 

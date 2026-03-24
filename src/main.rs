@@ -377,6 +377,18 @@ async fn run_server(
     // Proprietary tools (POM, DCRM, Eruka) are registered by ares-dirmacs, not here.
     // Extension crates call tool_registry.register() in their own main.rs.
 
+    // Register MCP client tools as agent-callable tools (MCP→ToolRegistry bridge)
+    #[cfg(feature = "mcp")]
+    {
+        if let Ok(mcp_reg) = ares::mcp::McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref()) {
+            for client_name in mcp_reg.client_names() {
+                if let Some(client) = mcp_reg.get_client(&client_name) {
+                    ares::tools::mcp_bridge::register_mcp_tools(&mut tool_registry, &client_name, client.clone());
+                }
+            }
+        }
+    }
+
     let tool_registry = Arc::new(tool_registry);
     tracing::info!(
         "Tool registry initialized with {} tools",

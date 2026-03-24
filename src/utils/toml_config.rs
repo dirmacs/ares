@@ -877,7 +877,15 @@ impl AresConfig {
             }
 
             for tool_name in &agent_config.tools {
-                if !self.tools.contains_key(tool_name) {
+                // Allow tools from registered tool configs OR MCP bridge tools
+                // MCP bridge tools follow the pattern: {mcp_client_name}_{operation}
+                let is_known_tool = self.tools.contains_key(tool_name);
+                let is_mcp_tool = tool_name.contains('_') && {
+                    // Check if any configured MCP client name is a prefix
+                    let mcp_names = self.mcp_client_names();
+                    mcp_names.iter().any(|mcp_name| tool_name.starts_with(&format!("{}_", mcp_name)))
+                };
+                if !is_known_tool && !is_mcp_tool {
                     return Err(ConfigError::MissingTool(
                         tool_name.clone(),
                         agent_name.clone(),
@@ -1086,6 +1094,28 @@ impl AresConfig {
     /// Returns an error if:
     /// - The environment variable is not set
     /// - The secret is shorter than 32 characters (256 bits)
+    /// Get names of configured MCP clients (from mcps directory .toon files).
+    /// Used by validation to allow MCP bridge tool names in agent configs.
+    pub fn mcp_client_names(&self) -> Vec<String> {
+        let path = &self.config.mcps_dir;
+        if !path.exists() { return vec![]; }
+        std::fs::read_dir(path)
+            .ok()
+            .map(|entries| {
+                entries.filter_map(|e| {
+                    let e = e.ok()?;
+                    let p = e.path();
+                    if p.extension()?.to_str()? == "toon" {
+                        // Read the name field from the TOON file
+                        let content = std::fs::read_to_string(&p).ok()?;
+                        let val: toml::Value = toml::from_str(&content).ok()?;
+                        val.get("name")?.as_str().map(String::from)
+                    } else { None }
+                }).collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn jwt_secret(&self) -> Result<String, ConfigError> {
         let secret = self
             .resolve_env(&self.auth.jwt_secret_env)

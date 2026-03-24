@@ -42,3 +42,23 @@ impl ContextProvider for NoOpContextProvider {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_noop_returns_none() {
+        let provider = NoOpContextProvider;
+        let result = provider.get_context("any_agent", "any_tenant").await;
+        assert!(result.is_none(), "NoOp should always return None");
+    }
+
+    #[tokio::test]
+    async fn test_noop_is_send_sync() {
+        // Verify the trait object can be shared across threads
+        let provider: Box<dyn ContextProvider> = Box::new(NoOpContextProvider);
+        let arc = std::sync::Arc::new(provider);
+        let _clone = arc.clone();
+    }
+}

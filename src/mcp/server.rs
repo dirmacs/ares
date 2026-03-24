@@ -538,7 +538,7 @@ impl AresMcpServer {
 
     /// Get list of available tools with JSON schemas
     fn get_tools(&self) -> Vec<Tool> {
-        let mut tools = vec![
+        let tools = vec![
             Tool {
                 name: "ares_list_agents".into(),
                 description: Some(

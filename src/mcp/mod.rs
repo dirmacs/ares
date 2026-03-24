@@ -29,4 +29,7 @@ pub mod registry;
 pub use server::start_mcp_server;
 
 #[cfg(feature = "mcp")]
+pub use extension::{McpToolExtension, NoOpMcpExtension};
+
+#[cfg(feature = "mcp")]
 pub use registry::McpRegistry;

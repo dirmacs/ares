@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <rect width="128" height="128" rx="20" fill="#0d1117"/>
+  <!-- Shield shape (agent/runtime) -->
+  <path d="M64 20L96 36V68C96 88 80 104 64 108C48 104 32 88 32 68V36L64 20Z" fill="none" stroke="#58a6ff" stroke-width="3"/>
+  <!-- Inner A letterform -->
+  <path d="M52 82L64 42L76 82M56 70H72" stroke="#58a6ff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Dot/node (agent node) -->
+  <circle cx="64" cy="36" r="4" fill="#e94560"/>
+  <!-- Side nodes (multi-provider) -->
+  <circle cx="40" cy="52" r="3" fill="#58a6ff" opacity="0.5"/>
+  <circle cx="88" cy="52" r="3" fill="#58a6ff" opacity="0.5"/>
+</svg>

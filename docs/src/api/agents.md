@@ -51,7 +51,7 @@ Returns all available agents on the platform. This endpoint does not require aut
 #### curl
 
 ```bash
-curl https://api.ares.dirmacs.com/api/agents
+curl http://localhost:3000/api/agents
 ```
 
 #### Python
@@ -59,7 +59,7 @@ curl https://api.ares.dirmacs.com/api/agents
 ```python
 import requests
 
-response = requests.get("https://api.ares.dirmacs.com/api/agents")
+response = requests.get("http://localhost:3000/api/agents")
 agents = response.json()
 
 for agent in agents:
@@ -69,7 +69,7 @@ for agent in agents:
 #### JavaScript
 
 ```javascript
-const response = await fetch("https://api.ares.dirmacs.com/api/agents");
+const response = await fetch("http://localhost:3000/api/agents");
 const agents = await response.json();
 
 agents.forEach(agent => {
@@ -94,7 +94,7 @@ GET /api/user/agents
 Returns all custom agents owned by the authenticated user.
 
 ```bash
-curl https://api.ares.dirmacs.com/api/user/agents \
+curl http://localhost:3000/api/user/agents \
   -H "Authorization: Bearer eyJhbGciOi..."
 ```
 
@@ -118,7 +118,7 @@ Create a new custom agent.
 #### Example
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/user/agents \
+curl -X POST http://localhost:3000/api/user/agents \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -d '{
@@ -133,7 +133,7 @@ curl -X POST https://api.ares.dirmacs.com/api/user/agents \
 import requests
 
 requests.post(
-    "https://api.ares.dirmacs.com/api/user/agents",
+    "http://localhost:3000/api/user/agents",
     headers={
         "Content-Type": "application/json",
         "Authorization": "Bearer eyJhbGciOi..."
@@ -160,7 +160,7 @@ Retrieve the full configuration of a specific user agent.
 | `name`    | string | path | The agent's name |
 
 ```bash
-curl https://api.ares.dirmacs.com/api/user/agents/code-reviewer \
+curl http://localhost:3000/api/user/agents/code-reviewer \
   -H "Authorization: Bearer eyJhbGciOi..."
 ```
 
@@ -173,7 +173,7 @@ PUT /api/user/agents/{name}
 Update an existing agent's configuration. You can modify the model, system prompt, or tools.
 
 ```bash
-curl -X PUT https://api.ares.dirmacs.com/api/user/agents/code-reviewer \
+curl -X PUT http://localhost:3000/api/user/agents/code-reviewer \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -d '{
@@ -192,7 +192,7 @@ DELETE /api/user/agents/{name}
 Permanently delete a user agent.
 
 ```bash
-curl -X DELETE https://api.ares.dirmacs.com/api/user/agents/code-reviewer \
+curl -X DELETE http://localhost:3000/api/user/agents/code-reviewer \
   -H "Authorization: Bearer eyJhbGciOi..."
 ```
 
@@ -211,7 +211,7 @@ POST /api/user/agents/import
 Import an agent definition from a TOON configuration file.
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/user/agents/import \
+curl -X POST http://localhost:3000/api/user/agents/import \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -d @agent-config.toon
@@ -226,7 +226,7 @@ GET /api/user/agents/{name}/export
 Export an agent's configuration in TOON format. Useful for sharing agent definitions or version-controlling them alongside your codebase.
 
 ```bash
-curl https://api.ares.dirmacs.com/api/user/agents/code-reviewer/export \
+curl http://localhost:3000/api/user/agents/code-reviewer/export \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -o code-reviewer.toon
 ```

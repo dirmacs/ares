@@ -409,7 +409,7 @@ impl ErukaProxy {
         let body = serde_json::json!({
             "fields": fields,
             "build_tree": build_tree,
-            "source": "dsprint_survey"
+            "source": "survey"
         });
         let mut req = self.http.post(&url).json(&body);
         if let Some(auth) = self.auth_header() {

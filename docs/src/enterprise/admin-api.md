@@ -2,7 +2,7 @@
 
 The Admin API provides full platform management capabilities for ARES operators. Use it to provision tenants, manage agents, monitor usage, and operate the platform.
 
-**Base URL:** `https://api.ares.dirmacs.com`
+**Base URL:** `http://localhost:3000`
 
 ## Authentication
 
@@ -160,7 +160,7 @@ This is the recommended way to onboard a new enterprise client. It atomically cr
 **curl Example:**
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/admin/provision-client \
+curl -X POST http://localhost:3000/api/admin/provision-client \
   -H "X-Admin-Secret: your-admin-secret" \
   -H "Content-Type: application/json" \
   -d '{

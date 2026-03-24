@@ -174,7 +174,7 @@ import requests
 
 def run_agent(api_key, agent_name, input_data):
     response = requests.post(
-        f"https://api.ares.dirmacs.com/v1/agents/{agent_name}/run",
+        f"http://localhost:3000/v1/agents/{agent_name}/run",
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -204,7 +204,7 @@ def run_agent(api_key, agent_name, input_data):
 ```javascript
 async function runAgent(apiKey, agentName, inputData) {
   const response = await fetch(
-    `https://api.ares.dirmacs.com/v1/agents/${agentName}/run`,
+    `http://localhost:3000/v1/agents/${agentName}/run`,
     {
       method: "POST",
       headers: {

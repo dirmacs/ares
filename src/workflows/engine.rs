@@ -432,6 +432,8 @@ mod tests {
             )),
             mcp_registry: None,
             deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
+            emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            context_provider: Arc::new(crate::agents::NoOpContextProvider),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -486,6 +488,8 @@ mod tests {
             )),
             mcp_registry: None,
             deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
+            emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            context_provider: Arc::new(crate::agents::NoOpContextProvider),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -540,6 +544,8 @@ mod tests {
             )),
             mcp_registry: None,
             deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
+            emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            context_provider: Arc::new(crate::agents::NoOpContextProvider),
         };
 
         let engine = WorkflowEngine::new(state);

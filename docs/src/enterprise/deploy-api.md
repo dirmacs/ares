@@ -2,7 +2,7 @@
 
 The Deployment API allows you to trigger, monitor, and inspect deployments of ARES platform services. Deployments run server-side on the VPS and stream build output for observability.
 
-**Base URL:** `https://api.ares.dirmacs.com`
+**Base URL:** `http://localhost:3000`
 
 ## Authentication
 
@@ -49,7 +49,7 @@ Starts a deployment for the specified target service. The deployment runs asynch
 **curl Example:**
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/admin/deploy \
+curl -X POST http://localhost:3000/api/admin/deploy \
   -H "X-Admin-Secret: your-admin-secret" \
   -H "Content-Type: application/json" \
   -d '{"target": "ares"}'
@@ -92,7 +92,7 @@ The recommended approach is to trigger a deployment, then poll every 3 seconds u
 
 ```bash
 # 1. Trigger deployment
-DEPLOY_ID=$(curl -s -X POST https://api.ares.dirmacs.com/api/admin/deploy \
+DEPLOY_ID=$(curl -s -X POST http://localhost:3000/api/admin/deploy \
   -H "X-Admin-Secret: your-admin-secret" \
   -H "Content-Type: application/json" \
   -d '{"target": "ares"}' | jq -r '.id')
@@ -101,7 +101,7 @@ echo "Deployment started: $DEPLOY_ID"
 
 # 2. Poll until complete
 while true; do
-  RESULT=$(curl -s https://api.ares.dirmacs.com/api/admin/deploy/$DEPLOY_ID \
+  RESULT=$(curl -s http://localhost:3000/api/admin/deploy/$DEPLOY_ID \
     -H "X-Admin-Secret: your-admin-secret")
 
   STATUS=$(echo "$RESULT" | jq -r '.status')
@@ -123,7 +123,7 @@ import requests
 import time
 
 ADMIN_SECRET = "your-admin-secret"
-BASE_URL = "https://api.ares.dirmacs.com"
+BASE_URL = "http://localhost:3000"
 headers = {
     "X-Admin-Secret": ADMIN_SECRET,
     "Content-Type": "application/json",
@@ -190,7 +190,7 @@ Returns the 20 most recent deployments, newest first.
 **curl Example:**
 
 ```bash
-curl https://api.ares.dirmacs.com/api/admin/deploys \
+curl http://localhost:3000/api/admin/deploys \
   -H "X-Admin-Secret: your-admin-secret"
 ```
 
@@ -237,7 +237,7 @@ Returns the runtime status of all managed services.
 **curl Example:**
 
 ```bash
-curl https://api.ares.dirmacs.com/api/admin/services \
+curl http://localhost:3000/api/admin/services \
   -H "X-Admin-Secret: your-admin-secret"
 ```
 
@@ -266,6 +266,6 @@ Returns recent log output from the service's systemd journal.
 **curl Example:**
 
 ```bash
-curl https://api.ares.dirmacs.com/api/admin/services/ares/logs \
+curl http://localhost:3000/api/admin/services/ares/logs \
   -H "X-Admin-Secret: your-admin-secret"
 ```

@@ -2,7 +2,7 @@
 
 The V1 API is the primary interface for enterprise clients integrating ARES into their applications. All endpoints are scoped to the authenticated tenant — you only see your own agents, runs, and usage.
 
-**Base URL:** `https://api.ares.dirmacs.com`
+**Base URL:** `http://localhost:3000`
 
 ## Authentication
 
@@ -293,7 +293,7 @@ Immediately invalidates the key. Returns `204 No Content` on success.
 ### Run an Agent (curl)
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/v1/agents/risk-analyzer/run \
+curl -X POST http://localhost:3000/v1/agents/risk-analyzer/run \
   -H "Authorization: Bearer ares_x7k9m2p4q8r1s5t3" \
   -H "Content-Type: application/json" \
   -d '{
@@ -310,7 +310,7 @@ curl -X POST https://api.ares.dirmacs.com/v1/agents/risk-analyzer/run \
 import requests
 
 API_KEY = "ares_x7k9m2p4q8r1s5t3"
-BASE_URL = "https://api.ares.dirmacs.com"
+BASE_URL = "http://localhost:3000"
 
 headers = {
     "Authorization": f"Bearer {API_KEY}",
@@ -339,7 +339,7 @@ print(f"Tokens: {result['tokens_used']}")
 ### Check Usage (curl)
 
 ```bash
-curl https://api.ares.dirmacs.com/v1/usage \
+curl http://localhost:3000/v1/usage \
   -H "Authorization: Bearer ares_x7k9m2p4q8r1s5t3"
 ```
 
@@ -380,7 +380,7 @@ for line in response.iter_lines():
 ### Chat with Streaming (JavaScript)
 
 ```javascript
-const response = await fetch("https://api.ares.dirmacs.com/v1/chat/stream", {
+const response = await fetch("http://localhost:3000/v1/chat/stream", {
   method: "POST",
   headers: {
     "Authorization": "Bearer ares_x7k9m2p4q8r1s5t3",

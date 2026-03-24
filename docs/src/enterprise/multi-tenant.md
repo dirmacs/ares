@@ -74,7 +74,7 @@ The recommended way to onboard a new client is the atomic provisioning endpoint.
 ### Step 1: Provision the Client
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/admin/provision-client \
+curl -X POST http://localhost:3000/api/admin/provision-client \
   -H "X-Admin-Secret: your-admin-secret" \
   -H "Content-Type: application/json" \
   -d '{
@@ -124,7 +124,7 @@ Securely deliver the `raw_api_key` to your client. This is the only time the ful
 Confirm the tenant's agents are accessible using their new API key:
 
 ```bash
-curl https://api.ares.dirmacs.com/v1/agents \
+curl http://localhost:3000/v1/agents \
   -H "Authorization: Bearer ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5"
 ```
 
@@ -133,7 +133,7 @@ The client should see their four provisioned agents.
 ### Step 4: Test an Agent Run
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/v1/agents/kasino-classifier/run \
+curl -X POST http://localhost:3000/v1/agents/kasino-classifier/run \
   -H "Authorization: Bearer ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5" \
   -H "Content-Type: application/json" \
   -d '{
@@ -150,7 +150,7 @@ curl -X POST https://api.ares.dirmacs.com/v1/agents/kasino-classifier/run \
 ### Add More Agents
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/admin/tenants/{tenant_id}/agents \
+curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/agents \
   -H "X-Admin-Secret: your-admin-secret" \
   -H "Content-Type: application/json" \
   -d '{
@@ -168,7 +168,7 @@ curl -X POST https://api.ares.dirmacs.com/api/admin/tenants/{tenant_id}/agents \
 ### Issue Additional API Keys
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/admin/tenants/{tenant_id}/api-keys \
+curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/api-keys \
   -H "X-Admin-Secret: your-admin-secret" \
   -H "Content-Type: application/json" \
   -d '{"name": "staging-key"}'
@@ -177,7 +177,7 @@ curl -X POST https://api.ares.dirmacs.com/api/admin/tenants/{tenant_id}/api-keys
 ### Upgrade a Tenant's Tier
 
 ```bash
-curl -X PUT https://api.ares.dirmacs.com/api/admin/tenants/{tenant_id}/quota \
+curl -X PUT http://localhost:3000/api/admin/tenants/{tenant_id}/quota \
   -H "X-Admin-Secret: your-admin-secret" \
   -H "Content-Type: application/json" \
   -d '{"tier": "enterprise"}'
@@ -187,11 +187,11 @@ curl -X PUT https://api.ares.dirmacs.com/api/admin/tenants/{tenant_id}/quota \
 
 ```bash
 # Current period summary
-curl https://api.ares.dirmacs.com/api/admin/tenants/{tenant_id}/usage \
+curl http://localhost:3000/api/admin/tenants/{tenant_id}/usage \
   -H "X-Admin-Secret: your-admin-secret"
 
 # Daily breakdown for the last 30 days
-curl "https://api.ares.dirmacs.com/api/admin/tenants/{tenant_id}/usage/daily?days=30" \
+curl "http://localhost:3000/api/admin/tenants/{tenant_id}/usage/daily?days=30" \
   -H "X-Admin-Secret: your-admin-secret"
 ```
 

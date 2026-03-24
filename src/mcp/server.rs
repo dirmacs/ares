@@ -99,6 +99,12 @@ impl AresMcpServer {
         }
     }
 
+    /// Register an MCP tool extension. Extensions provide additional tools
+    /// beyond the built-in ARES tools. Called by managed platform crates.
+    pub fn register_extension(&mut self, ext: Arc<dyn McpToolExtension>) {
+        self.extensions.push(ext);
+    }
+
     /// Authenticates the MCP connection.
     /// Called once at startup before any tool calls.
     pub async fn authenticate(&self) -> Result<(), String> {
@@ -894,6 +900,11 @@ impl AresMcpServer {
             });
         }
 
+        // Add tools from registered extensions
+        for ext in &self.extensions {
+            tools.extend(ext.tools());
+        }
+
         tools
     }
 
@@ -924,19 +935,38 @@ impl AresMcpServer {
                 Ok(input) => self.get_usage(input).await,
                 Err(e) => Err(format!("Invalid arguments: {}", e)),
             },
-            "eruka_read" => match serde_json::from_value::<ErukaReadInput>(args_value) {
-                Ok(input) => self.eruka_read(input).await,
-                Err(e) => Err(format!("Invalid arguments: {}", e)),
-            },
-            "eruka_write" => match serde_json::from_value::<ErukaWriteInput>(args_value) {
-                Ok(input) => self.eruka_write(input).await,
-                Err(e) => Err(format!("Invalid arguments: {}", e)),
-            },
-            "eruka_search" => match serde_json::from_value::<ErukaSearchInput>(args_value) {
-                Ok(input) => self.eruka_search(input).await,
-                Err(e) => Err(format!("Invalid arguments: {}", e)),
-            },
-            _ => Err(format!("Unknown tool: {}", name)),
+            // Try extension tools (eruka, custom tools from managed platform)
+            other => {
+                let tenant_id = match self.get_session().await {
+                    Ok(s) => s.tenant_id().to_string(),
+                    Err(e) => return CallToolResult::error(vec![Content::text(e)]),
+                };
+                // Check extensions first
+                for ext in &self.extensions {
+                    if let Some(result) = ext.execute(other, args_value.clone(), &tenant_id).await {
+                        return match result {
+                            Ok(r) => r,
+                            Err(e) => CallToolResult::error(vec![Content::text(e)]),
+                        };
+                    }
+                }
+                // Fall back to eruka proxy if configured (legacy path, will be removed)
+                match other {
+                    "eruka_read" => match serde_json::from_value::<ErukaReadInput>(args_value) {
+                        Ok(input) => self.eruka_read(input).await,
+                        Err(e) => Err(format!("Invalid arguments: {}", e)),
+                    },
+                    "eruka_write" => match serde_json::from_value::<ErukaWriteInput>(args_value) {
+                        Ok(input) => self.eruka_write(input).await,
+                        Err(e) => Err(format!("Invalid arguments: {}", e)),
+                    },
+                    "eruka_search" => match serde_json::from_value::<ErukaSearchInput>(args_value) {
+                        Ok(input) => self.eruka_search(input).await,
+                        Err(e) => Err(format!("Invalid arguments: {}", e)),
+                    },
+                    _ => Err(format!("Unknown tool: {}", other)),
+                }
+            }
         };
 
         match result {

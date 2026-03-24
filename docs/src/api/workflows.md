@@ -33,7 +33,7 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 ### Example
 
 ```bash
-curl https://api.ares.dirmacs.com/api/workflows \
+curl http://localhost:3000/api/workflows \
   -H "Authorization: Bearer eyJhbGciOi..."
 ```
 
@@ -100,7 +100,7 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 #### curl
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/workflows/default \
+curl -X POST http://localhost:3000/api/workflows/default \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -d '{
@@ -118,7 +118,7 @@ curl -X POST https://api.ares.dirmacs.com/api/workflows/default \
 import requests
 
 response = requests.post(
-    "https://api.ares.dirmacs.com/api/workflows/default",
+    "http://localhost:3000/api/workflows/default",
     headers={
         "Content-Type": "application/json",
         "Authorization": "Bearer eyJhbGciOi..."
@@ -144,7 +144,7 @@ for step in result["reasoning_path"]:
 
 ```javascript
 const response = await fetch(
-  "https://api.ares.dirmacs.com/api/workflows/default",
+  "http://localhost:3000/api/workflows/default",
   {
     method: "POST",
     headers: {

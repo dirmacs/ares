@@ -124,7 +124,7 @@ tools = []
 **Via the API:**
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/admin/tenants/{id}/agents \
+curl -X POST http://localhost:3000/api/admin/tenants/{id}/agents \
   -H "X-Admin-Secret: your-admin-secret" \
   -H "Content-Type: application/json" \
   -d '{
@@ -186,7 +186,7 @@ Here is what happens internally when a user asks a question that requires tool u
 **User sends:**
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/v1/chat \
+curl -X POST http://localhost:3000/v1/chat \
   -H "Authorization: Bearer ares_xxx" \
   -H "Content-Type: application/json" \
   -d '{

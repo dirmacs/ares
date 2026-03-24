@@ -18,7 +18,7 @@ You do not specify a model directly in your API calls. Instead, you specify an `
 
 ```bash
 # This request is routed to whichever model the "product" agent is configured to use
-curl -X POST https://api.ares.dirmacs.com/v1/chat \
+curl -X POST http://localhost:3000/v1/chat \
   -H "Authorization: Bearer ares_xxx" \
   -H "Content-Type: application/json" \
   -d '{"message": "Compare these two options", "agent_type": "product"}'

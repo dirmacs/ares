@@ -4,7 +4,7 @@ Get from zero to your first ARES API call in under 5 minutes.
 
 ## Prerequisites
 
-- An ARES API key (format: `ares_xxx`). Contact your administrator or use the [Dirmacs Admin](https://admin.dirmacs.com) provisioning UI to generate one.
+- An ARES API key (format: `ares_xxx`). Contact your administrator or use the [Dirmacs Admin](http://localhost:3000) provisioning UI to generate one.
 
 ## 1. Make your first chat request
 
@@ -13,7 +13,7 @@ Send a message to an ARES agent using the chat endpoint.
 ### curl
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/v1/chat \
+curl -X POST http://localhost:3000/v1/chat \
   -H "Authorization: Bearer ares_xxx" \
   -H "Content-Type: application/json" \
   -d '{
@@ -28,7 +28,7 @@ curl -X POST https://api.ares.dirmacs.com/v1/chat \
 import requests
 
 response = requests.post(
-    "https://api.ares.dirmacs.com/v1/chat",
+    "http://localhost:3000/v1/chat",
     headers={
         "Authorization": "Bearer ares_xxx",
         "Content-Type": "application/json",
@@ -46,7 +46,7 @@ print(data["response"])
 ### JavaScript
 
 ```javascript
-const response = await fetch("https://api.ares.dirmacs.com/v1/chat", {
+const response = await fetch("http://localhost:3000/v1/chat", {
   method: "POST",
   headers: {
     "Authorization": "Bearer ares_xxx",
@@ -81,7 +81,7 @@ For real-time, token-by-token output, use the streaming endpoint. ARES streams r
 ### curl
 
 ```bash
-curl -N -X POST https://api.ares.dirmacs.com/v1/chat/stream \
+curl -N -X POST http://localhost:3000/v1/chat/stream \
   -H "Authorization: Bearer ares_xxx" \
   -H "Content-Type: application/json" \
   -d '{
@@ -98,7 +98,7 @@ The `-N` flag disables output buffering so you see tokens as they arrive.
 import requests
 
 response = requests.post(
-    "https://api.ares.dirmacs.com/v1/chat/stream",
+    "http://localhost:3000/v1/chat/stream",
     headers={
         "Authorization": "Bearer ares_xxx",
         "Content-Type": "application/json",
@@ -120,7 +120,7 @@ for line in response.iter_lines():
 ### JavaScript
 
 ```javascript
-const response = await fetch("https://api.ares.dirmacs.com/v1/chat/stream", {
+const response = await fetch("http://localhost:3000/v1/chat/stream", {
   method: "POST",
   headers: {
     "Authorization": "Bearer ares_xxx",
@@ -155,7 +155,7 @@ while (true) {
 Use the `context_id` from a previous response to maintain conversation history:
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/v1/chat \
+curl -X POST http://localhost:3000/v1/chat \
   -H "Authorization: Bearer ares_xxx" \
   -H "Content-Type: application/json" \
   -d '{

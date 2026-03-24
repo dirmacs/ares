@@ -93,7 +93,7 @@ The error message indicates which limit was hit:
 You can proactively monitor your consumption to avoid hitting limits:
 
 ```bash
-curl https://api.ares.dirmacs.com/v1/usage \
+curl http://localhost:3000/v1/usage \
   -H "Authorization: Bearer ares_xxx"
 ```
 

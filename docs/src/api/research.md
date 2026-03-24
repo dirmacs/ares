@@ -53,7 +53,7 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 #### curl
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/research \
+curl -X POST http://localhost:3000/api/research \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -d '{
@@ -69,7 +69,7 @@ curl -X POST https://api.ares.dirmacs.com/api/research \
 import requests
 
 response = requests.post(
-    "https://api.ares.dirmacs.com/api/research",
+    "http://localhost:3000/api/research",
     headers={
         "Content-Type": "application/json",
         "Authorization": "Bearer eyJhbGciOi..."
@@ -90,7 +90,7 @@ print(f"Sources: {', '.join(result['sources'])}")
 #### JavaScript
 
 ```javascript
-const response = await fetch("https://api.ares.dirmacs.com/api/research", {
+const response = await fetch("http://localhost:3000/api/research", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",

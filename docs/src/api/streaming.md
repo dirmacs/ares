@@ -45,7 +45,7 @@ Each `data:` line represents one chunk of the response. Concatenate all chunks i
 The `-N` flag disables output buffering so chunks appear immediately:
 
 ```bash
-curl -N -X POST https://api.ares.dirmacs.com/api/chat/stream \
+curl -N -X POST http://localhost:3000/api/chat/stream \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -H "Accept: text/event-stream" \
@@ -63,7 +63,7 @@ Using the `requests` library with `stream=True`:
 import requests
 
 response = requests.post(
-    "https://api.ares.dirmacs.com/api/chat/stream",
+    "http://localhost:3000/api/chat/stream",
     headers={
         "Content-Type": "application/json",
         "Authorization": "Bearer eyJhbGciOi...",
@@ -101,7 +101,7 @@ async def stream_chat(message: str, token: str) -> str:
     async with httpx.AsyncClient() as client:
         async with client.stream(
             "POST",
-            "https://api.ares.dirmacs.com/api/chat/stream",
+            "http://localhost:3000/api/chat/stream",
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token}",
@@ -126,7 +126,7 @@ Using the Fetch API with `ReadableStream`:
 
 ```javascript
 async function streamChat(message, token) {
-  const response = await fetch("https://api.ares.dirmacs.com/api/chat/stream", {
+  const response = await fetch("http://localhost:3000/api/chat/stream", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -167,7 +167,7 @@ async function streamChat(message, token) {
 
 ```javascript
 async function streamChat(message, token) {
-  const response = await fetch("https://api.ares.dirmacs.com/api/chat/stream", {
+  const response = await fetch("http://localhost:3000/api/chat/stream", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -220,7 +220,7 @@ func streamChat(message, token string) (string, error) {
 	})
 
 	req, err := http.NewRequest("POST",
-		"https://api.ares.dirmacs.com/api/chat/stream",
+		"http://localhost:3000/api/chat/stream",
 		bytes.NewReader(body))
 	if err != nil {
 		return "", err

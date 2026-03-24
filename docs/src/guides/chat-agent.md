@@ -74,7 +74,7 @@ For tenant-specific agents or agents you want to manage programmatically, use th
 ### As a Platform Admin
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/admin/tenants/{tenant_id}/agents \
+curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/agents \
   -H "X-Admin-Secret: your-admin-secret" \
   -H "Content-Type: application/json" \
   -d '{
@@ -92,7 +92,7 @@ curl -X POST https://api.ares.dirmacs.com/api/admin/tenants/{tenant_id}/agents \
 ### As an Authenticated User
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/user/agents \
+curl -X POST http://localhost:3000/api/user/agents \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -116,7 +116,7 @@ curl -X POST https://api.ares.dirmacs.com/api/user/agents \
 Send a message to your agent:
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/chat \
+curl -X POST http://localhost:3000/api/chat \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -142,7 +142,7 @@ curl -X POST https://api.ares.dirmacs.com/api/chat \
 Include the conversation history in the `messages` array:
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/chat \
+curl -X POST http://localhost:3000/api/chat \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -160,7 +160,7 @@ curl -X POST https://api.ares.dirmacs.com/api/chat \
 If your agent has tools enabled, ARES handles the tool calling loop automatically. You send a normal chat message, and the agent uses tools as needed:
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/chat \
+curl -X POST http://localhost:3000/api/chat \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -178,7 +178,7 @@ The agent will internally call the calculator tool to compute `50000 * (1.15)^10
 For real-time responses, use the streaming endpoint:
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/chat/stream \
+curl -X POST http://localhost:3000/api/chat/stream \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -289,6 +289,6 @@ Start with `llama-3.3-70b` for most use cases. It offers a strong balance of cap
 Check available models with:
 
 ```bash
-curl https://api.ares.dirmacs.com/api/admin/models \
+curl http://localhost:3000/api/admin/models \
   -H "X-Admin-Secret: your-admin-secret"
 ```

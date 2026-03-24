@@ -388,7 +388,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires running PostgreSQL — run with: cargo test -- --ignored
     async fn test_workflow_engine_creation() {
         let config = Arc::new(create_test_config());
         let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
@@ -413,11 +412,9 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            db: Arc::new(
-                crate::db::PostgresClient::new_memory().await.unwrap(),
-            ),
+            db: Arc::new(crate::db::PostgresClient::new_test()),
             tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                crate::db::PostgresClient::new_memory().await.unwrap(),
+                crate::db::PostgresClient::new_test(),
             ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
@@ -445,7 +442,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires running PostgreSQL
     async fn test_available_workflows() {
         let config = Arc::new(create_test_config());
         let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
@@ -470,11 +466,9 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            db: Arc::new(
-                crate::db::PostgresClient::new_memory().await.unwrap(),
-            ),
+            db: Arc::new(crate::db::PostgresClient::new_test()),
             tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                crate::db::PostgresClient::new_memory().await.unwrap(),
+                crate::db::PostgresClient::new_test(),
             ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
@@ -502,7 +496,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires running PostgreSQL
     async fn test_get_workflow_config() {
         let config = Arc::new(create_test_config());
         let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
@@ -527,11 +520,9 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            db: Arc::new(
-                crate::db::PostgresClient::new_memory().await.unwrap(),
-            ),
+            db: Arc::new(crate::db::PostgresClient::new_test()),
             tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                crate::db::PostgresClient::new_memory().await.unwrap(),
+                crate::db::PostgresClient::new_test(),
             ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),

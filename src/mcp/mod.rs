@@ -2,6 +2,9 @@
 // MCP module — exposes ARES as an MCP tool provider.
 
 #[cfg(feature = "mcp")]
+pub mod extension;
+
+#[cfg(feature = "mcp")]
 pub mod server;
 
 #[cfg(feature = "mcp")]

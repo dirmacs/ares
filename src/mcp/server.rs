@@ -25,6 +25,7 @@
 use crate::db::tenants::TenantDb;
 use crate::mcp::auth::{extract_api_key_from_env, validate_mcp_api_key, McpSession};
 use crate::mcp::eruka_proxy::ErukaProxy;
+use crate::mcp::extension::McpToolExtension;
 use crate::mcp::tools::*;
 use crate::mcp::usage::{check_quota, record_mcp_usage, McpOperation};
 use rmcp::model::{
@@ -59,6 +60,8 @@ pub struct AresMcpServer {
     session: Arc<RwLock<Option<McpSession>>>,
     /// Eruka proxy client for eruka_read/write/search tools (optional — only for managed deployments)
     eruka: Option<Arc<ErukaProxy>>,
+    /// Extension tools registered by managed platform crates
+    extensions: Vec<Arc<dyn McpToolExtension>>,
     /// ARES API base URL for internal HTTP calls
     ares_api_url: String,
     /// HTTP client for calling ARES's own HTTP API
@@ -79,6 +82,7 @@ impl AresMcpServer {
         ares_api_url: &str,
         eruka: Option<Arc<ErukaProxy>>,
     ) -> Self {
+        let extensions: Vec<Arc<dyn McpToolExtension>> = vec![];
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -89,6 +93,7 @@ impl AresMcpServer {
             pool,
             session: Arc::new(RwLock::new(None)),
             eruka,
+            extensions,
             ares_api_url: ares_api_url.trim_end_matches('/').to_string(),
             http,
         }

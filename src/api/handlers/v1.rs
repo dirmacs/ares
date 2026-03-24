@@ -4,7 +4,6 @@
 //! using `Authorization: Bearer ares_xxx`. The `api_key_auth_middleware`
 //! injects `TenantContext` into request extensions before these handlers run.
 
-use crate::agents::AgentResponse;
 use crate::db::agent_runs;
 use crate::db::tenant_agents::{self, TenantAgent};
 use crate::memory::estimate_tokens;
@@ -408,7 +407,7 @@ pub async fn run_agent(
                 let pool = state.tenant_db.pool().clone();
                 let tid = tc.tenant_id.clone();
                 let aname = name.clone();
-                let rid = run_id.clone();
+                let _rid = run_id.clone();
                 let itok = input_tokens as i64;
                 let otok = output_tokens as i64;
                 let dur = duration_ms as i64;

@@ -1,70 +1,52 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 350" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" fill="none">
   <defs>
-    <linearGradient id="wingGoldL" x1="100%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#D4A843"/>
-      <stop offset="40%" stop-color="#C49A3C"/>
-      <stop offset="100%" stop-color="#8B6914"/>
+    <linearGradient id="gLeft" x1="100%" y1="0%" x2="0%" y2="60%">
+      <stop offset="0%" stop-color="#C89B3C"/>
+      <stop offset="100%" stop-color="#785A28"/>
     </linearGradient>
-    <linearGradient id="wingGoldR" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#D4A843"/>
-      <stop offset="40%" stop-color="#C49A3C"/>
-      <stop offset="100%" stop-color="#8B6914"/>
+    <linearGradient id="gRight" x1="0%" y1="0%" x2="100%" y2="60%">
+      <stop offset="0%" stop-color="#C89B3C"/>
+      <stop offset="100%" stop-color="#785A28"/>
     </linearGradient>
-    <linearGradient id="bodyGrad" x1="50%" y1="0%" x2="50%" y2="100%">
-      <stop offset="0%" stop-color="#1E3156"/>
-      <stop offset="100%" stop-color="#142240"/>
+    <linearGradient id="navy" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#1C3054"/>
+      <stop offset="100%" stop-color="#0F1D33"/>
     </linearGradient>
   </defs>
 
-  <!-- LEFT WING — outer gold feather layer -->
-  <path d="M310 140 C280 125 220 95 150 65 C100 45 50 28 15 18 C35 38 20 30 45 50 C60 62 40 55 75 75 C95 88 80 82 115 100 C140 112 128 108 165 122 C190 130 180 128 220 136 C245 140 240 139 275 143 L310 148"
-        fill="url(#wingGoldL)"/>
-  <!-- LEFT WING — inner navy layer -->
-  <path d="M310 148 C290 140 250 125 200 108 C160 95 125 82 95 72 C115 85 100 80 135 98 C160 108 150 105 185 118 C210 126 205 124 240 134 C260 139 258 138 290 144 L310 148"
-        fill="#1B2A4A"/>
+  <!-- LEFT WING — angular gold feathers, 5 blade shapes -->
+  <polygon points="320,130 280,115 220,80 140,42 10,8 50,48 25,32 75,68" fill="url(#gLeft)"/>
+  <polygon points="320,130 270,120 195,90 105,52 25,32 75,68 55,58 110,85" fill="url(#gLeft)" opacity="0.85"/>
+  <polygon points="320,138 285,128 225,105 155,78 80,58 130,88 110,80 170,105" fill="url(#gLeft)" opacity="0.7"/>
+  <!-- Left wing inner navy -->
+  <polygon points="320,142 290,132 240,115 185,95 140,82 180,102 165,98 215,115 200,112 260,130 250,128 305,140" fill="url(#navy)"/>
 
-  <!-- RIGHT WING — outer gold feather layer -->
-  <path d="M330 140 C360 125 420 95 490 65 C540 45 590 28 625 18 C605 38 620 30 595 50 C580 62 600 55 565 75 C545 88 560 82 525 100 C500 112 512 108 475 122 C450 130 460 128 420 136 C395 140 400 139 365 143 L330 148"
-        fill="url(#wingGoldR)"/>
-  <!-- RIGHT WING — inner navy layer -->
-  <path d="M330 148 C350 140 390 125 440 108 C480 95 515 82 545 72 C525 85 540 80 505 98 C480 108 490 105 455 118 C430 126 435 124 400 134 C380 139 382 138 350 144 L330 148"
-        fill="#1B2A4A"/>
+  <!-- RIGHT WING — mirror -->
+  <polygon points="320,130 360,115 420,80 500,42 630,8 590,48 615,32 565,68" fill="url(#gRight)"/>
+  <polygon points="320,130 370,120 445,90 535,52 615,32 565,68 585,58 530,85" fill="url(#gRight)" opacity="0.85"/>
+  <polygon points="320,138 355,128 415,105 485,78 560,58 510,88 530,80 470,105" fill="url(#gRight)" opacity="0.7"/>
+  <!-- Right wing inner navy -->
+  <polygon points="320,142 350,132 400,115 455,95 500,82 460,102 475,98 425,115 440,112 380,130 390,128 335,140" fill="url(#navy)"/>
 
-  <!-- EAGLE HEAD — navy silhouette -->
-  <path d="M302 120 C305 100 312 88 320 82 C328 88 335 100 338 120 L335 132 C328 138 312 138 305 132 Z"
-        fill="url(#bodyGrad)"/>
-  <!-- Beak — gold -->
-  <path d="M314 112 L320 97 L326 112" fill="#C49A3C" stroke="#A07830" stroke-width="0.5"/>
-  <!-- Eyes -->
-  <ellipse cx="311" cy="105" rx="2.5" ry="2" fill="#E8D5A3"/>
-  <ellipse cx="329" cy="105" rx="2.5" ry="2" fill="#E8D5A3"/>
-  <circle cx="311" cy="105" r="1" fill="#0D1117"/>
-  <circle cx="329" cy="105" r="1" fill="#0D1117"/>
+  <!-- HEAD — angular, sharp beak pointing down -->
+  <polygon points="305,118 320,80 335,118 328,125 320,130 312,125" fill="url(#navy)"/>
+  <!-- Beak — sharp gold triangle -->
+  <polygon points="315,108 320,92 325,108" fill="#C89B3C"/>
+  <!-- Eyes — narrow slits, fierce -->
+  <line x1="308" y1="104" x2="314" y2="102" stroke="#C89B3C" stroke-width="2" stroke-linecap="round"/>
+  <line x1="326" y1="102" x2="332" y2="104" stroke="#C89B3C" stroke-width="2" stroke-linecap="round"/>
 
-  <!-- EAGLE BODY — navy, broader chest -->
-  <path d="M278 148 C290 155 305 162 320 168 C335 162 350 155 362 148 L355 200 C348 218 336 232 320 238 C304 232 292 218 285 200 Z"
-        fill="url(#bodyGrad)"/>
+  <!-- BODY — angular navy shield shape -->
+  <polygon points="285,142 320,155 355,142 348,198 320,215 292,198" fill="url(#navy)"/>
 
-  <!-- ARES TEXT — gold, integrated into body -->
-  <text x="320" y="210" text-anchor="middle"
-        font-family="'Palatino Linotype','Book Antiqua','Georgia',serif"
-        font-weight="bold" font-size="32"
-        fill="#C49A3C" letter-spacing="8"
-        stroke="#A07830" stroke-width="0.3">ARES</text>
+  <!-- ARES TEXT — tight, bold, gold -->
+  <text x="320" y="195" text-anchor="middle"
+        font-family="'Trebuchet MS','Arial Black','Impact',sans-serif"
+        font-weight="900" font-size="28" font-style="italic"
+        fill="#C89B3C" letter-spacing="6">ARES</text>
 
-  <!-- TAIL FEATHERS — navy with gold highlights -->
-  <path d="M305 220 L296 265 L308 248 L320 275 L332 248 L344 265 L335 220"
-        fill="#1B2A4A"/>
-  <path d="M310 228 L304 255 L314 243 L320 265 L326 243 L336 255 L330 228"
-        fill="#C49A3C" opacity="0.15"/>
-
-  <!-- Wing tip details — gold feather strands on left -->
-  <line x1="15" y1="18" x2="45" y2="42" stroke="#D4A843" stroke-width="1.5" opacity="0.6"/>
-  <line x1="25" y1="28" x2="55" y2="52" stroke="#D4A843" stroke-width="1.5" opacity="0.6"/>
-  <line x1="38" y1="38" x2="68" y2="62" stroke="#D4A843" stroke-width="1.5" opacity="0.6"/>
-
-  <!-- Wing tip details — gold feather strands on right -->
-  <line x1="625" y1="18" x2="595" y2="42" stroke="#D4A843" stroke-width="1.5" opacity="0.6"/>
-  <line x1="615" y1="28" x2="585" y2="52" stroke="#D4A843" stroke-width="1.5" opacity="0.6"/>
-  <line x1="602" y1="38" x2="572" y2="62" stroke="#D4A843" stroke-width="1.5" opacity="0.6"/>
+  <!-- TAIL — sharp angular navy -->
+  <polygon points="308,200 300,245 312,228 320,255 328,228 340,245 332,200" fill="url(#navy)"/>
+  <!-- Tail accent -->
+  <polygon points="313,210 308,238 318,225 320,245 322,225 332,238 327,210" fill="#C89B3C" opacity="0.12"/>
 </svg>

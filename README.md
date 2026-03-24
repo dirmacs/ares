@@ -1,14 +1,27 @@
-# A.R.E.S - Agentic Retrieval Enhanced Server
+<p align="center">
+  <img src="docs/img/ares-logo.svg" width="128" alt="A.R.E.S">
+</p>
 
-[![Crates.io](https://img.shields.io/crates/v/ares-server.svg)](https://crates.io/crates/ares-server)
-[![Documentation](https://docs.rs/ares-server/badge.svg)](https://docs.rs/ares-server)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/rust-1.91%2B-blue.svg)](https://www.rust-lang.org)
-[![CI](https://github.com/dirmacs/ares/actions/workflows/ci.yml/badge.svg)](https://github.com/dirmacs/ares/actions/workflows/ci.yml)
+<h1 align="center">A.R.E.S</h1>
 
-![Ares Logo](./docs/ares.png)
+<p align="center">
+  Agentic Retrieval Enhanced Server. Rust. Multi-provider LLM. Tool calling. RAG. MCP.<br>
+  Extensible via ContextProvider trait. Run standalone or embed as a library.
+</p>
 
-A production-grade agentic chatbot server built in Rust with multi-provider LLM support, tool calling, RAG, MCP integration, and advanced research capabilities.
+<p align="center">
+  <a href="https://crates.io/crates/ares-server"><img src="https://img.shields.io/crates/v/ares-server.svg" alt="crates.io"></a>
+  <a href="https://docs.rs/ares-server"><img src="https://docs.rs/ares-server/badge.svg" alt="docs.rs"></a>
+  <a href="https://github.com/dirmacs/ares/actions/workflows/ci.yml"><img src="https://github.com/dirmacs/ares/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/tests-215-brightgreen.svg" alt="215 tests">
+  <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="MIT">
+</p>
+
+---
+
+**A.R.E.S** is a production-grade agentic AI server built in Rust. Multi-provider LLM routing, structured tool calling, RAG, MCP integration, multi-tenant auth, and workflow orchestration. Extensible via `ContextProvider` trait and `base_router()` for building managed platforms on top.
+
+Built by [DIRMACS](https://dirmacs.com).
 
 ## Features
 
@@ -16,13 +29,13 @@ A production-grade agentic chatbot server built in Rust with multi-provider LLM 
 - ⚙️ **TOML Configuration**: Declarative configuration with hot-reloading
 - 🎭 **Configurable Agents**: Define agents via [TOON (Token Oriented Object Notation)](https://toonformat.dev) with custom models, tools, and prompts
 - 🔄 **Workflow Engine**: Declarative workflow execution with agent routing
-- 🏠 **Local-First Development**: Runs entirely locally with Ollama and SQLite by default
+- 🏠 **Local-First Development**: Runs locally with Ollama and PostgreSQL
 - 🔧 **Tool Calling**: Type-safe function calling with automatic schema generation
 - 🔄 **Unified ToolCoordinator**: Provider-agnostic multi-turn tool calling for all LLM clients
 - 🎯 **Per-Agent Tool Filtering**: Restrict which tools each agent can access
 - 📡 **Streaming**: Real-time streaming responses from all providers
 - 🔐 **Authentication**: JWT-based auth with Argon2 password hashing
-- 💾 **Database**: Local SQLite (libsql) by default, optional Turso and Qdrant
+- 💾 **Database**: PostgreSQL with multi-tenant isolation, optional vector stores (ares-vector, Qdrant, LanceDB)
 - 🔌 **MCP Support**: Pluggable Model Context Protocol server integration
 - 🕸️ **Agent Framework**: Multi-agent orchestration with specialized agents
 - 📚 **RAG**: Pure-Rust vector store (ares-vector), multi-strategy search (semantic, BM25, fuzzy, hybrid), reranking
@@ -193,13 +206,15 @@ A.R.E.S uses Cargo features for conditional compilation:
 | `llamacpp-metal` | LlamaCpp with Metal (macOS) | No |
 | `llamacpp-vulkan` | LlamaCpp with Vulkan | No |
 
-### Database Backends
+### Database & Vector Stores
 
 | Feature | Description | Default |
 |---------|-------------|---------|
-| `local-db` | Local SQLite via libsql | ✅ Yes |
-| `turso` | Remote Turso database | No |
+| `postgres` | PostgreSQL database | ✅ Yes |
+| `ares-vector` | Built-in HNSW vector store | ✅ Yes |
 | `qdrant` | Qdrant vector database | No |
+| `pgvector` | PostgreSQL pgvector extension | No |
+| `lancedb` | LanceDB vector database | No |
 | `ares-vector` | Pure-Rust vector store with HNSW indexing | No |
 
 ### UI & Documentation
@@ -224,8 +239,8 @@ A.R.E.S uses Cargo features for conditional compilation:
 | Feature | Includes |
 |---------|----------|
 | `all-llm` | ollama + openai + llamacpp + anthropic |
-| `all-db` | local-db + turso + qdrant |
-| `full` | All optional features (except UI and local-embeddings): ollama, openai, llamacpp, anthropic, turso, qdrant, ares-vector, mcp, swagger-ui |
+| `all-db` | postgres + all vector stores |
+| `full` | All optional features (except UI and local-embeddings): ollama, openai, llamacpp, anthropic, postgres, qdrant, ares-vector, mcp, swagger-ui |
 | `full-ui` | All optional features + UI (except local-embeddings) |
 | `full-local-embeddings` | Full + local-embeddings (Linux/macOS only) |
 | `full-ui-local-embeddings` | Full + UI + local-embeddings (Linux/macOS only) |
@@ -591,7 +606,7 @@ By default, ARES uses `NoOpContextProvider` (returns `None` — agents run with 
 ┌─────▼─────────┐     ┌──────▼───────┐    ┌─────▼───────┐
 │  API Layer    │     │ Tool Calls   │    │  Knowledge  │
 │  (Axum)       │     │              │    │    Bases    │
-│ /api/chat     │     │ - Calculator │    │  - SQLite   │
+│ /api/chat     │     │ - Calculator │    │  - PostgreSQL   │
 │ /api/research │     │ - Web Search │    │  - Qdrant   │
 │ /api/workflows│     │              │    │             │
 └───────────────┘     └──────────────┘    └─────────────┘
@@ -763,7 +778,7 @@ Admin endpoints require the `X-Admin-Secret` header.
 #### Trigger Deploy
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/admin/deploy \
+curl -X POST http://localhost:3000/api/admin/deploy \
   -H "X-Admin-Secret: $ADMIN_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"target": "ares"}'
@@ -777,21 +792,21 @@ Response:
 #### Check Deploy Status
 
 ```bash
-curl https://api.ares.dirmacs.com/api/admin/deploy/deploy-abc123 \
+curl http://localhost:3000/api/admin/deploy/deploy-abc123 \
   -H "X-Admin-Secret: $ADMIN_SECRET"
 ```
 
 #### List Recent Deploys
 
 ```bash
-curl https://api.ares.dirmacs.com/api/admin/deploys \
+curl http://localhost:3000/api/admin/deploys \
   -H "X-Admin-Secret: $ADMIN_SECRET"
 ```
 
 #### Service Health
 
 ```bash
-curl https://api.ares.dirmacs.com/api/admin/services \
+curl http://localhost:3000/api/admin/services \
   -H "X-Admin-Secret: $ADMIN_SECRET"
 ```
 
@@ -799,8 +814,6 @@ Response:
 ```json
 {
   "ares": {"status": "active", "pid": "12345", "port": 3000},
-  "eruka": {"status": "active", "pid": "12346", "port": 8081},
-  "caddy": {"status": "active", "pid": "789", "port": 443},
   "postgresql": {"status": "active", "pid": "456", "port": 5432}
 }
 ```
@@ -808,7 +821,7 @@ Response:
 #### Service Logs
 
 ```bash
-curl https://api.ares.dirmacs.com/api/admin/services/ares/logs \
+curl http://localhost:3000/api/admin/services/ares/logs \
   -H "X-Admin-Secret: $ADMIN_SECRET"
 ```
 
@@ -1186,13 +1199,16 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Leptos](https://leptos.dev/) - Reactive web UI framework
 - [TOON Format](https://toonformat.dev) - Token-optimized configuration format
 
-## Support
+## Ecosystem
 
-- 📖 [Documentation](https://docs.rs/ares-server)
-- 🐛 [Issue Tracker](https://github.com/dirmacs/ares/issues)
-- 💬 [Discussions](https://github.com/dirmacs/ares/discussions)
-- 🚀 [Latest Release](https://github.com/dirmacs/ares/releases)
+| Project | What |
+|---------|------|
+| [pawan](https://dirmacs.github.io/pawan) | Self-healing CLI coding agent (29 tools, streaming TUI) |
+| [daedra](https://dirmacs.github.io/daedra) | Web search MCP server (7 backends, automatic fallback) |
+| [thulp](https://dirmacs.github.io/thulp) | Execution context engineering (11 crates, tool abstraction) |
+| [lancor](https://dirmacs.github.io/lancor) | llama.cpp toolkit (API client, HF Hub, server orchestration) |
+| [eruka](https://eruka.dirmacs.com) | Context intelligence engine (knowledge graph, memory tiers) |
 
----
+## License
 
-Made with ❤️ by [Dirmacs](https://dirmacs.com)
+MIT

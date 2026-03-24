@@ -177,6 +177,11 @@ pub struct UsageQuota {
 }
 
 // =============================================================================
+// Eruka types (used by eruka_proxy.rs and mcp/server.rs)
+// NOTE: These are duplicated in dirmacs-core/src/eruka/types.rs.
+// They will be removed from ares when eruka_proxy.rs is fully extracted.
+// =============================================================================
+
 // eruka_read (proxy)
 // =============================================================================
 

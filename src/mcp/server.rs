@@ -18,13 +18,9 @@
 //! - ares_get_status   — check agent run status
 //! - ares_deploy_agent — deploy a .toon config
 //! - ares_get_usage    — check usage/quota
-//! - eruka_read        — read context from Eruka
-//! - eruka_write       — write context to Eruka
-//! - eruka_search      — search Eruka knowledge base
 
 use crate::db::tenants::TenantDb;
 use crate::mcp::auth::{extract_api_key_from_env, validate_mcp_api_key, McpSession};
-use crate::mcp::eruka_proxy::ErukaProxy;
 use crate::mcp::extension::McpToolExtension;
 use crate::mcp::tools::*;
 use crate::mcp::usage::{check_quota, record_mcp_usage, McpOperation};
@@ -58,9 +54,7 @@ pub struct AresMcpServer {
     pool: sqlx::PgPool,
     /// Authenticated session (set after successful auth)
     session: Arc<RwLock<Option<McpSession>>>,
-    /// Eruka proxy client for eruka_read/write/search tools (optional — only for managed deployments)
-    eruka: Option<Arc<ErukaProxy>>,
-    /// Extension tools registered by managed platform crates
+    /// Extension tools registered by managed platform crates (e.g., Eruka tools from dirmacs-core)
     extensions: Vec<Arc<dyn McpToolExtension>>,
     /// ARES API base URL for internal HTTP calls
     ares_api_url: String,
@@ -75,12 +69,10 @@ impl AresMcpServer {
     /// - `tenant_db`: Tenant database for auth and tenant queries
     /// - `pool`: PostgreSQL connection pool for raw queries
     /// - `ares_api_url`: Base URL of ARES HTTP API (e.g., "https://api.ares.dirmacs.com")
-    /// - `eruka_api_url`: Base URL of Eruka API (e.g., "https://eruka.dirmacs.com")
     pub fn new(
         tenant_db: Arc<TenantDb>,
         pool: sqlx::PgPool,
         ares_api_url: &str,
-        eruka: Option<Arc<ErukaProxy>>,
     ) -> Self {
         let extensions: Vec<Arc<dyn McpToolExtension>> = vec![];
         let http = reqwest::Client::builder()
@@ -92,7 +84,6 @@ impl AresMcpServer {
             tenant_db,
             pool,
             session: Arc::new(RwLock::new(None)),
-            eruka,
             extensions,
             ares_api_url: ares_api_url.trim_end_matches('/').to_string(),
             http,
@@ -544,128 +535,6 @@ impl AresMcpServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    /// Read a knowledge field from Eruka.
-    pub async fn eruka_read(&self, input: ErukaReadInput) -> Result<CallToolResult, String> {
-        let eruka = self.eruka.as_ref().ok_or("Eruka proxy not configured. Set ERUKA_API_URL to enable.")?;
-        let start = std::time::Instant::now();
-        let session = self.get_session().await?;
-        self.enforce_quota(&session).await?;
-
-        let result = eruka.read(&session, input).await;
-        let duration = start.elapsed().as_millis() as u64;
-
-        match result {
-            Ok(output) => {
-                self.track_usage(
-                    session.tenant_id(),
-                    McpOperation::ErukaRead,
-                    0,
-                    true,
-                    duration,
-                )
-                .await;
-
-                let json =
-                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
-
-                Ok(CallToolResult::success(vec![Content::text(json)]))
-            }
-            Err(e) => {
-                self.track_usage(
-                    session.tenant_id(),
-                    McpOperation::ErukaRead,
-                    0,
-                    false,
-                    duration,
-                )
-                .await;
-
-                Err(format!("Eruka read failed: {}", e))
-            }
-        }
-    }
-
-    /// Write a knowledge field to Eruka.
-    pub async fn eruka_write(&self, input: ErukaWriteInput) -> Result<CallToolResult, String> {
-        let eruka = self.eruka.as_ref().ok_or("Eruka proxy not configured. Set ERUKA_API_URL to enable.")?;
-        let start = std::time::Instant::now();
-        let session = self.get_session().await?;
-        self.enforce_quota(&session).await?;
-
-        let result = eruka.write(&session, input).await;
-        let duration = start.elapsed().as_millis() as u64;
-
-        match result {
-            Ok(output) => {
-                self.track_usage(
-                    session.tenant_id(),
-                    McpOperation::ErukaWrite,
-                    0,
-                    true,
-                    duration,
-                )
-                .await;
-
-                let json =
-                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
-
-                Ok(CallToolResult::success(vec![Content::text(json)]))
-            }
-            Err(e) => {
-                self.track_usage(
-                    session.tenant_id(),
-                    McpOperation::ErukaWrite,
-                    0,
-                    false,
-                    duration,
-                )
-                .await;
-
-                Err(format!("Eruka write failed: {}", e))
-            }
-        }
-    }
-
-    /// Search Eruka knowledge base with a natural language query.
-    pub async fn eruka_search(&self, input: ErukaSearchInput) -> Result<CallToolResult, String> {
-        let eruka = self.eruka.as_ref().ok_or("Eruka proxy not configured. Set ERUKA_API_URL to enable.")?;
-        let start = std::time::Instant::now();
-        let session = self.get_session().await?;
-        self.enforce_quota(&session).await?;
-
-        let result = eruka.search(&session, input).await;
-        let duration = start.elapsed().as_millis() as u64;
-
-        match result {
-            Ok(output) => {
-                self.track_usage(
-                    session.tenant_id(),
-                    McpOperation::ErukaSearch,
-                    0,
-                    true,
-                    duration,
-                )
-                .await;
-
-                let json =
-                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
-
-                Ok(CallToolResult::success(vec![Content::text(json)]))
-            }
-            Err(e) => {
-                self.track_usage(
-                    session.tenant_id(),
-                    McpOperation::ErukaSearch,
-                    0,
-                    false,
-                    duration,
-                )
-                .await;
-
-                Err(format!("Eruka search failed: {}", e))
-            }
-        }
-    }
 
     /// Get list of available tools with JSON schemas
     fn get_tools(&self) -> Vec<Tool> {
@@ -793,117 +662,6 @@ impl AresMcpServer {
             },
         ];
 
-        // Eruka tools — only available when Eruka proxy is configured
-        if self.eruka.is_some() {
-            tools.push(Tool {
-                name: "eruka_read".into(),
-                description: Some(
-                    "Read a knowledge field from Eruka. Specify category (e.g., 'identity', 'market', 'content', 'products') and field name (e.g., 'company_name'). Returns the value, confidence, and knowledge state.".into(),
-                ),
-                input_schema: serde_json::from_value(json!({
-                    "type": "object",
-                    "properties": {
-                        "workspace_id": {
-                            "type": "string",
-                            "description": "Eruka workspace ID (defaults to tenant's workspace if omitted)"
-                        },
-                        "category": {
-                            "type": "string",
-                            "description": "Category to read from (e.g., 'identity', 'market', 'content')"
-                        },
-                        "field": {
-                            "type": "string",
-                            "description": "Specific field to read (e.g., 'company_name')"
-                        }
-                    },
-                    "required": ["category", "field"]
-                }))
-                .unwrap_or_default(),
-                annotations: None,
-                icons: None,
-                meta: None,
-                output_schema: None,
-                title: Some("Eruka Read".into()),
-            });
-            tools.push(Tool {
-                name: "eruka_write".into(),
-                description: Some(
-                    "Write a knowledge field to Eruka. Provide category, field name, value, confidence score (0.0-1.0, use 1.0 for confirmed facts), and source description.".into(),
-                ),
-                input_schema: serde_json::from_value(json!({
-                    "type": "object",
-                    "properties": {
-                        "workspace_id": {
-                            "type": "string",
-                            "description": "Eruka workspace ID (defaults to tenant's workspace if omitted)"
-                        },
-                        "category": {
-                            "type": "string",
-                            "description": "Category to write to"
-                        },
-                        "field": {
-                            "type": "string",
-                            "description": "Field name"
-                        },
-                        "value": {
-                            "type": "object",
-                            "description": "Value to write (any JSON value)"
-                        },
-                        "confidence": {
-                            "type": "number",
-                            "description": "Confidence score (0.0 to 1.0, use 1.0 for user-confirmed facts)"
-                        },
-                        "source": {
-                            "type": "string",
-                            "description": "Source of the information (e.g., 'user_interview', 'web_research')"
-                        }
-                    },
-                    "required": ["category", "field", "value", "confidence", "source"]
-                }))
-                .unwrap_or_default(),
-                annotations: None,
-                icons: None,
-                meta: None,
-                output_schema: None,
-                title: Some("Eruka Write".into()),
-            });
-            tools.push(Tool {
-                name: "eruka_search".into(),
-                description: Some(
-                    "Search the Eruka knowledge base with a natural language query. Returns matching fields with relevance scores.".into(),
-                ),
-                input_schema: serde_json::from_value(json!({
-                    "type": "object",
-                    "properties": {
-                        "workspace_id": {
-                            "type": "string",
-                            "description": "Eruka workspace ID (defaults to tenant's workspace if omitted)"
-                        },
-                        "query": {
-                            "type": "string",
-                            "description": "Natural language search query"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of results (default 5)",
-                            "default": 5
-                        }
-                    },
-                    "required": ["query"]
-                }))
-                .unwrap_or_default(),
-                annotations: None,
-                icons: None,
-                meta: None,
-                output_schema: None,
-                title: Some("Eruka Search".into()),
-            });
-        }
-
-        // Add tools from registered extensions
-        for ext in &self.extensions {
-            tools.extend(ext.tools());
-        }
 
         tools
     }
@@ -950,22 +708,7 @@ impl AresMcpServer {
                         };
                     }
                 }
-                // Fall back to eruka proxy if configured (legacy path, will be removed)
-                match other {
-                    "eruka_read" => match serde_json::from_value::<ErukaReadInput>(args_value) {
-                        Ok(input) => self.eruka_read(input).await,
-                        Err(e) => Err(format!("Invalid arguments: {}", e)),
-                    },
-                    "eruka_write" => match serde_json::from_value::<ErukaWriteInput>(args_value) {
-                        Ok(input) => self.eruka_write(input).await,
-                        Err(e) => Err(format!("Invalid arguments: {}", e)),
-                    },
-                    "eruka_search" => match serde_json::from_value::<ErukaSearchInput>(args_value) {
-                        Ok(input) => self.eruka_search(input).await,
-                        Err(e) => Err(format!("Invalid arguments: {}", e)),
-                    },
-                    _ => Err(format!("Unknown tool: {}", other)),
-                }
+                Err(format!("Unknown tool: {}", other))
             }
         };
 
@@ -1020,7 +763,8 @@ impl ServerHandler for AresMcpServer {
 /// - `tenant_db`: Tenant database for auth
 /// - `pool`: PostgreSQL connection pool
 /// - `ares_api_url`: ARES HTTP API URL
-/// - `eruka_api_url`: Eruka HTTP API URL
+///
+/// Extension crates can register additional tools via `server.register_extension()`.
 ///
 /// # Usage
 /// ```bash
@@ -1030,31 +774,8 @@ pub async fn start_mcp_server(
     tenant_db: Arc<TenantDb>,
     pool: sqlx::PgPool,
     ares_api_url: &str,
-    eruka_api_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Create ErukaProxy if URL is configured (optional for OSS deployments)
-    let eruka = if eruka_api_url.is_empty() || eruka_api_url == "http://localhost:8081" {
-        // Check if Eruka is actually reachable
-        match reqwest::get(&format!("{}/health", eruka_api_url)).await {
-            Ok(r) if r.status().is_success() => {
-                let mut proxy = ErukaProxy::new(eruka_api_url);
-                let _ = proxy.ensure_authenticated().await;
-                tracing::info!("Eruka proxy connected at {}", eruka_api_url);
-                Some(Arc::new(proxy))
-            }
-            _ => {
-                tracing::info!("Eruka not available at {} — eruka tools disabled", eruka_api_url);
-                None
-            }
-        }
-    } else {
-        let mut proxy = ErukaProxy::new(eruka_api_url);
-        let _ = proxy.ensure_authenticated().await;
-        tracing::info!("Eruka proxy connected at {}", eruka_api_url);
-        Some(Arc::new(proxy))
-    };
-
-    let server = AresMcpServer::new(tenant_db, pool, ares_api_url, eruka);
+    let server = AresMcpServer::new(tenant_db, pool, ares_api_url);
 
     // Authenticate before accepting tool calls
     server.authenticate().await?;

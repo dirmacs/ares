@@ -1,0 +1,483 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Streaming - ARES Documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="A.R.E.S — Agentic Retrieval Enhanced Server. Multi-provider LLM platform with tool calling, RAG, and multi-tenant enterprise support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="../getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart</a></li><li class="chapter-item expanded "><a href="../getting-started/authentication.html"><strong aria-hidden="true">2.</strong> Authentication</a></li><li class="chapter-item expanded "><a href="../getting-started/models.html"><strong aria-hidden="true">3.</strong> Models & Providers</a></li><li class="chapter-item expanded affix "><li class="part-title">API Reference</li><li class="chapter-item expanded "><a href="../api/chat.html"><strong aria-hidden="true">4.</strong> Chat</a></li><li class="chapter-item expanded "><a href="../api/agents.html"><strong aria-hidden="true">5.</strong> Agents</a></li><li class="chapter-item expanded "><a href="../api/workflows.html"><strong aria-hidden="true">6.</strong> Workflows</a></li><li class="chapter-item expanded "><a href="../api/research.html"><strong aria-hidden="true">7.</strong> Research</a></li><li class="chapter-item expanded "><a href="../api/rag.html"><strong aria-hidden="true">8.</strong> RAG</a></li><li class="chapter-item expanded "><a href="../api/streaming.html" class="active"><strong aria-hidden="true">9.</strong> Streaming</a></li><li class="chapter-item expanded affix "><li class="part-title">Enterprise</li><li class="chapter-item expanded "><a href="../enterprise/v1-api.html"><strong aria-hidden="true">10.</strong> V1 Client API</a></li><li class="chapter-item expanded "><a href="../enterprise/admin-api.html"><strong aria-hidden="true">11.</strong> Admin API</a></li><li class="chapter-item expanded "><a href="../enterprise/deploy-api.html"><strong aria-hidden="true">12.</strong> Deployment API</a></li><li class="chapter-item expanded "><a href="../enterprise/multi-tenant.html"><strong aria-hidden="true">13.</strong> Multi-Tenant Setup</a></li><li class="chapter-item expanded affix "><li class="part-title">Platform</li><li class="chapter-item expanded "><a href="../platform/rate-limits.html"><strong aria-hidden="true">14.</strong> Rate Limits & Quotas</a></li><li class="chapter-item expanded "><a href="../platform/errors.html"><strong aria-hidden="true">15.</strong> Error Handling</a></li><li class="chapter-item expanded "><a href="../platform/self-hosting.html"><strong aria-hidden="true">16.</strong> Self-Hosting</a></li><li class="chapter-item expanded affix "><li class="part-title">Extending ARES</li><li class="chapter-item expanded "><a href="../extending/context-provider.html"><strong aria-hidden="true">17.</strong> ContextProvider Trait</a></li><li class="chapter-item expanded "><a href="../extending/base-router.html"><strong aria-hidden="true">18.</strong> Building on base_router()</a></li><li class="chapter-item expanded affix "><li class="part-title">Guides</li><li class="chapter-item expanded "><a href="../guides/chat-agent.html"><strong aria-hidden="true">19.</strong> Build a Chat Agent</a></li><li class="chapter-item expanded "><a href="../guides/tool-calling.html"><strong aria-hidden="true">20.</strong> Tool Calling</a></li><li class="chapter-item expanded affix "><li class="part-title">Resources</li><li class="chapter-item expanded "><a href="../changelog.html"><strong aria-hidden="true">21.</strong> Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/api/streaming.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="streaming"><a class="header" href="#streaming">Streaming</a></h1>
+<p>ARES supports real-time streaming responses via Server-Sent Events (SSE). Instead of waiting for the full response to be generated, you receive text chunks as they are produced. This enables responsive UIs that display text as it appears.</p>
+<hr />
+<h2 id="endpoint"><a class="header" href="#endpoint">Endpoint</a></h2>
+<pre><code>POST /api/chat/stream
+</code></pre>
+<p>JWT authentication: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<pre><code>POST /v1/chat/stream
+</code></pre>
+<p>API key authentication: <code>Authorization: Bearer ares_xxx</code></p>
+<p>Both endpoints accept the same request body as <a href="./chat.html"><code>POST /api/chat</code></a> and return the same SSE format.</p>
+<hr />
+<h2 id="sse-format"><a class="header" href="#sse-format">SSE format</a></h2>
+<p>The response uses <code>Content-Type: text/event-stream</code>. Each event contains a <code>data:</code> field with a text chunk:</p>
+<pre><code>data: The
+data:  answer
+data:  to your
+data:  question is
+data:  as follows...
+</code></pre>
+<p>Each <code>data:</code> line represents one chunk of the response. Concatenate all chunks in order to reconstruct the complete response. The server closes the connection when generation is complete.</p>
+<hr />
+<h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<h3 id="curl"><a class="header" href="#curl">curl</a></h3>
+<p>The <code>-N</code> flag disables output buffering so chunks appear immediately:</p>
+<pre><code class="language-bash">curl -N -X POST http://localhost:3000/api/chat/stream \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "message": "Explain how neural networks learn",
+    "agent_type": "research"
+  }'
+</code></pre>
+<h3 id="python"><a class="header" href="#python">Python</a></h3>
+<p>Using the <code>requests</code> library with <code>stream=True</code>:</p>
+<pre><code class="language-python">import requests
+
+response = requests.post(
+    "http://localhost:3000/api/chat/stream",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOi...",
+        "Accept": "text/event-stream"
+    },
+    json={
+        "message": "Explain how neural networks learn",
+        "agent_type": "research"
+    },
+    stream=True
+)
+
+full_response = []
+
+for line in response.iter_lines():
+    if line:
+        decoded = line.decode("utf-8")
+        if decoded.startswith("data: "):
+            chunk = decoded[6:]
+            print(chunk, end="", flush=True)
+            full_response.append(chunk)
+
+complete_text = "".join(full_response)
+</code></pre>
+<p>For production use, consider using <code>httpx</code> with async streaming:</p>
+<pre><code class="language-python">import httpx
+import asyncio
+
+async def stream_chat(message: str, token: str) -&gt; str:
+    chunks = []
+
+    async with httpx.AsyncClient() as client:
+        async with client.stream(
+            "POST",
+            "http://localhost:3000/api/chat/stream",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+                "Accept": "text/event-stream"
+            },
+            json={"message": message}
+        ) as response:
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    chunk = line[6:]
+                    print(chunk, end="", flush=True)
+                    chunks.append(chunk)
+
+    return "".join(chunks)
+
+result = asyncio.run(stream_chat("Explain how neural networks learn", "eyJhbGciOi..."))
+</code></pre>
+<h3 id="javascript-browser"><a class="header" href="#javascript-browser">JavaScript (Browser)</a></h3>
+<p>Using the Fetch API with <code>ReadableStream</code>:</p>
+<pre><code class="language-javascript">async function streamChat(message, token) {
+  const response = await fetch("http://localhost:3000/api/chat/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+      "Accept": "text/event-stream"
+    },
+    body: JSON.stringify({
+      message: message,
+      agent_type: "research"
+    })
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let fullResponse = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const text = decoder.decode(value, { stream: true });
+    for (const line of text.split("\n")) {
+      if (line.startsWith("data: ")) {
+        const chunk = line.slice(6);
+        fullResponse += chunk;
+
+        // Update your UI here
+        document.getElementById("output").textContent = fullResponse;
+      }
+    }
+  }
+
+  return fullResponse;
+}
+</code></pre>
+<h3 id="javascript-nodejs"><a class="header" href="#javascript-nodejs">JavaScript (Node.js)</a></h3>
+<pre><code class="language-javascript">async function streamChat(message, token) {
+  const response = await fetch("http://localhost:3000/api/chat/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+      "Accept": "text/event-stream"
+    },
+    body: JSON.stringify({ message })
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let fullResponse = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const text = decoder.decode(value, { stream: true });
+    for (const line of text.split("\n")) {
+      if (line.startsWith("data: ")) {
+        const chunk = line.slice(6);
+        fullResponse += chunk;
+        process.stdout.write(chunk);
+      }
+    }
+  }
+
+  return fullResponse;
+}
+</code></pre>
+<h3 id="go"><a class="header" href="#go">Go</a></h3>
+<pre><code class="language-go">package main
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+)
+
+func streamChat(message, token string) (string, error) {
+	body, _ := json.Marshal(map[string]string{
+		"message":    message,
+		"agent_type": "research",
+	})
+
+	req, err := http.NewRequest("POST",
+		"http://localhost:3000/api/chat/stream",
+		bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var fullResponse strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			chunk := line[6:]
+			fmt.Print(chunk)
+			fullResponse.WriteString(chunk)
+		}
+	}
+
+	return fullResponse.String(), scanner.Err()
+}
+
+func main() {
+	result, err := streamChat("Explain how neural networks learn", "eyJhbGciOi...")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("\n\nFull response length: %d characters\n", len(result))
+}
+</code></pre>
+<hr />
+<h2 id="error-handling"><a class="header" href="#error-handling">Error handling</a></h2>
+<p>If the request is invalid or authentication fails, the server returns a standard HTTP error response (not SSE). Always check the response status before attempting to read the stream:</p>
+<pre><code class="language-python">response = requests.post(url, headers=headers, json=body, stream=True)
+
+if response.status_code != 200:
+    print(f"Error {response.status_code}: {response.text}")
+else:
+    for line in response.iter_lines():
+        # process SSE events
+</code></pre>
+<pre><code class="language-javascript">const response = await fetch(url, { method: "POST", headers, body });
+
+if (!response.ok) {
+  throw new Error(`Error ${response.status}: ${await response.text()}`);
+}
+
+// proceed with stream reading
+</code></pre>
+<hr />
+<h2 id="best-practices"><a class="header" href="#best-practices">Best practices</a></h2>
+<ul>
+<li><strong>Always set <code>Accept: text/event-stream</code></strong> to signal that you expect a streaming response.</li>
+<li><strong>Disable client-side buffering</strong> where possible (e.g., <code>-N</code> in curl, <code>stream=True</code> in Python requests).</li>
+<li><strong>Handle connection drops gracefully.</strong> The stream may close unexpectedly due to network issues. Implement retry logic for production applications.</li>
+<li><strong>Set reasonable timeouts.</strong> Long research queries may stream for 30+ seconds. Configure your HTTP client timeout accordingly.</li>
+<li><strong>Concatenate chunks for the final result.</strong> Individual chunks may split mid-word. Only process the complete response for downstream use.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../api/rag.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../enterprise/v1-api.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../api/rag.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../enterprise/v1-api.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

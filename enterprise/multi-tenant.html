@@ -1,0 +1,388 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Multi-Tenant Setup - ARES Documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="A.R.E.S — Agentic Retrieval Enhanced Server. Multi-provider LLM platform with tool calling, RAG, and multi-tenant enterprise support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="../getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart</a></li><li class="chapter-item expanded "><a href="../getting-started/authentication.html"><strong aria-hidden="true">2.</strong> Authentication</a></li><li class="chapter-item expanded "><a href="../getting-started/models.html"><strong aria-hidden="true">3.</strong> Models & Providers</a></li><li class="chapter-item expanded affix "><li class="part-title">API Reference</li><li class="chapter-item expanded "><a href="../api/chat.html"><strong aria-hidden="true">4.</strong> Chat</a></li><li class="chapter-item expanded "><a href="../api/agents.html"><strong aria-hidden="true">5.</strong> Agents</a></li><li class="chapter-item expanded "><a href="../api/workflows.html"><strong aria-hidden="true">6.</strong> Workflows</a></li><li class="chapter-item expanded "><a href="../api/research.html"><strong aria-hidden="true">7.</strong> Research</a></li><li class="chapter-item expanded "><a href="../api/rag.html"><strong aria-hidden="true">8.</strong> RAG</a></li><li class="chapter-item expanded "><a href="../api/streaming.html"><strong aria-hidden="true">9.</strong> Streaming</a></li><li class="chapter-item expanded affix "><li class="part-title">Enterprise</li><li class="chapter-item expanded "><a href="../enterprise/v1-api.html"><strong aria-hidden="true">10.</strong> V1 Client API</a></li><li class="chapter-item expanded "><a href="../enterprise/admin-api.html"><strong aria-hidden="true">11.</strong> Admin API</a></li><li class="chapter-item expanded "><a href="../enterprise/deploy-api.html"><strong aria-hidden="true">12.</strong> Deployment API</a></li><li class="chapter-item expanded "><a href="../enterprise/multi-tenant.html" class="active"><strong aria-hidden="true">13.</strong> Multi-Tenant Setup</a></li><li class="chapter-item expanded affix "><li class="part-title">Platform</li><li class="chapter-item expanded "><a href="../platform/rate-limits.html"><strong aria-hidden="true">14.</strong> Rate Limits & Quotas</a></li><li class="chapter-item expanded "><a href="../platform/errors.html"><strong aria-hidden="true">15.</strong> Error Handling</a></li><li class="chapter-item expanded "><a href="../platform/self-hosting.html"><strong aria-hidden="true">16.</strong> Self-Hosting</a></li><li class="chapter-item expanded affix "><li class="part-title">Extending ARES</li><li class="chapter-item expanded "><a href="../extending/context-provider.html"><strong aria-hidden="true">17.</strong> ContextProvider Trait</a></li><li class="chapter-item expanded "><a href="../extending/base-router.html"><strong aria-hidden="true">18.</strong> Building on base_router()</a></li><li class="chapter-item expanded affix "><li class="part-title">Guides</li><li class="chapter-item expanded "><a href="../guides/chat-agent.html"><strong aria-hidden="true">19.</strong> Build a Chat Agent</a></li><li class="chapter-item expanded "><a href="../guides/tool-calling.html"><strong aria-hidden="true">20.</strong> Tool Calling</a></li><li class="chapter-item expanded affix "><li class="part-title">Resources</li><li class="chapter-item expanded "><a href="../changelog.html"><strong aria-hidden="true">21.</strong> Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/enterprise/multi-tenant.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="multi-tenant-architecture"><a class="header" href="#multi-tenant-architecture">Multi-Tenant Architecture</a></h1>
+<p>ARES is a multi-tenant platform. Each enterprise client operates within an isolated tenant, with their own agents, API keys, usage quotas, and data boundaries. This page explains the tenancy model and how to provision new clients.</p>
+<hr />
+<h2 id="core-concepts"><a class="header" href="#core-concepts">Core Concepts</a></h2>
+<h3 id="tenants"><a class="header" href="#tenants">Tenants</a></h3>
+<p>A tenant is an isolated namespace on the ARES platform. Each tenant has:</p>
+<ul>
+<li>A unique name and ID</li>
+<li>A tier that determines rate limits and quotas</li>
+<li>Its own set of agents (cloned from templates or created manually)</li>
+<li>One or more API keys for authentication</li>
+<li>Independent usage tracking and billing data</li>
+</ul>
+<p>Tenants cannot see or interact with each other's resources. A request authenticated with Tenant A's API key will never return Tenant B's agents, runs, or usage data.</p>
+<h3 id="tiers"><a class="header" href="#tiers">Tiers</a></h3>
+<p>Every tenant is assigned a tier that governs their resource limits:</p>
+<div class="table-wrapper"><table><thead><tr><th>Tier</th><th>Monthly Requests</th><th>Monthly Tokens</th><th>Daily Rate Limit</th><th>Use Case</th></tr></thead><tbody>
+<tr><td><strong>Free</strong></td><td>1,000</td><td>100,000</td><td>100/day</td><td>Evaluation and testing</td></tr>
+<tr><td><strong>Dev</strong></td><td>10,000</td><td>1,000,000</td><td>1,000/day</td><td>Development and staging</td></tr>
+<tr><td><strong>Pro</strong></td><td>100,000</td><td>10,000,000</td><td>10,000/day</td><td>Production workloads</td></tr>
+<tr><td><strong>Enterprise</strong></td><td>Unlimited</td><td>Unlimited</td><td>Unlimited</td><td>High-volume clients</td></tr>
+</tbody></table>
+</div>
+<p>Tiers can be changed at any time via the Admin API without disrupting the tenant's service.</p>
+<h3 id="agent-templates"><a class="header" href="#agent-templates">Agent Templates</a></h3>
+<p>When a tenant is provisioned, ARES clones a set of pre-configured agent templates based on the specified <code>product_type</code>. Templates provide a working starting point that can be customized after creation.</p>
+<p>Available product types:</p>
+<div class="table-wrapper"><table><thead><tr><th>Product Type</th><th>Templates Included</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>generic</code></td><td>General-purpose agents</td><td>Default chat and analysis agents</td></tr>
+<tr><td><code>kasino</code></td><td><code>kasino-classifier</code>, <code>kasino-risk</code>, <code>kasino-transaction</code>, <code>kasino-report</code></td><td>Transaction analysis and reporting</td></tr>
+<tr><td><code>ehb</code></td><td>Health-oriented agents</td><td>eHealthBuddy clinical agents</td></tr>
+</tbody></table>
+</div>
+<p>Each template defines the agent's model, system prompt, tool access, and default configuration. After provisioning, agents can be freely modified or new ones added.</p>
+<h3 id="api-key-scoping"><a class="header" href="#api-key-scoping">API Key Scoping</a></h3>
+<p>Every API key is bound to exactly one tenant. When a request arrives with an API key:</p>
+<ol>
+<li>ARES looks up the key and identifies the associated tenant</li>
+<li>All operations execute within that tenant's scope</li>
+<li>Usage is tracked against that tenant's quotas</li>
+<li>The response only includes that tenant's data</li>
+</ol>
+<p>A tenant can have multiple API keys (e.g., separate keys for production, staging, and mobile). Each key's usage is tracked individually but counts toward the shared tenant quota.</p>
+<h3 id="data-isolation"><a class="header" href="#data-isolation">Data Isolation</a></h3>
+<p>Tenant isolation is enforced at the database query level. Every data-accessing query includes the tenant ID as a filter condition. This means:</p>
+<ul>
+<li>Agent listings only return the requesting tenant's agents</li>
+<li>Run history only shows runs from the requesting tenant</li>
+<li>Usage data only reflects the requesting tenant's consumption</li>
+<li>There is no API surface to query across tenant boundaries (except via the Admin API)</li>
+</ul>
+<hr />
+<h2 id="provisioning-flow"><a class="header" href="#provisioning-flow">Provisioning Flow</a></h2>
+<p>The recommended way to onboard a new client is the atomic provisioning endpoint. It creates all required resources in a single database transaction.</p>
+<h3 id="step-1-provision-the-client"><a class="header" href="#step-1-provision-the-client">Step 1: Provision the Client</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/admin/provision-client \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "acme-corp",
+    "tier": "pro",
+    "product_type": "kasino",
+    "api_key_name": "production"
+  }'
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+  "tenant_name": "acme-corp",
+  "tier": "pro",
+  "product_type": "kasino",
+  "api_key_id": "key-uuid",
+  "api_key_prefix": "ares_a1b2",
+  "raw_api_key": "ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5",
+  "agents_created": [
+    "kasino-classifier",
+    "kasino-risk",
+    "kasino-transaction",
+    "kasino-report"
+  ]
+}
+</code></pre>
+<p>This single call:</p>
+<ol>
+<li>Creates the tenant with the specified tier</li>
+<li>Looks up the agent templates for the given <code>product_type</code></li>
+<li>Clones each template as a tenant-specific agent</li>
+<li>Generates an API key bound to the new tenant</li>
+<li>Returns the raw API key (shown only once)</li>
+</ol>
+<p>If any step fails, the entire operation is rolled back. You will never end up with a half-provisioned tenant.</p>
+<h3 id="step-2-deliver-the-api-key"><a class="header" href="#step-2-deliver-the-api-key">Step 2: Deliver the API Key</a></h3>
+<p>Securely deliver the <code>raw_api_key</code> to your client. This is the only time the full key is visible — ARES stores only a hashed version internally.</p>
+<h3 id="step-3-verify-the-setup"><a class="header" href="#step-3-verify-the-setup">Step 3: Verify the Setup</a></h3>
+<p>Confirm the tenant's agents are accessible using their new API key:</p>
+<pre><code class="language-bash">curl http://localhost:3000/v1/agents \
+  -H "Authorization: Bearer ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5"
+</code></pre>
+<p>The client should see their four provisioned agents.</p>
+<h3 id="step-4-test-an-agent-run"><a class="header" href="#step-4-test-an-agent-run">Step 4: Test an Agent Run</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/v1/agents/kasino-classifier/run \
+  -H "Authorization: Bearer ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "message": "Classify this transaction: $500 at electronics store"
+    }
+  }'
+</code></pre>
+<hr />
+<h2 id="managing-tenants-after-provisioning"><a class="header" href="#managing-tenants-after-provisioning">Managing Tenants After Provisioning</a></h2>
+<h3 id="add-more-agents"><a class="header" href="#add-more-agents">Add More Agents</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/agents \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "custom-summarizer",
+    "agent_type": "summarizer",
+    "config": {
+      "model": "llama-3.3-70b",
+      "system_prompt": "You summarize financial reports concisely.",
+      "tools": [],
+      "max_tokens": 2048
+    }
+  }'
+</code></pre>
+<h3 id="issue-additional-api-keys"><a class="header" href="#issue-additional-api-keys">Issue Additional API Keys</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/api-keys \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "staging-key"}'
+</code></pre>
+<h3 id="upgrade-a-tenants-tier"><a class="header" href="#upgrade-a-tenants-tier">Upgrade a Tenant's Tier</a></h3>
+<pre><code class="language-bash">curl -X PUT http://localhost:3000/api/admin/tenants/{tenant_id}/quota \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"tier": "enterprise"}'
+</code></pre>
+<h3 id="monitor-usage"><a class="header" href="#monitor-usage">Monitor Usage</a></h3>
+<pre><code class="language-bash"># Current period summary
+curl http://localhost:3000/api/admin/tenants/{tenant_id}/usage \
+  -H "X-Admin-Secret: your-admin-secret"
+
+# Daily breakdown for the last 30 days
+curl "http://localhost:3000/api/admin/tenants/{tenant_id}/usage/daily?days=30" \
+  -H "X-Admin-Secret: your-admin-secret"
+</code></pre>
+<hr />
+<h2 id="architecture-notes"><a class="header" href="#architecture-notes">Architecture Notes</a></h2>
+<ul>
+<li><strong>Shared infrastructure:</strong> All tenants run on the same ARES instance and database. Isolation is logical, not physical. This keeps operational costs low for the MVP phase.</li>
+<li><strong>Atomic provisioning:</strong> The provisioning endpoint uses a database transaction. If agent template cloning fails halfway through, the tenant and any partially created resources are rolled back.</li>
+<li><strong>Key hashing:</strong> API keys are hashed before storage. The raw key is returned exactly once during creation. Lost keys must be revoked and replaced.</li>
+<li><strong>Auto-migration:</strong> ARES runs database migrations on startup (<code>sqlx::migrate!()</code>). New tenant-related schema changes are applied automatically when the server restarts.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../enterprise/deploy-api.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../platform/rate-limits.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../enterprise/deploy-api.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../platform/rate-limits.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

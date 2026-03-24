@@ -1,0 +1,373 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Workflows - ARES Documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="A.R.E.S — Agentic Retrieval Enhanced Server. Multi-provider LLM platform with tool calling, RAG, and multi-tenant enterprise support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="../getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart</a></li><li class="chapter-item expanded "><a href="../getting-started/authentication.html"><strong aria-hidden="true">2.</strong> Authentication</a></li><li class="chapter-item expanded "><a href="../getting-started/models.html"><strong aria-hidden="true">3.</strong> Models & Providers</a></li><li class="chapter-item expanded affix "><li class="part-title">API Reference</li><li class="chapter-item expanded "><a href="../api/chat.html"><strong aria-hidden="true">4.</strong> Chat</a></li><li class="chapter-item expanded "><a href="../api/agents.html"><strong aria-hidden="true">5.</strong> Agents</a></li><li class="chapter-item expanded "><a href="../api/workflows.html" class="active"><strong aria-hidden="true">6.</strong> Workflows</a></li><li class="chapter-item expanded "><a href="../api/research.html"><strong aria-hidden="true">7.</strong> Research</a></li><li class="chapter-item expanded "><a href="../api/rag.html"><strong aria-hidden="true">8.</strong> RAG</a></li><li class="chapter-item expanded "><a href="../api/streaming.html"><strong aria-hidden="true">9.</strong> Streaming</a></li><li class="chapter-item expanded affix "><li class="part-title">Enterprise</li><li class="chapter-item expanded "><a href="../enterprise/v1-api.html"><strong aria-hidden="true">10.</strong> V1 Client API</a></li><li class="chapter-item expanded "><a href="../enterprise/admin-api.html"><strong aria-hidden="true">11.</strong> Admin API</a></li><li class="chapter-item expanded "><a href="../enterprise/deploy-api.html"><strong aria-hidden="true">12.</strong> Deployment API</a></li><li class="chapter-item expanded "><a href="../enterprise/multi-tenant.html"><strong aria-hidden="true">13.</strong> Multi-Tenant Setup</a></li><li class="chapter-item expanded affix "><li class="part-title">Platform</li><li class="chapter-item expanded "><a href="../platform/rate-limits.html"><strong aria-hidden="true">14.</strong> Rate Limits & Quotas</a></li><li class="chapter-item expanded "><a href="../platform/errors.html"><strong aria-hidden="true">15.</strong> Error Handling</a></li><li class="chapter-item expanded "><a href="../platform/self-hosting.html"><strong aria-hidden="true">16.</strong> Self-Hosting</a></li><li class="chapter-item expanded affix "><li class="part-title">Extending ARES</li><li class="chapter-item expanded "><a href="../extending/context-provider.html"><strong aria-hidden="true">17.</strong> ContextProvider Trait</a></li><li class="chapter-item expanded "><a href="../extending/base-router.html"><strong aria-hidden="true">18.</strong> Building on base_router()</a></li><li class="chapter-item expanded affix "><li class="part-title">Guides</li><li class="chapter-item expanded "><a href="../guides/chat-agent.html"><strong aria-hidden="true">19.</strong> Build a Chat Agent</a></li><li class="chapter-item expanded "><a href="../guides/tool-calling.html"><strong aria-hidden="true">20.</strong> Tool Calling</a></li><li class="chapter-item expanded affix "><li class="part-title">Resources</li><li class="chapter-item expanded "><a href="../changelog.html"><strong aria-hidden="true">21.</strong> Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/api/workflows.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="workflows"><a class="header" href="#workflows">Workflows</a></h1>
+<p>Workflows are multi-agent orchestration pipelines. A workflow defines an entry point agent (typically a router) that analyzes the incoming query and delegates to specialist agents in sequence. The result is a coordinated, multi-step response that leverages the strengths of different agents.</p>
+<p><strong>How workflows operate:</strong></p>
+<ol>
+<li>The query enters through an <strong>entry agent</strong> (usually a router).</li>
+<li>The router analyzes intent and selects the most appropriate specialist agent.</li>
+<li>The specialist processes the query, optionally delegating further.</li>
+<li>Each step is recorded in the <strong>reasoning path</strong>, providing full transparency into the decision chain.</li>
+<li>The final response is returned along with metadata about the execution.</li>
+</ol>
+<hr />
+<h2 id="list-workflows"><a class="header" href="#list-workflows">List workflows</a></h2>
+<pre><code>GET /api/workflows
+</code></pre>
+<p>Returns the names of all available workflows.</p>
+<h3 id="authentication"><a class="header" href="#authentication">Authentication</a></h3>
+<p>Requires a JWT access token: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<h3 id="response"><a class="header" href="#response">Response</a></h3>
+<pre><code class="language-json">["default", "research", "support"]
+</code></pre>
+<h3 id="example"><a class="header" href="#example">Example</a></h3>
+<pre><code class="language-bash">curl http://localhost:3000/api/workflows \
+  -H "Authorization: Bearer eyJhbGciOi..."
+</code></pre>
+<hr />
+<h2 id="execute-a-workflow"><a class="header" href="#execute-a-workflow">Execute a workflow</a></h2>
+<pre><code>POST /api/workflows/{workflow_name}
+</code></pre>
+<p>Execute a named workflow. The query is routed through the workflow's agent chain, and the final synthesized response is returned along with execution metadata.</p>
+<h3 id="authentication-1"><a class="header" href="#authentication-1">Authentication</a></h3>
+<p>Requires a JWT access token: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<h3 id="path-parameters"><a class="header" href="#path-parameters">Path parameters</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>workflow_name</code></td><td>string</td><td>Name of the workflow to execute</td></tr>
+</tbody></table>
+</div>
+<h3 id="request-body"><a class="header" href="#request-body">Request body</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>query</code></td><td>string</td><td>Yes</td><td>The input query or task for the workflow.</td></tr>
+<tr><td><code>context</code></td><td>object</td><td>No</td><td>Additional context passed to agents during execution.</td></tr>
+</tbody></table>
+</div>
+<h3 id="response-1"><a class="header" href="#response-1">Response</a></h3>
+<pre><code class="language-json">{
+  "final_response": "Based on our analysis, the Pro plan at $49/month offers the best value for your use case. It includes 100K API calls, priority support, and access to all models. The Enterprise plan adds dedicated infrastructure and SLA guarantees, which may be worth considering if you expect to exceed 500K calls/month.",
+  "steps_executed": 3,
+  "agents_used": ["router", "sales", "product"],
+  "reasoning_path": [
+    {
+      "agent": "router",
+      "action": "Classified as pricing inquiry. Routing to sales agent."
+    },
+    {
+      "agent": "sales",
+      "action": "Retrieved pricing tiers. Consulting product agent for feature comparison."
+    },
+    {
+      "agent": "product",
+      "action": "Compared Pro vs Enterprise feature sets. Synthesized final recommendation."
+    }
+  ]
+}
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>final_response</code></td><td>string</td><td>The synthesized response from the workflow.</td></tr>
+<tr><td><code>steps_executed</code></td><td>integer</td><td>Total number of agent steps in the execution.</td></tr>
+<tr><td><code>agents_used</code></td><td>string[]</td><td>Ordered list of agents that participated.</td></tr>
+<tr><td><code>reasoning_path</code></td><td>array</td><td>Step-by-step trace of each agent's reasoning and actions.</td></tr>
+</tbody></table>
+</div>
+<h3 id="examples"><a class="header" href="#examples">Examples</a></h3>
+<h4 id="curl"><a class="header" href="#curl">curl</a></h4>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/workflows/default \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d '{
+    "query": "Compare your Pro and Enterprise pricing plans for a mid-size SaaS company",
+    "context": {
+      "company_size": "50-200 employees",
+      "expected_volume": "200K calls/month"
+    }
+  }'
+</code></pre>
+<h4 id="python"><a class="header" href="#python">Python</a></h4>
+<pre><code class="language-python">import requests
+
+response = requests.post(
+    "http://localhost:3000/api/workflows/default",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOi..."
+    },
+    json={
+        "query": "Compare your Pro and Enterprise pricing plans for a mid-size SaaS company",
+        "context": {
+            "company_size": "50-200 employees",
+            "expected_volume": "200K calls/month"
+        }
+    }
+)
+
+result = response.json()
+print(result["final_response"])
+
+# Inspect the reasoning chain
+for step in result["reasoning_path"]:
+    print(f"  [{step['agent']}] {step['action']}")
+</code></pre>
+<h4 id="javascript"><a class="header" href="#javascript">JavaScript</a></h4>
+<pre><code class="language-javascript">const response = await fetch(
+  "http://localhost:3000/api/workflows/default",
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer eyJhbGciOi..."
+    },
+    body: JSON.stringify({
+      query: "Compare your Pro and Enterprise pricing plans for a mid-size SaaS company",
+      context: {
+        company_size: "50-200 employees",
+        expected_volume: "200K calls/month"
+      }
+    })
+  }
+);
+
+const result = await response.json();
+console.log(result.final_response);
+
+// Inspect the reasoning chain
+result.reasoning_path.forEach(step =&gt; {
+  console.log(`  [${step.agent}] ${step.action}`);
+});
+</code></pre>
+<hr />
+<h2 id="workflow-behavior"><a class="header" href="#workflow-behavior">Workflow behavior</a></h2>
+<p><strong>Agent selection.</strong> The entry agent examines the query and routes to the specialist best suited to handle it. If a specialist determines it needs input from another agent, it can delegate further, creating a multi-hop chain.</p>
+<p><strong>Context propagation.</strong> The optional <code>context</code> object is available to every agent in the chain. Use it to pass structured information (user tier, session metadata, domain-specific parameters) that agents can reference during processing.</p>
+<p><strong>Determinism.</strong> Workflow routing is driven by the entry agent's LLM reasoning, so the same query may route differently depending on phrasing. The <code>reasoning_path</code> in the response provides full visibility into routing decisions.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../api/agents.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../api/research.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../api/agents.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../api/research.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

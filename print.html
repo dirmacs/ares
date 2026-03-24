@@ -1,0 +1,3983 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>ARES Documentation</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="A.R.E.S — Agentic Retrieval Enhanced Server. Multi-provider LLM platform with tool calling, RAG, and multi-tenant enterprise support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart</a></li><li class="chapter-item expanded "><a href="getting-started/authentication.html"><strong aria-hidden="true">2.</strong> Authentication</a></li><li class="chapter-item expanded "><a href="getting-started/models.html"><strong aria-hidden="true">3.</strong> Models & Providers</a></li><li class="chapter-item expanded affix "><li class="part-title">API Reference</li><li class="chapter-item expanded "><a href="api/chat.html"><strong aria-hidden="true">4.</strong> Chat</a></li><li class="chapter-item expanded "><a href="api/agents.html"><strong aria-hidden="true">5.</strong> Agents</a></li><li class="chapter-item expanded "><a href="api/workflows.html"><strong aria-hidden="true">6.</strong> Workflows</a></li><li class="chapter-item expanded "><a href="api/research.html"><strong aria-hidden="true">7.</strong> Research</a></li><li class="chapter-item expanded "><a href="api/rag.html"><strong aria-hidden="true">8.</strong> RAG</a></li><li class="chapter-item expanded "><a href="api/streaming.html"><strong aria-hidden="true">9.</strong> Streaming</a></li><li class="chapter-item expanded affix "><li class="part-title">Enterprise</li><li class="chapter-item expanded "><a href="enterprise/v1-api.html"><strong aria-hidden="true">10.</strong> V1 Client API</a></li><li class="chapter-item expanded "><a href="enterprise/admin-api.html"><strong aria-hidden="true">11.</strong> Admin API</a></li><li class="chapter-item expanded "><a href="enterprise/deploy-api.html"><strong aria-hidden="true">12.</strong> Deployment API</a></li><li class="chapter-item expanded "><a href="enterprise/multi-tenant.html"><strong aria-hidden="true">13.</strong> Multi-Tenant Setup</a></li><li class="chapter-item expanded affix "><li class="part-title">Platform</li><li class="chapter-item expanded "><a href="platform/rate-limits.html"><strong aria-hidden="true">14.</strong> Rate Limits & Quotas</a></li><li class="chapter-item expanded "><a href="platform/errors.html"><strong aria-hidden="true">15.</strong> Error Handling</a></li><li class="chapter-item expanded "><a href="platform/self-hosting.html"><strong aria-hidden="true">16.</strong> Self-Hosting</a></li><li class="chapter-item expanded affix "><li class="part-title">Extending ARES</li><li class="chapter-item expanded "><a href="extending/context-provider.html"><strong aria-hidden="true">17.</strong> ContextProvider Trait</a></li><li class="chapter-item expanded "><a href="extending/base-router.html"><strong aria-hidden="true">18.</strong> Building on base_router()</a></li><li class="chapter-item expanded affix "><li class="part-title">Guides</li><li class="chapter-item expanded "><a href="guides/chat-agent.html"><strong aria-hidden="true">19.</strong> Build a Chat Agent</a></li><li class="chapter-item expanded "><a href="guides/tool-calling.html"><strong aria-hidden="true">20.</strong> Tool Calling</a></li><li class="chapter-item expanded affix "><li class="part-title">Resources</li><li class="chapter-item expanded "><a href="changelog.html"><strong aria-hidden="true">21.</strong> Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
+<p>ARES is a multi-provider LLM platform that gives you a single, unified API to route requests across Groq, Anthropic, NVIDIA DeepSeek, and Ollama. It handles tool calling, retrieval-augmented generation (RAG), multi-step workflows, streaming, usage metering, and multi-tenant isolation out of the box — so you can focus on building your AI application instead of stitching together provider SDKs.</p>
+<h2 id="key-capabilities"><a class="header" href="#key-capabilities">Key capabilities</a></h2>
+<ul>
+<li><strong>Multi-provider LLM routing</strong> — Send requests to Groq, Anthropic, NVIDIA, or Ollama through one API. Switch models without changing your integration.</li>
+<li><strong>Tool calling</strong> — Define tools your agents can invoke. ARES manages the tool-call loop, execution, and response assembly.</li>
+<li><strong>Retrieval-augmented generation (RAG)</strong> — Ground LLM responses in your own data with built-in retrieval pipelines.</li>
+<li><strong>Workflows</strong> — Chain multiple agents and processing steps into deterministic, multi-step workflows.</li>
+<li><strong>Multi-tenant enterprise support</strong> — Tenant isolation, per-tenant agent configuration, API key scoping, and usage tracking at the tenant level.</li>
+<li><strong>Streaming</strong> — Server-Sent Events (SSE) streaming for real-time, token-by-token responses.</li>
+<li><strong>Usage metering</strong> — Track tokens, requests, and costs per tenant with built-in rate limiting and quota enforcement.</li>
+</ul>
+<h2 id="who-is-ares-for"><a class="header" href="#who-is-ares-for">Who is ARES for?</a></h2>
+<ul>
+<li><strong>Platform teams</strong> building internal AI infrastructure who need a reliable, multi-provider abstraction layer.</li>
+<li><strong>Enterprise clients</strong> who want managed AI agents with tenant isolation, usage visibility, and SLA guarantees.</li>
+<li><strong>Developers building AI applications</strong> who want a clean API without managing provider credentials, rate limits, and failover logic themselves.</li>
+</ul>
+<h2 id="base-url"><a class="header" href="#base-url">Base URL</a></h2>
+<p>All API requests are made to:</p>
+<pre><code>http://localhost:3000
+</code></pre>
+<h2 id="quick-links"><a class="header" href="#quick-links">Quick links</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Resource</th><th>Description</th></tr></thead><tbody>
+<tr><td><a href="getting-started/quickstart.html">Quickstart</a></td><td>Zero to first API call in 5 minutes</td></tr>
+<tr><td><a href="getting-started/authentication.html">Authentication</a></td><td>API keys, JWT tokens, and admin auth</td></tr>
+<tr><td><a href="getting-started/models.html">Models &amp; Providers</a></td><td>Available models, tiers, and provider configuration</td></tr>
+<tr><td><a href="changelog.html">Changelog</a></td><td>Release history and breaking changes</td></tr>
+</tbody></table>
+</div><div style="break-before: page; page-break-before: always;"></div><h1 id="quickstart"><a class="header" href="#quickstart">Quickstart</a></h1>
+<p>Get from zero to your first ARES API call in under 5 minutes.</p>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<ul>
+<li>An ARES API key (format: <code>ares_xxx</code>). Contact your administrator or use the <a href="http://localhost:3000">Dirmacs Admin</a> provisioning UI to generate one.</li>
+</ul>
+<h2 id="1-make-your-first-chat-request"><a class="header" href="#1-make-your-first-chat-request">1. Make your first chat request</a></h2>
+<p>Send a message to an ARES agent using the chat endpoint.</p>
+<h3 id="curl"><a class="header" href="#curl">curl</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/v1/chat \
+  -H "Authorization: Bearer ares_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What can you help me with?",
+    "agent_type": "product"
+  }'
+</code></pre>
+<h3 id="python"><a class="header" href="#python">Python</a></h3>
+<pre><code class="language-python">import requests
+
+response = requests.post(
+    "http://localhost:3000/v1/chat",
+    headers={
+        "Authorization": "Bearer ares_xxx",
+        "Content-Type": "application/json",
+    },
+    json={
+        "message": "What can you help me with?",
+        "agent_type": "product",
+    },
+)
+
+data = response.json()
+print(data["response"])
+</code></pre>
+<h3 id="javascript"><a class="header" href="#javascript">JavaScript</a></h3>
+<pre><code class="language-javascript">const response = await fetch("http://localhost:3000/v1/chat", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer ares_xxx",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    message: "What can you help me with?",
+    agent_type: "product",
+  }),
+});
+
+const data = await response.json();
+console.log(data.response);
+</code></pre>
+<h3 id="response"><a class="header" href="#response">Response</a></h3>
+<pre><code class="language-json">{
+  "response": "I can help you with product information, recommendations, and questions...",
+  "agent": "product",
+  "context_id": "ctx_a1b2c3d4"
+}
+</code></pre>
+<p>The <code>context_id</code> is returned with every response. Pass it back in subsequent requests to maintain conversation context.</p>
+<h2 id="2-try-streaming"><a class="header" href="#2-try-streaming">2. Try streaming</a></h2>
+<p>For real-time, token-by-token output, use the streaming endpoint. ARES streams responses using Server-Sent Events (SSE).</p>
+<h3 id="curl-1"><a class="header" href="#curl-1">curl</a></h3>
+<pre><code class="language-bash">curl -N -X POST http://localhost:3000/v1/chat/stream \
+  -H "Authorization: Bearer ares_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Explain how LLM routing works",
+    "agent_type": "product"
+  }'
+</code></pre>
+<p>The <code>-N</code> flag disables output buffering so you see tokens as they arrive.</p>
+<h3 id="python-1"><a class="header" href="#python-1">Python</a></h3>
+<pre><code class="language-python">import requests
+
+response = requests.post(
+    "http://localhost:3000/v1/chat/stream",
+    headers={
+        "Authorization": "Bearer ares_xxx",
+        "Content-Type": "application/json",
+    },
+    json={
+        "message": "Explain how LLM routing works",
+        "agent_type": "product",
+    },
+    stream=True,
+)
+
+for line in response.iter_lines():
+    if line:
+        decoded = line.decode("utf-8")
+        if decoded.startswith("data: "):
+            print(decoded[6:], end="", flush=True)
+</code></pre>
+<h3 id="javascript-1"><a class="header" href="#javascript-1">JavaScript</a></h3>
+<pre><code class="language-javascript">const response = await fetch("http://localhost:3000/v1/chat/stream", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer ares_xxx",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    message: "Explain how LLM routing works",
+    agent_type: "product",
+  }),
+});
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+
+  const chunk = decoder.decode(value);
+  const lines = chunk.split("\n");
+
+  for (const line of lines) {
+    if (line.startsWith("data: ")) {
+      process.stdout.write(line.slice(6));
+    }
+  }
+}
+</code></pre>
+<h2 id="3-continue-a-conversation"><a class="header" href="#3-continue-a-conversation">3. Continue a conversation</a></h2>
+<p>Use the <code>context_id</code> from a previous response to maintain conversation history:</p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/v1/chat \
+  -H "Authorization: Bearer ares_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Tell me more about that",
+    "agent_type": "product",
+    "context_id": "ctx_a1b2c3d4"
+  }'
+</code></pre>
+<h2 id="next-steps"><a class="header" href="#next-steps">Next steps</a></h2>
+<ul>
+<li><strong><a href="getting-started/authentication.html">Authentication</a></strong> — Learn about API keys, JWT tokens, and admin authentication.</li>
+<li><strong><a href="getting-started/models.html">Models &amp; Providers</a></strong> — Understand which models are available and how to choose the right one.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="authentication"><a class="header" href="#authentication">Authentication</a></h1>
+<p>ARES supports three authentication methods, each designed for a different use case.</p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Header</th><th>Routes</th><th>Use case</th></tr></thead><tbody>
+<tr><td>API Key</td><td><code>Authorization: Bearer ares_xxx</code></td><td><code>/v1/*</code></td><td>Client applications, backend services</td></tr>
+<tr><td>JWT</td><td><code>Authorization: Bearer &lt;access_token&gt;</code></td><td><code>/api/*</code></td><td>End-user sessions, frontend apps</td></tr>
+<tr><td>Admin Secret</td><td><code>X-Admin-Secret: &lt;secret&gt;</code></td><td><code>/api/admin/*</code></td><td>Internal administration</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="api-key-authentication"><a class="header" href="#api-key-authentication">API Key authentication</a></h2>
+<p>API keys are the simplest way to authenticate with ARES. Each key is scoped to a single tenant and carries that tenant's permissions and rate limits.</p>
+<p><strong>Format:</strong> <code>ares_</code> followed by a random string (e.g., <code>ares_k7Gx9mPqR2vLwN4s</code>).</p>
+<p><strong>How to get one:</strong> API keys are generated during tenant provisioning via the <a href="http://localhost:3000">Dirmacs Admin</a> dashboard, or through the admin API.</p>
+<h3 id="usage"><a class="header" href="#usage">Usage</a></h3>
+<p>Pass the API key in the <code>Authorization</code> header on any <code>/v1/*</code> endpoint:</p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/v1/chat \
+  -H "Authorization: Bearer ares_k7Gx9mPqR2vLwN4s" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello", "agent_type": "product"}'
+</code></pre>
+<pre><code class="language-python">import requests
+
+headers = {
+    "Authorization": "Bearer ares_k7Gx9mPqR2vLwN4s",
+    "Content-Type": "application/json",
+}
+
+response = requests.post(
+    "http://localhost:3000/v1/chat",
+    headers=headers,
+    json={"message": "Hello", "agent_type": "product"},
+)
+</code></pre>
+<pre><code class="language-javascript">const response = await fetch("http://localhost:3000/v1/chat", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer ares_k7Gx9mPqR2vLwN4s",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ message: "Hello", agent_type: "product" }),
+});
+</code></pre>
+<blockquote>
+<p><strong>Security:</strong> Treat API keys like passwords. Do not embed them in client-side code, commit them to version control, or expose them in logs. Use environment variables or a secrets manager.</p>
+</blockquote>
+<hr />
+<h2 id="jwt-authentication"><a class="header" href="#jwt-authentication">JWT authentication</a></h2>
+<p>JWT authentication is designed for end-user sessions. Users register and log in to receive short-lived access tokens and long-lived refresh tokens.</p>
+<ul>
+<li><strong>Access tokens</strong> expire after 15 minutes.</li>
+<li><strong>Refresh tokens</strong> are used to obtain new access tokens without re-entering credentials.</li>
+</ul>
+<h3 id="register-a-new-user"><a class="header" href="#register-a-new-user">Register a new user</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "developer@example.com",
+    "password": "your-secure-password",
+    "name": "Jane Developer"
+  }'
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "message": "Registration successful",
+  "user_id": "usr_abc123"
+}
+</code></pre>
+<h3 id="log-in"><a class="header" href="#log-in">Log in</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "developer@example.com",
+    "password": "your-secure-password"
+  }'
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "refresh_token": "rt_x9Kp2mQvL8wN3rTs...",
+  "expires_in": 900
+}
+</code></pre>
+<h3 id="use-the-access-token"><a class="header" href="#use-the-access-token">Use the access token</a></h3>
+<p>Pass the access token in the <code>Authorization</code> header on any <code>/api/*</code> endpoint:</p>
+<pre><code class="language-bash">curl http://localhost:3000/api/chat \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..." \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello", "agent_type": "product"}'
+</code></pre>
+<h3 id="refresh-an-expired-token"><a class="header" href="#refresh-an-expired-token">Refresh an expired token</a></h3>
+<p>When your access token expires, use the refresh token to get a new one:</p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "rt_x9Kp2mQvL8wN3rTs..."
+  }'
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "expires_in": 900
+}
+</code></pre>
+<h3 id="log-out"><a class="header" href="#log-out">Log out</a></h3>
+<p>Invalidate a refresh token when the user logs out:</p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "rt_x9Kp2mQvL8wN3rTs..."
+  }'
+</code></pre>
+<h3 id="token-management-in-python"><a class="header" href="#token-management-in-python">Token management in Python</a></h3>
+<pre><code class="language-python">import requests
+import time
+
+
+class AresClient:
+    def __init__(self, base_url="http://localhost:3000"):
+        self.base_url = base_url
+        self.access_token = None
+        self.refresh_token = None
+        self.token_expiry = 0
+
+    def login(self, email, password):
+        response = requests.post(
+            f"{self.base_url}/api/auth/login",
+            json={"email": email, "password": password},
+        )
+        data = response.json()
+        self.access_token = data["access_token"]
+        self.refresh_token = data["refresh_token"]
+        self.token_expiry = time.time() + data["expires_in"]
+
+    def _ensure_valid_token(self):
+        if time.time() &gt;= self.token_expiry - 30:  # Refresh 30s before expiry
+            response = requests.post(
+                f"{self.base_url}/api/auth/refresh",
+                json={"refresh_token": self.refresh_token},
+            )
+            data = response.json()
+            self.access_token = data["access_token"]
+            self.token_expiry = time.time() + data["expires_in"]
+
+    def chat(self, message, agent_type="product"):
+        self._ensure_valid_token()
+        response = requests.post(
+            f"{self.base_url}/api/chat",
+            headers={"Authorization": f"Bearer {self.access_token}"},
+            json={"message": message, "agent_type": agent_type},
+        )
+        return response.json()
+</code></pre>
+<h3 id="token-management-in-javascript"><a class="header" href="#token-management-in-javascript">Token management in JavaScript</a></h3>
+<pre><code class="language-javascript">class AresClient {
+  constructor(baseUrl = "http://localhost:3000") {
+    this.baseUrl = baseUrl;
+    this.accessToken = null;
+    this.refreshToken = null;
+    this.tokenExpiry = 0;
+  }
+
+  async login(email, password) {
+    const response = await fetch(`${this.baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await response.json();
+    this.accessToken = data.access_token;
+    this.refreshToken = data.refresh_token;
+    this.tokenExpiry = Date.now() + data.expires_in * 1000;
+  }
+
+  async ensureValidToken() {
+    if (Date.now() &gt;= this.tokenExpiry - 30000) {
+      const response = await fetch(`${this.baseUrl}/api/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: this.refreshToken }),
+      });
+      const data = await response.json();
+      this.accessToken = data.access_token;
+      this.tokenExpiry = Date.now() + data.expires_in * 1000;
+    }
+  }
+
+  async chat(message, agentType = "product") {
+    await this.ensureValidToken();
+    const response = await fetch(`${this.baseUrl}/api/chat`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ message, agent_type: agentType }),
+    });
+    return response.json();
+  }
+}
+</code></pre>
+<hr />
+<h2 id="admin-secret-authentication"><a class="header" href="#admin-secret-authentication">Admin Secret authentication</a></h2>
+<p>The admin secret provides full access to ARES administration endpoints. It is intended for internal tools and the Dirmacs Admin dashboard only.</p>
+<p>Pass the secret in the <code>X-Admin-Secret</code> header:</p>
+<pre><code class="language-bash">curl http://localhost:3000/api/admin/tenants \
+  -H "X-Admin-Secret: your-admin-secret"
+</code></pre>
+<blockquote>
+<p><strong>Warning:</strong> The admin secret grants unrestricted access to all tenants, agents, and configuration. Never expose it outside your infrastructure. It should only be used in server-to-server calls from trusted internal services.</p>
+</blockquote>
+<hr />
+<h2 id="error-responses"><a class="header" href="#error-responses">Error responses</a></h2>
+<p>Authentication failures return standard HTTP status codes:</p>
+<div class="table-wrapper"><table><thead><tr><th>Status</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>401 Unauthorized</code></td><td>Missing or invalid credentials</td></tr>
+<tr><td><code>403 Forbidden</code></td><td>Valid credentials but insufficient permissions</td></tr>
+<tr><td><code>429 Too Many Requests</code></td><td>Rate limit exceeded for this API key or tenant</td></tr>
+</tbody></table>
+</div>
+<p>Example error response:</p>
+<pre><code class="language-json">{
+  "error": "Invalid or expired token",
+  "code": "AUTH_INVALID_TOKEN"
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="models--providers"><a class="header" href="#models--providers">Models &amp; Providers</a></h1>
+<p>ARES routes LLM requests across multiple providers through a single API. You do not call providers directly — ARES selects the appropriate model based on the agent configuration and handles credentials, rate limits, and failover transparently.</p>
+<h2 id="available-models"><a class="header" href="#available-models">Available models</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Tier</th><th>Provider</th><th>Model</th><th>Best for</th></tr></thead><tbody>
+<tr><td><code>fast</code></td><td>Groq</td><td><code>llama-3.1-8b-instant</code></td><td>Quick responses, classification, simple Q&amp;A</td></tr>
+<tr><td><code>balanced</code></td><td>Groq</td><td><code>llama-3.3-70b-versatile</code></td><td>General-purpose tasks, GPT-4 class quality</td></tr>
+<tr><td><code>powerful</code></td><td>Anthropic</td><td><code>claude-sonnet-4-6</code></td><td>Complex reasoning, long-form analysis, nuanced tasks</td></tr>
+<tr><td><code>deepseek</code></td><td>NVIDIA</td><td><code>deepseek-v3.2</code></td><td>Code generation, technical documentation, structured output</td></tr>
+<tr><td><code>local</code></td><td>Ollama</td><td><code>ministral-3:3b</code></td><td>Development, testing, offline use</td></tr>
+</tbody></table>
+</div>
+<h2 id="how-model-selection-works"><a class="header" href="#how-model-selection-works">How model selection works</a></h2>
+<p>You do not specify a model directly in your API calls. Instead, you specify an <code>agent_type</code>, and each agent is configured with a model tier.</p>
+<pre><code class="language-bash"># This request is routed to whichever model the "product" agent is configured to use
+curl -X POST http://localhost:3000/v1/chat \
+  -H "Authorization: Bearer ares_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Compare these two options", "agent_type": "product"}'
+</code></pre>
+<p>The mapping between agents and models is configured by your tenant administrator. A typical setup might look like:</p>
+<div class="table-wrapper"><table><thead><tr><th>Agent</th><th>Model tier</th><th>Rationale</th></tr></thead><tbody>
+<tr><td><code>classifier</code></td><td><code>fast</code></td><td>Needs speed, not depth</td></tr>
+<tr><td><code>product</code></td><td><code>balanced</code></td><td>General-purpose, good quality</td></tr>
+<tr><td><code>analyst</code></td><td><code>powerful</code></td><td>Complex reasoning required</td></tr>
+<tr><td><code>code-review</code></td><td><code>deepseek</code></td><td>Specialized for code tasks</td></tr>
+</tbody></table>
+</div>
+<p>This design means you can upgrade an agent's underlying model without changing any client code.</p>
+<h2 id="provider-architecture"><a class="header" href="#provider-architecture">Provider architecture</a></h2>
+<p>ARES uses a named-provider system. Each provider is configured with its API endpoint, credentials, and rate limits. Models reference their provider by name.</p>
+<pre><code>┌─────────────┐
+│  Your App   │
+│  agent_type │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐     ┌──────────┐
+│    ARES     │────▶│   Groq   │  fast, balanced
+│   Router    │     └──────────┘
+│             │     ┌──────────┐
+│             │────▶│Anthropic │  powerful
+│             │     └──────────┘
+│             │     ┌──────────┐
+│             │────▶│  NVIDIA  │  deepseek
+│             │     └──────────┘
+│             │     ┌──────────┐
+│             │────▶│  Ollama  │  local
+└─────────────┘     └──────────┘
+</code></pre>
+<h3 id="provider-details"><a class="header" href="#provider-details">Provider details</a></h3>
+<p><strong>Groq</strong> — High-throughput inference on custom LPUs. Extremely fast response times. Hosts open-source models (Llama, Mixtral). Free tier available with rate limits.</p>
+<p><strong>Anthropic</strong> — Claude models. Best-in-class for complex reasoning, instruction following, and safety. Requires a paid API key.</p>
+<p><strong>NVIDIA (DeepSeek)</strong> — NVIDIA-hosted DeepSeek models via the NVIDIA AI API. Strong at code generation and structured technical output.</p>
+<p><strong>Ollama</strong> — Self-hosted, local inference. No external API calls. Useful for development, air-gapped environments, or when you need to keep data on-premises.</p>
+<h2 id="rate-limits"><a class="header" href="#rate-limits">Rate limits</a></h2>
+<p>Rate limits are enforced per provider and per tenant. The following are default limits for the Groq free tier:</p>
+<div class="table-wrapper"><table><thead><tr><th>Model tier</th><th>Requests per day</th><th>Tokens per minute</th></tr></thead><tbody>
+<tr><td><code>fast</code> (llama-3.1-8b)</td><td>14,400</td><td>20,000</td></tr>
+<tr><td><code>balanced</code> (llama-3.3-70b)</td><td>6,000</td><td>6,000</td></tr>
+</tbody></table>
+</div>
+<p>Anthropic and NVIDIA rate limits depend on your API plan with those providers. ARES surfaces rate limit errors transparently:</p>
+<pre><code class="language-json">{
+  "error": "Rate limit exceeded for provider 'groq'",
+  "code": "RATE_LIMIT_EXCEEDED",
+  "retry_after": 60
+}
+</code></pre>
+<p>Tenant-level rate limits and quotas are configured separately by your administrator and enforced by ARES regardless of provider limits.</p>
+<h2 id="adding-your-own-providers"><a class="header" href="#adding-your-own-providers">Adding your own providers</a></h2>
+<p>If you are self-hosting ARES, you can add providers in your <code>ares.toml</code> configuration:</p>
+<pre><code class="language-toml">[[providers]]
+name = "my-openai"
+kind = "openai"
+api_base = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[[models]]
+name = "gpt-4o"
+provider = "my-openai"
+model_id = "gpt-4o"
+tier = "powerful"
+</code></pre>
+<p>Any provider that exposes an OpenAI-compatible API (vLLM, Together AI, Fireworks, etc.) can be added using the <code>openai</code> provider kind.</p>
+<h2 id="choosing-the-right-tier"><a class="header" href="#choosing-the-right-tier">Choosing the right tier</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>If you need...</th><th>Use tier</th></tr></thead><tbody>
+<tr><td>Fastest possible response</td><td><code>fast</code></td></tr>
+<tr><td>Good quality at reasonable speed</td><td><code>balanced</code></td></tr>
+<tr><td>Maximum reasoning capability</td><td><code>powerful</code></td></tr>
+<tr><td>Code generation or technical tasks</td><td><code>deepseek</code></td></tr>
+<tr><td>Offline or local development</td><td><code>local</code></td></tr>
+</tbody></table>
+</div>
+<p>When in doubt, start with <code>balanced</code>. It provides the best trade-off between quality, speed, and cost for most use cases.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="chat--conversations"><a class="header" href="#chat--conversations">Chat &amp; Conversations</a></h1>
+<p>Send messages to ARES agents and manage multi-turn conversations.</p>
+<hr />
+<h2 id="send-a-message"><a class="header" href="#send-a-message">Send a message</a></h2>
+<pre><code>POST /api/chat
+</code></pre>
+<p>Send a message to an agent and receive a response. ARES routes the message to the appropriate agent based on the <code>agent_type</code> parameter, or uses the default router agent if none is specified.</p>
+<h3 id="authentication-1"><a class="header" href="#authentication-1">Authentication</a></h3>
+<p>Requires a JWT access token: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<h3 id="request-body"><a class="header" href="#request-body">Request body</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>message</code></td><td>string</td><td>Yes</td><td>The user's message or prompt.</td></tr>
+<tr><td><code>agent_type</code></td><td>string</td><td>No</td><td>Which agent handles the request (e.g., <code>"product"</code>, <code>"research"</code>, <code>"router"</code>). Defaults to the router agent.</td></tr>
+<tr><td><code>context_id</code></td><td>string</td><td>No</td><td>Conversation context ID. Pass this value back on subsequent requests to continue a multi-turn conversation.</td></tr>
+</tbody></table>
+</div>
+<h3 id="response-1"><a class="header" href="#response-1">Response</a></h3>
+<pre><code class="language-json">{
+  "response": "Here's what I found about your question...",
+  "agent": "product",
+  "context_id": "ctx_a1b2c3d4",
+  "sources": null
+}
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>response</code></td><td>string</td><td>The agent's response text.</td></tr>
+<tr><td><code>agent</code></td><td>string</td><td>The agent that handled the request.</td></tr>
+<tr><td><code>context_id</code></td><td>string</td><td>Context identifier. Pass this back to continue the conversation.</td></tr>
+<tr><td><code>sources</code></td><td>array|null</td><td>Source references, if the agent performed retrieval. Otherwise <code>null</code>.</td></tr>
+</tbody></table>
+</div>
+<h3 id="examples"><a class="header" href="#examples">Examples</a></h3>
+<h4 id="curl-2"><a class="header" href="#curl-2">curl</a></h4>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d '{
+    "message": "What pricing plans do you offer?",
+    "agent_type": "product"
+  }'
+</code></pre>
+<h4 id="python-2"><a class="header" href="#python-2">Python</a></h4>
+<pre><code class="language-python">import requests
+
+response = requests.post(
+    "http://localhost:3000/api/chat",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOi..."
+    },
+    json={
+        "message": "What pricing plans do you offer?",
+        "agent_type": "product"
+    }
+)
+
+data = response.json()
+print(data["response"])
+
+# Continue the conversation using the returned context_id
+follow_up = requests.post(
+    "http://localhost:3000/api/chat",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOi..."
+    },
+    json={
+        "message": "How does the Pro plan compare to Enterprise?",
+        "context_id": data["context_id"]
+    }
+)
+</code></pre>
+<h4 id="javascript-2"><a class="header" href="#javascript-2">JavaScript</a></h4>
+<pre><code class="language-javascript">const response = await fetch("http://localhost:3000/api/chat", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer eyJhbGciOi..."
+  },
+  body: JSON.stringify({
+    message: "What pricing plans do you offer?",
+    agent_type: "product"
+  })
+});
+
+const data = await response.json();
+console.log(data.response);
+
+// Continue the conversation
+const followUp = await fetch("http://localhost:3000/api/chat", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer eyJhbGciOi..."
+  },
+  body: JSON.stringify({
+    message: "How does the Pro plan compare to Enterprise?",
+    context_id: data.context_id
+  })
+});
+</code></pre>
+<hr />
+<h2 id="stream-a-response"><a class="header" href="#stream-a-response">Stream a response</a></h2>
+<pre><code>POST /api/chat/stream
+</code></pre>
+<p>Send a message and receive the response as a stream of Server-Sent Events (SSE). Each event contains a text chunk. This is the recommended approach for user-facing applications where you want to display the response as it is generated.</p>
+<p>The request body is identical to <code>POST /api/chat</code>.</p>
+<h3 id="authentication-2"><a class="header" href="#authentication-2">Authentication</a></h3>
+<p>Requires a JWT access token: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<h3 id="response-format"><a class="header" href="#response-format">Response format</a></h3>
+<p>The response uses the <code>text/event-stream</code> content type. Each SSE event contains a chunk of the agent's response:</p>
+<pre><code>data: Here's
+data:  what I
+data:  found about
+data:  your question...
+</code></pre>
+<p>Collect all chunks to form the complete response. The connection closes automatically when the response is complete.</p>
+<h3 id="examples-1"><a class="header" href="#examples-1">Examples</a></h3>
+<h4 id="curl-3"><a class="header" href="#curl-3">curl</a></h4>
+<pre><code class="language-bash">curl -N -X POST http://localhost:3000/api/chat/stream \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "message": "Explain quantum computing",
+    "agent_type": "research"
+  }'
+</code></pre>
+<h4 id="python-3"><a class="header" href="#python-3">Python</a></h4>
+<pre><code class="language-python">import requests
+
+response = requests.post(
+    "http://localhost:3000/api/chat/stream",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOi...",
+        "Accept": "text/event-stream"
+    },
+    json={
+        "message": "Explain quantum computing",
+        "agent_type": "research"
+    },
+    stream=True
+)
+
+for line in response.iter_lines():
+    if line:
+        decoded = line.decode("utf-8")
+        if decoded.startswith("data: "):
+            chunk = decoded[6:]  # Strip "data: " prefix
+            print(chunk, end="", flush=True)
+</code></pre>
+<h4 id="javascript-3"><a class="header" href="#javascript-3">JavaScript</a></h4>
+<pre><code class="language-javascript">const response = await fetch("http://localhost:3000/api/chat/stream", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer eyJhbGciOi...",
+    "Accept": "text/event-stream"
+  },
+  body: JSON.stringify({
+    message: "Explain quantum computing",
+    agent_type: "research"
+  })
+});
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+
+  const text = decoder.decode(value, { stream: true });
+  for (const line of text.split("\n")) {
+    if (line.startsWith("data: ")) {
+      const chunk = line.slice(6);
+      process.stdout.write(chunk); // Node.js
+      // Or append to DOM in browsers
+    }
+  }
+}
+</code></pre>
+<hr />
+<h2 id="conversations"><a class="header" href="#conversations">Conversations</a></h2>
+<p>Manage stored conversations and their message history.</p>
+<h3 id="list-conversations"><a class="header" href="#list-conversations">List conversations</a></h3>
+<pre><code>GET /api/conversations
+</code></pre>
+<p>Returns all conversations for the authenticated user.</p>
+<p><strong>Authentication:</strong> JWT required.</p>
+<pre><code class="language-bash">curl http://localhost:3000/api/conversations \
+  -H "Authorization: Bearer eyJhbGciOi..."
+</code></pre>
+<h3 id="get-a-conversation"><a class="header" href="#get-a-conversation">Get a conversation</a></h3>
+<pre><code>GET /api/conversations/{id}
+</code></pre>
+<p>Returns a single conversation along with its full message history.</p>
+<p><strong>Authentication:</strong> JWT required.</p>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>In</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>id</code></td><td>string</td><td>path</td><td>The conversation ID</td></tr>
+</tbody></table>
+</div>
+<pre><code class="language-bash">curl http://localhost:3000/api/conversations/conv_abc123 \
+  -H "Authorization: Bearer eyJhbGciOi..."
+</code></pre>
+<h3 id="update-a-conversation"><a class="header" href="#update-a-conversation">Update a conversation</a></h3>
+<pre><code>PUT /api/conversations/{id}
+</code></pre>
+<p>Update the title of a conversation.</p>
+<p><strong>Authentication:</strong> JWT required.</p>
+<p><strong>Request body:</strong></p>
+<pre><code class="language-json">{
+  "title": "Pricing discussion"
+}
+</code></pre>
+<pre><code class="language-bash">curl -X PUT http://localhost:3000/api/conversations/conv_abc123 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d '{"title": "Pricing discussion"}'
+</code></pre>
+<h3 id="delete-a-conversation"><a class="header" href="#delete-a-conversation">Delete a conversation</a></h3>
+<pre><code>DELETE /api/conversations/{id}
+</code></pre>
+<p>Permanently delete a conversation and all its messages.</p>
+<p><strong>Authentication:</strong> JWT required.</p>
+<pre><code class="language-bash">curl -X DELETE http://localhost:3000/api/conversations/conv_abc123 \
+  -H "Authorization: Bearer eyJhbGciOi..."
+</code></pre>
+<hr />
+<h2 id="user-memory"><a class="header" href="#user-memory">User memory</a></h2>
+<pre><code>GET /api/memory
+</code></pre>
+<p>Retrieve memory and preferences that ARES has learned from your conversations. This includes user preferences, context, and behavioral patterns the system has observed.</p>
+<p><strong>Authentication:</strong> JWT required.</p>
+<pre><code class="language-bash">curl http://localhost:3000/api/memory \
+  -H "Authorization: Bearer eyJhbGciOi..."
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="agents"><a class="header" href="#agents">Agents</a></h1>
+<p>ARES agents are autonomous units that process requests using a configured LLM model, a system prompt, and a set of tools. Each agent is specialized for a particular domain or task — routing, research, product knowledge, risk analysis, and more.</p>
+<p>Agents are defined by four properties:</p>
+<ul>
+<li><strong>Model</strong> — The LLM that powers the agent (e.g., <code>llama-3.3-70b</code>, <code>claude-3-5-sonnet</code>, <code>deepseek-r1</code>).</li>
+<li><strong>System prompt</strong> — Instructions that shape the agent's behavior, personality, and domain knowledge.</li>
+<li><strong>Tools</strong> — Capabilities the agent can invoke during processing (e.g., <code>calculator</code>, <code>web_search</code>, <code>code_interpreter</code>).</li>
+<li><strong>Name</strong> — A unique identifier used to route requests to this agent.</li>
+</ul>
+<p>Agents can be platform-provided (available to all users) or user-defined (private, created via API or TOON config).</p>
+<hr />
+<h2 id="list-all-agents"><a class="header" href="#list-all-agents">List all agents</a></h2>
+<pre><code>GET /api/agents
+</code></pre>
+<p>Returns all available agents on the platform. This endpoint does not require authentication.</p>
+<h3 id="response-2"><a class="header" href="#response-2">Response</a></h3>
+<pre><code class="language-json">[
+  {
+    "name": "router",
+    "description": "Routes incoming requests to the most appropriate specialist agent.",
+    "model": "llama-3.3-70b-versatile",
+    "tools": []
+  },
+  {
+    "name": "research",
+    "description": "Conducts deep multi-step research with source synthesis.",
+    "model": "deepseek-r1-distill-llama-70b",
+    "tools": ["web_search", "calculator"]
+  },
+  {
+    "name": "product",
+    "description": "Answers product-related questions with detailed knowledge.",
+    "model": "llama-3.3-70b-versatile",
+    "tools": []
+  }
+]
+</code></pre>
+<h3 id="examples-2"><a class="header" href="#examples-2">Examples</a></h3>
+<h4 id="curl-4"><a class="header" href="#curl-4">curl</a></h4>
+<pre><code class="language-bash">curl http://localhost:3000/api/agents
+</code></pre>
+<h4 id="python-4"><a class="header" href="#python-4">Python</a></h4>
+<pre><code class="language-python">import requests
+
+response = requests.get("http://localhost:3000/api/agents")
+agents = response.json()
+
+for agent in agents:
+    print(f"{agent['name']}: {agent['description']}")
+</code></pre>
+<h4 id="javascript-4"><a class="header" href="#javascript-4">JavaScript</a></h4>
+<pre><code class="language-javascript">const response = await fetch("http://localhost:3000/api/agents");
+const agents = await response.json();
+
+agents.forEach(agent =&gt; {
+  console.log(`${agent.name}: ${agent.description}`);
+});
+</code></pre>
+<hr />
+<h2 id="user-agents"><a class="header" href="#user-agents">User agents</a></h2>
+<p>Create and manage your own custom agents. User agents are private to your account and can be configured with any available model, custom system prompts, and tool selections.</p>
+<p>All user agent endpoints require JWT authentication: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<h3 id="list-your-agents"><a class="header" href="#list-your-agents">List your agents</a></h3>
+<pre><code>GET /api/user/agents
+</code></pre>
+<p>Returns all custom agents owned by the authenticated user.</p>
+<pre><code class="language-bash">curl http://localhost:3000/api/user/agents \
+  -H "Authorization: Bearer eyJhbGciOi..."
+</code></pre>
+<h3 id="create-an-agent"><a class="header" href="#create-an-agent">Create an agent</a></h3>
+<pre><code>POST /api/user/agents
+</code></pre>
+<p>Create a new custom agent.</p>
+<h4 id="request-body-1"><a class="header" href="#request-body-1">Request body</a></h4>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>name</code></td><td>string</td><td>Yes</td><td>Unique agent name (alphanumeric, hyphens).</td></tr>
+<tr><td><code>model</code></td><td>string</td><td>Yes</td><td>LLM model identifier.</td></tr>
+<tr><td><code>system_prompt</code></td><td>string</td><td>Yes</td><td>Instructions that define agent behavior.</td></tr>
+<tr><td><code>tools</code></td><td>string[]</td><td>No</td><td>List of tool names the agent can use.</td></tr>
+</tbody></table>
+</div>
+<h4 id="example"><a class="header" href="#example">Example</a></h4>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/user/agents \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d '{
+    "name": "code-reviewer",
+    "model": "llama-3.3-70b-versatile",
+    "system_prompt": "You are an expert code reviewer. Analyze code for bugs, security issues, and style problems. Be concise and actionable.",
+    "tools": ["calculator"]
+  }'
+</code></pre>
+<pre><code class="language-python">import requests
+
+requests.post(
+    "http://localhost:3000/api/user/agents",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOi..."
+    },
+    json={
+        "name": "code-reviewer",
+        "model": "llama-3.3-70b-versatile",
+        "system_prompt": "You are an expert code reviewer. Analyze code for bugs, security issues, and style problems. Be concise and actionable.",
+        "tools": ["calculator"]
+    }
+)
+</code></pre>
+<h3 id="get-agent-details"><a class="header" href="#get-agent-details">Get agent details</a></h3>
+<pre><code>GET /api/user/agents/{name}
+</code></pre>
+<p>Retrieve the full configuration of a specific user agent.</p>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>In</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>name</code></td><td>string</td><td>path</td><td>The agent's name</td></tr>
+</tbody></table>
+</div>
+<pre><code class="language-bash">curl http://localhost:3000/api/user/agents/code-reviewer \
+  -H "Authorization: Bearer eyJhbGciOi..."
+</code></pre>
+<h3 id="update-an-agent"><a class="header" href="#update-an-agent">Update an agent</a></h3>
+<pre><code>PUT /api/user/agents/{name}
+</code></pre>
+<p>Update an existing agent's configuration. You can modify the model, system prompt, or tools.</p>
+<pre><code class="language-bash">curl -X PUT http://localhost:3000/api/user/agents/code-reviewer \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d '{
+    "model": "deepseek-r1-distill-llama-70b",
+    "system_prompt": "You are a senior code reviewer specializing in Rust and TypeScript.",
+    "tools": ["calculator", "web_search"]
+  }'
+</code></pre>
+<h3 id="delete-an-agent"><a class="header" href="#delete-an-agent">Delete an agent</a></h3>
+<pre><code>DELETE /api/user/agents/{name}
+</code></pre>
+<p>Permanently delete a user agent.</p>
+<pre><code class="language-bash">curl -X DELETE http://localhost:3000/api/user/agents/code-reviewer \
+  -H "Authorization: Bearer eyJhbGciOi..."
+</code></pre>
+<hr />
+<h2 id="toon-importexport"><a class="header" href="#toon-importexport">TOON import/export</a></h2>
+<p>TOON is ARES's agent configuration format. You can import and export agent configs as TOON to share agent definitions, back up configurations, or migrate agents between environments.</p>
+<h3 id="import-a-toon-config"><a class="header" href="#import-a-toon-config">Import a TOON config</a></h3>
+<pre><code>POST /api/user/agents/import
+</code></pre>
+<p>Import an agent definition from a TOON configuration file.</p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/user/agents/import \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d @agent-config.toon
+</code></pre>
+<h3 id="export-as-toon"><a class="header" href="#export-as-toon">Export as TOON</a></h3>
+<pre><code>GET /api/user/agents/{name}/export
+</code></pre>
+<p>Export an agent's configuration in TOON format. Useful for sharing agent definitions or version-controlling them alongside your codebase.</p>
+<pre><code class="language-bash">curl http://localhost:3000/api/user/agents/code-reviewer/export \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -o code-reviewer.toon
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="workflows"><a class="header" href="#workflows">Workflows</a></h1>
+<p>Workflows are multi-agent orchestration pipelines. A workflow defines an entry point agent (typically a router) that analyzes the incoming query and delegates to specialist agents in sequence. The result is a coordinated, multi-step response that leverages the strengths of different agents.</p>
+<p><strong>How workflows operate:</strong></p>
+<ol>
+<li>The query enters through an <strong>entry agent</strong> (usually a router).</li>
+<li>The router analyzes intent and selects the most appropriate specialist agent.</li>
+<li>The specialist processes the query, optionally delegating further.</li>
+<li>Each step is recorded in the <strong>reasoning path</strong>, providing full transparency into the decision chain.</li>
+<li>The final response is returned along with metadata about the execution.</li>
+</ol>
+<hr />
+<h2 id="list-workflows"><a class="header" href="#list-workflows">List workflows</a></h2>
+<pre><code>GET /api/workflows
+</code></pre>
+<p>Returns the names of all available workflows.</p>
+<h3 id="authentication-3"><a class="header" href="#authentication-3">Authentication</a></h3>
+<p>Requires a JWT access token: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<h3 id="response-3"><a class="header" href="#response-3">Response</a></h3>
+<pre><code class="language-json">["default", "research", "support"]
+</code></pre>
+<h3 id="example-1"><a class="header" href="#example-1">Example</a></h3>
+<pre><code class="language-bash">curl http://localhost:3000/api/workflows \
+  -H "Authorization: Bearer eyJhbGciOi..."
+</code></pre>
+<hr />
+<h2 id="execute-a-workflow"><a class="header" href="#execute-a-workflow">Execute a workflow</a></h2>
+<pre><code>POST /api/workflows/{workflow_name}
+</code></pre>
+<p>Execute a named workflow. The query is routed through the workflow's agent chain, and the final synthesized response is returned along with execution metadata.</p>
+<h3 id="authentication-4"><a class="header" href="#authentication-4">Authentication</a></h3>
+<p>Requires a JWT access token: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<h3 id="path-parameters"><a class="header" href="#path-parameters">Path parameters</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>workflow_name</code></td><td>string</td><td>Name of the workflow to execute</td></tr>
+</tbody></table>
+</div>
+<h3 id="request-body-2"><a class="header" href="#request-body-2">Request body</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>query</code></td><td>string</td><td>Yes</td><td>The input query or task for the workflow.</td></tr>
+<tr><td><code>context</code></td><td>object</td><td>No</td><td>Additional context passed to agents during execution.</td></tr>
+</tbody></table>
+</div>
+<h3 id="response-4"><a class="header" href="#response-4">Response</a></h3>
+<pre><code class="language-json">{
+  "final_response": "Based on our analysis, the Pro plan at $49/month offers the best value for your use case. It includes 100K API calls, priority support, and access to all models. The Enterprise plan adds dedicated infrastructure and SLA guarantees, which may be worth considering if you expect to exceed 500K calls/month.",
+  "steps_executed": 3,
+  "agents_used": ["router", "sales", "product"],
+  "reasoning_path": [
+    {
+      "agent": "router",
+      "action": "Classified as pricing inquiry. Routing to sales agent."
+    },
+    {
+      "agent": "sales",
+      "action": "Retrieved pricing tiers. Consulting product agent for feature comparison."
+    },
+    {
+      "agent": "product",
+      "action": "Compared Pro vs Enterprise feature sets. Synthesized final recommendation."
+    }
+  ]
+}
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>final_response</code></td><td>string</td><td>The synthesized response from the workflow.</td></tr>
+<tr><td><code>steps_executed</code></td><td>integer</td><td>Total number of agent steps in the execution.</td></tr>
+<tr><td><code>agents_used</code></td><td>string[]</td><td>Ordered list of agents that participated.</td></tr>
+<tr><td><code>reasoning_path</code></td><td>array</td><td>Step-by-step trace of each agent's reasoning and actions.</td></tr>
+</tbody></table>
+</div>
+<h3 id="examples-3"><a class="header" href="#examples-3">Examples</a></h3>
+<h4 id="curl-5"><a class="header" href="#curl-5">curl</a></h4>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/workflows/default \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d '{
+    "query": "Compare your Pro and Enterprise pricing plans for a mid-size SaaS company",
+    "context": {
+      "company_size": "50-200 employees",
+      "expected_volume": "200K calls/month"
+    }
+  }'
+</code></pre>
+<h4 id="python-5"><a class="header" href="#python-5">Python</a></h4>
+<pre><code class="language-python">import requests
+
+response = requests.post(
+    "http://localhost:3000/api/workflows/default",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOi..."
+    },
+    json={
+        "query": "Compare your Pro and Enterprise pricing plans for a mid-size SaaS company",
+        "context": {
+            "company_size": "50-200 employees",
+            "expected_volume": "200K calls/month"
+        }
+    }
+)
+
+result = response.json()
+print(result["final_response"])
+
+# Inspect the reasoning chain
+for step in result["reasoning_path"]:
+    print(f"  [{step['agent']}] {step['action']}")
+</code></pre>
+<h4 id="javascript-5"><a class="header" href="#javascript-5">JavaScript</a></h4>
+<pre><code class="language-javascript">const response = await fetch(
+  "http://localhost:3000/api/workflows/default",
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer eyJhbGciOi..."
+    },
+    body: JSON.stringify({
+      query: "Compare your Pro and Enterprise pricing plans for a mid-size SaaS company",
+      context: {
+        company_size: "50-200 employees",
+        expected_volume: "200K calls/month"
+      }
+    })
+  }
+);
+
+const result = await response.json();
+console.log(result.final_response);
+
+// Inspect the reasoning chain
+result.reasoning_path.forEach(step =&gt; {
+  console.log(`  [${step.agent}] ${step.action}`);
+});
+</code></pre>
+<hr />
+<h2 id="workflow-behavior"><a class="header" href="#workflow-behavior">Workflow behavior</a></h2>
+<p><strong>Agent selection.</strong> The entry agent examines the query and routes to the specialist best suited to handle it. If a specialist determines it needs input from another agent, it can delegate further, creating a multi-hop chain.</p>
+<p><strong>Context propagation.</strong> The optional <code>context</code> object is available to every agent in the chain. Use it to pass structured information (user tier, session metadata, domain-specific parameters) that agents can reference during processing.</p>
+<p><strong>Determinism.</strong> Workflow routing is driven by the entry agent's LLM reasoning, so the same query may route differently depending on phrasing. The <code>reasoning_path</code> in the response provides full visibility into routing decisions.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="research"><a class="header" href="#research">Research</a></h1>
+<p>The Research API performs deep, multi-step research on a topic using parallel sub-agents. Unlike a single chat request, a research query spawns multiple agents that independently explore facets of the question, synthesize findings, and produce a comprehensive result with source attribution.</p>
+<hr />
+<h2 id="execute-a-research-query"><a class="header" href="#execute-a-research-query">Execute a research query</a></h2>
+<pre><code>POST /api/research
+</code></pre>
+<p>Submit a research query for deep, multi-step investigation.</p>
+<h3 id="authentication-5"><a class="header" href="#authentication-5">Authentication</a></h3>
+<p>Requires a JWT access token: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<h3 id="request-body-3"><a class="header" href="#request-body-3">Request body</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>query</code></td><td>string</td><td>Yes</td><td>--</td><td>The research question or topic.</td></tr>
+<tr><td><code>depth</code></td><td>integer</td><td>No</td><td>3</td><td>How many levels deep the research goes. Higher values explore sub-topics more thoroughly.</td></tr>
+<tr><td><code>max_iterations</code></td><td>integer</td><td>No</td><td>5</td><td>Maximum total agent calls. Acts as a cost/time ceiling.</td></tr>
+</tbody></table>
+</div>
+<p><strong>Understanding <code>depth</code>:</strong> At depth 1, the research agent answers the query directly. At depth 2, it identifies sub-questions, spawns agents to answer each, then synthesizes. At depth 3+, sub-agents can spawn their own sub-agents, creating a tree of investigation.</p>
+<p><strong>Understanding <code>max_iterations</code>:</strong> This is a hard cap on total agent invocations across all depth levels. If the research tree would require more calls than <code>max_iterations</code>, it stops expanding and synthesizes what it has. Use this to control cost and response time.</p>
+<h3 id="response-5"><a class="header" href="#response-5">Response</a></h3>
+<pre><code class="language-json">{
+  "findings": "## Market Analysis: Edge Computing in Healthcare\n\nEdge computing adoption in healthcare is accelerating, driven by three primary factors...\n\n### Key Findings\n1. **Latency requirements** — Real-time patient monitoring demands sub-10ms response times...\n2. **Data sovereignty** — HIPAA compliance increasingly favors on-premise processing...\n3. **Cost dynamics** — Edge deployment reduces cloud egress costs by 40-60% for imaging workloads...\n\n### Sources\n- Gartner Healthcare IT Report 2025\n- IEEE Edge Computing Survey\n- HHS HIPAA Guidance Update",
+  "sources": [
+    "Gartner Healthcare IT Report 2025",
+    "IEEE Edge Computing Survey",
+    "HHS HIPAA Guidance Update"
+  ],
+  "duration_ms": 8432
+}
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>findings</code></td><td>string</td><td>The synthesized research output, typically in Markdown.</td></tr>
+<tr><td><code>sources</code></td><td>string[]</td><td>References and sources discovered during research.</td></tr>
+<tr><td><code>duration_ms</code></td><td>integer</td><td>Total time taken for the research in milliseconds.</td></tr>
+</tbody></table>
+</div>
+<h3 id="examples-4"><a class="header" href="#examples-4">Examples</a></h3>
+<h4 id="curl-6"><a class="header" href="#curl-6">curl</a></h4>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/research \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d '{
+    "query": "What are the current trends in edge computing for healthcare?",
+    "depth": 3,
+    "max_iterations": 5
+  }'
+</code></pre>
+<h4 id="python-6"><a class="header" href="#python-6">Python</a></h4>
+<pre><code class="language-python">import requests
+
+response = requests.post(
+    "http://localhost:3000/api/research",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOi..."
+    },
+    json={
+        "query": "What are the current trends in edge computing for healthcare?",
+        "depth": 3,
+        "max_iterations": 5
+    }
+)
+
+result = response.json()
+print(result["findings"])
+print(f"\nCompleted in {result['duration_ms']}ms")
+print(f"Sources: {', '.join(result['sources'])}")
+</code></pre>
+<h4 id="javascript-6"><a class="header" href="#javascript-6">JavaScript</a></h4>
+<pre><code class="language-javascript">const response = await fetch("http://localhost:3000/api/research", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer eyJhbGciOi..."
+  },
+  body: JSON.stringify({
+    query: "What are the current trends in edge computing for healthcare?",
+    depth: 3,
+    max_iterations: 5
+  })
+});
+
+const result = await response.json();
+console.log(result.findings);
+console.log(`\nCompleted in ${result.duration_ms}ms`);
+console.log(`Sources: ${result.sources.join(", ")}`);
+</code></pre>
+<hr />
+<h2 id="tuning-research-parameters"><a class="header" href="#tuning-research-parameters">Tuning research parameters</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Recommended <code>depth</code></th><th>Recommended <code>max_iterations</code></th></tr></thead><tbody>
+<tr><td>Quick factual lookup</td><td>1</td><td>2</td></tr>
+<tr><td>Standard research question</td><td>2</td><td>5</td></tr>
+<tr><td>Deep competitive analysis</td><td>3</td><td>10</td></tr>
+<tr><td>Exhaustive literature review</td><td>4+</td><td>15+</td></tr>
+</tbody></table>
+</div>
+<p>Higher depth and iteration values produce more comprehensive results but take longer and consume more API quota. For most use cases, the defaults (<code>depth: 3</code>, <code>max_iterations: 5</code>) provide a good balance of thoroughness and speed.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="rag-retrieval-augmented-generation"><a class="header" href="#rag-retrieval-augmented-generation">RAG (Retrieval-Augmented Generation)</a></h1>
+<p>The RAG API lets you ingest documents, search them using multiple retrieval strategies, and manage document collections. RAG powers knowledge-grounded responses by retrieving relevant context from your documents before generating answers.</p>
+<blockquote>
+<p><strong>Feature flag:</strong> The RAG API requires ARES to be built with the <code>ares-vector</code> feature. If your deployment does not include this feature, these endpoints will return <code>404</code>.</p>
+</blockquote>
+<hr />
+<h2 id="ingest-documents"><a class="header" href="#ingest-documents">Ingest documents</a></h2>
+<pre><code>POST /api/rag/ingest
+</code></pre>
+<p>Ingest content into a named collection. The content is automatically chunked and indexed for retrieval.</p>
+<h3 id="authentication-6"><a class="header" href="#authentication-6">Authentication</a></h3>
+<p>Requires a JWT access token: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<h3 id="request-body-4"><a class="header" href="#request-body-4">Request body</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>collection</code></td><td>string</td><td>Yes</td><td>--</td><td>Name of the collection to ingest into. Created automatically if it doesn't exist.</td></tr>
+<tr><td><code>content</code></td><td>string</td><td>Yes</td><td>--</td><td>The text content to ingest.</td></tr>
+<tr><td><code>metadata</code></td><td>object</td><td>No</td><td><code>{}</code></td><td>Arbitrary key-value metadata attached to the document.</td></tr>
+<tr><td><code>chunking_strategy</code></td><td>string</td><td>No</td><td><code>"word"</code></td><td>How to split the content into chunks. Options: <code>"word"</code>, <code>"sentence"</code>, <code>"paragraph"</code>.</td></tr>
+</tbody></table>
+</div>
+<h3 id="response-6"><a class="header" href="#response-6">Response</a></h3>
+<pre><code class="language-json">{
+  "chunks_created": 5,
+  "document_ids": [
+    "doc_a1b2c3d4",
+    "doc_e5f6g7h8",
+    "doc_i9j0k1l2",
+    "doc_m3n4o5p6",
+    "doc_q7r8s9t0"
+  ],
+  "collection": "docs"
+}
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>chunks_created</code></td><td>integer</td><td>Number of chunks produced from the content.</td></tr>
+<tr><td><code>document_ids</code></td><td>string[]</td><td>IDs assigned to each chunk.</td></tr>
+<tr><td><code>collection</code></td><td>string</td><td>The collection the content was ingested into.</td></tr>
+</tbody></table>
+</div>
+<h3 id="examples-5"><a class="header" href="#examples-5">Examples</a></h3>
+<h4 id="curl-7"><a class="header" href="#curl-7">curl</a></h4>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/rag/ingest \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d '{
+    "collection": "product-docs",
+    "content": "ARES is a multi-agent AI platform that orchestrates specialized agents to handle complex queries. It supports multiple LLM providers including Groq, Anthropic, and NVIDIA...",
+    "metadata": {
+      "source": "documentation",
+      "version": "2.0",
+      "author": "engineering"
+    },
+    "chunking_strategy": "paragraph"
+  }'
+</code></pre>
+<h4 id="python-7"><a class="header" href="#python-7">Python</a></h4>
+<pre><code class="language-python">import requests
+
+response = requests.post(
+    "http://localhost:3000/api/rag/ingest",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOi..."
+    },
+    json={
+        "collection": "product-docs",
+        "content": "ARES is a multi-agent AI platform...",
+        "metadata": {"source": "documentation", "version": "2.0"},
+        "chunking_strategy": "paragraph"
+    }
+)
+
+result = response.json()
+print(f"Created {result['chunks_created']} chunks in '{result['collection']}'")
+</code></pre>
+<h4 id="javascript-7"><a class="header" href="#javascript-7">JavaScript</a></h4>
+<pre><code class="language-javascript">const response = await fetch("http://localhost:3000/api/rag/ingest", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer eyJhbGciOi..."
+  },
+  body: JSON.stringify({
+    collection: "product-docs",
+    content: "ARES is a multi-agent AI platform...",
+    metadata: { source: "documentation", version: "2.0" },
+    chunking_strategy: "paragraph"
+  })
+});
+
+const result = await response.json();
+console.log(`Created ${result.chunks_created} chunks in '${result.collection}'`);
+</code></pre>
+<hr />
+<h2 id="search-documents"><a class="header" href="#search-documents">Search documents</a></h2>
+<pre><code>POST /api/rag/search
+</code></pre>
+<p>Search a collection using one of several retrieval strategies. Returns the most relevant document chunks.</p>
+<h3 id="authentication-7"><a class="header" href="#authentication-7">Authentication</a></h3>
+<p>Requires a JWT access token: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<h3 id="request-body-5"><a class="header" href="#request-body-5">Request body</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>collection</code></td><td>string</td><td>Yes</td><td>--</td><td>Collection to search.</td></tr>
+<tr><td><code>query</code></td><td>string</td><td>Yes</td><td>--</td><td>The search query.</td></tr>
+<tr><td><code>strategy</code></td><td>string</td><td>No</td><td><code>"hybrid"</code></td><td>Retrieval strategy (see below).</td></tr>
+<tr><td><code>top_k</code></td><td>integer</td><td>No</td><td>5</td><td>Maximum number of results to return.</td></tr>
+<tr><td><code>rerank</code></td><td>boolean</td><td>No</td><td><code>false</code></td><td>Whether to rerank results for improved relevance ordering.</td></tr>
+</tbody></table>
+</div>
+<h3 id="search-strategies"><a class="header" href="#search-strategies">Search strategies</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Strategy</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>semantic</code></td><td>Vector similarity search. Best for conceptual or meaning-based queries.</td></tr>
+<tr><td><code>bm25</code></td><td>Classic keyword-based ranking (BM25 algorithm). Best for exact term matching.</td></tr>
+<tr><td><code>fuzzy</code></td><td>Tolerates typos and approximate matches. Useful for user-facing search with imprecise input.</td></tr>
+<tr><td><code>hybrid</code></td><td>Combines semantic and keyword search, then merges results. Best overall performance for most use cases.</td></tr>
+</tbody></table>
+</div>
+<h3 id="response-7"><a class="header" href="#response-7">Response</a></h3>
+<p>The response contains an array of matching document chunks, each with its content, relevance score, and metadata.</p>
+<h3 id="examples-6"><a class="header" href="#examples-6">Examples</a></h3>
+<h4 id="curl-8"><a class="header" href="#curl-8">curl</a></h4>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/rag/search \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d '{
+    "collection": "product-docs",
+    "query": "how does agent routing work",
+    "strategy": "hybrid",
+    "top_k": 5,
+    "rerank": true
+  }'
+</code></pre>
+<h4 id="python-8"><a class="header" href="#python-8">Python</a></h4>
+<pre><code class="language-python">import requests
+
+response = requests.post(
+    "http://localhost:3000/api/rag/search",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOi..."
+    },
+    json={
+        "collection": "product-docs",
+        "query": "how does agent routing work",
+        "strategy": "hybrid",
+        "top_k": 5,
+        "rerank": True
+    }
+)
+
+results = response.json()
+for result in results:
+    print(result)
+</code></pre>
+<h4 id="javascript-8"><a class="header" href="#javascript-8">JavaScript</a></h4>
+<pre><code class="language-javascript">const response = await fetch("http://localhost:3000/api/rag/search", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer eyJhbGciOi..."
+  },
+  body: JSON.stringify({
+    collection: "product-docs",
+    query: "how does agent routing work",
+    strategy: "hybrid",
+    top_k: 5,
+    rerank: true
+  })
+});
+
+const results = await response.json();
+results.forEach(result =&gt; console.log(result));
+</code></pre>
+<hr />
+<h2 id="list-collections"><a class="header" href="#list-collections">List collections</a></h2>
+<pre><code>GET /api/rag/collections
+</code></pre>
+<p>Returns all document collections for the authenticated user.</p>
+<h3 id="authentication-8"><a class="header" href="#authentication-8">Authentication</a></h3>
+<p>Requires a JWT access token: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<pre><code class="language-bash">curl http://localhost:3000/api/rag/collections \
+  -H "Authorization: Bearer eyJhbGciOi..."
+</code></pre>
+<hr />
+<h2 id="delete-a-collection"><a class="header" href="#delete-a-collection">Delete a collection</a></h2>
+<pre><code>DELETE /api/rag/collection
+</code></pre>
+<p>Permanently delete a collection and all its indexed documents.</p>
+<h3 id="authentication-9"><a class="header" href="#authentication-9">Authentication</a></h3>
+<p>Requires a JWT access token: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<h3 id="request-body-6"><a class="header" href="#request-body-6">Request body</a></h3>
+<pre><code class="language-json">{
+  "collection": "product-docs"
+}
+</code></pre>
+<h3 id="example-2"><a class="header" href="#example-2">Example</a></h3>
+<pre><code class="language-bash">curl -X DELETE http://localhost:3000/api/rag/collection \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d '{"collection": "product-docs"}'
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="streaming"><a class="header" href="#streaming">Streaming</a></h1>
+<p>ARES supports real-time streaming responses via Server-Sent Events (SSE). Instead of waiting for the full response to be generated, you receive text chunks as they are produced. This enables responsive UIs that display text as it appears.</p>
+<hr />
+<h2 id="endpoint"><a class="header" href="#endpoint">Endpoint</a></h2>
+<pre><code>POST /api/chat/stream
+</code></pre>
+<p>JWT authentication: <code>Authorization: Bearer &lt;jwt_access_token&gt;</code></p>
+<pre><code>POST /v1/chat/stream
+</code></pre>
+<p>API key authentication: <code>Authorization: Bearer ares_xxx</code></p>
+<p>Both endpoints accept the same request body as <a href="api/./chat.html"><code>POST /api/chat</code></a> and return the same SSE format.</p>
+<hr />
+<h2 id="sse-format"><a class="header" href="#sse-format">SSE format</a></h2>
+<p>The response uses <code>Content-Type: text/event-stream</code>. Each event contains a <code>data:</code> field with a text chunk:</p>
+<pre><code>data: The
+data:  answer
+data:  to your
+data:  question is
+data:  as follows...
+</code></pre>
+<p>Each <code>data:</code> line represents one chunk of the response. Concatenate all chunks in order to reconstruct the complete response. The server closes the connection when generation is complete.</p>
+<hr />
+<h2 id="examples-7"><a class="header" href="#examples-7">Examples</a></h2>
+<h3 id="curl-9"><a class="header" href="#curl-9">curl</a></h3>
+<p>The <code>-N</code> flag disables output buffering so chunks appear immediately:</p>
+<pre><code class="language-bash">curl -N -X POST http://localhost:3000/api/chat/stream \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "message": "Explain how neural networks learn",
+    "agent_type": "research"
+  }'
+</code></pre>
+<h3 id="python-9"><a class="header" href="#python-9">Python</a></h3>
+<p>Using the <code>requests</code> library with <code>stream=True</code>:</p>
+<pre><code class="language-python">import requests
+
+response = requests.post(
+    "http://localhost:3000/api/chat/stream",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOi...",
+        "Accept": "text/event-stream"
+    },
+    json={
+        "message": "Explain how neural networks learn",
+        "agent_type": "research"
+    },
+    stream=True
+)
+
+full_response = []
+
+for line in response.iter_lines():
+    if line:
+        decoded = line.decode("utf-8")
+        if decoded.startswith("data: "):
+            chunk = decoded[6:]
+            print(chunk, end="", flush=True)
+            full_response.append(chunk)
+
+complete_text = "".join(full_response)
+</code></pre>
+<p>For production use, consider using <code>httpx</code> with async streaming:</p>
+<pre><code class="language-python">import httpx
+import asyncio
+
+async def stream_chat(message: str, token: str) -&gt; str:
+    chunks = []
+
+    async with httpx.AsyncClient() as client:
+        async with client.stream(
+            "POST",
+            "http://localhost:3000/api/chat/stream",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+                "Accept": "text/event-stream"
+            },
+            json={"message": message}
+        ) as response:
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    chunk = line[6:]
+                    print(chunk, end="", flush=True)
+                    chunks.append(chunk)
+
+    return "".join(chunks)
+
+result = asyncio.run(stream_chat("Explain how neural networks learn", "eyJhbGciOi..."))
+</code></pre>
+<h3 id="javascript-browser"><a class="header" href="#javascript-browser">JavaScript (Browser)</a></h3>
+<p>Using the Fetch API with <code>ReadableStream</code>:</p>
+<pre><code class="language-javascript">async function streamChat(message, token) {
+  const response = await fetch("http://localhost:3000/api/chat/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+      "Accept": "text/event-stream"
+    },
+    body: JSON.stringify({
+      message: message,
+      agent_type: "research"
+    })
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let fullResponse = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const text = decoder.decode(value, { stream: true });
+    for (const line of text.split("\n")) {
+      if (line.startsWith("data: ")) {
+        const chunk = line.slice(6);
+        fullResponse += chunk;
+
+        // Update your UI here
+        document.getElementById("output").textContent = fullResponse;
+      }
+    }
+  }
+
+  return fullResponse;
+}
+</code></pre>
+<h3 id="javascript-nodejs"><a class="header" href="#javascript-nodejs">JavaScript (Node.js)</a></h3>
+<pre><code class="language-javascript">async function streamChat(message, token) {
+  const response = await fetch("http://localhost:3000/api/chat/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+      "Accept": "text/event-stream"
+    },
+    body: JSON.stringify({ message })
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let fullResponse = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const text = decoder.decode(value, { stream: true });
+    for (const line of text.split("\n")) {
+      if (line.startsWith("data: ")) {
+        const chunk = line.slice(6);
+        fullResponse += chunk;
+        process.stdout.write(chunk);
+      }
+    }
+  }
+
+  return fullResponse;
+}
+</code></pre>
+<h3 id="go"><a class="header" href="#go">Go</a></h3>
+<pre><code class="language-go">package main
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+)
+
+func streamChat(message, token string) (string, error) {
+	body, _ := json.Marshal(map[string]string{
+		"message":    message,
+		"agent_type": "research",
+	})
+
+	req, err := http.NewRequest("POST",
+		"http://localhost:3000/api/chat/stream",
+		bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var fullResponse strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			chunk := line[6:]
+			fmt.Print(chunk)
+			fullResponse.WriteString(chunk)
+		}
+	}
+
+	return fullResponse.String(), scanner.Err()
+}
+
+func main() {
+	result, err := streamChat("Explain how neural networks learn", "eyJhbGciOi...")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("\n\nFull response length: %d characters\n", len(result))
+}
+</code></pre>
+<hr />
+<h2 id="error-handling"><a class="header" href="#error-handling">Error handling</a></h2>
+<p>If the request is invalid or authentication fails, the server returns a standard HTTP error response (not SSE). Always check the response status before attempting to read the stream:</p>
+<pre><code class="language-python">response = requests.post(url, headers=headers, json=body, stream=True)
+
+if response.status_code != 200:
+    print(f"Error {response.status_code}: {response.text}")
+else:
+    for line in response.iter_lines():
+        # process SSE events
+</code></pre>
+<pre><code class="language-javascript">const response = await fetch(url, { method: "POST", headers, body });
+
+if (!response.ok) {
+  throw new Error(`Error ${response.status}: ${await response.text()}`);
+}
+
+// proceed with stream reading
+</code></pre>
+<hr />
+<h2 id="best-practices"><a class="header" href="#best-practices">Best practices</a></h2>
+<ul>
+<li><strong>Always set <code>Accept: text/event-stream</code></strong> to signal that you expect a streaming response.</li>
+<li><strong>Disable client-side buffering</strong> where possible (e.g., <code>-N</code> in curl, <code>stream=True</code> in Python requests).</li>
+<li><strong>Handle connection drops gracefully.</strong> The stream may close unexpectedly due to network issues. Implement retry logic for production applications.</li>
+<li><strong>Set reasonable timeouts.</strong> Long research queries may stream for 30+ seconds. Configure your HTTP client timeout accordingly.</li>
+<li><strong>Concatenate chunks for the final result.</strong> Individual chunks may split mid-word. Only process the complete response for downstream use.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="v1-client-api"><a class="header" href="#v1-client-api">V1 Client API</a></h1>
+<p>The V1 API is the primary interface for enterprise clients integrating ARES into their applications. All endpoints are scoped to the authenticated tenant — you only see your own agents, runs, and usage.</p>
+<p><strong>Base URL:</strong> <code>http://localhost:3000</code></p>
+<h2 id="authentication-10"><a class="header" href="#authentication-10">Authentication</a></h2>
+<p>Every request to <code>/v1/*</code> must include your API key in the <code>Authorization</code> header:</p>
+<pre><code>Authorization: Bearer ares_xxx
+</code></pre>
+<p>API keys are issued during tenant provisioning. You can create additional keys via the API or request them from your platform administrator.</p>
+<hr />
+<h2 id="agents-1"><a class="header" href="#agents-1">Agents</a></h2>
+<h3 id="list-agents"><a class="header" href="#list-agents">List Agents</a></h3>
+<pre><code>GET /v1/agents?page=1&amp;per_page=20
+</code></pre>
+<p>Returns a paginated list of agents configured for your tenant.</p>
+<p><strong>Query Parameters:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>page</code></td><td>integer</td><td><code>1</code></td><td>Page number</td></tr>
+<tr><td><code>per_page</code></td><td>integer</td><td><code>20</code></td><td>Results per page</td></tr>
+</tbody></table>
+</div>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "agents": [
+    {
+      "id": "uuid",
+      "name": "risk-analyzer",
+      "agent_type": "classifier",
+      "status": "active",
+      "config": { "model": "llama-3.3-70b", "tools": ["calculator"] },
+      "created_at": "2026-03-01T00:00:00Z",
+      "last_run": "2026-03-13T14:22:00Z",
+      "total_runs": 1547,
+      "success_rate": 0.982
+    }
+  ],
+  "total": 4,
+  "page": 1,
+  "per_page": 20
+}
+</code></pre>
+<h3 id="get-agent-details-1"><a class="header" href="#get-agent-details-1">Get Agent Details</a></h3>
+<pre><code>GET /v1/agents/{name}
+</code></pre>
+<p>Returns full details for a single agent.</p>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "id": "uuid",
+  "name": "risk-analyzer",
+  "agent_type": "classifier",
+  "status": "active",
+  "config": {
+    "model": "llama-3.3-70b",
+    "system_prompt": "You are a risk analysis agent...",
+    "tools": ["calculator"],
+    "max_tokens": 2048
+  },
+  "created_at": "2026-03-01T00:00:00Z",
+  "last_run": "2026-03-13T14:22:00Z",
+  "total_runs": 1547,
+  "success_rate": 0.982
+}
+</code></pre>
+<h3 id="run-an-agent"><a class="header" href="#run-an-agent">Run an Agent</a></h3>
+<pre><code>POST /v1/agents/{name}/run
+</code></pre>
+<p>Execute an agent with the provided input. This is the core endpoint for triggering agent work.</p>
+<p><strong>Request Body:</strong></p>
+<pre><code class="language-json">{
+  "input": {
+    "message": "Analyze the risk profile for transaction TX-9921",
+    "context": {
+      "amount": 15000,
+      "currency": "USD",
+      "merchant_category": "electronics"
+    }
+  }
+}
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "id": "run-uuid",
+  "agent_id": "agent-uuid",
+  "status": "completed",
+  "input": { "message": "Analyze the risk profile..." },
+  "output": {
+    "risk_score": 0.73,
+    "risk_level": "medium",
+    "reasoning": "Elevated amount for merchant category..."
+  },
+  "error": null,
+  "started_at": "2026-03-13T14:22:00Z",
+  "finished_at": "2026-03-13T14:22:01Z",
+  "duration_ms": 1243,
+  "tokens_used": 847
+}
+</code></pre>
+<p>If the agent fails, <code>status</code> will be <code>"failed"</code> and <code>error</code> will contain a description.</p>
+<h3 id="list-agent-runs"><a class="header" href="#list-agent-runs">List Agent Runs</a></h3>
+<pre><code>GET /v1/agents/{name}/runs?page=1&amp;per_page=20
+</code></pre>
+<p>Returns the run history for a specific agent, newest first.</p>
+<hr />
+<h2 id="chat"><a class="header" href="#chat">Chat</a></h2>
+<h3 id="send-a-chat-message"><a class="header" href="#send-a-chat-message">Send a Chat Message</a></h3>
+<pre><code>POST /v1/chat
+</code></pre>
+<p>Send a message to a model or agent and receive a complete response.</p>
+<p><strong>Request Body:</strong></p>
+<pre><code class="language-json">{
+  "messages": [
+    { "role": "user", "content": "Summarize Q1 revenue trends." }
+  ],
+  "model": "llama-3.3-70b",
+  "agent_type": "analyst"
+}
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "id": "msg-uuid",
+  "content": "Based on the data, Q1 revenue showed...",
+  "model": "llama-3.3-70b",
+  "tokens_used": 312,
+  "finish_reason": "stop"
+}
+</code></pre>
+<h3 id="stream-a-chat-response"><a class="header" href="#stream-a-chat-response">Stream a Chat Response</a></h3>
+<pre><code>POST /v1/chat/stream
+</code></pre>
+<p>Same request body as <code>/v1/chat</code>, but returns a Server-Sent Events (SSE) stream.</p>
+<pre><code>data: {"delta": "Based on", "finish_reason": null}
+data: {"delta": " the data,", "finish_reason": null}
+data: {"delta": " Q1 revenue", "finish_reason": null}
+...
+data: {"delta": "", "finish_reason": "stop", "tokens_used": 312}
+</code></pre>
+<hr />
+<h2 id="usage-1"><a class="header" href="#usage-1">Usage</a></h2>
+<h3 id="get-usage-summary"><a class="header" href="#get-usage-summary">Get Usage Summary</a></h3>
+<pre><code>GET /v1/usage
+</code></pre>
+<p>Returns your tenant's usage for the current billing period.</p>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "period_start": "2026-03-01T00:00:00Z",
+  "period_end": "2026-03-31T23:59:59Z",
+  "total_runs": 4821,
+  "total_tokens": 2847193,
+  "total_api_calls": 5290,
+  "quota_runs": 100000,
+  "quota_tokens": 10000000,
+  "daily_usage": [
+    { "date": "2026-03-13", "runs": 312, "tokens": 184920, "api_calls": 340 },
+    { "date": "2026-03-12", "runs": 287, "tokens": 171003, "api_calls": 315 }
+  ]
+}
+</code></pre>
+<hr />
+<h2 id="api-keys"><a class="header" href="#api-keys">API Keys</a></h2>
+<h3 id="list-api-keys"><a class="header" href="#list-api-keys">List API Keys</a></h3>
+<pre><code>GET /v1/api-keys
+</code></pre>
+<p>Returns all API keys for your tenant. The full key secret is never returned after creation.</p>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "keys": [
+    {
+      "id": "key-uuid",
+      "name": "android-production",
+      "prefix": "ares_a1b2",
+      "created_at": "2026-03-01T00:00:00Z",
+      "expires_at": "2027-03-01T00:00:00Z",
+      "last_used": "2026-03-13T14:00:00Z"
+    }
+  ]
+}
+</code></pre>
+<h3 id="create-api-key"><a class="header" href="#create-api-key">Create API Key</a></h3>
+<pre><code>POST /v1/api-keys
+</code></pre>
+<p><strong>Request Body:</strong></p>
+<pre><code class="language-json">{
+  "name": "mobile-app-key",
+  "expires_in_days": 365
+}
+</code></pre>
+<p><code>expires_in_days</code> is optional. If omitted, the key does not expire.</p>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "key": "key-uuid",
+  "secret": "ares_x7k9m2p4q8r1s5t3..."
+}
+</code></pre>
+<blockquote>
+<p><strong>Important:</strong> The <code>secret</code> field is only returned once at creation time. Store it securely — it cannot be retrieved again.</p>
+</blockquote>
+<h3 id="revoke-api-key"><a class="header" href="#revoke-api-key">Revoke API Key</a></h3>
+<pre><code>DELETE /v1/api-keys/{id}
+</code></pre>
+<p>Immediately invalidates the key. Returns <code>204 No Content</code> on success.</p>
+<hr />
+<h2 id="examples-8"><a class="header" href="#examples-8">Examples</a></h2>
+<h3 id="run-an-agent-curl"><a class="header" href="#run-an-agent-curl">Run an Agent (curl)</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/v1/agents/risk-analyzer/run \
+  -H "Authorization: Bearer ares_x7k9m2p4q8r1s5t3" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "message": "Evaluate this transaction",
+      "context": {"amount": 15000, "currency": "USD"}
+    }
+  }'
+</code></pre>
+<h3 id="run-an-agent-python"><a class="header" href="#run-an-agent-python">Run an Agent (Python)</a></h3>
+<pre><code class="language-python">import requests
+
+API_KEY = "ares_x7k9m2p4q8r1s5t3"
+BASE_URL = "http://localhost:3000"
+
+headers = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json",
+}
+
+# Run an agent
+response = requests.post(
+    f"{BASE_URL}/v1/agents/risk-analyzer/run",
+    headers=headers,
+    json={
+        "input": {
+            "message": "Evaluate this transaction",
+            "context": {"amount": 15000, "currency": "USD"},
+        }
+    },
+)
+
+result = response.json()
+print(f"Status: {result['status']}")
+print(f"Output: {result['output']}")
+print(f"Duration: {result['duration_ms']}ms")
+print(f"Tokens: {result['tokens_used']}")
+</code></pre>
+<h3 id="check-usage-curl"><a class="header" href="#check-usage-curl">Check Usage (curl)</a></h3>
+<pre><code class="language-bash">curl http://localhost:3000/v1/usage \
+  -H "Authorization: Bearer ares_x7k9m2p4q8r1s5t3"
+</code></pre>
+<h3 id="check-usage-python"><a class="header" href="#check-usage-python">Check Usage (Python)</a></h3>
+<pre><code class="language-python">response = requests.get(f"{BASE_URL}/v1/usage", headers=headers)
+usage = response.json()
+
+print(f"Runs this month: {usage['total_runs']} / {usage['quota_runs']}")
+print(f"Tokens this month: {usage['total_tokens']} / {usage['quota_tokens']}")
+</code></pre>
+<h3 id="chat-with-streaming-python"><a class="header" href="#chat-with-streaming-python">Chat with Streaming (Python)</a></h3>
+<pre><code class="language-python">import requests
+import json
+
+response = requests.post(
+    f"{BASE_URL}/v1/chat/stream",
+    headers=headers,
+    json={
+        "messages": [{"role": "user", "content": "Explain quantum computing."}],
+        "model": "llama-3.3-70b",
+    },
+    stream=True,
+)
+
+for line in response.iter_lines():
+    if line:
+        text = line.decode("utf-8")
+        if text.startswith("data: "):
+            data = json.loads(text[6:])
+            print(data.get("delta", ""), end="", flush=True)
+</code></pre>
+<h3 id="chat-with-streaming-javascript"><a class="header" href="#chat-with-streaming-javascript">Chat with Streaming (JavaScript)</a></h3>
+<pre><code class="language-javascript">const response = await fetch("http://localhost:3000/v1/chat/stream", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer ares_x7k9m2p4q8r1s5t3",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    messages: [{ role: "user", content: "Explain quantum computing." }],
+    model: "llama-3.3-70b",
+  }),
+});
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+
+  const text = decoder.decode(value);
+  for (const line of text.split("\n")) {
+    if (line.startsWith("data: ")) {
+      const data = JSON.parse(line.slice(6));
+      process.stdout.write(data.delta || "");
+    }
+  }
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="admin-api"><a class="header" href="#admin-api">Admin API</a></h1>
+<p>The Admin API provides full platform management capabilities for ARES operators. Use it to provision tenants, manage agents, monitor usage, and operate the platform.</p>
+<p><strong>Base URL:</strong> <code>http://localhost:3000</code></p>
+<h2 id="authentication-11"><a class="header" href="#authentication-11">Authentication</a></h2>
+<p>Every request to <code>/api/admin/*</code> must include the admin secret:</p>
+<pre><code>X-Admin-Secret: &lt;secret&gt;
+</code></pre>
+<p>This secret is set in your <code>ares.toml</code> configuration. Guard it carefully — it grants full platform access.</p>
+<hr />
+<h2 id="tenants"><a class="header" href="#tenants">Tenants</a></h2>
+<h3 id="create-tenant"><a class="header" href="#create-tenant">Create Tenant</a></h3>
+<pre><code>POST /api/admin/tenants
+</code></pre>
+<p><strong>Request Body:</strong></p>
+<pre><code class="language-json">{
+  "name": "acme-corp",
+  "tier": "pro"
+}
+</code></pre>
+<p>Valid tiers: <code>free</code>, <code>dev</code>, <code>pro</code>, <code>enterprise</code>.</p>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "id": "tenant-uuid",
+  "name": "acme-corp",
+  "tier": "pro",
+  "created_at": "2026-03-13T00:00:00Z"
+}
+</code></pre>
+<h3 id="list-tenants"><a class="header" href="#list-tenants">List Tenants</a></h3>
+<pre><code>GET /api/admin/tenants
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "tenants": [
+    {
+      "id": "tenant-uuid",
+      "name": "acme-corp",
+      "tier": "pro",
+      "agent_count": 4,
+      "created_at": "2026-03-13T00:00:00Z"
+    }
+  ]
+}
+</code></pre>
+<h3 id="get-tenant-details"><a class="header" href="#get-tenant-details">Get Tenant Details</a></h3>
+<pre><code>GET /api/admin/tenants/{id}
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "id": "tenant-uuid",
+  "name": "acme-corp",
+  "tier": "pro",
+  "agent_count": 4,
+  "api_key_count": 2,
+  "total_runs": 12849,
+  "total_tokens": 7291034,
+  "created_at": "2026-03-13T00:00:00Z"
+}
+</code></pre>
+<h3 id="update-tenant-tier"><a class="header" href="#update-tenant-tier">Update Tenant Tier</a></h3>
+<pre><code>PUT /api/admin/tenants/{id}/quota
+</code></pre>
+<p><strong>Request Body:</strong></p>
+<pre><code class="language-json">{
+  "tier": "enterprise"
+}
+</code></pre>
+<p><strong>Response:</strong> Updated tenant object.</p>
+<hr />
+<h2 id="provisioning"><a class="header" href="#provisioning">Provisioning</a></h2>
+<h3 id="provision-a-client"><a class="header" href="#provision-a-client">Provision a Client</a></h3>
+<pre><code>POST /api/admin/provision-client
+</code></pre>
+<p>This is the recommended way to onboard a new enterprise client. It atomically creates a tenant, clones the appropriate agent templates, and generates an API key — all in a single transaction. If any step fails, everything is rolled back.</p>
+<p><strong>Request Body:</strong></p>
+<pre><code class="language-json">{
+  "name": "acme-corp",
+  "tier": "pro",
+  "product_type": "kasino",
+  "api_key_name": "production"
+}
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>name</code></td><td>string</td><td>Yes</td><td>Unique tenant name (lowercase, alphanumeric + hyphens)</td></tr>
+<tr><td><code>tier</code></td><td>string</td><td>Yes</td><td>One of: <code>free</code>, <code>dev</code>, <code>pro</code>, <code>enterprise</code></td></tr>
+<tr><td><code>product_type</code></td><td>string</td><td>Yes</td><td>Template set to clone: <code>generic</code>, <code>kasino</code>, <code>ehb</code></td></tr>
+<tr><td><code>api_key_name</code></td><td>string</td><td>Yes</td><td>Label for the initial API key</td></tr>
+</tbody></table>
+</div>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "tenant_id": "tenant-uuid",
+  "tenant_name": "acme-corp",
+  "tier": "pro",
+  "product_type": "kasino",
+  "api_key_id": "key-uuid",
+  "api_key_prefix": "ares_a1b2",
+  "raw_api_key": "ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5",
+  "agents_created": [
+    "kasino-classifier",
+    "kasino-risk",
+    "kasino-transaction",
+    "kasino-report"
+  ]
+}
+</code></pre>
+<blockquote>
+<p><strong>Important:</strong> The <code>raw_api_key</code> is only returned once. Store it securely and deliver it to the client through a secure channel.</p>
+</blockquote>
+<p><strong>curl Example:</strong></p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/admin/provision-client \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "acme-corp",
+    "tier": "pro",
+    "product_type": "kasino",
+    "api_key_name": "production"
+  }'
+</code></pre>
+<hr />
+<h2 id="api-keys-1"><a class="header" href="#api-keys-1">API Keys</a></h2>
+<h3 id="create-api-key-for-tenant"><a class="header" href="#create-api-key-for-tenant">Create API Key for Tenant</a></h3>
+<pre><code>POST /api/admin/tenants/{id}/api-keys
+</code></pre>
+<p><strong>Request Body:</strong></p>
+<pre><code class="language-json">{
+  "name": "staging-key"
+}
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "id": "key-uuid",
+  "prefix": "ares_x7k9",
+  "raw_key": "ares_x7k9m2p4q8r1s5t3...",
+  "created_at": "2026-03-13T00:00:00Z"
+}
+</code></pre>
+<h3 id="list-api-keys-for-tenant"><a class="header" href="#list-api-keys-for-tenant">List API Keys for Tenant</a></h3>
+<pre><code>GET /api/admin/tenants/{id}/api-keys
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "keys": [
+    {
+      "id": "key-uuid",
+      "name": "production",
+      "prefix": "ares_a1b2",
+      "created_at": "2026-03-13T00:00:00Z",
+      "last_used": "2026-03-13T14:00:00Z"
+    }
+  ]
+}
+</code></pre>
+<hr />
+<h2 id="tenant-agents"><a class="header" href="#tenant-agents">Tenant Agents</a></h2>
+<h3 id="list-tenant-agents"><a class="header" href="#list-tenant-agents">List Tenant Agents</a></h3>
+<pre><code>GET /api/admin/tenants/{id}/agents
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "agents": [
+    {
+      "id": "agent-uuid",
+      "name": "kasino-classifier",
+      "agent_type": "classifier",
+      "status": "active",
+      "model": "llama-3.3-70b",
+      "total_runs": 2841,
+      "success_rate": 0.991
+    }
+  ]
+}
+</code></pre>
+<h3 id="create-tenant-agent"><a class="header" href="#create-tenant-agent">Create Tenant Agent</a></h3>
+<pre><code>POST /api/admin/tenants/{id}/agents
+</code></pre>
+<p><strong>Request Body:</strong></p>
+<pre><code class="language-json">{
+  "name": "custom-analyzer",
+  "agent_type": "analyzer",
+  "config": {
+    "model": "llama-3.3-70b",
+    "system_prompt": "You are a financial data analyzer...",
+    "tools": ["calculator"],
+    "max_tokens": 4096
+  }
+}
+</code></pre>
+<h3 id="update-tenant-agent"><a class="header" href="#update-tenant-agent">Update Tenant Agent</a></h3>
+<pre><code>PUT /api/admin/tenants/{id}/agents/{name}
+</code></pre>
+<p><strong>Request Body:</strong> Same structure as create. Fields provided will be updated.</p>
+<h3 id="delete-tenant-agent"><a class="header" href="#delete-tenant-agent">Delete Tenant Agent</a></h3>
+<pre><code>DELETE /api/admin/tenants/{id}/agents/{name}
+</code></pre>
+<p>Returns <code>204 No Content</code> on success.</p>
+<hr />
+<h2 id="templates-and-models"><a class="header" href="#templates-and-models">Templates and Models</a></h2>
+<h3 id="list-agent-templates"><a class="header" href="#list-agent-templates">List Agent Templates</a></h3>
+<pre><code>GET /api/admin/agent-templates?product_type=kasino
+</code></pre>
+<p>Returns the pre-configured agent templates available for a given product type. These are cloned during provisioning.</p>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "templates": [
+    {
+      "name": "kasino-classifier",
+      "agent_type": "classifier",
+      "product_type": "kasino",
+      "config": {
+        "model": "llama-3.3-70b",
+        "system_prompt": "You are a transaction classifier...",
+        "tools": []
+      }
+    }
+  ]
+}
+</code></pre>
+<h3 id="list-available-models"><a class="header" href="#list-available-models">List Available Models</a></h3>
+<pre><code>GET /api/admin/models
+</code></pre>
+<p>Returns all models configured across all providers.</p>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "models": [
+    {
+      "id": "llama-3.3-70b",
+      "provider": "groq",
+      "context_length": 131072,
+      "supports_tools": true
+    },
+    {
+      "id": "deepseek-r1",
+      "provider": "nvidia-deepseek",
+      "context_length": 65536,
+      "supports_tools": false
+    },
+    {
+      "id": "claude-3.5-sonnet",
+      "provider": "anthropic",
+      "context_length": 200000,
+      "supports_tools": true
+    }
+  ]
+}
+</code></pre>
+<hr />
+<h2 id="usage-and-analytics"><a class="header" href="#usage-and-analytics">Usage and Analytics</a></h2>
+<h3 id="tenant-usage-summary"><a class="header" href="#tenant-usage-summary">Tenant Usage Summary</a></h3>
+<pre><code>GET /api/admin/tenants/{id}/usage
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "tenant_id": "tenant-uuid",
+  "tenant_name": "acme-corp",
+  "tier": "pro",
+  "period_start": "2026-03-01T00:00:00Z",
+  "period_end": "2026-03-31T23:59:59Z",
+  "total_runs": 4821,
+  "total_tokens": 2847193,
+  "quota_runs": 100000,
+  "quota_tokens": 10000000
+}
+</code></pre>
+<h3 id="daily-usage-breakdown"><a class="header" href="#daily-usage-breakdown">Daily Usage Breakdown</a></h3>
+<pre><code>GET /api/admin/tenants/{id}/usage/daily?days=30
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "daily": [
+    { "date": "2026-03-13", "runs": 312, "tokens": 184920 },
+    { "date": "2026-03-12", "runs": 287, "tokens": 171003 }
+  ]
+}
+</code></pre>
+<h3 id="agent-run-history"><a class="header" href="#agent-run-history">Agent Run History</a></h3>
+<pre><code>GET /api/admin/tenants/{id}/agents/{name}/runs?limit=50
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "runs": [
+    {
+      "id": "run-uuid",
+      "status": "completed",
+      "started_at": "2026-03-13T14:22:00Z",
+      "duration_ms": 1243,
+      "tokens_used": 847
+    }
+  ]
+}
+</code></pre>
+<h3 id="agent-stats"><a class="header" href="#agent-stats">Agent Stats</a></h3>
+<pre><code>GET /api/admin/tenants/{id}/agents/{name}/stats
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "agent_name": "kasino-classifier",
+  "total_runs": 2841,
+  "successful_runs": 2815,
+  "failed_runs": 26,
+  "success_rate": 0.991,
+  "avg_duration_ms": 1102,
+  "avg_tokens": 723,
+  "last_run": "2026-03-13T14:22:00Z"
+}
+</code></pre>
+<h3 id="cross-tenant-agent-list"><a class="header" href="#cross-tenant-agent-list">Cross-Tenant Agent List</a></h3>
+<pre><code>GET /api/admin/agents
+</code></pre>
+<p>Returns agents across all tenants. Useful for platform-wide visibility.</p>
+<h3 id="platform-stats"><a class="header" href="#platform-stats">Platform Stats</a></h3>
+<pre><code>GET /api/admin/stats
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "total_tenants": 12,
+  "total_agents": 47,
+  "total_runs_today": 3291,
+  "total_tokens_today": 1948271,
+  "active_alerts": 2
+}
+</code></pre>
+<hr />
+<h2 id="alerts-and-audit"><a class="header" href="#alerts-and-audit">Alerts and Audit</a></h2>
+<h3 id="list-alerts"><a class="header" href="#list-alerts">List Alerts</a></h3>
+<pre><code>GET /api/admin/alerts?severity=critical&amp;resolved=false&amp;limit=100
+</code></pre>
+<p><strong>Query Parameters:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>severity</code></td><td>string</td><td>all</td><td>Filter by: <code>info</code>, <code>warning</code>, <code>critical</code></td></tr>
+<tr><td><code>resolved</code></td><td>boolean</td><td>all</td><td>Filter by resolution status</td></tr>
+<tr><td><code>limit</code></td><td>integer</td><td><code>100</code></td><td>Maximum results to return</td></tr>
+</tbody></table>
+</div>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "alerts": [
+    {
+      "id": "alert-uuid",
+      "severity": "critical",
+      "message": "Tenant acme-corp approaching token quota (92%)",
+      "tenant_id": "tenant-uuid",
+      "created_at": "2026-03-13T10:00:00Z",
+      "resolved": false
+    }
+  ]
+}
+</code></pre>
+<h3 id="resolve-alert"><a class="header" href="#resolve-alert">Resolve Alert</a></h3>
+<pre><code>POST /api/admin/alerts/{id}/resolve
+</code></pre>
+<p>Returns <code>200 OK</code> with the updated alert object.</p>
+<h3 id="audit-log"><a class="header" href="#audit-log">Audit Log</a></h3>
+<pre><code>GET /api/admin/audit-log?limit=50
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "entries": [
+    {
+      "id": "entry-uuid",
+      "action": "tenant.created",
+      "actor": "admin",
+      "details": { "tenant_name": "acme-corp", "tier": "pro" },
+      "timestamp": "2026-03-13T00:00:00Z"
+    },
+    {
+      "id": "entry-uuid",
+      "action": "agent.deleted",
+      "actor": "admin",
+      "details": { "tenant_id": "...", "agent_name": "old-agent" },
+      "timestamp": "2026-03-12T23:00:00Z"
+    }
+  ]
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="deployment-api"><a class="header" href="#deployment-api">Deployment API</a></h1>
+<p>The Deployment API allows you to trigger, monitor, and inspect deployments of ARES platform services. Deployments run server-side on the VPS and stream build output for observability.</p>
+<p><strong>Base URL:</strong> <code>http://localhost:3000</code></p>
+<h2 id="authentication-12"><a class="header" href="#authentication-12">Authentication</a></h2>
+<p>All deployment endpoints require the admin secret:</p>
+<pre><code>X-Admin-Secret: &lt;secret&gt;
+</code></pre>
+<hr />
+<h2 id="trigger-a-deployment"><a class="header" href="#trigger-a-deployment">Trigger a Deployment</a></h2>
+<pre><code>POST /api/admin/deploy
+</code></pre>
+<p>Starts a deployment for the specified target service. The deployment runs asynchronously — you receive a deployment ID immediately and poll for completion.</p>
+<p><strong>Request Body:</strong></p>
+<pre><code class="language-json">{
+  "target": "ares"
+}
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Target</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>ares</code></td><td>ARES backend — pulls latest code, rebuilds, and restarts</td></tr>
+<tr><td><code>admin</code></td><td>dirmacs-admin dashboard — rebuilds Leptos frontend</td></tr>
+<tr><td><code>eruka</code></td><td>Eruka backend — pulls, rebuilds, and restarts</td></tr>
+</tbody></table>
+</div>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "id": "deploy-uuid",
+  "status": "running",
+  "message": "Deployment started for ares"
+}
+</code></pre>
+<p><strong>curl Example:</strong></p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/admin/deploy \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"target": "ares"}'
+</code></pre>
+<hr />
+<h2 id="poll-deployment-status"><a class="header" href="#poll-deployment-status">Poll Deployment Status</a></h2>
+<pre><code>GET /api/admin/deploy/{id}
+</code></pre>
+<p>Returns the current status of a deployment. Poll this endpoint until <code>status</code> is no longer <code>"running"</code>.</p>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "id": "deploy-uuid",
+  "target": "ares",
+  "status": "success",
+  "started_at": "2026-03-13T14:00:00Z",
+  "finished_at": "2026-03-13T14:03:42Z",
+  "output": "Pulling latest changes...\nCompiling ares-server v0.1.0...\nFinished release target(s) in 3m 41s\nRestarting ares.service...\nService started successfully."
+}
+</code></pre>
+<p><strong>Status Values:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Status</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>running</code></td><td>Deployment is in progress</td></tr>
+<tr><td><code>success</code></td><td>Deployment completed successfully</td></tr>
+<tr><td><code>failed</code></td><td>Deployment failed — check <code>output</code> for details</td></tr>
+</tbody></table>
+</div>
+<h3 id="polling-pattern"><a class="header" href="#polling-pattern">Polling Pattern</a></h3>
+<p>The recommended approach is to trigger a deployment, then poll every 3 seconds until it completes:</p>
+<pre><code class="language-bash"># 1. Trigger deployment
+DEPLOY_ID=$(curl -s -X POST http://localhost:3000/api/admin/deploy \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"target": "ares"}' | jq -r '.id')
+
+echo "Deployment started: $DEPLOY_ID"
+
+# 2. Poll until complete
+while true; do
+  RESULT=$(curl -s http://localhost:3000/api/admin/deploy/$DEPLOY_ID \
+    -H "X-Admin-Secret: your-admin-secret")
+
+  STATUS=$(echo "$RESULT" | jq -r '.status')
+  echo "Status: $STATUS"
+
+  if [ "$STATUS" != "running" ]; then
+    echo "$RESULT" | jq -r '.output'
+    break
+  fi
+
+  sleep 3
+done
+</code></pre>
+<p><strong>Python Example:</strong></p>
+<pre><code class="language-python">import requests
+import time
+
+ADMIN_SECRET = "your-admin-secret"
+BASE_URL = "http://localhost:3000"
+headers = {
+    "X-Admin-Secret": ADMIN_SECRET,
+    "Content-Type": "application/json",
+}
+
+# Trigger
+resp = requests.post(
+    f"{BASE_URL}/api/admin/deploy",
+    headers=headers,
+    json={"target": "ares"},
+)
+deploy_id = resp.json()["id"]
+print(f"Deployment started: {deploy_id}")
+
+# Poll
+while True:
+    resp = requests.get(
+        f"{BASE_URL}/api/admin/deploy/{deploy_id}",
+        headers=headers,
+    )
+    result = resp.json()
+    print(f"Status: {result['status']}")
+
+    if result["status"] != "running":
+        print(result["output"])
+        break
+
+    time.sleep(3)
+</code></pre>
+<hr />
+<h2 id="list-recent-deployments"><a class="header" href="#list-recent-deployments">List Recent Deployments</a></h2>
+<pre><code>GET /api/admin/deploys
+</code></pre>
+<p>Returns the 20 most recent deployments, newest first.</p>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "deploys": [
+    {
+      "id": "deploy-uuid",
+      "target": "ares",
+      "status": "success",
+      "started_at": "2026-03-13T14:00:00Z",
+      "finished_at": "2026-03-13T14:03:42Z"
+    },
+    {
+      "id": "deploy-uuid-2",
+      "target": "admin",
+      "status": "failed",
+      "started_at": "2026-03-12T10:00:00Z",
+      "finished_at": "2026-03-12T10:02:15Z"
+    }
+  ]
+}
+</code></pre>
+<p><strong>curl Example:</strong></p>
+<pre><code class="language-bash">curl http://localhost:3000/api/admin/deploys \
+  -H "X-Admin-Secret: your-admin-secret"
+</code></pre>
+<hr />
+<h2 id="service-health"><a class="header" href="#service-health">Service Health</a></h2>
+<h3 id="list-all-services"><a class="header" href="#list-all-services">List All Services</a></h3>
+<pre><code>GET /api/admin/services
+</code></pre>
+<p>Returns the runtime status of all managed services.</p>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "ares": {
+    "status": "running",
+    "pid": 12847,
+    "port": 3000
+  },
+  "eruka": {
+    "status": "running",
+    "pid": 12901,
+    "port": 8081
+  },
+  "admin": {
+    "status": "running",
+    "pid": null,
+    "port": null
+  }
+}
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Status</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>running</code></td><td>Service is up and healthy</td></tr>
+<tr><td><code>stopped</code></td><td>Service is not running</td></tr>
+<tr><td><code>degraded</code></td><td>Service is running but unhealthy</td></tr>
+</tbody></table>
+</div>
+<p><strong>curl Example:</strong></p>
+<pre><code class="language-bash">curl http://localhost:3000/api/admin/services \
+  -H "X-Admin-Secret: your-admin-secret"
+</code></pre>
+<h3 id="get-service-logs"><a class="header" href="#get-service-logs">Get Service Logs</a></h3>
+<pre><code>GET /api/admin/services/{name}/logs
+</code></pre>
+<p>Returns recent log output from the service's systemd journal.</p>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "service": "ares",
+  "lines": [
+    "Mar 13 14:03:42 vps ares-server[12847]: Listening on 0.0.0.0:3000",
+    "Mar 13 14:03:42 vps ares-server[12847]: Connected to PostgreSQL",
+    "Mar 13 14:03:43 vps ares-server[12847]: Loaded 29 agents, 4 providers, 11 models",
+    "Mar 13 14:04:01 vps ares-server[12847]: POST /v1/agents/risk-analyzer/run 200 1243ms"
+  ]
+}
+</code></pre>
+<p><strong>curl Example:</strong></p>
+<pre><code class="language-bash">curl http://localhost:3000/api/admin/services/ares/logs \
+  -H "X-Admin-Secret: your-admin-secret"
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="multi-tenant-architecture"><a class="header" href="#multi-tenant-architecture">Multi-Tenant Architecture</a></h1>
+<p>ARES is a multi-tenant platform. Each enterprise client operates within an isolated tenant, with their own agents, API keys, usage quotas, and data boundaries. This page explains the tenancy model and how to provision new clients.</p>
+<hr />
+<h2 id="core-concepts"><a class="header" href="#core-concepts">Core Concepts</a></h2>
+<h3 id="tenants-1"><a class="header" href="#tenants-1">Tenants</a></h3>
+<p>A tenant is an isolated namespace on the ARES platform. Each tenant has:</p>
+<ul>
+<li>A unique name and ID</li>
+<li>A tier that determines rate limits and quotas</li>
+<li>Its own set of agents (cloned from templates or created manually)</li>
+<li>One or more API keys for authentication</li>
+<li>Independent usage tracking and billing data</li>
+</ul>
+<p>Tenants cannot see or interact with each other's resources. A request authenticated with Tenant A's API key will never return Tenant B's agents, runs, or usage data.</p>
+<h3 id="tiers"><a class="header" href="#tiers">Tiers</a></h3>
+<p>Every tenant is assigned a tier that governs their resource limits:</p>
+<div class="table-wrapper"><table><thead><tr><th>Tier</th><th>Monthly Requests</th><th>Monthly Tokens</th><th>Daily Rate Limit</th><th>Use Case</th></tr></thead><tbody>
+<tr><td><strong>Free</strong></td><td>1,000</td><td>100,000</td><td>100/day</td><td>Evaluation and testing</td></tr>
+<tr><td><strong>Dev</strong></td><td>10,000</td><td>1,000,000</td><td>1,000/day</td><td>Development and staging</td></tr>
+<tr><td><strong>Pro</strong></td><td>100,000</td><td>10,000,000</td><td>10,000/day</td><td>Production workloads</td></tr>
+<tr><td><strong>Enterprise</strong></td><td>Unlimited</td><td>Unlimited</td><td>Unlimited</td><td>High-volume clients</td></tr>
+</tbody></table>
+</div>
+<p>Tiers can be changed at any time via the Admin API without disrupting the tenant's service.</p>
+<h3 id="agent-templates"><a class="header" href="#agent-templates">Agent Templates</a></h3>
+<p>When a tenant is provisioned, ARES clones a set of pre-configured agent templates based on the specified <code>product_type</code>. Templates provide a working starting point that can be customized after creation.</p>
+<p>Available product types:</p>
+<div class="table-wrapper"><table><thead><tr><th>Product Type</th><th>Templates Included</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>generic</code></td><td>General-purpose agents</td><td>Default chat and analysis agents</td></tr>
+<tr><td><code>kasino</code></td><td><code>kasino-classifier</code>, <code>kasino-risk</code>, <code>kasino-transaction</code>, <code>kasino-report</code></td><td>Transaction analysis and reporting</td></tr>
+<tr><td><code>ehb</code></td><td>Health-oriented agents</td><td>eHealthBuddy clinical agents</td></tr>
+</tbody></table>
+</div>
+<p>Each template defines the agent's model, system prompt, tool access, and default configuration. After provisioning, agents can be freely modified or new ones added.</p>
+<h3 id="api-key-scoping"><a class="header" href="#api-key-scoping">API Key Scoping</a></h3>
+<p>Every API key is bound to exactly one tenant. When a request arrives with an API key:</p>
+<ol>
+<li>ARES looks up the key and identifies the associated tenant</li>
+<li>All operations execute within that tenant's scope</li>
+<li>Usage is tracked against that tenant's quotas</li>
+<li>The response only includes that tenant's data</li>
+</ol>
+<p>A tenant can have multiple API keys (e.g., separate keys for production, staging, and mobile). Each key's usage is tracked individually but counts toward the shared tenant quota.</p>
+<h3 id="data-isolation"><a class="header" href="#data-isolation">Data Isolation</a></h3>
+<p>Tenant isolation is enforced at the database query level. Every data-accessing query includes the tenant ID as a filter condition. This means:</p>
+<ul>
+<li>Agent listings only return the requesting tenant's agents</li>
+<li>Run history only shows runs from the requesting tenant</li>
+<li>Usage data only reflects the requesting tenant's consumption</li>
+<li>There is no API surface to query across tenant boundaries (except via the Admin API)</li>
+</ul>
+<hr />
+<h2 id="provisioning-flow"><a class="header" href="#provisioning-flow">Provisioning Flow</a></h2>
+<p>The recommended way to onboard a new client is the atomic provisioning endpoint. It creates all required resources in a single database transaction.</p>
+<h3 id="step-1-provision-the-client"><a class="header" href="#step-1-provision-the-client">Step 1: Provision the Client</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/admin/provision-client \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "acme-corp",
+    "tier": "pro",
+    "product_type": "kasino",
+    "api_key_name": "production"
+  }'
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+  "tenant_name": "acme-corp",
+  "tier": "pro",
+  "product_type": "kasino",
+  "api_key_id": "key-uuid",
+  "api_key_prefix": "ares_a1b2",
+  "raw_api_key": "ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5",
+  "agents_created": [
+    "kasino-classifier",
+    "kasino-risk",
+    "kasino-transaction",
+    "kasino-report"
+  ]
+}
+</code></pre>
+<p>This single call:</p>
+<ol>
+<li>Creates the tenant with the specified tier</li>
+<li>Looks up the agent templates for the given <code>product_type</code></li>
+<li>Clones each template as a tenant-specific agent</li>
+<li>Generates an API key bound to the new tenant</li>
+<li>Returns the raw API key (shown only once)</li>
+</ol>
+<p>If any step fails, the entire operation is rolled back. You will never end up with a half-provisioned tenant.</p>
+<h3 id="step-2-deliver-the-api-key"><a class="header" href="#step-2-deliver-the-api-key">Step 2: Deliver the API Key</a></h3>
+<p>Securely deliver the <code>raw_api_key</code> to your client. This is the only time the full key is visible — ARES stores only a hashed version internally.</p>
+<h3 id="step-3-verify-the-setup"><a class="header" href="#step-3-verify-the-setup">Step 3: Verify the Setup</a></h3>
+<p>Confirm the tenant's agents are accessible using their new API key:</p>
+<pre><code class="language-bash">curl http://localhost:3000/v1/agents \
+  -H "Authorization: Bearer ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5"
+</code></pre>
+<p>The client should see their four provisioned agents.</p>
+<h3 id="step-4-test-an-agent-run"><a class="header" href="#step-4-test-an-agent-run">Step 4: Test an Agent Run</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/v1/agents/kasino-classifier/run \
+  -H "Authorization: Bearer ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "message": "Classify this transaction: $500 at electronics store"
+    }
+  }'
+</code></pre>
+<hr />
+<h2 id="managing-tenants-after-provisioning"><a class="header" href="#managing-tenants-after-provisioning">Managing Tenants After Provisioning</a></h2>
+<h3 id="add-more-agents"><a class="header" href="#add-more-agents">Add More Agents</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/agents \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "custom-summarizer",
+    "agent_type": "summarizer",
+    "config": {
+      "model": "llama-3.3-70b",
+      "system_prompt": "You summarize financial reports concisely.",
+      "tools": [],
+      "max_tokens": 2048
+    }
+  }'
+</code></pre>
+<h3 id="issue-additional-api-keys"><a class="header" href="#issue-additional-api-keys">Issue Additional API Keys</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/api-keys \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "staging-key"}'
+</code></pre>
+<h3 id="upgrade-a-tenants-tier"><a class="header" href="#upgrade-a-tenants-tier">Upgrade a Tenant's Tier</a></h3>
+<pre><code class="language-bash">curl -X PUT http://localhost:3000/api/admin/tenants/{tenant_id}/quota \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"tier": "enterprise"}'
+</code></pre>
+<h3 id="monitor-usage"><a class="header" href="#monitor-usage">Monitor Usage</a></h3>
+<pre><code class="language-bash"># Current period summary
+curl http://localhost:3000/api/admin/tenants/{tenant_id}/usage \
+  -H "X-Admin-Secret: your-admin-secret"
+
+# Daily breakdown for the last 30 days
+curl "http://localhost:3000/api/admin/tenants/{tenant_id}/usage/daily?days=30" \
+  -H "X-Admin-Secret: your-admin-secret"
+</code></pre>
+<hr />
+<h2 id="architecture-notes"><a class="header" href="#architecture-notes">Architecture Notes</a></h2>
+<ul>
+<li><strong>Shared infrastructure:</strong> All tenants run on the same ARES instance and database. Isolation is logical, not physical. This keeps operational costs low for the MVP phase.</li>
+<li><strong>Atomic provisioning:</strong> The provisioning endpoint uses a database transaction. If agent template cloning fails halfway through, the tenant and any partially created resources are rolled back.</li>
+<li><strong>Key hashing:</strong> API keys are hashed before storage. The raw key is returned exactly once during creation. Lost keys must be revoked and replaced.</li>
+<li><strong>Auto-migration:</strong> ARES runs database migrations on startup (<code>sqlx::migrate!()</code>). New tenant-related schema changes are applied automatically when the server restarts.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="rate-limits-and-quotas"><a class="header" href="#rate-limits-and-quotas">Rate Limits and Quotas</a></h1>
+<p>ARES enforces two independent layers of rate limiting to protect the platform and ensure fair resource allocation across tenants.</p>
+<hr />
+<h2 id="layer-1-ip-based-rate-limiting"><a class="header" href="#layer-1-ip-based-rate-limiting">Layer 1: IP-Based Rate Limiting</a></h2>
+<p>Every incoming request is subject to per-IP rate limiting via <a href="https://docs.rs/tower_governor">tower_governor</a>. This layer protects against abuse, brute-force attacks, and accidental request floods regardless of authentication status.</p>
+<p>IP-based limits apply to all routes, including unauthenticated endpoints like <code>/health</code>. The specific thresholds are configured server-side and are intentionally generous for normal usage patterns.</p>
+<p>If you hit the IP rate limit, you will receive a <code>429 Too Many Requests</code> response. Back off and retry after a short delay.</p>
+<hr />
+<h2 id="layer-2-tenant-quotas"><a class="header" href="#layer-2-tenant-quotas">Layer 2: Tenant Quotas</a></h2>
+<p>Authenticated requests to <code>/v1/*</code> are additionally subject to tenant-level quotas based on the tenant's tier. These quotas reset at the beginning of each calendar month.</p>
+<div class="table-wrapper"><table><thead><tr><th>Tier</th><th>Monthly Requests</th><th>Monthly Tokens</th><th>Daily Rate Limit</th></tr></thead><tbody>
+<tr><td><strong>Free</strong></td><td>1,000</td><td>100,000</td><td>100/day</td></tr>
+<tr><td><strong>Dev</strong></td><td>10,000</td><td>1,000,000</td><td>1,000/day</td></tr>
+<tr><td><strong>Pro</strong></td><td>100,000</td><td>10,000,000</td><td>10,000/day</td></tr>
+<tr><td><strong>Enterprise</strong></td><td>Unlimited</td><td>Unlimited</td><td>Unlimited</td></tr>
+</tbody></table>
+</div>
+<h3 id="what-counts-as-a-request"><a class="header" href="#what-counts-as-a-request">What Counts as a Request</a></h3>
+<p>Each API call to a metered endpoint counts as one request:</p>
+<ul>
+<li><code>POST /v1/agents/{name}/run</code> — 1 request</li>
+<li><code>POST /v1/chat</code> — 1 request</li>
+<li><code>POST /v1/chat/stream</code> — 1 request</li>
+<li><code>GET /v1/agents</code> — 1 request</li>
+</ul>
+<p>Read-only endpoints like <code>GET /v1/usage</code> and <code>GET /v1/api-keys</code> are metered but count toward the request total.</p>
+<h3 id="what-counts-as-tokens"><a class="header" href="#what-counts-as-tokens">What Counts as Tokens</a></h3>
+<p>Token usage is tracked per request based on the combined input and output token count from the LLM provider. Both the prompt tokens and completion tokens are summed.</p>
+<hr />
+<h2 id="response-headers"><a class="header" href="#response-headers">Response Headers</a></h2>
+<p>When you make a request to a metered endpoint, ARES includes rate limit information in the response headers:</p>
+<div class="table-wrapper"><table><thead><tr><th>Header</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>X-RateLimit-Limit</code></td><td>Maximum requests allowed in the current period</td></tr>
+<tr><td><code>X-RateLimit-Remaining</code></td><td>Requests remaining in the current period</td></tr>
+<tr><td><code>X-RateLimit-Reset</code></td><td>UTC timestamp when the current period resets</td></tr>
+<tr><td><code>X-Quota-Tokens-Remaining</code></td><td>Tokens remaining in the current monthly period</td></tr>
+</tbody></table>
+</div>
+<p><strong>Example headers:</strong></p>
+<pre><code>X-RateLimit-Limit: 10000
+X-RateLimit-Remaining: 7482
+X-RateLimit-Reset: 2026-04-01T00:00:00Z
+X-Quota-Tokens-Remaining: 8241037
+</code></pre>
+<hr />
+<h2 id="exceeding-limits"><a class="header" href="#exceeding-limits">Exceeding Limits</a></h2>
+<p>When you exceed either rate limit layer, ARES returns:</p>
+<pre><code>HTTP/1.1 429 Too Many Requests
+Content-Type: application/json
+
+{
+  "error": "Rate limit exceeded. Daily request limit reached for your tier."
+}
+</code></pre>
+<p>The error message indicates which limit was hit:</p>
+<div class="table-wrapper"><table><thead><tr><th>Error Message</th><th>Cause</th><th>Resolution</th></tr></thead><tbody>
+<tr><td><code>Rate limit exceeded</code></td><td>IP-based rate limit</td><td>Wait and retry. Reduce request frequency.</td></tr>
+<tr><td><code>Daily request limit reached for your tier</code></td><td>Tenant daily cap</td><td>Wait until the next UTC day, or upgrade your tier.</td></tr>
+<tr><td><code>Monthly request quota exceeded</code></td><td>Tenant monthly cap</td><td>Wait until the next billing period, or upgrade.</td></tr>
+<tr><td><code>Monthly token quota exceeded</code></td><td>Tenant token cap</td><td>Wait until the next billing period, or upgrade.</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="checking-your-usage"><a class="header" href="#checking-your-usage">Checking Your Usage</a></h2>
+<p>You can proactively monitor your consumption to avoid hitting limits:</p>
+<pre><code class="language-bash">curl http://localhost:3000/v1/usage \
+  -H "Authorization: Bearer ares_xxx"
+</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code class="language-json">{
+  "period_start": "2026-03-01T00:00:00Z",
+  "period_end": "2026-03-31T23:59:59Z",
+  "total_runs": 4821,
+  "total_tokens": 2847193,
+  "total_api_calls": 5290,
+  "quota_runs": 100000,
+  "quota_tokens": 10000000,
+  "daily_usage": [
+    { "date": "2026-03-13", "runs": 312, "tokens": 184920, "api_calls": 340 }
+  ]
+}
+</code></pre>
+<p>Compare <code>total_runs</code> against <code>quota_runs</code> and <code>total_tokens</code> against <code>quota_tokens</code> to see how much headroom you have.</p>
+<hr />
+<h2 id="best-practices-1"><a class="header" href="#best-practices-1">Best Practices</a></h2>
+<ol>
+<li>
+<p><strong>Monitor usage proactively.</strong> Poll <code>GET /v1/usage</code> periodically rather than waiting for 429 errors.</p>
+</li>
+<li>
+<p><strong>Implement exponential backoff.</strong> When you receive a 429, wait before retrying. A simple strategy: wait 1s, then 2s, then 4s, up to a maximum of 30s.</p>
+</li>
+<li>
+<p><strong>Cache where possible.</strong> Agent listings and model metadata change infrequently. Cache these responses to reduce unnecessary API calls.</p>
+</li>
+<li>
+<p><strong>Use streaming for chat.</strong> <code>POST /v1/chat/stream</code> counts as a single request regardless of response length, same as the non-streaming variant.</p>
+</li>
+<li>
+<p><strong>Request a tier upgrade early.</strong> If you anticipate hitting your quota before month-end, contact your platform administrator to upgrade your tier. Tier changes take effect immediately.</p>
+</li>
+</ol>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="error-handling-1"><a class="header" href="#error-handling-1">Error Handling</a></h1>
+<p>ARES uses conventional HTTP status codes and a consistent JSON error format across all endpoints. This page documents the error response structure, status code meanings, and common errors with their solutions.</p>
+<hr />
+<h2 id="error-response-format"><a class="header" href="#error-response-format">Error Response Format</a></h2>
+<p>All errors return a JSON object with an <code>error</code> field containing a human-readable message:</p>
+<pre><code class="language-json">{
+  "error": "Human-readable error message"
+}
+</code></pre>
+<p>The HTTP status code indicates the category of error. The <code>error</code> string provides specific details about what went wrong.</p>
+<hr />
+<h2 id="http-status-codes"><a class="header" href="#http-status-codes">HTTP Status Codes</a></h2>
+<h3 id="success-codes"><a class="header" href="#success-codes">Success Codes</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Code</th><th>Meaning</th><th>When Used</th></tr></thead><tbody>
+<tr><td><code>200</code></td><td>OK</td><td>Successful read or update operation</td></tr>
+<tr><td><code>201</code></td><td>Created</td><td>Resource successfully created (tenant, agent, API key)</td></tr>
+<tr><td><code>204</code></td><td>No Content</td><td>Successful delete with no response body</td></tr>
+</tbody></table>
+</div>
+<h3 id="client-error-codes"><a class="header" href="#client-error-codes">Client Error Codes</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Code</th><th>Meaning</th><th>When Used</th></tr></thead><tbody>
+<tr><td><code>400</code></td><td>Bad Request</td><td>Malformed JSON, missing required fields, invalid parameter types</td></tr>
+<tr><td><code>401</code></td><td>Unauthorized</td><td>Missing or invalid authentication credentials</td></tr>
+<tr><td><code>403</code></td><td>Forbidden</td><td>Valid credentials but insufficient permissions for this operation</td></tr>
+<tr><td><code>404</code></td><td>Not Found</td><td>Resource does not exist, or does not belong to your tenant</td></tr>
+<tr><td><code>409</code></td><td>Conflict</td><td>Resource already exists (e.g., duplicate tenant name or agent name)</td></tr>
+<tr><td><code>422</code></td><td>Unprocessable Entity</td><td>Request is well-formed but contains invalid values (e.g., unknown tier, invalid model name)</td></tr>
+<tr><td><code>429</code></td><td>Too Many Requests</td><td>Rate limit or quota exceeded</td></tr>
+</tbody></table>
+</div>
+<h3 id="server-error-codes"><a class="header" href="#server-error-codes">Server Error Codes</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Code</th><th>Meaning</th><th>When Used</th></tr></thead><tbody>
+<tr><td><code>500</code></td><td>Internal Server Error</td><td>Unexpected server-side failure</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="common-errors-and-solutions"><a class="header" href="#common-errors-and-solutions">Common Errors and Solutions</a></h2>
+<h3 id="authentication-errors"><a class="header" href="#authentication-errors">Authentication Errors</a></h3>
+<p><strong>Missing API key:</strong></p>
+<pre><code>HTTP 401
+{"error": "Missing authorization header"}
+</code></pre>
+<p>Add the <code>Authorization: Bearer ares_xxx</code> header to your request.</p>
+<p><strong>Invalid API key:</strong></p>
+<pre><code>HTTP 401
+{"error": "Invalid API key"}
+</code></pre>
+<p>Verify that the API key is correct and has not been revoked. API keys start with <code>ares_</code>.</p>
+<p><strong>Missing admin secret:</strong></p>
+<pre><code>HTTP 401
+{"error": "Missing X-Admin-Secret header"}
+</code></pre>
+<p>Admin endpoints require the <code>X-Admin-Secret</code> header, not the <code>Authorization</code> header.</p>
+<p><strong>Invalid admin secret:</strong></p>
+<pre><code>HTTP 401
+{"error": "Invalid admin secret"}
+</code></pre>
+<p>Verify the admin secret matches the value configured in <code>ares.toml</code>.</p>
+<h3 id="resource-errors"><a class="header" href="#resource-errors">Resource Errors</a></h3>
+<p><strong>Agent not found:</strong></p>
+<pre><code>HTTP 404
+{"error": "Agent not found: risk-analyzer"}
+</code></pre>
+<p>The agent does not exist for your tenant. Check the agent name with <code>GET /v1/agents</code>. Agent names are case-sensitive.</p>
+<p><strong>Tenant not found:</strong></p>
+<pre><code>HTTP 404
+{"error": "Tenant not found"}
+</code></pre>
+<p>The tenant ID does not exist. List tenants with <code>GET /api/admin/tenants</code> to find the correct ID.</p>
+<p><strong>Duplicate resource:</strong></p>
+<pre><code>HTTP 409
+{"error": "Agent with name 'risk-analyzer' already exists for this tenant"}
+</code></pre>
+<p>An agent with this name already exists. Use a different name or update the existing agent.</p>
+<h3 id="validation-errors"><a class="header" href="#validation-errors">Validation Errors</a></h3>
+<p><strong>Invalid tier:</strong></p>
+<pre><code>HTTP 422
+{"error": "Invalid tier: 'gold'. Valid tiers: free, dev, pro, enterprise"}
+</code></pre>
+<p>Use one of the supported tier values.</p>
+<p><strong>Missing required field:</strong></p>
+<pre><code>HTTP 400
+{"error": "Missing required field: name"}
+</code></pre>
+<p>Include all required fields in your request body. Refer to the API documentation for the specific endpoint.</p>
+<p><strong>Invalid JSON:</strong></p>
+<pre><code>HTTP 400
+{"error": "Invalid JSON in request body"}
+</code></pre>
+<p>Ensure your request body is valid JSON. Check for trailing commas, unquoted keys, or mismatched brackets. Verify the <code>Content-Type: application/json</code> header is set.</p>
+<h3 id="rate-limit-errors"><a class="header" href="#rate-limit-errors">Rate Limit Errors</a></h3>
+<p><strong>Quota exceeded:</strong></p>
+<pre><code>HTTP 429
+{"error": "Monthly request quota exceeded"}
+</code></pre>
+<p>Your tenant has used all allocated requests for the current billing period. Wait until the period resets or contact your administrator to upgrade your tier.</p>
+<p><strong>Daily limit:</strong></p>
+<pre><code>HTTP 429
+{"error": "Daily request limit reached for your tier"}
+</code></pre>
+<p>Your tenant has hit the daily rate cap. Wait until the next UTC day or upgrade your tier.</p>
+<p>See <a href="platform/../platform/rate-limits.html">Rate Limits and Quotas</a> for details on limits by tier.</p>
+<h3 id="server-errors"><a class="header" href="#server-errors">Server Errors</a></h3>
+<p><strong>Internal server error:</strong></p>
+<pre><code>HTTP 500
+{"error": "Internal server error"}
+</code></pre>
+<p>An unexpected error occurred on the server. These are not caused by your request. If the error persists, check service health via <code>GET /api/admin/services</code> or inspect server logs.</p>
+<hr />
+<h2 id="error-handling-best-practices"><a class="header" href="#error-handling-best-practices">Error Handling Best Practices</a></h2>
+<ol>
+<li>
+<p><strong>Always check the HTTP status code first.</strong> The status code tells you the error category before you parse the response body.</p>
+</li>
+<li>
+<p><strong>Parse the error message for user display.</strong> The <code>error</code> field is written to be human-readable and safe to show to end users.</p>
+</li>
+<li>
+<p><strong>Retry on 429 and 500.</strong> Rate limit errors (429) should be retried with exponential backoff. Server errors (500) may be transient — retry once or twice before treating as a permanent failure.</p>
+</li>
+<li>
+<p><strong>Do not retry on 400, 401, 403, 404, 409, or 422.</strong> These indicate problems with the request itself. Fix the request before retrying.</p>
+</li>
+<li>
+<p><strong>Log the full response.</strong> When debugging, log both the HTTP status code and the response body. The error message often contains the specific field or value that caused the problem.</p>
+</li>
+</ol>
+<h3 id="example-robust-error-handling-python"><a class="header" href="#example-robust-error-handling-python">Example: Robust Error Handling (Python)</a></h3>
+<pre><code class="language-python">import requests
+
+def run_agent(api_key, agent_name, input_data):
+    response = requests.post(
+        f"http://localhost:3000/v1/agents/{agent_name}/run",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={"input": input_data},
+    )
+
+    if response.status_code == 200:
+        return response.json()
+
+    error = response.json().get("error", "Unknown error")
+
+    if response.status_code == 401:
+        raise AuthenticationError(f"Authentication failed: {error}")
+    elif response.status_code == 404:
+        raise AgentNotFoundError(f"Agent '{agent_name}' not found: {error}")
+    elif response.status_code == 429:
+        raise RateLimitError(f"Rate limited: {error}")
+    elif response.status_code &gt;= 500:
+        raise ServerError(f"Server error: {error}")
+    else:
+        raise APIError(f"API error ({response.status_code}): {error}")
+</code></pre>
+<h3 id="example-robust-error-handling-javascript"><a class="header" href="#example-robust-error-handling-javascript">Example: Robust Error Handling (JavaScript)</a></h3>
+<pre><code class="language-javascript">async function runAgent(apiKey, agentName, inputData) {
+  const response = await fetch(
+    `http://localhost:3000/v1/agents/${agentName}/run`,
+    {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ input: inputData }),
+    }
+  );
+
+  if (response.ok) {
+    return await response.json();
+  }
+
+  const { error } = await response.json();
+
+  switch (response.status) {
+    case 401: throw new Error(`Authentication failed: ${error}`);
+    case 404: throw new Error(`Agent '${agentName}' not found: ${error}`);
+    case 429: throw new Error(`Rate limited: ${error}`);
+    default:  throw new Error(`API error (${response.status}): ${error}`);
+  }
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="self-hosting"><a class="header" href="#self-hosting">Self-Hosting</a></h1>
+<p>Run your own ARES instance on your infrastructure. This guide covers local development setup, production deployment, and configuration options.</p>
+<hr />
+<h2 id="prerequisites-1"><a class="header" href="#prerequisites-1">Prerequisites</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Requirement</th><th>Minimum Version</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Rust</td><td>1.91+</td><td>Install via <a href="https://rustup.rs/">rustup</a></td></tr>
+<tr><td>PostgreSQL</td><td>15+</td><td>Used for tenants, agents, usage tracking</td></tr>
+<tr><td>Git</td><td>2.x</td><td>For cloning the repository</td></tr>
+</tbody></table>
+</div>
+<p>Optional, depending on your provider configuration:</p>
+<div class="table-wrapper"><table><thead><tr><th>Requirement</th><th>When Needed</th></tr></thead><tbody>
+<tr><td>Groq API key</td><td>Using Groq as an LLM provider</td></tr>
+<tr><td>Anthropic API key</td><td>Using Anthropic as an LLM provider</td></tr>
+<tr><td>NVIDIA API key</td><td>Using NVIDIA-hosted DeepSeek models</td></tr>
+<tr><td>Ollama</td><td>Running local models</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h2>
+<h3 id="1-clone-the-repository"><a class="header" href="#1-clone-the-repository">1. Clone the Repository</a></h3>
+<pre><code class="language-bash">git clone https://github.com/dirmacs/ares
+cd ares
+</code></pre>
+<h3 id="2-set-up-the-database"><a class="header" href="#2-set-up-the-database">2. Set Up the Database</a></h3>
+<p>Create a PostgreSQL database for ARES:</p>
+<pre><code class="language-bash">createdb ares
+</code></pre>
+<p>ARES runs migrations automatically on startup. No manual schema setup is required.</p>
+<h3 id="3-create-configuration"><a class="header" href="#3-create-configuration">3. Create Configuration</a></h3>
+<p>Copy the example config and customize it:</p>
+<pre><code class="language-bash">cp ares.example.toml ares.toml
+</code></pre>
+<p>Edit <code>ares.toml</code> to configure your providers and models. At minimum, you need one LLM provider:</p>
+<pre><code class="language-toml">[server]
+port = 3000
+
+[database]
+url = "postgres://localhost/ares"
+
+[[providers]]
+name = "groq"
+type = "openai"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+
+[[providers.models]]
+id = "llama-3.3-70b-versatile"
+name = "llama-3.3-70b"
+context_length = 131072
+</code></pre>
+<h3 id="4-set-environment-variables"><a class="header" href="#4-set-environment-variables">4. Set Environment Variables</a></h3>
+<pre><code class="language-bash">export DATABASE_URL="postgres://localhost/ares"
+export JWT_SECRET="your-secret-key-at-least-32-characters-long"
+export API_KEY="your-admin-api-secret"
+export GROQ_API_KEY="gsk_..."
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Required</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>DATABASE_URL</code></td><td>Yes</td><td>PostgreSQL connection string</td></tr>
+<tr><td><code>JWT_SECRET</code></td><td>Yes</td><td>Secret for signing JWT tokens (32+ characters)</td></tr>
+<tr><td><code>API_KEY</code></td><td>Yes</td><td>Admin secret for <code>/api/admin/*</code> endpoints</td></tr>
+<tr><td><code>GROQ_API_KEY</code></td><td>If using Groq</td><td>Groq API key</td></tr>
+<tr><td><code>ANTHROPIC_API_KEY</code></td><td>If using Anthropic</td><td>Anthropic API key</td></tr>
+<tr><td><code>NVIDIA_API_KEY</code></td><td>If using NVIDIA</td><td>NVIDIA API key</td></tr>
+</tbody></table>
+</div>
+<h3 id="5-build"><a class="header" href="#5-build">5. Build</a></h3>
+<pre><code class="language-bash">cargo build --release --features openai,postgres,mcp
+</code></pre>
+<p>See <a href="platform/self-hosting.html#feature-flags">Feature Flags</a> for all available options.</p>
+<h3 id="6-run"><a class="header" href="#6-run">6. Run</a></h3>
+<pre><code class="language-bash">./target/release/ares-server
+</code></pre>
+<h3 id="7-verify"><a class="header" href="#7-verify">7. Verify</a></h3>
+<pre><code class="language-bash">curl http://localhost:3000/health
+</code></pre>
+<p>You should receive a <code>200 OK</code> response. ARES is running.</p>
+<hr />
+<h2 id="feature-flags"><a class="header" href="#feature-flags">Feature Flags</a></h2>
+<p>ARES uses Cargo feature flags to control which capabilities are compiled into the binary. This keeps the binary lean — only include what you need.</p>
+<div class="table-wrapper"><table><thead><tr><th>Feature</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>openai</code></td><td>Yes</td><td>OpenAI-compatible provider support (also used for Groq, NVIDIA)</td></tr>
+<tr><td><code>anthropic</code></td><td>No</td><td>Anthropic Claude provider support</td></tr>
+<tr><td><code>ollama</code></td><td>No</td><td>Local Ollama model support</td></tr>
+<tr><td><code>postgres</code></td><td>Yes</td><td>PostgreSQL database backend</td></tr>
+<tr><td><code>mcp</code></td><td>No</td><td>Model Context Protocol support for external tool servers</td></tr>
+<tr><td><code>ares-vector</code></td><td>No</td><td>Vector storage and semantic search</td></tr>
+</tbody></table>
+</div>
+<h3 id="build-examples"><a class="header" href="#build-examples">Build Examples</a></h3>
+<p><strong>Minimal build (Groq only):</strong></p>
+<pre><code class="language-bash">cargo build --release --no-default-features --features openai,postgres
+</code></pre>
+<p><strong>Full build (all providers):</strong></p>
+<pre><code class="language-bash">cargo build --release --features openai,anthropic,ollama,postgres,mcp,ares-vector
+</code></pre>
+<p><strong>Production build (recommended for VPS deployment):</strong></p>
+<pre><code class="language-bash">cargo build --release --no-default-features --features openai,postgres,mcp
+</code></pre>
+<hr />
+<h2 id="production-deployment"><a class="header" href="#production-deployment">Production Deployment</a></h2>
+<h3 id="systemd-service"><a class="header" href="#systemd-service">systemd Service</a></h3>
+<p>Create a systemd unit file at <code>/etc/systemd/system/ares.service</code>:</p>
+<pre><code class="language-ini">[Unit]
+Description=ARES AI Agent Platform
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=ares
+Group=ares
+WorkingDirectory=/opt/ares
+ExecStart=/opt/ares/target/release/ares-server
+Restart=on-failure
+RestartSec=5
+Environment=DATABASE_URL=postgres://dirmacs:password@localhost/ares
+Environment=JWT_SECRET=your-production-jwt-secret
+Environment=API_KEY=your-admin-secret
+Environment=GROQ_API_KEY=gsk_...
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+<p>Enable and start:</p>
+<pre><code class="language-bash">sudo systemctl enable ares
+sudo systemctl start ares
+sudo systemctl status ares
+</code></pre>
+<p>View logs:</p>
+<pre><code class="language-bash">journalctl -u ares -f
+</code></pre>
+<h3 id="caddy-reverse-proxy"><a class="header" href="#caddy-reverse-proxy">Caddy Reverse Proxy</a></h3>
+<p><a href="https://caddyserver.com/">Caddy</a> provides automatic HTTPS with Let's Encrypt. Create a <code>Caddyfile</code>:</p>
+<pre><code>api.ares.yourdomain.com {
+    reverse_proxy localhost:3000
+}
+</code></pre>
+<p>Start Caddy:</p>
+<pre><code class="language-bash">sudo systemctl enable caddy
+sudo systemctl start caddy
+</code></pre>
+<p>Caddy automatically provisions and renews TLS certificates. No manual certificate management is needed.</p>
+<h3 id="postgresql-setup"><a class="header" href="#postgresql-setup">PostgreSQL Setup</a></h3>
+<p>For production, create a dedicated database user:</p>
+<pre><code class="language-sql">CREATE USER ares WITH PASSWORD 'strong-password-here';
+CREATE DATABASE ares OWNER ares;
+</code></pre>
+<p>Update your <code>DATABASE_URL</code> accordingly:</p>
+<pre><code>DATABASE_URL=postgres://ares:strong-password-here@localhost/ares
+</code></pre>
+<hr />
+<h2 id="configuration-reference"><a class="header" href="#configuration-reference">Configuration Reference</a></h2>
+<p>The <code>ares.toml</code> file is the primary configuration file. It controls server settings, providers, models, and agent definitions.</p>
+<h3 id="server-section"><a class="header" href="#server-section">Server Section</a></h3>
+<pre><code class="language-toml">[server]
+port = 3000          # HTTP port (overrides PORT env var)
+host = "0.0.0.0"     # Bind address
+</code></pre>
+<h3 id="database-section"><a class="header" href="#database-section">Database Section</a></h3>
+<pre><code class="language-toml">[database]
+url = "postgres://ares:password@localhost/ares"
+max_connections = 10
+</code></pre>
+<h3 id="provider-section"><a class="header" href="#provider-section">Provider Section</a></h3>
+<p>Each provider is defined as a <code>[[providers]]</code> entry:</p>
+<pre><code class="language-toml">[[providers]]
+name = "groq"
+type = "openai"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+
+[[providers.models]]
+id = "llama-3.3-70b-versatile"
+name = "llama-3.3-70b"
+context_length = 131072
+
+[[providers.models]]
+id = "llama-3.1-8b-instant"
+name = "llama-3.1-8b"
+context_length = 131072
+
+[[providers]]
+name = "anthropic"
+type = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[[providers.models]]
+id = "claude-3-5-sonnet-20241022"
+name = "claude-3.5-sonnet"
+context_length = 200000
+
+[[providers]]
+name = "local"
+type = "ollama"
+base_url = "http://localhost:11434"
+
+[[providers.models]]
+id = "mistral"
+name = "mistral-7b"
+context_length = 32768
+</code></pre>
+<h3 id="agent-section"><a class="header" href="#agent-section">Agent Section</a></h3>
+<p>Static agents can be defined in the config file:</p>
+<pre><code class="language-toml">[[agents]]
+name = "general-assistant"
+model = "llama-3.3-70b"
+system_prompt = "You are a helpful assistant."
+tools = ["calculator", "web_search"]
+max_tokens = 4096
+</code></pre>
+<p>For tenant-specific agents, use the Admin API instead of config file definitions.</p>
+<hr />
+<h2 id="updating"><a class="header" href="#updating">Updating</a></h2>
+<p>To update a running ARES instance:</p>
+<pre><code class="language-bash">cd /opt/ares
+git pull origin main
+cargo build --release --no-default-features --features openai,postgres,mcp
+sudo systemctl restart ares
+</code></pre>
+<p>Database migrations run automatically on startup. No manual migration steps are needed.</p>
+<hr />
+<h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
+<p><strong>Port already in use:</strong></p>
+<pre><code>Error: Address already in use (os error 98)
+</code></pre>
+<p>Another process is using port 3000. Either stop it or change the port in <code>ares.toml</code>.</p>
+<p><strong>Database connection failed:</strong></p>
+<pre><code>Error: error communicating with database
+</code></pre>
+<p>Verify PostgreSQL is running and your <code>DATABASE_URL</code> is correct. Check that the database user has permissions on the database.</p>
+<p><strong>Provider API key missing:</strong></p>
+<pre><code>Error: Environment variable GROQ_API_KEY not set
+</code></pre>
+<p>Set the required API key environment variable, or remove the provider from <code>ares.toml</code> if you do not need it.</p>
+<p><strong>JWT secret too short:</strong></p>
+<pre><code>Error: JWT_SECRET must be at least 32 characters
+</code></pre>
+<p>Use a longer secret. Generate one with: <code>openssl rand -hex 32</code></p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="contextprovider-trait"><a class="header" href="#contextprovider-trait">ContextProvider Trait</a></h1>
+<p>ARES provides a <code>ContextProvider</code> trait that lets extension crates inject external context into every agent call before LLM invocation.</p>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How It Works</a></h2>
+<p>Before every LLM call, ARES checks <code>state.context_provider.get_context(agent_name, tenant_id)</code>. If it returns <code>Some(context)</code>, the context is prepended to the agent's system prompt.</p>
+<p>By default, ARES uses <code>NoOpContextProvider</code> which returns <code>None</code> — agents run with their configured system prompt only.</p>
+<h2 id="implementing-your-own"><a class="header" href="#implementing-your-own">Implementing Your Own</a></h2>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use ares::agents::context_provider::ContextProvider;
+use async_trait::async_trait;
+
+struct MyKnowledgeProvider {
+    api_url: String,
+}
+
+#[async_trait]
+impl ContextProvider for MyKnowledgeProvider {
+    async fn get_context(
+        &amp;self,
+        agent_name: &amp;str,
+        tenant_id: &amp;str,
+    ) -&gt; Option&lt;String&gt; {
+        // Fetch relevant context from your knowledge base
+        // Return None if no context available
+        let url = format!("{}/context/{}/{}", self.api_url, tenant_id, agent_name);
+        reqwest::get(&amp;url).await.ok()?.text().await.ok()
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="wiring-into-appstate"><a class="header" href="#wiring-into-appstate">Wiring Into AppState</a></h2>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::sync::Arc;
+
+let state = AppState {
+    context_provider: Arc::new(MyKnowledgeProvider {
+        api_url: "http://localhost:8081".to_string(),
+    }),
+    // ... other fields
+};
+<span class="boring">}</span></code></pre></pre>
+<h2 id="use-cases"><a class="header" href="#use-cases">Use Cases</a></h2>
+<ul>
+<li><strong>Knowledge base injection</strong> — fetch relevant docs per agent and tenant</li>
+<li><strong>User preference injection</strong> — personalize agent behavior based on user history</li>
+<li><strong>Compliance constraints</strong> — inject regulatory rules into agent prompts</li>
+<li><strong>RAG augmentation</strong> — supplement the built-in RAG with external retrieval</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="building-on-base_router"><a class="header" href="#building-on-base_router">Building on base_router()</a></h1>
+<p>ARES exports <code>base_router(state)</code> which returns a fully configured Axum router with all generic endpoints. Extension crates can build managed platforms by merging additional routes on top.</p>
+<h2 id="pattern"><a class="header" href="#pattern">Pattern</a></h2>
+<pre><pre class="playground"><code class="language-rust">use ares::{base_router, AppState};
+use axum::{routing::post, Router};
+
+#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    // Build AppState (config, DB, LLM, tools, agents)
+    let state = build_my_state().await?;
+
+    // Start with all ARES generic routes
+    let app = Router::new()
+        .route("/health", axum::routing::get(|| async { "OK" }))
+        .nest("/api", ares::api::routes::create_router(
+            state.auth_service.clone(),
+            state.tenant_db.clone(),
+        ))
+        // Add your own routes
+        .nest("/v1/my-feature", my_routes())
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}</code></pre></pre>
+<h2 id="what-base_router-includes"><a class="header" href="#what-base_router-includes">What base_router() Includes</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Route Group</th><th>Endpoints</th></tr></thead><tbody>
+<tr><td>Auth</td><td><code>/api/auth/register</code>, <code>/api/auth/login</code>, <code>/api/auth/refresh</code>, <code>/api/auth/logout</code></td></tr>
+<tr><td>Chat</td><td><code>/api/chat</code>, <code>/api/chat/stream</code></td></tr>
+<tr><td>Agents</td><td><code>/api/agents</code></td></tr>
+<tr><td>Research</td><td><code>/api/research</code></td></tr>
+<tr><td>Workflows</td><td><code>/api/workflows</code>, <code>/api/workflows/{name}</code></td></tr>
+<tr><td>User Agents</td><td><code>/api/user/agents/*</code></td></tr>
+<tr><td>Conversations</td><td><code>/api/conversations/*</code></td></tr>
+<tr><td>Admin</td><td><code>/api/admin/tenants/*</code>, <code>/api/admin/agents/*</code>, <code>/api/admin/deploy/*</code></td></tr>
+<tr><td>V1 (API Key)</td><td><code>/api/v1/chat</code>, <code>/api/v1/agents/*</code>, <code>/api/v1/usage</code></td></tr>
+<tr><td>RAG</td><td><code>/api/rag/ingest</code>, <code>/api/rag/search</code> (requires <code>local-embeddings</code> + <code>ares-vector</code> features)</td></tr>
+</tbody></table>
+</div>
+<h2 id="registering-custom-tools"><a class="header" href="#registering-custom-tools">Registering Custom Tools</a></h2>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut tool_registry = ToolRegistry::with_config(&amp;config);
+
+// Built-in tools
+tool_registry.register(Arc::new(ares::tools::calculator::Calculator));
+
+// Your custom tools
+tool_registry.register(Arc::new(MyCustomTool::new()));
+<span class="boring">}</span></code></pre></pre>
+<h2 id="adding-middleware"><a class="header" href="#adding-middleware">Adding Middleware</a></h2>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let app = base_router(state.clone())
+    .layer(my_auth_middleware())
+    .layer(my_logging_middleware());
+<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="guide-build-a-chat-agent"><a class="header" href="#guide-build-a-chat-agent">Guide: Build a Chat Agent</a></h1>
+<p>This guide walks you through creating a custom chat agent on ARES — from defining its behavior to testing it in production.</p>
+<hr />
+<h2 id="what-is-an-agent"><a class="header" href="#what-is-an-agent">What is an Agent?</a></h2>
+<p>An ARES agent is a configured LLM endpoint with a specific personality, instructions, and tool access. Each agent has:</p>
+<ul>
+<li>A <strong>name</strong> — unique identifier used in API calls</li>
+<li>A <strong>model</strong> — which LLM powers it (e.g., <code>llama-3.3-70b</code>, <code>claude-3.5-sonnet</code>)</li>
+<li>A <strong>system prompt</strong> — instructions that define the agent's behavior</li>
+<li><strong>Tools</strong> — optional capabilities like <code>calculator</code> or <code>web_search</code></li>
+<li><strong>Configuration</strong> — max tokens, temperature, and other parameters</li>
+</ul>
+<p>You can create agents in two ways: via the configuration file or via the API.</p>
+<hr />
+<h2 id="option-1-define-in-arestoml"><a class="header" href="#option-1-define-in-arestoml">Option 1: Define in ares.toml</a></h2>
+<p>For agents that are part of your core platform, define them in the <code>ares.toml</code> configuration file:</p>
+<pre><code class="language-toml">[[agents]]
+name = "financial-analyst"
+model = "llama-3.3-70b"
+system_prompt = """
+You are a senior financial analyst. You help users understand financial data,
+calculate metrics, and provide clear explanations of financial concepts.
+
+Guidelines:
+- Always show your calculations step by step
+- Use the calculator tool for arithmetic to ensure accuracy
+- Present numbers with appropriate formatting (commas, decimal places)
+- When uncertain, clearly state your assumptions
+"""
+tools = ["calculator"]
+max_tokens = 4096
+</code></pre>
+<p>Restart ARES to load the new agent. It will be available immediately at <code>/api/chat</code> using <code>agent_type: "financial-analyst"</code>.</p>
+<h3 id="toon-config-format"><a class="header" href="#toon-config-format">TOON Config Format</a></h3>
+<p>ARES also supports the TOON configuration format for more structured agent definitions:</p>
+<pre><code class="language-toml">[[agents]]
+name = "support-agent"
+model = "llama-3.3-70b"
+
+[agents.toon]
+role = "Customer Support Specialist"
+personality = "Professional, empathetic, solution-oriented"
+knowledge = ["product documentation", "pricing plans", "common issues"]
+constraints = [
+    "Never make up information about products",
+    "Escalate billing disputes to human agents",
+    "Always confirm the customer's issue before proposing a solution",
+]
+tools = ["web_search"]
+</code></pre>
+<p>The TOON format structures the system prompt into semantic fields that ARES assembles into a coherent prompt. This makes agent behavior easier to reason about and modify.</p>
+<hr />
+<h2 id="option-2-create-via-api"><a class="header" href="#option-2-create-via-api">Option 2: Create via API</a></h2>
+<p>For tenant-specific agents or agents you want to manage programmatically, use the API.</p>
+<h3 id="as-a-platform-admin"><a class="header" href="#as-a-platform-admin">As a Platform Admin</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/agents \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "financial-analyst",
+    "agent_type": "analyst",
+    "config": {
+      "model": "llama-3.3-70b",
+      "system_prompt": "You are a senior financial analyst...",
+      "tools": ["calculator"],
+      "max_tokens": 4096
+    }
+  }'
+</code></pre>
+<h3 id="as-an-authenticated-user"><a class="header" href="#as-an-authenticated-user">As an Authenticated User</a></h3>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/user/agents \
+  -H "Authorization: Bearer &lt;jwt_token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-analyst",
+    "agent_type": "analyst",
+    "config": {
+      "model": "llama-3.3-70b",
+      "system_prompt": "You are a senior financial analyst...",
+      "tools": ["calculator"],
+      "max_tokens": 4096
+    }
+  }'
+</code></pre>
+<hr />
+<h2 id="testing-your-agent"><a class="header" href="#testing-your-agent">Testing Your Agent</a></h2>
+<h3 id="basic-chat"><a class="header" href="#basic-chat">Basic Chat</a></h3>
+<p>Send a message to your agent:</p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/chat \
+  -H "Authorization: Bearer &lt;jwt_token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What is the compound annual growth rate if revenue went from $1M to $1.8M over 3 years?"}
+    ],
+    "agent_type": "financial-analyst"
+  }'
+</code></pre>
+<p><strong>Expected response:</strong></p>
+<pre><code class="language-json">{
+  "content": "To calculate the Compound Annual Growth Rate (CAGR):\n\nCAGR = (Ending Value / Beginning Value)^(1/n) - 1\nCAGR = ($1,800,000 / $1,000,000)^(1/3) - 1\nCAGR = (1.8)^(0.3333) - 1\nCAGR = 1.2164 - 1\nCAGR = 0.2164\n\n**The CAGR is 21.64%.**\n\nThis means revenue grew at an average annual rate of approximately 21.6% over the 3-year period.",
+  "model": "llama-3.3-70b",
+  "tokens_used": 287
+}
+</code></pre>
+<h3 id="multi-turn-conversation"><a class="header" href="#multi-turn-conversation">Multi-Turn Conversation</a></h3>
+<p>Include the conversation history in the <code>messages</code> array:</p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/chat \
+  -H "Authorization: Bearer &lt;jwt_token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What is the CAGR from $1M to $1.8M over 3 years?"},
+      {"role": "assistant", "content": "The CAGR is 21.64%..."},
+      {"role": "user", "content": "What if the period was 5 years instead?"}
+    ],
+    "agent_type": "financial-analyst"
+  }'
+</code></pre>
+<h3 id="with-tool-usage"><a class="header" href="#with-tool-usage">With Tool Usage</a></h3>
+<p>If your agent has tools enabled, ARES handles the tool calling loop automatically. You send a normal chat message, and the agent uses tools as needed:</p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/chat \
+  -H "Authorization: Bearer &lt;jwt_token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "Calculate 15% annual compound interest on $50,000 over 10 years"}
+    ],
+    "agent_type": "financial-analyst"
+  }'
+</code></pre>
+<p>The agent will internally call the calculator tool to compute <code>50000 * (1.15)^10</code> and return the formatted result.</p>
+<h3 id="streaming-1"><a class="header" href="#streaming-1">Streaming</a></h3>
+<p>For real-time responses, use the streaming endpoint:</p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/chat/stream \
+  -H "Authorization: Bearer &lt;jwt_token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "Explain the difference between NPV and IRR"}
+    ],
+    "agent_type": "financial-analyst"
+  }'
+</code></pre>
+<p>This returns a Server-Sent Events stream. See the <a href="guides/../enterprise/v1-api.html">V1 API docs</a> for client-side streaming examples.</p>
+<hr />
+<h2 id="iterating-on-the-system-prompt"><a class="header" href="#iterating-on-the-system-prompt">Iterating on the System Prompt</a></h2>
+<p>The system prompt is the most important part of your agent. Here are practical guidelines:</p>
+<h3 id="be-specific-about-format"><a class="header" href="#be-specific-about-format">Be Specific About Format</a></h3>
+<p>Bad:</p>
+<pre><code>You are a helpful assistant.
+</code></pre>
+<p>Good:</p>
+<pre><code>You are a financial analyst. When presenting calculations:
+- Show each step on its own line
+- Use the calculator tool for all arithmetic
+- Format currency with $ and commas
+- Round percentages to 2 decimal places
+- End with a bold summary line
+</code></pre>
+<h3 id="define-boundaries"><a class="header" href="#define-boundaries">Define Boundaries</a></h3>
+<p>Tell the agent what it should <em>not</em> do:</p>
+<pre><code>Constraints:
+- Never provide specific investment advice or recommend buying/selling securities
+- If asked about tax implications, recommend consulting a tax professional
+- Do not speculate about future market movements
+- If you don't have enough data to answer accurately, say so
+</code></pre>
+<h3 id="include-examples"><a class="header" href="#include-examples">Include Examples</a></h3>
+<p>For complex formatting requirements, show the agent what you want:</p>
+<pre><code>When comparing metrics, use this format:
+
+| Metric | 2024 | 2025 | Change |
+|--------|------|------|--------|
+| Revenue | $1.2M | $1.8M | +50% |
+| EBITDA | $300K | $480K | +60% |
+</code></pre>
+<h3 id="test-edge-cases"><a class="header" href="#test-edge-cases">Test Edge Cases</a></h3>
+<p>After writing your system prompt, test these scenarios:</p>
+<ol>
+<li><strong>Off-topic requests</strong> — Does the agent stay in character or helpfully redirect?</li>
+<li><strong>Ambiguous inputs</strong> — Does the agent ask for clarification?</li>
+<li><strong>Tool failures</strong> — Does the agent handle tool errors gracefully?</li>
+<li><strong>Long conversations</strong> — Does the agent maintain context over multiple turns?</li>
+</ol>
+<hr />
+<h2 id="adding-tool-access"><a class="header" href="#adding-tool-access">Adding Tool Access</a></h2>
+<p>Agents can use built-in tools to extend their capabilities:</p>
+<pre><code class="language-toml">[[agents]]
+name = "research-agent"
+model = "llama-3.3-70b"
+system_prompt = "You are a research agent with access to web search and calculation tools."
+tools = ["calculator", "web_search"]
+</code></pre>
+<p>Available built-in tools:</p>
+<div class="table-wrapper"><table><thead><tr><th>Tool</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>calculator</code></td><td>Evaluate mathematical expressions</td></tr>
+<tr><td><code>web_search</code></td><td>Search the web for current information</td></tr>
+</tbody></table>
+</div>
+<p>See the <a href="guides/./tool-calling.html">Tool Calling guide</a> for details on how tool execution works.</p>
+<hr />
+<h2 id="choosing-a-model"><a class="header" href="#choosing-a-model">Choosing a Model</a></h2>
+<p>Different models have different strengths. Consider these factors when choosing:</p>
+<div class="table-wrapper"><table><thead><tr><th>Model</th><th>Provider</th><th>Best For</th></tr></thead><tbody>
+<tr><td><code>llama-3.3-70b</code></td><td>Groq</td><td>General-purpose, fast, good reasoning</td></tr>
+<tr><td><code>llama-3.1-8b</code></td><td>Groq</td><td>Simple tasks, lowest latency</td></tr>
+<tr><td><code>deepseek-r1</code></td><td>NVIDIA</td><td>Complex reasoning, chain-of-thought</td></tr>
+<tr><td><code>claude-3.5-sonnet</code></td><td>Anthropic</td><td>Nuanced writing, careful analysis</td></tr>
+</tbody></table>
+</div>
+<p>Start with <code>llama-3.3-70b</code> for most use cases. It offers a strong balance of capability, speed, and cost. Move to a specialized model only if you have a specific need.</p>
+<p>Check available models with:</p>
+<pre><code class="language-bash">curl http://localhost:3000/api/admin/models \
+  -H "X-Admin-Secret: your-admin-secret"
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="guide-tool-calling"><a class="header" href="#guide-tool-calling">Guide: Tool Calling</a></h1>
+<p>ARES supports tool calling (also known as function calling), allowing agents to use external tools during a conversation. When an agent needs to perform a calculation, search the web, or interact with an external system, it requests a tool call. ARES executes the tool and feeds the result back to the agent, which then incorporates it into its response.</p>
+<hr />
+<h2 id="how-it-works-1"><a class="header" href="#how-it-works-1">How It Works</a></h2>
+<p>Tool calling in ARES follows a multi-turn loop managed by the ToolCoordinator:</p>
+<pre><code>User message
+    |
+    v
+Agent (LLM) generates response
+    |
+    ├── If response is final text → return to user
+    |
+    └── If response contains tool_calls →
+            |
+            v
+        ARES executes each tool
+            |
+            v
+        Results sent back to agent
+            |
+            v
+        Agent generates next response (may call more tools or return final text)
+</code></pre>
+<p>This loop continues until the agent produces a final text response or the maximum iteration limit is reached. The entire process is transparent to the caller — you send a chat message and receive a complete response.</p>
+<hr />
+<h2 id="built-in-tools"><a class="header" href="#built-in-tools">Built-in Tools</a></h2>
+<p>ARES ships with two built-in tools:</p>
+<h3 id="calculator"><a class="header" href="#calculator">calculator</a></h3>
+<p>Evaluates mathematical expressions and returns the result.</p>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Basic arithmetic: <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code></li>
+<li>Exponents: <code>^</code> or <code>**</code></li>
+<li>Parentheses for grouping</li>
+<li>Common functions: <code>sqrt</code>, <code>sin</code>, <code>cos</code>, <code>log</code>, <code>ln</code>, <code>abs</code></li>
+<li>Constants: <code>pi</code>, <code>e</code></li>
+</ul>
+<p><strong>Example tool call from agent:</strong></p>
+<pre><code class="language-json">{
+  "name": "calculator",
+  "arguments": {
+    "expression": "50000 * (1.15 ^ 10)"
+  }
+}
+</code></pre>
+<p><strong>Result returned to agent:</strong></p>
+<pre><code class="language-json">{
+  "result": 202278.25
+}
+</code></pre>
+<h3 id="web_search"><a class="header" href="#web_search">web_search</a></h3>
+<p>Searches the web and returns relevant results.</p>
+<p><strong>Example tool call from agent:</strong></p>
+<pre><code class="language-json">{
+  "name": "web_search",
+  "arguments": {
+    "query": "current US federal interest rate 2026"
+  }
+}
+</code></pre>
+<p><strong>Result returned to agent:</strong></p>
+<pre><code class="language-json">{
+  "results": [
+    {
+      "title": "Federal Reserve holds rate at 4.25%",
+      "url": "https://...",
+      "snippet": "The Federal Reserve maintained its benchmark rate..."
+    }
+  ]
+}
+</code></pre>
+<hr />
+<h2 id="configuring-tool-access"><a class="header" href="#configuring-tool-access">Configuring Tool Access</a></h2>
+<h3 id="per-agent-tool-filtering"><a class="header" href="#per-agent-tool-filtering">Per-Agent Tool Filtering</a></h3>
+<p>Each agent specifies which tools it can use. An agent without tools configured cannot make tool calls, even if the underlying model supports them.</p>
+<p><strong>In ares.toml:</strong></p>
+<pre><code class="language-toml">[[agents]]
+name = "research-assistant"
+model = "llama-3.3-70b"
+system_prompt = "You are a research assistant with access to web search and calculation tools."
+tools = ["calculator", "web_search"]
+
+[[agents]]
+name = "math-tutor"
+model = "llama-3.3-70b"
+system_prompt = "You are a math tutor. Use the calculator to verify your work."
+tools = ["calculator"]
+
+[[agents]]
+name = "simple-chat"
+model = "llama-3.3-70b"
+system_prompt = "You are a conversational assistant."
+tools = []
+</code></pre>
+<p><strong>Via the API:</strong></p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/admin/tenants/{id}/agents \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "analyst",
+    "agent_type": "analyst",
+    "config": {
+      "model": "llama-3.3-70b",
+      "system_prompt": "You are a data analyst.",
+      "tools": ["calculator", "web_search"],
+      "max_tokens": 4096
+    }
+  }'
+</code></pre>
+<hr />
+<h2 id="toolcoordinator"><a class="header" href="#toolcoordinator">ToolCoordinator</a></h2>
+<p>The ToolCoordinator is the internal component that manages the tool calling loop. It handles:</p>
+<ul>
+<li><strong>Multi-turn orchestration</strong> — Sending tool results back to the model and processing follow-up tool calls</li>
+<li><strong>Parallel execution</strong> — When the model requests multiple tools in a single turn, they execute concurrently</li>
+<li><strong>Timeout enforcement</strong> — Individual tool calls are bounded by a configurable timeout</li>
+<li><strong>Iteration limits</strong> — Prevents infinite tool-calling loops</li>
+</ul>
+<h3 id="configuration"><a class="header" href="#configuration">Configuration</a></h3>
+<p>Tool calling behavior is configured at the server level:</p>
+<div class="table-wrapper"><table><thead><tr><th>Setting</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>max_iterations</code></td><td><code>10</code></td><td>Maximum tool-calling rounds before forcing a text response</td></tr>
+<tr><td><code>parallel_execution</code></td><td><code>true</code></td><td>Execute multiple tool calls concurrently within a single turn</td></tr>
+<tr><td><code>tool_timeout</code></td><td><code>30s</code></td><td>Maximum time for a single tool execution</td></tr>
+</tbody></table>
+</div>
+<p>If an agent hits the iteration limit, ARES instructs the model to produce a final response using the information gathered so far.</p>
+<hr />
+<h2 id="provider-compatibility"><a class="header" href="#provider-compatibility">Provider Compatibility</a></h2>
+<p>Tool calling requires model support. Not all providers and models support function calling:</p>
+<div class="table-wrapper"><table><thead><tr><th>Provider</th><th>Models</th><th>Tool Calling</th></tr></thead><tbody>
+<tr><td>Groq</td><td>llama-3.3-70b, llama-3.1-8b</td><td>Supported</td></tr>
+<tr><td>Anthropic</td><td>claude-3.5-sonnet</td><td>Supported</td></tr>
+<tr><td>NVIDIA</td><td>deepseek-r1</td><td>Not supported</td></tr>
+<tr><td>Ollama</td><td>Varies by model</td><td>Model-dependent</td></tr>
+</tbody></table>
+</div>
+<p>If you assign tools to an agent using a model that does not support tool calling, the tools will be ignored and the agent will respond with text only.</p>
+<hr />
+<h2 id="example-conversation-with-tool-calls"><a class="header" href="#example-conversation-with-tool-calls">Example: Conversation with Tool Calls</a></h2>
+<p>Here is what happens internally when a user asks a question that requires tool use.</p>
+<p><strong>User sends:</strong></p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/v1/chat \
+  -H "Authorization: Bearer ares_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What is the monthly payment on a $400,000 mortgage at 6.5% for 30 years?"}
+    ],
+    "agent_type": "financial-analyst"
+  }'
+</code></pre>
+<p><strong>Internal flow:</strong></p>
+<ol>
+<li>ARES sends the message to the LLM with the calculator tool definition</li>
+<li>The LLM responds with a tool call:
+<pre><code class="language-json">{
+  "tool_calls": [{
+    "name": "calculator",
+    "arguments": {"expression": "(400000 * (0.065/12) * (1 + 0.065/12)^360) / ((1 + 0.065/12)^360 - 1)"}
+  }]
+}
+</code></pre>
+</li>
+<li>ARES executes the calculator and gets <code>2528.27</code></li>
+<li>ARES sends the result back to the LLM</li>
+<li>The LLM produces a final text response incorporating the calculated value</li>
+</ol>
+<p><strong>User receives:</strong></p>
+<pre><code class="language-json">{
+  "content": "The monthly payment on a $400,000 mortgage at 6.5% APR over 30 years would be **$2,528.27**.\n\nThis is calculated using the standard amortization formula...",
+  "model": "llama-3.3-70b",
+  "tokens_used": 412
+}
+</code></pre>
+<p>The tool-calling steps are invisible to the caller. You send a question and receive a complete answer.</p>
+<hr />
+<h2 id="example-multiple-tool-calls-in-one-turn"><a class="header" href="#example-multiple-tool-calls-in-one-turn">Example: Multiple Tool Calls in One Turn</a></h2>
+<p>Models can request multiple tools simultaneously. For example, a research agent asked to "Compare the population of Tokyo and New York" might request two web searches in parallel:</p>
+<pre><code class="language-json">{
+  "tool_calls": [
+    {"name": "web_search", "arguments": {"query": "Tokyo population 2026"}},
+    {"name": "web_search", "arguments": {"query": "New York population 2026"}}
+  ]
+}
+</code></pre>
+<p>With <code>parallel_execution</code> enabled (the default), both searches execute concurrently. The results are sent back to the model together, and it produces a response comparing both cities.</p>
+<hr />
+<h2 id="example-multi-turn-tool-usage"><a class="header" href="#example-multi-turn-tool-usage">Example: Multi-Turn Tool Usage</a></h2>
+<p>Some questions require multiple rounds of tool use. For example:</p>
+<p><strong>User:</strong> "What is 15% of the GDP of France?"</p>
+<p><strong>Turn 1 — Agent calls web_search:</strong></p>
+<pre><code class="language-json">{"name": "web_search", "arguments": {"query": "France GDP 2026 USD"}}
+</code></pre>
+<p>Result: France's GDP is approximately $3.1 trillion.</p>
+<p><strong>Turn 2 — Agent calls calculator:</strong></p>
+<pre><code class="language-json">{"name": "calculator", "arguments": {"expression": "3100000000000 * 0.15"}}
+</code></pre>
+<p>Result: 465,000,000,000</p>
+<p><strong>Turn 3 — Agent produces final response:</strong>
+"15% of France's GDP (approximately $3.1 trillion) is <strong>$465 billion</strong>."</p>
+<p>Each round counts toward the <code>max_iterations</code> limit.</p>
+<hr />
+<h2 id="error-handling-2"><a class="header" href="#error-handling-2">Error Handling</a></h2>
+<p>If a tool call fails (timeout, invalid input, etc.), ARES returns an error result to the model:</p>
+<pre><code class="language-json">{
+  "tool_result": {
+    "name": "web_search",
+    "error": "Search timed out after 30 seconds"
+  }
+}
+</code></pre>
+<p>The model can then decide to:</p>
+<ul>
+<li>Retry the tool call with different parameters</li>
+<li>Use a different tool</li>
+<li>Respond with what it knows, noting the tool failure</li>
+</ul>
+<p>Well-designed system prompts should instruct the agent on how to handle tool failures gracefully.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="changelog"><a class="header" href="#changelog">Changelog</a></h1>
+<p>All notable changes to ARES are documented here. This project follows <a href="https://semver.org/">Semantic Versioning</a>.</p>
+<hr />
+<h2 id="063"><a class="header" href="#063">0.6.3</a></h2>
+<p><strong>Multi-provider LLM, tenant agents, and enterprise metering.</strong></p>
+<p>This release transforms ARES from a single-provider system into a full multi-provider LLM platform with enterprise-grade tenant management.</p>
+<h3 id="added"><a class="header" href="#added">Added</a></h3>
+<ul>
+<li><strong>Multi-provider LLM routing</strong> — Support for 4 providers (Groq, Anthropic, NVIDIA DeepSeek, Ollama) and 11 models through a unified API.</li>
+<li><strong>Model tier system</strong> — <code>fast</code>, <code>balanced</code>, <code>powerful</code>, <code>deepseek</code>, and <code>local</code> tiers with automatic provider routing.</li>
+<li><strong>Tenant agent system</strong> — Agents stored in the database per tenant. Template-based provisioning with full CRUD via admin API.</li>
+<li><strong>Agent templates</strong> — Seed templates applied automatically on startup. New tenants receive a default agent set.</li>
+<li><strong>Usage metering</strong> — <code>usage_events</code> table, <code>monthly_usage_cache</code>, and <code>daily_rate_limits</code> for tracking tokens, requests, and costs per tenant.</li>
+<li><strong>API key authentication</strong> — <code>Authorization: Bearer ares_xxx</code> on <code>/v1/*</code> routes with tenant scoping.</li>
+<li><strong>Kasino enterprise agents</strong> — 4 specialized agent templates (<code>kasino-classifier</code>, <code>kasino-risk</code>, <code>kasino-transaction</code>, <code>kasino-report</code>) for the first enterprise client.</li>
+<li><strong>Kasino API routes</strong> — Both JWT-protected (<code>/api/kasino/*</code>) and API-key (<code>/v1/kasino/*</code>) endpoints.</li>
+<li><strong>Admin provisioning API</strong> — Atomic tenant creation: schema + agents + API key in a single operation.</li>
+</ul>
+<h3 id="changed"><a class="header" href="#changed">Changed</a></h3>
+<ul>
+<li>Chat handler now resolves <code>tenant_id</code> from authentication context instead of hardcoded values.</li>
+<li>Provider configuration moved from code to <code>ares.toml</code> for runtime flexibility.</li>
+<li>Rate limit enforcement now operates at both the provider and tenant level.</li>
+</ul>
+<h3 id="fixed"><a class="header" href="#fixed">Fixed</a></h3>
+<ul>
+<li>Chat handler tenant_id resolution for multi-tenant requests.</li>
+</ul>
+<hr />
+<h2 id="062"><a class="header" href="#062">0.6.2</a></h2>
+<p><strong>Streaming and SSE support.</strong></p>
+<h3 id="added-1"><a class="header" href="#added-1">Added</a></h3>
+<ul>
+<li><strong>Server-Sent Events streaming</strong> — <code>POST /v1/chat/stream</code> endpoint for real-time, token-by-token responses.</li>
+<li><strong>Stream handler</strong> — Unified streaming across all providers with consistent SSE format.</li>
+<li><strong>Context continuation</strong> — <code>context_id</code> parameter for maintaining conversation history across requests.</li>
+</ul>
+<h3 id="changed-1"><a class="header" href="#changed-1">Changed</a></h3>
+<ul>
+<li>Response format standardized to <code>{"response", "agent", "context_id"}</code> across all endpoints.</li>
+</ul>
+<hr />
+<h2 id="061"><a class="header" href="#061">0.6.1</a></h2>
+<p><strong>Tool calling and RAG foundations.</strong></p>
+<h3 id="added-2"><a class="header" href="#added-2">Added</a></h3>
+<ul>
+<li><strong>Tool calling framework</strong> — Define tools per agent. ARES manages the tool-call loop, execution, and response assembly.</li>
+<li><strong>RAG pipeline</strong> — Retrieval-augmented generation with pluggable document stores.</li>
+<li><strong>Workflow engine</strong> — Chain multiple agents into multi-step workflows with deterministic execution.</li>
+</ul>
+<h3 id="changed-2"><a class="header" href="#changed-2">Changed</a></h3>
+<ul>
+<li>Agent configuration schema extended to support tool definitions and RAG settings.</li>
+</ul>
+<hr />
+<h2 id="050"><a class="header" href="#050">0.5.0</a></h2>
+<p><strong>JWT authentication and user management.</strong></p>
+<h3 id="added-3"><a class="header" href="#added-3">Added</a></h3>
+<ul>
+<li><strong>User registration and login</strong> — <code>POST /api/auth/register</code>, <code>POST /api/auth/login</code>.</li>
+<li><strong>JWT token lifecycle</strong> — 15-minute access tokens, refresh token rotation, logout/invalidation.</li>
+<li><strong>Role-based access</strong> — User roles with permission checks on protected routes.</li>
+<li><strong>Admin authentication</strong> — <code>X-Admin-Secret</code> header for internal administration endpoints.</li>
+</ul>
+<h3 id="changed-3"><a class="header" href="#changed-3">Changed</a></h3>
+<ul>
+<li>All <code>/api/*</code> routes now require JWT authentication.</li>
+<li>Error responses standardized with <code>error</code> and <code>code</code> fields.</li>
+</ul>
+<hr />
+<h2 id="040"><a class="header" href="#040">0.4.0</a></h2>
+<p><strong>PostgreSQL backend and multi-tenant schema.</strong></p>
+<h3 id="added-4"><a class="header" href="#added-4">Added</a></h3>
+<ul>
+<li><strong>PostgreSQL integration</strong> — Full migration from in-memory storage to PostgreSQL with <code>sqlx</code>.</li>
+<li><strong>Auto-migration</strong> — <code>sqlx::migrate!()</code> runs on startup. No manual SQL required.</li>
+<li><strong>Tenant schema</strong> — <code>tenants</code>, <code>tenant_agents</code>, and <code>api_keys</code> tables with foreign key relationships.</li>
+<li><strong>Tenant tiers</strong> — Free, Dev, Pro, and Enterprise tiers with configurable limits.</li>
+</ul>
+<h3 id="changed-4"><a class="header" href="#changed-4">Changed</a></h3>
+<ul>
+<li>All state persistence moved from in-memory structures to PostgreSQL.</li>
+<li>Connection pooling via <code>sqlx::PgPool</code> with configurable pool size.</li>
+</ul>
+<hr />
+<p>For the complete commit history, see the <a href="https://github.com/dirmacs/ares">ARES repository on GitHub</a>.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+    </div>
+    </body>
+</html>

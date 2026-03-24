@@ -1,0 +1,452 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Tool Calling - ARES Documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="A.R.E.S — Agentic Retrieval Enhanced Server. Multi-provider LLM platform with tool calling, RAG, and multi-tenant enterprise support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="../getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart</a></li><li class="chapter-item expanded "><a href="../getting-started/authentication.html"><strong aria-hidden="true">2.</strong> Authentication</a></li><li class="chapter-item expanded "><a href="../getting-started/models.html"><strong aria-hidden="true">3.</strong> Models & Providers</a></li><li class="chapter-item expanded affix "><li class="part-title">API Reference</li><li class="chapter-item expanded "><a href="../api/chat.html"><strong aria-hidden="true">4.</strong> Chat</a></li><li class="chapter-item expanded "><a href="../api/agents.html"><strong aria-hidden="true">5.</strong> Agents</a></li><li class="chapter-item expanded "><a href="../api/workflows.html"><strong aria-hidden="true">6.</strong> Workflows</a></li><li class="chapter-item expanded "><a href="../api/research.html"><strong aria-hidden="true">7.</strong> Research</a></li><li class="chapter-item expanded "><a href="../api/rag.html"><strong aria-hidden="true">8.</strong> RAG</a></li><li class="chapter-item expanded "><a href="../api/streaming.html"><strong aria-hidden="true">9.</strong> Streaming</a></li><li class="chapter-item expanded affix "><li class="part-title">Enterprise</li><li class="chapter-item expanded "><a href="../enterprise/v1-api.html"><strong aria-hidden="true">10.</strong> V1 Client API</a></li><li class="chapter-item expanded "><a href="../enterprise/admin-api.html"><strong aria-hidden="true">11.</strong> Admin API</a></li><li class="chapter-item expanded "><a href="../enterprise/deploy-api.html"><strong aria-hidden="true">12.</strong> Deployment API</a></li><li class="chapter-item expanded "><a href="../enterprise/multi-tenant.html"><strong aria-hidden="true">13.</strong> Multi-Tenant Setup</a></li><li class="chapter-item expanded affix "><li class="part-title">Platform</li><li class="chapter-item expanded "><a href="../platform/rate-limits.html"><strong aria-hidden="true">14.</strong> Rate Limits & Quotas</a></li><li class="chapter-item expanded "><a href="../platform/errors.html"><strong aria-hidden="true">15.</strong> Error Handling</a></li><li class="chapter-item expanded "><a href="../platform/self-hosting.html"><strong aria-hidden="true">16.</strong> Self-Hosting</a></li><li class="chapter-item expanded affix "><li class="part-title">Extending ARES</li><li class="chapter-item expanded "><a href="../extending/context-provider.html"><strong aria-hidden="true">17.</strong> ContextProvider Trait</a></li><li class="chapter-item expanded "><a href="../extending/base-router.html"><strong aria-hidden="true">18.</strong> Building on base_router()</a></li><li class="chapter-item expanded affix "><li class="part-title">Guides</li><li class="chapter-item expanded "><a href="../guides/chat-agent.html"><strong aria-hidden="true">19.</strong> Build a Chat Agent</a></li><li class="chapter-item expanded "><a href="../guides/tool-calling.html" class="active"><strong aria-hidden="true">20.</strong> Tool Calling</a></li><li class="chapter-item expanded affix "><li class="part-title">Resources</li><li class="chapter-item expanded "><a href="../changelog.html"><strong aria-hidden="true">21.</strong> Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/guides/tool-calling.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="guide-tool-calling"><a class="header" href="#guide-tool-calling">Guide: Tool Calling</a></h1>
+<p>ARES supports tool calling (also known as function calling), allowing agents to use external tools during a conversation. When an agent needs to perform a calculation, search the web, or interact with an external system, it requests a tool call. ARES executes the tool and feeds the result back to the agent, which then incorporates it into its response.</p>
+<hr />
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How It Works</a></h2>
+<p>Tool calling in ARES follows a multi-turn loop managed by the ToolCoordinator:</p>
+<pre><code>User message
+    |
+    v
+Agent (LLM) generates response
+    |
+    ├── If response is final text → return to user
+    |
+    └── If response contains tool_calls →
+            |
+            v
+        ARES executes each tool
+            |
+            v
+        Results sent back to agent
+            |
+            v
+        Agent generates next response (may call more tools or return final text)
+</code></pre>
+<p>This loop continues until the agent produces a final text response or the maximum iteration limit is reached. The entire process is transparent to the caller — you send a chat message and receive a complete response.</p>
+<hr />
+<h2 id="built-in-tools"><a class="header" href="#built-in-tools">Built-in Tools</a></h2>
+<p>ARES ships with two built-in tools:</p>
+<h3 id="calculator"><a class="header" href="#calculator">calculator</a></h3>
+<p>Evaluates mathematical expressions and returns the result.</p>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Basic arithmetic: <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code></li>
+<li>Exponents: <code>^</code> or <code>**</code></li>
+<li>Parentheses for grouping</li>
+<li>Common functions: <code>sqrt</code>, <code>sin</code>, <code>cos</code>, <code>log</code>, <code>ln</code>, <code>abs</code></li>
+<li>Constants: <code>pi</code>, <code>e</code></li>
+</ul>
+<p><strong>Example tool call from agent:</strong></p>
+<pre><code class="language-json">{
+  "name": "calculator",
+  "arguments": {
+    "expression": "50000 * (1.15 ^ 10)"
+  }
+}
+</code></pre>
+<p><strong>Result returned to agent:</strong></p>
+<pre><code class="language-json">{
+  "result": 202278.25
+}
+</code></pre>
+<h3 id="web_search"><a class="header" href="#web_search">web_search</a></h3>
+<p>Searches the web and returns relevant results.</p>
+<p><strong>Example tool call from agent:</strong></p>
+<pre><code class="language-json">{
+  "name": "web_search",
+  "arguments": {
+    "query": "current US federal interest rate 2026"
+  }
+}
+</code></pre>
+<p><strong>Result returned to agent:</strong></p>
+<pre><code class="language-json">{
+  "results": [
+    {
+      "title": "Federal Reserve holds rate at 4.25%",
+      "url": "https://...",
+      "snippet": "The Federal Reserve maintained its benchmark rate..."
+    }
+  ]
+}
+</code></pre>
+<hr />
+<h2 id="configuring-tool-access"><a class="header" href="#configuring-tool-access">Configuring Tool Access</a></h2>
+<h3 id="per-agent-tool-filtering"><a class="header" href="#per-agent-tool-filtering">Per-Agent Tool Filtering</a></h3>
+<p>Each agent specifies which tools it can use. An agent without tools configured cannot make tool calls, even if the underlying model supports them.</p>
+<p><strong>In ares.toml:</strong></p>
+<pre><code class="language-toml">[[agents]]
+name = "research-assistant"
+model = "llama-3.3-70b"
+system_prompt = "You are a research assistant with access to web search and calculation tools."
+tools = ["calculator", "web_search"]
+
+[[agents]]
+name = "math-tutor"
+model = "llama-3.3-70b"
+system_prompt = "You are a math tutor. Use the calculator to verify your work."
+tools = ["calculator"]
+
+[[agents]]
+name = "simple-chat"
+model = "llama-3.3-70b"
+system_prompt = "You are a conversational assistant."
+tools = []
+</code></pre>
+<p><strong>Via the API:</strong></p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/api/admin/tenants/{id}/agents \
+  -H "X-Admin-Secret: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "analyst",
+    "agent_type": "analyst",
+    "config": {
+      "model": "llama-3.3-70b",
+      "system_prompt": "You are a data analyst.",
+      "tools": ["calculator", "web_search"],
+      "max_tokens": 4096
+    }
+  }'
+</code></pre>
+<hr />
+<h2 id="toolcoordinator"><a class="header" href="#toolcoordinator">ToolCoordinator</a></h2>
+<p>The ToolCoordinator is the internal component that manages the tool calling loop. It handles:</p>
+<ul>
+<li><strong>Multi-turn orchestration</strong> — Sending tool results back to the model and processing follow-up tool calls</li>
+<li><strong>Parallel execution</strong> — When the model requests multiple tools in a single turn, they execute concurrently</li>
+<li><strong>Timeout enforcement</strong> — Individual tool calls are bounded by a configurable timeout</li>
+<li><strong>Iteration limits</strong> — Prevents infinite tool-calling loops</li>
+</ul>
+<h3 id="configuration"><a class="header" href="#configuration">Configuration</a></h3>
+<p>Tool calling behavior is configured at the server level:</p>
+<div class="table-wrapper"><table><thead><tr><th>Setting</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>max_iterations</code></td><td><code>10</code></td><td>Maximum tool-calling rounds before forcing a text response</td></tr>
+<tr><td><code>parallel_execution</code></td><td><code>true</code></td><td>Execute multiple tool calls concurrently within a single turn</td></tr>
+<tr><td><code>tool_timeout</code></td><td><code>30s</code></td><td>Maximum time for a single tool execution</td></tr>
+</tbody></table>
+</div>
+<p>If an agent hits the iteration limit, ARES instructs the model to produce a final response using the information gathered so far.</p>
+<hr />
+<h2 id="provider-compatibility"><a class="header" href="#provider-compatibility">Provider Compatibility</a></h2>
+<p>Tool calling requires model support. Not all providers and models support function calling:</p>
+<div class="table-wrapper"><table><thead><tr><th>Provider</th><th>Models</th><th>Tool Calling</th></tr></thead><tbody>
+<tr><td>Groq</td><td>llama-3.3-70b, llama-3.1-8b</td><td>Supported</td></tr>
+<tr><td>Anthropic</td><td>claude-3.5-sonnet</td><td>Supported</td></tr>
+<tr><td>NVIDIA</td><td>deepseek-r1</td><td>Not supported</td></tr>
+<tr><td>Ollama</td><td>Varies by model</td><td>Model-dependent</td></tr>
+</tbody></table>
+</div>
+<p>If you assign tools to an agent using a model that does not support tool calling, the tools will be ignored and the agent will respond with text only.</p>
+<hr />
+<h2 id="example-conversation-with-tool-calls"><a class="header" href="#example-conversation-with-tool-calls">Example: Conversation with Tool Calls</a></h2>
+<p>Here is what happens internally when a user asks a question that requires tool use.</p>
+<p><strong>User sends:</strong></p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/v1/chat \
+  -H "Authorization: Bearer ares_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What is the monthly payment on a $400,000 mortgage at 6.5% for 30 years?"}
+    ],
+    "agent_type": "financial-analyst"
+  }'
+</code></pre>
+<p><strong>Internal flow:</strong></p>
+<ol>
+<li>ARES sends the message to the LLM with the calculator tool definition</li>
+<li>The LLM responds with a tool call:
+<pre><code class="language-json">{
+  "tool_calls": [{
+    "name": "calculator",
+    "arguments": {"expression": "(400000 * (0.065/12) * (1 + 0.065/12)^360) / ((1 + 0.065/12)^360 - 1)"}
+  }]
+}
+</code></pre>
+</li>
+<li>ARES executes the calculator and gets <code>2528.27</code></li>
+<li>ARES sends the result back to the LLM</li>
+<li>The LLM produces a final text response incorporating the calculated value</li>
+</ol>
+<p><strong>User receives:</strong></p>
+<pre><code class="language-json">{
+  "content": "The monthly payment on a $400,000 mortgage at 6.5% APR over 30 years would be **$2,528.27**.\n\nThis is calculated using the standard amortization formula...",
+  "model": "llama-3.3-70b",
+  "tokens_used": 412
+}
+</code></pre>
+<p>The tool-calling steps are invisible to the caller. You send a question and receive a complete answer.</p>
+<hr />
+<h2 id="example-multiple-tool-calls-in-one-turn"><a class="header" href="#example-multiple-tool-calls-in-one-turn">Example: Multiple Tool Calls in One Turn</a></h2>
+<p>Models can request multiple tools simultaneously. For example, a research agent asked to "Compare the population of Tokyo and New York" might request two web searches in parallel:</p>
+<pre><code class="language-json">{
+  "tool_calls": [
+    {"name": "web_search", "arguments": {"query": "Tokyo population 2026"}},
+    {"name": "web_search", "arguments": {"query": "New York population 2026"}}
+  ]
+}
+</code></pre>
+<p>With <code>parallel_execution</code> enabled (the default), both searches execute concurrently. The results are sent back to the model together, and it produces a response comparing both cities.</p>
+<hr />
+<h2 id="example-multi-turn-tool-usage"><a class="header" href="#example-multi-turn-tool-usage">Example: Multi-Turn Tool Usage</a></h2>
+<p>Some questions require multiple rounds of tool use. For example:</p>
+<p><strong>User:</strong> "What is 15% of the GDP of France?"</p>
+<p><strong>Turn 1 — Agent calls web_search:</strong></p>
+<pre><code class="language-json">{"name": "web_search", "arguments": {"query": "France GDP 2026 USD"}}
+</code></pre>
+<p>Result: France's GDP is approximately $3.1 trillion.</p>
+<p><strong>Turn 2 — Agent calls calculator:</strong></p>
+<pre><code class="language-json">{"name": "calculator", "arguments": {"expression": "3100000000000 * 0.15"}}
+</code></pre>
+<p>Result: 465,000,000,000</p>
+<p><strong>Turn 3 — Agent produces final response:</strong>
+"15% of France's GDP (approximately $3.1 trillion) is <strong>$465 billion</strong>."</p>
+<p>Each round counts toward the <code>max_iterations</code> limit.</p>
+<hr />
+<h2 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h2>
+<p>If a tool call fails (timeout, invalid input, etc.), ARES returns an error result to the model:</p>
+<pre><code class="language-json">{
+  "tool_result": {
+    "name": "web_search",
+    "error": "Search timed out after 30 seconds"
+  }
+}
+</code></pre>
+<p>The model can then decide to:</p>
+<ul>
+<li>Retry the tool call with different parameters</li>
+<li>Use a different tool</li>
+<li>Respond with what it knows, noting the tool failure</li>
+</ul>
+<p>Well-designed system prompts should instruct the agent on how to handle tool failures gracefully.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../guides/chat-agent.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../changelog.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../guides/chat-agent.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../changelog.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

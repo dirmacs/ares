@@ -417,8 +417,13 @@ mod tests {
             async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
                 Ok("mock".to_string())
             }
-            async fn generate_with_history(&self, _: &[(String, String)]) -> Result<String> {
-                Ok("mock".to_string())
+            async fn generate_with_history(&self, _: &[(String, String)]) -> Result<LLMResponse> {
+                Ok(LLMResponse {
+                    content: "mock".to_string(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".to_string(),
+                    usage: None,
+                })
             }
             async fn generate_with_tools(
                 &self,
@@ -508,8 +513,13 @@ mod tests {
             async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
                 Ok("mock".to_string())
             }
-            async fn generate_with_history(&self, _: &[(String, String)]) -> Result<String> {
-                Ok("mock".to_string())
+            async fn generate_with_history(&self, _: &[(String, String)]) -> Result<LLMResponse> {
+                Ok(LLMResponse {
+                    content: "mock".to_string(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".to_string(),
+                    usage: None,
+                })
             }
             async fn generate_with_tools(
                 &self,

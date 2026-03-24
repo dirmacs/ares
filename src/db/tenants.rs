@@ -419,7 +419,7 @@ impl TenantDb {
 
 fn generate_api_key() -> String {
     let bytes: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
-    hex::encode(bytes)
+    format!("ares_{}", hex::encode(bytes))
 }
 
 fn hash_api_key(raw_key: &str) -> String {

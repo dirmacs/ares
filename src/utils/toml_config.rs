@@ -1564,7 +1564,7 @@ api_key_env = "TEST_API_KEY"
         assert_eq!(config.auth.jwt_refresh_expiry, 604800);
 
         // Database defaults
-        assert_eq!(config.database.url, "./data/ares.db");
+        assert_eq!(config.database.url, "postgres://postgres:postgres@localhost:5432/ares");
 
         // RAG defaults
         assert_eq!(config.rag.embedding_model, "bge-small-en-v1.5");

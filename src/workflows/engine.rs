@@ -387,8 +387,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_workflow_engine_creation() {
+    #[tokio::test]
+    #[ignore] // Requires running PostgreSQL — run with: cargo test -- --ignored
+    async fn test_workflow_engine_creation() {
         let config = Arc::new(create_test_config());
         let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
         let tool_registry = Arc::new(ToolRegistry::new());
@@ -413,10 +414,10 @@ mod tests {
                 .unwrap(),
             ),
             db: Arc::new(
-                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
+                crate::db::PostgresClient::new_memory().await.unwrap(),
             ),
             tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
+                crate::db::PostgresClient::new_memory().await.unwrap(),
             ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
@@ -443,8 +444,9 @@ mod tests {
         assert!(!engine.has_workflow("nonexistent"));
     }
 
-    #[test]
-    fn test_available_workflows() {
+    #[tokio::test]
+    #[ignore] // Requires running PostgreSQL
+    async fn test_available_workflows() {
         let config = Arc::new(create_test_config());
         let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
         let tool_registry = Arc::new(ToolRegistry::new());
@@ -469,10 +471,10 @@ mod tests {
                 .unwrap(),
             ),
             db: Arc::new(
-                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
+                crate::db::PostgresClient::new_memory().await.unwrap(),
             ),
             tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
+                crate::db::PostgresClient::new_memory().await.unwrap(),
             ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
@@ -499,8 +501,9 @@ mod tests {
         assert!(workflows.contains(&"research".to_string()));
     }
 
-    #[test]
-    fn test_get_workflow_config() {
+    #[tokio::test]
+    #[ignore] // Requires running PostgreSQL
+    async fn test_get_workflow_config() {
         let config = Arc::new(create_test_config());
         let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
         let tool_registry = Arc::new(ToolRegistry::new());
@@ -525,10 +528,10 @@ mod tests {
                 .unwrap(),
             ),
             db: Arc::new(
-                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
+                crate::db::PostgresClient::new_memory().await.unwrap(),
             ),
             tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                futures::executor::block_on(crate::db::PostgresClient::new_memory()).unwrap(),
+                crate::db::PostgresClient::new_memory().await.unwrap(),
             ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),

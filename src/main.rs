@@ -657,8 +657,8 @@ async fn run_server(
             api::routes::create_router(state.auth_service.clone(), state.tenant_db.clone()),
         );
 
-    // DSprint, DCRM, POM routes are registered by ares-dirmacs, not here.
-    // Extension crates call app.nest("/v1/dsprint", ...) in their own main.rs.
+    // Proprietary routes are registered by ares-dirmacs, not here.
+    // Extension crates call app.merge(), ...) in their own main.rs.
 
     // Swagger UI (optional - requires network during build)
     #[cfg(feature = "swagger-ui")]

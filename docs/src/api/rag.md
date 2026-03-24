@@ -54,7 +54,7 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 #### curl
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/rag/ingest \
+curl -X POST http://localhost:3000/api/rag/ingest \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -d '{
@@ -75,7 +75,7 @@ curl -X POST https://api.ares.dirmacs.com/api/rag/ingest \
 import requests
 
 response = requests.post(
-    "https://api.ares.dirmacs.com/api/rag/ingest",
+    "http://localhost:3000/api/rag/ingest",
     headers={
         "Content-Type": "application/json",
         "Authorization": "Bearer eyJhbGciOi..."
@@ -95,7 +95,7 @@ print(f"Created {result['chunks_created']} chunks in '{result['collection']}'")
 #### JavaScript
 
 ```javascript
-const response = await fetch("https://api.ares.dirmacs.com/api/rag/ingest", {
+const response = await fetch("http://localhost:3000/api/rag/ingest", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
@@ -155,7 +155,7 @@ The response contains an array of matching document chunks, each with its conten
 #### curl
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/rag/search \
+curl -X POST http://localhost:3000/api/rag/search \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -d '{
@@ -173,7 +173,7 @@ curl -X POST https://api.ares.dirmacs.com/api/rag/search \
 import requests
 
 response = requests.post(
-    "https://api.ares.dirmacs.com/api/rag/search",
+    "http://localhost:3000/api/rag/search",
     headers={
         "Content-Type": "application/json",
         "Authorization": "Bearer eyJhbGciOi..."
@@ -195,7 +195,7 @@ for result in results:
 #### JavaScript
 
 ```javascript
-const response = await fetch("https://api.ares.dirmacs.com/api/rag/search", {
+const response = await fetch("http://localhost:3000/api/rag/search", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
@@ -229,7 +229,7 @@ Returns all document collections for the authenticated user.
 Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 
 ```bash
-curl https://api.ares.dirmacs.com/api/rag/collections \
+curl http://localhost:3000/api/rag/collections \
   -H "Authorization: Bearer eyJhbGciOi..."
 ```
 
@@ -258,7 +258,7 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 ### Example
 
 ```bash
-curl -X DELETE https://api.ares.dirmacs.com/api/rag/collection \
+curl -X DELETE http://localhost:3000/api/rag/collection \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -d '{"collection": "product-docs"}'

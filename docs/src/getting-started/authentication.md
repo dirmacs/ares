@@ -16,14 +16,14 @@ API keys are the simplest way to authenticate with ARES. Each key is scoped to a
 
 **Format:** `ares_` followed by a random string (e.g., `ares_k7Gx9mPqR2vLwN4s`).
 
-**How to get one:** API keys are generated during tenant provisioning via the [Dirmacs Admin](https://admin.dirmacs.com) dashboard, or through the admin API.
+**How to get one:** API keys are generated during tenant provisioning via the [Dirmacs Admin](http://localhost:3000) dashboard, or through the admin API.
 
 ### Usage
 
 Pass the API key in the `Authorization` header on any `/v1/*` endpoint:
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/v1/chat \
+curl -X POST http://localhost:3000/v1/chat \
   -H "Authorization: Bearer ares_k7Gx9mPqR2vLwN4s" \
   -H "Content-Type: application/json" \
   -d '{"message": "Hello", "agent_type": "product"}'
@@ -38,14 +38,14 @@ headers = {
 }
 
 response = requests.post(
-    "https://api.ares.dirmacs.com/v1/chat",
+    "http://localhost:3000/v1/chat",
     headers=headers,
     json={"message": "Hello", "agent_type": "product"},
 )
 ```
 
 ```javascript
-const response = await fetch("https://api.ares.dirmacs.com/v1/chat", {
+const response = await fetch("http://localhost:3000/v1/chat", {
   method: "POST",
   headers: {
     "Authorization": "Bearer ares_k7Gx9mPqR2vLwN4s",
@@ -69,7 +69,7 @@ JWT authentication is designed for end-user sessions. Users register and log in 
 ### Register a new user
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/auth/register \
+curl -X POST http://localhost:3000/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{
     "email": "developer@example.com",
@@ -90,7 +90,7 @@ curl -X POST https://api.ares.dirmacs.com/api/auth/register \
 ### Log in
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/auth/login \
+curl -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "developer@example.com",
@@ -113,7 +113,7 @@ curl -X POST https://api.ares.dirmacs.com/api/auth/login \
 Pass the access token in the `Authorization` header on any `/api/*` endpoint:
 
 ```bash
-curl https://api.ares.dirmacs.com/api/chat \
+curl http://localhost:3000/api/chat \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..." \
   -H "Content-Type: application/json" \
   -d '{"message": "Hello", "agent_type": "product"}'
@@ -124,7 +124,7 @@ curl https://api.ares.dirmacs.com/api/chat \
 When your access token expires, use the refresh token to get a new one:
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/auth/refresh \
+curl -X POST http://localhost:3000/api/auth/refresh \
   -H "Content-Type: application/json" \
   -d '{
     "refresh_token": "rt_x9Kp2mQvL8wN3rTs..."
@@ -145,7 +145,7 @@ curl -X POST https://api.ares.dirmacs.com/api/auth/refresh \
 Invalidate a refresh token when the user logs out:
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/auth/logout \
+curl -X POST http://localhost:3000/api/auth/logout \
   -H "Content-Type: application/json" \
   -d '{
     "refresh_token": "rt_x9Kp2mQvL8wN3rTs..."
@@ -160,7 +160,7 @@ import time
 
 
 class AresClient:
-    def __init__(self, base_url="https://api.ares.dirmacs.com"):
+    def __init__(self, base_url="http://localhost:3000"):
         self.base_url = base_url
         self.access_token = None
         self.refresh_token = None
@@ -200,7 +200,7 @@ class AresClient:
 
 ```javascript
 class AresClient {
-  constructor(baseUrl = "https://api.ares.dirmacs.com") {
+  constructor(baseUrl = "http://localhost:3000") {
     this.baseUrl = baseUrl;
     this.accessToken = null;
     this.refreshToken = null;
@@ -256,7 +256,7 @@ The admin secret provides full access to ARES administration endpoints. It is in
 Pass the secret in the `X-Admin-Secret` header:
 
 ```bash
-curl https://api.ares.dirmacs.com/api/admin/tenants \
+curl http://localhost:3000/api/admin/tenants \
   -H "X-Admin-Secret: your-admin-secret"
 ```
 

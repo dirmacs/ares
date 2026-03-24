@@ -67,8 +67,12 @@ pub fn new_deploy_registry() -> DeployRegistry {
 // ---------------------------------------------------------------------------
 
 const VALID_TARGETS: &[&str] = &["ares", "admin", "eruka", "dotdot"];
-const DEPLOY_SCRIPT: &str = "/opt/dirmacs-ops/deploy.sh";
-const HEALTH_SCRIPT: &str = "/opt/dirmacs-ops/health.sh";
+fn deploy_script() -> String {
+    std::env::var("DEPLOY_SCRIPT").unwrap_or_else(|_| "./scripts/deploy.sh".to_string())
+}
+fn health_script() -> String {
+    std::env::var("HEALTH_SCRIPT").unwrap_or_else(|_| "./scripts/health.sh".to_string())
+}
 
 /// POST /api/admin/deploy — trigger a deployment
 pub async fn trigger_deploy(
@@ -128,7 +132,7 @@ pub async fn trigger_deploy(
     let deploy_id = id.clone();
     let deploy_target = target.clone();
     tokio::spawn(async move {
-        let result = tokio::process::Command::new(DEPLOY_SCRIPT)
+        let result = tokio::process::Command::new(deploy_script())
             .arg(&deploy_target)
             .output()
             .await;
@@ -196,7 +200,7 @@ pub async fn list_deploys(State(state): State<AppState>) -> Json<Vec<DeployStatu
 /// GET /api/admin/services — health check all services
 pub async fn get_services_health() -> Result<Json<HashMap<String, ServiceHealth>>> {
     let output = tokio::process::Command::new("bash")
-        .arg(HEALTH_SCRIPT)
+        .arg(&health_script())
         .output()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to run health script: {}", e)))?;

@@ -47,7 +47,7 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 #### curl
 
 ```bash
-curl -X POST https://api.ares.dirmacs.com/api/chat \
+curl -X POST http://localhost:3000/api/chat \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -d '{
@@ -62,7 +62,7 @@ curl -X POST https://api.ares.dirmacs.com/api/chat \
 import requests
 
 response = requests.post(
-    "https://api.ares.dirmacs.com/api/chat",
+    "http://localhost:3000/api/chat",
     headers={
         "Content-Type": "application/json",
         "Authorization": "Bearer eyJhbGciOi..."
@@ -78,7 +78,7 @@ print(data["response"])
 
 # Continue the conversation using the returned context_id
 follow_up = requests.post(
-    "https://api.ares.dirmacs.com/api/chat",
+    "http://localhost:3000/api/chat",
     headers={
         "Content-Type": "application/json",
         "Authorization": "Bearer eyJhbGciOi..."
@@ -93,7 +93,7 @@ follow_up = requests.post(
 #### JavaScript
 
 ```javascript
-const response = await fetch("https://api.ares.dirmacs.com/api/chat", {
+const response = await fetch("http://localhost:3000/api/chat", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
@@ -109,7 +109,7 @@ const data = await response.json();
 console.log(data.response);
 
 // Continue the conversation
-const followUp = await fetch("https://api.ares.dirmacs.com/api/chat", {
+const followUp = await fetch("http://localhost:3000/api/chat", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
@@ -156,7 +156,7 @@ Collect all chunks to form the complete response. The connection closes automati
 #### curl
 
 ```bash
-curl -N -X POST https://api.ares.dirmacs.com/api/chat/stream \
+curl -N -X POST http://localhost:3000/api/chat/stream \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -H "Accept: text/event-stream" \
@@ -172,7 +172,7 @@ curl -N -X POST https://api.ares.dirmacs.com/api/chat/stream \
 import requests
 
 response = requests.post(
-    "https://api.ares.dirmacs.com/api/chat/stream",
+    "http://localhost:3000/api/chat/stream",
     headers={
         "Content-Type": "application/json",
         "Authorization": "Bearer eyJhbGciOi...",
@@ -196,7 +196,7 @@ for line in response.iter_lines():
 #### JavaScript
 
 ```javascript
-const response = await fetch("https://api.ares.dirmacs.com/api/chat/stream", {
+const response = await fetch("http://localhost:3000/api/chat/stream", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
@@ -244,7 +244,7 @@ Returns all conversations for the authenticated user.
 **Authentication:** JWT required.
 
 ```bash
-curl https://api.ares.dirmacs.com/api/conversations \
+curl http://localhost:3000/api/conversations \
   -H "Authorization: Bearer eyJhbGciOi..."
 ```
 
@@ -263,7 +263,7 @@ Returns a single conversation along with its full message history.
 | `id`      | string | path | The conversation ID |
 
 ```bash
-curl https://api.ares.dirmacs.com/api/conversations/conv_abc123 \
+curl http://localhost:3000/api/conversations/conv_abc123 \
   -H "Authorization: Bearer eyJhbGciOi..."
 ```
 
@@ -286,7 +286,7 @@ Update the title of a conversation.
 ```
 
 ```bash
-curl -X PUT https://api.ares.dirmacs.com/api/conversations/conv_abc123 \
+curl -X PUT http://localhost:3000/api/conversations/conv_abc123 \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -d '{"title": "Pricing discussion"}'
@@ -303,7 +303,7 @@ Permanently delete a conversation and all its messages.
 **Authentication:** JWT required.
 
 ```bash
-curl -X DELETE https://api.ares.dirmacs.com/api/conversations/conv_abc123 \
+curl -X DELETE http://localhost:3000/api/conversations/conv_abc123 \
   -H "Authorization: Bearer eyJhbGciOi..."
 ```
 
@@ -320,6 +320,6 @@ Retrieve memory and preferences that ARES has learned from your conversations. T
 **Authentication:** JWT required.
 
 ```bash
-curl https://api.ares.dirmacs.com/api/memory \
+curl http://localhost:3000/api/memory \
   -H "Authorization: Bearer eyJhbGciOi..."
 ```

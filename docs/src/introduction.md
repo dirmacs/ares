@@ -23,7 +23,7 @@ ARES is a multi-provider LLM platform that gives you a single, unified API to ro
 All API requests are made to:
 
 ```
-https://api.ares.dirmacs.com
+http://localhost:3000
 ```
 
 ## Quick links

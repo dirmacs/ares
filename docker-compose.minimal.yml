@@ -1,0 +1,33 @@
+# A.R.E.S — Minimal Development Stack (PostgreSQL only)
+#
+# Spin up PostgreSQL for local ares development. No LLM, no vector DB.
+#
+# Usage:
+#   docker compose -f docker-compose.minimal.yml up -d
+#   export DATABASE_URL=postgres://ares:ares_dev@localhost:5432/ares
+#   export JWT_SECRET=$(openssl rand -hex 32)
+#   export API_KEY=$(openssl rand -hex 16)
+#   cargo run
+#
+# The server starts with Ollama as default provider (configure in ares.toml).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ares-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ares
+      POSTGRES_PASSWORD: ares_dev
+      POSTGRES_DB: ares
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ares"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

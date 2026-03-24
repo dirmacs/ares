@@ -44,6 +44,9 @@
 pub mod calculator;
 /// Tool registry for managing available tools.
 pub mod registry;
+/// MCP→ToolRegistry bridge: registers MCP client operations as agent-callable tools.
+#[cfg(feature = "mcp")]
+pub mod mcp_bridge;
 /// Web search tool using DuckDuckGo (requires `search-tools` feature).
 #[cfg(feature = "search-tools")]
 pub mod search;

@@ -805,17 +805,13 @@ async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std
     let pool = db.pool.clone();
     let tenant_db = Arc::new(ares::TenantDb::new(Arc::new(db)));
 
-    // Get API URLs from environment or config
+    // Get API URL from environment or config
     let ares_api_url = std::env::var("ARES_API_URL")
         .unwrap_or_else(|_| "http://localhost:3000".to_string());
-    let eruka_api_url =
-        std::env::var("ERUKA_API_URL").unwrap_or_else(|_| "http://localhost:8081".to_string());
-
     tracing::info!("ARES API URL: {}", ares_api_url);
-    tracing::info!("Eruka API URL: {}", eruka_api_url);
 
-    // Start MCP server
-    ares::mcp::start_mcp_server(tenant_db, pool, &ares_api_url, &eruka_api_url).await?;
+    // Start MCP server (extensions like Eruka are registered by managed platform crates)
+    ares::mcp::start_mcp_server(tenant_db, pool, &ares_api_url).await?;
 
     Ok(())
 }

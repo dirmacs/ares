@@ -496,6 +496,51 @@ system_prompt: |
   You are an imported agent.'
 ```
 
+## Extending ARES
+
+ARES is designed as a library that extension crates can build upon. Two key extension points:
+
+### `base_router()` — Composable HTTP Router
+
+```rust
+use ares::{base_router, AppState};
+
+// Build your own binary on top of ARES
+let app = base_router(state.clone())
+    .merge(my_custom_routes(state.clone()))
+    .layer(my_custom_middleware());
+
+axum::serve(listener, app).await?;
+```
+
+### `ContextProvider` — Pluggable Context Injection
+
+Inject external context into every agent call before LLM invocation:
+
+```rust
+use ares::agents::context_provider::ContextProvider;
+use async_trait::async_trait;
+
+struct MyContextProvider { /* your state */ }
+
+#[async_trait]
+impl ContextProvider for MyContextProvider {
+    async fn get_context(&self, agent_name: &str, tenant_id: &str) -> Option<String> {
+        // Fetch context from your knowledge base, vector DB, etc.
+        // Returns None if no context available (agents use system prompt only)
+        Some("Relevant context for this agent...".to_string())
+    }
+}
+
+// Wire it into AppState
+let state = AppState {
+    context_provider: Arc::new(MyContextProvider { /* ... */ }),
+    // ... other fields
+};
+```
+
+By default, ARES uses `NoOpContextProvider` (returns `None` — agents run with system prompt only). Extension crates implement this trait to inject domain-specific knowledge.
+
 ## Architecture
 
 ```

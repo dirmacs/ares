@@ -1,12 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
-  <rect width="128" height="128" rx="20" fill="#0d1117"/>
-  <!-- Shield shape (agent/runtime) -->
-  <path d="M64 20L96 36V68C96 88 80 104 64 108C48 104 32 88 32 68V36L64 20Z" fill="none" stroke="#58a6ff" stroke-width="3"/>
-  <!-- Inner A letterform -->
-  <path d="M52 82L64 42L76 82M56 70H72" stroke="#58a6ff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <!-- Dot/node (agent node) -->
-  <circle cx="64" cy="36" r="4" fill="#e94560"/>
-  <!-- Side nodes (multi-provider) -->
-  <circle cx="40" cy="52" r="3" fill="#58a6ff" opacity="0.5"/>
-  <circle cx="88" cy="52" r="3" fill="#58a6ff" opacity="0.5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200" fill="none">
+  <!-- Left wing (gold) -->
+  <path d="M200 95 L10 40 L40 70 L15 55 L55 80 L30 70 L80 95 L60 90 L110 105 L95 100 L140 110 L130 108 L170 112"
+        stroke="#C4973B" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M200 95 L25 50 L70 85 L40 70 L100 98 L75 90 L140 108 L120 105 L170 112"
+        fill="#C4973B" opacity="0.9"/>
+
+  <!-- Right wing (gold) -->
+  <path d="M200 95 L390 40 L360 70 L385 55 L345 80 L370 70 L320 95 L340 90 L290 105 L305 100 L260 110 L270 108 L230 112"
+        stroke="#C4973B" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M200 95 L375 50 L330 85 L360 70 L300 98 L325 90 L260 108 L280 105 L230 112"
+        fill="#C4973B" opacity="0.9"/>
+
+  <!-- Eagle head (navy) -->
+  <path d="M185 80 Q190 60 200 58 Q210 60 215 80 L210 90 Q200 95 190 90 Z"
+        fill="#1B2A4A"/>
+  <!-- Beak -->
+  <path d="M196 78 L200 68 L204 78" fill="#C4973B"/>
+  <!-- Eye left -->
+  <circle cx="194" cy="74" r="2" fill="#E8D5A3"/>
+  <!-- Eye right -->
+  <circle cx="206" cy="74" r="2" fill="#E8D5A3"/>
+
+  <!-- Body (navy) -->
+  <path d="M170 112 Q185 120 200 125 Q215 120 230 112 L220 140 Q200 155 180 140 Z"
+        fill="#1B2A4A"/>
+
+  <!-- ARES text overlay (gold on navy body) -->
+  <text x="200" y="138" text-anchor="middle" font-family="Georgia, serif" font-weight="bold"
+        font-size="22" fill="#C4973B" letter-spacing="4">ARES</text>
+
+  <!-- Tail feathers (navy) -->
+  <path d="M188 140 L185 165 L195 155 L200 170 L205 155 L215 165 L212 140"
+        fill="#1B2A4A" opacity="0.8"/>
 </svg>

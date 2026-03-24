@@ -30,6 +30,11 @@
 - [Error Handling](./platform/errors.md)
 - [Self-Hosting](./platform/self-hosting.md)
 
+# Extending ARES
+
+- [ContextProvider Trait](./extending/context-provider.md)
+- [Building on base_router()](./extending/base-router.md)
+
 # Guides
 
 - [Build a Chat Agent](./guides/chat-agent.md)

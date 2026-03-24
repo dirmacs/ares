@@ -39,6 +39,18 @@ impl PostgresClient {
         Self::new_local("").await
     }
 
+    /// Create a test-only client with a lazy pool that doesn't actually connect.
+    /// Use this in unit tests that construct AppState but never execute queries.
+    #[cfg(test)]
+    pub fn new_test() -> Self {
+        let url = "postgres://test:test@localhost:5432/test";
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy(url)
+            .expect("connect_lazy should never fail");
+        Self { pool }
+    }
+
     pub async fn new(url: String, auth_token: String) -> Result<Self> {
         Self::new_remote(url, auth_token).await
     }

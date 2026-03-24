@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="docs/img/ares-logo.svg" width="128" alt="A.R.E.S">
+  <img src="docs/img/ares-logo.svg" width="400" alt="A.R.E.S — Agentic Retrieval Enhanced Server">
 </p>
-
-<h1 align="center">A.R.E.S</h1>
 
 <p align="center">
   Agentic Retrieval Enhanced Server. Rust. Multi-provider LLM. Tool calling. RAG. MCP.<br>

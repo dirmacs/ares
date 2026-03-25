@@ -276,16 +276,44 @@ Handle employee info, policies, and benefits."#
             }
         }
 
-        // Max iterations reached — return last assistant content
-        let last = messages
-            .iter()
-            .rev()
-            .find(|m| m.role == crate::llm::coordinator::MessageRole::Assistant)
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
+        // Max iterations reached — make ONE final LLM call without tools to get synthesis
+        // Bug #7 fix: the last assistant message has empty content (it was a tool-call message).
+        // We need the LLM to synthesize a final response from all the tool results.
+        tracing::warn!(
+            agent = %self.name,
+            "Max tool iterations ({}) reached — making final synthesis call",
+            self.max_tool_iterations
+        );
+        let final_response = self
+            .llm
+            .generate_with_tools_and_history(&messages, &[])
+            .await;
+
+        let content = match final_response {
+            Ok(resp) if !resp.content.is_empty() => resp.content,
+            Ok(_) => {
+                // Final call also returned empty — find any non-empty assistant content
+                messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == crate::llm::coordinator::MessageRole::Assistant && !m.content.is_empty())
+                    .map(|m| m.content.clone())
+                    .unwrap_or_else(|| "Agent completed tool calls but could not generate a final response.".to_string())
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Final synthesis call failed");
+                // Still try to return something useful
+                messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == crate::llm::coordinator::MessageRole::Assistant && !m.content.is_empty())
+                    .map(|m| m.content.clone())
+                    .unwrap_or_else(|| format!("Agent completed but synthesis failed: {}", e))
+            }
+        };
 
         Ok(AgentResponse {
-            content: last,
+            content,
             usage: Some(total_usage),
             metadata: Some(ExecutionMetadata {
                 model_name: self.llm.model_name().to_string(),

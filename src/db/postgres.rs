@@ -326,8 +326,33 @@ pub struct UserAgent {
 }
 
 impl UserAgent {
+    pub fn new(id: String, user_id: String, name: String, model: String) -> Self {
+        let now = chrono::Utc::now().timestamp();
+        Self {
+            id,
+            user_id,
+            name,
+            display_name: None,
+            description: None,
+            model,
+            system_prompt: None,
+            tools: "[]".to_string(),
+            max_tool_iterations: 10,
+            parallel_tools: false,
+            extra: "{}".to_string(),
+            is_public: false,
+            usage_count: 0,
+            rating_sum: 0,
+            rating_count: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
     pub fn tools_vec(&self) -> Vec<String> {
         serde_json::from_str(&self.tools).unwrap_or_default()
+    }
+    pub fn set_tools(&mut self, tools: Vec<String>) {
+        self.tools = serde_json::to_string(&tools).unwrap_or_else(|_| "[]".to_string());
     }
     pub fn average_rating(&self) -> Option<f32> {
         if self.rating_count > 0 {

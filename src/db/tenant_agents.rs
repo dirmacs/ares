@@ -293,8 +293,8 @@ pub async fn seed_default_templates(pool: &PgPool) -> Result<()> {
             model: "fast",
             system_prompt: "You are a helpful AI assistant. Answer questions clearly and concisely. If you don't know something, say so. Be direct and useful.",
         },
-        // Client-specific templates (Kasino, eHB, Dinkedin) are loaded by ares-dirmacs
-        // from TOON files, not hardcoded here. See: dirmacs-core agents/loader.rs
+        // Client-specific agent templates are loaded by the managed platform crate
+        // from TOON config files, not hardcoded in the OSS layer.
     ];
 
     for tpl in templates {

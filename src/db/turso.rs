@@ -7,23 +7,6 @@ use libsql::{params, Builder, Connection, Database};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Conversation record from the database
-#[derive(Debug, Clone)]
-pub struct Conversation {
-    /// Unique conversation identifier
-    pub id: String,
-    /// ID of the user who owns this conversation
-    pub user_id: String,
-    /// Optional conversation title
-    pub title: Option<String>,
-    /// Number of messages in the conversation
-    pub message_count: i32,
-    /// RFC3339 formatted creation timestamp
-    pub created_at: String,
-    /// RFC3339 formatted last update timestamp
-    pub updated_at: String,
-}
-
 /// Turso/libSQL database client for persistent storage
 ///
 /// Supports both remote Turso databases and local SQLite files.
@@ -1164,107 +1147,183 @@ impl TursoClient {
 
         Ok(executions)
     }
-}
 
-/// Registered user account
-#[derive(Debug, Clone)]
-pub struct User {
-    /// Unique user identifier (UUID)
-    pub id: String,
-    /// User's email address
-    pub email: String,
-    /// Argon2 hashed password
-    pub password_hash: String,
-    /// User's display name
-    pub name: String,
-    /// Unix timestamp of account creation
-    pub created_at: i64,
-    /// Unix timestamp of last update
-    pub updated_at: i64,
-}
+    // ============= Missing trait methods =============
 
-/// User-created agent stored in the database
-/// This structure mirrors the TOON AgentConfig format for easy import/export
-#[derive(Debug, Clone)]
-pub struct UserAgent {
-    /// Unique agent identifier (UUID)
-    pub id: String,
-    /// ID of the user who created this agent
-    pub user_id: String,
-    /// Agent name (unique per user)
-    pub name: String,
-    /// Human-readable display name
-    pub display_name: Option<String>,
-    /// Agent description
-    pub description: Option<String>,
-    /// LLM model identifier (e.g., "gpt-4", "llama3.2")
-    pub model: String,
-    /// System prompt that defines agent behavior
-    pub system_prompt: Option<String>,
-    /// JSON array of tool names: ["calculator", "web_search"]
-    pub tools: String,
-    /// Maximum iterations for tool use loops
-    pub max_tool_iterations: i32,
-    /// Whether to execute tools in parallel
-    pub parallel_tools: bool,
-    /// JSON object for additional configuration
-    pub extra: String,
-    /// Whether agent is visible in community marketplace
-    pub is_public: bool,
-    /// Number of times this agent has been used
-    pub usage_count: i32,
-    /// Sum of all ratings received
-    pub rating_sum: i32,
-    /// Number of ratings received
-    pub rating_count: i32,
-    /// Unix timestamp of creation
-    pub created_at: i64,
-    /// Unix timestamp of last update
-    pub updated_at: i64,
-}
+    pub async fn get_user_by_id(&self, id: &str) -> Result<Option<User>> {
+        let conn = self.operation_conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id, email, password_hash, name, created_at, updated_at
+                 FROM users WHERE id = ?",
+                [id],
+            )
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to query user: {}", e)))?;
 
-impl UserAgent {
-    /// Create a new UserAgent with required fields
-    pub fn new(id: String, user_id: String, name: String, model: String) -> Self {
-        let now = Utc::now().timestamp();
-        Self {
-            id,
-            user_id,
-            name,
-            display_name: None,
-            description: None,
-            model,
-            system_prompt: None,
-            tools: "[]".to_string(),
-            max_tool_iterations: 10,
-            parallel_tools: false,
-            extra: "{}".to_string(),
-            is_public: false,
-            usage_count: 0,
-            rating_sum: 0,
-            rating_count: 0,
-            created_at: now,
-            updated_at: now,
-        }
-    }
-
-    /// Get tools as a `Vec<String>`
-    pub fn tools_vec(&self) -> Vec<String> {
-        serde_json::from_str(&self.tools).unwrap_or_default()
-    }
-
-    /// Set tools from a `Vec<String>`
-    pub fn set_tools(&mut self, tools: Vec<String>) {
-        self.tools = serde_json::to_string(&tools).unwrap_or_else(|_| "[]".to_string());
-    }
-
-    /// Calculate average rating (returns None if no ratings)
-    pub fn average_rating(&self) -> Option<f32> {
-        if self.rating_count > 0 {
-            Some(self.rating_sum as f32 / self.rating_count as f32)
+        if let Some(row) = rows.next().await.map_err(|e| AppError::Database(e.to_string()))? {
+            Ok(Some(User {
+                id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
+                email: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
+                password_hash: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
+                name: row.get(3).map_err(|e| AppError::Database(e.to_string()))?,
+                created_at: row.get(4).map_err(|e| AppError::Database(e.to_string()))?,
+                updated_at: row.get(5).map_err(|e| AppError::Database(e.to_string()))?,
+            }))
         } else {
-            None
+            Ok(None)
         }
+    }
+
+    pub async fn validate_session(&self, token_hash: &str) -> Result<Option<String>> {
+        let conn = self.operation_conn().await?;
+        let now = Utc::now().timestamp();
+        let mut rows = conn
+            .query(
+                "SELECT user_id FROM sessions WHERE token_hash = ? AND expires_at > ?",
+                (token_hash, now),
+            )
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to validate session: {}", e)))?;
+
+        if let Some(row) = rows.next().await.map_err(|e| AppError::Database(e.to_string()))? {
+            let user_id: String = row.get(0).map_err(|e| AppError::Database(e.to_string()))?;
+            Ok(Some(user_id))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn delete_session(&self, id: &str) -> Result<()> {
+        let conn = self.operation_conn().await?;
+        conn.execute("DELETE FROM sessions WHERE id = ?", [id])
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to delete session: {}", e)))?;
+        Ok(())
+    }
+
+    pub async fn delete_session_by_token_hash(&self, token_hash: &str) -> Result<()> {
+        let conn = self.operation_conn().await?;
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", [token_hash])
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to delete session: {}", e)))?;
+        Ok(())
+    }
+
+    pub async fn get_memory_by_category(
+        &self,
+        user_id: &str,
+        category: &str,
+    ) -> Result<Vec<MemoryFact>> {
+        let all = self.get_user_memory(user_id).await?;
+        Ok(all.into_iter().filter(|m| m.category == category).collect())
+    }
+
+    pub async fn get_preference(
+        &self,
+        user_id: &str,
+        category: &str,
+        key: &str,
+    ) -> Result<Option<Preference>> {
+        let prefs = self.get_user_preferences(user_id).await?;
+        Ok(prefs.into_iter().find(|p| p.category == category && p.key == key))
+    }
+}
+
+// ============= DatabaseClient trait implementation =============
+
+#[async_trait]
+impl DatabaseClient for TursoClient {
+    async fn create_user(&self, id: &str, email: &str, password_hash: &str, name: &str) -> Result<()> {
+        TursoClient::create_user(self, id, email, password_hash, name).await
+    }
+    async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
+        TursoClient::get_user_by_email(self, email).await
+    }
+    async fn get_user_by_id(&self, id: &str) -> Result<Option<User>> {
+        TursoClient::get_user_by_id(self, id).await
+    }
+    async fn create_session(&self, id: &str, user_id: &str, token_hash: &str, expires_at: i64) -> Result<()> {
+        TursoClient::create_session(self, id, user_id, token_hash, expires_at).await
+    }
+    async fn validate_session(&self, token_hash: &str) -> Result<Option<String>> {
+        TursoClient::validate_session(self, token_hash).await
+    }
+    async fn delete_session(&self, id: &str) -> Result<()> {
+        TursoClient::delete_session(self, id).await
+    }
+    async fn delete_session_by_token_hash(&self, token_hash: &str) -> Result<()> {
+        TursoClient::delete_session_by_token_hash(self, token_hash).await
+    }
+    async fn create_conversation(&self, id: &str, user_id: &str, title: Option<&str>) -> Result<()> {
+        TursoClient::create_conversation(self, id, user_id, title).await
+    }
+    async fn conversation_exists(&self, conversation_id: &str) -> Result<bool> {
+        TursoClient::conversation_exists(self, conversation_id).await
+    }
+    async fn get_user_conversations(&self, user_id: &str) -> Result<Vec<ConversationSummary>> {
+        let convos = TursoClient::get_user_conversations(self, user_id).await?;
+        Ok(convos.into_iter().map(|c| ConversationSummary {
+            id: c.id,
+            title: c.title.unwrap_or_default(),
+            created_at: c.created_at,
+            updated_at: c.updated_at,
+            message_count: c.message_count,
+        }).collect())
+    }
+    async fn get_conversation(&self, conversation_id: &str) -> Result<Conversation> {
+        TursoClient::get_conversation(self, conversation_id).await
+    }
+    async fn delete_conversation(&self, conversation_id: &str) -> Result<()> {
+        TursoClient::delete_conversation(self, conversation_id).await
+    }
+    async fn update_conversation_title(&self, conversation_id: &str, title: Option<&str>) -> Result<()> {
+        TursoClient::update_conversation_title(self, conversation_id, title).await
+    }
+    async fn add_message(&self, id: &str, conversation_id: &str, role: MessageRole, content: &str) -> Result<()> {
+        TursoClient::add_message(self, id, conversation_id, role, content).await
+    }
+    async fn get_conversation_history(&self, conversation_id: &str) -> Result<Vec<Message>> {
+        TursoClient::get_conversation_history(self, conversation_id).await
+    }
+    async fn store_memory_fact(&self, fact: &MemoryFact) -> Result<()> {
+        TursoClient::store_memory_fact(self, fact).await
+    }
+    async fn get_user_memory(&self, user_id: &str) -> Result<Vec<MemoryFact>> {
+        TursoClient::get_user_memory(self, user_id).await
+    }
+    async fn get_memory_by_category(&self, user_id: &str, category: &str) -> Result<Vec<MemoryFact>> {
+        TursoClient::get_memory_by_category(self, user_id, category).await
+    }
+    async fn store_preference(&self, user_id: &str, preference: &Preference) -> Result<()> {
+        TursoClient::store_preference(self, user_id, preference).await
+    }
+    async fn get_user_preferences(&self, user_id: &str) -> Result<Vec<Preference>> {
+        TursoClient::get_user_preferences(self, user_id).await
+    }
+    async fn get_preference(&self, user_id: &str, category: &str, key: &str) -> Result<Option<Preference>> {
+        TursoClient::get_preference(self, user_id, category, key).await
+    }
+    async fn get_user_agent_by_name(&self, user_id: &str, name: &str) -> Result<Option<UserAgent>> {
+        TursoClient::get_user_agent_by_name(self, user_id, name).await
+    }
+    async fn get_public_agent_by_name(&self, name: &str) -> Result<Option<UserAgent>> {
+        TursoClient::get_public_agent_by_name(self, name).await
+    }
+    async fn list_user_agents(&self, user_id: &str) -> Result<Vec<UserAgent>> {
+        TursoClient::list_user_agents(self, user_id).await
+    }
+    async fn list_public_agents(&self, limit: u32, offset: u32) -> Result<Vec<UserAgent>> {
+        TursoClient::list_public_agents(self, limit, offset).await
+    }
+    async fn create_user_agent(&self, agent: &UserAgent) -> Result<()> {
+        TursoClient::create_user_agent(self, agent).await
+    }
+    async fn update_user_agent(&self, agent: &UserAgent) -> Result<()> {
+        TursoClient::update_user_agent(self, agent).await
+    }
+    async fn delete_user_agent(&self, id: &str, user_id: &str) -> Result<bool> {
+        TursoClient::delete_user_agent(self, id, user_id).await
     }
 }
 

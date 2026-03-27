@@ -74,6 +74,9 @@ pub mod tenant_agents;
 pub mod tenants;
 /// Database traits and common types shared across providers.
 pub mod traits;
+/// Turso/libSQL database client (alternative to PostgreSQL).
+#[cfg(feature = "turso")]
+pub mod turso;
 /// Agent config version history (Sprint 11).
 pub mod agent_versions;
 
@@ -85,6 +88,8 @@ pub use ares_vector::AresVectorStore;
 #[cfg(feature = "lancedb")]
 pub use lancedb::LanceDBStore;
 pub use postgres::PostgresClient;
+#[cfg(feature = "turso")]
+pub use turso::TursoClient;
 #[cfg(feature = "qdrant")]
 pub use qdrant::QdrantVectorStore;
 pub use tenants::{TenantDb, UsageSummary};

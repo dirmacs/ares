@@ -11,6 +11,11 @@ pub enum DatabaseProvider {
     Postgres {
         url: String,
     },
+    #[cfg(feature = "turso")]
+    Turso {
+        url: String,
+        auth_token: String,
+    },
 }
 
 impl DatabaseProvider {
@@ -30,10 +35,23 @@ impl DatabaseProvider {
                         .await?;
                 Ok(Box::new(client))
             }
+            #[cfg(feature = "turso")]
+            DatabaseProvider::Turso { url, auth_token } => {
+                let client = super::turso::TursoClient::new(url.clone(), auth_token.clone()).await?;
+                Ok(Box::new(client))
+            }
         }
     }
 
     pub fn from_env() -> Self {
+        // Turso takes priority if TURSO_URL is set
+        #[cfg(feature = "turso")]
+        if let Ok(url) = std::env::var("TURSO_URL") {
+            if !url.is_empty() {
+                let token = std::env::var("TURSO_AUTH_TOKEN").unwrap_or_default();
+                return DatabaseProvider::Turso { url, auth_token: token };
+            }
+        }
         if let Ok(url) = std::env::var("DATABASE_URL") {
             if !url.is_empty() {
                 return DatabaseProvider::Postgres { url };

@@ -11,7 +11,6 @@
   <a href="https://crates.io/crates/ares-server"><img src="https://img.shields.io/crates/v/ares-server.svg" alt="crates.io"></a>
   <a href="https://docs.rs/ares-server"><img src="https://docs.rs/ares-server/badge.svg" alt="docs.rs"></a>
   <a href="https://github.com/dirmacs/ares/actions/workflows/ci.yml"><img src="https://github.com/dirmacs/ares/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/tests-221-brightgreen.svg" alt="221 tests">
   <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="MIT">
 </p>
 

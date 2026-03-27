@@ -53,6 +53,35 @@ fn get_model_lock(model_name: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
+/// Pre-download model files via lancor's hub client.
+///
+/// Fastembed's built-in hf_hub/ureq client fails on xethub CDN redirects.
+/// Lancor uses reqwest which handles these correctly. We download the files
+/// to fastembed's cache dir so it finds them on init.
+fn pre_download_model(
+    repo_id: &str,
+    files: &[&str],
+    cache_dir: &std::path::Path,
+) -> Result<()> {
+    let hub = lancor::hub::HubClient::with_cache_dir(cache_dir.to_path_buf())
+        .map_err(|e| AppError::Internal(format!("Failed to create hub client: {}", e)))?;
+
+    let rt = tokio::runtime::Handle::current();
+    for filename in files {
+        match tokio::task::block_in_place(|| {
+            rt.block_on(hub.download(repo_id, filename, None))
+        }) {
+            Ok(path) => {
+                tracing::debug!("Pre-downloaded {}/{} to {}", repo_id, filename, path.display());
+            }
+            Err(e) => {
+                tracing::warn!("Could not pre-download {}/{}: {}", repo_id, filename, e);
+            }
+        }
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Embedding Model Configuration
 // ============================================================================
@@ -233,6 +262,16 @@ impl EmbeddingModelType {
             Self::SnowflakeArcticEmbedMLongQ => FastEmbedModel::SnowflakeArcticEmbedMLongQ,
             Self::SnowflakeArcticEmbedL => FastEmbedModel::SnowflakeArcticEmbedL,
             Self::SnowflakeArcticEmbedLQ => FastEmbedModel::SnowflakeArcticEmbedLQ,
+        }
+    }
+
+    /// Get the HuggingFace repo ID for this model (used for pre-downloading)
+    pub fn hf_repo_id(&self) -> &'static str {
+        match self {
+            Self::BgeSmallEnV15 | Self::BgeSmallEnV15Q => "Xenova/bge-small-en-v1.5",
+            Self::AllMiniLmL6V2 | Self::AllMiniLmL6V2Q => "sentence-transformers/all-MiniLM-L6-v2",
+            Self::AllMiniLmL12V2 | Self::AllMiniLmL12V2Q => "sentence-transformers/all-MiniLM-L12-v2",
+            _ => "Xenova/bge-small-en-v1.5", // fallback to default
         }
     }
 
@@ -623,9 +662,20 @@ impl EmbeddingService {
             ))
         })?;
 
+        let cache_dir = std::env::var("FASTEMBED_CACHE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from(".fastembed_cache"));
+        std::fs::create_dir_all(&cache_dir).ok();
+
+        // Pre-download ONNX model via lancor's hub client (handles CDN redirects
+        // that fastembed's ureq-based hf_hub client fails on)
+        let model_repo = config.model.hf_repo_id();
+        pre_download_model(model_repo, &["onnx/model.onnx", "tokenizer.json", "config.json"], &cache_dir)?;
+
         let model = TextEmbedding::try_new(
             InitOptions::new(config.model.to_fastembed_model())
-                .with_show_download_progress(config.show_download_progress),
+                .with_cache_dir(cache_dir.clone())
+                .with_show_download_progress(true),
         )
         .map_err(|e| AppError::Internal(format!("Failed to initialize embedding model: {}", e)))?;
 

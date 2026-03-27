@@ -1,4 +1,7 @@
 use crate::types::{AppError, MemoryFact, Message, MessageRole, Preference, Result};
+use super::postgres::{Conversation, User, UserAgent};
+use super::traits::{ConversationSummary, DatabaseClient};
+use async_trait::async_trait;
 use chrono::Utc;
 use libsql::{params, Builder, Connection, Database};
 use std::sync::Arc;

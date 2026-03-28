@@ -53,10 +53,55 @@ fn extract_user_collection(user_id: &str, scoped_name: &str) -> Option<String> {
 static EMBEDDING_SERVICE: OnceCell<Arc<EmbeddingService>> = OnceCell::const_new();
 
 /// Get or create the embedding service.
+///
+/// Pre-downloads model files via lancor (reqwest) before fastembed init,
+/// because fastembed's hf-hub/ureq client fails on HuggingFace's xethub CDN.
 async fn get_embedding_service() -> Result<Arc<EmbeddingService>> {
     EMBEDDING_SERVICE
         .get_or_try_init(|| async {
-            let service = EmbeddingService::with_model(EmbeddingModelType::default())
+            // Pre-download ONNX model via lancor before fastembed tries with ureq
+            let model = EmbeddingModelType::default();
+            let cache_dir = std::env::var("FASTEMBED_CACHE_DIR")
+                .unwrap_or_else(|_| ".fastembed_cache".to_string());
+            let cache_path = std::path::PathBuf::from(&cache_dir);
+
+            if let Ok(hub) = lancor::hub::HubClient::with_cache_dir(cache_path.clone()) {
+                let repo_id = model.hf_repo_id();
+                for filename in &["onnx/model.onnx", "tokenizer.json", "config.json", "tokenizer_config.json"] {
+                    // Build HF cache path
+                    let folder = format!("models--{}", repo_id.replace('/', "--"));
+                    let snapshot_dir = cache_path.join(&folder).join("snapshots").join("lancor");
+                    let target = snapshot_dir.join(filename);
+
+                    if target.exists() && std::fs::metadata(&target).map(|m| m.len() > 0).unwrap_or(false) {
+                        tracing::debug!("Model file cached: {}", target.display());
+                        continue;
+                    }
+
+                    tracing::info!("Downloading {}/{} via lancor...", repo_id, filename);
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+
+                    match hub.download(repo_id, filename, None).await {
+                        Ok(dl_path) => {
+                            if dl_path != target {
+                                std::fs::copy(&dl_path, &target).ok();
+                            }
+                            tracing::info!("Downloaded: {} ({} bytes)", filename,
+                                std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0));
+                        }
+                        Err(e) => tracing::warn!("Could not download {}: {}", filename, e),
+                    }
+                }
+
+                // Write refs/main
+                let refs_dir = cache_path.join(format!("models--{}", repo_id.replace('/', "--"))).join("refs");
+                std::fs::create_dir_all(&refs_dir).ok();
+                std::fs::write(refs_dir.join("main"), "lancor").ok();
+            }
+
+            let service = EmbeddingService::with_model(model)
                 .map_err(|e| AppError::Internal(format!("Failed to init embeddings: {}", e)))?;
             Ok::<_, AppError>(Arc::new(service))
         })

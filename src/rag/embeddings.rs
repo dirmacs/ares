@@ -56,23 +56,56 @@ fn get_model_lock(model_name: &str) -> Arc<Mutex<()>> {
 /// Pre-download model files via lancor's hub client.
 ///
 /// Fastembed's built-in hf_hub/ureq client fails on xethub CDN redirects.
-/// Lancor uses reqwest which handles these correctly. We download the files
-/// to fastembed's cache dir so it finds them on init.
+/// Lancor uses reqwest which handles these correctly. We download files
+/// then place them in the HF cache format that hf-hub/fastembed expects:
+///   {cache_dir}/models--{org}--{model}/snapshots/{hash}/{filename}
+///   {cache_dir}/models--{org}--{model}/refs/main → {hash}
 fn pre_download_model(
     repo_id: &str,
     files: &[&str],
     cache_dir: &std::path::Path,
 ) -> Result<()> {
+    // Build HF cache directory structure
+    let folder_name = format!("models--{}", repo_id.replace('/', "--"));
+    let snapshot_hash = "lancor-prefetch"; // deterministic hash for our downloads
+    let snapshot_dir = cache_dir.join(&folder_name).join("snapshots").join(snapshot_hash);
+    let refs_dir = cache_dir.join(&folder_name).join("refs");
+
+    std::fs::create_dir_all(&snapshot_dir).ok();
+    std::fs::create_dir_all(&refs_dir).ok();
+
+    // Write refs/main → snapshot hash
+    let ref_path = refs_dir.join("main");
+    if !ref_path.exists() {
+        std::fs::write(&ref_path, snapshot_hash).ok();
+    }
+
     let hub = lancor::hub::HubClient::with_cache_dir(cache_dir.to_path_buf())
         .map_err(|e| AppError::Internal(format!("Failed to create hub client: {}", e)))?;
 
     let rt = tokio::runtime::Handle::current();
     for filename in files {
+        let target = snapshot_dir.join(filename);
+        if target.exists() && std::fs::metadata(&target).map(|m| m.len() > 0).unwrap_or(false) {
+            tracing::debug!("Already cached: {}/{}", repo_id, filename);
+            continue;
+        }
+
+        // Create parent dirs for nested files like onnx/model.onnx
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+
         match tokio::task::block_in_place(|| {
             rt.block_on(hub.download(repo_id, filename, None))
         }) {
-            Ok(path) => {
-                tracing::debug!("Pre-downloaded {}/{} to {}", repo_id, filename, path.display());
+            Ok(downloaded_path) => {
+                // Copy from lancor's cache to HF cache format
+                if downloaded_path != target {
+                    std::fs::copy(&downloaded_path, &target).ok();
+                }
+                tracing::info!("Pre-downloaded {}/{} ({} bytes)", repo_id, filename,
+                    std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0));
             }
             Err(e) => {
                 tracing::warn!("Could not pre-download {}/{}: {}", repo_id, filename, e);

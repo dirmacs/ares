@@ -50,10 +50,8 @@ session-*.md
 # Production configuration (keep public template ares.example.toml)
 ares.toml
 ares.toml.bak
-kasino.toml
 agents/*.toml
 agents/private/
-eruka.toon
 
 # Temp and backup files
 *_temp

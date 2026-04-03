@@ -567,6 +567,10 @@ pub enum AppError {
     /// Service temporarily unavailable (emergency stop, maintenance).
     #[error("Service unavailable: {0}")]
     Unavailable(String),
+
+    /// Rate limit / quota exceeded.
+    #[error("Rate limited: {0}")]
+    RateLimited(String),
 }
 
 impl AppError {
@@ -582,6 +586,7 @@ impl AppError {
             AppError::External(_) => ErrorCode::ExternalServiceError,
             AppError::Internal(_) => ErrorCode::InternalError,
             AppError::Unavailable(_) => ErrorCode::InternalError,
+            AppError::RateLimited(_) => ErrorCode::InternalError,
         }
     }
 
@@ -630,6 +635,7 @@ impl axum::response::IntoResponse for AppError {
             AppError::External(msg) => (axum::http::StatusCode::BAD_GATEWAY, msg.clone()),
             AppError::Internal(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             AppError::Unavailable(msg) => (axum::http::StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
+            AppError::RateLimited(msg) => (axum::http::StatusCode::TOO_MANY_REQUESTS, msg.clone()),
         };
 
         let body = serde_json::json!({

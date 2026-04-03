@@ -31,6 +31,10 @@ pub struct ChatRequest {
     /// Optional context ID for conversation continuity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+    /// Optional Eruka workspace_id for per-user context isolation.
+    /// When set, the Eruka context middleware queries this workspace instead of the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 /// Response from chat endpoints.

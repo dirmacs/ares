@@ -7,7 +7,7 @@
 use crate::db::agent_runs;
 use crate::db::tenant_agents::{self, TenantAgent};
 use crate::memory::estimate_tokens;
-use crate::models::TenantContext;
+use crate::models::{TenantContext, TenantTier};
 use crate::types::{AgentContext, AgentType, AppError, ChatRequest, ChatResponse, Result};
 use crate::AppState;
 use axum::{
@@ -184,6 +184,18 @@ pub async fn v1_chat(
     Json(payload): Json<ChatRequest>,
 ) -> Result<axum::response::Response> {
     let tc = extract_tenant(ctx)?;
+
+    // Quota enforcement — check monthly + daily request limits
+    if tc.tier != TenantTier::Enterprise {
+        let monthly = state.tenant_db.get_monthly_requests(&tc.tenant_id).await.unwrap_or(0);
+        let daily = state.tenant_db.get_daily_requests(&tc.tenant_id).await.unwrap_or(0);
+        if !tc.can_make_request(monthly, daily) {
+            return Err(crate::types::AppError::RateLimited(format!(
+                "Quota exceeded for {:?} tier. Monthly: {}/{}, Daily: {}/{}",
+                tc.tier, monthly, tc.quota.requests_per_month, daily, tc.quota.requests_per_day
+            )));
+        }
+    }
 
     // Emergency stop — kill switch for all agents
     if state.emergency_stop.load(std::sync::atomic::Ordering::Relaxed) {

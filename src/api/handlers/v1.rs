@@ -223,9 +223,28 @@ pub async fn v1_chat(
     let agent_name = crate::agents::registry::AgentRegistry::type_to_name(&agent_type).to_string();
     let start = std::time::Instant::now();
 
+    // Inject Eruka context — the core product feature.
+    // Calls the ContextProvider (ErukaContextProvider in managed mode, NoOp in OSS)
+    // to fetch per-agent knowledge state and gap constraints from Eruka.
+    let eruka_context = state.context_provider
+        .get_context(&agent_name, &tc.tenant_id)
+        .await;
+
+    let effective_message = if let Some(ctx) = eruka_context {
+        tracing::info!(
+            agent = %agent_name,
+            tenant = %tc.tenant_id,
+            ctx_len = ctx.len(),
+            "External context injected into agent call"
+        );
+        format!("{}\n\n---\nUser message: {}", ctx, payload.message)
+    } else {
+        payload.message.clone()
+    };
+
     use crate::agents::Agent;
     let agent = state.agent_registry.create_agent(&agent_name).await?;
-    let response = agent.execute(&payload.message, &agent_context).await?;
+    let response = agent.execute(&effective_message, &agent_context).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
     let response_text = response.content;
@@ -241,7 +260,7 @@ pub async fn v1_chat(
         (u.prompt_tokens, u.completion_tokens)
     } else {
         (
-            estimate_tokens(&payload.message) as u32,
+            estimate_tokens(&effective_message) as u32,
             estimate_tokens(&response_text) as u32,
         )
     };

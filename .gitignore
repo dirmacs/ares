@@ -64,3 +64,4 @@ docs/book/
 *.code-workspace
 .fastembed_cache/
 data/
+ares-server-with-embeddings

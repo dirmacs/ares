@@ -23,22 +23,79 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub async fn admin_middleware(req: axum::extract::Request, next: Next) -> Response {
-    let admin_secret = std::env::var("ADMIN_API_KEY").ok();
+/// Extended JWT claims that include Eruka's roles map.
+#[derive(Debug, Deserialize)]
+struct AdminClaims {
+    pub sub: String,
+    pub email: String,
+    pub exp: usize,
+    pub iat: usize,
+    #[serde(default)]
+    pub roles: HashMap<String, Vec<RoleEntry>>,
+}
 
+#[derive(Debug, Deserialize)]
+struct RoleEntry {
+    pub role: String,
+    #[allow(dead_code)]
+    pub resource_id: Option<String>,
+}
+
+/// Check if JWT claims have admin role in any of: "admin", "ares", "eruka".
+fn has_admin_role(claims: &AdminClaims) -> bool {
+    for product in ["admin", "ares", "eruka"] {
+        if let Some(entries) = claims.roles.get(product) {
+            if entries.iter().any(|e| e.role == "admin") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub async fn admin_middleware(req: axum::extract::Request, next: Next) -> Response {
+    // Method 1: X-Admin-Secret header (legacy, backward-compatible)
+    let admin_secret = std::env::var("ADMIN_API_KEY").ok();
     let header_secret = req
         .headers()
         .get("x-admin-secret")
-        .and_then(|v| v.to_str().ok());
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
 
-    match (admin_secret, header_secret) {
-        (Some(expected), Some(given)) if expected == given => next.run(req).await,
-        _ => Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("Content-Type", "application/json")
-            .body(r#"{"error":"Invalid or missing X-Admin-Secret header"}"#.into())
-            .unwrap(),
+    if let (Some(expected), Some(given)) = (&admin_secret, &header_secret) {
+        if expected == given {
+            return next.run(req).await;
+        }
     }
+
+    // Method 2: JWT Bearer token with admin role
+    let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_default();
+    if !jwt_secret.is_empty() {
+        if let Some(token) = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+        {
+            let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+            validation.leeway = 60;
+            if let Ok(data) = jsonwebtoken::decode::<AdminClaims>(
+                token,
+                &jsonwebtoken::DecodingKey::from_secret(jwt_secret.as_bytes()),
+                &validation,
+            ) {
+                if has_admin_role(&data.claims) {
+                    return next.run(req).await;
+                }
+            }
+        }
+    }
+
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("Content-Type", "application/json")
+        .body(r#"{"error":"Admin access requires X-Admin-Secret header or JWT with admin role"}"#.into())
+        .unwrap()
 }
 
 #[derive(Debug, Deserialize, Serialize)]

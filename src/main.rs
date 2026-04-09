@@ -27,7 +27,7 @@ use ares::{
     AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
     ProviderRegistry, ToolRegistry,
 };
-use axum::{routing::get, routing::post, Router};
+use axum::{routing::get, Router};
 use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};

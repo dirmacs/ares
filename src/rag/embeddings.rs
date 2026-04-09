@@ -705,12 +705,50 @@ impl EmbeddingService {
         let model_repo = config.model.hf_repo_id();
         pre_download_model(model_repo, &["onnx/model.onnx", "tokenizer.json", "config.json"], &cache_dir)?;
 
-        let model = TextEmbedding::try_new(
-            InitOptions::new(config.model.to_fastembed_model())
-                .with_cache_dir(cache_dir.clone())
-                .with_show_download_progress(true),
-        )
-        .map_err(|e| AppError::Internal(format!("Failed to initialize embedding model: {}", e)))?;
+        // Try loading from local cache first to bypass hf-hub's broken ureq xethub client.
+        // Uses UserDefinedEmbeddingModel with raw ONNX bytes when cache exists.
+        let folder_name = format!("models--{}", model_repo.replace('/', "--"));
+        let model_base = cache_dir.join(&folder_name).join("snapshots");
+        let snapshot_dir = if model_base.exists() {
+            std::fs::read_dir(&model_base).ok().and_then(|entries| {
+                entries.filter_map(|e| e.ok()).find(|e| {
+                    e.path().join("onnx").join("model.onnx").exists()
+                }).map(|e| e.path())
+            })
+        } else {
+            let native = cache_dir.join(model_repo.replace('/', "--"));
+            if native.join("onnx").join("model.onnx").exists() { Some(native) } else { None }
+        };
+
+        let model = if let Some(ref snap) = snapshot_dir {
+            tracing::info!("Loading embedding model from local cache: {}", snap.display());
+            let onnx_bytes = std::fs::read(snap.join("onnx").join("model.onnx"))
+                .map_err(|e| AppError::Internal(format!("Failed to read ONNX: {}", e)))?;
+            let tokenizer_bytes = std::fs::read(snap.join("tokenizer.json"))
+                .map_err(|e| AppError::Internal(format!("Failed to read tokenizer: {}", e)))?;
+            let tokenizer_config = std::fs::read(snap.join("tokenizer_config.json")).unwrap_or_default();
+            let special_tokens = std::fs::read(snap.join("special_tokens_map.json")).unwrap_or_default();
+            let config_json = std::fs::read(snap.join("config.json")).unwrap_or_default();
+
+            let tokenizer_files = fastembed::TokenizerFiles {
+                tokenizer_file: tokenizer_bytes,
+                config_file: tokenizer_config,
+                special_tokens_map_file: special_tokens,
+                tokenizer_config_file: config_json,
+            };
+
+            let user_model = fastembed::UserDefinedEmbeddingModel::new(onnx_bytes, tokenizer_files);
+            TextEmbedding::try_new_from_user_defined(user_model, fastembed::InitOptionsUserDefined::new())
+                .map_err(|e| AppError::Internal(format!("Failed to load local model: {}", e)))?
+        } else {
+            tracing::warn!("No local ONNX cache, attempting HF download (may fail on xethub)");
+            TextEmbedding::try_new(
+                InitOptions::new(config.model.to_fastembed_model())
+                    .with_cache_dir(cache_dir.clone())
+                    .with_show_download_progress(true),
+            )
+            .map_err(|e| AppError::Internal(format!("Failed to init embedding model: {}", e)))?
+        };
 
         let sparse_model = if config.sparse_enabled {
             let sparse_model_name = format!("{:?}", config.sparse_model.to_fastembed_model());

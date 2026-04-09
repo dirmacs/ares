@@ -470,4 +470,104 @@ mod tests {
         let results = reranker.rerank("test query", &[], None).await.unwrap();
         assert!(results.is_empty());
     }
+
+    #[test]
+    fn test_display_roundtrip_all_reranker_models() {
+        for model in RerankerModelType::all() {
+            let display = model.to_string();
+            let parsed: RerankerModelType = display.parse().unwrap_or_else(|_| {
+                panic!("Display→FromStr roundtrip failed for {:?} ('{}')", model, display)
+            });
+            assert_eq!(parsed, model);
+        }
+    }
+
+    #[test]
+    fn test_reranker_from_str_aliases() {
+        let aliases = vec![
+            ("bge-base", RerankerModelType::BgeRerankerBase),
+            ("bge-m3", RerankerModelType::BgeRerankerV2M3),
+            ("jina-turbo", RerankerModelType::JinaRerankerV1TurboEn),
+            ("jina-multilingual", RerankerModelType::JinaRerankerV2BaseMultilingual),
+        ];
+        for (alias, expected) in aliases {
+            let parsed: RerankerModelType = alias.parse().unwrap();
+            assert_eq!(parsed, expected, "Alias '{}' mismatch", alias);
+        }
+    }
+
+    #[test]
+    fn test_reranker_from_str_case_insensitive() {
+        let parsed: RerankerModelType = "BGE-RERANKER-BASE".parse().unwrap();
+        assert_eq!(parsed, RerankerModelType::BgeRerankerBase);
+    }
+
+    #[test]
+    fn test_reranker_from_str_invalid() {
+        let result = "fake-reranker".parse::<RerankerModelType>();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Unknown reranker model"));
+    }
+
+    #[test]
+    fn test_hf_repo_id_all_models() {
+        for model in RerankerModelType::all() {
+            let repo = model.hf_repo_id();
+            assert!(!repo.is_empty(), "{:?} has empty repo ID", model);
+            assert!(repo.contains('/'), "{:?} repo '{}' should have org/model format", model, repo);
+        }
+    }
+
+    #[test]
+    fn test_reranker_config_serialization() {
+        let config = RerankerConfig {
+            model: RerankerModelType::JinaRerankerV1TurboEn,
+            show_download_progress: false,
+            top_k: 5,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: RerankerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.model, RerankerModelType::JinaRerankerV1TurboEn);
+        assert_eq!(parsed.top_k, 5);
+        assert!(!parsed.show_download_progress);
+    }
+
+    #[test]
+    fn test_reranked_result_serialization() {
+        let result = RerankedResult {
+            id: "doc-1".to_string(),
+            content: "test content".to_string(),
+            retrieval_score: 0.8,
+            rerank_score: 0.95,
+            final_score: 0.9,
+            original_rank: 3,
+            new_rank: 1,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"id\":\"doc-1\""));
+        assert!(json.contains("\"new_rank\":1"));
+
+        let parsed: RerankedResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "doc-1");
+        assert_eq!(parsed.original_rank, 3);
+        assert_eq!(parsed.new_rank, 1);
+    }
+
+    #[test]
+    fn test_to_fastembed_reranker_all_variants() {
+        for model in RerankerModelType::all() {
+            let _ = model.to_fastembed_model(); // should not panic
+        }
+    }
+
+    #[test]
+    fn test_reranker_new_and_model_type() {
+        let config = RerankerConfig {
+            model: RerankerModelType::BgeRerankerV2M3,
+            ..Default::default()
+        };
+        let reranker = Reranker::new(config);
+        assert_eq!(reranker.model_type(), RerankerModelType::BgeRerankerV2M3);
+    }
 }

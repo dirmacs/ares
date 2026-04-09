@@ -208,11 +208,12 @@ A.R.E.S uses Cargo features for conditional compilation:
 | Feature | Description | Default |
 |---------|-------------|---------|
 | `postgres` | PostgreSQL database | ✅ Yes |
-| `ares-vector` | Built-in HNSW vector store | ✅ Yes |
+| `ares-vector` | Pure-Rust embedded HNSW vector store | ✅ Yes |
 | `qdrant` | Qdrant vector database | No |
 | `pgvector` | PostgreSQL pgvector extension | No |
+| `chromadb` | ChromaDB embedding database | No |
+| `pinecone` | Pinecone managed vector database | No |
 | `lancedb` | LanceDB vector database | No |
-| `ares-vector` | Pure-Rust vector store with HNSW indexing | No |
 
 ### UI & Documentation
 

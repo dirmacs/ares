@@ -41,7 +41,7 @@ impl PostgresClient {
 
     /// Create a test-only client with a lazy pool that doesn't actually connect.
     /// Use this in unit tests that construct AppState but never execute queries.
-    #[cfg(test)]
+    #[doc(hidden)]
     pub fn new_test() -> Self {
         let url = "postgres://test:test@localhost:5432/test";
         let pool = PgPoolOptions::new()

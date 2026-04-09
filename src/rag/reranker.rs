@@ -66,6 +66,16 @@ impl RerankerModelType {
         ]
     }
 
+    /// Get the HuggingFace repo ID for this model (used for lancor pre-downloading)
+    pub fn hf_repo_id(&self) -> &'static str {
+        match self {
+            Self::BgeRerankerBase => "BAAI/bge-reranker-base",
+            Self::BgeRerankerV2M3 => "BAAI/bge-reranker-v2-m3",
+            Self::JinaRerankerV1TurboEn => "jinaai/jina-reranker-v1-turbo-en",
+            Self::JinaRerankerV2BaseMultilingual => "jinaai/jina-reranker-v2-base-multilingual",
+        }
+    }
+
     /// Check if this model is multilingual
     pub fn is_multilingual(&self) -> bool {
         matches!(
@@ -196,6 +206,19 @@ impl Reranker {
             .get_or_try_init(|| async {
                 let config = self.config.clone();
                 tokio::task::spawn_blocking(move || {
+                    // Pre-download ONNX model files via lancor to bypass hf-hub/ureq xethub bug
+                    let repo_id = config.model.hf_repo_id();
+                    let onnx_files = &["onnx/model.onnx", "tokenizer.json", "config.json"];
+                    let cache_dir = std::env::var("FASTEMBED_CACHE_DIR")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|_| {
+                            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                            std::path::PathBuf::from(home).join(".cache").join("fastembed")
+                        });
+                    if let Err(e) = super::embeddings::pre_download_model(repo_id, onnx_files, &cache_dir) {
+                        tracing::warn!("Reranker pre-download failed (may already be cached): {}", e);
+                    }
+
                     let init_options = RerankInitOptions::new(config.model.to_fastembed_model())
                         .with_show_download_progress(config.show_download_progress);
                     let model = TextRerank::try_new(init_options).map_err(|e| {

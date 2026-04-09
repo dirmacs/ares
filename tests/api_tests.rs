@@ -3,6 +3,12 @@ use axum_test::TestServer;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use uuid::Uuid;
+
+/// Generate a unique email for test isolation across parallel and repeated runs.
+fn unique_email(prefix: &str) -> String {
+    format!("{}+{}@test.example.com", prefix, Uuid::new_v4())
+}
 
 use ares::{
     auth::jwt::AuthService,
@@ -29,22 +35,10 @@ use common::mocks::MockLLMFactory;
 
 // ============= Test Helpers =============
 
-/// Create a test app with PostgreSQL database
+/// Create a test app with PostgreSQL database (uses ares_test DB)
 async fn create_test_app() -> Router {
-    // Create database connection (uses DATABASE_URL env var)
-    let db = PostgresClient::new_memory()
-        .await
-        .expect("Failed to create database connection");
-
-    // Create a test user for auth middleware
-    db.create_user(
-        "test-user",
-        "testuser@example.com",
-        "dummy_hash",
-        "Test User",
-    )
-    .await
-    .expect("Failed to create test user");
+    // Connect to ares_test DB. First call per binary does cleanup + migrations.
+    let db = common::test_db::create_test_db().await;
 
     // Create auth service with test secret
     let auth_service = AuthService::new(
@@ -232,11 +226,12 @@ async fn test_health_check_multiple_times() {
 #[tokio::test]
 async fn test_register_user() {
     let server = create_test_server().await;
+    let email = unique_email("register");
 
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "test@example.com",
+            "email": email,
             "password": "password123",
             "name": "Test User"
         }))
@@ -252,12 +247,13 @@ async fn test_register_user() {
 #[tokio::test]
 async fn test_register_and_login() {
     let server = create_test_server().await;
+    let email = unique_email("login");
 
     // Register
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "login_test@example.com",
+            "email": email,
             "password": "password123",
             "name": "Test User"
         }))
@@ -271,7 +267,7 @@ async fn test_register_and_login() {
     let response = server
         .post("/api/auth/login")
         .json(&json!({
-            "email": "login_test@example.com",
+            "email": email,
             "password": "password123"
         }))
         .await;
@@ -285,12 +281,13 @@ async fn test_register_and_login() {
 #[tokio::test]
 async fn test_register_duplicate_user() {
     let server = create_test_server().await;
+    let email = unique_email("dup");
 
     // Register first user
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "duplicate@example.com",
+            "email": email,
             "password": "password123",
             "name": "Test User"
         }))
@@ -302,7 +299,7 @@ async fn test_register_duplicate_user() {
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "duplicate@example.com",
+            "email": email,
             "password": "password456",
             "name": "Another User"
         }))
@@ -315,11 +312,11 @@ async fn test_register_duplicate_user() {
 async fn test_login_invalid_credentials() {
     let server = create_test_server().await;
 
-    // Try to login without registering
+    // Try to login without registering — UUID email guaranteed not to exist
     let response = server
         .post("/api/auth/login")
         .json(&json!({
-            "email": "nonexistent@example.com",
+            "email": unique_email("nonexistent"),
             "password": "password123"
         }))
         .await;
@@ -330,12 +327,13 @@ async fn test_login_invalid_credentials() {
 #[tokio::test]
 async fn test_login_wrong_password() {
     let server = create_test_server().await;
+    let email = unique_email("wrongpass");
 
     // Register
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "wrongpass@example.com",
+            "email": email,
             "password": "correct_password",
             "name": "Test User"
         }))
@@ -347,7 +345,7 @@ async fn test_login_wrong_password() {
     let response = server
         .post("/api/auth/login")
         .json(&json!({
-            "email": "wrongpass@example.com",
+            "email": email,
             "password": "wrong_password"
         }))
         .await;
@@ -363,7 +361,7 @@ async fn test_register_short_password() {
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "shortpass@example.com",
+            "email": unique_email("shortpass"),
             "password": "short",
             "name": "Test User"
         }))
@@ -381,7 +379,7 @@ async fn test_register_invalid_email() {
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "notanemail",
+            "email": unique_email("invalidemail"),
             "password": "password123",
             "name": "Test User"
         }))
@@ -400,7 +398,7 @@ async fn test_register_empty_name() {
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "emptyname@example.com",
+            "email": unique_email("emptyname"),
             "password": "password123",
             "name": ""
         }))
@@ -418,7 +416,7 @@ async fn test_refresh_token() {
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "refresh@example.com",
+            "email": unique_email("refresh"),
             "password": "password123",
             "name": "Test User"
         }))
@@ -460,12 +458,13 @@ async fn test_refresh_token_invalid() {
 #[tokio::test]
 async fn test_multiple_logins() {
     let server = create_test_server().await;
+    let email = unique_email("multilogin");
 
     // Register
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "multilogin@example.com",
+            "email": email,
             "password": "password123",
             "name": "Test User"
         }))
@@ -478,7 +477,7 @@ async fn test_multiple_logins() {
         let response = server
             .post("/api/auth/login")
             .json(&json!({
-                "email": "multilogin@example.com",
+                "email": email,
                 "password": "password123"
             }))
             .await;
@@ -539,7 +538,7 @@ async fn test_chat_endpoint_with_live_ollama() {
     let register = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "chatuser@example.com",
+            "email": unique_email("chatuser"),
             "password": "password123",
             "name": "Chat User"
         }))
@@ -870,7 +869,7 @@ async fn test_auth_response_structure() {
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "structure@example.com",
+            "email": unique_email("structure"),
             "password": "password123",
             "name": "Test User"
         }))
@@ -902,7 +901,7 @@ async fn test_missing_required_fields() {
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "missing@example.com",
+            "email": unique_email("missing"),
             "name": "Test User"
         }))
         .await;
@@ -930,7 +929,7 @@ async fn test_extra_fields_ignored() {
     let response = server
         .post("/api/auth/register")
         .json(&json!({
-            "email": "extrafields@example.com",
+            "email": unique_email("extrafields"),
             "password": "password123",
             "name": "Test User",
             "extra_field": "should be ignored",

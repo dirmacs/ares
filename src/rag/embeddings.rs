@@ -60,7 +60,7 @@ fn get_model_lock(model_name: &str) -> Arc<Mutex<()>> {
 /// then place them in the HF cache format that hf-hub/fastembed expects:
 ///   {cache_dir}/models--{org}--{model}/snapshots/{hash}/{filename}
 ///   {cache_dir}/models--{org}--{model}/refs/main → {hash}
-fn pre_download_model(
+pub(crate) fn pre_download_model(
     repo_id: &str,
     files: &[&str],
     cache_dir: &std::path::Path,

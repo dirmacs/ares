@@ -90,3 +90,115 @@ pub mod loader {
 
 #[cfg(feature = "skills")]
 pub use loader::*;
+
+#[cfg(all(test, feature = "skills"))]
+mod tests {
+    use super::loader::*;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn create_skill_file(dir: &std::path::Path, name: &str, description: &str) {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let content = format!(
+            "---\nname: {}\ndescription: {}\n---\n\n# {}\n\nSkill instructions here.\n",
+            name, description, name
+        );
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+    }
+
+    #[test]
+    fn test_skills_config_default() {
+        let config = SkillsConfig::default();
+        assert!(config.project_dir.is_none());
+        assert!(config.personal_dir.is_none());
+        assert!(config.plugin_dirs.is_empty());
+    }
+
+    #[test]
+    fn test_load_skills_empty_dir() {
+        let temp = TempDir::new().unwrap();
+        let config = SkillsConfig {
+            project_dir: Some(temp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let skills = load_skills(&config);
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_load_skills_finds_skill_files() {
+        let temp = TempDir::new().unwrap();
+        create_skill_file(temp.path(), "test-skill", "A test skill");
+        create_skill_file(temp.path(), "another-skill", "Another skill");
+
+        let config = SkillsConfig {
+            project_dir: Some(temp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let skills = load_skills(&config);
+        assert_eq!(skills.len(), 2);
+    }
+
+    #[test]
+    fn test_list_skills_returns_summaries() {
+        let temp = TempDir::new().unwrap();
+        create_skill_file(temp.path(), "my-skill", "Does something useful");
+
+        let config = SkillsConfig {
+            project_dir: Some(temp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let summaries = list_skills(&config);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "my-skill");
+        assert_eq!(summaries[0].description, "Does something useful");
+        assert_eq!(summaries[0].scope, "project");
+    }
+
+    #[test]
+    fn test_get_skill_found() {
+        let temp = TempDir::new().unwrap();
+        create_skill_file(temp.path(), "target-skill", "Find me");
+
+        let config = SkillsConfig {
+            project_dir: Some(temp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let skill = get_skill(&config, "target-skill");
+        assert!(skill.is_some());
+    }
+
+    #[test]
+    fn test_get_skill_not_found() {
+        let temp = TempDir::new().unwrap();
+        let config = SkillsConfig {
+            project_dir: Some(temp.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert!(get_skill(&config, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_skill_summary_serialization() {
+        let summary = SkillSummary {
+            name: "test".to_string(),
+            description: "A test".to_string(),
+            scope: "project".to_string(),
+            path: "/tmp/test/SKILL.md".to_string(),
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"name\":\"test\""));
+        assert!(json.contains("\"scope\":\"project\""));
+    }
+
+    #[test]
+    fn test_nonexistent_dir_returns_empty() {
+        let config = SkillsConfig {
+            project_dir: Some(PathBuf::from("/nonexistent/path/that/doesnt/exist")),
+            ..Default::default()
+        };
+        let skills = load_skills(&config);
+        assert!(skills.is_empty());
+    }
+}

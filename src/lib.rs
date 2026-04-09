@@ -154,6 +154,9 @@ pub mod models;
 pub mod rag;
 /// Multi-agent research coordination.
 pub mod research;
+/// SKILL.md file discovery and loading (requires `skills` feature).
+#[cfg(feature = "skills")]
+pub mod skills;
 /// Built-in tools (calculator, web search).
 pub mod tools;
 /// Core types (requests, responses, errors).

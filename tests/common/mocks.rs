@@ -82,11 +82,16 @@ impl LLMClient for MockLLMClient {
         Ok(self.response.clone())
     }
 
-    async fn generate_with_history(&self, _messages: &[(String, String)]) -> Result<String> {
+    async fn generate_with_history(&self, _messages: &[(String, String)]) -> Result<LLMResponse> {
         if self.should_fail {
             return Err(AppError::LLM("Mock LLM failure".to_string()));
         }
-        Ok(self.response.clone())
+        Ok(LLMResponse {
+            content: self.response.clone(),
+            tool_calls: self.tool_calls.clone(),
+            finish_reason: "stop".to_string(),
+            usage: None,
+        })
     }
 
     async fn generate_with_tools(

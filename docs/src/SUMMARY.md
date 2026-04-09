@@ -12,9 +12,13 @@
 
 - [Chat](./api/chat.md)
 - [Agents](./api/agents.md)
+- [Tools](./api/tools.md)
+- [Skills](./api/skills.md)
+- [MCP Integration](./api/mcp.md)
+- [Memory](./api/memory.md)
+- [RAG](./api/rag.md)
 - [Workflows](./api/workflows.md)
 - [Research](./api/research.md)
-- [RAG](./api/rag.md)
 - [Streaming](./api/streaming.md)
 
 # Enterprise

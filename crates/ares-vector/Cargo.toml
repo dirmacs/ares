@@ -8,6 +8,7 @@ license = "MIT"
 repository = "https://github.com/dirmacs/ares"
 keywords = ["vector", "database", "hnsw", "embedding", "similarity-search"]
 categories = ["database", "algorithms", "science"]
+readme = "README.md"
 authors = ["Dirmacs <build@dirmacs.com>"]
 
 [features]

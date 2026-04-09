@@ -284,19 +284,22 @@ mod pool_lifecycle_tests {
 
     #[tokio::test]
     async fn test_cleanup_task_respects_shutdown() {
-        let pool = Arc::new(ClientPool::new(
-            PoolConfig::default().with_idle_timeout(Duration::from_millis(10)),
-        ));
+        let mut config = PoolConfig::default().with_idle_timeout(Duration::from_millis(100));
+        // Override health_check_interval so the cleanup loop ticks fast enough
+        // to observe the shutdown flag within the test timeout
+        config.health_check_interval = Duration::from_millis(50);
+
+        let pool = Arc::new(ClientPool::new(config));
 
         let handle = pool.start_cleanup_task();
 
-        // Give it a moment to start
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        // Give the cleanup task time to start and tick at least once
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Shutdown should cause cleanup task to exit
+        // Shutdown should cause cleanup task to exit on next tick
         pool.shutdown();
 
-        // Task should complete relatively quickly
+        // Task should complete within a few ticks
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
         assert!(result.is_ok());
     }

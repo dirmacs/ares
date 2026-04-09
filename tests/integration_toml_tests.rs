@@ -183,8 +183,8 @@ fn test_provider_registry_from_config() {
     assert!(registry.has_model("test-model"));
 }
 
-#[test]
-fn test_workflow_engine_from_config() {
+#[tokio::test]
+async fn test_workflow_engine_from_config() {
     use ares::agents::AgentRegistry;
     use ares::llm::ProviderRegistry;
     use ares::tools::registry::ToolRegistry;
@@ -216,9 +216,9 @@ fn test_workflow_engine_from_config() {
             )
             .unwrap(),
         ),
-        db: Arc::new(futures::executor::block_on(ares::db::PostgresClient::new_memory()).unwrap()),
+        db: Arc::new(ares::db::PostgresClient::new_test()),
         tenant_db: Arc::new(ares::db::TenantDb::new(Arc::new(
-            futures::executor::block_on(ares::db::PostgresClient::new_memory()).unwrap(),
+            ares::db::PostgresClient::new_test(),
         ))),
         llm_factory: Arc::new(ConfigBasedLLMFactory::new(
             provider_registry.clone(),

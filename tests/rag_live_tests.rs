@@ -170,7 +170,7 @@ fn long_document() -> &'static str {
 // Embedding Tests
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_live_embedding_model_loading() {
     skip_if_not_live!();
@@ -188,7 +188,7 @@ async fn test_live_embedding_model_loading() {
     assert!(service.dimensions() > 0, "Dimensions should be positive");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_live_single_embedding() {
     skip_if_not_live!();
@@ -209,7 +209,7 @@ async fn test_live_single_embedding() {
     assert_eq!(embedding.len(), service.dimensions());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_live_batch_embeddings() {
     skip_if_not_live!();
@@ -245,7 +245,7 @@ async fn test_live_batch_embeddings() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_live_embedding_similarity() {
     skip_if_not_live!();
@@ -293,7 +293,7 @@ async fn test_live_embedding_similarity() {
 // Vector Store Tests
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_live_vector_store_crud() {
     skip_if_not_live!();
@@ -381,7 +381,7 @@ async fn test_live_vector_store_crud() {
 // Chunking Tests
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_live_chunking_and_search() {
     skip_if_not_live!();
@@ -480,7 +480,7 @@ async fn test_live_chunking_and_search() {
 // Search Strategy Tests
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_live_hybrid_search() {
     skip_if_not_live!();
@@ -562,7 +562,7 @@ async fn test_live_hybrid_search() {
 // Reranker Tests
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_live_reranking() {
     skip_if_not_live!();
@@ -618,7 +618,7 @@ async fn test_live_reranking() {
 // End-to-End Pipeline Test
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_live_full_rag_pipeline() {
     skip_if_not_live!();
@@ -754,7 +754,7 @@ async fn test_live_full_rag_pipeline() {
 // Performance Benchmarks
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_live_embedding_throughput() {
     skip_if_not_live!();
@@ -783,7 +783,7 @@ async fn test_live_embedding_throughput() {
     assert_eq!(embeddings.len(), texts.len());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_live_search_latency() {
     skip_if_not_live!();

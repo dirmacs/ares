@@ -172,16 +172,22 @@ async fn create_test_app() -> Router {
         .expect("Failed to create DynamicConfigManager"),
     );
 
+    let db = Arc::new(db);
     let state = AppState {
         config_manager,
-        db: Arc::new(db),
-        tenant_db: Arc::new(ares::db::TenantDb::new(Arc::new(db.clone()))),
+        db: db.clone(),
+        tenant_db: Arc::new(ares::db::TenantDb::new(db)),
         llm_factory,
         provider_registry,
         agent_registry,
         tool_registry,
         auth_service: Arc::new(auth_service),
         dynamic_config,
+        deploy_registry: ares::api::handlers::deploy::DeployRegistry::default(),
+        emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        context_provider: Arc::new(ares::agents::context_provider::NoOpContextProvider),
+        #[cfg(feature = "mcp")]
+        mcp_registry: None,
     };
 
     // Build a minimal router for testing
@@ -189,7 +195,7 @@ async fn create_test_app() -> Router {
         .route("/health", get(|| async { "OK" }))
         .nest(
             "/api",
-            ares::api::routes::create_router(state.auth_service.clone()),
+            ares::api::routes::create_router(state.auth_service.clone(), state.tenant_db.clone()),
         )
         .with_state(state)
 }
@@ -603,7 +609,7 @@ async fn test_mock_llm_with_history() {
     ];
     let result = client.generate_with_history(&messages).await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), "History response");
+    assert_eq!(result.unwrap().content, "History response");
 }
 
 #[tokio::test]

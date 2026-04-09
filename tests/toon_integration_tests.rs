@@ -42,6 +42,7 @@ fn setup_test_config_dirs() -> (TempDir, PathBuf, PathBuf, PathBuf, PathBuf, Pat
 #[test]
 fn test_toon_agent_roundtrip() {
     let agent = ToonAgentConfig {
+        version: "1.0.0".to_string(),
         name: "test-agent".to_string(),
         model: "gpt-4".to_string(),
         system_prompt: Some("You are a helpful assistant.".to_string()),
@@ -133,6 +134,7 @@ fn test_dynamic_config_manager_load_from_dirs() {
 
     // Create a test agent TOON file
     let agent = ToonAgentConfig {
+        version: "1.0.0".to_string(),
         name: "test-agent".to_string(),
         model: "test-model".to_string(),
         system_prompt: Some("Test system prompt".to_string()),
@@ -190,7 +192,8 @@ fn test_dynamic_config_manager_list_methods() {
     // Create multiple agents
     for i in 1..=3 {
         let agent = ToonAgentConfig {
-            name: format!("agent-{}", i),
+            version: "1.0.0".to_string(),
+        name: format!("agent-{}", i),
             model: "model".to_string(),
             system_prompt: None,
             tools: vec![],
@@ -272,7 +275,7 @@ fn test_toon_mcp_roundtrip() {
     let mcp = ToonMcpConfig {
         name: "filesystem".to_string(),
         enabled: true,
-        command: "npx".to_string(),
+        command: Some("npx".to_string()),
         args: vec![
             "-y".to_string(),
             "@modelcontextprotocol/server-filesystem".to_string(),
@@ -300,6 +303,7 @@ fn test_toon_mcp_roundtrip() {
 fn test_toon_config_with_extra_fields() {
     // Test that extra/unknown fields in TOON are preserved via serde flatten
     let agent = ToonAgentConfig {
+        version: "1.0.0".to_string(),
         name: "agent-with-extra".to_string(),
         model: "test-model".to_string(),
         system_prompt: Some("Test prompt".to_string()),
@@ -379,6 +383,7 @@ fn test_dynamic_config_validation_with_workflows() {
 
     // Create agent
     let agent = ToonAgentConfig {
+        version: "1.0.0".to_string(),
         name: "router".to_string(),
         model: "test-model".to_string(),
         system_prompt: Some("Router agent".to_string()),

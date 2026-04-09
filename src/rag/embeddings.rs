@@ -1183,4 +1183,180 @@ mod tests {
         assert!(all.contains(&EmbeddingModelType::BgeSmallEnV15));
         assert!(all.contains(&EmbeddingModelType::MultilingualE5Large));
     }
+
+    #[test]
+    fn test_display_roundtrip_all_models() {
+        // Every model's Display output should parse back via FromStr
+        for model in EmbeddingModelType::all() {
+            let display = model.to_string();
+            let parsed: EmbeddingModelType = display.parse().unwrap_or_else(|_| {
+                panic!("Display→FromStr roundtrip failed for {:?} ('{}')", model, display)
+            });
+            assert_eq!(parsed, model, "Roundtrip mismatch for {}", display);
+        }
+    }
+
+    #[test]
+    fn test_from_str_aliases() {
+        // Test short aliases resolve correctly
+        let aliases = vec![
+            ("bge-small", EmbeddingModelType::BgeSmallEnV15),
+            ("bge-small-en", EmbeddingModelType::BgeSmallEnV15),
+            ("bge-base", EmbeddingModelType::BgeBaseEnV15),
+            ("bge-large", EmbeddingModelType::BgeLargeEnV15),
+            ("e5-small", EmbeddingModelType::MultilingualE5Small),
+            ("e5-large", EmbeddingModelType::MultilingualE5Large),
+            ("mpnet", EmbeddingModelType::AllMpnetBaseV2),
+            ("nomic", EmbeddingModelType::NomicEmbedTextV15),
+            ("mxbai", EmbeddingModelType::MxbaiEmbedLargeV1),
+            ("gte-base", EmbeddingModelType::GteBaseEnV15),
+            ("gte-large", EmbeddingModelType::GteLargeEnV15),
+            ("clip", EmbeddingModelType::ClipVitB32),
+            ("jina-code", EmbeddingModelType::JinaEmbeddingsV2BaseCode),
+            ("gemma", EmbeddingModelType::EmbeddingGemma300M),
+            ("modernbert", EmbeddingModelType::ModernBertEmbedLarge),
+            ("snowflake-l", EmbeddingModelType::SnowflakeArcticEmbedL),
+        ];
+        for (alias, expected) in aliases {
+            let parsed: EmbeddingModelType = alias.parse().unwrap_or_else(|_| {
+                panic!("Alias '{}' should parse", alias)
+            });
+            assert_eq!(parsed, expected, "Alias '{}' mismatch", alias);
+        }
+    }
+
+    #[test]
+    fn test_from_str_case_insensitive() {
+        let upper: EmbeddingModelType = "BGE-SMALL-EN-V1.5".parse().unwrap();
+        assert_eq!(upper, EmbeddingModelType::BgeSmallEnV15);
+        let mixed: EmbeddingModelType = "Nomic-Embed-Text-V1.5".parse().unwrap();
+        assert_eq!(mixed, EmbeddingModelType::NomicEmbedTextV15);
+    }
+
+    #[test]
+    fn test_from_str_invalid_model() {
+        let result = "totally-fake-model".parse::<EmbeddingModelType>();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Unknown embedding model"), "Error should mention 'Unknown': {}", msg);
+    }
+
+    #[test]
+    fn test_hf_repo_id_known_models() {
+        assert_eq!(EmbeddingModelType::BgeSmallEnV15.hf_repo_id(), "Xenova/bge-small-en-v1.5");
+        assert_eq!(EmbeddingModelType::AllMiniLmL6V2.hf_repo_id(), "sentence-transformers/all-MiniLM-L6-v2");
+        assert_eq!(EmbeddingModelType::AllMiniLmL12V2.hf_repo_id(), "sentence-transformers/all-MiniLM-L12-v2");
+    }
+
+    #[test]
+    fn test_hf_repo_id_quantized_same_as_base() {
+        // Quantized variants should map to same repo as base
+        assert_eq!(
+            EmbeddingModelType::BgeSmallEnV15.hf_repo_id(),
+            EmbeddingModelType::BgeSmallEnV15Q.hf_repo_id()
+        );
+        assert_eq!(
+            EmbeddingModelType::AllMiniLmL6V2.hf_repo_id(),
+            EmbeddingModelType::AllMiniLmL6V2Q.hf_repo_id()
+        );
+    }
+
+    #[test]
+    fn test_dimensions_categories() {
+        // Verify dimension categories: 384, 512, 768, 1024
+        for model in EmbeddingModelType::all() {
+            let dim = model.dimensions();
+            assert!(
+                dim == 384 || dim == 512 || dim == 768 || dim == 1024,
+                "{:?} has unexpected dimension {}",
+                model,
+                dim
+            );
+        }
+    }
+
+    #[test]
+    fn test_sparse_model_display_roundtrip() {
+        let model = SparseModelType::SpladePpV1;
+        let display = model.to_string();
+        assert_eq!(display, "splade-pp-v1");
+        let parsed: SparseModelType = display.parse().unwrap();
+        assert_eq!(parsed, model);
+    }
+
+    #[test]
+    fn test_sparse_model_alias() {
+        let parsed: SparseModelType = "splade".parse().unwrap();
+        assert_eq!(parsed, SparseModelType::SpladePpV1);
+    }
+
+    #[test]
+    fn test_sparse_model_invalid() {
+        let result = "nonexistent-sparse".parse::<SparseModelType>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_embedding_config_serialization_roundtrip() {
+        let config = EmbeddingConfig {
+            model: EmbeddingModelType::NomicEmbedTextV15,
+            batch_size: 64,
+            show_download_progress: false,
+            sparse_enabled: true,
+            sparse_model: SparseModelType::SpladePpV1,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: EmbeddingConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.model, EmbeddingModelType::NomicEmbedTextV15);
+        assert_eq!(parsed.batch_size, 64);
+        assert!(!parsed.show_download_progress);
+        assert!(parsed.sparse_enabled);
+    }
+
+    #[test]
+    fn test_to_fastembed_model_all_variants() {
+        // Ensure every model maps to a fastembed variant without panicking
+        for model in EmbeddingModelType::all() {
+            let _ = model.to_fastembed_model(); // should not panic
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pre_download_creates_cache_structure() {
+        // Test that pre_download_model creates the correct directory structure
+        // (without actually downloading — lancor will fail on fake repo, but dirs should be created)
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_dir = tmp.path().to_path_buf();
+
+        // This will fail on download (fake repo) but should create dir structure
+        let _ = pre_download_model(
+            "fake-org/fake-model",
+            &["onnx/model.onnx"],
+            &cache_dir,
+        );
+
+        // Verify HF cache structure was created
+        let folder = cache_dir.join("models--fake-org--fake-model");
+        assert!(folder.join("snapshots").join("lancor-prefetch").exists(),
+            "snapshot dir should be created");
+        assert!(folder.join("refs").exists(),
+            "refs dir should be created");
+        let ref_main = folder.join("refs").join("main");
+        if ref_main.exists() {
+            let content = std::fs::read_to_string(&ref_main).unwrap();
+            assert_eq!(content, "lancor-prefetch");
+        }
+    }
+
+    #[test]
+    fn test_model_lock_creation() {
+        // get_model_lock should return same Arc for same model
+        let lock1 = get_model_lock("test-model");
+        let lock2 = get_model_lock("test-model");
+        assert!(Arc::ptr_eq(&lock1, &lock2), "Same model should return same lock");
+
+        let lock3 = get_model_lock("other-model");
+        assert!(!Arc::ptr_eq(&lock1, &lock3), "Different models should have different locks");
+    }
 }

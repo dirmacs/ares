@@ -712,7 +712,11 @@ impl EmbeddingService {
         let snapshot_dir = if model_base.exists() {
             std::fs::read_dir(&model_base).ok().and_then(|entries| {
                 entries.filter_map(|e| e.ok()).find(|e| {
-                    e.path().join("onnx").join("model.onnx").exists()
+                    let p = e.path();
+                    p.join("onnx").join("model.onnx").exists()
+                        && p.join("tokenizer.json").exists()
+                        && p.join("config.json").exists()
+                        && p.join("special_tokens_map.json").exists()
                 }).map(|e| e.path())
             })
         } else {
@@ -724,17 +728,20 @@ impl EmbeddingService {
             tracing::info!("Loading embedding model from local cache: {}", snap.display());
             let onnx_bytes = std::fs::read(snap.join("onnx").join("model.onnx"))
                 .map_err(|e| AppError::Internal(format!("Failed to read ONNX: {}", e)))?;
-            let tokenizer_bytes = std::fs::read(snap.join("tokenizer.json"))
-                .map_err(|e| AppError::Internal(format!("Failed to read tokenizer: {}", e)))?;
-            let tokenizer_config = std::fs::read(snap.join("tokenizer_config.json")).unwrap_or_default();
-            let special_tokens = std::fs::read(snap.join("special_tokens_map.json")).unwrap_or_default();
-            let config_json = std::fs::read(snap.join("config.json")).unwrap_or_default();
+            let tokenizer_file = std::fs::read(snap.join("tokenizer.json"))
+                .map_err(|e| AppError::Internal(format!("Failed to read tokenizer.json: {}", e)))?;
+            let config_file = std::fs::read(snap.join("config.json"))
+                .map_err(|e| AppError::Internal(format!("Failed to read config.json: {}", e)))?;
+            let special_tokens_map_file = std::fs::read(snap.join("special_tokens_map.json"))
+                .map_err(|e| AppError::Internal(format!("Failed to read special_tokens_map.json: {}", e)))?;
+            let tokenizer_config_file = std::fs::read(snap.join("tokenizer_config.json"))
+                .map_err(|e| AppError::Internal(format!("Failed to read tokenizer_config.json: {}", e)))?;
 
             let tokenizer_files = fastembed::TokenizerFiles {
-                tokenizer_file: tokenizer_bytes,
-                config_file: tokenizer_config,
-                special_tokens_map_file: special_tokens,
-                tokenizer_config_file: config_json,
+                tokenizer_file,
+                config_file,
+                special_tokens_map_file,
+                tokenizer_config_file,
             };
 
             let user_model = fastembed::UserDefinedEmbeddingModel::new(onnx_bytes, tokenizer_files);

@@ -232,6 +232,11 @@ fn test_workflow_engine_from_config() {
             900,
             604800,
         )),
+        deploy_registry: ares::api::handlers::deploy::DeployRegistry::default(),
+        emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        context_provider: Arc::new(ares::agents::context_provider::NoOpContextProvider),
+        #[cfg(feature = "mcp")]
+        mcp_registry: None,
     };
 
     // Create workflow engine

@@ -156,8 +156,8 @@ async fn test_live_ollama_generate_with_history() {
         .await
         .expect("Generation failed");
 
-    println!("Response: {}", response);
-    assert!(!response.is_empty(), "Response should not be empty");
+    println!("Response: {}", response.content);
+    assert!(!response.content.is_empty(), "Response should not be empty");
     // The response should mention 6 since we asked about 3+3
 }
 

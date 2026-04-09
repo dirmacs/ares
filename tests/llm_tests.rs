@@ -36,7 +36,7 @@ async fn test_mock_llm_client_generate_with_history() {
     ];
     let result = client.generate_with_history(&messages).await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), "History response");
+    assert_eq!(result.unwrap().content, "History response");
 }
 
 #[tokio::test]

@@ -120,9 +120,7 @@ curl -X POST http://localhost:3000/api/chat \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "messages": [
-      {"role": "user", "content": "What is the compound annual growth rate if revenue went from $1M to $1.8M over 3 years?"}
-    ],
+    "message": "What is the compound annual growth rate if revenue went from $1M to $1.8M over 3 years?",
     "agent_type": "financial-analyst"
   }'
 ```
@@ -131,27 +129,24 @@ curl -X POST http://localhost:3000/api/chat \
 
 ```json
 {
-  "content": "To calculate the Compound Annual Growth Rate (CAGR):\n\nCAGR = (Ending Value / Beginning Value)^(1/n) - 1\nCAGR = ($1,800,000 / $1,000,000)^(1/3) - 1\nCAGR = (1.8)^(0.3333) - 1\nCAGR = 1.2164 - 1\nCAGR = 0.2164\n\n**The CAGR is 21.64%.**\n\nThis means revenue grew at an average annual rate of approximately 21.6% over the 3-year period.",
-  "model": "llama-3.3-70b",
-  "tokens_used": 287
+  "response": "To calculate the Compound Annual Growth Rate (CAGR):\n\nCAGR = (Ending Value / Beginning Value)^(1/n) - 1\nCAGR = ($1,800,000 / $1,000,000)^(1/3) - 1\nCAGR = (1.8)^(0.3333) - 1\nCAGR = 1.2164 - 1\nCAGR = 0.2164\n\n**The CAGR is 21.64%.**\n\nThis means revenue grew at an average annual rate of approximately 21.6% over the 3-year period.",
+  "agent": "financial-analyst",
+  "context_id": "ctx_abc123"
 }
 ```
 
 ### Multi-Turn Conversation
 
-Include the conversation history in the `messages` array:
+Pass the `context_id` from the previous response to continue the conversation. ARES manages history server-side:
 
 ```bash
 curl -X POST http://localhost:3000/api/chat \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "messages": [
-      {"role": "user", "content": "What is the CAGR from $1M to $1.8M over 3 years?"},
-      {"role": "assistant", "content": "The CAGR is 21.64%..."},
-      {"role": "user", "content": "What if the period was 5 years instead?"}
-    ],
-    "agent_type": "financial-analyst"
+    "message": "What if the period was 5 years instead?",
+    "agent_type": "financial-analyst",
+    "context_id": "ctx_abc123"
   }'
 ```
 
@@ -164,9 +159,7 @@ curl -X POST http://localhost:3000/api/chat \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "messages": [
-      {"role": "user", "content": "Calculate 15% annual compound interest on $50,000 over 10 years"}
-    ],
+    "message": "Calculate 15% annual compound interest on $50,000 over 10 years",
     "agent_type": "financial-analyst"
   }'
 ```
@@ -182,9 +175,7 @@ curl -X POST http://localhost:3000/api/chat/stream \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "messages": [
-      {"role": "user", "content": "Explain the difference between NPV and IRR"}
-    ],
+    "message": "Explain the difference between NPV and IRR",
     "agent_type": "financial-analyst"
   }'
 ```

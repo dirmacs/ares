@@ -20,25 +20,9 @@ personal_dir = "~/.claude/skills/"
 plugin_dirs = ["./plugins/my-plugin/skills"]
 ```
 
-## API
-
-### List Skills
-
-```
-GET /api/skills
-```
-
-Returns all discovered skills with scope-based priority (project > personal > enterprise > plugin).
-
-### Get Skill
-
-```
-GET /api/skills/{name}
-```
-
-Returns a single skill by qualified name.
-
 ## Library Usage
+
+Skills are available as a library API only — there are no HTTP endpoints for skill discovery. Use the functions below in your Rust code:
 
 ```rust
 use ares::skills::{SkillsConfig, load_skills, list_skills, get_skill};

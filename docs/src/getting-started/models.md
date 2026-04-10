@@ -8,8 +8,8 @@ ARES routes LLM requests across multiple providers through a single API. You do 
 |---|---|---|---|
 | `fast` | Groq | `llama-3.1-8b-instant` | Quick responses, classification, simple Q&A |
 | `balanced` | Groq | `llama-3.3-70b-versatile` | General-purpose tasks, GPT-4 class quality |
-| `powerful` | Anthropic | `claude-sonnet-4-6` | Complex reasoning, long-form analysis, nuanced tasks |
-| `deepseek` | NVIDIA | `deepseek-v3.2` | Code generation, technical documentation, structured output |
+| `powerful` | Anthropic | `claude-3.5-sonnet` | Complex reasoning, long-form analysis, nuanced tasks |
+| `deepseek` | NVIDIA | `deepseek-r1-distill-llama-70b` | Code generation, technical documentation, structured output |
 | `local` | Ollama | `ministral-3:3b` | Development, testing, offline use |
 
 ## How model selection works

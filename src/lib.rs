@@ -132,8 +132,10 @@
 /// AI agent orchestration and management.
 pub mod agents;
 /// HTTP API handlers and routes.
+#[cfg(feature = "postgres")]
 pub mod api;
 /// JWT authentication and middleware.
+#[cfg(feature = "postgres")]
 pub mod auth;
 /// Command-line interface and scaffolding.
 pub mod cli;
@@ -147,12 +149,14 @@ pub mod mcp;
 /// Conversation memory and context management.
 pub mod memory;
 /// Middleware for API key auth and usage tracking.
+#[cfg(feature = "postgres")]
 pub mod middleware;
 /// Multi-tenant models (Tenant, ApiKey, Quota).
 pub mod models;
 /// Retrieval Augmented Generation (RAG) components.
 pub mod rag;
 /// Multi-agent research coordination.
+#[cfg(feature = "postgres")]
 pub mod research;
 /// SKILL.md file discovery and loading (requires `skills` feature).
 #[cfg(feature = "skills")]
@@ -164,11 +168,14 @@ pub mod types;
 /// Configuration utilities (TOML, TOON).
 pub mod utils;
 /// Workflow engine for agent orchestration.
+#[cfg(feature = "postgres")]
 pub mod workflows;
 
 // Re-export commonly used types
 pub use agents::{AgentRegistry, AgentRegistryBuilder};
+#[cfg(feature = "postgres")]
 pub use db::tenants::TenantDb;
+#[cfg(feature = "postgres")]
 pub use db::PostgresClient;
 pub use llm::client::LLMClientFactoryTrait;
 pub use llm::{
@@ -179,12 +186,17 @@ pub use tools::registry::ToolRegistry;
 pub use types::{AppError, ErrorCode, Result};
 pub use utils::toml_config::{AresConfig, AresConfigManager};
 pub use utils::toon_config::DynamicConfigManager;
+#[cfg(feature = "postgres")]
 pub use workflows::{WorkflowEngine, WorkflowOutput, WorkflowStep};
 
-use crate::auth::jwt::AuthService;
 use std::sync::Arc;
 
+/// Application state shared across handlers (requires postgres feature for full server)
+#[cfg(feature = "postgres")]
+use crate::auth::jwt::AuthService;
+
 /// Application state shared across handlers
+#[cfg(feature = "postgres")]
 #[derive(Clone)]
 pub struct AppState {
     /// TOML-based infrastructure configuration with hot-reload support
@@ -232,6 +244,7 @@ pub struct AppState {
 ///     .merge(my_custom_routes(state.clone()))
 ///     .layer(my_custom_middleware());
 /// ```
+#[cfg(feature = "postgres")]
 pub fn base_router(state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/health", axum::routing::get(|| async { "OK" }))

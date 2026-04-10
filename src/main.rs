@@ -16,8 +16,9 @@
 //! ares-server --config my-config.toml
 //! ```
 
-#[cfg(feature = "mcp")]
+#[cfg(all(feature = "postgres", feature = "mcp"))]
 use ares::mcp::McpRegistry;
+#[cfg(feature = "postgres")]
 use ares::{
     api,
     auth::jwt::AuthService,
@@ -27,15 +28,36 @@ use ares::{
     AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
     ProviderRegistry, ToolRegistry,
 };
+#[cfg(feature = "postgres")]
 use axum::{routing::get, Router};
+#[cfg(feature = "postgres")]
 use std::sync::Arc;
+#[cfg(feature = "postgres")]
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
+#[cfg(feature = "postgres")]
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-#[cfg(feature = "swagger-ui")]
+#[cfg(all(feature = "postgres", feature = "swagger-ui"))]
 use utoipa::OpenApi;
-#[cfg(feature = "swagger-ui")]
+#[cfg(all(feature = "postgres", feature = "swagger-ui"))]
 use utoipa_swagger_ui::SwaggerUi;
 
+/// Stub main for builds without the `postgres` feature.
+///
+/// The `ares-server` binary is the standalone server and requires the
+/// `postgres` feature for its database backend. When `ares` is built as
+/// a lean library dependency (e.g. for pawan), the server binary is
+/// compiled to this stub so the crate still produces a valid executable.
+#[cfg(not(feature = "postgres"))]
+fn main() {
+    eprintln!(
+        "ares-server binary requires the `postgres` feature. \
+         Rebuild with `--features postgres` to run the server, \
+         or import `ares` as a library without this binary."
+    );
+    std::process::exit(1);
+}
+
+#[cfg(feature = "postgres")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse CLI arguments
@@ -111,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Handle the config subcommand
+#[cfg(feature = "postgres")]
 fn handle_config_command(
     config_path: &std::path::Path,
     full: bool,
@@ -178,6 +201,7 @@ fn handle_config_command(
 }
 
 /// Handle the agent subcommand
+#[cfg(feature = "postgres")]
 fn handle_agent_command(
     config_path: &std::path::Path,
     cmd: AgentCommands,
@@ -246,6 +270,7 @@ fn handle_agent_command(
 
 /// Initialize tracing with the given log filter.
 /// Falls back to `log_filter` if RUST_LOG is not set.
+#[cfg(feature = "postgres")]
 fn init_tracing(log_filter: &str) {
     tracing_subscriber::registry()
         .with(
@@ -257,6 +282,7 @@ fn init_tracing(log_filter: &str) {
 }
 
 /// Run the A.R.E.S server
+#[cfg(feature = "postgres")]
 async fn run_server(
     config_path: &std::path::Path,
     verbose: bool,
@@ -773,6 +799,7 @@ async fn run_server(
 
 /// Signal handler for graceful shutdown.
 /// Listens for Ctrl+C (SIGINT) and SIGTERM on Unix systems.
+#[cfg(feature = "postgres")]
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -802,7 +829,7 @@ async fn shutdown_signal() {
 }
 
 /// Run the A.R.E.S MCP server
-#[cfg(feature = "mcp")]
+#[cfg(all(feature = "postgres", feature = "mcp"))]
 async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     // Load .env file for secrets
     dotenvy::dotenv().ok();
@@ -831,12 +858,14 @@ async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std
 }
 
 /// Initialize PostgreSQL database
+#[cfg(feature = "postgres")]
 async fn init_postgres_db(url: &str) -> Result<PostgresClient, Box<dyn std::error::Error>> {
     tracing::info!(database_url = %url, "Initializing PostgreSQL database");
     Ok(PostgresClient::new_local(url).await?)
 }
 
 /// Build CORS layer from configuration
+#[cfg(feature = "postgres")]
 fn build_cors_layer(origins: &[String]) -> CorsLayer {
     use axum::http::{header, Method};
     use tower_http::cors::AllowOrigin;
@@ -879,11 +908,13 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
 }
 
 /// Health check endpoint
+#[cfg(feature = "postgres")]
 async fn health_check() -> &'static str {
     "OK"
 }
 
 /// Detailed health check endpoint with component status
+#[cfg(feature = "postgres")]
 async fn health_check_detailed(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> axum::Json<serde_json::Value> {
@@ -940,6 +971,7 @@ async fn health_check_detailed(
 }
 
 /// Configuration info endpoint (non-sensitive info only)
+#[cfg(feature = "postgres")]
 async fn config_info(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> axum::Json<serde_json::Value> {
@@ -963,7 +995,7 @@ async fn config_info(
 // UI Embedding (when `ui` feature is enabled)
 // =============================================================================
 
-#[cfg(feature = "ui")]
+#[cfg(all(feature = "postgres", feature = "ui"))]
 mod ui {
     use axum::{
         body::Body,
@@ -1034,7 +1066,7 @@ mod ui {
     }
 }
 
-#[cfg(feature = "ui")]
+#[cfg(all(feature = "postgres", feature = "ui"))]
 fn ui_routes() -> Router<AppState> {
     ui::routes()
 }

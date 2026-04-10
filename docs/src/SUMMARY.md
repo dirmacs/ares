@@ -31,6 +31,7 @@
 # Platform
 
 - [Rate Limits & Quotas](./platform/rate-limits.md)
+- [Loop Detection & Safety](./platform/safety.md)
 - [Error Handling](./platform/errors.md)
 - [Self-Hosting](./platform/self-hosting.md)
 

@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Models &amp; Providers - ARES Documentation</title>
+        <title>MCP Integration - ARES Documentation</title>
 
 
         <!-- Custom HTML head -->
@@ -129,7 +129,7 @@
                         <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/getting-started/models.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/api/mcp.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -158,110 +158,63 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="models--providers"><a class="header" href="#models--providers">Models &amp; Providers</a></h1>
-<p>ARES routes LLM requests across multiple providers through a single API. You do not call providers directly — ARES selects the appropriate model based on the agent configuration and handles credentials, rate limits, and failover transparently.</p>
-<h2 id="available-models"><a class="header" href="#available-models">Available models</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>Tier</th><th>Provider</th><th>Model</th><th>Best for</th></tr></thead><tbody>
-<tr><td><code>fast</code></td><td>Groq</td><td><code>llama-3.1-8b-instant</code></td><td>Quick responses, classification, simple Q&amp;A</td></tr>
-<tr><td><code>balanced</code></td><td>Groq</td><td><code>llama-3.3-70b-versatile</code></td><td>General-purpose tasks, GPT-4 class quality</td></tr>
-<tr><td><code>powerful</code></td><td>Anthropic</td><td><code>claude-3.5-sonnet</code></td><td>Complex reasoning, long-form analysis, nuanced tasks</td></tr>
-<tr><td><code>deepseek</code></td><td>NVIDIA</td><td><code>deepseek-r1-distill-llama-70b</code></td><td>Code generation, technical documentation, structured output</td></tr>
-<tr><td><code>local</code></td><td>Ollama</td><td><code>ministral-3:3b</code></td><td>Development, testing, offline use</td></tr>
-</tbody></table>
-</div>
-<h2 id="how-model-selection-works"><a class="header" href="#how-model-selection-works">How model selection works</a></h2>
-<p>You do not specify a model directly in your API calls. Instead, you specify an <code>agent_type</code>, and each agent is configured with a model tier.</p>
-<pre><code class="language-bash"># This request is routed to whichever model the "product" agent is configured to use
-curl -X POST http://localhost:3000/v1/chat \
-  -H "Authorization: Bearer ares_xxx" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Compare these two options", "agent_type": "product"}'
+                        <h1 id="mcp-integration"><a class="header" href="#mcp-integration">MCP Integration</a></h1>
+<p>ARES integrates with <a href="https://modelcontextprotocol.io">Model Context Protocol</a> servers, allowing agents to use external tools as first-class capabilities.</p>
+<h2 id="feature-flag"><a class="header" href="#feature-flag">Feature Flag</a></h2>
+<pre><code class="language-toml">[dependencies]
+ares-server = { version = "0.7", features = ["mcp"] }
 </code></pre>
-<p>The mapping between agents and models is configured by your tenant administrator. A typical setup might look like:</p>
-<div class="table-wrapper"><table><thead><tr><th>Agent</th><th>Model tier</th><th>Rationale</th></tr></thead><tbody>
-<tr><td><code>classifier</code></td><td><code>fast</code></td><td>Needs speed, not depth</td></tr>
-<tr><td><code>product</code></td><td><code>balanced</code></td><td>General-purpose, good quality</td></tr>
-<tr><td><code>analyst</code></td><td><code>powerful</code></td><td>Complex reasoning required</td></tr>
-<tr><td><code>code-review</code></td><td><code>deepseek</code></td><td>Specialized for code tasks</td></tr>
-</tbody></table>
-</div>
-<p>This design means you can upgrade an agent's underlying model without changing any client code.</p>
-<h2 id="provider-architecture"><a class="header" href="#provider-architecture">Provider architecture</a></h2>
-<p>ARES uses a named-provider system. Each provider is configured with its API endpoint, credentials, and rate limits. Models reference their provider by name.</p>
-<pre><code>┌─────────────┐
-│  Your App   │
-│  agent_type │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐     ┌──────────┐
-│    ARES     │────▶│   Groq   │  fast, balanced
-│   Router    │     └──────────┘
-│             │     ┌──────────┐
-│             │────▶│Anthropic │  powerful
-│             │     └──────────┘
-│             │     ┌──────────┐
-│             │────▶│  NVIDIA  │  deepseek
-│             │     └──────────┘
-│             │     ┌──────────┐
-│             │────▶│  Ollama  │  local
-└─────────────┘     └──────────┘
+<p>MCP is included in the default feature set.</p>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<p>MCP servers are configured via <code>.toon</code> files in your config directory. Each server gets its own TOON configuration.</p>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How It Works</a></h2>
+<ol>
+<li>ARES discovers MCP server configs from the config directory</li>
+<li><code>McpRegistry::from_dir()</code> loads and connects to configured servers</li>
+<li>Each server provides an <code>McpClient</code> for tool invocation</li>
+<li>Agents access MCP tools through the registry</li>
+</ol>
+<h2 id="architecture"><a class="header" href="#architecture">Architecture</a></h2>
+<pre><code>Agent Request → McpRegistry → get_client("eruka") → McpClient → MCP Server
+                                                                      ↓
+Agent Response ← Tool Result ←────────────────────────────────────────┘
 </code></pre>
-<h3 id="provider-details"><a class="header" href="#provider-details">Provider details</a></h3>
-<p><strong>Groq</strong> — High-throughput inference on custom LPUs. Extremely fast response times. Hosts open-source models (Llama, Mixtral). Free tier available with rate limits.</p>
-<p><strong>Anthropic</strong> — Claude models. Best-in-class for complex reasoning, instruction following, and safety. Requires a paid API key.</p>
-<p><strong>NVIDIA (DeepSeek)</strong> — NVIDIA-hosted DeepSeek models via the NVIDIA AI API. Strong at code generation and structured technical output.</p>
-<p><strong>Ollama</strong> — Self-hosted, local inference. No external API calls. Useful for development, air-gapped environments, or when you need to keep data on-premises.</p>
-<h2 id="rate-limits"><a class="header" href="#rate-limits">Rate limits</a></h2>
-<p>Rate limits are enforced per provider and per tenant. The following are default limits for the Groq free tier:</p>
-<div class="table-wrapper"><table><thead><tr><th>Model tier</th><th>Requests per day</th><th>Tokens per minute</th></tr></thead><tbody>
-<tr><td><code>fast</code> (llama-3.1-8b)</td><td>14,400</td><td>20,000</td></tr>
-<tr><td><code>balanced</code> (llama-3.3-70b)</td><td>6,000</td><td>6,000</td></tr>
-</tbody></table>
-</div>
-<p>Anthropic and NVIDIA rate limits depend on your API plan with those providers. ARES surfaces rate limit errors transparently:</p>
-<pre><code class="language-json">{
-  "error": "Rate limit exceeded for provider 'groq'",
-  "code": "RATE_LIMIT_EXCEEDED",
-  "retry_after": 60
-}
-</code></pre>
-<p>Tenant-level rate limits and quotas are configured separately by your administrator and enforced by ARES regardless of provider limits.</p>
-<h2 id="adding-your-own-providers"><a class="header" href="#adding-your-own-providers">Adding your own providers</a></h2>
-<p>If you are self-hosting ARES, you can add providers in your <code>ares.toml</code> configuration:</p>
-<pre><code class="language-toml">[[providers]]
-name = "my-openai"
-kind = "openai"
-api_base = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
+<h2 id="library-usage"><a class="header" href="#library-usage">Library Usage</a></h2>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use ares::mcp::McpRegistry;
 
-[[models]]
-name = "gpt-4o"
-provider = "my-openai"
-model_id = "gpt-4o"
-tier = "powerful"
+// Load MCP servers from config directory
+let registry = McpRegistry::from_dir("config/mcp")?;
+
+// List connected servers
+let names = registry.client_names();
+
+// Get a specific client
+if let Some(client) = registry.get_client("eruka") {
+    // Use the client to call MCP tools
+}
+
+// Convenience method for Eruka specifically
+if let Some(eruka) = registry.eruka() {
+    // Direct access to Eruka MCP client
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="per-agent-mcp-access"><a class="header" href="#per-agent-mcp-access">Per-Agent MCP Access</a></h2>
+<p>Agents can be configured with specific MCP server access via TOON configuration:</p>
+<pre><code class="language-toon">[agent.researcher]
+mcp_servers = ["eruka", "search"]
 </code></pre>
-<p>Any provider that exposes an OpenAI-compatible API (vLLM, Together AI, Fireworks, etc.) can be added using the <code>openai</code> provider kind.</p>
-<h2 id="choosing-the-right-tier"><a class="header" href="#choosing-the-right-tier">Choosing the right tier</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>If you need...</th><th>Use tier</th></tr></thead><tbody>
-<tr><td>Fastest possible response</td><td><code>fast</code></td></tr>
-<tr><td>Good quality at reasonable speed</td><td><code>balanced</code></td></tr>
-<tr><td>Maximum reasoning capability</td><td><code>powerful</code></td></tr>
-<tr><td>Code generation or technical tasks</td><td><code>deepseek</code></td></tr>
-<tr><td>Offline or local development</td><td><code>local</code></td></tr>
-</tbody></table>
-</div>
-<p>When in doubt, start with <code>balanced</code>. It provides the best trade-off between quality, speed, and cost for most use cases.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../getting-started/authentication.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../api/skills.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../api/chat.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../api/memory.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -271,11 +224,11 @@ tier = "powerful"
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../getting-started/authentication.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../api/skills.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../api/chat.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../api/memory.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

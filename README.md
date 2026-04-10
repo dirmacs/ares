@@ -8,9 +8,8 @@
 </p>
 
 <p align="center">
-  <a href="https://crates.io/crates/ares-server"><img src="https://img.shields.io/crates/v/ares-server.svg" alt="crates.io"></a>
-  <a href="https://docs.rs/ares-server"><img src="https://docs.rs/ares-server/badge.svg" alt="docs.rs"></a>
-  <a href="https://github.com/dirmacs/ares/actions/workflows/ci.yml"><img src="https://github.com/dirmacs/ares/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/dirmacs/ares"><img src="https://img.shields.io/github/stars/dirmacs/ares?style=flat" alt="GitHub"></a>
+  <a href="https://dirmacs.github.io/ares"><img src="https://img.shields.io/badge/docs-mdbook-blue" alt="docs"></a>
   <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="MIT">
 </p>
 
@@ -42,6 +41,8 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 - 📖 **OpenAPI**: Automatic API documentation generation
 - 🧪 **Testing**: Comprehensive unit and integration tests
 - ✔️ **Config Validation**: Circular reference detection and unused config warnings
+- 🔁 **Loop Detection**: Automatic detection of repetitive agent outputs with 3-tier escalation (warn → force alternative → halt)
+- 💾 **Crash Recovery**: Checkpoint serialization — save agent state at each step, restore on restart
 
 ## Installation
 

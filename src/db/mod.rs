@@ -59,24 +59,32 @@ pub mod pinecone;
 #[cfg(feature = "qdrant")]
 pub mod qdrant;
 
-// Relational database
+// Relational database (requires postgres feature for sqlx)
+#[cfg(feature = "postgres")]
 /// Agent run tracking (execution history).
 pub mod agent_runs;
+#[cfg(feature = "postgres")]
 /// Platform alerts (health, quota, errors).
 pub mod alerts;
+#[cfg(feature = "postgres")]
 /// Admin audit log (mutation tracking).
 pub mod audit_log;
-/// Turso/libSQL database client implementation.
+#[cfg(feature = "postgres")]
+/// PostgreSQL database client implementation.
 pub mod postgres;
+#[cfg(feature = "postgres")]
 /// Per-tenant agent instance management.
 pub mod tenant_agents;
+#[cfg(feature = "postgres")]
 /// Multi-tenant tenant management.
 pub mod tenants;
 /// Database traits and common types shared across providers.
+#[cfg(feature = "postgres")]
 pub mod traits;
 /// Turso/libSQL database client (alternative to PostgreSQL).
 #[cfg(feature = "turso")]
 pub mod turso;
+#[cfg(feature = "postgres")]
 /// Agent config version history (Sprint 11).
 pub mod agent_versions;
 
@@ -87,9 +95,11 @@ pub use vectorstore::{CollectionInfo, CollectionStats, VectorStore, VectorStoreP
 pub use ares_vector::AresVectorStore;
 #[cfg(feature = "lancedb")]
 pub use lancedb::LanceDBStore;
+#[cfg(feature = "postgres")]
 pub use postgres::PostgresClient;
 #[cfg(feature = "turso")]
 pub use turso::TursoClient;
 #[cfg(feature = "qdrant")]
 pub use qdrant::QdrantVectorStore;
+#[cfg(feature = "postgres")]
 pub use tenants::{TenantDb, UsageSummary};

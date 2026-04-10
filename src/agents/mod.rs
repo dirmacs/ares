@@ -36,11 +36,13 @@ pub mod loop_detector;
 /// Checkpoint/crash recovery — serialize agent state, restore on restart.
 pub mod checkpoint;
 /// Multi-agent orchestration for complex tasks.
+#[cfg(feature = "postgres")]
 pub mod orchestrator;
 pub mod registry;
 /// Request routing to specialized agents.
 pub mod router;
 /// Per-tenant agent creation from DB-stored configs.
+#[cfg(feature = "postgres")]
 pub mod tenant_agent;
 
 use crate::llm::client::TokenUsage;

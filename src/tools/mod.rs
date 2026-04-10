@@ -50,3 +50,6 @@ pub mod mcp_bridge;
 /// Web search tool using DuckDuckGo (requires `search-tools` feature).
 #[cfg(feature = "search-tools")]
 pub mod search;
+/// Web scraping tool — fetch URL, extract readable text (requires `search-tools` feature).
+#[cfg(feature = "search-tools")]
+pub mod web_scrape;

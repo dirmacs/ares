@@ -87,3 +87,71 @@ fn skills_config_from_state(state: &AppState) -> crate::skills::SkillsConfig {
         None => crate::skills::SkillsConfig::default(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_skill_response_serialization() {
+        let resp = SkillResponse {
+            name: "test-skill".to_string(),
+            description: "A test".to_string(),
+            scope: "project".to_string(),
+            path: "/tmp/test/SKILL.md".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("test-skill"));
+        assert!(json.contains("project"));
+    }
+
+    #[test]
+    fn test_skill_detail_response_serialization() {
+        let resp = SkillDetailResponse {
+            name: "my-skill".to_string(),
+            description: "Does things".to_string(),
+            scope: "personal".to_string(),
+            path: "/home/user/.claude/skills/my-skill/SKILL.md".to_string(),
+            content: "# My Skill\n\nInstructions here.".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("my-skill"));
+        assert!(json.contains("Instructions here"));
+    }
+
+    #[test]
+    fn test_skills_list_response_serialization() {
+        let resp = SkillsListResponse {
+            skills: vec![],
+            count: 0,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"count\":0"));
+        assert!(json.contains("\"skills\":[]"));
+    }
+
+    #[test]
+    fn test_skills_list_with_items() {
+        let resp = SkillsListResponse {
+            skills: vec![
+                SkillResponse {
+                    name: "a".to_string(),
+                    description: "first".to_string(),
+                    scope: "project".to_string(),
+                    path: "/a/SKILL.md".to_string(),
+                },
+                SkillResponse {
+                    name: "b".to_string(),
+                    description: "second".to_string(),
+                    scope: "personal".to_string(),
+                    path: "/b/SKILL.md".to_string(),
+                },
+            ],
+            count: 2,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"count\":2"));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["skills"].as_array().unwrap().len(), 2);
+    }
+}

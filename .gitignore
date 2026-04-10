@@ -59,9 +59,16 @@ agents/private/
 
 # mdBook build output
 docs/book/
+# mdBook stray build output (sometimes written to repo root)
+/api/
+/platform/
 
 # IDE workspace files
 *.code-workspace
 .fastembed_cache/
+.fastembed_native/
 data/
 ares-server-with-embeddings
+
+# deagle code intelligence graph (local cache)
+.deagle/

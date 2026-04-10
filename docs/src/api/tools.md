@@ -8,6 +8,7 @@ ARES provides a type-safe tool calling framework with automatic schema generatio
 |------|-------------|---------|
 | Calculator | Mathematical expression evaluation | default |
 | Web Search | Search via [Daedra](https://github.com/dirmacs/daedra) | `search-tools` |
+| Web Scrape | Fetch URL and extract readable text content | `search-tools` |
 
 ## Tool Trait
 

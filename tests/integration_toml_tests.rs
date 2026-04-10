@@ -106,6 +106,8 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
         agents,
         workflows,
         rag: RagConfig::default(),
+        #[cfg(feature = "skills")]
+        skills: None,
     }
 }
 

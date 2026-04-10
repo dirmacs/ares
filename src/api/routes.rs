@@ -85,6 +85,14 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
                 .delete(crate::api::handlers::conversations::delete_conversation),
         );
 
+    // Skills routes (requires skills feature)
+    #[cfg(feature = "skills")]
+    {
+        protected_routes = protected_routes
+            .route("/skills", get(crate::api::handlers::skills::list_skills))
+            .route("/skills/{name}", get(crate::api::handlers::skills::get_skill));
+    }
+
     // RAG routes (requires local-embeddings feature for ONNX-based embeddings and ares-vector for vector storage)
     #[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
     {

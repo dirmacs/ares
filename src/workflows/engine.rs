@@ -384,6 +384,8 @@ mod tests {
             agents,
             workflows,
             rag: RagConfig::default(),
+            #[cfg(feature = "skills")]
+            skills: None,
         }
     }
 

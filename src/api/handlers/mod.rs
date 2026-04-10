@@ -19,6 +19,9 @@ pub mod deploy;
 pub mod rag;
 /// Research coordination handlers.
 pub mod research;
+/// Skills discovery handlers (requires `skills` feature).
+#[cfg(feature = "skills")]
+pub mod skills;
 /// User-created agent management handlers.
 pub mod user_agents;
 /// V1 API key-authenticated tenant-scoped handlers.

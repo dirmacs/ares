@@ -121,6 +121,8 @@ async fn create_test_app() -> Router {
         agents,
         workflows: HashMap::new(),
         rag: RagConfig::default(),
+        #[cfg(feature = "skills")]
+        skills: None,
     };
 
     // Create config manager (without file watcher for tests)

@@ -373,6 +373,8 @@ async fn run_server(
     tool_registry.register(Arc::new(ares::tools::calculator::Calculator));
     #[cfg(feature = "search-tools")]
     tool_registry.register(Arc::new(ares::tools::search::WebSearch::new()));
+    #[cfg(feature = "search-tools")]
+    tool_registry.register(Arc::new(ares::tools::web_scrape::WebScrape::new()));
 
     // Proprietary tools (POM, DCRM, Eruka) are registered by ares-dirmacs, not here.
     // Extension crates call tool_registry.register() in their own main.rs.

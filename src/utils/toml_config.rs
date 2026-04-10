@@ -60,6 +60,11 @@ pub struct AresConfig {
     #[serde(default)]
     pub rag: RagConfig,
 
+    /// Skills configuration (SKILL.md discovery directories)
+    #[cfg(feature = "skills")]
+    #[serde(default)]
+    pub skills: Option<SkillsTomlConfig>,
+
     /// Dynamic configuration paths (TOON files)
     #[serde(default)]
     pub config: DynamicConfigPaths,
@@ -430,6 +435,20 @@ fn default_max_depth() -> u8 {
 
 fn default_max_iterations() -> u8 {
     5
+}
+
+// ============= Skills Configuration =============
+
+/// Skills directory configuration for SKILL.md discovery.
+#[cfg(feature = "skills")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsTomlConfig {
+    /// Project skills directory (e.g., ./.claude/skills/).
+    pub project_dir: Option<std::path::PathBuf>,
+    /// Personal skills directory (e.g., ~/.claude/skills/).
+    pub personal_dir: Option<std::path::PathBuf>,
+    /// Plugin directories to scan for skills.
+    pub plugin_dirs: Option<Vec<std::path::PathBuf>>,
 }
 
 // ============= RAG Configuration =============

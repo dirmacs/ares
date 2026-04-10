@@ -31,6 +31,8 @@
 pub mod configurable;
 /// External context injection trait (OSS: NoOp, Managed: Eruka/custom).
 pub mod context_provider;
+/// Loop detection for agent outputs — prevents repetitive/stuck agents.
+pub mod loop_detector;
 /// Multi-agent orchestration for complex tasks.
 pub mod orchestrator;
 pub mod registry;

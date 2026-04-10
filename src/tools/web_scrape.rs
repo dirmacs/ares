@@ -181,10 +181,40 @@ mod tests {
         assert!(schema["required"].as_array().unwrap().contains(&json!("url")));
     }
 
+    #[test]
+    fn test_schema_has_max_length() {
+        let tool = WebScrape::new();
+        let schema = tool.parameters_schema();
+        assert!(schema["properties"]["max_length"].is_object());
+        assert_eq!(schema["properties"]["max_length"]["default"], 5000);
+    }
+
     #[tokio::test]
     async fn test_missing_url() {
         let tool = WebScrape::new();
         let result = tool.execute(json!({})).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_empty_url() {
+        let tool = WebScrape::new();
+        let result = tool.execute(json!({"url": ""})).await;
+        // Empty URL should fail at the HTTP level
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_url() {
+        let tool = WebScrape::new();
+        let result = tool.execute(json!({"url": "not-a-valid-url"})).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_nonexistent_host() {
+        let tool = WebScrape::new();
+        let result = tool.execute(json!({"url": "http://this-host-definitely-does-not-exist-xyz123.com"})).await;
         assert!(result.is_err());
     }
 
@@ -193,5 +223,26 @@ mod tests {
         let tool = WebScrape::new();
         assert_eq!(tool.name(), "web_scrape");
         assert!(!tool.description().is_empty());
+        assert!(tool.description().contains("readable text"));
+    }
+
+    #[test]
+    fn test_default() {
+        let tool = WebScrape::default();
+        assert_eq!(tool.name(), "web_scrape");
+    }
+
+    #[tokio::test]
+    async fn test_null_url_rejected() {
+        let tool = WebScrape::new();
+        let result = tool.execute(json!({"url": null})).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_numeric_url_rejected() {
+        let tool = WebScrape::new();
+        let result = tool.execute(json!({"url": 12345})).await;
+        assert!(result.is_err());
     }
 }

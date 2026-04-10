@@ -11,6 +11,13 @@ ARES is a multi-provider LLM platform that gives you a single, unified API to ro
 - **Multi-tenant enterprise support** — Tenant isolation, per-tenant agent configuration, API key scoping, and usage tracking at the tenant level.
 - **Streaming** — Server-Sent Events (SSE) streaming for real-time, token-by-token responses.
 - **Usage metering** — Track tokens, requests, and costs per tenant with built-in rate limiting and quota enforcement.
+- **Skills** — SKILL.md file discovery and loading via [thulp-skill-files](https://crates.io/crates/thulp-skill-files). Scope-based priority resolution (project > personal > plugin).
+- **MCP integration** — Bridge external MCP servers as agent-callable tools. Connect Eruka, Daedra, or any MCP-compatible service.
+- **Loop detection** — Sliding-window hash tracking with 3-tier escalation (warn, force alternative, halt) prevents agents from getting stuck in infinite loops.
+- **Crash recovery** — Checkpoint-based state serialization lets agents resume from the last saved state after failures.
+- **Agent versioning** — Version history, rollback, and emergency stop (kill switch) for all agent requests.
+- **Research coordination** — Deep research agent with configurable depth and max iterations for multi-step investigation tasks.
+- **Deployment automation** — Built-in deploy/rollback endpoints with service health monitoring and log streaming.
 
 ## Who is ARES for?
 

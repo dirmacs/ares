@@ -5,7 +5,7 @@ exclude = ["ui", "crates/pawan"]
 resolver = "2"
 
 [workspace.package]
-version = "0.7.4"
+version = "0.7.5"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/dirmacs/ares"
@@ -110,11 +110,18 @@ chromadb = ["dep:chromadb"]
 pinecone = ["dep:pinecone-sdk"]
 
 # ============= Additional Features =============
-# MCP (Model Context Protocol) server support
-# NOTE: mcp implies postgres — the MCP server exposes tenant DB queries via
-# sqlx::PgPool references in mcp/server.rs and mcp/usage.rs. Enabling `mcp`
-# without `postgres` breaks compilation (caught in 0.7.3, fixed in 0.7.4).
-mcp = ["dep:rmcp", "postgres"]
+# MCP (Model Context Protocol) protocol glue, client, auth, extension, registry,
+# and tool plumbing. Zero postgres dependency — enables MCP *consumers*.
+#
+# To run the ARES MCP *server* (mcp/server.rs + mcp/usage.rs, which query tenant
+# DB via sqlx::PgPool), enable both `mcp` and `postgres`. The `run_mcp_server`
+# entry in main.rs is already gated by `all(feature = "postgres", feature = "mcp")`.
+#
+# Decoupled in 0.7.5. 0.7.4 coarsely coupled `mcp` -> `postgres` (bandaid for the
+# 0.7.3 compile break when mcp was enabled alone); 0.7.5 moves server/usage
+# behind `cfg(all(mcp, postgres))` so library consumers can use mcp without
+# dragging sqlx into their dependency graph.
+mcp = ["dep:rmcp"]
 
 # Eruka context injection - fetches per-agent context from Eruka with caching
 eruka-context = []

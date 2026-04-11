@@ -5,6 +5,12 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-04-11
+
+### Fixed
+
+- **`mcp` feature implies `postgres`** — the MCP server code under `src/mcp/server.rs` and `src/mcp/usage.rs` references `sqlx::PgPool` directly, so enabling `features = ["mcp"]` without `features = ["postgres"]` produced `E0433: unresolved module sqlx` compile errors. Making `mcp = ["dep:rmcp", "postgres"]` fixes the feature graph so any consumer that turns on MCP gets the transitive postgres dep automatically. Downstream crates that previously had to spell out both features can now enable `mcp` alone. No behavior change — the dep was already implicit at the code level.
+
 ## [0.7.3] - 2026-04-11
 
 ### Fixed

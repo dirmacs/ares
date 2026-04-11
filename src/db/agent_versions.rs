@@ -87,17 +87,18 @@ pub async fn get_agent_version_history(
     agent_id: &str,
     limit: i64,
 ) -> Result<Vec<AgentVersionRecord>> {
-    let rows = sqlx::query_as!(
-        AgentVersionRecord,
-        r#"SELECT id, agent_id, version, config_json, is_active, change_source,
-                  created_at as "created_at: chrono::DateTime<chrono::Utc>"
+    // Runtime `query_as` (not the `query_as!` macro) — same reason as
+    // usage.rs: library crates shipped via crates.io cannot assume a
+    // DATABASE_URL env var or `.sqlx` cache at downstream compile time.
+    let rows = sqlx::query_as::<_, AgentVersionRecord>(
+        r#"SELECT id, agent_id, version, config_json, is_active, change_source, created_at
            FROM agent_config_versions
            WHERE agent_id = $1
            ORDER BY created_at DESC
            LIMIT $2"#,
-        agent_id,
-        limit,
     )
+    .bind(agent_id)
+    .bind(limit)
     .fetch_all(pool)
     .await?;
 
@@ -105,7 +106,7 @@ pub async fn get_agent_version_history(
 }
 
 /// A row from agent_config_versions
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct AgentVersionRecord {
     pub id: String,
     pub agent_id: String,

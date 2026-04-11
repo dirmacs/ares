@@ -5,7 +5,7 @@ exclude = ["ui", "crates/pawan"]
 resolver = "2"
 
 [workspace.package]
-version = "0.7.3"
+version = "0.7.4"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/dirmacs/ares"
@@ -111,7 +111,10 @@ pinecone = ["dep:pinecone-sdk"]
 
 # ============= Additional Features =============
 # MCP (Model Context Protocol) server support
-mcp = ["dep:rmcp"]
+# NOTE: mcp implies postgres — the MCP server exposes tenant DB queries via
+# sqlx::PgPool references in mcp/server.rs and mcp/usage.rs. Enabling `mcp`
+# without `postgres` breaks compilation (caught in 0.7.3, fixed in 0.7.4).
+mcp = ["dep:rmcp", "postgres"]
 
 # Eruka context injection - fetches per-agent context from Eruka with caching
 eruka-context = []

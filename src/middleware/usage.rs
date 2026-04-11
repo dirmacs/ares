@@ -52,20 +52,24 @@ async fn record_usage(
 		.and_then(|v| v.to_str().ok())
 		.map(|v| v.to_string());
 
-	// Record usage event
-	sqlx::query!(
+	// Record usage event.
+	// Use runtime `sqlx::query` (not the `query!` macro) so downstream
+	// crates don't need DATABASE_URL at compile time or a `.sqlx` cache.
+	// Library crates that ship via crates.io cannot rely on a live DB
+	// or bundled cache being available to their consumers.
+	sqlx::query(
 		"INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'http', $3, $4, $5, $6, $7, $8, $9, $10)",
-		uuid::Uuid::new_v4().to_string(),
-		tenant_id,
-		1,
-		token_count,
-		input_tokens,
-		output_tokens,
-		model_name,
-		agent_name,
-		provider_name,
-		chrono::Utc::now().timestamp()
 	)
+	.bind(uuid::Uuid::new_v4().to_string())
+	.bind(tenant_id)
+	.bind(1_i32)
+	.bind(token_count)
+	.bind(input_tokens)
+	.bind(output_tokens)
+	.bind(model_name)
+	.bind(agent_name)
+	.bind(provider_name)
+	.bind(chrono::Utc::now().timestamp())
 	.execute(pool)
 	.await?;
 	Ok(())

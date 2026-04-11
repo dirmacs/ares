@@ -5,6 +5,19 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-04-11
+
+### Fixed
+
+- **`sqlx::query!` / `sqlx::query_as!` macros replaced with runtime variants** — downstream crates no longer need `DATABASE_URL` at compile time or a shipped `.sqlx` cache to build `ares-server`. Fixes compilation failures in any consumer that pulls `ares-server` from crates.io with `features = ["postgres"]`.
+  - `src/middleware/usage.rs`: `sqlx::query!(...)` → `sqlx::query(...).bind(...)`
+  - `src/db/agent_versions.rs`: `sqlx::query_as!(AgentVersionRecord, ...)` → `sqlx::query_as::<_, AgentVersionRecord>(...).bind(...)`
+  - `AgentVersionRecord` now derives `sqlx::FromRow`.
+
+### Note
+
+No schema or behavior change — only compile-time check removed to unblock downstream crate builds. Library crates shipped via crates.io cannot assume consumers have a live DB or prepared cache.
+
 ## [0.6.2] - 2026-03-08
 
 ### Security

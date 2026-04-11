@@ -5,11 +5,19 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] - 2026-04-11
+
+### Changed
+
+- **`mcp` feature decoupled from `postgres`** — replaces the 0.7.4 coarse coupling. Library consumers can now enable `mcp` for protocol glue, client, registry, extension, and tool plumbing **without** dragging `sqlx` and `postgres` into their dependency graph. The MCP *server* (`mcp/server.rs`), usage tracking (`mcp/usage.rs`), and tenant API-key auth (`mcp/auth.rs` — uses `crate::db::tenants::TenantDb`) are now gated behind `cfg(all(feature = "mcp", feature = "postgres"))`. Their only consumer is `start_mcp_server`, which `main.rs` already gates with the same combination. Verified compile-clean for `--features "mcp"`, `--features "mcp,postgres"`, and default features. 234 lib tests pass.
+
 ## [0.7.4] - 2026-04-11
 
 ### Fixed
 
 - **`mcp` feature implies `postgres`** — the MCP server code under `src/mcp/server.rs` and `src/mcp/usage.rs` references `sqlx::PgPool` directly, so enabling `features = ["mcp"]` without `features = ["postgres"]` produced `E0433: unresolved module sqlx` compile errors. Making `mcp = ["dep:rmcp", "postgres"]` fixes the feature graph so any consumer that turns on MCP gets the transitive postgres dep automatically. Downstream crates that previously had to spell out both features can now enable `mcp` alone. No behavior change — the dep was already implicit at the code level.
+
+> **Note:** 0.7.4 was never published to crates.io. It was superseded by 0.7.5, which decouples the modules behind separate `cfg` gates so `mcp` no longer requires `postgres`.
 
 ## [0.7.3] - 2026-04-11
 

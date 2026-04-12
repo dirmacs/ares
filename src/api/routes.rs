@@ -11,6 +11,7 @@ use axum::{
 use std::sync::Arc;
 
 use crate::api::handlers::deploy;
+use crate::api::handlers::loops;
 
 /// Creates the main API router with all routes configured.
 ///
@@ -73,6 +74,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/user/agents/{name}/export",
             get(crate::api::handlers::user_agents::export_agent_toon),
         )
+        // Loop-mode agent routes
+        .route("/loops/start", post(loops::start_loop))
+        .route("/loops", get(loops::list_loops))
+        .route("/loops/{id}", delete(loops::stop_loop))
         // Conversation routes
         .route(
             "/conversations",

@@ -14,6 +14,8 @@ pub mod chat;
 pub mod conversations;
 /// Deployment automation handlers.
 pub mod deploy;
+/// Loop-mode agent lifecycle handlers (start/list/stop).
+pub mod loops;
 /// RAG (document ingestion/search) handlers.
 #[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
 pub mod rag;

@@ -33,6 +33,8 @@ pub mod configurable;
 pub mod context_provider;
 /// Loop detection for agent outputs — prevents repetitive/stuck agents.
 pub mod loop_detector;
+/// Long-running iteration mode — agents that run on a fixed interval.
+pub mod loop_mode;
 /// Checkpoint/crash recovery — serialize agent state, restore on restart.
 pub mod checkpoint;
 /// Multi-agent orchestration for complex tasks.

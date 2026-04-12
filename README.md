@@ -21,28 +21,26 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 
 ## Features
 
-- 🤖 **Multi-Provider LLM Support**: Ollama, OpenAI, Anthropic Claude, LlamaCpp (direct GGUF loading)
-- ⚙️ **TOML Configuration**: Declarative configuration with hot-reloading
-- 🎭 **Configurable Agents**: Define agents via [TOON (Token Oriented Object Notation)](https://toonformat.dev) with custom models, tools, and prompts
-- 🔄 **Workflow Engine**: Declarative workflow execution with agent routing
-- 🏠 **Local-First Development**: Runs locally with Ollama and PostgreSQL
-- 🔧 **Tool Calling**: Type-safe function calling with automatic schema generation
-- 🔄 **Unified ToolCoordinator**: Provider-agnostic multi-turn tool calling for all LLM clients
-- 🎯 **Per-Agent Tool Filtering**: Restrict which tools each agent can access
-- 📡 **Streaming**: Real-time streaming responses from all providers
-- 🔐 **Authentication**: JWT-based auth with Argon2 password hashing
-- 💾 **Database**: PostgreSQL with multi-tenant isolation, optional vector stores (ares-vector, Qdrant, LanceDB)
-- 🔌 **MCP Support**: Pluggable Model Context Protocol server integration
-- 🕸️ **Agent Framework**: Multi-agent orchestration with specialized agents
-- 📚 **RAG**: Pure-Rust vector store (ares-vector), multi-strategy search (semantic, BM25, fuzzy, hybrid), reranking
-- 🧠 **Memory**: User personalization and context management
-- 🔬 **Deep Research**: Multi-step research with parallel subagents
-- 🌐 **Web Search**: Built-in web search via [daedra](https://github.com/dirmacs/daedra) (no API keys required)
-- 📖 **OpenAPI**: Automatic API documentation generation
-- 🧪 **Testing**: Comprehensive unit and integration tests
-- ✔️ **Config Validation**: Circular reference detection and unused config warnings
-- 🔁 **Loop Detection**: Automatic detection of repetitive agent outputs with 3-tier escalation (warn → force alternative → halt)
-- 💾 **Crash Recovery**: Checkpoint serialization — save agent state at each step, restore on restart
+- **Multi-provider LLM**: Ollama, OpenAI, Anthropic Claude, LlamaCpp (direct GGUF loading)
+- **TOML configuration**: declarative, hot-reloading
+- **Configurable agents**: define via [TOON](https://toonformat.dev) with custom models, tools, and prompts
+- **Workflow engine**: declarative execution with agent routing
+- **Tool calling**: type-safe function calling with automatic schema generation
+- **ToolCoordinator**: provider-agnostic multi-turn tool calling for all LLM clients
+- **Per-agent tool filtering**: restrict which tools each agent can access
+- **Streaming**: real-time responses from all providers
+- **Auth**: JWT with Argon2 password hashing
+- **Database**: PostgreSQL with multi-tenant isolation, optional vector stores (ares-vector, Qdrant, LanceDB)
+- **MCP**: pluggable Model Context Protocol server integration
+- **Multi-agent orchestration**: specialized agent routing
+- **RAG**: pure-Rust vector store, multi-strategy search (semantic, BM25, fuzzy, hybrid), reranking
+- **Memory**: user personalization and context management
+- **Deep research**: multi-step research with parallel subagents
+- **Web search**: built-in via [daedra](https://github.com/dirmacs/daedra)
+- **OpenAPI**: automatic documentation generation
+- **Config validation**: circular reference detection and unused config warnings
+- **Loop detection**: 3-tier escalation (warn → force alternative → halt) for repetitive outputs
+- **Crash recovery**: checkpoint serialization — save agent state at each step, restore on restart
 
 ## Installation
 

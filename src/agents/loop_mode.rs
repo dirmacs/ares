@@ -10,6 +10,10 @@
 //! `orchestrator` land in follow-up phases.
 
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Configuration for a long-running iteration-mode agent.
@@ -44,9 +48,9 @@ fn default_count_failures() -> bool {
 }
 
 impl LoopModeConfig {
-    /// The interval as a `std::time::Duration`.
+    /// The interval as a `std::time::Duration` (minimum 1ms for scheduler safety).
     pub fn interval(&self) -> Duration {
-        Duration::from_secs(self.interval_secs)
+        Duration::from_secs(self.interval_secs).max(Duration::from_millis(1))
     }
 }
 
@@ -121,6 +125,65 @@ pub enum LoopFinishReason {
     ExternalStop,
     /// Runtime error that the agent could not recover from.
     FatalError,
+}
+
+/// Boxed async tick function: returns Ok(()) on success, Err on failure.
+pub type TickFn = Box<
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync,
+>;
+
+/// Runtime scheduler that drives an iteration-mode agent.
+pub struct LoopRunner {
+    pub config: LoopModeConfig,
+    pub state: LoopModeState,
+    stop: Arc<AtomicBool>,
+}
+
+impl LoopRunner {
+    pub fn new(config: LoopModeConfig) -> Self {
+        Self {
+            config,
+            state: LoopModeState::default(),
+            stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn stop_handle(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
+    }
+
+    pub async fn run(&mut self, tick: &TickFn) -> LoopFinishReason {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.state.started_at_epoch_secs = now;
+
+        let mut interval = tokio::time::interval(self.config.interval());
+        interval.tick().await; // first tick fires immediately
+
+        loop {
+            if self.stop.load(Ordering::Relaxed) {
+                return LoopFinishReason::ExternalStop;
+            }
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            match tick().await {
+                Ok(()) => self.state.record_success(now),
+                Err(_) => self.state.record_failure(now),
+            }
+
+            if let Some(reason) = self.state.should_halt(&self.config) {
+                return reason;
+            }
+
+            interval.tick().await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -242,5 +305,51 @@ mod tests {
             serde_json::to_string(&LoopFinishReason::ConsecutiveFailures).unwrap(),
             "\"consecutive_failures\""
         );
+    }
+
+    #[tokio::test]
+    async fn loop_runner_halts_on_max_iterations() {
+        let config = LoopModeConfig {
+            interval_secs: 0,
+            max_iterations: Some(3),
+            halt_on_consecutive_failures: 999,
+            ..LoopModeConfig::default()
+        };
+        let mut runner = LoopRunner::new(config);
+        let tick: TickFn = Box::new(|| Box::pin(async { Ok(()) }));
+        let reason = runner.run(&tick).await;
+        assert_eq!(reason, LoopFinishReason::MaxIterationsReached);
+        assert_eq!(runner.state.iterations_run, 3);
+    }
+
+    #[tokio::test]
+    async fn loop_runner_halts_on_consecutive_failures() {
+        let config = LoopModeConfig {
+            interval_secs: 0,
+            max_iterations: None,
+            halt_on_consecutive_failures: 2,
+            ..LoopModeConfig::default()
+        };
+        let mut runner = LoopRunner::new(config);
+        let tick: TickFn = Box::new(|| Box::pin(async { Err("fail".into()) }));
+        let reason = runner.run(&tick).await;
+        assert_eq!(reason, LoopFinishReason::ConsecutiveFailures);
+        assert_eq!(runner.state.consecutive_failures, 2);
+    }
+
+    #[tokio::test]
+    async fn loop_runner_external_stop() {
+        let config = LoopModeConfig {
+            interval_secs: 0,
+            max_iterations: None,
+            halt_on_consecutive_failures: 999,
+            ..LoopModeConfig::default()
+        };
+        let mut runner = LoopRunner::new(config);
+        let stop = runner.stop_handle();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let tick: TickFn = Box::new(|| Box::pin(async { Ok(()) }));
+        let reason = runner.run(&tick).await;
+        assert_eq!(reason, LoopFinishReason::ExternalStop);
     }
 }

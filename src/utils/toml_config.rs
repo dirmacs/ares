@@ -438,109 +438,114 @@ fn default_max_iterations() -> u8 {
 }
 
 // ============= Skills Configuration =============
-
-/// Skills directory configuration for SKILL.md discovery.
+// Skills directory configuration for SKILL.md discovery.
+// NOTE: This struct is used when the 'skills' feature is enabled.
 #[cfg(feature = "skills")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillsTomlConfig {
-    /// Project skills directory (e.g., ./.claude/skills/).
-    pub project_dir: Option<std::path::PathBuf>,
-    /// Personal skills directory (e.g., ~/.claude/skills/).
-    pub personal_dir: Option<std::path::PathBuf>,
-    /// Plugin directories to scan for skills.
-    pub plugin_dirs: Option<Vec<std::path::PathBuf>>,
+	/// Project skills directory (e.g., ./.claude/skills/).
+	pub project_dir: Option<std::path::PathBuf>,
+	/// Personal skills directory (e.g., ~/.claude/skills/).
+	pub personal_dir: Option<std::path::PathBuf>,
+	/// Plugin directories to scan for skills.
+	pub plugin_dirs: Option<Vec<std::path::PathBuf>>
 }
 
 // ============= RAG Configuration =============
-
-/// RAG (Retrieval Augmented Generation) configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RagConfig {
-    // =========== Vector Store ===========
-    /// Vector store provider: "ares-vector" (default), "qdrant", "lancedb", "pgvector"
-    #[serde(default = "default_vector_store")]
-    pub vector_store: String,
-
-    /// Path for persistent vector storage (default: "./data/vectors")
-    #[serde(default = "default_vector_path")]
-    pub vector_path: String,
-
-    // =========== Embeddings ===========
-    /// Embedding model to use for vector embeddings (default: "bge-small-en-v1.5").
-    /// Available models: bge-small-en-v1.5, bge-base-en-v1.5, bge-large-en-v1.5,
-    /// all-minilm-l6-v2, all-minilm-l12-v2, nomic-embed-text-v1.5, etc.
-    #[serde(default = "default_embedding_model")]
-    pub embedding_model: String,
-
-    /// Enable sparse embeddings for hybrid search (default: false)
-    #[serde(default)]
-    pub sparse_embeddings: bool,
-
-    /// Sparse embedding model (default: "splade-pp-en-v1")
-    #[serde(default = "default_sparse_model")]
-    pub sparse_model: String,
-
-    // =========== Chunking ===========
-    /// Chunking strategy: "word" (default), "semantic", "character"
-    #[serde(default = "default_chunking_strategy")]
-    pub chunking_strategy: String,
-
-    /// Size of text chunks for indexing (default: 200 words or 500 chars for semantic).
-    #[serde(default = "default_chunk_size")]
-    pub chunk_size: usize,
-
-    /// Overlap between consecutive chunks (default: 50).
-    #[serde(default = "default_chunk_overlap")]
-    pub chunk_overlap: usize,
-
-    /// Minimum chunk size to keep (default: 20 chars).
-    #[serde(default = "default_min_chunk_size")]
-    pub min_chunk_size: usize,
-
-    // =========== Search ===========
-    /// Default search strategy: "semantic" (default), "bm25", "fuzzy", "hybrid"
-    #[serde(default = "default_search_strategy")]
-    pub search_strategy: String,
-
-    /// Default number of results to return (default: 10)
-    #[serde(default = "default_search_limit")]
-    pub search_limit: usize,
-
-    /// Default similarity threshold (default: 0.0)
-    #[serde(default)]
-    pub search_threshold: f32,
-
-    /// Hybrid search weights (semantic, bm25, fuzzy) - sum should be 1.0
-    #[serde(default)]
-    pub hybrid_weights: Option<HybridWeightsConfig>,
-
-    // =========== Reranking ===========
-    /// Enable reranking by default (default: false)
-    #[serde(default)]
-    pub rerank_enabled: bool,
-
-    /// Reranker model: "bge-reranker-base" (default), "bge-reranker-v2-m3",
-    /// "jina-reranker-v1-turbo-en", "jina-reranker-v2-base-multilingual"
-    #[serde(default = "default_reranker_model")]
-    pub reranker_model: String,
-
-    /// Weight for combining rerank and retrieval scores (default: 0.6)
-    #[serde(default = "default_rerank_weight")]
-    pub rerank_weight: f32,
+// RAG (Retrieval Augmented Generation) configuration.
+// =========== Vector Store ===========
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RAGVectorConfig {
+	/// Enable RAG feature flag (disabled by default for safety)
+	pub enabled: bool,
+	/// Available models: bge-small-en-v1.5, bge-base-en-v1.5, bge-large-en-v1.5,
+	/// all-minilm-l6-v2, all-minilm-l12-v2, nomic-embed-text-v1.5, etc.
+#[serde(default = "default_embedding_model")]
+	pub embedding_model: String,
+	/// Enable sparse embeddings for hybrid search (default: false)
+#[serde(default)]
+	pub sparse_embeddings: bool,
+	/// Sparse embedding model (default: "splade-pp-en-v1")
+#[serde(default = "default_sparse_model")]
+	pub sparse_model: String
 }
 
-/// Hybrid search weight configuration
+// =========== Chunking ===========
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RagChunkingConfig {
+	/// Chunking strategy: "word" (default), "semantic", "character"
+#[serde(default = "default_chunking_strategy")]
+	pub chunking_strategy: String,
+	/// Size of text chunks for indexing (default: 200 words or 500 chars for semantic).
+#[serde(default = "default_chunk_size")]
+	pub chunk_size: usize,
+	/// Overlap between consecutive chunks (default: 50).
+#[serde(default = "default_chunk_overlap")]
+	pub chunk_overlap: usize,
+	/// Minimum chunk size to keep (default: 20 chars).
+#[serde(default = "default_min_chunk_size")]
+	pub min_chunk_size: usize
+}
+
+// =========== Search ===========
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RagSearchConfig {
+	/// Default search strategy: "semantic" (default), "bm25", "fuzzy", "hybrid"
+#[serde(default = "default_search_strategy")]
+	pub search_strategy: String,
+	/// Default number of results to return (default: 10)
+#[serde(default = "default_search_limit")]
+	pub search_limit: usize,
+	/// Default similarity threshold (default: 0.0)
+#[serde(default)]
+	pub search_threshold: f32,
+	/// Hybrid search weights (semantic, bm25, fuzzy) - sum should be 1.0
+#[serde(default)]
+	pub hybrid_weights: Option<HybridWeightsConfig>,
+}
+
+// =========== Reranking ===========
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RagRerankingConfig {
+	/// Enable reranking by default (default: false)
+#[serde(default)]
+	pub rerank_enabled: bool,
+	/// Reranker model: "bge-reranker-base" (default), "bge-reranker-v2-m3",
+	/// "jina-reranker-v1-turbo-en", "jina-reranker-v2-base-multilingual"
+#[serde(default = "default_reranker_model")]
+	pub reranker_model: String,
+	/// Weight for combining rerank and retrieval scores (default: 0.6)
+#[serde(default = "default_rerank_weight")]
+pub rerank_weight: f32
+}
+/// RAG Configuration Wrapper
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RagConfig {
+    /// Vector store configuration for vector embeddings and retrieval
+    pub vector: RAGVectorConfig,
+    /// Text chunking strategy for document indexing
+    pub chunking: RagChunkingConfig,
+    /// Search strategy and configuration
+    pub search: RagSearchConfig,
+    /// Reranking configuration
+    pub rerank: RagRerankingConfig,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+
 pub struct HybridWeightsConfig {
-    /// Weight for semantic search (default: 0.5)
-    #[serde(default = "default_semantic_weight")]
-    pub semantic: f32,
-    /// Weight for BM25 search (default: 0.3)
-    #[serde(default = "default_bm25_weight")]
-    pub bm25: f32,
-    /// Weight for fuzzy search (default: 0.2)
-    #[serde(default = "default_fuzzy_weight")]
-    pub fuzzy: f32,
+	/// Weight for semantic search (default: 0.5)
+#[serde(default = "default_semantic_weight")]
+	pub semantic: f32,
+	/// Weight for BM25 search (default: 0.3)
+#[serde(default = "default_bm25_weight")]
+	pub bm25: f32,
+	/// Weight for fuzzy search (default: 0.2)
+#[serde(default = "default_fuzzy_weight")]
+	pub fuzzy: f32
 }
 
 impl Default for HybridWeightsConfig {
@@ -616,22 +621,10 @@ fn default_rerank_weight() -> f32 {
 impl Default for RagConfig {
     fn default() -> Self {
         Self {
-            vector_store: default_vector_store(),
-            vector_path: default_vector_path(),
-            embedding_model: default_embedding_model(),
-            sparse_embeddings: false,
-            sparse_model: default_sparse_model(),
-            chunking_strategy: default_chunking_strategy(),
-            chunk_size: default_chunk_size(),
-            chunk_overlap: default_chunk_overlap(),
-            min_chunk_size: default_min_chunk_size(),
-            search_strategy: default_search_strategy(),
-            search_limit: default_search_limit(),
-            search_threshold: 0.0,
-            hybrid_weights: None,
-            rerank_enabled: false,
-            reranker_model: default_reranker_model(),
-            rerank_weight: default_rerank_weight(),
+            vector: RAGVectorConfig::default(),
+            chunking: RagChunkingConfig::default(),
+            search: RagSearchConfig::default(),
+            rerank: RagRerankingConfig::default(),
         }
     }
 }

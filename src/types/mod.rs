@@ -195,6 +195,48 @@ pub struct RagDeleteCollectionResponse {
 
 // ============= Workflow Types =============
 
+// ============= Semantic Search Types =============
+
+/// Request for semantic document search.
+/// Available only when `ares-vector` feature is enabled.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SemanticSearchRequest {
+    /// Collection to search (tenant-scoped).
+    pub collection: String,
+    /// The search query text to embed.
+    pub query: String,
+    /// Maximum results to return (default: 10, max: 100).
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
+    /// Minimum similarity threshold (0.0 to 1.0, default: 0.0).
+    #[serde(default = "default_search_threshold")]
+    pub threshold: f32,
+}
+
+/// Single semantic search result.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SemanticSearchResult {
+    /// Document ID.
+    pub id: String,
+    /// Matching text content.
+    pub content: String,
+    /// Similarity score (0.0 to 1.0, higher is better).
+    pub similarity: f32,
+    /// Document metadata.
+    pub metadata: DocumentMetadata,
+}
+
+/// Response from semantic search.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SemanticSearchResponse {
+    /// Search results.
+    pub results: Vec<SemanticSearchResult>,
+    /// Total number of results found.
+    pub total: usize,
+    /// Query processing time in milliseconds.
+    pub duration_ms: u64,
+}
+
 /// Request payload for workflow execution endpoints.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct WorkflowRequest {

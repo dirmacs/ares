@@ -56,7 +56,7 @@ static EMBEDDING_SERVICE: OnceCell<Arc<EmbeddingService>> = OnceCell::const_new(
 ///
 /// Pre-downloads model files via lancor (reqwest) before fastembed init,
 /// because fastembed's hf-hub/ureq client fails on HuggingFace's xethub CDN.
-async fn get_embedding_service() -> Result<Arc<EmbeddingService>> {
+pub async fn get_embedding_service() -> Result<Arc<EmbeddingService>> {
     EMBEDDING_SERVICE
         .get_or_try_init(|| async {
             // Pre-download ONNX model via lancor before fastembed tries with ureq
@@ -118,7 +118,7 @@ static VECTOR_STORE: OnceCell<Arc<AresVectorStore>> = OnceCell::const_new();
 
 /// Get or create the vector store with the configured path.
 /// The path is read from config on first initialization.
-async fn get_vector_store(vector_path: &str) -> Result<Arc<AresVectorStore>> {
+pub async fn get_vector_store(vector_path: &str) -> Result<Arc<AresVectorStore>> {
     VECTOR_STORE
         .get_or_try_init(|| async {
             let store = AresVectorStore::new(Some(vector_path.to_string())).await?;

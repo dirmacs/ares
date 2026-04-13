@@ -5,7 +5,7 @@ exclude = ["ui", "crates/pawan"]
 resolver = "2"
 
 [workspace.package]
-version = "0.7.5"
+version = "0.7.3"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/dirmacs/ares"

@@ -432,6 +432,7 @@ mod tests {
             )),
             mcp_registry: None,
             deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
+            loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
             emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_provider: Arc::new(crate::agents::NoOpContextProvider),
         };
@@ -486,6 +487,7 @@ mod tests {
             )),
             mcp_registry: None,
             deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
+            loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
             emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_provider: Arc::new(crate::agents::NoOpContextProvider),
         };
@@ -540,6 +542,7 @@ mod tests {
             )),
             mcp_registry: None,
             deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
+            loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
             emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_provider: Arc::new(crate::agents::NoOpContextProvider),
         };

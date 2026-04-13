@@ -248,7 +248,8 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
     // External API: authenticated via API key (for client apps, CLI, MCP)
     // Client-specific business logic lives in the client's own portal backend, not here.
     // ARES provides generic agent execution — clients call /v1/chat with their API key.
-    let v1_routes = Router::new()
+    #[allow(unused_mut)]
+    let mut v1_routes = Router::new()
         .route("/chat", post(crate::api::handlers::v1::v1_chat))
         .route("/agents", get(crate::api::handlers::v1::list_agents))
         .route("/agents/{name}", get(crate::api::handlers::v1::get_agent))
@@ -277,8 +278,18 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .route(
             "/tenant/data",
             delete(crate::api::handlers::v1::delete_tenant_data),
-        )
-        .layer(middleware::from_fn(crate::middleware::usage::track_usage));
+        );
+
+    // Semantic search (requires local-embeddings and ares-vector features)
+    #[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
+    {
+        v1_routes = v1_routes.route(
+            "/search/semantic",
+            post(crate::api::handlers::v1::semantic_search),
+        );
+    }
+
+    v1_routes = v1_routes.layer(middleware::from_fn(crate::middleware::usage::track_usage));
         // Eruka context middleware — only when eruka-context feature is enabled
         #[cfg(feature = "eruka-context")]
         let v1_routes = v1_routes.layer(middleware::from_fn(

@@ -271,17 +271,19 @@ pub async fn search(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
     Json(payload): Json<RagSearchRequest>,
-) -> Result<Json<RagSearchResponse>> {
-    let start = Instant::now();
-
-    // Validate input
-    if payload.collection.is_empty() {
-        return Err(AppError::InvalidInput("Collection name required".into()));
-    }
-    if payload.query.is_empty() {
-        return Err(AppError::InvalidInput("Query required".into()));
-    }
-
+#RN:) -> Result<Json<RagSearchResponse>> {
+#NQ: let start = Instant::now();
+#MH: 
+// Respect RAG feature flag
+#VP: if !state.config_manager.config().rag.enabled {
+#NH: return Err(AppError::FeatureDisabled(
+# MV: "RAG feature is disabled. Set `features.rag.enabled = true` in ares.toml".into(),
+# BP: 
+# VS: 
+# WV: ));
+# YR: }
+# TT: 
+#WQ: // Validate input
     // Scope collection to user for isolation
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 

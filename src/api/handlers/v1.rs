@@ -664,6 +664,87 @@ pub async fn revoke_api_key(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
+/// POST /v1/search/semantic — semantic document search
+///
+/// Searches ingested documents using semantic similarity.
+/// Available only when `ares-vector` feature is enabled.
+pub async fn semantic_search(
+    State(state): State<AppState>,
+    ctx: Option<Extension<TenantContext>>,
+    Json(payload): Json<crate::types::SemanticSearchRequest>,
+) -> Result<Json<crate::types::SemanticSearchResponse>> {
+    use crate::api::handlers::rag::{get_embedding_service, get_vector_store};
+    use crate::db::VectorStore;
+    use std::time::Instant;
+
+    let start = Instant::now();
+    let tc = extract_tenant(ctx)?;
+
+    // Validate input
+    if payload.collection.is_empty() {
+        return Err(AppError::InvalidInput("Collection name required".into()));
+    }
+    if payload.query.is_empty() {
+        return Err(AppError::InvalidInput("Query required".into()));
+    }
+    // Enforce max limit
+    let limit = payload.limit.min(100).max(1);
+
+    // Get services
+    let embedding_service = get_embedding_service().await?;
+    let vector_path = &state.config_manager.config().rag.vector_path;
+    let vector_store = get_vector_store(vector_path).await?;
+
+    // Build scoped collection name with tenant isolation
+    let scoped_collection = format!("tenant_{}_{}", tc.tenant_id, payload.collection);
+
+    // Check collection exists
+    if !vector_store.collection_exists(&scoped_collection).await? {
+        return Err(AppError::NotFound(format!(
+            "Collection '{}' not found",
+            payload.collection
+        )));
+    }
+
+    // Generate query embedding
+    let query_embedding = embedding_service.embed_text(&payload.query).await?;
+
+    // Perform vector search with cosine similarity
+    let results = vector_store
+        .search(&scoped_collection, &query_embedding, limit, payload.threshold)
+        .await?;
+
+    // Map to response format
+    let search_results: Vec<crate::types::SemanticSearchResult> = results
+        .into_iter()
+        .map(|r| crate::types::SemanticSearchResult {
+            id: r.document.id,
+            content: r.document.content,
+            similarity: r.score,
+            metadata: r.document.metadata,
+        })
+        .collect();
+
+    let total = search_results.len();
+
+    tracing::info!(
+        tenant_id = %tc.tenant_id,
+        collection = %payload.collection,
+        query = %payload.query,
+        results = total,
+        duration_ms = start.elapsed().as_millis() as u64,
+        "Semantic search completed"
+    );
+
+    Ok(Json(crate::types::SemanticSearchResponse {
+        results: search_results,
+        total,
+        duration_ms: start.elapsed().as_millis() as u64,
+    }))
+}
+
+
 /// GDPR: DELETE /v1/tenant/data — purge all tenant data (usage_events, agent_runs, api_keys)
 /// The tenant account itself is NOT deleted; only operational data is purged.
 pub async fn delete_tenant_data(

@@ -168,8 +168,8 @@ pub async fn ingest(
 
     // Get services
     let embedding_service = get_embedding_service().await?;
-    let vector_path = &state.config_manager.config().rag.vector_path;
-    let vector_store = get_vector_store(vector_path).await?;
+&state.config_manager.config().rag.vector.vector_path
+let vector_store = get_vector_store(vector_path).await?
 
     // Parse chunking strategy
     let strategy: ChunkingStrategy = payload
@@ -271,26 +271,23 @@ pub async fn search(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
     Json(payload): Json<RagSearchRequest>,
-#RN:) -> Result<Json<RagSearchResponse>> {
-#NQ: let start = Instant::now();
-#MH: 
-// Respect RAG feature flag
-#VP: if !state.config_manager.config().rag.enabled {
-#NH: return Err(AppError::FeatureDisabled(
-# MV: "RAG feature is disabled. Set `features.rag.enabled = true` in ares.toml".into(),
-# BP: 
-# VS: 
-# WV: ));
-# YR: }
-# TT: 
+) -> Result<Json<RagSearchResponse>> {
+    let start = Instant::now();
+    // Respect RAG feature flag
+    if !state.config_manager.config().rag.enabled {
+        return Err(AppError::FeatureDisabled(
+            "RAG feature is disabled. Set `features.rag.enabled = true` in ares.toml".into(),
+        ));
+    }
+
 #WQ: // Validate input
     // Scope collection to user for isolation
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
     // Get services
     let embedding_service = get_embedding_service().await?;
-    let vector_path = &state.config_manager.config().rag.vector_path;
-    let vector_store = get_vector_store(vector_path).await?;
+&state.config_manager.config().rag.vector.vector_path
+let vector_store = get_vector_store(vector_path).await?
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
@@ -487,8 +484,8 @@ pub async fn delete_collection(
     // Scope collection to user for isolation
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
-    let vector_path = &state.config_manager.config().rag.vector_path;
-    let vector_store = get_vector_store(vector_path).await?;
+    let vector_path = &state.config_manager.config().rag.vector.vector_path;
+    let vector_store = get_vector_store(vector_path).await?
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
@@ -539,8 +536,8 @@ pub async fn list_collections(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<Vec<crate::db::CollectionInfo>>> {
-    let vector_path = &state.config_manager.config().rag.vector_path;
-    let vector_store = get_vector_store(vector_path).await?;
+    let vector_path = &state.config_manager.config().rag.vector.vector_path;
+    let vector_store = get_vector_store(vector_path).await?
     let all_collections = vector_store.list_collections().await?;
 
     // Filter to only collections belonging to this user and unscope names

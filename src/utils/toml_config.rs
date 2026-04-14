@@ -454,20 +454,22 @@ pub struct SkillsTomlConfig {
 // RAG (Retrieval Augmented Generation) configuration.
 // =========== Vector Store ===========
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
 pub struct RAGVectorConfig {
-	/// Enable RAG feature flag (disabled by default for safety)
-	pub enabled: bool,
-	/// Available models: bge-small-en-v1.5, bge-base-en-v1.5, bge-large-en-v1.5,
-	/// all-minilm-l6-v2, all-minilm-l12-v2, nomic-embed-text-v1.5, etc.
-#[serde(default = "default_embedding_model")]
-	pub embedding_model: String,
-	/// Enable sparse embeddings for hybrid search (default: false)
-#[serde(default)]
-	pub sparse_embeddings: bool,
-	/// Sparse embedding model (default: "splade-pp-en-v1")
-#[serde(default = "default_sparse_model")]
-	pub sparse_model: String
+    /// Enable RAG feature flag (disabled by default for safety)
+    pub enabled: bool,
+    /// Available models: bge-small-en-v1.5, bge-base-en-v1.5, bge-large-en-v1.5,
+    /// all-minilm-l6-v2, all-minilm-l12-v2, nomic-embed-text-v1.5, etc.
+    #[serde(default = "default_embedding_model")]
+    pub embedding_model: String,
+    /// Enable sparse embeddings for hybrid search (default: false)
+    #[serde(default)]
+    pub sparse_embeddings: bool,
+    /// Sparse embedding model (default: "splade-pp-en-v1")
+    #[serde(default = "default_sparse_model")]
+    pub sparse_model: String,
+    /// Path to store vector data (default: "./data/vectors")
+    #[serde(default = "default_vector_path")]
+    pub vector_path: String,
 }
 
 // =========== Chunking ===========

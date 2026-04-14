@@ -693,7 +693,7 @@ pub async fn semantic_search(
 
     // Get services
     let embedding_service = get_embedding_service().await?;
-    let vector_path = &state.config_manager.config().rag.vector_path;
+let vector_path = &state.config_manager.config().rag.vector.vector_path;
     let vector_store = get_vector_store(vector_path).await?;
 
     // Build scoped collection name with tenant isolation

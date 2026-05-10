@@ -95,7 +95,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
     {
         protected_routes = protected_routes
             .route("/skills", get(crate::api::handlers::skills::list_skills))
-            .route("/skills/{name}", get(crate::api::handlers::skills::get_skill));
+            .route(
+                "/skills/{name}",
+                get(crate::api::handlers::skills::get_skill),
+            );
     }
 
     // RAG routes (requires local-embeddings feature for ONNX-based embeddings and ares-vector for vector storage)
@@ -249,14 +252,19 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
     // Client-specific business logic lives in the client's own portal backend, not here.
     // ARES provides generic agent execution — clients call /v1/chat with their API key.
     #[allow(unused_mut)]
-    let mut v1_routes = Router::new()
+    let v1_metered_routes = Router::new()
         .route("/chat", post(crate::api::handlers::v1::v1_chat))
-        .route("/agents", get(crate::api::handlers::v1::list_agents))
-        .route("/agents/{name}", get(crate::api::handlers::v1::get_agent))
+        .route("/research", post(crate::api::handlers::v1::v1_research))
         .route(
             "/agents/{name}/run",
             post(crate::api::handlers::v1::run_agent),
         )
+        .layer(middleware::from_fn(crate::middleware::usage::track_usage));
+
+    let mut v1_routes = Router::new()
+        .merge(v1_metered_routes)
+        .route("/agents", get(crate::api::handlers::v1::list_agents))
+        .route("/agents/{name}", get(crate::api::handlers::v1::get_agent))
         .route(
             "/agents/{name}/runs",
             get(crate::api::handlers::v1::list_agent_runs),
@@ -289,13 +297,13 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         );
     }
 
-    v1_routes = v1_routes.layer(middleware::from_fn(crate::middleware::usage::track_usage));
-        // Eruka context middleware — only when eruka-context feature is enabled
-        #[cfg(feature = "eruka-context")]
-        let v1_routes = v1_routes.layer(middleware::from_fn(
-            crate::middleware::eruka_context::eruka_context_middleware,
-        ));
-        let v1_routes = v1_routes.layer(middleware::from_fn(
+    // Eruka context middleware — only when eruka-context feature is enabled
+    #[cfg(feature = "eruka-context")]
+    let v1_routes = v1_routes.layer(middleware::from_fn(
+        crate::middleware::eruka_context::eruka_context_middleware,
+    ));
+    let v1_routes = v1_routes
+        .layer(middleware::from_fn(
             crate::middleware::api_key_auth::api_key_auth_middleware,
         ))
         .layer(middleware::from_fn(move |mut req: Request, next: Next| {

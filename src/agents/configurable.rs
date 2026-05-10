@@ -21,6 +21,8 @@ pub struct ConfigurableAgent {
     agent_type: AgentType,
     /// The LLM client to use for generation
     llm: Box<dyn LLMClient>,
+    /// The configured provider backing the LLM client
+    provider_name: String,
     /// The system prompt from configuration
     system_prompt: String,
     /// Tools available to this agent
@@ -48,6 +50,17 @@ impl ConfigurableAgent {
         llm: Box<dyn LLMClient>,
         tool_registry: Option<Arc<ToolRegistry>>,
     ) -> Self {
+        Self::new_with_provider(name, config, llm, tool_registry, config.model.clone())
+    }
+
+    /// Create a new configurable agent with explicit provider metadata
+    pub fn new_with_provider(
+        name: &str,
+        config: &AgentConfig,
+        llm: Box<dyn LLMClient>,
+        tool_registry: Option<Arc<ToolRegistry>>,
+        provider_name: String,
+    ) -> Self {
         let agent_type = Self::name_to_type(name);
         let system_prompt = config
             .system_prompt
@@ -58,6 +71,7 @@ impl ConfigurableAgent {
             name: name.to_string(),
             agent_type,
             llm,
+            provider_name,
             system_prompt,
             tool_registry,
             allowed_tools: config.tools.clone(),
@@ -82,6 +96,7 @@ impl ConfigurableAgent {
             name: name.to_string(),
             agent_type,
             llm,
+            provider_name: "unknown".to_string(),
             system_prompt,
             tool_registry,
             allowed_tools,
@@ -211,7 +226,10 @@ Handle employee info, policies, and benefits."#
         let effective_prompt = match crate::middleware::eruka_context::get_current_eruka_context() {
             Some(eruka_ctx) if !eruka_ctx.is_empty() => {
                 tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "External context injected into system prompt");
-                format!("{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.", eruka_ctx, self.system_prompt)
+                format!(
+                    "{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.",
+                    eruka_ctx, self.system_prompt
+                )
             }
             _ => self.system_prompt.clone(),
         };
@@ -254,7 +272,7 @@ Handle employee info, policies, and benefits."#
                     usage: Some(total_usage),
                     metadata: Some(ExecutionMetadata {
                         model_name: self.llm.model_name().to_string(),
-                        provider_name: "openai".to_string(),
+                        provider_name: self.provider_name.clone(),
                     }),
                 });
             }
@@ -296,9 +314,15 @@ Handle employee info, policies, and benefits."#
                 messages
                     .iter()
                     .rev()
-                    .find(|m| m.role == crate::llm::coordinator::MessageRole::Assistant && !m.content.is_empty())
+                    .find(|m| {
+                        m.role == crate::llm::coordinator::MessageRole::Assistant
+                            && !m.content.is_empty()
+                    })
                     .map(|m| m.content.clone())
-                    .unwrap_or_else(|| "Agent completed tool calls but could not generate a final response.".to_string())
+                    .unwrap_or_else(|| {
+                        "Agent completed tool calls but could not generate a final response."
+                            .to_string()
+                    })
             }
             Err(e) => {
                 tracing::error!(error = %e, "Final synthesis call failed");
@@ -306,7 +330,10 @@ Handle employee info, policies, and benefits."#
                 messages
                     .iter()
                     .rev()
-                    .find(|m| m.role == crate::llm::coordinator::MessageRole::Assistant && !m.content.is_empty())
+                    .find(|m| {
+                        m.role == crate::llm::coordinator::MessageRole::Assistant
+                            && !m.content.is_empty()
+                    })
                     .map(|m| m.content.clone())
                     .unwrap_or_else(|| format!("Agent completed but synthesis failed: {}", e))
             }
@@ -317,7 +344,7 @@ Handle employee info, policies, and benefits."#
             usage: Some(total_usage),
             metadata: Some(ExecutionMetadata {
                 model_name: self.llm.model_name().to_string(),
-                provider_name: "openai".to_string(),
+                provider_name: self.provider_name.clone(),
             }),
         })
     }
@@ -338,7 +365,10 @@ impl Agent for ConfigurableAgent {
         let effective_prompt = match crate::middleware::eruka_context::get_current_eruka_context() {
             Some(eruka_ctx) if !eruka_ctx.is_empty() => {
                 tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "External context injected into system prompt (simple path)");
-                format!("{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.", eruka_ctx, self.system_prompt)
+                format!(
+                    "{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.",
+                    eruka_ctx, self.system_prompt
+                )
             }
             _ => self.system_prompt.clone(),
         };
@@ -378,7 +408,7 @@ impl Agent for ConfigurableAgent {
             usage: llm_response.usage,
             metadata: Some(ExecutionMetadata {
                 model_name: self.llm.model_name().to_string(),
-                provider_name: "openai".to_string(),
+                provider_name: self.provider_name.clone(),
             }),
         })
     }

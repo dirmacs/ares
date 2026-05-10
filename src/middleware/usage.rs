@@ -23,41 +23,50 @@ pub async fn track_usage(req: Request, next: Next) -> Response {
 }
 
 async fn record_usage(
-	tenant_id: &str,
-	headers: &axum::http::HeaderMap,
-	pool: &sqlx::PgPool,
+    tenant_id: &str,
+    headers: &axum::http::HeaderMap,
+    pool: &sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-	let input_tokens: i64 = headers
-		.get("x-input-tokens")
-		.and_then(|v| v.to_str().ok())
-		.and_then(|v| v.parse::<i64>().ok())
-		.unwrap_or(0);
-	let output_tokens: i64 = headers
-		.get("x-output-tokens")
-		.and_then(|v| v.to_str().ok())
-		.and_then(|v| v.parse::<i64>().ok())
-		.unwrap_or(0);
-	let token_count = input_tokens + output_tokens;
+    let has_metering_headers = headers.contains_key("x-input-tokens")
+        || headers.contains_key("x-output-tokens")
+        || headers.contains_key("x-model-name")
+        || headers.contains_key("x-agent-name")
+        || headers.contains_key("x-provider-name");
+    if !has_metering_headers {
+        return Ok(());
+    }
 
-	let model_name: Option<String> = headers
-		.get("x-model-name")
-		.and_then(|v| v.to_str().ok())
-		.map(|v| v.to_string());
-	let agent_name: Option<String> = headers
-		.get("x-agent-name")
-		.and_then(|v| v.to_str().ok())
-		.map(|v| v.to_string());
-	let provider_name: Option<String> = headers
-		.get("x-provider-name")
-		.and_then(|v| v.to_str().ok())
-		.map(|v| v.to_string());
+    let input_tokens: i64 = headers
+        .get("x-input-tokens")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+    let output_tokens: i64 = headers
+        .get("x-output-tokens")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+    let token_count = input_tokens + output_tokens;
 
-	// Record usage event.
-	// Use runtime `sqlx::query` (not the `query!` macro) so downstream
-	// crates don't need DATABASE_URL at compile time or a `.sqlx` cache.
-	// Library crates that ship via crates.io cannot rely on a live DB
-	// or bundled cache being available to their consumers.
-	sqlx::query(
+    let model_name: Option<String> = headers
+        .get("x-model-name")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_string());
+    let agent_name: Option<String> = headers
+        .get("x-agent-name")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_string());
+    let provider_name: Option<String> = headers
+        .get("x-provider-name")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_string());
+
+    // Record usage event.
+    // Use runtime `sqlx::query` (not the `query!` macro) so downstream
+    // crates don't need DATABASE_URL at compile time or a `.sqlx` cache.
+    // Library crates that ship via crates.io cannot rely on a live DB
+    // or bundled cache being available to their consumers.
+    sqlx::query(
 		"INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'http', $3, $4, $5, $6, $7, $8, $9, $10)",
 	)
 	.bind(uuid::Uuid::new_v4().to_string())
@@ -72,5 +81,5 @@ async fn record_usage(
 	.bind(chrono::Utc::now().timestamp())
 	.execute(pool)
 	.await?;
-	Ok(())
+    Ok(())
 }

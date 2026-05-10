@@ -202,6 +202,11 @@ impl AgentRegistry {
             .provider_registry
             .create_client_for_model(&config.model)
             .await?;
+        let provider_name = self
+            .provider_registry
+            .get_model(&config.model)
+            .map(|model| model.provider.clone())
+            .unwrap_or_else(|| config.model.clone());
 
         // Create a filtered tool registry with only the tools this agent can use
         let agent_tool_registry = if config.tools.is_empty() {
@@ -210,11 +215,12 @@ impl AgentRegistry {
             Some(Arc::clone(&self.tool_registry))
         };
 
-        Ok(ConfigurableAgent::new(
+        Ok(ConfigurableAgent::new_with_provider(
             name,
             config,
             llm,
             agent_tool_registry,
+            provider_name,
         ))
     }
 

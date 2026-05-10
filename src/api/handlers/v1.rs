@@ -8,12 +8,16 @@ use crate::db::agent_runs;
 use crate::db::tenant_agents::{self, TenantAgent};
 use crate::memory::estimate_tokens;
 use crate::models::{TenantContext, TenantTier};
-use crate::types::{AgentContext, AgentType, AppError, ChatRequest, ChatResponse, Result};
+use crate::research::coordinator::ResearchCoordinator;
+use crate::types::{
+    AgentContext, AgentType, AppError, ChatRequest, ChatResponse, ResearchRequest,
+    ResearchResponse, Result,
+};
 use crate::AppState;
 use axum::{
     extract::{Extension, Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{HeaderName, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use chrono::{DateTime, Datelike, TimeZone, Utc};
@@ -173,6 +177,52 @@ fn extract_tenant(ctx: Option<Extension<TenantContext>>) -> Result<TenantContext
         .ok_or_else(|| AppError::Auth("Missing tenant context".to_string()))
 }
 
+fn set_header(headers: &mut axum::http::HeaderMap, name: &'static str, value: impl ToString) {
+    if let Ok(value) = HeaderValue::from_str(&value.to_string()) {
+        headers.insert(HeaderName::from_static(name), value);
+    }
+}
+
+fn usage_response<T: Serialize>(
+    payload: T,
+    input_tokens: u64,
+    output_tokens: u64,
+    model_name: &str,
+    provider_name: &str,
+    agent_name: &str,
+) -> Response {
+    let mut response = Json(payload).into_response();
+    let headers = response.headers_mut();
+    set_header(headers, "x-input-tokens", input_tokens);
+    set_header(headers, "x-output-tokens", output_tokens);
+    set_header(headers, "x-model-name", model_name);
+    set_header(headers, "x-provider-name", provider_name);
+    set_header(headers, "x-agent-name", agent_name);
+    response
+}
+
+async fn enforce_quota(state: &AppState, tc: &TenantContext) -> Result<()> {
+    if tc.tier != TenantTier::Enterprise {
+        let monthly = state
+            .tenant_db
+            .get_monthly_requests(&tc.tenant_id)
+            .await
+            .unwrap_or(0);
+        let daily = state
+            .tenant_db
+            .get_daily_requests(&tc.tenant_id)
+            .await
+            .unwrap_or(0);
+        if !tc.can_make_request(monthly, daily) {
+            return Err(AppError::RateLimited(format!(
+                "Quota exceeded for {:?} tier. Monthly: {}/{}, Daily: {}/{}",
+                tc.tier, monthly, tc.quota.requests_per_month, daily, tc.quota.requests_per_day
+            )));
+        }
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Handlers
 // =============================================================================
@@ -186,19 +236,13 @@ pub async fn v1_chat(
     let tc = extract_tenant(ctx)?;
 
     // Quota enforcement — check monthly + daily request limits
-    if tc.tier != TenantTier::Enterprise {
-        let monthly = state.tenant_db.get_monthly_requests(&tc.tenant_id).await.unwrap_or(0);
-        let daily = state.tenant_db.get_daily_requests(&tc.tenant_id).await.unwrap_or(0);
-        if !tc.can_make_request(monthly, daily) {
-            return Err(crate::types::AppError::RateLimited(format!(
-                "Quota exceeded for {:?} tier. Monthly: {}/{}, Daily: {}/{}",
-                tc.tier, monthly, tc.quota.requests_per_month, daily, tc.quota.requests_per_day
-            )));
-        }
-    }
+    enforce_quota(&state, &tc).await?;
 
     // Emergency stop — kill switch for all agents
-    if state.emergency_stop.load(std::sync::atomic::Ordering::Relaxed) {
+    if state
+        .emergency_stop
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         return Err(crate::types::AppError::Unavailable(
             "All agents are currently under human review. Please try again later.".to_string(),
         ));
@@ -226,7 +270,8 @@ pub async fn v1_chat(
     // Inject Eruka context — the core product feature.
     // Calls the ContextProvider (ErukaContextProvider in managed mode, NoOp in OSS)
     // to fetch per-agent knowledge state and gap constraints from Eruka.
-    let eruka_context = state.context_provider
+    let eruka_context = state
+        .context_provider
         .get_context(&agent_name, &tc.tenant_id)
         .await;
 
@@ -248,10 +293,14 @@ pub async fn v1_chat(
     let duration_ms = start.elapsed().as_millis() as i64;
 
     let response_text = response.content;
-    let model_name = response.metadata.as_ref()
+    let model_name = response
+        .metadata
+        .as_ref()
         .map(|m| m.model_name.clone())
         .unwrap_or_else(|| "unknown".to_string());
-    let provider_name = response.metadata.as_ref()
+    let provider_name = response
+        .metadata
+        .as_ref()
         .map(|m| m.provider_name.clone())
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -300,28 +349,84 @@ pub async fn v1_chat(
         sources: None,
     };
 
-    let body = Json(chat_response);
-    let mut response = body.into_response();
-    response.headers_mut().insert(
-        axum::http::HeaderName::from_static("x-input-tokens"),
-        axum::http::HeaderValue::from(input_tokens),
-    );
-    response.headers_mut().insert(
-        axum::http::HeaderName::from_static("x-output-tokens"),
-        axum::http::HeaderValue::from(output_tokens),
-    );
-    if let Ok(v) = axum::http::HeaderValue::from_str(&model_name) {
-        response.headers_mut().insert(
-            axum::http::HeaderName::from_static("x-model-name"), v,
-        );
-    }
-    if let Ok(v) = axum::http::HeaderValue::from_str(&provider_name) {
-        response.headers_mut().insert(
-            axum::http::HeaderName::from_static("x-provider-name"), v,
-        );
+    Ok(usage_response(
+        chat_response,
+        input_tokens as u64,
+        output_tokens as u64,
+        &model_name,
+        &provider_name,
+        crate::agents::registry::AgentRegistry::type_to_name(&agent_type),
+    ))
+}
+
+/// POST /v1/research — tenant-scoped research with provider-reported metering.
+pub async fn v1_research(
+    State(state): State<AppState>,
+    ctx: Option<Extension<TenantContext>>,
+    Json(payload): Json<ResearchRequest>,
+) -> Result<Response> {
+    let tc = extract_tenant(ctx)?;
+    enforce_quota(&state, &tc).await?;
+
+    if state
+        .emergency_stop
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return Err(AppError::Unavailable(
+            "All agents are currently under human review. Please try again later.".to_string(),
+        ));
     }
 
-    Ok(response)
+    let start = std::time::Instant::now();
+    let config = state.config_manager.config();
+    let (depth, max_iterations) = if let Some(workflow) = config.get_workflow("research") {
+        (
+            payload.depth.unwrap_or(workflow.max_depth),
+            payload.max_iterations.unwrap_or(workflow.max_iterations),
+        )
+    } else {
+        (
+            payload.depth.unwrap_or(2),
+            payload.max_iterations.unwrap_or(5),
+        )
+    };
+
+    let model_key = config
+        .get_agent("orchestrator")
+        .map(|a| a.model.as_str())
+        .unwrap_or("powerful");
+    let configured_provider = config
+        .get_model(model_key)
+        .map(|m| m.provider.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let llm_client = match state
+        .provider_registry
+        .create_client_for_model(model_key)
+        .await
+    {
+        Ok(client) => client,
+        Err(_) => state.llm_factory.create_default().await?,
+    };
+    let model_name = llm_client.model_name().to_string();
+
+    let coordinator = ResearchCoordinator::new(llm_client, depth, max_iterations);
+    let (findings, sources, usage) = coordinator.research_with_usage(&payload.query).await?;
+
+    let response = ResearchResponse {
+        findings,
+        sources,
+        duration_ms: start.elapsed().as_millis() as u64,
+    };
+
+    Ok(usage_response(
+        response,
+        usage.input_tokens as u64,
+        usage.output_tokens as u64,
+        &model_name,
+        &configured_provider,
+        "research",
+    ))
 }
 
 /// GET /v1/agents — list all agents for this tenant
@@ -373,11 +478,14 @@ pub async fn run_agent(
     ctx: Option<Extension<TenantContext>>,
     Path(name): Path<String>,
     Json(input): Json<serde_json::Value>,
-) -> Result<Json<V1AgentRun>> {
+) -> Result<Response> {
     let tc = extract_tenant(ctx)?;
 
     // Emergency stop
-    if state.emergency_stop.load(std::sync::atomic::Ordering::Relaxed) {
+    if state
+        .emergency_stop
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         return Err(crate::types::AppError::Unavailable(
             "All agents are currently under human review. Please try again later.".to_string(),
         ));
@@ -446,16 +554,27 @@ pub async fn run_agent(
                 let pname = provider_name.clone();
                 tokio::spawn(async move {
                     let _ = agent_runs::insert_agent_run(
-                        &pool, &tid, &aname, None, "completed", itok, otok, dur, None,
-                        &mname, &pname, false,
+                        &pool,
+                        &tid,
+                        &aname,
+                        None,
+                        "completed",
+                        itok,
+                        otok,
+                        dur,
+                        None,
+                        &mname,
+                        &pname,
+                        false,
                     )
                     .await;
                 });
             }
 
-            Ok(Json(V1AgentRun {
+            let response_agent_id = name;
+            let response = V1AgentRun {
                 id: run_id,
-                agent_id: name,
+                agent_id: response_agent_id.clone(),
                 status: "completed".to_string(),
                 input,
                 output: Some(serde_json::json!({"response": response.content})),
@@ -464,7 +583,16 @@ pub async fn run_agent(
                 finished_at: Some(Utc::now()),
                 duration_ms: Some(duration_ms),
                 tokens_used: Some(input_tokens + output_tokens),
-            }))
+            };
+
+            Ok(usage_response(
+                response,
+                input_tokens,
+                output_tokens,
+                &model_name,
+                &provider_name,
+                &response_agent_id,
+            ))
         }
         Err(e) => {
             // Record failed run
@@ -477,16 +605,27 @@ pub async fn run_agent(
                 let dur = duration_ms as i64;
                 tokio::spawn(async move {
                     let _ = agent_runs::insert_agent_run(
-                        &pool, &tid, &aname, None, "failed", 0, 0, dur,
-                        Some(&err_msg), "unknown", "unknown", false,
+                        &pool,
+                        &tid,
+                        &aname,
+                        None,
+                        "failed",
+                        0,
+                        0,
+                        dur,
+                        Some(&err_msg),
+                        "unknown",
+                        "unknown",
+                        false,
                     )
                     .await;
                 });
             }
 
-            Ok(Json(V1AgentRun {
+            let response_agent_id = name;
+            let response = V1AgentRun {
                 id: run_id,
-                agent_id: name,
+                agent_id: response_agent_id.clone(),
                 status: "failed".to_string(),
                 input,
                 output: None,
@@ -495,7 +634,16 @@ pub async fn run_agent(
                 finished_at: Some(Utc::now()),
                 duration_ms: Some(duration_ms),
                 tokens_used: Some(0),
-            }))
+            };
+
+            Ok(usage_response(
+                response,
+                0,
+                0,
+                "unknown",
+                "unknown",
+                &response_agent_id,
+            ))
         }
     }
 }
@@ -693,7 +841,7 @@ pub async fn semantic_search(
 
     // Get services
     let embedding_service = get_embedding_service().await?;
-let vector_path = &state.config_manager.config().rag.vector.vector_path;
+    let vector_path = &state.config_manager.config().rag.vector.vector_path;
     let vector_store = get_vector_store(vector_path).await?;
 
     // Build scoped collection name with tenant isolation
@@ -712,7 +860,12 @@ let vector_path = &state.config_manager.config().rag.vector.vector_path;
 
     // Perform vector search with cosine similarity
     let results = vector_store
-        .search(&scoped_collection, &query_embedding, limit, payload.threshold)
+        .search(
+            &scoped_collection,
+            &query_embedding,
+            limit,
+            payload.threshold,
+        )
         .await?;
 
     // Map to response format
@@ -744,7 +897,6 @@ let vector_path = &state.config_manager.config().rag.vector.vector_path;
     }))
 }
 
-
 /// GDPR: DELETE /v1/tenant/data — purge all tenant data (usage_events, agent_runs, api_keys)
 /// The tenant account itself is NOT deleted; only operational data is purged.
 pub async fn delete_tenant_data(
@@ -756,32 +908,29 @@ pub async fn delete_tenant_data(
 
     let pool = state.tenant_db.pool();
 
-    let usage_rows: Vec<i64> = sqlx::query_scalar(
-        "DELETE FROM usage_events WHERE tenant_id = $1 RETURNING 1"
-    )
-    .bind(tid)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    let usage_rows: Vec<i64> =
+        sqlx::query_scalar("DELETE FROM usage_events WHERE tenant_id = $1 RETURNING 1")
+            .bind(tid)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
     let usage_deleted = usage_rows.len() as i64;
 
-    let run_rows: Vec<i64> = sqlx::query_scalar(
-        "DELETE FROM agent_runs WHERE tenant_id = $1 RETURNING 1"
-    )
-    .bind(tid)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    let run_rows: Vec<i64> =
+        sqlx::query_scalar("DELETE FROM agent_runs WHERE tenant_id = $1 RETURNING 1")
+            .bind(tid)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
     let runs_deleted = run_rows.len() as i64;
 
     // Revoke all API keys (keeps account, deletes keys)
-    let key_rows: Vec<i64> = sqlx::query_scalar(
-        "DELETE FROM api_keys WHERE tenant_id = $1 RETURNING 1"
-    )
-    .bind(tid)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    let key_rows: Vec<i64> =
+        sqlx::query_scalar("DELETE FROM api_keys WHERE tenant_id = $1 RETURNING 1")
+            .bind(tid)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
     let keys_deleted = key_rows.len() as i64;
 
     // Also clear monthly cache
@@ -799,4 +948,3 @@ pub async fn delete_tenant_data(
         "note": "Tenant account retained. All operational data purged per GDPR Article 17."
     })))
 }
-

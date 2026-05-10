@@ -441,6 +441,7 @@ fn default_max_iterations() -> u8 {
 // Skills directory configuration for SKILL.md discovery.
 // NOTE: This struct is used when the 'skills' feature is enabled.
 #[cfg(feature = "skills")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SkillsTomlConfig {
 	/// Project skills directory (e.g., ./.claude/skills/).
 	pub project_dir: Option<std::path::PathBuf>,

@@ -1,8 +1,24 @@
 use crate::{
-    llm::LLMClient,
+    llm::{client::TokenUsage, LLMClient},
     types::{Result, Source},
 };
 use tokio::task::JoinSet;
+
+/// Token usage accumulated across the LLM calls made by a research run.
+#[derive(Debug, Clone, Default)]
+pub struct ResearchUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
+impl ResearchUsage {
+    fn add(&mut self, usage: Option<&TokenUsage>) {
+        if let Some(usage) = usage {
+            self.input_tokens += usage.prompt_tokens;
+            self.output_tokens += usage.completion_tokens;
+        }
+    }
+}
 
 /// Coordinates multi-step research tasks across multiple queries.
 ///
@@ -26,10 +42,21 @@ impl ResearchCoordinator {
 
     /// Execute deep research on a query
     pub async fn research(&self, query: &str) -> Result<(String, Vec<Source>)> {
+        let (synthesis, sources, _) = self.research_with_usage(query).await?;
+        Ok((synthesis, sources))
+    }
+
+    /// Execute deep research and return provider-reported token usage.
+    pub async fn research_with_usage(
+        &self,
+        query: &str,
+    ) -> Result<(String, Vec<Source>, ResearchUsage)> {
         let mut all_findings = Vec::new();
+        let mut usage = ResearchUsage::default();
 
         // Generate initial research questions
-        let questions = self.generate_research_questions(query).await?;
+        let (questions, question_usage) = self.generate_research_questions(query).await?;
+        usage.add(question_usage.as_ref());
 
         // Execute breadth-first parallel search
         for iteration in 0..self.max_iterations {
@@ -49,9 +76,10 @@ impl ResearchCoordinator {
 
             // Generate follow-up questions based on findings
             if iteration < self.max_iterations - 1 {
-                let follow_ups = self
+                let (follow_ups, followup_usage) = self
                     .generate_followup_questions(query, &all_findings)
                     .await?;
+                usage.add(followup_usage.as_ref());
 
                 if follow_ups.is_empty() {
                     break;
@@ -60,15 +88,19 @@ impl ResearchCoordinator {
         }
 
         // Synthesize findings
-        let synthesis = self.synthesize_findings(query, &all_findings).await?;
+        let (synthesis, synthesis_usage) = self.synthesize_findings(query, &all_findings).await?;
+        usage.add(synthesis_usage.as_ref());
 
         // Extract sources
         let all_sources = self.extract_sources(&all_findings);
 
-        Ok((synthesis, all_sources))
+        Ok((synthesis, all_sources, usage))
     }
 
-    async fn generate_research_questions(&self, query: &str) -> Result<Vec<String>> {
+    async fn generate_research_questions(
+        &self,
+        query: &str,
+    ) -> Result<(Vec<String>, Option<TokenUsage>)> {
         let prompt = format!(
             r#"Generate {} focused research questions to comprehensively answer: {}
 
@@ -83,9 +115,13 @@ Example:
             self.depth, query, self.depth
         );
 
-        let response = self.llm.generate(&prompt).await?;
+        let response = self
+            .llm
+            .generate_with_history(&[("user".to_string(), prompt)])
+            .await?;
 
-        Ok(response
+        let questions = response
+            .content
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| {
@@ -95,7 +131,9 @@ Example:
                     .trim()
                     .to_string()
             })
-            .collect())
+            .collect();
+
+        Ok((questions, response.usage))
     }
 
     async fn parallel_research(&self, questions: &[String]) -> Result<Vec<String>> {
@@ -125,9 +163,9 @@ Example:
         &self,
         _original_query: &str,
         findings: &[String],
-    ) -> Result<Vec<String>> {
+    ) -> Result<(Vec<String>, Option<TokenUsage>)> {
         if findings.is_empty() {
-            return Ok(vec![]);
+            return Ok((vec![], None));
         }
 
         let prompt = format!(
@@ -146,17 +184,27 @@ Example:
             findings.join("\n")
         );
 
-        let response = self.llm.generate(&prompt).await?;
+        let response = self
+            .llm
+            .generate_with_history(&[("user".to_string(), prompt)])
+            .await?;
 
-        Ok(response
+        let questions = response
+            .content
             .lines()
             .filter(|line| !line.trim().is_empty())
             .take(3)
             .map(|s| s.to_string())
-            .collect())
+            .collect();
+
+        Ok((questions, response.usage))
     }
 
-    async fn synthesize_findings(&self, query: &str, findings: &[String]) -> Result<String> {
+    async fn synthesize_findings(
+        &self,
+        query: &str,
+        findings: &[String],
+    ) -> Result<(String, Option<TokenUsage>)> {
         let prompt = format!(
             r#"Original query: {}
 
@@ -174,7 +222,11 @@ Example:
             findings.join("\n\n")
         );
 
-        self.llm.generate(&prompt).await
+        let response = self
+            .llm
+            .generate_with_history(&[("user".to_string(), prompt)])
+            .await?;
+        Ok((response.content, response.usage))
     }
 
     fn extract_sources(&self, findings: &[String]) -> Vec<Source> {

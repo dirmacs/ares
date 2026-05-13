@@ -41,11 +41,14 @@ struct RoleEntry {
     pub resource_id: Option<String>,
 }
 
-/// Check if JWT claims have admin role in any of: "admin", "ares", "eruka".
+/// Check if JWT claims have admin or super_admin role in any of: "admin", "ares", "eruka".
 fn has_admin_role(claims: &AdminClaims) -> bool {
     for product in ["admin", "ares", "eruka"] {
         if let Some(entries) = claims.roles.get(product) {
-            if entries.iter().any(|e| e.role == "admin") {
+            if entries
+                .iter()
+                .any(|e| matches!(e.role.as_str(), "admin" | "super_admin"))
+            {
                 return true;
             }
         }

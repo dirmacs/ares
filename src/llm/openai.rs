@@ -28,6 +28,7 @@ use async_openai::{
     types::chat::{
         ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
         ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+        ReasoningEffort,
         ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestToolMessageArgs,
         ChatCompletionRequestUserMessageArgs, ChatCompletionTool, ChatCompletionTools,
         CreateChatCompletionRequestArgs, FunctionCall, FunctionObject,
@@ -176,21 +177,13 @@ impl OpenAIClient {
             }
         }
     }
-}
 
-#[async_trait]
-impl LLMClient for OpenAIClient {
-    async fn generate(&self, prompt: &str) -> Result<String> {
-        let message = ChatCompletionRequestUserMessageArgs::default()
-            .content(prompt)
-            .build()
-            .map_err(|e| AppError::LLM(format!("Failed to build message: {}", e)))?;
+    fn apply_model_params(&self, builder: &mut CreateChatCompletionRequestArgs) {
+        // GPT-5 chat-completions works reliably here when we explicitly cap reasoning effort.
+        if self.model.starts_with("gpt-5") {
+            builder.reasoning_effort(ReasoningEffort::Low);
+        }
 
-        let mut builder = CreateChatCompletionRequestArgs::default();
-        builder.model(&self.model);
-        builder.messages(vec![ChatCompletionRequestMessage::User(message)]);
-
-        // Apply model parameters
         if let Some(temp) = self.params.temperature {
             builder.temperature(temp);
         }
@@ -206,6 +199,21 @@ impl LLMClient for OpenAIClient {
         if let Some(pres_penalty) = self.params.presence_penalty {
             builder.presence_penalty(pres_penalty);
         }
+    }
+}
+
+#[async_trait]
+impl LLMClient for OpenAIClient {
+    async fn generate(&self, prompt: &str) -> Result<String> {
+        let message = ChatCompletionRequestUserMessageArgs::default()
+            .content(prompt)
+            .build()
+            .map_err(|e| AppError::LLM(format!("Failed to build message: {}", e)))?;
+
+        let mut builder = CreateChatCompletionRequestArgs::default();
+        builder.model(&self.model);
+        builder.messages(vec![ChatCompletionRequestMessage::User(message)]);
+        self.apply_model_params(&mut builder);
 
         let request = builder
             .build()
@@ -242,23 +250,7 @@ impl LLMClient for OpenAIClient {
             ChatCompletionRequestMessage::System(system_message),
             ChatCompletionRequestMessage::User(user_message),
         ]);
-
-        // Apply model parameters
-        if let Some(temp) = self.params.temperature {
-            builder.temperature(temp);
-        }
-        if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens);
-        }
-        if let Some(top_p) = self.params.top_p {
-            builder.top_p(top_p);
-        }
-        if let Some(freq_penalty) = self.params.frequency_penalty {
-            builder.frequency_penalty(freq_penalty);
-        }
-        if let Some(pres_penalty) = self.params.presence_penalty {
-            builder.presence_penalty(pres_penalty);
-        }
+        self.apply_model_params(&mut builder);
 
         let request = builder
             .build()
@@ -322,23 +314,7 @@ impl LLMClient for OpenAIClient {
         let mut builder = CreateChatCompletionRequestArgs::default();
         builder.model(&self.model);
         builder.messages(chat_messages?);
-
-        // Apply model parameters
-        if let Some(temp) = self.params.temperature {
-            builder.temperature(temp);
-        }
-        if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens);
-        }
-        if let Some(top_p) = self.params.top_p {
-            builder.top_p(top_p);
-        }
-        if let Some(freq_penalty) = self.params.frequency_penalty {
-            builder.frequency_penalty(freq_penalty);
-        }
-        if let Some(pres_penalty) = self.params.presence_penalty {
-            builder.presence_penalty(pres_penalty);
-        }
+        self.apply_model_params(&mut builder);
 
         let request = builder
             .build()
@@ -386,23 +362,7 @@ impl LLMClient for OpenAIClient {
         builder.model(&self.model);
         builder.messages(vec![ChatCompletionRequestMessage::User(user_message)]);
         builder.tools(openai_tools);
-
-        // Apply model parameters
-        if let Some(temp) = self.params.temperature {
-            builder.temperature(temp);
-        }
-        if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens);
-        }
-        if let Some(top_p) = self.params.top_p {
-            builder.top_p(top_p);
-        }
-        if let Some(freq_penalty) = self.params.frequency_penalty {
-            builder.frequency_penalty(freq_penalty);
-        }
-        if let Some(pres_penalty) = self.params.presence_penalty {
-            builder.presence_penalty(pres_penalty);
-        }
+        self.apply_model_params(&mut builder);
 
         let request = builder
             .build()
@@ -470,23 +430,7 @@ impl LLMClient for OpenAIClient {
         if !openai_tools.is_empty() {
             builder.tools(openai_tools);
         }
-
-        // Apply model parameters
-        if let Some(temp) = self.params.temperature {
-            builder.temperature(temp);
-        }
-        if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens);
-        }
-        if let Some(top_p) = self.params.top_p {
-            builder.top_p(top_p);
-        }
-        if let Some(freq_penalty) = self.params.frequency_penalty {
-            builder.frequency_penalty(freq_penalty);
-        }
-        if let Some(pres_penalty) = self.params.presence_penalty {
-            builder.presence_penalty(pres_penalty);
-        }
+        self.apply_model_params(&mut builder);
 
         let request = builder
             .build()
@@ -544,23 +488,7 @@ impl LLMClient for OpenAIClient {
         let mut builder = CreateChatCompletionRequestArgs::default();
         builder.model(&self.model);
         builder.messages(vec![ChatCompletionRequestMessage::User(user_message)]);
-
-        // Apply model parameters
-        if let Some(temp) = self.params.temperature {
-            builder.temperature(temp);
-        }
-        if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens);
-        }
-        if let Some(top_p) = self.params.top_p {
-            builder.top_p(top_p);
-        }
-        if let Some(freq_penalty) = self.params.frequency_penalty {
-            builder.frequency_penalty(freq_penalty);
-        }
-        if let Some(pres_penalty) = self.params.presence_penalty {
-            builder.presence_penalty(pres_penalty);
-        }
+        self.apply_model_params(&mut builder);
 
         let request = builder
             .build()
@@ -614,23 +542,7 @@ impl LLMClient for OpenAIClient {
             ChatCompletionRequestMessage::System(system_message),
             ChatCompletionRequestMessage::User(user_message),
         ]);
-
-        // Apply model parameters
-        if let Some(temp) = self.params.temperature {
-            builder.temperature(temp);
-        }
-        if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens);
-        }
-        if let Some(top_p) = self.params.top_p {
-            builder.top_p(top_p);
-        }
-        if let Some(freq_penalty) = self.params.frequency_penalty {
-            builder.frequency_penalty(freq_penalty);
-        }
-        if let Some(pres_penalty) = self.params.presence_penalty {
-            builder.presence_penalty(pres_penalty);
-        }
+        self.apply_model_params(&mut builder);
 
         let request = builder
             .build()
@@ -710,23 +622,7 @@ impl LLMClient for OpenAIClient {
         let mut builder = CreateChatCompletionRequestArgs::default();
         builder.model(&self.model);
         builder.messages(chat_messages?);
-
-        // Apply model parameters
-        if let Some(temp) = self.params.temperature {
-            builder.temperature(temp);
-        }
-        if let Some(max_tokens) = self.params.max_tokens {
-            builder.max_completion_tokens(max_tokens);
-        }
-        if let Some(top_p) = self.params.top_p {
-            builder.top_p(top_p);
-        }
-        if let Some(freq_penalty) = self.params.frequency_penalty {
-            builder.frequency_penalty(freq_penalty);
-        }
-        if let Some(pres_penalty) = self.params.presence_penalty {
-            builder.presence_penalty(pres_penalty);
-        }
+        self.apply_model_params(&mut builder);
 
         let request = builder
             .build()

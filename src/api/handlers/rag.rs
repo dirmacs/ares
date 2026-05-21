@@ -68,39 +68,54 @@ pub async fn get_embedding_service() -> Result<Arc<EmbeddingService>> {
             match lancor::hub::HubClient::with_cache_dir(cache_path.clone()) {
                 Err(e) => tracing::error!("Failed to create lancor HubClient: {}", e),
                 Ok(hub) => {
-                let repo_id = model.hf_repo_id();
-                for filename in &["onnx/model.onnx", "tokenizer.json", "config.json", "tokenizer_config.json"] {
-                    // Build HF cache path
-                    let folder = format!("models--{}", repo_id.replace('/', "--"));
-                    let snapshot_dir = cache_path.join(&folder).join("snapshots").join("lancor");
-                    let target = snapshot_dir.join(filename);
+                    let repo_id = model.hf_repo_id();
+                    for filename in &[
+                        "onnx/model.onnx",
+                        "tokenizer.json",
+                        "config.json",
+                        "tokenizer_config.json",
+                    ] {
+                        // Build HF cache path
+                        let folder = format!("models--{}", repo_id.replace('/', "--"));
+                        let snapshot_dir =
+                            cache_path.join(&folder).join("snapshots").join("lancor");
+                        let target = snapshot_dir.join(filename);
 
-                    if target.exists() && std::fs::metadata(&target).map(|m| m.len() > 0).unwrap_or(false) {
-                        tracing::debug!("Model file cached: {}", target.display());
-                        continue;
-                    }
-
-                    tracing::info!("Downloading {}/{} via lancor...", repo_id, filename);
-                    if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-
-                    match hub.download(repo_id, filename, None).await {
-                        Ok(dl_path) => {
-                            if dl_path != target {
-                                std::fs::copy(&dl_path, &target).ok();
-                            }
-                            tracing::info!("Downloaded: {} ({} bytes)", filename,
-                                std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0));
+                        if target.exists()
+                            && std::fs::metadata(&target)
+                                .map(|m| m.len() > 0)
+                                .unwrap_or(false)
+                        {
+                            tracing::debug!("Model file cached: {}", target.display());
+                            continue;
                         }
-                        Err(e) => tracing::warn!("Could not download {}: {}", filename, e),
-                    }
-                }
 
-                // Write refs/main
-                let refs_dir = cache_path.join(format!("models--{}", repo_id.replace('/', "--"))).join("refs");
-                std::fs::create_dir_all(&refs_dir).ok();
-                std::fs::write(refs_dir.join("main"), "lancor").ok();
+                        tracing::info!("Downloading {}/{} via lancor...", repo_id, filename);
+                        if let Some(parent) = target.parent() {
+                            std::fs::create_dir_all(parent).ok();
+                        }
+
+                        match hub.download(repo_id, filename, None).await {
+                            Ok(dl_path) => {
+                                if dl_path != target {
+                                    std::fs::copy(&dl_path, &target).ok();
+                                }
+                                tracing::info!(
+                                    "Downloaded: {} ({} bytes)",
+                                    filename,
+                                    std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0)
+                                );
+                            }
+                            Err(e) => tracing::warn!("Could not download {}: {}", filename, e),
+                        }
+                    }
+
+                    // Write refs/main
+                    let refs_dir = cache_path
+                        .join(format!("models--{}", repo_id.replace('/', "--")))
+                        .join("refs");
+                    std::fs::create_dir_all(&refs_dir).ok();
+                    std::fs::write(refs_dir.join("main"), "lancor").ok();
                 }
             }
 
@@ -168,8 +183,8 @@ pub async fn ingest(
 
     // Get services
     let embedding_service = get_embedding_service().await?;
-&state.config_manager.config().rag.vector.vector_path
-let vector_store = get_vector_store(vector_path).await?
+    let vector_path = &state.config_manager.config().rag.vector.vector_path;
+    let vector_store = get_vector_store(vector_path).await?;
 
     // Parse chunking strategy
     let strategy: ChunkingStrategy = payload
@@ -280,14 +295,14 @@ pub async fn search(
         ));
     }
 
-#WQ: // Validate input
+    // Validate input
     // Scope collection to user for isolation
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
     // Get services
     let embedding_service = get_embedding_service().await?;
-&state.config_manager.config().rag.vector.vector_path
-let vector_store = get_vector_store(vector_path).await?
+    let vector_path = &state.config_manager.config().rag.vector.vector_path;
+    let vector_store = get_vector_store(vector_path).await?;
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
@@ -485,7 +500,7 @@ pub async fn delete_collection(
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
     let vector_path = &state.config_manager.config().rag.vector.vector_path;
-    let vector_store = get_vector_store(vector_path).await?
+    let vector_store = get_vector_store(vector_path).await?;
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
@@ -537,7 +552,7 @@ pub async fn list_collections(
     AuthUser(claims): AuthUser,
 ) -> Result<Json<Vec<crate::db::CollectionInfo>>> {
     let vector_path = &state.config_manager.config().rag.vector.vector_path;
-    let vector_store = get_vector_store(vector_path).await?
+    let vector_store = get_vector_store(vector_path).await?;
     let all_collections = vector_store.list_collections().await?;
 
     // Filter to only collections belonging to this user and unscope names

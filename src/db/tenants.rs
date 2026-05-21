@@ -96,7 +96,8 @@ impl TenantDb {
     pub async fn create_api_key(&self, tenant_id: &str, name: String) -> Result<(ApiKey, String)> {
         let id = uuid::Uuid::new_v4().to_string();
         let raw_key = generate_api_key();
-        let key_prefix = format!("ares_{}", &raw_key[..8]);
+        let key_prefix = api_key_prefix(&raw_key)
+            .expect("generate_api_key must return a valid ares_-prefixed key");
 
         let key_hash = hash_api_key(&raw_key);
 
@@ -148,7 +149,9 @@ impl TenantDb {
     }
 
     pub async fn verify_api_key(&self, raw_key: &str) -> Result<Option<TenantContext>> {
-        let key_prefix = format!("ares_{}", &raw_key[5..13]);
+        let Some(key_prefix) = api_key_prefix(raw_key) else {
+            return Ok(None);
+        };
         let row = sqlx::query(
             "SELECT ak.id, ak.tenant_id, ak.key_hash, ak.is_active, ak.expires_at, t.tier 
              FROM api_keys ak 
@@ -176,9 +179,7 @@ impl TenantDb {
                 }
             }
 
-            // Strip "ares_" prefix before hashing to match what create_api_key hashes
-            let key_without_prefix = raw_key.strip_prefix("ares_").unwrap_or(raw_key);
-            let input_hash = hash_api_key(key_without_prefix);
+            let input_hash = hash_api_key(raw_key);
             if input_hash != key_hash {
                 return Ok(None);
             }
@@ -422,6 +423,15 @@ fn generate_api_key() -> String {
     format!("ares_{}", hex::encode(bytes))
 }
 
+fn api_key_prefix(raw_key: &str) -> Option<String> {
+    let key_without_prefix = raw_key.strip_prefix("ares_")?;
+    if key_without_prefix.len() < 8 {
+        return None;
+    }
+
+    Some(format!("ares_{}", &key_without_prefix[..8]))
+}
+
 fn hash_api_key(raw_key: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(raw_key.as_bytes());
@@ -444,5 +454,15 @@ mod tests {
         let key = generate_api_key();
         assert!(key.starts_with("ares_"));
         assert_eq!(key.len(), 69);
+    }
+
+    #[test]
+    fn test_api_key_prefix_matches_generated_key() {
+        let key = generate_api_key();
+        let prefix = api_key_prefix(&key).expect("prefix");
+
+        assert!(prefix.starts_with("ares_"));
+        assert_eq!(prefix.len(), 13);
+        assert_eq!(prefix, format!("ares_{}", &key[5..13]));
     }
 }

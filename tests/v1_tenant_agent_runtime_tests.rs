@@ -209,6 +209,7 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
         auth_service: Arc::new(auth_service),
         dynamic_config,
         deploy_registry: ares::api::handlers::deploy::DeployRegistry::default(),
+        loop_registry: ares::api::handlers::loops::LoopRegistry::new(),
         emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         context_provider: Arc::new(ares::agents::context_provider::NoOpContextProvider),
         #[cfg(feature = "mcp")]
@@ -279,7 +280,7 @@ async fn test_v1_chat_uses_tenant_agent_config_over_registry() {
         }))
         .await;
 
-    assert_eq!(response.status(), 200);
+    assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
     assert_eq!(body["agent"], "product (tenant_db)");
     assert_eq!(body["response"], "SYSTEM_PROMPT=tenant-product-prompt");
@@ -299,7 +300,7 @@ async fn test_v1_chat_falls_back_to_registry_when_tenant_agent_missing() {
         }))
         .await;
 
-    assert_eq!(response.status(), 200);
+    assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
     assert_eq!(body["agent"], "product (registry)");
     assert_eq!(body["response"], "SYSTEM_PROMPT=registry-product-prompt");
@@ -331,8 +332,8 @@ async fn test_v1_chat_isolates_same_agent_name_per_tenant() {
         }))
         .await;
 
-    assert_eq!(response_a.status(), 200);
-    assert_eq!(response_b.status(), 200);
+    assert_eq!(response_a.status_code(), 200);
+    assert_eq!(response_b.status_code(), 200);
 
     let body_a: Value = response_a.json();
     let body_b: Value = response_b.json();
@@ -361,7 +362,7 @@ async fn test_v1_chat_supports_custom_agent_type_from_tenant_db() {
         }))
         .await;
 
-    assert_eq!(response.status(), 200);
+    assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
     assert_eq!(body["agent"], "some-agent (tenant_db)");
     assert_eq!(body["response"], "SYSTEM_PROMPT=tenant-custom-agent-prompt");
@@ -395,7 +396,7 @@ async fn test_v1_chat_rejects_disabled_tenant_agent_without_fallback() {
         }))
         .await;
 
-    assert_eq!(response.status(), 404);
+    assert_eq!(response.status_code(), 404);
     let body: Value = response.json();
     assert!(body["error"].as_str().unwrap().contains("disabled"));
 }
@@ -429,7 +430,7 @@ async fn test_v1_chat_rejects_invalid_tenant_agent_config_without_fallback() {
         }))
         .await;
 
-    assert_eq!(response.status(), 500);
+    assert_eq!(response.status_code(), 500);
     let body: Value = response.json();
     assert!(body["error"]
         .as_str()
@@ -451,7 +452,7 @@ async fn test_v1_run_agent_executes_tenant_agent_config() {
         }))
         .await;
 
-    assert_eq!(response.status(), 200);
+    assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
     assert_eq!(body["agent_id"], "product");
     assert_eq!(

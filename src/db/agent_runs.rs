@@ -16,12 +16,19 @@ pub struct AgentRun {
     pub tenant_id: String,
     pub agent_name: String,
     pub user_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub session_id: Option<String>,
     pub status: String,
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub duration_ms: i64,
     pub error: Option<String>,
     pub created_at: i64,
+    pub request_source: Option<String>,
+    pub product: Option<String>,
+    pub agent_config_source: Option<String>,
+    pub agent_config_version: Option<String>,
+    pub eruka_binding_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,6 +62,17 @@ pub struct AllAgentsEntry {
     pub last_run_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentRunMetadata {
+    pub workspace_id: Option<String>,
+    pub session_id: Option<String>,
+    pub request_source: Option<String>,
+    pub product: Option<String>,
+    pub agent_config_source: Option<String>,
+    pub agent_config_version: Option<String>,
+    pub eruka_binding_id: Option<String>,
+}
+
 pub async fn insert_agent_run(
     pool: &PgPool,
     tenant_id: &str,
@@ -69,17 +87,62 @@ pub async fn insert_agent_run(
     provider_name: &str,
     is_streaming: bool,
 ) -> Result<String> {
+    insert_agent_run_with_metadata(
+        pool,
+        tenant_id,
+        agent_name,
+        user_id,
+        status,
+        input_tokens,
+        output_tokens,
+        duration_ms,
+        error,
+        model_name,
+        provider_name,
+        is_streaming,
+        None,
+    )
+    .await
+}
+
+pub async fn insert_agent_run_with_metadata(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+    user_id: Option<&str>,
+    status: &str,
+    input_tokens: i64,
+    output_tokens: i64,
+    duration_ms: i64,
+    error: Option<&str>,
+    model_name: &str,
+    provider_name: &str,
+    is_streaming: bool,
+    metadata: Option<&AgentRunMetadata>,
+) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_ts();
+    let metadata = metadata.cloned().unwrap_or_default();
 
     sqlx::query(
-        "INSERT INTO agent_runs (id, tenant_id, agent_name, user_id, status, input_tokens, output_tokens, duration_ms, error, created_at, model_name, provider_name, is_streaming)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
+        "INSERT INTO agent_runs (
+            id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
+            input_tokens, output_tokens, duration_ms, error, created_at,
+            model_name, provider_name, is_streaming, request_source, product,
+            agent_config_source, agent_config_version, eruka_binding_id
+         ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12,
+            $13, $14, $15, $16, $17,
+            $18, $19, $20
+         )",
     )
     .bind(&id)
     .bind(tenant_id)
     .bind(agent_name)
     .bind(user_id)
+    .bind(&metadata.workspace_id)
+    .bind(&metadata.session_id)
     .bind(status)
     .bind(input_tokens)
     .bind(output_tokens)
@@ -89,6 +152,11 @@ pub async fn insert_agent_run(
     .bind(model_name)
     .bind(provider_name)
     .bind(is_streaming)
+    .bind(&metadata.request_source)
+    .bind(&metadata.product)
+    .bind(&metadata.agent_config_source)
+    .bind(&metadata.agent_config_version)
+    .bind(&metadata.eruka_binding_id)
     .execute(pool)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
@@ -105,9 +173,12 @@ pub async fn list_agent_runs(
 ) -> Result<Vec<AgentRun>> {
     let rows = if let Some(name) = agent_name {
         sqlx::query(
-            "SELECT id, tenant_id, agent_name, user_id, status, input_tokens, output_tokens, duration_ms, error, created_at
+            "SELECT id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
+                    input_tokens, output_tokens, duration_ms, error, created_at,
+                    request_source, product, agent_config_source, agent_config_version,
+                    eruka_binding_id
              FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2
-             ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+             ORDER BY created_at DESC LIMIT $3 OFFSET $4",
         )
         .bind(tenant_id)
         .bind(name)
@@ -117,9 +188,12 @@ pub async fn list_agent_runs(
         .await
     } else {
         sqlx::query(
-            "SELECT id, tenant_id, agent_name, user_id, status, input_tokens, output_tokens, duration_ms, error, created_at
+            "SELECT id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
+                    input_tokens, output_tokens, duration_ms, error, created_at,
+                    request_source, product, agent_config_source, agent_config_version,
+                    eruka_binding_id
              FROM agent_runs WHERE tenant_id = $1
-             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         )
         .bind(tenant_id)
         .bind(limit)
@@ -136,12 +210,19 @@ pub async fn list_agent_runs(
                 tenant_id: row.get("tenant_id"),
                 agent_name: row.get("agent_name"),
                 user_id: row.get("user_id"),
+                workspace_id: row.get("workspace_id"),
+                session_id: row.get("session_id"),
                 status: row.get("status"),
                 input_tokens: row.get("input_tokens"),
                 output_tokens: row.get("output_tokens"),
                 duration_ms: row.get("duration_ms"),
                 error: row.get("error"),
                 created_at: row.get("created_at"),
+                request_source: row.get("request_source"),
+                product: row.get("product"),
+                agent_config_source: row.get("agent_config_source"),
+                agent_config_version: row.get("agent_config_version"),
+                eruka_binding_id: row.get("eruka_binding_id"),
             })
         })
         .collect()

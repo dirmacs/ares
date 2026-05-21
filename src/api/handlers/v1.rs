@@ -333,8 +333,17 @@ pub async fn v1_chat(
         let otok = output_tokens as i64;
         let mname = model_name.clone();
         let pname = provider_name.clone();
+        let metadata = agent_runs::AgentRunMetadata {
+            workspace_id: payload.workspace_id.clone(),
+            session_id: Some(agent_context.session_id.clone()),
+            request_source: Some("api_v1_chat".to_string()),
+            product: None,
+            agent_config_source: Some(resolved_agent.source.as_str().to_string()),
+            agent_config_version: None,
+            eruka_binding_id: None,
+        };
         tokio::spawn(async move {
-            let _ = agent_runs::insert_agent_run(
+            let _ = agent_runs::insert_agent_run_with_metadata(
                 &pool,
                 &tid,
                 &aname,
@@ -347,6 +356,7 @@ pub async fn v1_chat(
                 &mname,
                 &pname,
                 false,
+                Some(&metadata),
             )
             .await;
         });
@@ -376,6 +386,13 @@ pub async fn v1_chat(
         "x-agent-config-source",
         resolved_agent.source.as_str(),
     );
+    if let Some(workspace_id) = &payload.workspace_id {
+        set_header(
+            response.headers_mut(),
+            "x-runtime-workspace-id",
+            workspace_id,
+        );
+    }
     Ok(response)
 }
 
@@ -518,6 +535,10 @@ pub async fn run_agent(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| serde_json::to_string(&input).unwrap_or_default());
+    let runtime_workspace_id = input
+        .get("workspace_id")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
 
     // Build agent context
     let agent_context = AgentContext {
@@ -568,14 +589,22 @@ pub async fn run_agent(
                 let pool = state.tenant_db.pool().clone();
                 let tid = tc.tenant_id.clone();
                 let aname = resolved_agent.agent_name.clone();
-                let _rid = run_id.clone();
                 let itok = input_tokens as i64;
                 let otok = output_tokens as i64;
                 let dur = duration_ms as i64;
                 let mname = model_name.clone();
                 let pname = provider_name.clone();
+                let metadata = agent_runs::AgentRunMetadata {
+                    workspace_id: runtime_workspace_id.clone(),
+                    session_id: Some(agent_context.session_id.clone()),
+                    request_source: Some("api_v1_agent_run".to_string()),
+                    product: None,
+                    agent_config_source: Some(resolved_agent.source.as_str().to_string()),
+                    agent_config_version: None,
+                    eruka_binding_id: None,
+                };
                 tokio::spawn(async move {
-                    let _ = agent_runs::insert_agent_run(
+                    let _ = agent_runs::insert_agent_run_with_metadata(
                         &pool,
                         &tid,
                         &aname,
@@ -588,6 +617,7 @@ pub async fn run_agent(
                         &mname,
                         &pname,
                         false,
+                        Some(&metadata),
                     )
                     .await;
                 });
@@ -620,6 +650,13 @@ pub async fn run_agent(
                 "x-agent-config-source",
                 resolved_agent.source.as_str(),
             );
+            if let Some(workspace_id) = &runtime_workspace_id {
+                set_header(
+                    response.headers_mut(),
+                    "x-runtime-workspace-id",
+                    workspace_id,
+                );
+            }
             Ok(response)
         }
         Err(e) => {
@@ -631,8 +668,17 @@ pub async fn run_agent(
                 let aname = resolved_agent.agent_name.clone();
                 let err_msg = e.to_string();
                 let dur = duration_ms as i64;
+                let metadata = agent_runs::AgentRunMetadata {
+                    workspace_id: runtime_workspace_id.clone(),
+                    session_id: Some(agent_context.session_id.clone()),
+                    request_source: Some("api_v1_agent_run".to_string()),
+                    product: None,
+                    agent_config_source: Some(resolved_agent.source.as_str().to_string()),
+                    agent_config_version: None,
+                    eruka_binding_id: None,
+                };
                 tokio::spawn(async move {
-                    let _ = agent_runs::insert_agent_run(
+                    let _ = agent_runs::insert_agent_run_with_metadata(
                         &pool,
                         &tid,
                         &aname,
@@ -645,6 +691,7 @@ pub async fn run_agent(
                         "unknown",
                         "unknown",
                         false,
+                        Some(&metadata),
                     )
                     .await;
                 });
@@ -671,6 +718,13 @@ pub async fn run_agent(
                 "x-agent-config-source",
                 resolved_agent.source.as_str(),
             );
+            if let Some(workspace_id) = &runtime_workspace_id {
+                set_header(
+                    response.headers_mut(),
+                    "x-runtime-workspace-id",
+                    workspace_id,
+                );
+            }
             Ok(response)
         }
     }

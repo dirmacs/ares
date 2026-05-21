@@ -4,6 +4,7 @@
 //! using `Authorization: Bearer ares_xxx`. The `api_key_auth_middleware`
 //! injects `TenantContext` into request extensions before these handlers run.
 
+use crate::agents::tenant_agent;
 use crate::db::agent_runs;
 use crate::db::tenant_agents::{self, TenantAgent};
 use crate::memory::estimate_tokens;
@@ -288,8 +289,17 @@ pub async fn v1_chat(
     };
 
     use crate::agents::Agent;
-    let agent = state.agent_registry.create_agent(&agent_name).await?;
-    let response = agent.execute(&effective_message, &agent_context).await?;
+    let resolved_agent = tenant_agent::resolve_agent_for_tenant(
+        state.tenant_db.pool(),
+        &state.agent_registry,
+        &tc.tenant_id,
+        &agent_name,
+    )
+    .await?;
+    let response = resolved_agent
+        .agent
+        .execute(&effective_message, &agent_context)
+        .await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
     let response_text = response.content;
@@ -318,7 +328,7 @@ pub async fn v1_chat(
     {
         let pool = state.tenant_db.pool().clone();
         let tid = tc.tenant_id.clone();
-        let aname = agent_name;
+        let aname = resolved_agent.agent_name.clone();
         let itok = input_tokens as i64;
         let otok = output_tokens as i64;
         let mname = model_name.clone();
@@ -344,19 +354,29 @@ pub async fn v1_chat(
 
     let chat_response = ChatResponse {
         response: response_text,
-        agent: format!("{:?} (system)", agent_type),
+        agent: format!(
+            "{} ({})",
+            resolved_agent.agent_name,
+            resolved_agent.source.as_str()
+        ),
         context_id: agent_context.session_id,
         sources: None,
     };
 
-    Ok(usage_response(
+    let mut response = usage_response(
         chat_response,
         input_tokens as u64,
         output_tokens as u64,
         &model_name,
         &provider_name,
-        crate::agents::registry::AgentRegistry::type_to_name(&agent_type),
-    ))
+        &resolved_agent.agent_name,
+    );
+    set_header(
+        response.headers_mut(),
+        "x-agent-config-source",
+        resolved_agent.source.as_str(),
+    );
+    Ok(response)
 }
 
 /// POST /v1/research — tenant-scoped research with provider-reported metering.
@@ -491,10 +511,6 @@ pub async fn run_agent(
         ));
     }
 
-    // Verify agent exists for this tenant
-    let _agent =
-        tenant_agents::get_tenant_agent(state.tenant_db.pool(), &tc.tenant_id, &name).await?;
-
     // Extract message from input JSON
     let message = input
         .get("message")
@@ -514,8 +530,14 @@ pub async fn run_agent(
     // Execute agent with timing
     let start = std::time::Instant::now();
     use crate::agents::Agent;
-    let agent = state.agent_registry.create_agent(&name).await?;
-    let result = agent.execute(&message, &agent_context).await;
+    let resolved_agent = tenant_agent::resolve_required_tenant_agent(
+        state.tenant_db.pool(),
+        &state.agent_registry,
+        &tc.tenant_id,
+        &name,
+    )
+    .await?;
+    let result = resolved_agent.agent.execute(&message, &agent_context).await;
     let duration_ms = start.elapsed().as_millis() as u64;
 
     match result {
@@ -545,7 +567,7 @@ pub async fn run_agent(
             {
                 let pool = state.tenant_db.pool().clone();
                 let tid = tc.tenant_id.clone();
-                let aname = name.clone();
+                let aname = resolved_agent.agent_name.clone();
                 let _rid = run_id.clone();
                 let itok = input_tokens as i64;
                 let otok = output_tokens as i64;
@@ -571,7 +593,7 @@ pub async fn run_agent(
                 });
             }
 
-            let response_agent_id = name;
+            let response_agent_id = resolved_agent.agent_name.clone();
             let response = V1AgentRun {
                 id: run_id,
                 agent_id: response_agent_id.clone(),
@@ -585,14 +607,20 @@ pub async fn run_agent(
                 tokens_used: Some(input_tokens + output_tokens),
             };
 
-            Ok(usage_response(
+            let mut response = usage_response(
                 response,
                 input_tokens,
                 output_tokens,
                 &model_name,
                 &provider_name,
                 &response_agent_id,
-            ))
+            );
+            set_header(
+                response.headers_mut(),
+                "x-agent-config-source",
+                resolved_agent.source.as_str(),
+            );
+            Ok(response)
         }
         Err(e) => {
             // Record failed run
@@ -600,7 +628,7 @@ pub async fn run_agent(
             {
                 let pool = state.tenant_db.pool().clone();
                 let tid = tc.tenant_id.clone();
-                let aname = name.clone();
+                let aname = resolved_agent.agent_name.clone();
                 let err_msg = e.to_string();
                 let dur = duration_ms as i64;
                 tokio::spawn(async move {
@@ -622,7 +650,7 @@ pub async fn run_agent(
                 });
             }
 
-            let response_agent_id = name;
+            let response_agent_id = resolved_agent.agent_name.clone();
             let response = V1AgentRun {
                 id: run_id,
                 agent_id: response_agent_id.clone(),
@@ -636,14 +664,14 @@ pub async fn run_agent(
                 tokens_used: Some(0),
             };
 
-            Ok(usage_response(
-                response,
-                0,
-                0,
-                "unknown",
-                "unknown",
-                &response_agent_id,
-            ))
+            let mut response =
+                usage_response(response, 0, 0, "unknown", "unknown", &response_agent_id);
+            set_header(
+                response.headers_mut(),
+                "x-agent-config-source",
+                resolved_agent.source.as_str(),
+            );
+            Ok(response)
         }
     }
 }

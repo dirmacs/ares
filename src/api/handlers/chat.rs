@@ -97,7 +97,8 @@ pub async fn chat(
     // Execute agent with timing
     let agent_name_for_run = AgentRegistry::type_to_name(&agent_type).to_string();
     let start = std::time::Instant::now();
-    let (response, usage) = execute_agent(agent_type, &payload.message, &agent_context, &state).await?;
+    let (response, usage) =
+        execute_agent(agent_type, &payload.message, &agent_context, &state).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
     // Store messages in conversation
@@ -138,8 +139,17 @@ pub async fn chat(
             .unwrap_or_else(|| "system".to_string());
         let itok = input_tokens as i64;
         let otok = output_tokens as i64;
+        let metadata = agent_runs::AgentRunMetadata {
+            workspace_id: payload.workspace_id.clone(),
+            session_id: Some(context_id.clone()),
+            request_source: Some("api_chat".to_string()),
+            product: None,
+            agent_config_source: None,
+            agent_config_version: None,
+            eruka_binding_id: None,
+        };
         tokio::spawn(async move {
-            let _ = agent_runs::insert_agent_run(
+            let _ = agent_runs::insert_agent_run_with_metadata(
                 &pool,
                 &tenant_id_for_run,
                 &agent_name,
@@ -152,6 +162,7 @@ pub async fn chat(
                 "unknown",
                 "unknown",
                 false,
+                Some(&metadata),
             )
             .await;
         });
@@ -209,12 +220,15 @@ async fn execute_agent(
     // Execute the agent
     let agent_resp = agent.execute(message, context).await?;
 
-    Ok((ChatResponse {
-        response: agent_resp.content,
-        agent: format!("{:?} ({})", agent_type, source),
-        context_id: context.session_id.clone(),
-        sources: None,
-    }, agent_resp.usage))
+    Ok((
+        ChatResponse {
+            response: agent_resp.content,
+            agent: format!("{:?} ({})", agent_type, source),
+            context_id: context.session_id.clone(),
+            sources: None,
+        },
+        agent_resp.usage,
+    ))
 }
 
 /// Get user memory
@@ -296,6 +310,7 @@ pub async fn chat_stream(
     let claims_clone = claims.clone();
     let message = payload.message.clone();
     let agent_type_req = payload.agent_type;
+    let runtime_workspace_id = payload.workspace_id.clone();
     let context_id_clone = context_id.clone();
 
     let stream = async_stream::stream! {
@@ -522,10 +537,19 @@ pub async fn chat_stream(
             let itok = crate::memory::estimate_tokens(&message) as i64;
             let otok = crate::memory::estimate_tokens(&full_response) as i64;
             let model = user_agent.model.clone();
+            let metadata = crate::db::agent_runs::AgentRunMetadata {
+                workspace_id: runtime_workspace_id.clone(),
+                session_id: Some(context_id_clone.clone()),
+                request_source: Some("api_chat_stream".to_string()),
+                product: None,
+                agent_config_source: Some(source.to_string()),
+                agent_config_version: None,
+                eruka_binding_id: None,
+            };
             tokio::spawn(async move {
-                let _ = crate::db::agent_runs::insert_agent_run(
+                let _ = crate::db::agent_runs::insert_agent_run_with_metadata(
                     &pool, &tid, &aname, Some(&tid), "completed",
-                    itok, otok, 0, None, &model, "unknown", true,
+                    itok, otok, 0, None, &model, "unknown", true, Some(&metadata),
                 )
                 .await;
             });

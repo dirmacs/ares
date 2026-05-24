@@ -4,6 +4,7 @@
 //! using `Authorization: Bearer ares_xxx`. The `api_key_auth_middleware`
 //! injects `TenantContext` into request extensions before these handlers run.
 
+use crate::agents::context_provider::AgentRuntimeContext;
 use crate::agents::tenant_agent;
 use crate::db::agent_runs;
 use crate::db::tenant_agents::{self, TenantAgent};
@@ -271,9 +272,14 @@ pub async fn v1_chat(
     // Inject Eruka context — the core product feature.
     // Calls the ContextProvider (ErukaContextProvider in managed mode, NoOp in OSS)
     // to fetch per-agent knowledge state and gap constraints from Eruka.
+    let mut runtime_context =
+        AgentRuntimeContext::new(tc.tenant_id.clone(), agent_name.clone(), "api_v1_chat");
+    runtime_context.workspace_id = payload.workspace_id.clone();
+    runtime_context.session_id = Some(agent_context.session_id.clone());
+
     let eruka_context = state
         .context_provider
-        .get_context(&agent_name, &tc.tenant_id)
+        .get_context_for_run(&runtime_context)
         .await;
 
     let effective_message = if let Some(ctx) = eruka_context {
@@ -558,7 +564,31 @@ pub async fn run_agent(
         &name,
     )
     .await?;
-    let result = resolved_agent.agent.execute(&message, &agent_context).await;
+    let mut runtime_context =
+        AgentRuntimeContext::new(tc.tenant_id.clone(), name.clone(), "api_v1_agent_run");
+    runtime_context.workspace_id = runtime_workspace_id.clone();
+    runtime_context.session_id = Some(agent_context.session_id.clone());
+
+    let eruka_context = state
+        .context_provider
+        .get_context_for_run(&runtime_context)
+        .await;
+    let effective_message = if let Some(ctx) = eruka_context {
+        tracing::info!(
+            agent = %name,
+            tenant = %tc.tenant_id,
+            ctx_len = ctx.len(),
+            "External context injected into agent run"
+        );
+        format!("{}\n\n---\nUser message: {}", ctx, message)
+    } else {
+        message.clone()
+    };
+
+    let result = resolved_agent
+        .agent
+        .execute(&effective_message, &agent_context)
+        .await;
     let duration_ms = start.elapsed().as_millis() as u64;
 
     match result {
@@ -567,7 +597,7 @@ pub async fn run_agent(
                 (u.prompt_tokens as u64, u.completion_tokens as u64)
             } else {
                 (
-                    estimate_tokens(&message) as u64,
+                    estimate_tokens(&effective_message) as u64,
                     estimate_tokens(&response.content) as u64,
                 )
             };

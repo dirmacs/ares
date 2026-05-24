@@ -17,6 +17,43 @@
 
 use async_trait::async_trait;
 
+/// Runtime metadata available to managed context providers.
+///
+/// Public ARES treats these fields as caller-supplied metadata. Managed
+/// providers must still validate workspace use against their own binding or
+/// auth policy before using it for external memory fetches.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentRuntimeContext {
+    /// Tenant that owns the agent execution.
+    pub tenant_id: String,
+    /// Registry or tenant-agent name being executed.
+    pub agent_name: String,
+    /// Optional workspace selected by the authenticated upstream runtime.
+    pub workspace_id: Option<String>,
+    /// Optional end-user identifier for user-scoped products.
+    pub user_id: Option<String>,
+    /// Optional session or conversation identifier for this run.
+    pub session_id: Option<String>,
+    /// Logical source of the request, such as an API handler name.
+    pub request_source: String,
+}
+
+impl AgentRuntimeContext {
+    /// Build runtime metadata with required tenant, agent, and source fields.
+    pub fn new(
+        tenant_id: impl Into<String>,
+        agent_name: impl Into<String>,
+        request_source: impl Into<String>,
+    ) -> Self {
+        Self {
+            tenant_id: tenant_id.into(),
+            agent_name: agent_name.into(),
+            request_source: request_source.into(),
+            ..Self::default()
+        }
+    }
+}
+
 /// Trait for injecting external context into agent calls.
 ///
 /// Called before every LLM invocation with the agent name and tenant ID.
@@ -24,11 +61,13 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait ContextProvider: Send + Sync + 'static {
     /// Get context for a specific agent and tenant.
-    async fn get_context(
-        &self,
-        agent_name: &str,
-        tenant_id: &str,
-    ) -> Option<String>;
+    async fn get_context(&self, agent_name: &str, tenant_id: &str) -> Option<String> {
+        let runtime = AgentRuntimeContext::new(tenant_id, agent_name, "legacy_context_provider");
+        self.get_context_for_run(&runtime).await
+    }
+
+    /// Get context using the full runtime metadata when available.
+    async fn get_context_for_run(&self, runtime: &AgentRuntimeContext) -> Option<String>;
 }
 
 /// Default: no external context (pure OSS mode).
@@ -38,7 +77,7 @@ pub struct NoOpContextProvider;
 
 #[async_trait]
 impl ContextProvider for NoOpContextProvider {
-    async fn get_context(&self, _agent_name: &str, _tenant_id: &str) -> Option<String> {
+    async fn get_context_for_run(&self, _runtime: &AgentRuntimeContext) -> Option<String> {
         None
     }
 }
@@ -52,6 +91,15 @@ mod tests {
         let provider = NoOpContextProvider;
         let result = provider.get_context("any_agent", "any_tenant").await;
         assert!(result.is_none(), "NoOp should always return None");
+    }
+
+    #[test]
+    fn runtime_context_new_sets_required_fields() {
+        let runtime = AgentRuntimeContext::new("tenant-1", "agent-1", "api_v1_chat");
+        assert_eq!(runtime.tenant_id, "tenant-1");
+        assert_eq!(runtime.agent_name, "agent-1");
+        assert_eq!(runtime.request_source, "api_v1_chat");
+        assert_eq!(runtime.workspace_id, None);
     }
 
     #[tokio::test]

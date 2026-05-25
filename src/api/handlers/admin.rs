@@ -1,17 +1,22 @@
+use crate::agents::context_provider::AgentRuntimeContext;
+use crate::agents::tenant_agent;
 use crate::db::agent_runs;
 use crate::db::agent_versions;
 use crate::db::alerts as db_alerts;
 use crate::db::audit_log;
 use crate::db::tenant_agents::{
     clone_templates_for_tenant, create_tenant_agent as db_create_tenant_agent,
-    delete_tenant_agent as db_delete_tenant_agent, list_agent_templates,
-    list_tenant_agents as db_list_tenant_agents, update_tenant_agent as db_update_tenant_agent,
-    AgentTemplate, CreateTenantAgentRequest, TenantAgent, UpdateTenantAgentRequest,
+    delete_tenant_agent as db_delete_tenant_agent, get_tenant_agent as db_get_tenant_agent,
+    list_agent_templates, list_tenant_agent_versions, list_tenant_agents as db_list_tenant_agents,
+    record_tenant_agent_version, rollback_tenant_agent_version,
+    update_tenant_agent as db_update_tenant_agent, AgentTemplate, CreateTenantAgentRequest,
+    TenantAgent, UpdateTenantAgentRequest,
 };
 use crate::db::tenants::UsageSummary;
 use crate::llm::provider_registry::ModelInfo;
+use crate::memory::estimate_tokens;
 use crate::models::{Tenant, TenantTier};
-use crate::types::{AppError, Result};
+use crate::types::{AgentContext, AppError, Result};
 use crate::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -97,7 +102,10 @@ pub async fn admin_middleware(req: axum::extract::Request, next: Next) -> Respon
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header("Content-Type", "application/json")
-        .body(r#"{"error":"Admin access requires X-Admin-Secret header or JWT with admin role"}"#.into())
+        .body(
+            r#"{"error":"Admin access requires X-Admin-Secret header or JWT with admin role"}"#
+                .into(),
+        )
         .unwrap()
 }
 
@@ -442,6 +450,199 @@ pub async fn delete_tenant_agent_handler(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn list_tenant_agent_versions_handler(
+    State(state): State<AppState>,
+    Path((tenant_id, agent_name)): Path<(String, String)>,
+) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
+    let agent = db_get_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
+    let mut records =
+        list_tenant_agent_versions(state.tenant_db.pool(), &tenant_id, &agent_name, 50).await?;
+    if records.is_empty() {
+        record_tenant_agent_version(state.tenant_db.pool(), &agent, "admin_seed").await?;
+        records =
+            list_tenant_agent_versions(state.tenant_db.pool(), &tenant_id, &agent_name, 50).await?;
+    }
+    Ok(Json(records))
+}
+
+pub async fn rollback_tenant_agent_version_handler(
+    State(state): State<AppState>,
+    Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
+) -> Result<Json<TenantAgent>> {
+    let agent =
+        rollback_tenant_agent_version(state.tenant_db.pool(), &tenant_id, &agent_name, &version)
+            .await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let resource_id = format!("{}:{}", tenant_id, agent_name);
+    let details = format!("Rolled back tenant agent to version {}", version);
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "tenant_agent_rollback",
+            "agent",
+            &resource_id,
+            Some(&details),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(agent))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TestTenantAgentRequest {
+    pub message: String,
+    pub config: serde_json::Value,
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub use_eruka_context: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestTenantAgentResponse {
+    pub status: String,
+    pub response: Option<String>,
+    pub error: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub duration_ms: u64,
+    pub model_name: Option<String>,
+    pub provider_name: Option<String>,
+    pub config_source: String,
+    pub config_version: String,
+    pub workspace_id: Option<String>,
+    pub eruka_context_injected: bool,
+}
+
+pub async fn test_tenant_agent_handler(
+    State(state): State<AppState>,
+    Path((tenant_id, agent_name)): Path<(String, String)>,
+    Json(req): Json<TestTenantAgentRequest>,
+) -> Result<Json<TestTenantAgentResponse>> {
+    if state
+        .emergency_stop
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return Err(AppError::Unavailable(
+            "All agents are currently under human review. Please try again later.".to_string(),
+        ));
+    }
+
+    let message = req.message.trim();
+    if message.is_empty() {
+        return Err(AppError::InvalidInput(
+            "Test Agent requires a non-empty message".to_string(),
+        ));
+    }
+
+    db_get_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
+    let agent_config = tenant_agent::agent_config_from_json(&req.config)?;
+    let draft_agent = state
+        .agent_registry
+        .create_agent_from_config(&agent_name, &agent_config)
+        .await?;
+
+    let agent_context = AgentContext {
+        user_id: tenant_id.clone(),
+        session_id: format!("admin-test-{}", uuid::Uuid::new_v4()),
+        conversation_history: vec![],
+        user_memory: None,
+    };
+
+    let mut runtime_context =
+        AgentRuntimeContext::new(tenant_id.clone(), agent_name.clone(), "admin_test_agent");
+    runtime_context.workspace_id = req
+        .workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    runtime_context.session_id = Some(agent_context.session_id.clone());
+
+    let eruka_context = if req.use_eruka_context {
+        state
+            .context_provider
+            .get_context_for_run(&runtime_context)
+            .await
+    } else {
+        None
+    };
+    let eruka_context_injected = eruka_context.is_some();
+    let effective_message = if let Some(ctx) = eruka_context {
+        format!("{}\n\n---\nUser message: {}", ctx, message)
+    } else {
+        message.to_string()
+    };
+
+    let start = std::time::Instant::now();
+    use crate::agents::Agent;
+    let result = draft_agent
+        .execute(&effective_message, &agent_context)
+        .await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    let config_version = req
+        .config
+        .get("version")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("draft:{}", value))
+        .unwrap_or_else(|| "draft".to_string());
+
+    match result {
+        Ok(response) => {
+            let (input_tokens, output_tokens) = if let Some(ref usage) = response.usage {
+                (usage.prompt_tokens as u64, usage.completion_tokens as u64)
+            } else {
+                (
+                    estimate_tokens(&effective_message) as u64,
+                    estimate_tokens(&response.content) as u64,
+                )
+            };
+            let model_name = response
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.model_name.clone());
+            let provider_name = response
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.provider_name.clone());
+
+            Ok(Json(TestTenantAgentResponse {
+                status: "completed".to_string(),
+                response: Some(response.content),
+                error: None,
+                input_tokens,
+                output_tokens,
+                duration_ms,
+                model_name,
+                provider_name,
+                config_source: "draft".to_string(),
+                config_version,
+                workspace_id: runtime_context.workspace_id,
+                eruka_context_injected,
+            }))
+        }
+        Err(error) => Ok(Json(TestTenantAgentResponse {
+            status: "failed".to_string(),
+            response: None,
+            error: Some(error.to_string()),
+            input_tokens: estimate_tokens(&effective_message) as u64,
+            output_tokens: 0,
+            duration_ms,
+            model_name: None,
+            provider_name: None,
+            config_source: "draft".to_string(),
+            config_version,
+            workspace_id: runtime_context.workspace_id,
+            eruka_context_injected,
+        })),
+    }
+}
+
 // =============================================================================
 // Templates and Models
 // =============================================================================
@@ -656,13 +857,9 @@ pub async fn list_agent_versions_handler(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
-    let records = agent_versions::get_agent_version_history(
-        state.tenant_db.pool(),
-        &agent_id,
-        50,
-    )
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    let records = agent_versions::get_agent_version_history(state.tenant_db.pool(), &agent_id, 50)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(Json(records))
 }
@@ -675,13 +872,9 @@ pub async fn rollback_agent_handler(
     Path((agent_id, version)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
     // Fetch the target version from DB
-    let history = agent_versions::get_agent_version_history(
-        state.tenant_db.pool(),
-        &agent_id,
-        100,
-    )
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    let history = agent_versions::get_agent_version_history(state.tenant_db.pool(), &agent_id, 100)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     let record = history
         .into_iter()
@@ -756,8 +949,8 @@ pub async fn emergency_stop_handler(
 
     let pool = state.tenant_db.pool().clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, action, "platform", "all_agents", None, None)
-            .await;
+        let _ =
+            audit_log::log_admin_action(&pool, action, "platform", "all_agents", None, None).await;
     });
 
     Ok(Json(serde_json::json!({

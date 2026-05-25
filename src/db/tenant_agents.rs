@@ -54,6 +54,216 @@ pub struct UpdateTenantAgentRequest {
     pub enabled: Option<bool>,
 }
 
+fn row_to_tenant_agent(row: &sqlx::postgres::PgRow) -> TenantAgent {
+    TenantAgent {
+        id: row.get("id"),
+        tenant_id: row.get("tenant_id"),
+        agent_name: row.get("agent_name"),
+        display_name: row.get("display_name"),
+        description: row.get("description"),
+        config: row.get::<serde_json::Value, _>("config"),
+        enabled: row.get("enabled"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+pub fn tenant_agent_version_key(tenant_id: &str, agent_name: &str) -> String {
+    format!("tenant:{}:{}", tenant_id, agent_name)
+}
+
+fn active_runtime_config_version(agent: &TenantAgent) -> String {
+    agent
+        .config
+        .get("version")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| format!("tenant-db:{}", agent.updated_at))
+}
+
+fn tenant_agent_snapshot_version(agent: &TenantAgent) -> String {
+    format!("tenant-db:{}:{}", agent.updated_at, uuid::Uuid::new_v4())
+}
+
+fn tenant_agent_snapshot(agent: &TenantAgent) -> serde_json::Value {
+    serde_json::json!({
+        "snapshot_type": "tenant_agent",
+        "runtime_config_version": active_runtime_config_version(agent),
+        "tenant_agent": agent,
+    })
+}
+
+fn tenant_agent_from_snapshot(snapshot: serde_json::Value) -> Result<TenantAgent> {
+    let value = if let Some(agent) = snapshot.get("tenant_agent") {
+        agent.clone()
+    } else {
+        snapshot
+    };
+
+    serde_json::from_value(value).map_err(|e| {
+        AppError::InvalidInput(format!(
+            "Failed to deserialize tenant agent snapshot: {}",
+            e
+        ))
+    })
+}
+
+pub async fn record_tenant_agent_version(
+    pool: &PgPool,
+    agent: &TenantAgent,
+    change_source: &str,
+) -> Result<crate::db::agent_versions::AgentVersionRecord> {
+    let agent_id = tenant_agent_version_key(&agent.tenant_id, &agent.agent_name);
+    let version = tenant_agent_snapshot_version(agent);
+    let config_json = tenant_agent_snapshot(agent);
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    sqlx::query("UPDATE agent_config_versions SET is_active = false WHERE agent_id = $1")
+        .bind(&agent_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let record = sqlx::query_as::<_, crate::db::agent_versions::AgentVersionRecord>(
+        r#"INSERT INTO agent_config_versions
+           (agent_id, version, config_json, is_active, change_source)
+           VALUES ($1, $2, $3, true, $4)
+           RETURNING id, agent_id, version, config_json, is_active, change_source, created_at"#,
+    )
+    .bind(&agent_id)
+    .bind(&version)
+    .bind(&config_json)
+    .bind(change_source)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    Ok(record)
+}
+
+pub async fn list_tenant_agent_versions(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+    limit: i64,
+) -> Result<Vec<crate::db::agent_versions::AgentVersionRecord>> {
+    let agent_id = tenant_agent_version_key(tenant_id, agent_name);
+    let rows = sqlx::query_as::<_, crate::db::agent_versions::AgentVersionRecord>(
+        r#"SELECT id, agent_id, version, config_json, is_active, change_source, created_at
+           FROM agent_config_versions
+           WHERE agent_id = $1
+           ORDER BY created_at DESC
+           LIMIT $2"#,
+    )
+    .bind(&agent_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    Ok(rows)
+}
+
+pub async fn rollback_tenant_agent_version(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+    version: &str,
+) -> Result<TenantAgent> {
+    let agent_id = tenant_agent_version_key(tenant_id, agent_name);
+    let record = sqlx::query(
+        "SELECT config_json FROM agent_config_versions WHERE agent_id = $1 AND version = $2",
+    )
+    .bind(&agent_id)
+    .bind(version)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?
+    .ok_or_else(|| {
+        AppError::NotFound(format!(
+            "No version '{}' found for tenant agent '{}'",
+            version, agent_id
+        ))
+    })?;
+
+    let snapshot = tenant_agent_from_snapshot(record.get("config_json"))?;
+    if snapshot.tenant_id != tenant_id || snapshot.agent_name != agent_name {
+        return Err(AppError::InvalidInput(format!(
+            "Version '{}' does not belong to tenant agent '{}'",
+            version, agent_id
+        )));
+    }
+
+    let now = now_ts();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let row = sqlx::query(
+        r#"UPDATE tenant_agents
+           SET display_name = $1, description = $2, config = $3, enabled = $4, updated_at = $5
+           WHERE tenant_id = $6 AND agent_name = $7
+           RETURNING id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at"#,
+    )
+    .bind(&snapshot.display_name)
+    .bind(&snapshot.description)
+    .bind(&snapshot.config)
+    .bind(snapshot.enabled)
+    .bind(now)
+    .bind(tenant_id)
+    .bind(agent_name)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?
+    .ok_or_else(|| {
+        AppError::NotFound(format!(
+            "Agent '{}' not found for tenant '{}'",
+            agent_name, tenant_id
+        ))
+    })?;
+
+    let restored = row_to_tenant_agent(&row);
+    let restored_version = tenant_agent_snapshot_version(&restored);
+    let restored_snapshot = tenant_agent_snapshot(&restored);
+    let change_source = format!("rollback:{}", version);
+
+    sqlx::query("UPDATE agent_config_versions SET is_active = false WHERE agent_id = $1")
+        .bind(&agent_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    sqlx::query(
+        r#"INSERT INTO agent_config_versions
+           (agent_id, version, config_json, is_active, change_source)
+           VALUES ($1, $2, $3, true, $4)"#,
+    )
+    .bind(&agent_id)
+    .bind(&restored_version)
+    .bind(&restored_snapshot)
+    .bind(&change_source)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    Ok(restored)
+}
+
 // =============================================================================
 // Tenant Agent CRUD
 // =============================================================================
@@ -68,21 +278,7 @@ pub async fn list_tenant_agents(pool: &PgPool, tenant_id: &str) -> Result<Vec<Te
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    rows.iter()
-        .map(|row| {
-            Ok(TenantAgent {
-                id: row.get("id"),
-                tenant_id: row.get("tenant_id"),
-                agent_name: row.get("agent_name"),
-                display_name: row.get("display_name"),
-                description: row.get("description"),
-                config: row.get::<serde_json::Value, _>("config"),
-                enabled: row.get("enabled"),
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
-            })
-        })
-        .collect()
+    Ok(rows.iter().map(row_to_tenant_agent).collect())
 }
 
 pub async fn get_tenant_agent(
@@ -101,17 +297,7 @@ pub async fn get_tenant_agent(
     .map_err(|e| AppError::Database(e.to_string()))?
     .ok_or_else(|| AppError::NotFound(format!("Agent '{}' not found for tenant '{}'", agent_name, tenant_id)))?;
 
-    Ok(TenantAgent {
-        id: row.get("id"),
-        tenant_id: row.get("tenant_id"),
-        agent_name: row.get("agent_name"),
-        display_name: row.get("display_name"),
-        description: row.get("description"),
-        config: row.get::<serde_json::Value, _>("config"),
-        enabled: row.get("enabled"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    })
+    Ok(row_to_tenant_agent(&row))
 }
 
 pub async fn create_tenant_agent(
@@ -137,7 +323,9 @@ pub async fn create_tenant_agent(
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    get_tenant_agent(pool, tenant_id, &req.agent_name).await
+    let agent = get_tenant_agent(pool, tenant_id, &req.agent_name).await?;
+    record_tenant_agent_version(pool, &agent, "admin_create").await?;
+    Ok(agent)
 }
 
 pub async fn update_tenant_agent(
@@ -171,7 +359,9 @@ pub async fn update_tenant_agent(
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    get_tenant_agent(pool, tenant_id, agent_name).await
+    let agent = get_tenant_agent(pool, tenant_id, agent_name).await?;
+    record_tenant_agent_version(pool, &agent, "admin_update").await?;
+    Ok(agent)
 }
 
 pub async fn delete_tenant_agent(pool: &PgPool, tenant_id: &str, agent_name: &str) -> Result<()> {
@@ -189,6 +379,53 @@ pub async fn delete_tenant_agent(pool: &PgPool, tenant_id: &str, agent_name: &st
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        tenant_agent_from_snapshot, tenant_agent_snapshot, tenant_agent_version_key, TenantAgent,
+    };
+
+    fn sample_agent() -> TenantAgent {
+        TenantAgent {
+            id: "agent-row-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            agent_name: "listener".to_string(),
+            display_name: "Listener".to_string(),
+            description: Some("desc".to_string()),
+            config: serde_json::json!({
+                "model": "fast",
+                "system_prompt": "test",
+            }),
+            enabled: true,
+            created_at: 10,
+            updated_at: 20,
+        }
+    }
+
+    #[test]
+    fn tenant_version_key_is_tenant_scoped() {
+        assert_eq!(
+            tenant_agent_version_key("tenant-1", "listener"),
+            "tenant:tenant-1:listener"
+        );
+    }
+
+    #[test]
+    fn tenant_agent_snapshot_round_trips() {
+        let agent = sample_agent();
+        let snapshot = tenant_agent_snapshot(&agent);
+        assert_eq!(
+            snapshot["runtime_config_version"].as_str(),
+            Some("tenant-db:20")
+        );
+
+        let restored = tenant_agent_from_snapshot(snapshot).expect("snapshot should deserialize");
+        assert_eq!(restored.tenant_id, "tenant-1");
+        assert_eq!(restored.agent_name, "listener");
+        assert_eq!(restored.config["model"], "fast");
+    }
 }
 
 // =============================================================================

@@ -221,6 +221,14 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             get(crate::api::handlers::admin::list_agent_runs_handler),
         )
         .route(
+            "/admin/tenants/{tenant_id}/agents/{agent_name}/feedback/summary",
+            get(crate::api::handlers::admin::get_agent_feedback_summary_handler),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/agents/{agent_name}/runs/{run_id}/feedback",
+            post(crate::api::handlers::admin::create_agent_run_feedback_handler),
+        )
+        .route(
             "/admin/tenants/{tenant_id}/agents/{agent_name}/stats",
             get(crate::api::handlers::admin::get_agent_stats_handler),
         )

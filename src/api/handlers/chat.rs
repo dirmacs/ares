@@ -147,6 +147,7 @@ pub async fn chat(
             agent_config_source: None,
             agent_config_version: None,
             eruka_binding_id: None,
+            ..Default::default()
         };
         tokio::spawn(async move {
             let _ = agent_runs::insert_agent_run_with_metadata(
@@ -545,6 +546,7 @@ pub async fn chat_stream(
                 agent_config_source: Some(source.to_string()),
                 agent_config_version: None,
                 eruka_binding_id: None,
+                ..Default::default()
             };
             tokio::spawn(async move {
                 let _ = crate::db::agent_runs::insert_agent_run_with_metadata(

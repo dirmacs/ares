@@ -281,6 +281,7 @@ pub async fn v1_chat(
         .context_provider
         .get_context_for_run(&runtime_context)
         .await;
+    let eruka_context_hit = eruka_context.is_some();
 
     let effective_message = if let Some(ctx) = eruka_context {
         tracing::info!(
@@ -347,6 +348,9 @@ pub async fn v1_chat(
             agent_config_source: Some(resolved_agent.source.as_str().to_string()),
             agent_config_version: resolved_agent.config_version.clone(),
             eruka_binding_id: None,
+            eruka_context_hit,
+            eruka_read_count: if eruka_context_hit { 1 } else { 0 },
+            eruka_write_count: 0,
         };
         tokio::spawn(async move {
             let _ = agent_runs::insert_agent_run_with_metadata(
@@ -580,6 +584,7 @@ pub async fn run_agent(
         .context_provider
         .get_context_for_run(&runtime_context)
         .await;
+    let eruka_context_hit = eruka_context.is_some();
     let effective_message = if let Some(ctx) = eruka_context {
         tracing::info!(
             agent = %name,
@@ -639,6 +644,9 @@ pub async fn run_agent(
                     agent_config_source: Some(resolved_agent.source.as_str().to_string()),
                     agent_config_version: resolved_agent.config_version.clone(),
                     eruka_binding_id: None,
+                    eruka_context_hit,
+                    eruka_read_count: if eruka_context_hit { 1 } else { 0 },
+                    eruka_write_count: 0,
                 };
                 tokio::spawn(async move {
                     let _ = agent_runs::insert_agent_run_with_metadata(
@@ -720,6 +728,9 @@ pub async fn run_agent(
                     agent_config_source: Some(resolved_agent.source.as_str().to_string()),
                     agent_config_version: resolved_agent.config_version.clone(),
                     eruka_binding_id: None,
+                    eruka_context_hit,
+                    eruka_read_count: if eruka_context_hit { 1 } else { 0 },
+                    eruka_write_count: 0,
                 };
                 tokio::spawn(async move {
                     let _ = agent_runs::insert_agent_run_with_metadata(

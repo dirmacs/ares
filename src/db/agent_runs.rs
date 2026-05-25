@@ -32,6 +32,9 @@ pub struct AgentRun {
     pub agent_config_source: Option<String>,
     pub agent_config_version: Option<String>,
     pub eruka_binding_id: Option<String>,
+    pub eruka_context_hit: bool,
+    pub eruka_read_count: i64,
+    pub eruka_write_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +77,9 @@ pub struct AgentRunMetadata {
     pub agent_config_source: Option<String>,
     pub agent_config_version: Option<String>,
     pub eruka_binding_id: Option<String>,
+    pub eruka_context_hit: bool,
+    pub eruka_read_count: i64,
+    pub eruka_write_count: i64,
 }
 
 pub async fn insert_agent_run(
@@ -132,12 +138,14 @@ pub async fn insert_agent_run_with_metadata(
             id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
             input_tokens, output_tokens, duration_ms, error, created_at,
             model_name, provider_name, is_streaming, request_source, product,
-            agent_config_source, agent_config_version, eruka_binding_id
+            agent_config_source, agent_config_version, eruka_binding_id,
+            eruka_context_hit, eruka_read_count, eruka_write_count
          ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
             $13, $14, $15, $16, $17,
-            $18, $19, $20
+            $18, $19, $20,
+            $21, $22, $23
          )",
     )
     .bind(&id)
@@ -160,6 +168,9 @@ pub async fn insert_agent_run_with_metadata(
     .bind(&metadata.agent_config_source)
     .bind(&metadata.agent_config_version)
     .bind(&metadata.eruka_binding_id)
+    .bind(metadata.eruka_context_hit)
+    .bind(metadata.eruka_read_count)
+    .bind(metadata.eruka_write_count)
     .execute(pool)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
@@ -182,7 +193,10 @@ pub async fn list_agent_runs(
                     COALESCE(provider_name, 'unknown') AS provider_name,
                     COALESCE(is_streaming, false) AS is_streaming,
                     request_source, product,
-                    agent_config_source, agent_config_version, eruka_binding_id
+                    agent_config_source, agent_config_version, eruka_binding_id,
+                    COALESCE(eruka_context_hit, false) AS eruka_context_hit,
+                    COALESCE(eruka_read_count, 0)::BIGINT AS eruka_read_count,
+                    COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count
              FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2
              ORDER BY created_at DESC LIMIT $3 OFFSET $4",
         )
@@ -200,7 +214,10 @@ pub async fn list_agent_runs(
                     COALESCE(provider_name, 'unknown') AS provider_name,
                     COALESCE(is_streaming, false) AS is_streaming,
                     request_source, product,
-                    agent_config_source, agent_config_version, eruka_binding_id
+                    agent_config_source, agent_config_version, eruka_binding_id,
+                    COALESCE(eruka_context_hit, false) AS eruka_context_hit,
+                    COALESCE(eruka_read_count, 0)::BIGINT AS eruka_read_count,
+                    COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count
              FROM agent_runs WHERE tenant_id = $1
              ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         )
@@ -235,6 +252,9 @@ pub async fn list_agent_runs(
                 agent_config_source: row.get("agent_config_source"),
                 agent_config_version: row.get("agent_config_version"),
                 eruka_binding_id: row.get("eruka_binding_id"),
+                eruka_context_hit: row.get("eruka_context_hit"),
+                eruka_read_count: row.get("eruka_read_count"),
+                eruka_write_count: row.get("eruka_write_count"),
             })
         })
         .collect()

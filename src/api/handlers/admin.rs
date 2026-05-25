@@ -922,6 +922,9 @@ mod tests {
             agent_config_source: Some("tenant_db".into()),
             agent_config_version: Some("v1".into()),
             eruka_binding_id: None,
+            eruka_context_hit: false,
+            eruka_read_count: 0,
+            eruka_write_count: 0,
         }
     }
 

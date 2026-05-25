@@ -17,6 +17,7 @@ use crate::llm::provider_registry::ModelInfo;
 use crate::memory::estimate_tokens;
 use crate::models::{Tenant, TenantTier};
 use crate::types::{AgentContext, AppError, Result};
+use crate::utils::toml_config::BillingConfig;
 use crate::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -798,11 +799,55 @@ pub struct AgentRunsQuery {
     pub offset: Option<i64>,
 }
 
+/// Estimated cost attached to an admin-visible agent run.
+#[derive(Debug, Clone, Serialize)]
+pub struct CostEstimateResponse {
+    /// Currency for the estimate.
+    pub currency: String,
+    /// Estimated input-token cost in USD, if pricing is configured.
+    pub input_cost_usd: Option<f64>,
+    /// Estimated output-token cost in USD, if pricing is configured.
+    pub output_cost_usd: Option<f64>,
+    /// Estimated total cost in USD, if both input and output rates are configured.
+    pub total_cost_usd: Option<f64>,
+    /// Whether a matching provider/model pricing entry was found.
+    pub pricing_known: bool,
+}
+
+impl CostEstimateResponse {
+    fn unknown() -> Self {
+        Self {
+            currency: "USD".to_string(),
+            input_cost_usd: None,
+            output_cost_usd: None,
+            total_cost_usd: None,
+            pricing_known: false,
+        }
+    }
+}
+
+/// Admin response for one run plus derived operational metrics.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentRunResponse {
+    /// Raw persisted run fields.
+    #[serde(flatten)]
+    pub run: agent_runs::AgentRun,
+    /// Estimated cost derived from explicit config pricing.
+    pub cost_estimate: CostEstimateResponse,
+}
+
+impl AgentRunResponse {
+    fn from_run(run: agent_runs::AgentRun, billing: &BillingConfig) -> Self {
+        let cost_estimate = estimate_run_cost(billing, &run);
+        Self { run, cost_estimate }
+    }
+}
+
 pub async fn list_agent_runs_handler(
     State(state): State<AppState>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
     Query(q): Query<AgentRunsQuery>,
-) -> Result<Json<Vec<agent_runs::AgentRun>>> {
+) -> Result<Json<Vec<AgentRunResponse>>> {
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
     let runs = agent_runs::list_agent_runs(
@@ -813,7 +858,105 @@ pub async fn list_agent_runs_handler(
         offset,
     )
     .await?;
-    Ok(Json(runs))
+    let config = state.config_manager.config();
+    let response = runs
+        .into_iter()
+        .map(|run| AgentRunResponse::from_run(run, &config.billing))
+        .collect();
+    Ok(Json(response))
+}
+
+fn estimate_run_cost(billing: &BillingConfig, run: &agent_runs::AgentRun) -> CostEstimateResponse {
+    let Some(pricing) = billing.pricing_for(&run.provider_name, &run.model_name) else {
+        return CostEstimateResponse::unknown();
+    };
+
+    let input_cost_usd = pricing
+        .input_usd_per_million_tokens
+        .map(|rate| tokens_to_cost(run.input_tokens, rate));
+    let output_cost_usd = pricing
+        .output_usd_per_million_tokens
+        .map(|rate| tokens_to_cost(run.output_tokens, rate));
+    let total_cost_usd = match (input_cost_usd, output_cost_usd) {
+        (Some(input), Some(output)) => Some(input + output),
+        _ => None,
+    };
+
+    CostEstimateResponse {
+        currency: pricing.currency.clone(),
+        input_cost_usd,
+        output_cost_usd,
+        total_cost_usd,
+        pricing_known: true,
+    }
+}
+
+fn tokens_to_cost(tokens: i64, usd_per_million_tokens: f64) -> f64 {
+    (tokens.max(0) as f64 / 1_000_000.0) * usd_per_million_tokens
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::toml_config::ModelPricingConfig;
+
+    fn run(provider_name: &str, model_name: &str) -> agent_runs::AgentRun {
+        agent_runs::AgentRun {
+            id: "run-1".into(),
+            tenant_id: "tenant-1".into(),
+            agent_name: "agent-1".into(),
+            user_id: None,
+            workspace_id: None,
+            session_id: None,
+            status: "completed".into(),
+            input_tokens: 2_000,
+            output_tokens: 500,
+            duration_ms: 750,
+            error: None,
+            created_at: 1_700_000_000,
+            model_name: model_name.into(),
+            provider_name: provider_name.into(),
+            is_streaming: false,
+            request_source: Some("api_v1_chat".into()),
+            product: None,
+            agent_config_source: Some("tenant_db".into()),
+            agent_config_version: Some("v1".into()),
+            eruka_binding_id: None,
+        }
+    }
+
+    fn billing() -> BillingConfig {
+        let mut billing = BillingConfig::default();
+        billing.model_pricing.insert(
+            "gpt_test".into(),
+            ModelPricingConfig {
+                provider: "openai".into(),
+                model: "gpt-test".into(),
+                input_usd_per_million_tokens: Some(5.0),
+                output_usd_per_million_tokens: Some(15.0),
+                currency: "USD".into(),
+            },
+        );
+        billing
+    }
+
+    #[test]
+    fn estimate_run_cost_returns_unknown_without_matching_pricing() {
+        let estimate = estimate_run_cost(&BillingConfig::default(), &run("openai", "gpt-test"));
+
+        assert!(!estimate.pricing_known);
+        assert_eq!(estimate.total_cost_usd, None);
+    }
+
+    #[test]
+    fn estimate_run_cost_uses_configured_provider_model_pricing() {
+        let estimate = estimate_run_cost(&billing(), &run(" OpenAI ", "GPT-Test"));
+
+        assert!(estimate.pricing_known);
+        assert_eq!(estimate.input_cost_usd, Some(0.01));
+        assert_eq!(estimate.output_cost_usd, Some(0.0075));
+        assert_eq!(estimate.total_cost_usd, Some(0.0175));
+    }
 }
 
 pub async fn get_agent_stats_handler(

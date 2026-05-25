@@ -24,6 +24,9 @@ pub struct AgentRun {
     pub duration_ms: i64,
     pub error: Option<String>,
     pub created_at: i64,
+    pub model_name: String,
+    pub provider_name: String,
+    pub is_streaming: bool,
     pub request_source: Option<String>,
     pub product: Option<String>,
     pub agent_config_source: Option<String>,
@@ -175,8 +178,11 @@ pub async fn list_agent_runs(
         sqlx::query(
             "SELECT id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
                     input_tokens, output_tokens, duration_ms, error, created_at,
-                    request_source, product, agent_config_source, agent_config_version,
-                    eruka_binding_id
+                    COALESCE(model_name, 'unknown') AS model_name,
+                    COALESCE(provider_name, 'unknown') AS provider_name,
+                    COALESCE(is_streaming, false) AS is_streaming,
+                    request_source, product,
+                    agent_config_source, agent_config_version, eruka_binding_id
              FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2
              ORDER BY created_at DESC LIMIT $3 OFFSET $4",
         )
@@ -190,8 +196,11 @@ pub async fn list_agent_runs(
         sqlx::query(
             "SELECT id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
                     input_tokens, output_tokens, duration_ms, error, created_at,
-                    request_source, product, agent_config_source, agent_config_version,
-                    eruka_binding_id
+                    COALESCE(model_name, 'unknown') AS model_name,
+                    COALESCE(provider_name, 'unknown') AS provider_name,
+                    COALESCE(is_streaming, false) AS is_streaming,
+                    request_source, product,
+                    agent_config_source, agent_config_version, eruka_binding_id
              FROM agent_runs WHERE tenant_id = $1
              ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         )
@@ -218,6 +227,9 @@ pub async fn list_agent_runs(
                 duration_ms: row.get("duration_ms"),
                 error: row.get("error"),
                 created_at: row.get("created_at"),
+                model_name: row.get("model_name"),
+                provider_name: row.get("provider_name"),
+                is_streaming: row.get("is_streaming"),
                 request_source: row.get("request_source"),
                 product: row.get("product"),
                 agent_config_source: row.get("agent_config_source"),

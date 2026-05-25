@@ -171,6 +171,18 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
                 .post(crate::api::handlers::admin::create_tenant_agent_handler),
         )
         .route(
+            "/admin/tenants/{tenant_id}/agents/{agent_name}/versions",
+            get(crate::api::handlers::admin::list_tenant_agent_versions_handler),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/agents/{agent_name}/rollback/{version}",
+            post(crate::api::handlers::admin::rollback_tenant_agent_version_handler),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/agents/{agent_name}/test",
+            post(crate::api::handlers::admin::test_tenant_agent_handler),
+        )
+        .route(
             "/admin/tenants/{tenant_id}/agents/{agent_name}",
             put(crate::api::handlers::admin::update_tenant_agent_handler)
                 .delete(crate::api::handlers::admin::delete_tenant_agent_handler),

@@ -657,8 +657,15 @@ where
         ))
     })?;
 
-    decode_default(&content)
-        .map_err(|e| ToonConfigError::Parse(format!("Failed to parse {:?}: {}", path, e)))
+    match decode_default(&content) {
+        Ok(config) => Ok(config),
+        Err(toon_error) => toml::from_str(&content).map_err(|toml_error| {
+            ToonConfigError::Parse(format!(
+                "Failed to parse {:?} as TOON ({}) or TOML ({})",
+                path, toon_error, toml_error
+            ))
+        }),
+    }
 }
 
 // ============= Error Types =============
@@ -762,7 +769,8 @@ pub struct DynamicConfigManager {
     /// Shared sender for version change events. Populated via `set_version_tx`.
     /// The watcher closure holds a clone of this Arc, so setting it after construction
     /// is visible inside the watcher.
-    version_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<ToonAgentConfig>>>>>,
+    version_tx:
+        Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<ToonAgentConfig>>>>>,
 }
 
 impl DynamicConfigManager {
@@ -818,8 +826,9 @@ impl DynamicConfigManager {
         let config = Arc::new(ArcSwap::from_pointee(initial_config));
 
         // Shared version channel — populated after construction via set_version_tx
-        let version_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<ToonAgentConfig>>>>> =
-            Arc::new(std::sync::Mutex::new(None));
+        let version_tx: Arc<
+            std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<ToonAgentConfig>>>>,
+        > = Arc::new(std::sync::Mutex::new(None));
 
         // Set up file watcher if hot reload is enabled
         let watcher = if hot_reload {
@@ -864,7 +873,9 @@ impl DynamicConfigManager {
         tools_dir: PathBuf,
         workflows_dir: PathBuf,
         mcps_dir: PathBuf,
-        version_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<ToonAgentConfig>>>>>,
+        version_tx: Arc<
+            std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<ToonAgentConfig>>>>,
+        >,
     ) -> Result<RecommendedWatcher, ToonConfigError> {
         let agents_dir_clone = agents_dir.clone();
         let models_dir_clone = models_dir.clone();
@@ -1199,6 +1210,30 @@ system_prompt: Test agent prompt"#;
         assert_eq!(agent.name, "test-agent");
         assert_eq!(agent.model, "fast");
         assert_eq!(agent.max_tool_iterations, 5);
+    }
+
+    #[test]
+    fn test_load_toml_shaped_toon_config_from_dir() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let mcps_dir = temp_dir.path().join("mcps");
+        fs::create_dir_all(&mcps_dir).expect("Failed to create mcps dir");
+
+        let mcp_content = r#"name = "eruka"
+enabled = true
+endpoint = "https://eruka.dirmacs.com/mcp"
+transport = "http"
+timeout_secs = 30
+"#;
+
+        fs::write(mcps_dir.join("eruka.toon"), mcp_content).expect("Failed to write mcp file");
+
+        let mcps =
+            load_configs_from_dir::<ToonMcpConfig>(&mcps_dir, "mcps").expect("Failed to load mcps");
+
+        let mcp = mcps.get("eruka").expect("MCP not found");
+        assert_eq!(mcp.name, "eruka");
+        assert!(mcp.enabled);
+        assert_eq!(mcp.timeout_secs, 30);
     }
 
     #[test]

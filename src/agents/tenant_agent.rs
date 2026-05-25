@@ -106,15 +106,26 @@ pub struct ResolvedAgent {
     pub agent: ConfigurableAgent,
     pub source: AgentConfigSource,
     pub agent_name: String,
+    pub config_version: Option<String>,
+}
+
+fn tenant_config_version(config: &serde_json::Value, updated_at: i64) -> String {
+    config
+        .get("version")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| format!("tenant-db:{}", updated_at))
 }
 
 async fn load_tenant_agent_config(
     pool: &PgPool,
     tenant_id: &str,
     agent_name: &str,
-) -> Result<Option<AgentConfig>> {
+) -> Result<Option<(AgentConfig, String)>> {
     let row = sqlx::query(
-        "SELECT config, enabled FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2",
+        "SELECT config, enabled, updated_at FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2",
     )
     .bind(tenant_id)
     .bind(agent_name)
@@ -135,9 +146,11 @@ async fn load_tenant_agent_config(
     }
 
     let config_json: serde_json::Value = row.get("config");
+    let updated_at: i64 = row.get("updated_at");
+    let config_version = tenant_config_version(&config_json, updated_at);
     let agent_config = json_to_agent_config(&config_json)?;
 
-    Ok(Some(agent_config))
+    Ok(Some((agent_config, config_version)))
 }
 
 pub async fn resolve_agent_for_tenant(
@@ -146,7 +159,9 @@ pub async fn resolve_agent_for_tenant(
     tenant_id: &str,
     agent_name: &str,
 ) -> Result<ResolvedAgent> {
-    if let Some(agent_config) = load_tenant_agent_config(pool, tenant_id, agent_name).await? {
+    if let Some((agent_config, config_version)) =
+        load_tenant_agent_config(pool, tenant_id, agent_name).await?
+    {
         let agent = agent_registry
             .create_agent_from_config(agent_name, &agent_config)
             .await?;
@@ -155,6 +170,7 @@ pub async fn resolve_agent_for_tenant(
             agent,
             source: AgentConfigSource::TenantDb,
             agent_name: agent_name.to_string(),
+            config_version: Some(config_version),
         });
     }
 
@@ -163,6 +179,7 @@ pub async fn resolve_agent_for_tenant(
         agent,
         source: AgentConfigSource::Registry,
         agent_name: agent_name.to_string(),
+        config_version: None,
     })
 }
 
@@ -172,7 +189,9 @@ pub async fn resolve_required_tenant_agent(
     tenant_id: &str,
     agent_name: &str,
 ) -> Result<ResolvedAgent> {
-    let Some(agent_config) = load_tenant_agent_config(pool, tenant_id, agent_name).await? else {
+    let Some((agent_config, config_version)) =
+        load_tenant_agent_config(pool, tenant_id, agent_name).await?
+    else {
         return Err(AppError::NotFound(format!(
             "Agent '{}' not found for tenant '{}'",
             agent_name, tenant_id
@@ -187,6 +206,7 @@ pub async fn resolve_required_tenant_agent(
         agent,
         source: AgentConfigSource::TenantDb,
         agent_name: agent_name.to_string(),
+        config_version: Some(config_version),
     })
 }
 
@@ -199,7 +219,7 @@ pub async fn create_tenant_agent(
     agent_name: &str,
 ) -> Option<ConfigurableAgent> {
     match load_tenant_agent_config(pool, tenant_id, agent_name).await {
-        Ok(Some(agent_config)) => agent_registry
+        Ok(Some((agent_config, _))) => agent_registry
             .create_agent_from_config(agent_name, &agent_config)
             .await
             .ok(),
@@ -209,7 +229,7 @@ pub async fn create_tenant_agent(
 
 #[cfg(test)]
 mod tests {
-    use super::json_to_agent_config;
+    use super::{json_to_agent_config, tenant_config_version};
 
     #[test]
     fn tenant_config_requires_model() {
@@ -247,5 +267,30 @@ mod tests {
         assert!(err
             .to_string()
             .contains("'parallel_tools' must be a boolean"));
+    }
+
+    #[test]
+    fn tenant_config_version_uses_explicit_version_when_present() {
+        let version = tenant_config_version(
+            &serde_json::json!({
+                "model": "default",
+                "version": "fleet-42"
+            }),
+            123,
+        );
+
+        assert_eq!(version, "fleet-42");
+    }
+
+    #[test]
+    fn tenant_config_version_falls_back_to_updated_at() {
+        let version = tenant_config_version(
+            &serde_json::json!({
+                "model": "default"
+            }),
+            123,
+        );
+
+        assert_eq!(version, "tenant-db:123");
     }
 }

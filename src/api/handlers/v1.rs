@@ -345,7 +345,7 @@ pub async fn v1_chat(
             request_source: Some("api_v1_chat".to_string()),
             product: None,
             agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-            agent_config_version: None,
+            agent_config_version: resolved_agent.config_version.clone(),
             eruka_binding_id: None,
         };
         tokio::spawn(async move {
@@ -392,6 +392,13 @@ pub async fn v1_chat(
         "x-agent-config-source",
         resolved_agent.source.as_str(),
     );
+    if let Some(config_version) = &resolved_agent.config_version {
+        set_header(
+            response.headers_mut(),
+            "x-agent-config-version",
+            config_version,
+        );
+    }
     if let Some(workspace_id) = &payload.workspace_id {
         set_header(
             response.headers_mut(),
@@ -630,7 +637,7 @@ pub async fn run_agent(
                     request_source: Some("api_v1_agent_run".to_string()),
                     product: None,
                     agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-                    agent_config_version: None,
+                    agent_config_version: resolved_agent.config_version.clone(),
                     eruka_binding_id: None,
                 };
                 tokio::spawn(async move {
@@ -680,6 +687,13 @@ pub async fn run_agent(
                 "x-agent-config-source",
                 resolved_agent.source.as_str(),
             );
+            if let Some(config_version) = &resolved_agent.config_version {
+                set_header(
+                    response.headers_mut(),
+                    "x-agent-config-version",
+                    config_version,
+                );
+            }
             if let Some(workspace_id) = &runtime_workspace_id {
                 set_header(
                     response.headers_mut(),
@@ -704,7 +718,7 @@ pub async fn run_agent(
                     request_source: Some("api_v1_agent_run".to_string()),
                     product: None,
                     agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-                    agent_config_version: None,
+                    agent_config_version: resolved_agent.config_version.clone(),
                     eruka_binding_id: None,
                 };
                 tokio::spawn(async move {

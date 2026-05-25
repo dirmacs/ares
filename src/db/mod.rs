@@ -64,6 +64,9 @@ pub mod qdrant;
 /// Agent run tracking (execution history).
 pub mod agent_runs;
 #[cfg(feature = "postgres")]
+/// Reviewer and quality feedback attached to agent runs.
+pub mod agent_feedback;
+#[cfg(feature = "postgres")]
 /// Platform alerts (health, quota, errors).
 pub mod alerts;
 #[cfg(feature = "postgres")]

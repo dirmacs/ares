@@ -1,5 +1,6 @@
 use crate::agents::context_provider::AgentRuntimeContext;
 use crate::agents::tenant_agent;
+use crate::db::agent_feedback;
 use crate::db::agent_runs;
 use crate::db::agent_versions;
 use crate::db::alerts as db_alerts;
@@ -799,6 +800,23 @@ pub struct AgentRunsQuery {
     pub offset: Option<i64>,
 }
 
+/// Query for tenant-agent feedback summaries.
+#[derive(Debug, Deserialize)]
+pub struct AgentFeedbackSummaryQuery {
+    pub days: Option<i64>,
+}
+
+/// Request body for recording reviewer quality feedback on one run.
+#[derive(Debug, Deserialize)]
+pub struct CreateAgentRunFeedbackRequest {
+    pub feedback_type: String,
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub flags: Vec<String>,
+    pub notes: Option<String>,
+    pub reviewer: Option<String>,
+}
+
 /// Estimated cost attached to an admin-visible agent run.
 #[derive(Debug, Clone, Serialize)]
 pub struct CostEstimateResponse {
@@ -864,6 +882,65 @@ pub async fn list_agent_runs_handler(
         .map(|run| AgentRunResponse::from_run(run, &config.billing))
         .collect();
     Ok(Json(response))
+}
+
+pub async fn create_agent_run_feedback_handler(
+    State(state): State<AppState>,
+    Path((tenant_id, agent_name, run_id)): Path<(String, String, String)>,
+    Json(payload): Json<CreateAgentRunFeedbackRequest>,
+) -> Result<Json<agent_feedback::AgentRunFeedback>> {
+    let feedback = agent_feedback::insert_agent_run_feedback(
+        state.tenant_db.pool(),
+        agent_feedback::NewAgentRunFeedback {
+            tenant_id: tenant_id.clone(),
+            agent_name: agent_name.clone(),
+            run_id: Some(run_id.clone()),
+            feedback_type: payload.feedback_type,
+            score: payload.score,
+            flags: payload.flags,
+            notes: payload.notes,
+            reviewer: payload.reviewer,
+        },
+    )
+    .await?;
+
+    let feedback_id = feedback.id.clone();
+    let pool = state.tenant_db.pool().clone();
+    tokio::spawn(async move {
+        let details = serde_json::json!({
+            "agent_name": agent_name,
+            "run_id": run_id,
+            "feedback_id": feedback_id,
+        })
+        .to_string();
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "agent_run_feedback",
+            "agent_run",
+            &tenant_id,
+            Some(&details),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(feedback))
+}
+
+pub async fn get_agent_feedback_summary_handler(
+    State(state): State<AppState>,
+    Path((tenant_id, agent_name)): Path<(String, String)>,
+    Query(q): Query<AgentFeedbackSummaryQuery>,
+) -> Result<Json<agent_feedback::AgentFeedbackSummary>> {
+    let days = q.days.unwrap_or(30).clamp(1, 366);
+    let summary = agent_feedback::get_agent_feedback_summary(
+        state.tenant_db.pool(),
+        &tenant_id,
+        &agent_name,
+        days,
+    )
+    .await?;
+    Ok(Json(summary))
 }
 
 fn estimate_run_cost(billing: &BillingConfig, run: &agent_runs::AgentRun) -> CostEstimateResponse {

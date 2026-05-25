@@ -6,7 +6,7 @@ use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 
 /// Converts tenant agent JSONB config to the AgentConfig struct used by AgentRegistry.
-fn json_to_agent_config(json: &serde_json::Value) -> Result<AgentConfig> {
+pub(crate) fn agent_config_from_json(json: &serde_json::Value) -> Result<AgentConfig> {
     let obj = json.as_object().ok_or_else(|| {
         AppError::Configuration("Tenant agent config must be a JSON object".into())
     })?;
@@ -148,7 +148,7 @@ async fn load_tenant_agent_config(
     let config_json: serde_json::Value = row.get("config");
     let updated_at: i64 = row.get("updated_at");
     let config_version = tenant_config_version(&config_json, updated_at);
-    let agent_config = json_to_agent_config(&config_json)?;
+    let agent_config = agent_config_from_json(&config_json)?;
 
     Ok(Some((agent_config, config_version)))
 }
@@ -229,11 +229,11 @@ pub async fn create_tenant_agent(
 
 #[cfg(test)]
 mod tests {
-    use super::{json_to_agent_config, tenant_config_version};
+    use super::{agent_config_from_json, tenant_config_version};
 
     #[test]
     fn tenant_config_requires_model() {
-        let err = json_to_agent_config(&serde_json::json!({
+        let err = agent_config_from_json(&serde_json::json!({
             "system_prompt": "hi"
         }))
         .expect_err("missing model should fail");
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn tenant_config_rejects_non_string_tools() {
-        let err = json_to_agent_config(&serde_json::json!({
+        let err = agent_config_from_json(&serde_json::json!({
             "model": "default",
             "tools": ["ok", 123]
         }))
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn tenant_config_rejects_non_boolean_parallel_tools() {
-        let err = json_to_agent_config(&serde_json::json!({
+        let err = agent_config_from_json(&serde_json::json!({
             "model": "default",
             "parallel_tools": "yes"
         }))

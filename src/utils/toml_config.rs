@@ -443,18 +443,19 @@ fn default_max_iterations() -> u8 {
 #[cfg(feature = "skills")]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SkillsTomlConfig {
-	/// Project skills directory (e.g., ./.claude/skills/).
-	pub project_dir: Option<std::path::PathBuf>,
-	/// Personal skills directory (e.g., ~/.claude/skills/).
-	pub personal_dir: Option<std::path::PathBuf>,
-	/// Plugin directories to scan for skills.
-	pub plugin_dirs: Option<Vec<std::path::PathBuf>>
+    /// Project skills directory (e.g., ./.claude/skills/).
+    pub project_dir: Option<std::path::PathBuf>,
+    /// Personal skills directory (e.g., ~/.claude/skills/).
+    pub personal_dir: Option<std::path::PathBuf>,
+    /// Plugin directories to scan for skills.
+    pub plugin_dirs: Option<Vec<std::path::PathBuf>>,
 }
 
 // ============= RAG Configuration =============
 // RAG (Retrieval Augmented Generation) configuration.
 // =========== Vector Store ===========
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct RAGVectorConfig {
     /// Enable RAG feature flag (disabled by default for safety)
     pub enabled: bool,
@@ -474,55 +475,55 @@ pub struct RAGVectorConfig {
 }
 
 // =========== Chunking ===========
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RagChunkingConfig {
-	/// Chunking strategy: "word" (default), "semantic", "character"
-#[serde(default = "default_chunking_strategy")]
-	pub chunking_strategy: String,
-	/// Size of text chunks for indexing (default: 200 words or 500 chars for semantic).
-#[serde(default = "default_chunk_size")]
-	pub chunk_size: usize,
-	/// Overlap between consecutive chunks (default: 50).
-#[serde(default = "default_chunk_overlap")]
-	pub chunk_overlap: usize,
-	/// Minimum chunk size to keep (default: 20 chars).
-#[serde(default = "default_min_chunk_size")]
-	pub min_chunk_size: usize
+    /// Chunking strategy: "word" (default), "semantic", "character"
+    #[serde(default = "default_chunking_strategy")]
+    pub chunking_strategy: String,
+    /// Size of text chunks for indexing (default: 200 words or 500 chars for semantic).
+    #[serde(default = "default_chunk_size")]
+    pub chunk_size: usize,
+    /// Overlap between consecutive chunks (default: 50).
+    #[serde(default = "default_chunk_overlap")]
+    pub chunk_overlap: usize,
+    /// Minimum chunk size to keep (default: 20 chars).
+    #[serde(default = "default_min_chunk_size")]
+    pub min_chunk_size: usize,
 }
 
 // =========== Search ===========
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RagSearchConfig {
-	/// Default search strategy: "semantic" (default), "bm25", "fuzzy", "hybrid"
-#[serde(default = "default_search_strategy")]
-	pub search_strategy: String,
-	/// Default number of results to return (default: 10)
-#[serde(default = "default_search_limit")]
-	pub search_limit: usize,
-	/// Default similarity threshold (default: 0.0)
-#[serde(default)]
-	pub search_threshold: f32,
-	/// Hybrid search weights (semantic, bm25, fuzzy) - sum should be 1.0
-#[serde(default)]
-	pub hybrid_weights: Option<HybridWeightsConfig>,
+    /// Default search strategy: "semantic" (default), "bm25", "fuzzy", "hybrid"
+    #[serde(default = "default_search_strategy")]
+    pub search_strategy: String,
+    /// Default number of results to return (default: 10)
+    #[serde(default = "default_search_limit")]
+    pub search_limit: usize,
+    /// Default similarity threshold (default: 0.0)
+    #[serde(default)]
+    pub search_threshold: f32,
+    /// Hybrid search weights (semantic, bm25, fuzzy) - sum should be 1.0
+    #[serde(default)]
+    pub hybrid_weights: Option<HybridWeightsConfig>,
 }
 
 // =========== Reranking ===========
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RagRerankingConfig {
-	/// Enable reranking by default (default: false)
-#[serde(default)]
-	pub rerank_enabled: bool,
-	/// Reranker model: "bge-reranker-base" (default), "bge-reranker-v2-m3",
-	/// "jina-reranker-v1-turbo-en", "jina-reranker-v2-base-multilingual"
-#[serde(default = "default_reranker_model")]
-	pub reranker_model: String,
-	/// Weight for combining rerank and retrieval scores (default: 0.6)
-#[serde(default = "default_rerank_weight")]
-pub rerank_weight: f32
+    /// Enable reranking by default (default: false)
+    #[serde(default)]
+    pub rerank_enabled: bool,
+    /// Reranker model: "bge-reranker-base" (default), "bge-reranker-v2-m3",
+    /// "jina-reranker-v1-turbo-en", "jina-reranker-v2-base-multilingual"
+    #[serde(default = "default_reranker_model")]
+    pub reranker_model: String,
+    /// Weight for combining rerank and retrieval scores (default: 0.6)
+    #[serde(default = "default_rerank_weight")]
+    pub rerank_weight: f32,
 }
 /// RAG Configuration Wrapper
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -540,15 +541,15 @@ pub struct RagConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 
 pub struct HybridWeightsConfig {
-	/// Weight for semantic search (default: 0.5)
-#[serde(default = "default_semantic_weight")]
-	pub semantic: f32,
-	/// Weight for BM25 search (default: 0.3)
-#[serde(default = "default_bm25_weight")]
-	pub bm25: f32,
-	/// Weight for fuzzy search (default: 0.2)
-#[serde(default = "default_fuzzy_weight")]
-	pub fuzzy: f32
+    /// Weight for semantic search (default: 0.5)
+    #[serde(default = "default_semantic_weight")]
+    pub semantic: f32,
+    /// Weight for BM25 search (default: 0.3)
+    #[serde(default = "default_bm25_weight")]
+    pub bm25: f32,
+    /// Weight for fuzzy search (default: 0.2)
+    #[serde(default = "default_fuzzy_weight")]
+    pub fuzzy: f32,
 }
 
 impl Default for HybridWeightsConfig {
@@ -557,6 +558,50 @@ impl Default for HybridWeightsConfig {
             semantic: 0.5,
             bm25: 0.3,
             fuzzy: 0.2,
+        }
+    }
+}
+
+impl Default for RAGVectorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            embedding_model: default_embedding_model(),
+            sparse_embeddings: false,
+            sparse_model: default_sparse_model(),
+            vector_path: default_vector_path(),
+        }
+    }
+}
+
+impl Default for RagChunkingConfig {
+    fn default() -> Self {
+        Self {
+            chunking_strategy: default_chunking_strategy(),
+            chunk_size: default_chunk_size(),
+            chunk_overlap: default_chunk_overlap(),
+            min_chunk_size: default_min_chunk_size(),
+        }
+    }
+}
+
+impl Default for RagSearchConfig {
+    fn default() -> Self {
+        Self {
+            search_strategy: default_search_strategy(),
+            search_limit: default_search_limit(),
+            search_threshold: 0.0,
+            hybrid_weights: None,
+        }
+    }
+}
+
+impl Default for RagRerankingConfig {
+    fn default() -> Self {
+        Self {
+            rerank_enabled: false,
+            reranker_model: default_reranker_model(),
+            rerank_weight: default_rerank_weight(),
         }
     }
 }
@@ -571,10 +616,6 @@ fn default_bm25_weight() -> f32 {
 
 fn default_fuzzy_weight() -> f32 {
     0.2
-}
-
-fn default_vector_store() -> String {
-    "ares-vector".to_string()
 }
 
 fn default_vector_path() -> String {
@@ -898,7 +939,9 @@ impl AresConfig {
                 let is_mcp_tool = tool_name.contains('_') && {
                     // Check if any configured MCP client name is a prefix
                     let mcp_names = self.mcp_client_names();
-                    mcp_names.iter().any(|mcp_name| tool_name.starts_with(&format!("{}_", mcp_name)))
+                    mcp_names
+                        .iter()
+                        .any(|mcp_name| tool_name.starts_with(&format!("{}_", mcp_name)))
                 };
                 if !is_known_tool && !is_mcp_tool {
                     return Err(ConfigError::MissingTool(
@@ -1113,20 +1156,26 @@ impl AresConfig {
     /// Used by validation to allow MCP bridge tool names in agent configs.
     pub fn mcp_client_names(&self) -> Vec<String> {
         let path = &self.config.mcps_dir;
-        if !path.exists() { return vec![]; }
+        if !path.exists() {
+            return vec![];
+        }
         std::fs::read_dir(path)
             .ok()
             .map(|entries| {
-                entries.filter_map(|e| {
-                    let e = e.ok()?;
-                    let p = e.path();
-                    if p.extension()?.to_str()? == "toon" {
-                        // Read the name field from the TOON file
-                        let content = std::fs::read_to_string(&p).ok()?;
-                        let val: toml::Value = toml::from_str(&content).ok()?;
-                        val.get("name")?.as_str().map(String::from)
-                    } else { None }
-                }).collect()
+                entries
+                    .filter_map(|e| {
+                        let e = e.ok()?;
+                        let p = e.path();
+                        if p.extension()?.to_str()? == "toon" {
+                            // Read the name field from the TOON file
+                            let content = std::fs::read_to_string(&p).ok()?;
+                            let val: toml::Value = toml::from_str(&content).ok()?;
+                            val.get("name")?.as_str().map(String::from)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
             })
             .unwrap_or_default()
     }
@@ -1609,14 +1658,17 @@ api_key_env = "TEST_API_KEY"
         assert_eq!(config.auth.jwt_refresh_expiry, 604800);
 
         // Database defaults
-        assert_eq!(config.database.url, "postgres://postgres:postgres@localhost:5432/ares");
+        assert_eq!(
+            config.database.url,
+            "postgres://postgres:postgres@localhost:5432/ares"
+        );
 
         // RAG defaults
-        assert_eq!(config.rag.embedding_model, "bge-small-en-v1.5");
-        assert_eq!(config.rag.chunk_size, 200);
-        assert_eq!(config.rag.chunk_overlap, 50);
-        assert_eq!(config.rag.vector_store, "ares-vector");
-        assert_eq!(config.rag.search_strategy, "semantic");
+        assert_eq!(config.rag.vector.embedding_model, "bge-small-en-v1.5");
+        assert_eq!(config.rag.vector.vector_path, "./data/vectors");
+        assert_eq!(config.rag.chunking.chunk_size, 200);
+        assert_eq!(config.rag.chunking.chunk_overlap, 50);
+        assert_eq!(config.rag.search.search_strategy, "semantic");
     }
 
     #[test]

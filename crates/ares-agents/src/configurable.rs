@@ -1,0 +1,1190 @@
+//! Configurable Agent implementation
+//!
+//! This module provides a generic agent that can be configured via TOML.
+//! It replaces the hardcoded agent implementations with a flexible,
+//! configuration-driven approach.
+
+use crate::{Agent, AgentResponse, ExecutionMetadata};
+use ares_llm::coordinator::ConversationMessage;
+use ares_llm::LLMClient;
+use ares_tools::registry::ToolRegistry;
+use ares_types::types::{AgentContext, AgentType, Result, ToolDefinition};
+use ares_config::toml_config::AgentConfig;
+use async_trait::async_trait;
+use std::sync::Arc;
+
+/// A configurable agent that derives its behavior from TOML configuration
+pub struct ConfigurableAgent {
+    /// The agent's name/type identifier
+    name: String,
+    /// The agent type enum value
+    agent_type: AgentType,
+    /// The LLM client to use for generation
+    llm: Box<dyn LLMClient>,
+    /// The configured provider backing the LLM client
+    provider_name: String,
+    /// The system prompt from configuration
+    system_prompt: String,
+    /// Tools available to this agent
+    tool_registry: Option<Arc<ToolRegistry>>,
+    /// List of tool names this agent is allowed to use
+    allowed_tools: Vec<String>,
+    /// Maximum tool calling iterations
+    max_tool_iterations: usize,
+    /// Whether to execute tools in parallel
+    parallel_tools: bool,
+}
+
+impl ConfigurableAgent {
+    /// Create a new configurable agent from TOML config
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The agent name (used to determine AgentType)
+    /// * `config` - The agent configuration from ares.toml
+    /// * `llm` - The LLM client (already created from the model config)
+    /// * `tool_registry` - Optional tool registry for tool calling
+    pub fn new(
+        name: &str,
+        config: &AgentConfig,
+        llm: Box<dyn LLMClient>,
+        tool_registry: Option<Arc<ToolRegistry>>,
+    ) -> Self {
+        Self::new_with_provider(name, config, llm, tool_registry, config.model.clone())
+    }
+
+    /// Create a new configurable agent with explicit provider metadata
+    pub fn new_with_provider(
+        name: &str,
+        config: &AgentConfig,
+        llm: Box<dyn LLMClient>,
+        tool_registry: Option<Arc<ToolRegistry>>,
+        provider_name: String,
+    ) -> Self {
+        let agent_type = Self::name_to_type(name);
+        let system_prompt = config
+            .system_prompt
+            .clone()
+            .unwrap_or_else(|| Self::default_system_prompt(name));
+
+        Self {
+            name: name.to_string(),
+            agent_type,
+            llm,
+            provider_name,
+            system_prompt,
+            tool_registry,
+            allowed_tools: config.tools.clone(),
+            max_tool_iterations: config.max_tool_iterations,
+            parallel_tools: config.parallel_tools,
+        }
+    }
+
+    /// Create a new configurable agent with explicit parameters
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_params(
+        name: &str,
+        agent_type: AgentType,
+        llm: Box<dyn LLMClient>,
+        system_prompt: String,
+        tool_registry: Option<Arc<ToolRegistry>>,
+        allowed_tools: Vec<String>,
+        max_tool_iterations: usize,
+        parallel_tools: bool,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            agent_type,
+            llm,
+            provider_name: "unknown".to_string(),
+            system_prompt,
+            tool_registry,
+            allowed_tools,
+            max_tool_iterations,
+            parallel_tools,
+        }
+    }
+
+    /// Convert agent name to AgentType
+    fn name_to_type(name: &str) -> AgentType {
+        AgentType::from_string(name)
+    }
+
+    /// Get default system prompt for an agent type
+    fn default_system_prompt(name: &str) -> String {
+        match name.to_lowercase().as_str() {
+            "router" => r#"You are a routing agent that classifies user queries.
+Available agents: product, invoice, sales, finance, hr, orchestrator.
+Respond with ONLY the agent name (one word, lowercase)."#
+                .to_string(),
+
+            "orchestrator" => r#"You are an orchestrator agent for complex queries.
+Break down requests, delegate to specialists, and synthesize results."#
+                .to_string(),
+
+            "product" => r#"You are a Product Agent for product-related queries.
+Handle catalog, specifications, inventory, and pricing questions."#
+                .to_string(),
+
+            "invoice" => r#"You are an Invoice Agent for billing queries.
+Handle invoices, payments, and billing history."#
+                .to_string(),
+
+            "sales" => r#"You are a Sales Agent for sales analytics.
+Handle performance metrics, revenue, and customer data."#
+                .to_string(),
+
+            "finance" => r#"You are a Finance Agent for financial analysis.
+Handle statements, budgets, and expense management."#
+                .to_string(),
+
+            "hr" => r#"You are an HR Agent for human resources.
+Handle employee info, policies, and benefits."#
+                .to_string(),
+
+            _ => format!("You are a {} agent.", name),
+        }
+    }
+
+    /// Get the agent name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the max tool iterations setting
+    pub fn max_tool_iterations(&self) -> usize {
+        self.max_tool_iterations
+    }
+
+    /// Get the parallel tools setting
+    pub fn parallel_tools(&self) -> bool {
+        self.parallel_tools
+    }
+
+    /// Check if this agent has tools configured
+    pub fn has_tools(&self) -> bool {
+        !self.allowed_tools.is_empty() && self.tool_registry.is_some()
+    }
+
+    /// Get the tool registry (if any)
+    pub fn tool_registry(&self) -> Option<&Arc<ToolRegistry>> {
+        self.tool_registry.as_ref()
+    }
+
+    /// Get the list of allowed tool names for this agent
+    pub fn allowed_tools(&self) -> &[String] {
+        &self.allowed_tools
+    }
+
+    /// Get tool definitions for only this agent's allowed tools
+    ///
+    /// This filters the tool registry to only return tools that:
+    /// 1. Are in this agent's allowed tools list
+    /// 2. Are enabled in the tool registry
+    pub fn get_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {
+        match &self.tool_registry {
+            Some(registry) => {
+                let allowed: Vec<&str> = self.allowed_tools.iter().map(|s| s.as_str()).collect();
+                registry.get_tool_definitions_for(&allowed)
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Check if a specific tool is allowed for this agent
+    pub fn can_use_tool(&self, tool_name: &str) -> bool {
+        self.allowed_tools.contains(&tool_name.to_string())
+            && self
+                .tool_registry
+                .as_ref()
+                .map(|r| r.is_enabled(tool_name))
+                .unwrap_or(false)
+    }
+
+    /// Execute the agent with tool-calling support (multi-turn loop).
+    async fn execute_with_tools(
+        &self,
+        input: &str,
+        context: &AgentContext,
+    ) -> Result<AgentResponse> {
+        use ares_llm::client::TokenUsage;
+
+        let tools = self.get_filtered_tool_definitions();
+        tracing::debug!(
+            agent = %self.name,
+            allowed_tools = ?self.allowed_tools,
+            tool_count = tools.len(),
+            "execute_with_tools: tool definitions loaded"
+        );
+        let registry = self.tool_registry.as_ref().unwrap();
+
+        let mut messages: Vec<ConversationMessage> = Vec::new();
+
+        // Inject external context if a ContextProvider is configured
+        // OSS: NoOpContextProvider returns None. Managed: ErukaContextProvider returns knowledge states.
+        #[cfg(feature = "eruka-context")]
+        let effective_prompt = match crate::external_context::get_current_eruka_context() {
+            Some(eruka_ctx) if !eruka_ctx.is_empty() => {
+                tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "External context injected into system prompt");
+                format!(
+                    "{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.",
+                    eruka_ctx, self.system_prompt
+                )
+            }
+            _ => self.system_prompt.clone(),
+        };
+        #[cfg(not(feature = "eruka-context"))]
+        let effective_prompt = self.system_prompt.clone();
+        messages.push(ConversationMessage::system(&effective_prompt));
+
+        // Add recent conversation history (last 5 messages)
+        for msg in context.conversation_history.iter().rev().take(5).rev() {
+            let cm = match msg.role {
+                ares_types::types::MessageRole::User => ConversationMessage::user(&msg.content),
+                ares_types::types::MessageRole::Assistant => {
+                    ConversationMessage::assistant(&msg.content, vec![])
+                }
+                _ => ConversationMessage::system(&msg.content),
+            };
+            messages.push(cm);
+        }
+
+        messages.push(ConversationMessage::user(input));
+
+        let mut total_usage = TokenUsage::default();
+
+        for _ in 0..self.max_tool_iterations {
+            let response = self
+                .llm
+                .generate_with_tools_and_history(&messages, &tools)
+                .await?;
+
+            if let Some(usage) = &response.usage {
+                total_usage = TokenUsage::new(
+                    total_usage.prompt_tokens + usage.prompt_tokens,
+                    total_usage.completion_tokens + usage.completion_tokens,
+                );
+            }
+
+            if response.tool_calls.is_empty() {
+                return Ok(AgentResponse {
+                    content: response.content,
+                    usage: Some(total_usage),
+                    metadata: Some(ExecutionMetadata {
+                        model_name: self.llm.model_name().to_string(),
+                        provider_name: self.provider_name.clone(),
+                    }),
+                });
+            }
+
+            // Add assistant message with tool calls
+            messages.push(ConversationMessage::assistant(
+                &response.content,
+                response.tool_calls.clone(),
+            ));
+
+            // Execute each tool call and add results
+            for tc in &response.tool_calls {
+                let result = registry.execute(&tc.name, tc.arguments.clone()).await;
+                let result_value = match result {
+                    Ok(v) => v,
+                    Err(e) => serde_json::json!({"error": e.to_string()}),
+                };
+                messages.push(ConversationMessage::tool_result(&tc.id, &result_value));
+            }
+        }
+
+        // Max iterations reached — make ONE final LLM call without tools to get synthesis
+        // Bug #7 fix: the last assistant message has empty content (it was a tool-call message).
+        // We need the LLM to synthesize a final response from all the tool results.
+        tracing::warn!(
+            agent = %self.name,
+            "Max tool iterations ({}) reached — making final synthesis call",
+            self.max_tool_iterations
+        );
+        let final_response = self
+            .llm
+            .generate_with_tools_and_history(&messages, &[])
+            .await;
+
+        let content = match final_response {
+            Ok(resp) if !resp.content.is_empty() => resp.content,
+            Ok(_) => {
+                // Final call also returned empty — find any non-empty assistant content
+                messages
+                    .iter()
+                    .rev()
+                    .find(|m| {
+                        m.role == ares_llm::coordinator::MessageRole::Assistant
+                            && !m.content.is_empty()
+                    })
+                    .map(|m| m.content.clone())
+                    .unwrap_or_else(|| {
+                        "Agent completed tool calls but could not generate a final response."
+                            .to_string()
+                    })
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Final synthesis call failed");
+                // Still try to return something useful
+                messages
+                    .iter()
+                    .rev()
+                    .find(|m| {
+                        m.role == ares_llm::coordinator::MessageRole::Assistant
+                            && !m.content.is_empty()
+                    })
+                    .map(|m| m.content.clone())
+                    .unwrap_or_else(|| format!("Agent completed but synthesis failed: {}", e))
+            }
+        };
+
+        Ok(AgentResponse {
+            content,
+            usage: Some(total_usage),
+            metadata: Some(ExecutionMetadata {
+                model_name: self.llm.model_name().to_string(),
+                provider_name: self.provider_name.clone(),
+            }),
+        })
+    }
+}
+
+#[async_trait]
+impl Agent for ConfigurableAgent {
+    async fn execute(&self, input: &str, context: &AgentContext) -> Result<AgentResponse> {
+        if self.has_tools() {
+            tracing::debug!(agent = %self.name, "execute: using tool-calling path");
+            return self.execute_with_tools(input, context).await;
+        }
+        tracing::debug!(agent = %self.name, "execute: no tools, using simple path");
+
+        // Build context with conversation history if available
+        // Inject external context if a ContextProvider is configured
+        #[cfg(feature = "eruka-context")]
+        let effective_prompt = match crate::external_context::get_current_eruka_context() {
+            Some(eruka_ctx) if !eruka_ctx.is_empty() => {
+                tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "External context injected into system prompt (simple path)");
+                format!(
+                    "{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.",
+                    eruka_ctx, self.system_prompt
+                )
+            }
+            _ => self.system_prompt.clone(),
+        };
+        #[cfg(not(feature = "eruka-context"))]
+        let effective_prompt = self.system_prompt.clone();
+        let mut messages = vec![("system".to_string(), effective_prompt)];
+
+        // Add user memory if available
+        if let Some(memory) = &context.user_memory {
+            let memory_context = format!(
+                "User preferences: {}",
+                memory
+                    .preferences
+                    .iter()
+                    .map(|p| format!("{}: {}", p.key, p.value))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            messages.push(("system".to_string(), memory_context));
+        }
+
+        // Add recent conversation history (last 5 messages)
+        for msg in context.conversation_history.iter().rev().take(5).rev() {
+            let role = match msg.role {
+                ares_types::types::MessageRole::User => "user",
+                ares_types::types::MessageRole::Assistant => "assistant",
+                _ => "system",
+            };
+            messages.push((role.to_string(), msg.content.clone()));
+        }
+
+        messages.push(("user".to_string(), input.to_string()));
+
+        let llm_response = self.llm.generate_with_history(&messages).await?;
+        Ok(AgentResponse {
+            content: llm_response.content,
+            usage: llm_response.usage,
+            metadata: Some(ExecutionMetadata {
+                model_name: self.llm.model_name().to_string(),
+                provider_name: self.provider_name.clone(),
+            }),
+        })
+    }
+
+    fn system_prompt(&self) -> String {
+        self.system_prompt.clone()
+    }
+
+    fn agent_type(&self) -> AgentType {
+        self.agent_type.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ares_llm::LLMResponse;
+    use ares_llm::client::TokenUsage;
+    use ares_config::toml_config::AgentConfig;
+    use ares_types::types::{Message, MessageRole, Preference, ToolCall, UserMemory};
+    use chrono::Utc;
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::{Arc, Mutex};
+
+    // ============== Shared MockLLM ==============
+
+    /// Configurable mock LLM client shared by all tests.
+    ///
+    /// - `content` is returned for `generate_with_history` and simple methods.
+    /// - `tool_responses` queue feeds `generate_with_tools_and_history` —
+    ///   popped front-to-back on each call; falls back to default when empty.
+    struct MockLLM {
+        content: String,
+        tool_responses: Arc<Mutex<VecDeque<LLMResponse>>>,
+    }
+
+    impl MockLLM {
+        fn new() -> Self {
+            Self::with_content("mock")
+        }
+
+        fn with_content(content: &str) -> Self {
+            Self {
+                content: content.to_string(),
+                tool_responses: Arc::new(Mutex::new(VecDeque::new())),
+            }
+        }
+
+        /// Supply a sequence of responses for `generate_with_tools_and_history`.
+        /// Each call pops the front; when the queue is exhausted the default is used.
+        fn with_tool_responses(responses: Vec<LLMResponse>) -> Self {
+            Self {
+                content: "mock".to_string(),
+                tool_responses: Arc::new(Mutex::new(responses.into())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LLMClient for MockLLM {
+        async fn generate(&self, _: &str) -> Result<String> {
+            Ok(self.content.clone())
+        }
+        async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
+            Ok(self.content.clone())
+        }
+        async fn generate_with_history(&self, _: &[(String, String)]) -> Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: self.content.clone(),
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+                usage: None,
+            })
+        }
+        async fn generate_with_tools(
+            &self,
+            _: &str,
+            _: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: self.content.clone(),
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+                usage: None,
+            })
+        }
+        async fn generate_with_tools_and_history(
+            &self,
+            _: &[ares_llm::coordinator::ConversationMessage],
+            _: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            let mut q = self.tool_responses.lock().unwrap();
+            Ok(q.pop_front().unwrap_or(LLMResponse {
+                content: self.content.clone(),
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+                usage: None,
+            }))
+        }
+        async fn stream(
+            &self,
+            _: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+        {
+            Ok(Box::new(futures::stream::empty()))
+        }
+        async fn stream_with_system(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+        {
+            Ok(Box::new(futures::stream::empty()))
+        }
+        async fn stream_with_history(
+            &self,
+            _: &[(String, String)],
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+        {
+            Ok(Box::new(futures::stream::empty()))
+        }
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+    }
+
+    // ============== Shared MockTool ==============
+
+    struct MockTool {
+        name: String,
+        description: String,
+    }
+
+    impl MockTool {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+                description: format!("Mock tool: {}", name),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ares_tools::registry::Tool for MockTool {
+        fn name(&self) -> &str { &self.name }
+        fn description(&self) -> &str { &self.description }
+        fn parameters_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+        async fn execute(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+            Ok(serde_json::json!({"result": "ok"}))
+        }
+    }
+
+    // ============== Helpers ==============
+
+    fn make_config(tools: Vec<&str>, system_prompt: Option<&str>) -> AgentConfig {
+        AgentConfig {
+            model: "default".to_string(),
+            system_prompt: system_prompt.map(String::from),
+            tools: tools.into_iter().map(String::from).collect(),
+            max_tool_iterations: 5,
+            parallel_tools: false,
+            extra: HashMap::new(),
+        }
+    }
+
+    fn make_context() -> AgentContext {
+        AgentContext {
+            user_id: "test-user".to_string(),
+            session_id: "test-session".to_string(),
+            conversation_history: vec![],
+            user_memory: None,
+        }
+    }
+
+    fn make_context_with_history(history: Vec<(MessageRole, &str)>) -> AgentContext {
+        AgentContext {
+            user_id: "test-user".to_string(),
+            session_id: "test-session".to_string(),
+            conversation_history: history
+                .into_iter()
+                .map(|(role, content)| Message {
+                    role,
+                    content: content.to_string(),
+                    timestamp: Utc::now(),
+                })
+                .collect(),
+            user_memory: None,
+        }
+    }
+
+    fn make_tool_response(content: &str, calls: Vec<ToolCall>) -> LLMResponse {
+        let finish_reason = if calls.is_empty() { "stop" } else { "tool_calls" };
+        LLMResponse {
+            content: content.to_string(),
+            tool_calls: calls,
+            finish_reason: finish_reason.to_string(),
+            usage: Some(TokenUsage::new(10, 5)),
+        }
+    }
+
+    fn make_registry_with_tool(name: &str) -> Arc<ToolRegistry> {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(MockTool::new(name)));
+        Arc::new(reg)
+    }
+
+    // ==========================================================
+    //  2. default_system_prompt — all variants
+    // ==========================================================
+
+    #[test]
+    fn test_default_system_prompt_router() {
+        let p = ConfigurableAgent::default_system_prompt("router");
+        assert!(p.contains("routing"), "router prompt should mention 'routing'");
+    }
+
+    #[test]
+    fn test_default_system_prompt_orchestrator() {
+        let p = ConfigurableAgent::default_system_prompt("orchestrator");
+        assert!(p.contains("orchestrator"));
+    }
+
+    #[test]
+    fn test_default_system_prompt_product() {
+        let p = ConfigurableAgent::default_system_prompt("product");
+        assert!(p.contains("Product"));
+    }
+
+    #[test]
+    fn test_default_system_prompt_invoice() {
+        let p = ConfigurableAgent::default_system_prompt("invoice");
+        assert!(p.contains("Invoice"));
+    }
+
+    #[test]
+    fn test_default_system_prompt_sales() {
+        let p = ConfigurableAgent::default_system_prompt("sales");
+        assert!(p.contains("Sales"));
+    }
+
+    #[test]
+    fn test_default_system_prompt_finance() {
+        let p = ConfigurableAgent::default_system_prompt("finance");
+        assert!(p.contains("Finance"));
+    }
+
+    #[test]
+    fn test_default_system_prompt_hr() {
+        let p = ConfigurableAgent::default_system_prompt("hr");
+        assert!(p.contains("HR"));
+    }
+
+    #[test]
+    fn test_default_system_prompt_unknown_name() {
+        let p = ConfigurableAgent::default_system_prompt("unknown_name");
+        assert_eq!(p, "You are a unknown_name agent.");
+    }
+
+    #[test]
+    fn test_default_system_prompt_case_insensitive() {
+        let p = ConfigurableAgent::default_system_prompt("ROUTER");
+        assert!(p.contains("routing"), "ROUTER should match router branch");
+    }
+
+    // ==========================================================
+    //  3. name_to_type — more edge cases
+    // ==========================================================
+
+    #[test]
+    fn test_name_to_type_router() {
+        assert!(matches!(
+            ConfigurableAgent::name_to_type("router"),
+            AgentType::Router
+        ));
+    }
+
+    #[test]
+    fn test_name_to_type_invoice() {
+        assert!(matches!(
+            ConfigurableAgent::name_to_type("invoice"),
+            AgentType::Invoice
+        ));
+    }
+
+    #[test]
+    fn test_name_to_type_sales() {
+        assert!(matches!(
+            ConfigurableAgent::name_to_type("sales"),
+            AgentType::Sales
+        ));
+    }
+
+    #[test]
+    fn test_name_to_type_finance() {
+        assert!(matches!(
+            ConfigurableAgent::name_to_type("finance"),
+            AgentType::Finance
+        ));
+    }
+
+    #[test]
+    fn test_name_to_type_hr() {
+        assert!(matches!(
+            ConfigurableAgent::name_to_type("hr"),
+            AgentType::HR
+        ));
+    }
+
+    #[test]
+    fn test_name_to_type_orchestrator() {
+        assert!(matches!(
+            ConfigurableAgent::name_to_type("orchestrator"),
+            AgentType::Orchestrator
+        ));
+    }
+
+    #[test]
+    fn test_name_to_type_product_upper() {
+        assert!(matches!(
+            ConfigurableAgent::name_to_type("PRODUCT"),
+            AgentType::Product
+        ));
+    }
+
+    #[test]
+    fn test_name_to_type_unknown() {
+        assert!(matches!(
+            ConfigurableAgent::name_to_type("unknown"),
+            AgentType::Custom(_)
+        ));
+    }
+
+    #[test]
+    fn test_name_to_type_custom_preserves_name() {
+        if let AgentType::Custom(name) = ConfigurableAgent::name_to_type("my-custom-agent") {
+            assert_eq!(name, "my-custom-agent");
+        } else {
+            panic!("Expected Custom variant");
+        }
+    }
+
+    #[test]
+    fn test_name_to_type_empty_string() {
+        assert!(matches!(
+            ConfigurableAgent::name_to_type(""),
+            AgentType::Custom(ref s) if s.is_empty()
+        ));
+    }
+
+    // ==========================================================
+    //  4. Accessors
+    // ==========================================================
+
+    #[test]
+    fn test_name_accessor() {
+        let config = make_config(vec![], None);
+        let agent = ConfigurableAgent::new("product", &config, Box::new(MockLLM::new()), None);
+        assert_eq!(agent.name(), "product");
+    }
+
+    #[test]
+    fn test_max_tool_iterations_accessor() {
+        let mut config = make_config(vec![], None);
+        config.max_tool_iterations = 42;
+        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        assert_eq!(agent.max_tool_iterations(), 42);
+    }
+
+    #[test]
+    fn test_parallel_tools_accessor() {
+        let mut config = make_config(vec![], None);
+        config.parallel_tools = true;
+        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        assert!(agent.parallel_tools());
+    }
+
+    #[test]
+    fn test_tool_registry_returns_some_when_provided() {
+        let config = make_config(vec![], None);
+        let reg = Arc::new(ToolRegistry::new());
+        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), Some(reg.clone()));
+        assert!(agent.tool_registry().is_some());
+        // Same Arc
+        assert!(Arc::ptr_eq(agent.tool_registry().unwrap(), &reg));
+    }
+
+    #[test]
+    fn test_tool_registry_returns_none_when_absent() {
+        let config = make_config(vec![], None);
+        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        assert!(agent.tool_registry().is_none());
+    }
+
+    #[test]
+    fn test_allowed_tools_from_config() {
+        let config = make_config(vec!["calculator", "web_search"], None);
+        let agent = ConfigurableAgent::new("orchestrator", &config, Box::new(MockLLM::new()), None);
+        assert_eq!(agent.allowed_tools().len(), 2);
+        assert!(agent.allowed_tools().contains(&"calculator".to_string()));
+        assert!(agent.allowed_tools().contains(&"web_search".to_string()));
+    }
+
+    // ==========================================================
+    //  5. can_use_tool
+    // ==========================================================
+
+    #[test]
+    fn test_can_use_tool_in_allowed_but_no_registry() {
+        let config = make_config(vec!["calculator"], None);
+        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        assert!(!agent.can_use_tool("calculator"), "no registry → false");
+    }
+
+    #[test]
+    fn test_can_use_tool_not_in_allowed_list() {
+        let config = make_config(vec!["calculator"], None);
+        let reg = Arc::new(ToolRegistry::new());
+        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), Some(reg));
+        assert!(!agent.can_use_tool("web_search"), "not in allowed → false");
+    }
+
+    #[test]
+    fn test_can_use_tool_both_empty() {
+        let config = make_config(vec![], None);
+        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        assert!(!agent.can_use_tool("anything"));
+    }
+
+    // ==========================================================
+    //  6. get_filtered_tool_definitions
+    // ==========================================================
+
+    #[test]
+    fn test_get_filtered_tool_definitions_no_registry() {
+        let config = make_config(vec!["calculator"], None);
+        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        assert!(agent.get_filtered_tool_definitions().is_empty());
+    }
+
+    #[test]
+    fn test_get_filtered_tool_definitions_with_registry() {
+        let reg = make_registry_with_tool("calculator");
+        let config = make_config(vec!["calculator"], None);
+        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), Some(reg));
+        let defs = agent.get_filtered_tool_definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "calculator");
+    }
+
+    // ==========================================================
+    //  7. with_params constructor
+    // ==========================================================
+
+    #[test]
+    fn test_with_params_sets_all_fields() {
+        let agent = ConfigurableAgent::with_params(
+            "my-agent",
+            AgentType::Finance,
+            Box::new(MockLLM::new()),
+            "Custom prompt".to_string(),
+            Some(Arc::new(ToolRegistry::new())),
+            vec!["tool_a".to_string()],
+            10,
+            true,
+        );
+        assert_eq!(agent.name(), "my-agent");
+        assert!(matches!(agent.agent_type(), AgentType::Finance));
+        assert_eq!(agent.system_prompt(), "Custom prompt");
+        assert!(agent.tool_registry().is_some());
+        assert_eq!(agent.allowed_tools().len(), 1);
+        assert_eq!(agent.max_tool_iterations(), 10);
+        assert!(agent.parallel_tools());
+    }
+
+    #[test]
+    fn test_with_params_provider_name_is_unknown() {
+        let agent = ConfigurableAgent::with_params(
+            "x",
+            AgentType::Router,
+            Box::new(MockLLM::new()),
+            "p".to_string(),
+            None,
+            vec![],
+            1,
+            false,
+        );
+        assert_eq!(agent.provider_name, "unknown");
+    }
+
+    // ==========================================================
+    //  8. new_with_provider constructor
+    // ==========================================================
+
+    #[test]
+    fn test_new_with_provider_uses_explicit_name() {
+        let config = make_config(vec![], None);
+        let agent = ConfigurableAgent::new_with_provider(
+            "sales",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+            "my-provider".to_string(),
+        );
+        assert_eq!(agent.name(), "sales");
+        assert!(matches!(agent.agent_type(), AgentType::Sales));
+        assert_eq!(agent.provider_name, "my-provider");
+    }
+
+    #[test]
+    fn test_new_with_provider_falls_back_to_default_prompt() {
+        let config = make_config(vec![], None); // system_prompt: None
+        let agent = ConfigurableAgent::new_with_provider(
+            "invoice",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+            "p".to_string(),
+        );
+        assert!(
+            agent.system_prompt().contains("Invoice"),
+            "should use default_system_prompt for 'invoice'"
+        );
+    }
+
+    #[test]
+    fn test_new_with_provider_uses_config_prompt_when_some() {
+        let config = make_config(vec![], Some("Custom system prompt"));
+        let agent = ConfigurableAgent::new_with_provider(
+            "invoice",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+            "p".to_string(),
+        );
+        assert_eq!(agent.system_prompt(), "Custom system prompt");
+    }
+
+    // ==========================================================
+    //  9. Agent trait methods
+    // ==========================================================
+
+    #[test]
+    fn test_agent_trait_system_prompt() {
+        let config = make_config(vec![], Some("Hello from config"));
+        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        assert_eq!(Agent::system_prompt(&agent), "Hello from config");
+    }
+
+    #[test]
+    fn test_agent_trait_agent_type() {
+        let config = make_config(vec![], None);
+        let agent = ConfigurableAgent::new("finance", &config, Box::new(MockLLM::new()), None);
+        assert!(matches!(Agent::agent_type(&agent), AgentType::Finance));
+    }
+
+    // ==========================================================
+    //  10. Agent::execute — simple path (no tools)
+    // ==========================================================
+
+    #[tokio::test]
+    async fn test_execute_simple_calls_generate_with_history() {
+        let config = make_config(vec![], Some("You are helpful"));
+        let agent = ConfigurableAgent::new(
+            "router",
+            &config,
+            Box::new(MockLLM::with_content("hello world")),
+            None,
+        );
+        let ctx = make_context();
+        let resp = Agent::execute(&agent, "hi", &ctx).await.unwrap();
+        assert_eq!(resp.content, "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_execute_simple_returns_metadata() {
+        let config = make_config(vec![], None);
+        let agent = ConfigurableAgent::new(
+            "router",
+            &config,
+            Box::new(MockLLM::with_content("ok")),
+            None,
+        );
+        let ctx = make_context();
+        let resp = Agent::execute(&agent, "test", &ctx).await.unwrap();
+        let meta = resp.metadata.unwrap();
+        assert_eq!(meta.model_name, "mock");
+        assert_eq!(meta.provider_name, "default"); // from AgentConfig.model
+    }
+
+    #[tokio::test]
+    async fn test_execute_simple_empty_conversation_history() {
+        let config = make_config(vec![], Some("system"));
+        let agent = ConfigurableAgent::new(
+            "router",
+            &config,
+            Box::new(MockLLM::with_content("reply")),
+            None,
+        );
+        let ctx = AgentContext {
+            user_id: "u".to_string(),
+            session_id: "s".to_string(),
+            conversation_history: vec![],
+            user_memory: None,
+        };
+        let resp = Agent::execute(&agent, "q", &ctx).await.unwrap();
+        assert_eq!(resp.content, "reply");
+    }
+
+    #[tokio::test]
+    async fn test_execute_simple_with_conversation_history() {
+        let config = make_config(vec![], Some("system"));
+        let agent = ConfigurableAgent::new(
+            "router",
+            &config,
+            Box::new(MockLLM::with_content("contextual reply")),
+            None,
+        );
+        let ctx = make_context_with_history(vec![
+            (MessageRole::User, "first question"),
+            (MessageRole::Assistant, "first answer"),
+            (MessageRole::User, "follow up"),
+        ]);
+        let resp = Agent::execute(&agent, "final", &ctx).await.unwrap();
+        assert_eq!(resp.content, "contextual reply");
+    }
+
+    #[tokio::test]
+    async fn test_execute_simple_with_user_memory() {
+        let config = make_config(vec![], Some("system"));
+        let agent = ConfigurableAgent::new(
+            "router",
+            &config,
+            Box::new(MockLLM::with_content("memory reply")),
+            None,
+        );
+        let ctx = AgentContext {
+            user_id: "u".to_string(),
+            session_id: "s".to_string(),
+            conversation_history: vec![],
+            user_memory: Some(UserMemory {
+                user_id: "u".to_string(),
+                preferences: vec![Preference {
+                    category: "communication".to_string(),
+                    key: "style".to_string(),
+                    value: "concise".to_string(),
+                    confidence: 0.9,
+                }],
+                facts: vec![],
+            }),
+        };
+        let resp = Agent::execute(&agent, "q", &ctx).await.unwrap();
+        assert_eq!(resp.content, "memory reply");
+    }
+
+    // ==========================================================
+    //  11. Agent::execute — tool path (with tools + registry)
+    // ==========================================================
+
+    #[tokio::test]
+    async fn test_execute_tool_path_no_tool_calls_returns_final() {
+        let reg = make_registry_with_tool("calculator");
+        let mut config = make_config(vec!["calculator"], Some("system"));
+        config.max_tool_iterations = 3;
+        // MockLLM returns empty tool_calls → immediate return
+        let agent = ConfigurableAgent::new(
+            "orchestrator",
+            &config,
+            Box::new(MockLLM::with_content("final answer")),
+            Some(reg),
+        );
+        let ctx = make_context();
+        let resp = Agent::execute(&agent, "compute 2+2", &ctx).await.unwrap();
+        assert_eq!(resp.content, "final answer");
+        let meta = resp.metadata.unwrap();
+        assert_eq!(meta.model_name, "mock");
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_path_tool_calls_then_final() {
+        let reg = make_registry_with_tool("calculator");
+        let mut config = make_config(vec!["calculator"], Some("system"));
+        config.max_tool_iterations = 3;
+
+        // First call: return a tool_call; second call: return final content
+        let tool_call = ToolCall {
+            id: "tc_1".to_string(),
+            name: "calculator".to_string(),
+            arguments: serde_json::json!({"expression": "2+2"}),
+        };
+        let responses = vec![
+            make_tool_response("", vec![tool_call]),
+            make_tool_response("The answer is 4", vec![]),
+        ];
+
+        let agent = ConfigurableAgent::new(
+            "orchestrator",
+            &config,
+            Box::new(MockLLM::with_tool_responses(responses)),
+            Some(reg),
+        );
+        let ctx = make_context();
+        let resp = Agent::execute(&agent, "2+2?", &ctx).await.unwrap();
+        assert_eq!(resp.content, "The answer is 4");
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_path_max_iterations_reaches_synthesis() {
+        let reg = make_registry_with_tool("calculator");
+        let mut config = make_config(vec!["calculator"], Some("system"));
+        config.max_tool_iterations = 2; // low limit to trigger synthesis
+
+        let tc = ToolCall {
+            id: "tc_1".to_string(),
+            name: "calculator".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        // Both calls return tool_calls → loop exhausts → synthesis call
+        let responses = vec![
+            make_tool_response("", vec![tc.clone()]),
+            make_tool_response("", vec![tc]),
+        ];
+
+        let agent = ConfigurableAgent::new(
+            "orchestrator",
+            &config,
+            Box::new(MockLLM::with_tool_responses(responses)),
+            Some(reg),
+        );
+        let ctx = make_context();
+        let resp = Agent::execute(&agent, "compute", &ctx).await.unwrap();
+        // After max iterations, synthesis call returns default content "mock"
+        // (queue exhausted → fallback)
+        assert!(!resp.content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_path_tool_execution_error() {
+        // Register a tool that always errors
+        struct FailingTool;
+        #[async_trait]
+        impl ares_tools::registry::Tool for FailingTool {
+            fn name(&self) -> &str { "fail_tool" }
+            fn description(&self) -> &str { "always fails" }
+            fn parameters_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+            async fn execute(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+                Err(ares_types::AppError::Internal("tool crashed".to_string()))
+            }
+        }
+
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(FailingTool));
+        let reg = Arc::new(reg);
+
+        let mut config = make_config(vec!["fail_tool"], Some("system"));
+        config.max_tool_iterations = 3;
+
+        let tc = ToolCall {
+            id: "tc_err".to_string(),
+            name: "fail_tool".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let responses = vec![
+            make_tool_response("", vec![tc]),
+            make_tool_response("Error handled", vec![]),
+        ];
+
+        let agent = ConfigurableAgent::new(
+            "orchestrator",
+            &config,
+            Box::new(MockLLM::with_tool_responses(responses)),
+            Some(reg),
+        );
+        let ctx = make_context();
+        let resp = Agent::execute(&agent, "do it", &ctx).await.unwrap();
+        // The tool error is caught and returned as a tool result JSON;
+        // the LLM then produces a final response.
+        assert_eq!(resp.content, "Error handled");
+    }
+}

@@ -1,0 +1,46 @@
+[package]
+name = "ares-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "Database and vector store clients for A.R.E.S"
+[features]
+default = []
+postgres = ["dep:sqlx"]
+turso = ["dep:libsql"]
+ares-vector = ["dep:ares-vector"]
+lancedb = ["dep:lancedb", "dep:lance"]
+qdrant = ["dep:qdrant-client"]
+chromadb = ["dep:chromadb"]
+pinecone = ["dep:pinecone-sdk"]
+pgvector = []
+[dependencies]
+ares-types = { workspace = true }
+ares-config = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true, optional = true }
+libsql = { workspace = true, optional = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+ares-vector = { workspace = true, features = ["serde"], optional = true }
+qdrant-client = { workspace = true, optional = true }
+lancedb = { workspace = true, optional = true }
+lance = { workspace = true, optional = true }
+chromadb = { workspace = true, optional = true }
+pinecone-sdk = { workspace = true, optional = true }
+[dev-dependencies]
+chrono = { workspace = true }
+matches = "0.1"
+tokio = { workspace = true }

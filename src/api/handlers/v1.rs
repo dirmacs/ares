@@ -1085,3 +1085,220 @@ pub async fn delete_tenant_data(
         "note": "Tenant account retained. All operational data purged per GDPR Article 17."
     })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use chrono::TimeZone;
+
+    fn sample_tenant_agent(enabled: bool) -> TenantAgent {
+        TenantAgent {
+            id: "agent-row-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            agent_name: "support-bot".to_string(),
+            display_name: "Support Bot".to_string(),
+            description: Some("handles tickets".to_string()),
+            config: serde_json::json!({"model": "fast"}),
+            enabled,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_100,
+        }
+    }
+
+    #[test]
+    fn ts_to_dt_converts_valid_unix_timestamp() {
+        let dt = ts_to_dt(1_700_000_000);
+        assert_eq!(dt, Utc.timestamp_opt(1_700_000_000, 0).single().unwrap());
+    }
+
+    #[test]
+    fn ts_to_dt_invalid_timestamp_falls_back_to_now() {
+        let before = Utc::now();
+        let dt = ts_to_dt(i64::MAX);
+        let after = Utc::now();
+        assert!(dt >= before && dt <= after);
+    }
+
+    #[test]
+    fn extract_tenant_returns_context_when_present() {
+        let ctx = TenantContext::new("tenant-42".into(), TenantTier::Pro);
+        let got = extract_tenant(Some(Extension(ctx.clone()))).expect("tenant context");
+        assert_eq!(got.tenant_id, ctx.tenant_id);
+        assert_eq!(got.tier, ctx.tier);
+    }
+
+    #[test]
+    fn extract_tenant_missing_context_is_auth_error() {
+        let err = extract_tenant(None).unwrap_err();
+        match err {
+            AppError::Auth(msg) => assert!(msg.contains("Missing tenant context")),
+            other => panic!("expected Auth error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_header_inserts_valid_values() {
+        let mut headers = axum::http::HeaderMap::new();
+        set_header(&mut headers, "x-model-name", "gpt-test");
+        assert_eq!(
+            headers.get("x-model-name").and_then(|v| v.to_str().ok()),
+            Some("gpt-test")
+        );
+    }
+
+    #[test]
+    fn set_header_skips_invalid_header_values() {
+        let mut headers = axum::http::HeaderMap::new();
+        set_header(&mut headers, "x-model-name", "\ninvalid");
+        assert!(headers.get("x-model-name").is_none());
+    }
+
+    #[tokio::test]
+    async fn usage_response_sets_metering_headers_and_json_body() {
+        let response = usage_response(
+            serde_json::json!({"answer": "ok"}),
+            12,
+            34,
+            "gpt-test",
+            "openai",
+            "router",
+        );
+
+        assert_eq!(
+            response
+                .headers()
+                .get("x-input-tokens")
+                .and_then(|v| v.to_str().ok()),
+            Some("12")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-output-tokens")
+                .and_then(|v| v.to_str().ok()),
+            Some("34")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-model-name")
+                .and_then(|v| v.to_str().ok()),
+            Some("gpt-test")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-provider-name")
+                .and_then(|v| v.to_str().ok()),
+            Some("openai")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-agent-name")
+                .and_then(|v| v.to_str().ok()),
+            Some("router")
+        );
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(json["answer"], "ok");
+    }
+
+    #[test]
+    fn tenant_agent_to_v1_agent_maps_enabled_status() {
+        let v1: V1Agent = sample_tenant_agent(true).into();
+        assert_eq!(v1.id, "agent-row-1");
+        assert_eq!(v1.name, "support-bot");
+        assert_eq!(v1.agent_type, "custom");
+        assert!(matches!(v1.status, V1AgentStatus::Active));
+        assert_eq!(v1.config, serde_json::json!({"model": "fast"}));
+        assert_eq!(v1.created_at, Utc.timestamp_opt(1_700_000_000, 0).single().unwrap());
+        assert!(v1.last_run.is_none());
+        assert_eq!(v1.total_runs, 0);
+        assert_eq!(v1.success_rate, 0.0);
+    }
+
+    #[test]
+    fn tenant_agent_to_v1_agent_maps_disabled_status() {
+        let v1: V1Agent = sample_tenant_agent(false).into();
+        assert!(matches!(v1.status, V1AgentStatus::Disabled));
+    }
+
+    #[test]
+    fn paginated_empty_serializes_zero_totals() {
+        let page = Paginated::<V1Agent>::empty(2, 25);
+        assert!(page.items.is_empty());
+        assert_eq!(page.total, 0);
+        assert_eq!(page.page, 2);
+        assert_eq!(page.per_page, 25);
+        assert_eq!(page.total_pages, 0);
+
+        let json = serde_json::to_value(&page).expect("serialize paginated");
+        assert_eq!(json["items"], serde_json::json!([]));
+        assert_eq!(json["total"], 0);
+        assert_eq!(json["page"], 2);
+        assert_eq!(json["per_page"], 25);
+        assert_eq!(json["total_pages"], 0);
+    }
+
+    #[test]
+    fn v1_agent_status_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&V1AgentStatus::Active).unwrap(),
+            "\"active\""
+        );
+        assert_eq!(
+            serde_json::to_string(&V1AgentStatus::Disabled).unwrap(),
+            "\"disabled\""
+        );
+    }
+
+    #[test]
+    fn pagination_query_deserializes_optional_fields() {
+        let q: PaginationQuery =
+            serde_json::from_str(r#"{"page":3,"per_page":50}"#).expect("deserialize");
+        assert_eq!(q.page, Some(3));
+        assert_eq!(q.per_page, Some(50));
+
+        let defaults: PaginationQuery = serde_json::from_str("{}").expect("empty object");
+        assert!(defaults.page.is_none());
+        assert!(defaults.per_page.is_none());
+    }
+
+    #[test]
+    fn create_api_key_request_deserializes_expiry() {
+        let req: CreateApiKeyRequest = serde_json::from_str(
+            r#"{"name":"ci-key","expires_in_days":30}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(req.name, "ci-key");
+        assert_eq!(req.expires_in_days, Some(30));
+    }
+
+    #[test]
+    fn v1_usage_round_trips_through_json() {
+        let usage = V1Usage {
+            period_start: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            period_end: Utc.with_ymd_and_hms(2024, 1, 31, 23, 59, 59).unwrap(),
+            total_runs: 10,
+            total_tokens: 5000,
+            total_api_calls: 42,
+            quota_runs: Some(1000),
+            quota_tokens: Some(1_000_000),
+            daily_usage: vec![DailyUsage {
+                date: "2024-01-15".into(),
+                runs: 2,
+                tokens: 800,
+                api_calls: 5,
+            }],
+        };
+
+        let json = serde_json::to_value(&usage).expect("serialize");
+        assert_eq!(json["total_runs"], 10);
+        assert_eq!(json["daily_usage"][0]["date"], "2024-01-15");
+    }
+}

@@ -47,19 +47,29 @@ impl DatabaseProvider {
         // Turso takes priority if TURSO_URL is set
         #[cfg(feature = "turso")]
         if let Ok(url) = std::env::var("TURSO_URL") {
+            let url = url.trim();
             if !url.is_empty() {
                 let token = std::env::var("TURSO_AUTH_TOKEN").unwrap_or_default();
-                return DatabaseProvider::Turso { url, auth_token: token };
+                return DatabaseProvider::Turso {
+                    url: url.to_string(),
+                    auth_token: token,
+                };
             }
         }
         if let Ok(url) = std::env::var("DATABASE_URL") {
+            let url = url.trim();
             if !url.is_empty() {
-                return DatabaseProvider::Postgres { url };
+                return DatabaseProvider::Postgres {
+                    url: url.to_string(),
+                };
             }
         }
         if let Ok(path) = std::env::var("DATABASE_PATH") {
+            let path = path.trim();
             if !path.is_empty() && path != ":memory:" {
-                return DatabaseProvider::SQLite { path };
+                return DatabaseProvider::SQLite {
+                    path: path.to_string(),
+                };
             }
         }
         DatabaseProvider::Memory
@@ -322,6 +332,31 @@ impl DatabaseClient for super::postgres::PostgresClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::postgres::{PostgresClient, UserAgent};
+    use ares_types::types::{MemoryFact, MessageRole, Preference};
+    use sqlx::postgres::PgPoolOptions;
+    use sqlx::PgPool;
+
+    fn unreachable_postgres_pool() -> PgPool {
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/nope")
+            .expect("connect_lazy should not fail for malformed URLs")
+    }
+
+    fn unreachable_client() -> PostgresClient {
+        PostgresClient {
+            pool: unreachable_postgres_pool(),
+        }
+    }
+
+    fn assert_database_error<T: std::fmt::Debug>(result: Result<T>) {
+        matches::assert_matches!(
+            result.unwrap_err(),
+            AppError::Database(msg) if !msg.is_empty()
+        );
+    }
+
     #[test]
     fn test_database_provider_default_returns_memory() {
         let provider = DatabaseProvider::default();
@@ -411,4 +446,204 @@ mod tests {
         let provider = DatabaseProvider::from_env();
         matches::assert_matches!(provider, DatabaseProvider::Memory);
     }
+
+    #[test]
+    fn test_from_env_returns_postgres_when_database_url_set() {
+        std::env::remove_var("TURSO_URL");
+        std::env::remove_var("DATABASE_PATH");
+        std::env::set_var("DATABASE_URL", "postgres://example.com/ares");
+        let provider = DatabaseProvider::from_env();
+        matches::assert_matches!(
+            provider,
+            DatabaseProvider::Postgres { url } if url == "postgres://example.com/ares"
+        );
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[test]
+    fn test_from_env_ignores_empty_database_url() {
+        std::env::remove_var("TURSO_URL");
+        std::env::remove_var("DATABASE_PATH");
+        std::env::set_var("DATABASE_URL", "   ");
+        let provider = DatabaseProvider::from_env();
+        matches::assert_matches!(provider, DatabaseProvider::Memory);
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[test]
+    fn test_from_env_returns_sqlite_when_database_path_set() {
+        std::env::remove_var("TURSO_URL");
+        std::env::remove_var("DATABASE_URL");
+        std::env::set_var("DATABASE_PATH", "/var/lib/ares/data.db");
+        let provider = DatabaseProvider::from_env();
+        matches::assert_matches!(
+            provider,
+            DatabaseProvider::SQLite { path } if path == "/var/lib/ares/data.db"
+        );
+        std::env::remove_var("DATABASE_PATH");
+    }
+
+    #[test]
+    fn test_from_env_ignores_memory_database_path() {
+        std::env::remove_var("TURSO_URL");
+        std::env::remove_var("DATABASE_URL");
+        std::env::set_var("DATABASE_PATH", ":memory:");
+        let provider = DatabaseProvider::from_env();
+        matches::assert_matches!(provider, DatabaseProvider::Memory);
+        std::env::remove_var("DATABASE_PATH");
+    }
+
+    #[tokio::test]
+    async fn create_client_postgres_rejects_unreachable_host() {
+        let provider = DatabaseProvider::Postgres {
+            url: "postgres://invalid:invalid@127.0.0.1:1/nope".into(),
+        };
+        assert!(provider.create_client().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_client_memory_executes_provider_branch() {
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://invalid:invalid@127.0.0.1:1/nope",
+        );
+        let provider = DatabaseProvider::Memory;
+        let _ = provider.create_client().await;
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[tokio::test]
+    async fn create_client_sqlite_executes_provider_branch() {
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://invalid:invalid@127.0.0.1:1/nope",
+        );
+        let provider = DatabaseProvider::SQLite {
+            path: "/tmp/test.db".into(),
+        };
+        let _ = provider.create_client().await;
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[tokio::test]
+    async fn database_client_stub_agent_methods_do_not_hit_database() {
+        let client = PostgresClient::new_test();
+        assert!(client.list_user_agents("user-1").await.unwrap().is_empty());
+        assert!(client.list_public_agents(10, 0).await.unwrap().is_empty());
+        let agent = UserAgent::new(
+            "agent-1".into(),
+            "user-1".into(),
+            "coder".into(),
+            "gpt-4".into(),
+        );
+        client.create_user_agent(&agent).await.unwrap();
+        client.update_user_agent(&agent).await.unwrap();
+        assert!(client.delete_user_agent("agent-1", "user-1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn database_client_create_user_maps_connection_error() {
+        let client = unreachable_client();
+        assert_database_error(
+            client
+                .create_user("u1", "a@b.com", "hash", "Alice")
+                .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn database_client_get_user_by_email_maps_connection_error() {
+        let client = unreachable_client();
+        assert_database_error(client.get_user_by_email("a@b.com").await);
+    }
+
+    #[tokio::test]
+    async fn database_client_get_user_by_id_maps_connection_error() {
+        let client = unreachable_client();
+        assert_database_error(client.get_user_by_id("u1").await);
+    }
+
+    #[tokio::test]
+    async fn database_client_session_methods_map_connection_error() {
+        let client = unreachable_client();
+        assert_database_error(
+            client
+                .create_session("s1", "u1", "token-hash", 9_999_999_999)
+                .await,
+        );
+        assert_database_error(client.validate_session("token-hash").await);
+        assert_database_error(client.delete_session("s1").await);
+        assert_database_error(client.delete_session_by_token_hash("token-hash").await);
+    }
+
+    #[tokio::test]
+    async fn database_client_conversation_methods_map_connection_error() {
+        let client = unreachable_client();
+        assert_database_error(
+            client
+                .create_conversation("c1", "u1", Some("title"))
+                .await,
+        );
+        assert_database_error(client.conversation_exists("c1").await);
+        assert_database_error(client.get_user_conversations("u1").await);
+        assert_database_error(client.get_conversation("c1").await);
+        assert_database_error(client.delete_conversation("c1").await);
+        assert_database_error(
+            client
+                .update_conversation_title("c1", Some("new"))
+                .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn database_client_message_methods_map_connection_error() {
+        let client = unreachable_client();
+        assert_database_error(
+            client
+                .add_message("m1", "c1", MessageRole::User, "hello")
+                .await,
+        );
+        assert_database_error(client.get_conversation_history("c1").await);
+    }
+
+    #[tokio::test]
+    async fn database_client_memory_methods_map_connection_error() {
+        let client = unreachable_client();
+        let now = chrono::Utc::now();
+        let fact = MemoryFact {
+            id: "f1".into(),
+            user_id: "u1".into(),
+            category: "work".into(),
+            fact_key: "role".into(),
+            fact_value: "engineer".into(),
+            confidence: 1.0,
+            created_at: now,
+            updated_at: now,
+        };
+        assert_database_error(client.store_memory_fact(&fact).await);
+        assert_database_error(client.get_user_memory("u1").await);
+        assert_database_error(client.get_memory_by_category("u1", "work").await);
+    }
+
+    #[tokio::test]
+    async fn database_client_preference_methods_map_connection_error() {
+        let client = unreachable_client();
+        let preference = Preference {
+            category: "ui".into(),
+            key: "theme".into(),
+            value: "dark".into(),
+            confidence: 1.0,
+        };
+        assert_database_error(client.store_preference("u1", &preference).await);
+        assert_database_error(client.get_user_preferences("u1").await);
+        assert_database_error(client.get_preference("u1", "ui", "theme").await);
+    }
+
+    #[tokio::test]
+    async fn database_client_agent_lookup_methods_map_connection_error() {
+        let client = unreachable_client();
+        assert_database_error(client.get_user_agent_by_name("u1", "coder").await);
+        assert_database_error(client.get_public_agent_by_name("coder").await);
+    }
+
 }

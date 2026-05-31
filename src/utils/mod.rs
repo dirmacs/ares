@@ -1,4 +1,2 @@
-//! Configuration utilities (TOML, TOON).
-
-pub mod toml_config;
-pub mod toon_config;
+pub use ares_config::toml_config;
+pub use ares_config::toon_config;

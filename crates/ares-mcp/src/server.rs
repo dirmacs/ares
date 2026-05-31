@@ -21,7 +21,7 @@
 
 use ares_db::tenants::TenantDb;
 use crate::auth::{extract_api_key_from_env, validate_mcp_api_key, McpSession};
-use crate::extension::McpToolExtension;
+use crate::extension::{dispatch_extensions, McpToolExtension};
 use crate::tools::*;
 use crate::usage::{check_quota, record_mcp_usage, McpOperation};
 use rmcp::model::{
@@ -699,14 +699,18 @@ impl AresMcpServer {
                     Ok(s) => s.tenant_id().to_string(),
                     Err(e) => return CallToolResult::error(vec![Content::text(e)]),
                 };
-                // Check extensions first
-                for ext in &self.extensions {
-                    if let Some(result) = ext.execute(other, args_value.clone(), &tenant_id).await {
-                        return match result {
-                            Ok(r) => r,
-                            Err(e) => CallToolResult::error(vec![Content::text(e)]),
-                        };
-                    }
+                if let Some(result) = dispatch_extensions(
+                    &self.extensions,
+                    other,
+                    args_value.clone(),
+                    &tenant_id,
+                )
+                .await
+                {
+                    return match result {
+                        Ok(r) => r,
+                        Err(e) => CallToolResult::error(vec![Content::text(e)]),
+                    };
                 }
                 Err(format!("Unknown tool: {}", other))
             }

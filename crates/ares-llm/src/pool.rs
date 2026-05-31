@@ -1073,6 +1073,47 @@ mod tests {
         assert_eq!(guard.model_name(), "guard");
     }
 
+    #[cfg(feature = "ollama")]
+    #[test]
+    fn test_register_provider_overwrites_existing_name() {
+        let pool = ClientPool::with_defaults();
+        pool.register_provider("ollama", ollama_stub_provider());
+        pool.register_provider("ollama", ollama_stub_provider());
+        assert_eq!(pool.provider_names(), vec!["ollama"]);
+    }
+
+    #[cfg(feature = "ollama")]
+    #[tokio::test]
+    async fn test_stats_aggregate_multiple_providers() {
+        let config = PoolConfig::default()
+            .with_max_connections(2)
+            .without_health_check();
+        let pool = ClientPool::new(config.clone());
+        register_seeded_pool(&pool, "a", config.clone(), vec![mock_client("a1")]);
+        register_seeded_pool(&pool, "b", config, vec![mock_client("b1")]);
+
+        let _ga = pool.get("a").await.expect("provider a");
+        let stats = pool.stats();
+        assert_eq!(stats.providers.len(), 2);
+        assert_eq!(stats.total_in_use, 1);
+        assert_eq!(stats.total_available, 1);
+    }
+
+    #[cfg(feature = "ollama")]
+    #[tokio::test]
+    async fn test_shutdown_drains_seeded_clients() {
+        let config = PoolConfig::default()
+            .with_max_connections(2)
+            .without_health_check();
+        let pool = ClientPool::new(config.clone());
+        register_seeded_pool(&pool, "mock", config, vec![mock_client("seeded")]);
+        assert_eq!(pool.stats().total_available, 1);
+
+        pool.shutdown();
+        assert!(pool.is_shutdown());
+        assert_eq!(pool.stats().total_available, 0);
+    }
+
     #[tokio::test]
     async fn test_get_after_shutdown() {
         let pool = ClientPool::with_defaults();

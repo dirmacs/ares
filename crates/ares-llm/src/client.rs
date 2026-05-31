@@ -1,0 +1,1278 @@
+use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
+use ares_config::toml_config::{ModelConfig, ProviderConfig};
+use async_trait::async_trait;
+
+/// Generic LLM client trait for provider abstraction
+#[async_trait]
+pub trait LLMClient: Send + Sync {
+    /// Generate a completion from a prompt
+    async fn generate(&self, prompt: &str) -> Result<String>;
+
+    /// Generate with system prompt
+    async fn generate_with_system(&self, system: &str, prompt: &str) -> Result<String>;
+
+    /// Generate with conversation history, returning full response with token usage
+    async fn generate_with_history(
+        &self,
+        messages: &[(String, String)], // (role, content) pairs
+    ) -> Result<LLMResponse>;
+
+    /// Generate with tool calling support
+    async fn generate_with_tools(
+        &self,
+        prompt: &str,
+        tools: &[ToolDefinition],
+    ) -> Result<LLMResponse>;
+
+    /// Generate with conversation history AND tool definitions.
+    ///
+    /// This is the core method for multi-turn tool calling, combining:
+    /// - `generate_with_history()` - conversation context
+    /// - `generate_with_tools()` - tool calling capability
+    ///
+    /// # Arguments
+    ///
+    /// * `messages` - Conversation history as ConversationMessage structs
+    /// * `tools` - Available tool definitions
+    ///
+    /// # Returns
+    ///
+    /// An LLMResponse containing the model's reply and any tool calls requested.
+    async fn generate_with_tools_and_history(
+        &self,
+        messages: &[crate::coordinator::ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<LLMResponse>;
+
+    /// Stream a completion
+    async fn stream(
+        &self,
+        prompt: &str,
+    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>;
+
+    /// Stream a completion with system prompt
+    async fn stream_with_system(
+        &self,
+        system: &str,
+        prompt: &str,
+    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>;
+
+    /// Stream a completion with conversation history
+    async fn stream_with_history(
+        &self,
+        messages: &[(String, String)], // (role, content) pairs
+    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>;
+
+    /// Get the model name/identifier
+    fn model_name(&self) -> &str;
+}
+
+/// Token usage statistics from an LLM generation call
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TokenUsage {
+    /// Number of tokens in the prompt/input
+    pub prompt_tokens: u32,
+    /// Number of tokens in the completion/output
+    pub completion_tokens: u32,
+    /// Total tokens used (prompt + completion)
+    pub total_tokens: u32,
+}
+
+impl TokenUsage {
+    /// Create a new TokenUsage with the given values
+    pub fn new(prompt_tokens: u32, completion_tokens: u32) -> Self {
+        Self {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+        }
+    }
+}
+
+/// Response from an LLM generation call
+#[derive(Debug, Clone)]
+pub struct LLMResponse {
+    /// The generated text content
+    pub content: String,
+    /// Any tool calls the model wants to make
+    pub tool_calls: Vec<ToolCall>,
+    /// Reason the generation finished (e.g., "stop", "tool_calls", "length")
+    pub finish_reason: String,
+    /// Token usage statistics (if provided by the model)
+    pub usage: Option<TokenUsage>,
+}
+
+/// Model inference parameters
+#[derive(Debug, Clone, Default)]
+pub struct ModelParams {
+    /// Sampling temperature (0.0 = deterministic, 1.0+ = creative)
+    pub temperature: Option<f32>,
+    /// Maximum tokens to generate
+    pub max_tokens: Option<u32>,
+    /// Nucleus sampling parameter
+    pub top_p: Option<f32>,
+    /// Frequency penalty (-2.0 to 2.0)
+    pub frequency_penalty: Option<f32>,
+    /// Presence penalty (-2.0 to 2.0)
+    pub presence_penalty: Option<f32>,
+}
+
+impl ModelParams {
+    /// Create params from a ModelConfig
+    pub fn from_model_config(config: &ModelConfig) -> Self {
+        Self {
+            temperature: Some(config.temperature),
+            max_tokens: Some(config.max_tokens),
+            top_p: config.top_p,
+            frequency_penalty: config.frequency_penalty,
+            presence_penalty: config.presence_penalty,
+        }
+    }
+}
+
+/// LLM Provider configuration
+///
+/// Each variant is feature-gated to ensure only enabled providers are available.
+/// Use `Provider::from_env()` to automatically select based on environment variables.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum Provider {
+    /// OpenAI API and compatible endpoints (e.g., Azure OpenAI, local vLLM)
+    #[cfg(feature = "openai")]
+    OpenAI {
+        /// API key for authentication
+        api_key: String,
+        /// Base URL for the API (default: <https://api.openai.com/v1>)
+        api_base: String,
+        /// Model identifier (e.g., "gpt-4", "gpt-3.5-turbo")
+        model: String,
+        /// Model inference parameters
+        params: ModelParams,
+    },
+
+    /// Ollama local inference server
+    #[cfg(feature = "ollama")]
+    Ollama {
+        /// Base URL for Ollama API (default: http://localhost:11434)
+        base_url: String,
+        /// Model name (e.g., "ministral-3:3b", "mistral", "qwen3-vl:2b")
+        model: String,
+        /// Model inference parameters
+        params: ModelParams,
+    },
+
+    /// LlamaCpp for direct GGUF model loading
+    #[cfg(feature = "llamacpp")]
+    LlamaCpp {
+        /// Path to the GGUF model file
+        model_path: String,
+        /// Model inference parameters
+        params: ModelParams,
+    },
+
+    /// Anthropic Claude API
+    #[cfg(feature = "anthropic")]
+    Anthropic {
+        /// API key for authentication
+        api_key: String,
+        /// Model identifier (e.g., "claude-3-5-sonnet-20241022")
+        model: String,
+        /// Model inference parameters
+        params: ModelParams,
+    },
+}
+
+impl Provider {
+    /// Create an LLM client from this provider configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The provider cannot be initialized
+    /// - Required configuration is missing
+    /// - Network connectivity issues (for remote providers)
+    #[allow(unreachable_patterns)]
+    pub async fn create_client(&self) -> Result<Box<dyn LLMClient>> {
+        match self {
+            #[cfg(feature = "openai")]
+            Provider::OpenAI {
+                api_key,
+                api_base,
+                model,
+                params,
+            } => Ok(Box::new(super::openai::OpenAIClient::with_params(
+                api_key.clone(),
+                api_base.clone(),
+                model.clone(),
+                params.clone(),
+            ))),
+
+            #[cfg(feature = "ollama")]
+            Provider::Ollama {
+                base_url,
+                model,
+                params,
+            } => Ok(Box::new(
+                super::ollama::OllamaClient::with_params(
+                    base_url.clone(),
+                    model.clone(),
+                    params.clone(),
+                )
+                .await?,
+            )),
+
+            #[cfg(feature = "llamacpp")]
+            Provider::LlamaCpp { model_path, params } => Ok(Box::new(
+                super::llamacpp::LlamaCppClient::with_params(model_path.clone(), params.clone())?,
+            )),
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic {
+                api_key,
+                model,
+                params,
+            } => Ok(Box::new(super::anthropic::AnthropicClient::with_params(
+                api_key.clone(),
+                model.clone(),
+                params.clone(),
+            ))),
+            _ => unreachable!("Provider variant not enabled"),
+        }
+    }
+
+    /// Create a provider from environment variables
+    ///
+    /// Provider priority (first match wins):
+    /// 1. **LlamaCpp** - if `LLAMACPP_MODEL_PATH` is set
+    /// 2. **OpenAI** - if `OPENAI_API_KEY` is set
+    /// 3. **Ollama** - default fallback for local inference
+    ///
+    /// # Environment Variables
+    ///
+    /// ## LlamaCpp
+    /// - `LLAMACPP_MODEL_PATH` - Path to GGUF model file (required)
+    ///
+    /// ## OpenAI
+    /// - `OPENAI_API_KEY` - API key (required)
+    /// - `OPENAI_API_BASE` - Base URL (default: <https://api.openai.com/v1>)
+    /// - `OPENAI_MODEL` - Model name (default: gpt-4)
+    ///
+    /// ## Ollama
+    /// - `OLLAMA_BASE_URL` - Server URL (default: http://localhost:11434)
+    /// - `OLLAMA_MODEL` - Model name (default: ministral-3:3b)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no LLM provider features are enabled or configured.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Set environment variables
+    /// std::env::set_var("OLLAMA_MODEL", "ministral-3:3b");
+    ///
+    /// let provider = Provider::from_env()?;
+    /// let client = provider.create_client().await?;
+    /// ```
+    #[allow(unreachable_code)]
+    pub fn from_env() -> Result<Self> {
+        // Check for LlamaCpp first (direct GGUF loading - highest priority when configured)
+        #[cfg(feature = "llamacpp")]
+        if let Ok(model_path) = std::env::var("LLAMACPP_MODEL_PATH") {
+            if !model_path.is_empty() {
+                return Ok(Provider::LlamaCpp {
+                    model_path,
+                    params: ModelParams::default(),
+                });
+            }
+        }
+
+        // Check for OpenAI (requires explicit API key configuration)
+        #[cfg(feature = "openai")]
+        if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+            if !api_key.is_empty() {
+                let api_base = std::env::var("OPENAI_API_BASE")
+                    .unwrap_or_else(|_| "https://api.openai.com/v1".into());
+                let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4".into());
+                return Ok(Provider::OpenAI {
+                    api_key,
+                    api_base,
+                    model,
+                    params: ModelParams::default(),
+                });
+            }
+        }
+
+        // Check for Anthropic (requires explicit API key configuration)
+        #[cfg(feature = "anthropic")]
+        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+            if !api_key.is_empty() {
+                let model = std::env::var("ANTHROPIC_MODEL")
+                    .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into());
+                return Ok(Provider::Anthropic {
+                    api_key,
+                    model,
+                    params: ModelParams::default(),
+                });
+            }
+        }
+
+        // Ollama as default local inference (no API key required)
+        #[cfg(feature = "ollama")]
+        {
+            // Accept both OLLAMA_URL (preferred) and legacy OLLAMA_BASE_URL
+            let base_url = std::env::var("OLLAMA_URL")
+                .or_else(|_| std::env::var("OLLAMA_BASE_URL"))
+                .unwrap_or_else(|_| "http://localhost:11434".into());
+            let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "ministral-3:3b".into());
+            return Ok(Provider::Ollama {
+                base_url,
+                model,
+                params: ModelParams::default(),
+            });
+        }
+
+        // No provider available
+        #[allow(unreachable_code)]
+        Err(AppError::Configuration(
+            "No LLM provider configured. Enable a feature (ollama, openai, llamacpp) and set the appropriate environment variables.".into(),
+        ))
+    }
+
+    /// Get the provider name as a string
+    #[allow(unreachable_patterns)]
+    pub fn name(&self) -> &'static str {
+        match self {
+            #[cfg(feature = "openai")]
+            Provider::OpenAI { .. } => "openai",
+
+            #[cfg(feature = "ollama")]
+            Provider::Ollama { .. } => "ollama",
+
+            #[cfg(feature = "llamacpp")]
+            Provider::LlamaCpp { .. } => "llamacpp",
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => "anthropic",
+            _ => unreachable!("Provider variant not enabled"),
+        }
+    }
+
+    /// Check if this provider requires an API key
+    #[allow(unreachable_patterns)]
+    pub fn requires_api_key(&self) -> bool {
+        match self {
+            #[cfg(feature = "openai")]
+            Provider::OpenAI { .. } => true,
+
+            #[cfg(feature = "ollama")]
+            Provider::Ollama { .. } => false,
+
+            #[cfg(feature = "llamacpp")]
+            Provider::LlamaCpp { .. } => false,
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => true,
+            _ => unreachable!("Provider variant not enabled"),
+        }
+    }
+
+    /// Check if this provider is local (no network required)
+    #[allow(unreachable_patterns)]
+    pub fn is_local(&self) -> bool {
+        match self {
+            #[cfg(feature = "openai")]
+            Provider::OpenAI { api_base, .. } => {
+                api_base.contains("localhost") || api_base.contains("127.0.0.1")
+            }
+
+            #[cfg(feature = "ollama")]
+            Provider::Ollama { base_url, .. } => {
+                base_url.contains("localhost") || base_url.contains("127.0.0.1")
+            }
+
+            #[cfg(feature = "llamacpp")]
+            Provider::LlamaCpp { .. } => true,
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => false,
+            _ => unreachable!("Provider variant not enabled"),
+        }
+    }
+
+    /// Create a provider from TOML configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `provider_config` - The provider configuration from ares.toml
+    /// * `model_override` - Optional model name to override the provider default
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider type doesn't match an enabled feature
+    /// or if required environment variables are not set.
+    #[allow(unused_variables)]
+    pub fn from_config(
+        provider_config: &ProviderConfig,
+        model_override: Option<&str>,
+    ) -> Result<Self> {
+        Self::from_config_with_params(provider_config, model_override, ModelParams::default())
+    }
+
+    /// Create a provider from TOML configuration with model parameters
+    #[allow(unused_variables)]
+    pub fn from_config_with_params(
+        provider_config: &ProviderConfig,
+        model_override: Option<&str>,
+        params: ModelParams,
+    ) -> Result<Self> {
+        match provider_config {
+            #[cfg(feature = "ollama")]
+            ProviderConfig::Ollama {
+                base_url,
+                default_model,
+            } => Ok(Provider::Ollama {
+                base_url: base_url.clone(),
+                model: model_override
+                    .map(String::from)
+                    .unwrap_or_else(|| default_model.clone()),
+                params,
+            }),
+
+            #[cfg(not(feature = "ollama"))]
+            ProviderConfig::Ollama { .. } => Err(AppError::Configuration(
+                "Ollama provider configured but 'ollama' feature is not enabled".into(),
+            )),
+
+            #[cfg(feature = "openai")]
+            ProviderConfig::OpenAI {
+                api_key_env,
+                api_base,
+                default_model,
+            } => {
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    AppError::Configuration(format!(
+                        "OpenAI API key environment variable '{}' is not set",
+                        api_key_env
+                    ))
+                })?;
+                Ok(Provider::OpenAI {
+                    api_key,
+                    api_base: api_base.clone(),
+                    model: model_override
+                        .map(String::from)
+                        .unwrap_or_else(|| default_model.clone()),
+                    params,
+                })
+            }
+
+            #[cfg(not(feature = "openai"))]
+            ProviderConfig::OpenAI { .. } => Err(AppError::Configuration(
+                "OpenAI provider configured but 'openai' feature is not enabled".into(),
+            )),
+
+            #[cfg(feature = "llamacpp")]
+            ProviderConfig::LlamaCpp { model_path, .. } => Ok(Provider::LlamaCpp {
+                model_path: model_path.clone(),
+                params,
+            }),
+
+            #[cfg(not(feature = "llamacpp"))]
+            ProviderConfig::LlamaCpp { .. } => Err(AppError::Configuration(
+                "LlamaCpp provider configured but 'llamacpp' feature is not enabled".into(),
+            )),
+
+            #[cfg(feature = "anthropic")]
+            ProviderConfig::Anthropic {
+                api_key_env,
+                default_model,
+            } => {
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    AppError::Configuration(format!(
+                        "Anthropic API key environment variable '{}' is not set",
+                        api_key_env
+                    ))
+                })?;
+                Ok(Provider::Anthropic {
+                    api_key,
+                    model: model_override
+                        .map(String::from)
+                        .unwrap_or_else(|| default_model.clone()),
+                    params,
+                })
+            }
+
+            #[cfg(not(feature = "anthropic"))]
+            ProviderConfig::Anthropic { .. } => Err(AppError::Configuration(
+                "Anthropic provider configured but 'anthropic' feature is not enabled".into(),
+            )),
+        }
+    }
+
+    /// Create a provider from a model configuration and its associated provider config
+    ///
+    /// This is the primary way to create providers from TOML config, as it resolves
+    /// the model -> provider reference chain.
+    pub fn from_model_config(
+        model_config: &ModelConfig,
+        provider_config: &ProviderConfig,
+    ) -> Result<Self> {
+        let params = ModelParams::from_model_config(model_config);
+        Self::from_config_with_params(provider_config, Some(&model_config.model), params)
+    }
+}
+
+/// Trait abstraction for LLM client factories (useful for mocking in tests)
+#[async_trait]
+pub trait LLMClientFactoryTrait: Send + Sync {
+    /// Get the default provider configuration
+    fn default_provider(&self) -> &Provider;
+
+    /// Create an LLM client using the default provider
+    async fn create_default(&self) -> Result<Box<dyn LLMClient>>;
+
+    /// Create an LLM client using a specific provider
+    async fn create_with_provider(&self, provider: Provider) -> Result<Box<dyn LLMClient>>;
+}
+
+/// Configuration-based LLM client factory
+///
+/// Provides a convenient way to create LLM clients with a default provider
+/// while allowing runtime provider switching.
+pub struct LLMClientFactory {
+    default_provider: Provider,
+}
+
+impl LLMClientFactory {
+    /// Create a new factory with a specific default provider
+    pub fn new(default_provider: Provider) -> Self {
+        Self { default_provider }
+    }
+
+    /// Create a factory from environment variables
+    ///
+    /// Uses `Provider::from_env()` to determine the default provider.
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
+            default_provider: Provider::from_env()?,
+        })
+    }
+
+    /// Get the default provider configuration
+    pub fn default_provider(&self) -> &Provider {
+        &self.default_provider
+    }
+
+    /// Create an LLM client using the default provider
+    pub async fn create_default(&self) -> Result<Box<dyn LLMClient>> {
+        self.default_provider.create_client().await
+    }
+
+    /// Create an LLM client using a specific provider
+    pub async fn create_with_provider(&self, provider: Provider) -> Result<Box<dyn LLMClient>> {
+        provider.create_client().await
+    }
+}
+
+#[async_trait]
+impl LLMClientFactoryTrait for LLMClientFactory {
+    fn default_provider(&self) -> &Provider {
+        &self.default_provider
+    }
+
+    async fn create_default(&self) -> Result<Box<dyn LLMClient>> {
+        self.default_provider.create_client().await
+    }
+
+    async fn create_with_provider(&self, provider: Provider) -> Result<Box<dyn LLMClient>> {
+        provider.create_client().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_llm_response_creation() {
+        let response = LLMResponse {
+            content: "Hello".to_string(),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: None,
+        };
+
+        assert_eq!(response.content, "Hello");
+        assert!(response.tool_calls.is_empty());
+        assert_eq!(response.finish_reason, "stop");
+        assert!(response.usage.is_none());
+    }
+
+    #[test]
+    fn test_llm_response_with_usage() {
+        let usage = TokenUsage::new(100, 50);
+        let response = LLMResponse {
+            content: "Hello".to_string(),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: Some(usage),
+        };
+
+        assert!(response.usage.is_some());
+        let usage = response.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 50);
+        assert_eq!(usage.total_tokens, 150);
+    }
+
+    #[test]
+    fn test_llm_response_with_tool_calls() {
+        let tool_calls = vec![
+            ToolCall {
+                id: "1".to_string(),
+                name: "calculator".to_string(),
+                arguments: serde_json::json!({"a": 1, "b": 2}),
+            },
+            ToolCall {
+                id: "2".to_string(),
+                name: "search".to_string(),
+                arguments: serde_json::json!({"query": "test"}),
+            },
+        ];
+
+        let response = LLMResponse {
+            content: "".to_string(),
+            tool_calls,
+            finish_reason: "tool_calls".to_string(),
+            usage: Some(TokenUsage::new(50, 25)),
+        };
+
+        assert_eq!(response.tool_calls.len(), 2);
+        assert_eq!(response.tool_calls[0].name, "calculator");
+        assert_eq!(response.finish_reason, "tool_calls");
+        assert_eq!(response.usage.as_ref().unwrap().total_tokens, 75);
+    }
+
+    #[test]
+    fn test_factory_creation() {
+        // This test just verifies the factory can be created
+        // Actual provider tests require feature flags
+        #[cfg(feature = "ollama")]
+        {
+            let factory = LLMClientFactory::new(Provider::Ollama {
+                base_url: "http://localhost:11434".to_string(),
+                model: "test".to_string(),
+                params: ModelParams::default(),
+            });
+            assert_eq!(factory.default_provider().name(), "ollama");
+        }
+    }
+
+    #[cfg(feature = "ollama")]
+    #[test]
+    fn test_ollama_provider_properties() {
+        let provider = Provider::Ollama {
+            base_url: "http://localhost:11434".to_string(),
+            model: "ministral-3:3b".to_string(),
+            params: ModelParams::default(),
+        };
+
+        assert_eq!(provider.name(), "ollama");
+        assert!(!provider.requires_api_key());
+        assert!(provider.is_local());
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn test_openai_provider_properties() {
+        let provider = Provider::OpenAI {
+            api_key: "sk-test".to_string(),
+            api_base: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4".to_string(),
+            params: ModelParams::default(),
+        };
+
+        assert_eq!(provider.name(), "openai");
+        assert!(provider.requires_api_key());
+        assert!(!provider.is_local());
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn test_openai_local_provider() {
+        let provider = Provider::OpenAI {
+            api_key: "test".to_string(),
+            api_base: "http://localhost:8000/v1".to_string(),
+            model: "local-model".to_string(),
+            params: ModelParams::default(),
+        };
+
+        assert!(provider.is_local());
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_llamacpp_provider_properties() {
+        let provider = Provider::LlamaCpp {
+            model_path: "/path/to/model.gguf".to_string(),
+            params: ModelParams::default(),
+        };
+
+        assert_eq!(provider.name(), "llamacpp");
+        assert!(!provider.requires_api_key());
+        assert!(provider.is_local());
+    }
+
+    #[cfg(feature = "anthropic")]
+    #[test]
+    fn test_anthropic_provider_properties() {
+        let provider = Provider::Anthropic {
+            api_key: "sk-ant-test".to_string(),
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            params: ModelParams::default(),
+        };
+
+        assert_eq!(provider.name(), "anthropic");
+        assert!(provider.requires_api_key());
+        assert!(!provider.is_local());
+    }
+    // ===== TokenUsage tests =====
+
+    #[test]
+    fn test_token_usage_default_all_zeros() {
+        let usage = TokenUsage::default();
+        assert_eq!(usage.prompt_tokens, 0);
+        assert_eq!(usage.completion_tokens, 0);
+        assert_eq!(usage.total_tokens, 0);
+    }
+
+    #[test]
+    fn test_token_usage_new_calculates_total() {
+        let usage = TokenUsage::new(100, 50);
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 50);
+        assert_eq!(usage.total_tokens, 150);
+    }
+
+    #[test]
+    fn test_token_usage_new_zero_tokens() {
+        let usage = TokenUsage::new(0, 0);
+        assert_eq!(usage.total_tokens, 0);
+    }
+
+    #[test]
+    fn test_token_usage_new_large_values() {
+        let usage = TokenUsage::new(u32::MAX / 2, u32::MAX / 2 + 1);
+        assert_eq!(usage.total_tokens, u32::MAX);
+    }
+
+    #[test]
+    fn test_token_usage_serde_roundtrip() {
+        let usage = TokenUsage::new(100, 200);
+        let json = serde_json::to_string(&usage).unwrap();
+        let deserialized: TokenUsage = serde_json::from_str(&json).unwrap();
+        assert_eq!(usage, deserialized);
+    }
+
+    #[test]
+    fn test_token_usage_serde_default_values() {
+        let json = r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}"#;
+        let usage: TokenUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage, TokenUsage::default());
+    }
+
+    #[test]
+    fn test_token_usage_serde_partial_json() {
+        // All fields present but verify deserialization accepts correct types
+        let json = r#"{"prompt_tokens":42,"completion_tokens":58,"total_tokens":100}"#;
+        let usage: TokenUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.prompt_tokens, 42);
+        assert_eq!(usage.completion_tokens, 58);
+        assert_eq!(usage.total_tokens, 100);
+    }
+
+    #[test]
+    fn test_token_usage_clone_eq() {
+        let a = TokenUsage::new(10, 20);
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_token_usage_debug_format() {
+        let usage = TokenUsage::new(1, 2);
+        let debug_str = format!("{:?}", usage);
+        assert!(debug_str.contains("TokenUsage"));
+        assert!(debug_str.contains("prompt_tokens"));
+    }
+
+    // ===== ModelParams tests =====
+
+    #[test]
+    fn test_model_params_default_all_none() {
+        let params = ModelParams::default();
+        assert!(params.temperature.is_none());
+        assert!(params.max_tokens.is_none());
+        assert!(params.top_p.is_none());
+        assert!(params.frequency_penalty.is_none());
+        assert!(params.presence_penalty.is_none());
+    }
+
+    #[test]
+    fn test_model_params_from_model_config_all_fields() {
+        let config = ModelConfig {
+            provider: "openai".to_string(),
+            model: "gpt-4".to_string(),
+            temperature: 0.5,
+            max_tokens: 1024,
+            top_p: Some(0.9),
+            frequency_penalty: Some(0.1),
+            presence_penalty: Some(0.2),
+        };
+        let params = ModelParams::from_model_config(&config);
+        assert_eq!(params.temperature, Some(0.5));
+        assert_eq!(params.max_tokens, Some(1024));
+        assert_eq!(params.top_p, Some(0.9));
+        assert_eq!(params.frequency_penalty, Some(0.1));
+        assert_eq!(params.presence_penalty, Some(0.2));
+    }
+
+    #[test]
+    fn test_model_params_from_model_config_optional_none() {
+        let config = ModelConfig {
+            provider: "ollama".to_string(),
+            model: "mistral".to_string(),
+            temperature: 0.7,
+            max_tokens: 512,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+        };
+        let params = ModelParams::from_model_config(&config);
+        assert_eq!(params.temperature, Some(0.7));
+        assert_eq!(params.max_tokens, Some(512));
+        assert!(params.top_p.is_none());
+        assert!(params.frequency_penalty.is_none());
+        assert!(params.presence_penalty.is_none());
+    }
+
+    #[test]
+    fn test_model_params_clone() {
+        let params = ModelParams {
+            temperature: Some(0.8),
+            max_tokens: Some(2048),
+            top_p: Some(0.95),
+            frequency_penalty: Some(-0.5),
+            presence_penalty: Some(0.3),
+        };
+        let cloned = params.clone();
+        assert_eq!(params.temperature, cloned.temperature);
+        assert_eq!(params.max_tokens, cloned.max_tokens);
+        assert_eq!(params.top_p, cloned.top_p);
+        assert_eq!(params.frequency_penalty, cloned.frequency_penalty);
+        assert_eq!(params.presence_penalty, cloned.presence_penalty);
+    }
+
+    // ===== LLMResponse tests =====
+
+    #[test]
+    fn test_llm_response_empty_content() {
+        let response = LLMResponse {
+            content: String::new(),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: None,
+        };
+        assert!(response.content.is_empty());
+    }
+
+    #[test]
+    fn test_llm_response_clone() {
+        let response = LLMResponse {
+            content: "hello".to_string(),
+            tool_calls: vec![ToolCall {
+                id: "1".to_string(),
+                name: "fn".to_string(),
+                arguments: serde_json::json!({"key": "value"}),
+            }],
+            finish_reason: "tool_calls".to_string(),
+            usage: Some(TokenUsage::new(10, 20)),
+        };
+        let cloned = response.clone();
+        assert_eq!(cloned.content, "hello");
+        assert_eq!(cloned.tool_calls.len(), 1);
+        assert_eq!(cloned.tool_calls[0].name, "fn");
+        assert_eq!(cloned.finish_reason, "tool_calls");
+        assert_eq!(cloned.usage.unwrap().total_tokens, 30);
+    }
+
+    // ===== Ollama provider tests (feature-gated) =====
+
+    #[cfg(feature = "ollama")]
+    mod ollama_tests {
+        use super::*;
+
+        #[test]
+        fn test_ollama_name() {
+            let provider = Provider::Ollama {
+                base_url: "http://localhost:11434".to_string(),
+                model: "mistral".to_string(),
+                params: ModelParams::default(),
+            };
+            assert_eq!(provider.name(), "ollama");
+        }
+
+        #[test]
+        fn test_ollama_requires_no_api_key() {
+            let provider = Provider::Ollama {
+                base_url: "http://localhost:11434".to_string(),
+                model: "mistral".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(!provider.requires_api_key());
+        }
+
+        #[test]
+        fn test_ollama_is_local_localhost() {
+            let provider = Provider::Ollama {
+                base_url: "http://localhost:11434".to_string(),
+                model: "mistral".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(provider.is_local());
+        }
+
+        #[test]
+        fn test_ollama_is_local_127_0_0_1() {
+            let provider = Provider::Ollama {
+                base_url: "http://127.0.0.1:11434".to_string(),
+                model: "mistral".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(provider.is_local());
+        }
+
+        #[test]
+        fn test_ollama_is_not_local_remote() {
+            let provider = Provider::Ollama {
+                base_url: "http://192.168.1.100:11434".to_string(),
+                model: "mistral".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(!provider.is_local());
+        }
+
+        #[test]
+        fn test_ollama_from_config_no_override() {
+            let config = ProviderConfig::Ollama {
+                base_url: "http://localhost:11434".to_string(),
+                default_model: "mistral".to_string(),
+            };
+            let provider = Provider::from_config(&config, None).unwrap();
+            match provider {
+                Provider::Ollama { base_url, model, params } => {
+                    assert_eq!(base_url, "http://localhost:11434");
+                    assert_eq!(model, "mistral");
+                    assert_eq!(params, ModelParams::default());
+                }
+                _ => panic!("Expected Ollama variant"),
+            }
+        }
+
+        #[test]
+        fn test_ollama_from_config_with_model_override() {
+            let config = ProviderConfig::Ollama {
+                base_url: "http://localhost:11434".to_string(),
+                default_model: "mistral".to_string(),
+            };
+            let provider = Provider::from_config(&config, Some("qwen3:8b")).unwrap();
+            match provider {
+                Provider::Ollama { model, .. } => assert_eq!(model, "qwen3:8b"),
+                _ => panic!("Expected Ollama variant"),
+            }
+        }
+
+        #[test]
+        fn test_ollama_from_config_with_params() {
+            let config = ProviderConfig::Ollama {
+                base_url: "http://localhost:11434".to_string(),
+                default_model: "mistral".to_string(),
+            };
+            let params = ModelParams {
+                temperature: Some(0.9),
+                max_tokens: Some(1024),
+                ..Default::default()
+            };
+            let provider =
+                Provider::from_config_with_params(&config, None, params.clone()).unwrap();
+            match provider {
+                Provider::Ollama { params: p, .. } => {
+                    assert_eq!(p.temperature, Some(0.9));
+                    assert_eq!(p.max_tokens, Some(1024));
+                }
+                _ => panic!("Expected Ollama variant"),
+            }
+        }
+
+        #[test]
+        fn test_ollama_from_model_config() {
+            let model_config = ModelConfig {
+                provider: "ollama".to_string(),
+                model: "ministral-3:3b".to_string(),
+                temperature: 0.8,
+                max_tokens: 256,
+                top_p: Some(0.95),
+                frequency_penalty: None,
+                presence_penalty: None,
+            };
+            let provider_config = ProviderConfig::Ollama {
+                base_url: "http://localhost:11434".to_string(),
+                default_model: "mistral".to_string(),
+            };
+            let provider =
+                Provider::from_model_config(&model_config, &provider_config).unwrap();
+            match provider {
+                Provider::Ollama { model, params, .. } => {
+                    assert_eq!(model, "ministral-3:3b");
+                    assert_eq!(params.temperature, Some(0.8));
+                    assert_eq!(params.max_tokens, Some(256));
+                    assert_eq!(params.top_p, Some(0.95));
+                }
+                _ => panic!("Expected Ollama variant"),
+            }
+        }
+
+        #[test]
+        fn test_ollama_from_env_default_fallback() {
+            // Remove all vars to ensure Ollama default path
+            std::env::remove_var("OLLAMA_URL");
+            std::env::remove_var("OLLAMA_BASE_URL");
+            std::env::remove_var("OLLAMA_MODEL");
+            std::env::remove_var("LLAMACPP_MODEL_PATH");
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+
+            let provider = Provider::from_env().unwrap();
+            match provider {
+                Provider::Ollama { base_url, model, .. } => {
+                    assert_eq!(base_url, "http://localhost:11434");
+                    assert_eq!(model, "ministral-3:3b");
+                }
+                _ => panic!("Expected Ollama variant with default config"),
+            }
+        }
+
+        #[test]
+        fn test_factory_with_ollama_provider() {
+            let provider = Provider::Ollama {
+                base_url: "http://localhost:11434".to_string(),
+                model: "test-model".to_string(),
+                params: ModelParams::default(),
+            };
+            let factory = LLMClientFactory::new(provider);
+            assert_eq!(factory.default_provider().name(), "ollama");
+            assert!(!factory.default_provider().requires_api_key());
+            assert!(factory.default_provider().is_local());
+        }
+
+        #[test]
+        fn test_factory_trait_default_provider() {
+            let provider = Provider::Ollama {
+                base_url: "http://localhost:11434".to_string(),
+                model: "test".to_string(),
+                params: ModelParams::default(),
+            };
+            let factory = LLMClientFactory::new(provider);
+            let trait_ref: &dyn LLMClientFactoryTrait = &factory;
+            assert_eq!(trait_ref.default_provider().name(), "ollama");
+        }
+    }
+
+    // ===== OpenAI provider tests (feature-gated) =====
+
+    #[cfg(feature = "openai")]
+    mod openai_tests {
+        use super::*;
+
+        #[test]
+        fn test_openai_name() {
+            let provider = Provider::OpenAI {
+                api_key: "sk-test".to_string(),
+                api_base: "https://api.openai.com/v1".to_string(),
+                model: "gpt-4".to_string(),
+                params: ModelParams::default(),
+            };
+            assert_eq!(provider.name(), "openai");
+        }
+
+        #[test]
+        fn test_openai_requires_api_key() {
+            let provider = Provider::OpenAI {
+                api_key: "sk-test".to_string(),
+                api_base: "https://api.openai.com/v1".to_string(),
+                model: "gpt-4".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(provider.requires_api_key());
+        }
+
+        #[test]
+        fn test_openai_is_local_localhost() {
+            let provider = Provider::OpenAI {
+                api_key: "test".to_string(),
+                api_base: "http://localhost:8000/v1".to_string(),
+                model: "local".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(provider.is_local());
+        }
+
+        #[test]
+        fn test_openai_is_local_127_0_0_1() {
+            let provider = Provider::OpenAI {
+                api_key: "test".to_string(),
+                api_base: "http://127.0.0.1:8000/v1".to_string(),
+                model: "local".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(provider.is_local());
+        }
+
+        #[test]
+        fn test_openai_is_not_local_remote() {
+            let provider = Provider::OpenAI {
+                api_key: "sk-test".to_string(),
+                api_base: "https://api.openai.com/v1".to_string(),
+                model: "gpt-4".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(!provider.is_local());
+        }
+
+        #[test]
+        fn test_openai_from_config_missing_env_var() {
+            // Ensure the env var is not set to test the error path
+            std::env::remove_var("TEST_OPENAI_MISSING_KEY");
+            let config = ProviderConfig::OpenAI {
+                api_key_env: "TEST_OPENAI_MISSING_KEY".to_string(),
+                api_base: "https://api.openai.com/v1".to_string(),
+                default_model: "gpt-4".to_string(),
+            };
+            let result = Provider::from_config(&config, None);
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                AppError::Configuration(msg) => {
+                    assert!(msg.contains("TEST_OPENAI_MISSING_KEY"));
+                }
+                other => panic!("Expected Configuration error, got: {:?}", other),
+            }
+        }
+    }
+
+    // ===== Anthropic provider tests (feature-gated) =====
+
+    #[cfg(feature = "anthropic")]
+    mod anthropic_tests {
+        use super::*;
+
+        #[test]
+        fn test_anthropic_name() {
+            let provider = Provider::Anthropic {
+                api_key: "sk-ant-test".to_string(),
+                model: "claude-3-5-sonnet-20241022".to_string(),
+                params: ModelParams::default(),
+            };
+            assert_eq!(provider.name(), "anthropic");
+        }
+
+        #[test]
+        fn test_anthropic_requires_api_key() {
+            let provider = Provider::Anthropic {
+                api_key: "sk-ant-test".to_string(),
+                model: "claude-3-5-sonnet-20241022".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(provider.requires_api_key());
+        }
+
+        #[test]
+        fn test_anthropic_is_not_local() {
+            let provider = Provider::Anthropic {
+                api_key: "sk-ant-test".to_string(),
+                model: "claude-3-5-sonnet-20241022".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(!provider.is_local());
+        }
+
+        #[test]
+        fn test_anthropic_from_config_missing_env_var() {
+            std::env::remove_var("TEST_ANTHROPIC_MISSING_KEY");
+            let config = ProviderConfig::Anthropic {
+                api_key_env: "TEST_ANTHROPIC_MISSING_KEY".to_string(),
+                default_model: "claude-3-5-sonnet-20241022".to_string(),
+            };
+            let result = Provider::from_config(&config, None);
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                AppError::Configuration(msg) => {
+                    assert!(msg.contains("TEST_ANTHROPIC_MISSING_KEY"));
+                }
+                other => panic!("Expected Configuration error, got: {:?}", other),
+            }
+        }
+    }
+
+    // ===== LlamaCpp provider tests (feature-gated) =====
+
+    #[cfg(feature = "llamacpp")]
+    mod llamacpp_tests {
+        use super::*;
+
+        #[test]
+        fn test_llamacpp_name() {
+            let provider = Provider::LlamaCpp {
+                model_path: "/models/test.gguf".to_string(),
+                params: ModelParams::default(),
+            };
+            assert_eq!(provider.name(), "llamacpp");
+        }
+
+        #[test]
+        fn test_llamacpp_requires_no_api_key() {
+            let provider = Provider::LlamaCpp {
+                model_path: "/models/test.gguf".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(!provider.requires_api_key());
+        }
+
+        #[test]
+        fn test_llamacpp_is_always_local() {
+            let provider = Provider::LlamaCpp {
+                model_path: "/models/test.gguf".to_string(),
+                params: ModelParams::default(),
+            };
+            assert!(provider.is_local());
+        }
+
+        #[test]
+        fn test_llamacpp_from_config() {
+            let config = ProviderConfig::LlamaCpp {
+                model_path: "/models/llama.gguf".to_string(),
+                n_ctx: 4096,
+                n_threads: 4,
+                max_tokens: 512,
+            };
+            let provider = Provider::from_config(&config, None).unwrap();
+            match provider {
+                Provider::LlamaCpp { model_path, params } => {
+                    assert_eq!(model_path, "/models/llama.gguf");
+                    // from_config uses default ModelParams
+                    assert_eq!(params, ModelParams::default());
+                }
+                _ => panic!("Expected LlamaCpp variant"),
+            }
+        }
+    }
+}

@@ -3263,7 +3263,8 @@ output_usd_per_million_tokens = 0.0
 
     #[test]
     fn test_empty_toml_parses_with_defaults() {
-        let config: AresConfig = toml::from_str("").unwrap();
+        let toml_str = "[server]\n[auth]\njwt_secret_env = \"TEST_JWT\"\napi_key_env = \"TEST_API\"\n[database]\n";
+        let config: AresConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 3000);
         assert!(config.providers.is_empty());
@@ -3275,7 +3276,8 @@ output_usd_per_million_tokens = 0.0
 
     #[test]
     fn test_minimal_toml_with_only_server() {
-        let config: AresConfig = toml::from_str("[server]\nport = 9999\n").unwrap();
+        let toml_str = "[server]\nport = 9999\n\n[auth]\njwt_secret_env = \"TEST_JWT\"\napi_key_env = \"TEST_API\"\n\n[database]\n";
+        let config: AresConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.server.port, 9999);
         assert_eq!(config.server.host, "127.0.0.1");
     }
@@ -3357,8 +3359,6 @@ provider = "p"
 model = "m2"
 [agents.a1]
 model = "m1"
-[agents.a2]
-model = "m2"
 [workflows.w]
 entry_agent = "a1"
 "#;

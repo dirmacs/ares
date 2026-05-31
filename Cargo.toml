@@ -4,6 +4,7 @@ members = [
     ".", "crates/ares-vector", "crates/ares-types", "crates/ares-config",
     "crates/ares-rag", "crates/ares-tools", "crates/ares-llm",
     "crates/ares-db", "crates/ares-mcp", "crates/ares-agents",
+    "crates/ares-auth", "crates/ares-memory",
 ]
 exclude = ["ui"]
 resolver = "2"
@@ -35,6 +36,8 @@ ares-llm = { path = "crates/ares-llm" }
 ares-db = { path = "crates/ares-db" }
 ares-mcp = { path = "crates/ares-mcp" }
 ares-agents = { path = "crates/ares-agents" }
+ares-auth = { path = "crates/ares-auth" }
+ares-memory = { path = "crates/ares-memory" }
 anyhow = "1.0.100"
 hex = "0.4"
 rand = "0.9.2"
@@ -221,6 +224,7 @@ ares-llm = { workspace = true }
 ares-db = { workspace = true }
 ares-mcp = { workspace = true }
 ares-agents = { workspace = true }
+ares-auth = { workspace = true }
 
 # HuggingFace model downloads (DRY — reuse lancor's hub client)
 lancor = "0.2"

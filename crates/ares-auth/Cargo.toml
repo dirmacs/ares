@@ -1,0 +1,19 @@
+[package]
+name = "ares-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "JWT authentication and password hashing for A.R.E.S"
+
+[dependencies]
+ares-types = { workspace = true }
+argon2 = "0.5.3"
+chrono = { workspace = true }
+jsonwebtoken = { version = "10.3.0", features = ["use_pem", "rust_crypto"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10.9"
+uuid = { workspace = true }

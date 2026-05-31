@@ -116,6 +116,112 @@ pub(crate) fn pre_download_model(
 }
 
 // ============================================================================
+// Embedding Vector Utilities
+// ============================================================================
+
+/// Cosine similarity between two dense embeddings.
+///
+/// Returns a value in `[-1.0, 1.0]` where `1.0` means identical direction.
+/// Returns `0.0` when vectors have mismatched lengths or zero magnitude.
+#[inline]
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+
+    let mut dot = 0.0f32;
+    let mut norm_a = 0.0f32;
+    let mut norm_b = 0.0f32;
+
+    for (x, y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
+    }
+
+    let denom = norm_a.sqrt() * norm_b.sqrt();
+    if denom == 0.0 {
+        0.0
+    } else {
+        (dot / denom).clamp(-1.0, 1.0)
+    }
+}
+
+/// Cosine distance between two embeddings (`1.0 - cosine_similarity`).
+///
+/// Lower values indicate greater similarity. Range: `[0.0, 2.0]`.
+#[inline]
+pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
+    1.0 - cosine_similarity(a, b)
+}
+
+/// Euclidean (L2) distance between two embeddings.
+///
+/// Returns [`AppError::InvalidInput`] when dimensions do not match.
+pub fn euclidean_distance(a: &[f32], b: &[f32]) -> Result<f32> {
+    if a.len() != b.len() {
+        return Err(AppError::InvalidInput(format!(
+            "Embedding dimension mismatch: {} vs {}",
+            a.len(),
+            b.len()
+        )));
+    }
+
+    let sum_sq: f32 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| {
+            let d = x - y;
+            d * d
+        })
+        .sum();
+
+    Ok(sum_sq.sqrt())
+}
+
+/// L2-normalize an embedding in place (unit length). No-op for zero vectors.
+pub fn normalize_embedding(embedding: &mut [f32]) {
+    let norm_sq: f32 = embedding.iter().map(|x| x * x).sum();
+    if norm_sq == 0.0 {
+        return;
+    }
+    let inv = norm_sq.sqrt().recip();
+    for value in embedding.iter_mut() {
+        *value *= inv;
+    }
+}
+
+/// Validate that an embedding matches the expected model dimension.
+pub fn validate_embedding_dims(embedding: &[f32], expected_dims: usize) -> Result<()> {
+    if embedding.is_empty() {
+        return Err(AppError::InvalidInput(
+            "Embedding vector must not be empty".to_string(),
+        ));
+    }
+    if embedding.len() != expected_dims {
+        return Err(AppError::InvalidInput(format!(
+            "Expected embedding dimension {}, got {}",
+            expected_dims,
+            embedding.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Construct a validated dense embedding vector for the given model dimension.
+pub fn dense_embedding(values: Vec<f32>, expected_dims: usize) -> Result<Vec<f32>> {
+    validate_embedding_dims(&values, expected_dims)?;
+    Ok(values)
+}
+
+/// Error returned when sparse embeddings are requested but not configured.
+pub(crate) fn sparse_embeddings_disabled_error() -> AppError {
+    AppError::Internal(
+        "Sparse embeddings not enabled. Set sparse_enabled: true in config.".to_string(),
+    )
+}
+
+// ============================================================================
 // Embedding Model Configuration
 // ============================================================================
 
@@ -867,11 +973,10 @@ impl EmbeddingService {
         &self,
         texts: &[S],
     ) -> Result<Vec<fastembed::SparseEmbedding>> {
-        let sparse_model = self.sparse_model.as_ref().ok_or_else(|| {
-            AppError::Internal(
-                "Sparse embeddings not enabled. Set sparse_enabled: true in config.".to_string(),
-            )
-        })?;
+        let sparse_model = self
+            .sparse_model
+            .as_ref()
+            .ok_or_else(sparse_embeddings_disabled_error)?;
 
         let texts_owned: Vec<String> = texts.iter().map(|s| s.as_ref().to_string()).collect();
         let batch_size = self.config.batch_size;
@@ -1980,4 +2085,137 @@ mod tests {
         let b = a;
         assert_eq!(a, b);
     }
+    // ---- Embedding vector utilities ----
+
+    #[test]
+    fn cosine_similarity_identical_unit_vectors() {
+        let a = [1.0f32, 0.0, 0.0];
+        let b = [1.0, 0.0, 0.0];
+        assert!((cosine_similarity(&a, &b) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal_vectors() {
+        let a = [1.0f32, 0.0];
+        let b = [0.0, 1.0];
+        assert!(cosine_similarity(&a, &b).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn cosine_similarity_opposite_vectors() {
+        let a = [1.0f32, 0.0];
+        let b = [-1.0, 0.0];
+        assert!((cosine_similarity(&a, &b) + 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn cosine_similarity_mismatched_lengths_returns_zero() {
+        assert_eq!(cosine_similarity(&[1.0, 0.0], &[1.0, 0.0, 0.0]), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_empty_vectors_returns_zero() {
+        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_zero_vector_returns_zero() {
+        assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 1.0]), 0.0);
+    }
+
+    #[test]
+    fn cosine_distance_matches_one_minus_similarity() {
+        let a = [3.0f32, 4.0];
+        let b = [4.0, 3.0];
+        let sim = cosine_similarity(&a, &b);
+        assert!((cosine_distance(&a, &b) - (1.0 - sim)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn euclidean_distance_identical_vectors_is_zero() {
+        let a = [1.0f32, 2.0, 3.0];
+        let b = [1.0, 2.0, 3.0];
+        assert!((euclidean_distance(&a, &b).unwrap()).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn euclidean_distance_known_value() {
+        let a = [0.0f32, 0.0];
+        let b = [3.0, 4.0];
+        assert!((euclidean_distance(&a, &b).unwrap() - 5.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn euclidean_distance_dimension_mismatch_is_error() {
+        let err = euclidean_distance(&[1.0], &[1.0, 2.0]).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(err.to_string().contains("dimension mismatch"));
+    }
+
+    #[test]
+    fn normalize_embedding_produces_unit_length() {
+        let mut v = [3.0f32, 4.0];
+        normalize_embedding(&mut v);
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-6);
+        assert!((v[0] - 0.6).abs() < 1e-6);
+        assert!((v[1] - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn normalize_embedding_zero_vector_is_noop() {
+        let mut v = [0.0f32, 0.0];
+        normalize_embedding(&mut v);
+        assert_eq!(v, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn validate_embedding_dims_accepts_matching_length() {
+        assert!(validate_embedding_dims(&[0.1, 0.2, 0.3], 3).is_ok());
+    }
+
+    #[test]
+    fn validate_embedding_dims_rejects_wrong_length() {
+        let err = validate_embedding_dims(&[1.0, 2.0], 384).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(err.to_string().contains("Expected embedding dimension 384"));
+    }
+
+    #[test]
+    fn validate_embedding_dims_rejects_empty() {
+        let err = validate_embedding_dims(&[], 384).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn dense_embedding_creates_valid_vector() {
+        let values: Vec<f32> = (0..384).map(|i| i as f32 * 0.01).collect();
+        let embedding = dense_embedding(values.clone(), 384).unwrap();
+        assert_eq!(embedding, values);
+    }
+
+    #[test]
+    fn dense_embedding_propagates_dimension_error() {
+        let err = dense_embedding(vec![1.0, 2.0], 3).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn sparse_embeddings_disabled_error_message() {
+        let err = sparse_embeddings_disabled_error();
+        let msg = err.to_string();
+        assert!(msg.contains("Sparse embeddings not enabled"));
+        assert!(msg.contains("sparse_enabled"));
+    }
+
+    #[test]
+    fn cosine_similarity_high_dimensional_embeddings() {
+        let dim = EmbeddingModelType::BgeSmallEnV15.dimensions();
+        let a: Vec<f32> = (0..dim).map(|i| i as f32).collect();
+        let b = a.clone();
+        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-5);
+    }
+
 }
+

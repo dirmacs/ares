@@ -103,7 +103,7 @@ pub struct LLMResponse {
 }
 
 /// Model inference parameters
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ModelParams {
     /// Sampling temperature (0.0 = deterministic, 1.0+ = creative)
     pub temperature: Option<f32>,
@@ -988,7 +988,6 @@ mod tests {
             let provider = Provider::from_config(&config, Some("qwen3:8b")).unwrap();
             match provider {
                 Provider::Ollama { model, .. } => assert_eq!(model, "qwen3:8b"),
-                _ => panic!("Expected Ollama variant"),
             }
         }
 
@@ -1010,7 +1009,6 @@ mod tests {
                     assert_eq!(p.temperature, Some(0.9));
                     assert_eq!(p.max_tokens, Some(1024));
                 }
-                _ => panic!("Expected Ollama variant"),
             }
         }
 
@@ -1038,7 +1036,6 @@ mod tests {
                     assert_eq!(params.max_tokens, Some(256));
                     assert_eq!(params.top_p, Some(0.95));
                 }
-                _ => panic!("Expected Ollama variant"),
             }
         }
 
@@ -1058,7 +1055,6 @@ mod tests {
                     assert_eq!(base_url, "http://localhost:11434");
                     assert_eq!(model, "ministral-3:3b");
                 }
-                _ => panic!("Expected Ollama variant with default config"),
             }
         }
 

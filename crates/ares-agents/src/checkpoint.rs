@@ -31,13 +31,13 @@ pub struct Checkpoint {
     pub status: CheckpointStatus,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CheckpointMessage {
     pub role: String, // "user" | "assistant" | "system"
     pub content: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCallRecord {
     pub tool_name: String,
     pub arguments: String,
@@ -278,5 +278,132 @@ mod tests {
 
         let loaded = mgr.load_latest("sess1").unwrap().unwrap();
         assert_eq!(loaded.status, CheckpointStatus::Failed("OOM".into()));
+    }
+
+    #[test]
+    fn test_restore_preserves_all_checkpoint_fields() {
+        let dir = temp_dir();
+        let mgr = CheckpointManager::new(dir.path()).unwrap();
+
+        let mut cp = sample_checkpoint("sess-restore", 3);
+        cp.id = "cp-full".into();
+        cp.agent_name = "researcher".into();
+        cp.partial_results = vec!["chunk-a".into(), "chunk-b".into()];
+        cp.status = CheckpointStatus::Completed;
+        cp.messages.push(CheckpointMessage {
+            role: "system".into(),
+            content: "follow instructions".into(),
+        });
+
+        mgr.save(&cp).unwrap();
+        let loaded = mgr.load_latest("sess-restore").unwrap().unwrap();
+
+        assert_eq!(loaded.id, cp.id);
+        assert_eq!(loaded.agent_name, cp.agent_name);
+        assert_eq!(loaded.session_id, cp.session_id);
+        assert_eq!(loaded.step, cp.step);
+        assert_eq!(loaded.messages, cp.messages);
+        assert_eq!(loaded.tool_calls, cp.tool_calls);
+        assert_eq!(loaded.partial_results, cp.partial_results);
+        assert_eq!(loaded.timestamp, cp.timestamp);
+        assert_eq!(loaded.status, cp.status);
+    }
+
+    #[test]
+    fn test_checkpoint_status_completed_and_halted_round_trip() {
+        let dir = temp_dir();
+        let mgr = CheckpointManager::new(dir.path()).unwrap();
+
+        let mut completed = sample_checkpoint("sess-status", 0);
+        completed.status = CheckpointStatus::Completed;
+        mgr.save(&completed).unwrap();
+        let loaded = mgr.load_latest("sess-status").unwrap().unwrap();
+        assert_eq!(loaded.status, CheckpointStatus::Completed);
+
+        let mut halted = sample_checkpoint("sess-status", 1);
+        halted.status = CheckpointStatus::Halted("loop detected".into());
+        mgr.save(&halted).unwrap();
+        let loaded = mgr.load_latest("sess-status").unwrap().unwrap();
+        assert_eq!(
+            loaded.status,
+            CheckpointStatus::Halted("loop detected".into())
+        );
+    }
+
+    #[test]
+    fn new_fails_when_checkpoint_path_is_a_file() {
+        let dir = temp_dir();
+        let file_path = dir.path().join("not_a_dir");
+        std::fs::write(&file_path, "blocking file").unwrap();
+
+        let err = match CheckpointManager::new(&file_path) {
+            Err(err) => err,
+            Ok(_) => panic!("expected checkpoint manager creation to fail"),
+        };
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::NotADirectory
+                    | std::io::ErrorKind::PermissionDenied
+                    | std::io::ErrorKind::AlreadyExists
+            ),
+            "unexpected error kind: {:?}",
+            err.kind()
+        );
+    }
+
+    #[test]
+    fn load_latest_invalid_json_returns_invalid_data() {
+        let dir = temp_dir();
+        let mgr = CheckpointManager::new(dir.path()).unwrap();
+        let session = "bad-json";
+
+        let checkpoint_path = dir.path().join(format!("{session}_0.json"));
+        std::fs::write(&checkpoint_path, "not valid json").unwrap();
+        let latest_path = dir.path().join(format!("{session}_latest.json"));
+        std::fs::write(&latest_path, format!("{session}_0.json")).unwrap();
+
+        let err = mgr.load_latest(session).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn load_latest_stale_pointer_returns_none() {
+        let dir = temp_dir();
+        let mgr = CheckpointManager::new(dir.path()).unwrap();
+        let session = "stale-pointer";
+        let latest_path = dir.path().join(format!("{session}_latest.json"));
+        std::fs::write(&latest_path, "missing_checkpoint_file.json").unwrap();
+
+        assert!(mgr.load_latest(session).unwrap().is_none());
+    }
+
+    #[test]
+    fn list_checkpoints_skips_corrupt_entries() {
+        let dir = temp_dir();
+        let mgr = CheckpointManager::new(dir.path()).unwrap();
+        let session = "sess-skip";
+
+        mgr.save(&sample_checkpoint(session, 0)).unwrap();
+        mgr.save(&sample_checkpoint(session, 1)).unwrap();
+
+        let corrupt = dir.path().join(format!("{session}_corrupt.json"));
+        std::fs::write(corrupt, "{not valid json").unwrap();
+
+        let listed = mgr.list_checkpoints(session).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].step, 0);
+        assert_eq!(listed[1].step, 1);
+    }
+
+    #[test]
+    fn has_checkpoint_false_without_latest_pointer() {
+        let dir = temp_dir();
+        let mgr = CheckpointManager::new(dir.path()).unwrap();
+
+        mgr.save(&sample_checkpoint("sess-has", 0)).unwrap();
+        std::fs::remove_file(dir.path().join("sess-has_latest.json")).unwrap();
+
+        assert!(!mgr.has_checkpoint("sess-has"));
     }
 }

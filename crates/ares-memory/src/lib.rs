@@ -424,4 +424,220 @@ mod tests {
         assert_eq!(output[0].key, "format");
     }
 
+    #[test]
+    fn test_user_memory_serde_roundtrip() {
+        let memory = UserMemory {
+            user_id: "user-42".to_string(),
+            preferences: vec![Preference {
+                category: "output".to_string(),
+                key: "format".to_string(),
+                value: "markdown".to_string(),
+                confidence: 0.75,
+            }],
+            facts: vec![MemoryFact {
+                id: "fact-1".to_string(),
+                user_id: "user-42".to_string(),
+                category: "work".to_string(),
+                fact_key: "team".to_string(),
+                fact_value: "platform".to_string(),
+                confidence: 0.95,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }],
+        };
+
+        let json = serde_json::to_string(&memory).expect("serialize UserMemory");
+        let parsed: UserMemory = serde_json::from_str(&json).expect("deserialize UserMemory");
+        assert_eq!(parsed.user_id, "user-42");
+        assert_eq!(parsed.preferences.len(), 1);
+        assert_eq!(parsed.facts[0].fact_key, "team");
+    }
+
+    #[test]
+    fn test_message_serde_roundtrip() {
+        let msg = Message {
+            role: MessageRole::Assistant,
+            content: "hello".to_string(),
+            timestamp: Utc::now(),
+        };
+        let json = serde_json::to_string(&msg).expect("serialize Message");
+        let parsed: Message = serde_json::from_str(&json).expect("deserialize Message");
+        assert_eq!(parsed.content, "hello");
+        assert!(matches!(parsed.role, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn test_format_memory_respects_max_limits() {
+        let prefs: Vec<Preference> = (0..MAX_PREFERENCES_IN_PROMPT + 5)
+            .map(|i| Preference {
+                category: "output".to_string(),
+                key: format!("key-{i}"),
+                value: "v".to_string(),
+                confidence: 0.9,
+            })
+            .collect();
+        let facts: Vec<MemoryFact> = (0..MAX_FACTS_IN_PROMPT + 5)
+            .map(|i| MemoryFact {
+                id: format!("id-{i}"),
+                user_id: "u".to_string(),
+                category: "work".to_string(),
+                fact_key: format!("fact-{i}"),
+                fact_value: "v".to_string(),
+                confidence: 0.9,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .collect();
+
+        let memory = UserMemory {
+            user_id: "u".to_string(),
+            preferences: prefs,
+            facts,
+        };
+        let formatted = format_memory_for_prompt(&memory);
+        for i in MAX_PREFERENCES_IN_PROMPT..MAX_PREFERENCES_IN_PROMPT + 5 {
+            assert!(
+                !formatted.contains(&format!("key-{i}")),
+                "preference beyond cap should be omitted"
+            );
+        }
+        for i in MAX_FACTS_IN_PROMPT..MAX_FACTS_IN_PROMPT + 5 {
+            assert!(
+                !formatted.contains(&format!("fact-{i}")),
+                "fact beyond cap should be omitted"
+            );
+        }
+        assert!(formatted.contains("key-0"));
+        assert!(formatted.contains("fact-0"));
+    }
+
+    #[test]
+    fn test_format_memory_filters_low_confidence_facts() {
+        let memory = UserMemory {
+            user_id: "test".to_string(),
+            preferences: vec![],
+            facts: vec![
+                MemoryFact {
+                    id: "1".to_string(),
+                    user_id: "test".to_string(),
+                    category: "work".to_string(),
+                    fact_key: "kept".to_string(),
+                    fact_value: "yes".to_string(),
+                    confidence: 0.9,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                },
+                MemoryFact {
+                    id: "2".to_string(),
+                    user_id: "test".to_string(),
+                    category: "work".to_string(),
+                    fact_key: "dropped".to_string(),
+                    fact_value: "no".to_string(),
+                    confidence: 0.2,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                },
+            ],
+        };
+        let result = format_memory_for_prompt(&memory);
+        assert!(result.contains("kept"));
+        assert!(!result.contains("dropped"));
+    }
+
+    #[test]
+    fn test_truncate_history_zero_window_returns_empty() {
+        let history: Vec<Message> = (0..3)
+            .map(|i| Message {
+                role: MessageRole::User,
+                content: format!("msg {i}"),
+                timestamp: Utc::now(),
+            })
+            .collect();
+        assert!(truncate_history(&history, 0).is_empty());
+    }
+
+    #[test]
+    fn test_truncate_history_to_tokens_zero_budget_returns_empty() {
+        let history: Vec<Message> = vec![Message {
+            role: MessageRole::User,
+            content: "non-empty".to_string(),
+            timestamp: Utc::now(),
+        }];
+        assert!(truncate_history_to_tokens(&history, 0).is_empty());
+    }
+
+    #[test]
+    fn test_build_context_uses_default_history_window() {
+        let history: Vec<Message> = (0..DEFAULT_HISTORY_WINDOW + 5)
+            .map(|i| Message {
+                role: MessageRole::User,
+                content: format!("Message {}", i),
+                timestamp: Utc::now(),
+            })
+            .collect();
+
+        let context = build_context(
+            "user".to_string(),
+            "session".to_string(),
+            history,
+            None,
+            None,
+        );
+        assert_eq!(context.conversation_history.len(), DEFAULT_HISTORY_WINDOW);
+    }
+
+    #[test]
+    fn test_format_preferences_compact_filters_low_confidence() {
+        let prefs = vec![
+            Preference {
+                category: "output".to_string(),
+                key: "keep".to_string(),
+                value: "yes".to_string(),
+                confidence: 0.9,
+            },
+            Preference {
+                category: "output".to_string(),
+                key: "drop".to_string(),
+                value: "no".to_string(),
+                confidence: 0.1,
+            },
+        ];
+        let result = format_preferences_compact(&prefs);
+        assert!(result.contains("keep"));
+        assert!(!result.contains("drop"));
+    }
+
+    #[test]
+    fn test_filter_facts_by_category_no_matches() {
+        let facts = vec![MemoryFact {
+            id: "1".to_string(),
+            user_id: "u".to_string(),
+            category: "work".to_string(),
+            fact_key: "role".to_string(),
+            fact_value: "engineer".to_string(),
+            confidence: 0.9,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }];
+        assert!(filter_facts_by_category(&facts, "missing").is_empty());
+    }
+
+    #[test]
+    fn test_truncate_history_to_tokens_keeps_recent_within_budget() {
+        let history: Vec<Message> = vec![
+            Message {
+                role: MessageRole::User,
+                content: "a".repeat(40),
+                timestamp: Utc::now(),
+            },
+            Message {
+                role: MessageRole::User,
+                content: "short".to_string(),
+                timestamp: Utc::now(),
+            },
+        ];
+        let truncated = truncate_history_to_tokens(&history, 5);
+        assert_eq!(truncated.len(), 1);
+        assert_eq!(truncated[0].content, "short");
+    }
 }

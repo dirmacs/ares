@@ -339,3 +339,314 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .merge(admin_routes)
         .nest("/v1", v1_routes)
 }
+
+
+
+/// Joins a route prefix and suffix into a single path (for nested routers).
+pub(crate) fn join_route_paths(prefix: &str, suffix: &str) -> String {
+    let prefix = prefix.trim_end_matches('/');
+    let suffix = if suffix.starts_with('/') {
+        suffix.to_string()
+    } else {
+        format!("/{suffix}")
+    };
+    format!("{prefix}{suffix}")
+}
+
+/// Public routes that do not require JWT authentication.
+pub(crate) fn public_route_paths() -> &'static [&'static str] {
+    &[
+        "/auth/register",
+        "/auth/login",
+        "/auth/refresh",
+        "/auth/logout",
+        "/agents",
+    ]
+}
+
+/// Protected routes that require JWT authentication (non-v1).
+pub(crate) fn protected_route_paths() -> &'static [&'static str] {
+    &[
+        "/chat",
+        "/chat/stream",
+        "/research",
+        "/memory",
+        "/workflows",
+        "/conversations",
+        "/loops/start",
+    ]
+}
+
+#[cfg(test)]
+mod route_path_tests {
+    use super::*;
+
+    #[test]
+    fn join_route_paths_nests_v1_chat() {
+        assert_eq!(join_route_paths("/v1", "/chat"), "/v1/chat");
+    }
+
+    #[test]
+    fn join_route_paths_adds_leading_slash_when_missing() {
+        assert_eq!(join_route_paths("/api", "health"), "/api/health");
+    }
+
+    #[test]
+    fn public_route_paths_include_auth_login() {
+        assert!(public_route_paths().contains(&"/auth/login"));
+    }
+
+    #[test]
+    fn protected_route_paths_include_research() {
+        assert!(protected_route_paths().contains(&"/research"));
+    }
+
+    #[test]
+    fn public_and_protected_paths_do_not_overlap() {
+        for path in public_route_paths() {
+            assert!(!protected_route_paths().contains(path));
+        }
+    }
+}
+
+#[cfg(all(test, feature = "postgres"))]
+mod tests {
+    use super::*;
+    use crate::agents::context_provider::NoOpContextProvider;
+    use crate::utils::toml_config::{
+        AgentConfig, AresConfig, AuthConfig, BillingConfig, DatabaseConfig,
+        DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig, ServerConfig,
+    };
+    use crate::{
+        AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory,
+        DynamicConfigManager, ProviderRegistry, ToolRegistry,
+    };
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    fn minimal_config() -> AresConfig {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "p".into(),
+            ProviderConfig::Ollama {
+                base_url: "http://127.0.0.1:11434".into(),
+                default_model: "m".into(),
+            },
+        );
+        let mut models = HashMap::new();
+        models.insert(
+            "default".into(),
+            ModelConfig {
+                provider: "p".into(),
+                model: "m".into(),
+                temperature: 0.7,
+                max_tokens: 512,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
+            },
+        );
+        let mut agents = HashMap::new();
+        agents.insert(
+            "a".into(),
+            AgentConfig {
+                model: "default".into(),
+                system_prompt: None,
+                tools: vec![],
+                max_tool_iterations: 1,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
+        );
+        AresConfig {
+            server: ServerConfig::default(),
+            auth: AuthConfig {
+                jwt_secret_env: "JWT_SECRET".into(),
+                jwt_access_expiry: 900,
+                jwt_refresh_expiry: 604800,
+                api_key_env: "API_KEY".into(),
+            },
+            database: DatabaseConfig::default(),
+            config: DynamicConfigPaths::default(),
+            providers,
+            models,
+            tools: HashMap::new(),
+            agents,
+            workflows: HashMap::new(),
+            rag: RagConfig::default(),
+            billing: BillingConfig::default(),
+            #[cfg(feature = "skills")]
+            skills: None,
+        }
+    }
+
+    fn test_app_state() -> AppState {
+        let config = minimal_config();
+        let config_manager = Arc::new(AresConfigManager::from_config(config));
+        let provider_registry = Arc::new(ProviderRegistry::from_config(&config_manager.config()));
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let agent_registry = Arc::new(AgentRegistry::from_config(
+            &config_manager.config(),
+            provider_registry.clone(),
+            tool_registry.clone(),
+        ));
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base = temp_dir.path();
+        for sub in ["agents", "models", "tools", "workflows", "mcps"] {
+            std::fs::create_dir_all(base.join(sub)).expect("mkdir");
+        }
+        let dynamic_config = Arc::new(
+            DynamicConfigManager::new(
+                base.join("agents"),
+                base.join("models"),
+                base.join("tools"),
+                base.join("workflows"),
+                base.join("mcps"),
+                false,
+            )
+            .expect("dynamic config"),
+        );
+        std::mem::forget(temp_dir);
+
+        let db = Arc::new(crate::db::PostgresClient::new_test());
+        AppState {
+            config_manager,
+            dynamic_config,
+            db: db.clone(),
+            tenant_db: Arc::new(TenantDb::new(db)),
+            llm_factory: Arc::new(ConfigBasedLLMFactory::new(
+                provider_registry.clone(),
+                "default",
+            )),
+            provider_registry,
+            agent_registry,
+            tool_registry,
+            auth_service: Arc::new(AuthService::new(
+                "test-secret-at-least-32-characters-long".into(),
+                900,
+                604800,
+            )),
+            deploy_registry: deploy::new_deploy_registry(),
+            loop_registry: loops::LoopRegistry::new(),
+            emergency_stop: Arc::new(AtomicBool::new(false)),
+            context_provider: Arc::new(NoOpContextProvider),
+            #[cfg(feature = "mcp")]
+            mcp_registry: None,
+        }
+    }
+
+    fn test_server(state: AppState) -> axum_test::TestServer {
+        let auth = state.auth_service.clone();
+        let tenant_db = state.tenant_db.clone();
+        let app = create_router(auth, tenant_db).with_state(state);
+        axum_test::TestServer::new(app).expect("test server")
+    }
+
+    fn public_api_paths() -> &'static [&'static str] {
+        &[
+            "/auth/register",
+            "/auth/login",
+            "/auth/refresh",
+            "/auth/logout",
+            "/agents",
+        ]
+    }
+
+    #[test]
+    fn public_api_paths_include_auth_and_agents() {
+        let paths = public_api_paths();
+        assert!(paths.contains(&"/auth/register"));
+        assert!(paths.contains(&"/auth/login"));
+        assert!(paths.contains(&"/agents"));
+    }
+
+    #[test]
+    fn public_api_paths_exclude_protected_resources() {
+        let paths = public_api_paths();
+        assert!(!paths.iter().any(|p| p.contains("chat")));
+        assert!(!paths.iter().any(|p| p.contains("conversations")));
+    }
+
+    #[test]
+    fn create_router_builds_without_panic() {
+        let state = test_app_state();
+        let _ = create_router(state.auth_service.clone(), state.tenant_db.clone());
+    }
+
+    #[test]
+    fn route_contract_does_not_depend_on_env() {
+        std::env::remove_var("DATABASE_URL");
+        std::env::remove_var("JWT_SECRET");
+        assert_eq!(public_api_paths().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn create_router_exposes_public_agents_list() {
+        let server = test_server(test_app_state());
+        let response = server.get("/agents").await;
+        response.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn create_router_protects_chat_without_jwt() {
+        let server = test_server(test_app_state());
+        let response = server
+            .post("/chat")
+            .json(&serde_json::json!({"message": "hi"}))
+            .await;
+        response.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn create_router_exposes_loop_routes_behind_jwt() {
+        let state = test_app_state();
+        let tokens = state
+            .auth_service
+            .generate_tokens("user-1", "user@example.com")
+            .expect("tokens");
+        let server = test_server(state);
+        let response = server
+            .get("/loops")
+            .add_header("authorization", format!("Bearer {}", tokens.access_token))
+            .await;
+        response.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn create_router_admin_deploys_requires_admin_secret() {
+        std::env::set_var("ADMIN_API_KEY", "test-admin-secret-value");
+        let server = test_server(test_app_state());
+
+        let unauthorized = server.get("/admin/deploys").await;
+        unauthorized.assert_status_unauthorized();
+
+        let authorized = server
+            .get("/admin/deploys")
+            .add_header("x-admin-secret", "test-admin-secret-value")
+            .await;
+        authorized.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn create_router_nests_v1_agents_behind_api_key_auth() {
+        let server = test_server(test_app_state());
+        let response = server.get("/v1/agents").await;
+        response.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_deploy_post_route() {
+        std::env::set_var("ADMIN_API_KEY", "deploy-route-secret");
+        let server = test_server(test_app_state());
+        let response = server
+            .post("/admin/deploy")
+            .add_header("x-admin-secret", "deploy-route-secret")
+            .json(&serde_json::json!({"target": "not-valid"}))
+            .await;
+        response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    }
+}

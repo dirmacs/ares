@@ -407,6 +407,31 @@ mod route_path_tests {
             assert!(!protected_route_paths().contains(path));
         }
     }
+
+    #[test]
+    fn join_route_paths_strips_trailing_slash_on_prefix() {
+        assert_eq!(join_route_paths("/v1/", "agents"), "/v1/agents");
+    }
+
+    #[test]
+    fn join_route_paths_preserves_suffix_with_leading_slash() {
+        assert_eq!(join_route_paths("/api", "/v1/chat"), "/api/v1/chat");
+    }
+
+    #[test]
+    fn protected_route_paths_include_conversations_and_chat() {
+        let paths = protected_route_paths();
+        assert!(paths.contains(&"/conversations"));
+        assert!(paths.contains(&"/chat"));
+        assert!(paths.contains(&"/chat/stream"));
+    }
+
+    #[test]
+    fn public_route_paths_include_refresh_and_logout() {
+        let paths = public_route_paths();
+        assert!(paths.contains(&"/auth/refresh"));
+        assert!(paths.contains(&"/auth/logout"));
+    }
 }
 
 #[cfg(all(test, feature = "postgres"))]

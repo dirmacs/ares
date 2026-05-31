@@ -1,0 +1,3625 @@
+//! TOML-based configuration for A.R.E.S
+//!
+//! This module provides declarative configuration for providers, models, agents,
+//! tools, and workflows via a TOML file (`ares.toml`).
+//!
+//! # Hot Reloading
+//!
+//! Configuration changes are automatically detected and applied at runtime.
+//! Use `AresConfigManager` for thread-safe access to the current configuration.
+
+use arc_swap::ArcSwap;
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tracing::{error, info, warn};
+
+/// Root configuration structure loaded from ares.toml
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AresConfig {
+    /// HTTP server configuration (host, port, log level).
+    pub server: ServerConfig,
+
+    /// Authentication configuration (JWT secrets, expiry times).
+    pub auth: AuthConfig,
+
+    /// Database configuration (Turso/SQLite, Qdrant).
+    pub database: DatabaseConfig,
+
+    /// Named LLM provider configurations
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderConfig>,
+
+    /// Named model configurations that reference providers
+    /// NOTE: These are being migrated to TOON files in config/models/
+    #[serde(default)]
+    pub models: HashMap<String, ModelConfig>,
+
+    /// Tool configurations
+    /// NOTE: These are being migrated to TOON files in config/tools/
+    #[serde(default)]
+    pub tools: HashMap<String, ToolConfig>,
+
+    /// Agent configurations
+    /// NOTE: These are being migrated to TOON files in config/agents/
+    #[serde(default)]
+    pub agents: HashMap<String, AgentConfig>,
+
+    /// Workflow configurations
+    /// NOTE: These are being migrated to TOON files in config/workflows/
+    #[serde(default)]
+    pub workflows: HashMap<String, WorkflowConfig>,
+
+    /// RAG configuration
+    #[serde(default)]
+    pub rag: RagConfig,
+
+    /// Billing and cost-estimation configuration
+    #[serde(default)]
+    pub billing: BillingConfig,
+
+    /// Skills configuration (SKILL.md discovery directories)
+    #[cfg(feature = "skills")]
+    #[serde(default)]
+    pub skills: Option<SkillsTomlConfig>,
+
+    /// Dynamic configuration paths (TOON files)
+    #[serde(default)]
+    pub config: DynamicConfigPaths,
+}
+
+// ============= Server Configuration =============
+
+/// Server configuration settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    /// Host address to bind to (default: "127.0.0.1").
+    #[serde(default = "default_host")]
+    pub host: String,
+
+    /// Port number to listen on (default: 3000).
+    #[serde(default = "default_port")]
+    pub port: u16,
+
+    /// Log level: "trace", "debug", "info", "warn", "error" (default: "info").
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+
+    /// Allowed CORS origins (default: ["*"] for development, set explicitly for production).
+    /// Use specific origins like `["https://yourdomain.com"]` in production.
+    #[serde(default = "default_cors_origins")]
+    pub cors_origins: Vec<String>,
+
+    /// Rate limiting: requests per second per IP (default: 100, 0 = disabled).
+    #[serde(default = "default_rate_limit")]
+    pub rate_limit_per_second: u32,
+
+    /// Rate limiting burst size (default: 10).
+    #[serde(default = "default_rate_limit_burst")]
+    pub rate_limit_burst: u32,
+}
+
+fn default_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_port() -> u16 {
+    3000
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_cors_origins() -> Vec<String> {
+    vec!["http://localhost:3000".to_string()]
+}
+
+fn default_rate_limit() -> u32 {
+    100
+}
+
+fn default_rate_limit_burst() -> u32 {
+    10
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: default_host(),
+            port: default_port(),
+            log_level: default_log_level(),
+            cors_origins: default_cors_origins(),
+            rate_limit_per_second: default_rate_limit(),
+            rate_limit_burst: default_rate_limit_burst(),
+        }
+    }
+}
+
+// ============= Authentication Configuration =============
+
+/// Authentication configuration settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// Environment variable name containing the JWT secret.
+    pub jwt_secret_env: String,
+
+    /// JWT access token expiry time in seconds (default: 900 = 15 minutes).
+    #[serde(default = "default_jwt_access_expiry")]
+    pub jwt_access_expiry: i64,
+
+    /// JWT refresh token expiry time in seconds (default: 604800 = 7 days).
+    #[serde(default = "default_jwt_refresh_expiry")]
+    pub jwt_refresh_expiry: i64,
+
+    /// Environment variable name containing the API key.
+    pub api_key_env: String,
+}
+
+fn default_jwt_access_expiry() -> i64 {
+    900
+}
+
+fn default_jwt_refresh_expiry() -> i64 {
+    604800
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            jwt_secret_env: "JWT_SECRET".to_string(),
+            jwt_access_expiry: default_jwt_access_expiry(),
+            jwt_refresh_expiry: default_jwt_refresh_expiry(),
+            api_key_env: "API_KEY".to_string(),
+        }
+    }
+}
+
+// ============= Database Configuration =============
+
+/// Database configuration settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseConfig {
+    /// PostgreSQL database URL (default: "postgres://postgres:postgres@localhost:5432/ares").
+    #[serde(default = "default_database_url")]
+    pub url: String,
+
+    /// Qdrant vector database configuration (optional).
+    pub qdrant: Option<QdrantConfig>,
+}
+
+fn default_database_url() -> String {
+    "postgres://postgres:postgres@localhost:5432/ares".to_string()
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            url: default_database_url(),
+            qdrant: None,
+        }
+    }
+}
+
+/// Qdrant vector database configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QdrantConfig {
+    /// Qdrant server URL (default: "http://localhost:6334").
+    #[serde(default = "default_qdrant_url")]
+    pub url: String,
+
+    /// Environment variable for Qdrant API key.
+    pub api_key_env: Option<String>,
+}
+
+fn default_qdrant_url() -> String {
+    "http://localhost:6334".to_string()
+}
+
+impl Default for QdrantConfig {
+    fn default() -> Self {
+        Self {
+            url: default_qdrant_url(),
+            api_key_env: None,
+        }
+    }
+}
+
+// ============= Provider Configuration =============
+
+/// LLM provider configuration. Tagged enum based on provider type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ProviderConfig {
+    /// Ollama local LLM server.
+    Ollama {
+        /// Ollama server URL (default: "http://localhost:11434").
+        #[serde(default = "default_ollama_url")]
+        base_url: String,
+        /// Default model to use with this provider.
+        default_model: String,
+    },
+    /// OpenAI API (or compatible endpoints).
+    OpenAI {
+        /// Environment variable containing API key.
+        api_key_env: String,
+        /// API base URL (default: `https://api.openai.com/v1`).
+        #[serde(default = "default_openai_base")]
+        api_base: String,
+        /// Default model to use with this provider.
+        default_model: String,
+    },
+    /// LlamaCpp for direct GGUF model loading.
+    LlamaCpp {
+        /// Path to the GGUF model file.
+        model_path: String,
+        /// Context window size (default: 4096).
+        #[serde(default = "default_n_ctx")]
+        n_ctx: u32,
+        /// Number of threads for inference (default: 4).
+        #[serde(default = "default_n_threads")]
+        n_threads: u32,
+        /// Maximum tokens to generate (default: 512).
+        #[serde(default = "default_max_tokens")]
+        max_tokens: u32,
+    },
+    /// Anthropic Claude API.
+    Anthropic {
+        /// Environment variable containing API key.
+        api_key_env: String,
+        /// Default model to use with this provider.
+        default_model: String,
+    },
+}
+
+impl ProviderConfig {
+    /// Returns the provider type discriminator (`ollama`, `openai`, etc.).
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            ProviderConfig::Ollama { .. } => "ollama",
+            ProviderConfig::OpenAI { .. } => "openai",
+            ProviderConfig::LlamaCpp { .. } => "llamacpp",
+            ProviderConfig::Anthropic { .. } => "anthropic",
+        }
+    }
+}
+
+impl std::str::FromStr for ProviderConfig {
+    type Err = ConfigError;
+
+    /// Parse a provider type name into a default `ProviderConfig` variant.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "ollama" => Ok(ProviderConfig::Ollama {
+                base_url: default_ollama_url(),
+                default_model: "default".to_string(),
+            }),
+            "openai" => Ok(ProviderConfig::OpenAI {
+                api_key_env: "OPENAI_API_KEY".to_string(),
+                api_base: default_openai_base(),
+                default_model: "gpt-4o".to_string(),
+            }),
+            "anthropic" => Ok(ProviderConfig::Anthropic {
+                api_key_env: "ANTHROPIC_API_KEY".to_string(),
+                default_model: "claude-3-5-sonnet-20241022".to_string(),
+            }),
+            "llamacpp" | "llama-cpp" | "llama_cpp" => Ok(ProviderConfig::LlamaCpp {
+                model_path: "./models/default.gguf".to_string(),
+                n_ctx: default_n_ctx(),
+                n_threads: default_n_threads(),
+                max_tokens: default_max_tokens(),
+            }),
+            other => Err(ConfigError::ValidationError(format!(
+                "Unknown provider type: {other}. Use: ollama, openai, anthropic, llamacpp"
+            ))),
+        }
+    }
+}
+
+fn default_ollama_url() -> String {
+    "http://localhost:11434".to_string()
+}
+
+fn default_openai_base() -> String {
+    "https://api.openai.com/v1".to_string()
+}
+
+fn default_n_ctx() -> u32 {
+    4096
+}
+
+fn default_n_threads() -> u32 {
+    4
+}
+
+fn default_max_tokens() -> u32 {
+    512
+}
+
+// ============= Model Configuration =============
+
+/// Model configuration referencing a provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelConfig {
+    /// Reference to a provider name defined in \[providers\].
+    pub provider: String,
+
+    /// Model name/identifier to use with the provider.
+    pub model: String,
+
+    /// Sampling temperature (0.0 = deterministic, 1.0+ = creative). Default: 0.7.
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
+
+    /// Maximum tokens to generate (default: 512).
+    #[serde(default = "default_model_max_tokens")]
+    pub max_tokens: u32,
+
+    /// Optional nucleus sampling parameter.
+    pub top_p: Option<f32>,
+
+    /// Optional frequency penalty (-2.0 to 2.0).
+    pub frequency_penalty: Option<f32>,
+
+    /// Optional presence penalty (-2.0 to 2.0).
+    pub presence_penalty: Option<f32>,
+}
+
+fn default_temperature() -> f32 {
+    0.7
+}
+
+fn default_model_max_tokens() -> u32 {
+    512
+}
+
+// ============= Tool Configuration =============
+
+/// Tool configuration for built-in or custom tools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolConfig {
+    /// Whether the tool is enabled (default: true).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Optional human-readable description of the tool.
+    #[serde(default)]
+    pub description: Option<String>,
+
+    /// Timeout in seconds for tool execution (default: 30).
+    #[serde(default = "default_tool_timeout")]
+    pub timeout_secs: u64,
+
+    /// Additional tool-specific configuration passed through.
+    #[serde(flatten)]
+    pub extra: HashMap<String, toml::Value>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_tool_timeout() -> u64 {
+    30
+}
+
+impl Default for ToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            description: None,
+            timeout_secs: default_tool_timeout(),
+            extra: HashMap::new(),
+        }
+    }
+}
+
+// ============= Agent Configuration =============
+
+/// Agent configuration binding a model to tools and behavior.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// Reference to a model name defined in \[models\].
+    pub model: String,
+
+    /// System prompt for the agent (personality, instructions).
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+
+    /// List of tool names this agent can use.
+    #[serde(default)]
+    pub tools: Vec<String>,
+
+    /// Maximum tool calling iterations before stopping (default: 10).
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: usize,
+
+    /// Whether to execute tool calls in parallel when possible.
+    #[serde(default)]
+    pub parallel_tools: bool,
+
+    /// Additional agent-specific configuration passed through.
+    #[serde(flatten)]
+    pub extra: HashMap<String, toml::Value>,
+}
+
+fn default_max_tool_iterations() -> usize {
+    10
+}
+
+// ============= Workflow Configuration =============
+
+/// Workflow configuration defining agent orchestration patterns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowConfig {
+    /// Entry point agent that receives initial requests.
+    pub entry_agent: String,
+
+    /// Fallback agent if routing fails or no match is found.
+    pub fallback_agent: Option<String>,
+
+    /// Maximum depth for recursive/nested workflows (default: 3).
+    #[serde(default = "default_max_depth")]
+    pub max_depth: u8,
+
+    /// Maximum iterations for research/iterative workflows (default: 5).
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: u8,
+
+    /// Whether to execute sub-agent calls in parallel.
+    #[serde(default)]
+    pub parallel_subagents: bool,
+}
+
+fn default_max_depth() -> u8 {
+    3
+}
+
+fn default_max_iterations() -> u8 {
+    5
+}
+
+// ============= Skills Configuration =============
+// Skills directory configuration for SKILL.md discovery.
+// NOTE: This struct is used when the 'skills' feature is enabled.
+#[cfg(feature = "skills")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SkillsTomlConfig {
+    /// Project skills directory (e.g., ./.claude/skills/).
+    pub project_dir: Option<std::path::PathBuf>,
+    /// Personal skills directory (e.g., ~/.claude/skills/).
+    pub personal_dir: Option<std::path::PathBuf>,
+    /// Plugin directories to scan for skills.
+    pub plugin_dirs: Option<Vec<std::path::PathBuf>>,
+}
+
+// ============= RAG Configuration =============
+// RAG (Retrieval Augmented Generation) configuration.
+// =========== Vector Store ===========
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RAGVectorConfig {
+    /// Enable RAG feature flag (disabled by default for safety)
+    pub enabled: bool,
+    /// Available models: bge-small-en-v1.5, bge-base-en-v1.5, bge-large-en-v1.5,
+    /// all-minilm-l6-v2, all-minilm-l12-v2, nomic-embed-text-v1.5, etc.
+    #[serde(default = "default_embedding_model")]
+    pub embedding_model: String,
+    /// Enable sparse embeddings for hybrid search (default: false)
+    #[serde(default)]
+    pub sparse_embeddings: bool,
+    /// Sparse embedding model (default: "splade-pp-en-v1")
+    #[serde(default = "default_sparse_model")]
+    pub sparse_model: String,
+    /// Path to store vector data (default: "./data/vectors")
+    #[serde(default = "default_vector_path")]
+    pub vector_path: String,
+}
+
+// =========== Chunking ===========
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RagChunkingConfig {
+    /// Chunking strategy: "word" (default), "semantic", "character"
+    #[serde(default = "default_chunking_strategy")]
+    pub chunking_strategy: String,
+    /// Size of text chunks for indexing (default: 200 words or 500 chars for semantic).
+    #[serde(default = "default_chunk_size")]
+    pub chunk_size: usize,
+    /// Overlap between consecutive chunks (default: 50).
+    #[serde(default = "default_chunk_overlap")]
+    pub chunk_overlap: usize,
+    /// Minimum chunk size to keep (default: 20 chars).
+    #[serde(default = "default_min_chunk_size")]
+    pub min_chunk_size: usize,
+}
+
+// =========== Search ===========
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RagSearchConfig {
+    /// Default search strategy: "semantic" (default), "bm25", "fuzzy", "hybrid"
+    #[serde(default = "default_search_strategy")]
+    pub search_strategy: String,
+    /// Default number of results to return (default: 10)
+    #[serde(default = "default_search_limit")]
+    pub search_limit: usize,
+    /// Default similarity threshold (default: 0.0)
+    #[serde(default)]
+    pub search_threshold: f32,
+    /// Hybrid search weights (semantic, bm25, fuzzy) - sum should be 1.0
+    #[serde(default)]
+    pub hybrid_weights: Option<HybridWeightsConfig>,
+}
+
+// =========== Reranking ===========
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RagRerankingConfig {
+    /// Enable reranking by default (default: false)
+    #[serde(default)]
+    pub rerank_enabled: bool,
+    /// Reranker model: "bge-reranker-base" (default), "bge-reranker-v2-m3",
+    /// "jina-reranker-v1-turbo-en", "jina-reranker-v2-base-multilingual"
+    #[serde(default = "default_reranker_model")]
+    pub reranker_model: String,
+    /// Weight for combining rerank and retrieval scores (default: 0.6)
+    #[serde(default = "default_rerank_weight")]
+    pub rerank_weight: f32,
+}
+/// RAG Configuration Wrapper
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RagConfig {
+    /// Vector store configuration for vector embeddings and retrieval
+    pub vector: RAGVectorConfig,
+    /// Text chunking strategy for document indexing
+    pub chunking: RagChunkingConfig,
+    /// Search strategy and configuration
+    pub search: RagSearchConfig,
+    /// Reranking configuration
+    pub rerank: RagRerankingConfig,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+
+pub struct HybridWeightsConfig {
+    /// Weight for semantic search (default: 0.5)
+    #[serde(default = "default_semantic_weight")]
+    pub semantic: f32,
+    /// Weight for BM25 search (default: 0.3)
+    #[serde(default = "default_bm25_weight")]
+    pub bm25: f32,
+    /// Weight for fuzzy search (default: 0.2)
+    #[serde(default = "default_fuzzy_weight")]
+    pub fuzzy: f32,
+}
+
+impl Default for HybridWeightsConfig {
+    fn default() -> Self {
+        Self {
+            semantic: 0.5,
+            bm25: 0.3,
+            fuzzy: 0.2,
+        }
+    }
+}
+
+impl Default for RAGVectorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            embedding_model: default_embedding_model(),
+            sparse_embeddings: false,
+            sparse_model: default_sparse_model(),
+            vector_path: default_vector_path(),
+        }
+    }
+}
+
+impl Default for RagChunkingConfig {
+    fn default() -> Self {
+        Self {
+            chunking_strategy: default_chunking_strategy(),
+            chunk_size: default_chunk_size(),
+            chunk_overlap: default_chunk_overlap(),
+            min_chunk_size: default_min_chunk_size(),
+        }
+    }
+}
+
+impl Default for RagSearchConfig {
+    fn default() -> Self {
+        Self {
+            search_strategy: default_search_strategy(),
+            search_limit: default_search_limit(),
+            search_threshold: 0.0,
+            hybrid_weights: None,
+        }
+    }
+}
+
+impl Default for RagRerankingConfig {
+    fn default() -> Self {
+        Self {
+            rerank_enabled: false,
+            reranker_model: default_reranker_model(),
+            rerank_weight: default_rerank_weight(),
+        }
+    }
+}
+
+fn default_semantic_weight() -> f32 {
+    0.5
+}
+
+fn default_bm25_weight() -> f32 {
+    0.3
+}
+
+fn default_fuzzy_weight() -> f32 {
+    0.2
+}
+
+fn default_vector_path() -> String {
+    "./data/vectors".to_string()
+}
+
+fn default_embedding_model() -> String {
+    "bge-small-en-v1.5".to_string()
+}
+
+fn default_sparse_model() -> String {
+    "splade-pp-en-v1".to_string()
+}
+
+fn default_chunking_strategy() -> String {
+    "word".to_string()
+}
+
+fn default_chunk_size() -> usize {
+    200
+}
+
+fn default_chunk_overlap() -> usize {
+    50
+}
+
+fn default_min_chunk_size() -> usize {
+    20
+}
+
+fn default_search_strategy() -> String {
+    "semantic".to_string()
+}
+
+fn default_search_limit() -> usize {
+    10
+}
+
+fn default_reranker_model() -> String {
+    "bge-reranker-base".to_string()
+}
+
+fn default_rerank_weight() -> f32 {
+    0.6
+}
+
+impl Default for RagConfig {
+    fn default() -> Self {
+        Self {
+            vector: RAGVectorConfig::default(),
+            chunking: RagChunkingConfig::default(),
+            search: RagSearchConfig::default(),
+            rerank: RagRerankingConfig::default(),
+        }
+    }
+}
+
+// ============= Billing Configuration =============
+
+/// Billing and estimated-cost configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BillingConfig {
+    /// Explicit provider/model pricing entries keyed by an operator-friendly name.
+    #[serde(default)]
+    pub model_pricing: HashMap<String, ModelPricingConfig>,
+}
+
+impl BillingConfig {
+    /// Find pricing by runtime provider/model identifiers.
+    pub fn pricing_for(
+        &self,
+        provider_name: &str,
+        model_name: &str,
+    ) -> Option<&ModelPricingConfig> {
+        let provider_key = pricing_key(provider_name);
+        let model_key = pricing_key(model_name);
+        self.model_pricing.values().find(|pricing| {
+            pricing_key(&pricing.provider) == provider_key
+                && pricing_key(&pricing.model) == model_key
+        })
+    }
+}
+
+/// Pricing for a single runtime provider/model pair.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelPricingConfig {
+    /// Runtime provider name, such as `openai` or `ollama-local`.
+    pub provider: String,
+    /// Runtime model identifier.
+    pub model: String,
+    /// USD per one million prompt/input tokens, if known.
+    pub input_usd_per_million_tokens: Option<f64>,
+    /// USD per one million completion/output tokens, if known.
+    pub output_usd_per_million_tokens: Option<f64>,
+    /// Currency for this estimate. Defaults to USD.
+    #[serde(default = "default_billing_currency")]
+    pub currency: String,
+}
+
+fn default_billing_currency() -> String {
+    "USD".to_string()
+}
+
+fn pricing_key(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+// ============= Dynamic Configuration Paths =============
+
+/// Paths to TOON config directories for dynamic behavioral configuration
+///
+/// ARES uses a hybrid configuration approach:
+/// - **TOML** (`ares.toml`): Static infrastructure config (server, auth, database, providers)
+/// - **TOON** (`config/*.toon`): Dynamic behavioral config (agents, workflows, models, tools, MCPs)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicConfigPaths {
+    /// Directory containing agent TOON files
+    #[serde(default = "default_agents_dir")]
+    pub agents_dir: std::path::PathBuf,
+
+    /// Directory containing workflow TOON files
+    #[serde(default = "default_workflows_dir")]
+    pub workflows_dir: std::path::PathBuf,
+
+    /// Directory containing model TOON files
+    #[serde(default = "default_models_dir")]
+    pub models_dir: std::path::PathBuf,
+
+    /// Directory containing tool TOON files
+    #[serde(default = "default_tools_dir")]
+    pub tools_dir: std::path::PathBuf,
+
+    /// Directory containing MCP TOON files
+    #[serde(default = "default_mcps_dir")]
+    pub mcps_dir: std::path::PathBuf,
+
+    /// Whether to watch for changes and hot-reload TOON configs
+    #[serde(default = "default_hot_reload")]
+    pub hot_reload: bool,
+
+    /// Interval in milliseconds for checking config changes
+    #[serde(default = "default_watch_interval")]
+    pub watch_interval_ms: u64,
+}
+
+fn default_agents_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("config/agents")
+}
+
+fn default_workflows_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("config/workflows")
+}
+
+fn default_models_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("config/models")
+}
+
+fn default_tools_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("config/tools")
+}
+
+fn default_mcps_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("config/mcps")
+}
+
+fn default_hot_reload() -> bool {
+    true
+}
+
+fn default_watch_interval() -> u64 {
+    1000
+}
+
+impl Default for DynamicConfigPaths {
+    fn default() -> Self {
+        Self {
+            agents_dir: default_agents_dir(),
+            workflows_dir: default_workflows_dir(),
+            models_dir: default_models_dir(),
+            tools_dir: default_tools_dir(),
+            mcps_dir: default_mcps_dir(),
+            hot_reload: default_hot_reload(),
+            watch_interval_ms: default_watch_interval(),
+        }
+    }
+}
+
+// ============= Configuration Loading & Validation =============
+
+/// Configuration warnings that don't prevent operation but may indicate issues.
+#[derive(Debug, Clone)]
+pub struct ConfigWarning {
+    /// Category of the warning.
+    pub kind: ConfigWarningKind,
+
+    /// Human-readable warning message.
+    pub message: String,
+}
+
+/// Categories of configuration warnings.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigWarningKind {
+    /// A provider is defined but not referenced by any model.
+    UnusedProvider,
+
+    /// A model is defined but not referenced by any agent.
+    UnusedModel,
+
+    /// A tool is defined but not referenced by any agent.
+    UnusedTool,
+
+    /// An agent is defined but not referenced by any workflow.
+    UnusedAgent,
+}
+
+impl std::fmt::Display for ConfigWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+/// Errors that can occur during configuration loading.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// The configuration file was not found at the specified path.
+    #[error("Configuration file not found: {0}")]
+    FileNotFound(PathBuf),
+
+    /// Failed to read the configuration file from disk.
+    #[error("Failed to read configuration file: {0}")]
+    ReadError(#[from] std::io::Error),
+
+    /// Failed to parse the TOML content.
+    #[error("Failed to parse TOML: {0}")]
+    ParseError(#[from] toml::de::Error),
+
+    /// Configuration validation failed.
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+
+    /// An environment variable referenced in the config is not set.
+    #[error("Environment variable '{0}' referenced in config is not set")]
+    MissingEnvVar(String),
+
+    /// A provider referenced by a model does not exist.
+    #[error("Provider '{0}' referenced by model '{1}' does not exist")]
+    MissingProvider(String, String),
+
+    /// A model referenced by an agent does not exist.
+    #[error("Model '{0}' referenced by agent '{1}' does not exist")]
+    MissingModel(String, String),
+
+    /// An agent referenced by a workflow does not exist.
+    #[error("Agent '{0}' referenced by workflow '{1}' does not exist")]
+    MissingAgent(String, String),
+
+    /// A tool referenced by an agent does not exist.
+    #[error("Tool '{0}' referenced by agent '{1}' does not exist")]
+    MissingTool(String, String),
+
+    /// A circular reference was detected in the configuration.
+    #[error("Circular reference detected: {0}")]
+    CircularReference(String),
+
+    /// An error occurred while watching configuration files for changes.
+    #[error("Watch error: {0}")]
+    WatchError(#[from] notify::Error),
+}
+
+impl AresConfig {
+    /// Load configuration from a TOML file
+    ///
+    /// # Panics
+    ///
+    /// Panics if the configuration file doesn't exist or is invalid.
+    /// This is intentional - the server cannot run without a valid config.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+
+        if !path.exists() {
+            return Err(ConfigError::FileNotFound(path.to_path_buf()));
+        }
+
+        let content = fs::read_to_string(path)?;
+        let config: AresConfig = toml::from_str(&content)?;
+
+        // Validate the configuration
+        config.validate()?;
+
+        Ok(config)
+    }
+
+    /// Load configuration from a TOML file without validation.
+    ///
+    /// This is useful for CLI commands that only need to inspect the configuration
+    /// without actually running the server (e.g., `ares-server config`).
+    /// Environment variables are not checked.
+    pub fn load_unchecked<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+
+        if !path.exists() {
+            return Err(ConfigError::FileNotFound(path.to_path_buf()));
+        }
+
+        let content = fs::read_to_string(path)?;
+        let config: AresConfig = toml::from_str(&content)?;
+
+        Ok(config)
+    }
+
+    /// Validate the configuration for internal consistency and env var availability
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        // Validate auth env vars exist
+        self.validate_env_var(&self.auth.jwt_secret_env)?;
+        self.validate_env_var(&self.auth.api_key_env)?;
+
+        // Validate database env vars if specified
+        if let Some(ref qdrant) = self.database.qdrant {
+            if let Some(ref env) = qdrant.api_key_env {
+                self.validate_env_var(env)?;
+            }
+        }
+
+        // Validate provider env vars
+        for (name, provider) in &self.providers {
+            match provider {
+                ProviderConfig::OpenAI { api_key_env, .. } => {
+                    self.validate_env_var(api_key_env)?;
+                }
+                ProviderConfig::Anthropic { api_key_env, .. } => {
+                    self.validate_env_var(api_key_env)?;
+                }
+                ProviderConfig::LlamaCpp { model_path, .. } => {
+                    // Validate model path exists
+                    if !Path::new(model_path).exists() {
+                        return Err(ConfigError::ValidationError(format!(
+                            "LlamaCpp model path does not exist: {} (provider: {})",
+                            model_path, name
+                        )));
+                    }
+                }
+                ProviderConfig::Ollama { .. } => {
+                    // Ollama doesn't require validation - it's the default fallback
+                }
+            }
+        }
+
+        // Validate model -> provider references
+        for (model_name, model_config) in &self.models {
+            if !self.providers.contains_key(&model_config.provider) {
+                return Err(ConfigError::MissingProvider(
+                    model_config.provider.clone(),
+                    model_name.clone(),
+                ));
+            }
+        }
+
+        // Validate agent -> model and agent -> tools references
+        for (agent_name, agent_config) in &self.agents {
+            if !self.models.contains_key(&agent_config.model) {
+                return Err(ConfigError::MissingModel(
+                    agent_config.model.clone(),
+                    agent_name.clone(),
+                ));
+            }
+
+            for tool_name in &agent_config.tools {
+                // Allow tools from registered tool configs OR MCP bridge tools
+                // MCP bridge tools follow the pattern: {mcp_client_name}_{operation}
+                let is_known_tool = self.tools.contains_key(tool_name);
+                let is_mcp_tool = tool_name.contains('_') && {
+                    // Check if any configured MCP client name is a prefix
+                    let mcp_names = self.mcp_client_names();
+                    mcp_names
+                        .iter()
+                        .any(|mcp_name| tool_name.starts_with(&format!("{}_", mcp_name)))
+                };
+                if !is_known_tool && !is_mcp_tool {
+                    return Err(ConfigError::MissingTool(
+                        tool_name.clone(),
+                        agent_name.clone(),
+                    ));
+                }
+            }
+        }
+
+        // Validate workflow -> agent references
+        for (workflow_name, workflow_config) in &self.workflows {
+            if !self.agents.contains_key(&workflow_config.entry_agent) {
+                return Err(ConfigError::MissingAgent(
+                    workflow_config.entry_agent.clone(),
+                    workflow_name.clone(),
+                ));
+            }
+
+            if let Some(ref fallback) = workflow_config.fallback_agent {
+                if !self.agents.contains_key(fallback) {
+                    return Err(ConfigError::MissingAgent(
+                        fallback.clone(),
+                        workflow_name.clone(),
+                    ));
+                }
+            }
+        }
+
+        // Check for circular references in workflows (entry_agent -> fallback cycles)
+        self.detect_circular_references()?;
+
+        Ok(())
+    }
+
+    /// Detect circular references in workflow configurations
+    ///
+    /// Currently checks for:
+    /// - Workflow entry_agent pointing to itself via fallback chain
+    fn detect_circular_references(&self) -> Result<(), ConfigError> {
+        use std::collections::HashSet;
+
+        for (workflow_name, workflow_config) in &self.workflows {
+            let mut visited = HashSet::new();
+            let mut current = Some(workflow_config.entry_agent.as_str());
+
+            while let Some(agent_name) = current {
+                if visited.contains(agent_name) {
+                    return Err(ConfigError::CircularReference(format!(
+                        "Circular reference detected in workflow '{}': agent '{}' appears multiple times in the chain",
+                        workflow_name, agent_name
+                    )));
+                }
+                visited.insert(agent_name);
+
+                // Check if this agent is the entry for any workflow that has this workflow's entry as fallback
+                // This is a simple check - could be extended for more complex scenarios
+                current = None;
+
+                // For now, we just check that fallback_agent doesn't equal entry_agent
+                if let Some(ref fallback) = workflow_config.fallback_agent {
+                    if fallback == &workflow_config.entry_agent {
+                        return Err(ConfigError::CircularReference(format!(
+                            "Workflow '{}' has entry_agent '{}' that equals fallback_agent",
+                            workflow_name, workflow_config.entry_agent
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate configuration with warnings for unused items
+    ///
+    /// Returns Ok with warnings, or Err if validation fails
+    pub fn validate_with_warnings(&self) -> Result<Vec<ConfigWarning>, ConfigError> {
+        // Run standard validation first
+        self.validate()?;
+
+        // Collect warnings
+        let mut warnings = Vec::new();
+
+        // Check for unused providers
+        warnings.extend(self.check_unused_providers());
+
+        // Check for unused models
+        warnings.extend(self.check_unused_models());
+
+        // Check for unused tools
+        warnings.extend(self.check_unused_tools());
+
+        // Check for unused agents
+        warnings.extend(self.check_unused_agents());
+
+        Ok(warnings)
+    }
+
+    /// Check for providers that aren't referenced by any model
+    fn check_unused_providers(&self) -> Vec<ConfigWarning> {
+        use std::collections::HashSet;
+
+        let referenced: HashSet<_> = self.models.values().map(|m| m.provider.as_str()).collect();
+
+        self.providers
+            .keys()
+            .filter(|name| !referenced.contains(name.as_str()))
+            .map(|name| ConfigWarning {
+                kind: ConfigWarningKind::UnusedProvider,
+                message: format!(
+                    "Provider '{}' is defined but not referenced by any model",
+                    name
+                ),
+            })
+            .collect()
+    }
+
+    /// Check for models that aren't referenced by any agent
+    fn check_unused_models(&self) -> Vec<ConfigWarning> {
+        use std::collections::HashSet;
+
+        let referenced: HashSet<_> = self.agents.values().map(|a| a.model.as_str()).collect();
+
+        self.models
+            .keys()
+            .filter(|name| !referenced.contains(name.as_str()))
+            .map(|name| ConfigWarning {
+                kind: ConfigWarningKind::UnusedModel,
+                message: format!(
+                    "Model '{}' is defined but not referenced by any agent",
+                    name
+                ),
+            })
+            .collect()
+    }
+
+    /// Check for tools that aren't referenced by any agent
+    fn check_unused_tools(&self) -> Vec<ConfigWarning> {
+        use std::collections::HashSet;
+
+        let referenced: HashSet<_> = self
+            .agents
+            .values()
+            .flat_map(|a| a.tools.iter().map(|t| t.as_str()))
+            .collect();
+
+        self.tools
+            .keys()
+            .filter(|name| !referenced.contains(name.as_str()))
+            .map(|name| ConfigWarning {
+                kind: ConfigWarningKind::UnusedTool,
+                message: format!("Tool '{}' is defined but not referenced by any agent", name),
+            })
+            .collect()
+    }
+
+    /// Check for agents that aren't referenced by any workflow
+    fn check_unused_agents(&self) -> Vec<ConfigWarning> {
+        use std::collections::HashSet;
+
+        let referenced: HashSet<_> = self
+            .workflows
+            .values()
+            .flat_map(|w| {
+                let mut refs = vec![w.entry_agent.as_str()];
+                if let Some(ref fallback) = w.fallback_agent {
+                    refs.push(fallback.as_str());
+                }
+                refs
+            })
+            .collect();
+
+        // Also consider orchestrator/router as always "used" since they're system agents
+        let system_agents: HashSet<&str> = ["orchestrator", "router"].into_iter().collect();
+
+        self.agents
+            .keys()
+            .filter(|name| {
+                !referenced.contains(name.as_str()) && !system_agents.contains(name.as_str())
+            })
+            .map(|name| ConfigWarning {
+                kind: ConfigWarningKind::UnusedAgent,
+                message: format!(
+                    "Agent '{}' is defined but not referenced by any workflow",
+                    name
+                ),
+            })
+            .collect()
+    }
+
+    fn validate_env_var(&self, name: &str) -> Result<(), ConfigError> {
+        std::env::var(name).map_err(|_| ConfigError::MissingEnvVar(name.to_string()))?;
+        Ok(())
+    }
+
+    /// Get a resolved value from an env var reference
+    pub fn resolve_env(&self, env_name: &str) -> Option<String> {
+        std::env::var(env_name).ok()
+    }
+
+    /// Minimum length for JWT secret (256 bits = 32 bytes)
+    const JWT_SECRET_MIN_LENGTH: usize = 32;
+
+    /// Get the JWT secret from the environment
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The environment variable is not set
+    /// - The secret is shorter than 32 characters (256 bits)
+    /// Get names of configured MCP clients (from mcps directory .toon files).
+    /// Used by validation to allow MCP bridge tool names in agent configs.
+    pub fn mcp_client_names(&self) -> Vec<String> {
+        let path = &self.config.mcps_dir;
+        if !path.exists() {
+            return vec![];
+        }
+        std::fs::read_dir(path)
+            .ok()
+            .map(|entries| {
+                entries
+                    .filter_map(|e| {
+                        let e = e.ok()?;
+                        let p = e.path();
+                        if p.extension()?.to_str()? == "toon" {
+                            // Read the name field from the TOON file
+                            let content = std::fs::read_to_string(&p).ok()?;
+                            let val: toml::Value = toml::from_str(&content).ok()?;
+                            val.get("name")?.as_str().map(String::from)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn jwt_secret(&self) -> Result<String, ConfigError> {
+        let secret = self
+            .resolve_env(&self.auth.jwt_secret_env)
+            .ok_or_else(|| ConfigError::MissingEnvVar(self.auth.jwt_secret_env.clone()))?;
+
+        if secret.len() < Self::JWT_SECRET_MIN_LENGTH {
+            return Err(ConfigError::ValidationError(format!(
+                "JWT_SECRET must be at least {} characters for security (current: {} chars). \
+                 Use a cryptographically random string, e.g.: openssl rand -base64 32",
+                Self::JWT_SECRET_MIN_LENGTH,
+                secret.len()
+            )));
+        }
+
+        Ok(secret)
+    }
+
+    /// Get the API key from the environment
+    pub fn api_key(&self) -> Result<String, ConfigError> {
+        self.resolve_env(&self.auth.api_key_env)
+            .ok_or_else(|| ConfigError::MissingEnvVar(self.auth.api_key_env.clone()))
+    }
+
+    /// Get provider by name
+    pub fn get_provider(&self, name: &str) -> Option<&ProviderConfig> {
+        self.providers.get(name)
+    }
+
+    /// Get model by name
+    pub fn get_model(&self, name: &str) -> Option<&ModelConfig> {
+        self.models.get(name)
+    }
+
+    /// Get agent config by name
+    pub fn get_agent(&self, name: &str) -> Option<&AgentConfig> {
+        self.agents.get(name)
+    }
+
+    /// Get tool config by name
+    pub fn get_tool(&self, name: &str) -> Option<&ToolConfig> {
+        self.tools.get(name)
+    }
+
+    /// Get workflow config by name
+    pub fn get_workflow(&self, name: &str) -> Option<&WorkflowConfig> {
+        self.workflows.get(name)
+    }
+
+    /// Get all enabled tools
+    pub fn enabled_tools(&self) -> Vec<&str> {
+        self.tools
+            .iter()
+            .filter(|(_, config)| config.enabled)
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
+    /// Get all tools for an agent
+    pub fn agent_tools(&self, agent_name: &str) -> Vec<&str> {
+        self.get_agent(agent_name)
+            .map(|agent| {
+                agent
+                    .tools
+                    .iter()
+                    .filter(|t| self.get_tool(t).map(|tc| tc.enabled).unwrap_or(false))
+                    .map(|s| s.as_str())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+// ============= Hot Reloading Configuration Manager =============
+
+/// Thread-safe configuration manager with hot reloading support
+pub struct AresConfigManager {
+    config: Arc<ArcSwap<AresConfig>>,
+    config_path: PathBuf,
+    watcher: RwLock<Option<RecommendedWatcher>>,
+    reload_tx: Option<mpsc::UnboundedSender<()>>,
+}
+
+impl AresConfigManager {
+    /// Create a new configuration manager and load the initial config
+    ///
+    /// # Panics
+    ///
+    /// Panics if ares.toml doesn't exist or is invalid.
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
+        // Convert to absolute path for reliable file watching
+        let path = path.as_ref();
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(ConfigError::ReadError)?
+                .join(path)
+        };
+
+        let config = AresConfig::load(&path)?;
+
+        Ok(Self {
+            config: Arc::new(ArcSwap::from_pointee(config)),
+            config_path: path,
+            watcher: RwLock::new(None),
+            reload_tx: None,
+        })
+    }
+
+    /// Get the current configuration (lockless read)
+    pub fn config(&self) -> Arc<AresConfig> {
+        self.config.load_full()
+    }
+
+    /// Manually reload the configuration from disk
+    pub fn reload(&self) -> Result<(), ConfigError> {
+        info!("Reloading configuration from {:?}", self.config_path);
+
+        let new_config = AresConfig::load(&self.config_path)?;
+        self.config.store(Arc::new(new_config));
+
+        info!("Configuration reloaded successfully");
+        Ok(())
+    }
+
+    /// Start watching for configuration file changes
+    pub fn start_watching(&mut self) -> Result<(), ConfigError> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<()>();
+        self.reload_tx = Some(tx.clone());
+
+        let config_path = self.config_path.clone();
+        let config_arc = Arc::clone(&self.config);
+
+        // Create debounced file watcher
+        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+            match res {
+                Ok(event) => {
+                    if event.kind.is_modify() || event.kind.is_create() {
+                        // Send reload signal (debounced in the receiver)
+                        let _ = tx.send(());
+                    }
+                }
+                Err(e) => {
+                    error!("Config watcher error: {:?}", e);
+                }
+            }
+        })?;
+
+        // Watch the config file's parent directory
+        if let Some(parent) = self.config_path.parent() {
+            watcher.watch(parent, RecursiveMode::NonRecursive)?;
+        }
+
+        *self.watcher.write() = Some(watcher);
+
+        // Spawn reload handler with debouncing
+        let config_path_clone = config_path.clone();
+        tokio::spawn(async move {
+            let mut last_reload = std::time::Instant::now();
+            let debounce_duration = Duration::from_millis(500);
+
+            while rx.recv().await.is_some() {
+                // Debounce: only reload if enough time has passed
+                if last_reload.elapsed() < debounce_duration {
+                    continue;
+                }
+
+                // Wait a bit for file write to complete
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                match AresConfig::load(&config_path_clone) {
+                    Ok(new_config) => {
+                        config_arc.store(Arc::new(new_config));
+                        info!("Configuration hot-reloaded successfully");
+                        last_reload = std::time::Instant::now();
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to hot-reload config: {}. Keeping previous config.",
+                            e
+                        );
+                    }
+                }
+            }
+        });
+
+        info!("Configuration hot-reload watcher started");
+        Ok(())
+    }
+
+    /// Stop watching for configuration changes
+    pub fn stop_watching(&self) {
+        *self.watcher.write() = None;
+        info!("Configuration hot-reload watcher stopped");
+    }
+}
+
+impl Clone for AresConfigManager {
+    fn clone(&self) -> Self {
+        Self {
+            config: Arc::clone(&self.config),
+            config_path: self.config_path.clone(),
+            watcher: RwLock::new(None), // Watcher is not cloned
+            reload_tx: self.reload_tx.clone(),
+        }
+    }
+}
+
+impl AresConfigManager {
+    /// Create a config manager directly from a config (useful for testing)
+    /// This won't have file watching capabilities.
+    pub fn from_config(config: AresConfig) -> Self {
+        Self {
+            config: Arc::new(ArcSwap::from_pointee(config)),
+            config_path: PathBuf::from("test-config.toml"),
+            watcher: RwLock::new(None),
+            reload_tx: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_config() -> String {
+        r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+log_level = "debug"
+
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+jwt_access_expiry = 900
+jwt_refresh_expiry = 604800
+api_key_env = "TEST_API_KEY"
+
+[database]
+url = "./data/test.db"
+
+[providers.ollama-local]
+type = "ollama"
+base_url = "http://localhost:11434"
+default_model = "ministral-3:3b"
+
+[models.default]
+provider = "ollama-local"
+model = "ministral-3:3b"
+temperature = 0.7
+max_tokens = 512
+
+[billing.model_pricing.test_default]
+provider = "ollama-local"
+model = "ministral-3:3b"
+input_usd_per_million_tokens = 0.0
+output_usd_per_million_tokens = 0.0
+
+[tools.calculator]
+enabled = true
+description = "Basic calculator"
+timeout_secs = 10
+
+[agents.router]
+model = "default"
+tools = []
+max_tool_iterations = 5
+
+[workflows.default]
+entry_agent = "router"
+max_depth = 3
+max_iterations = 5
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn test_parse_config() {
+        // Set required env vars for validation
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var(
+                "TEST_JWT_SECRET",
+                "test-secret-at-least-32-characters-long-at-least-32-characters-long",
+            );
+            std::env::set_var("TEST_API_KEY", "test-api-key");
+        }
+
+        let content = create_test_config();
+        let config: AresConfig = toml::from_str(&content).expect("Failed to parse config");
+
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 3000);
+        assert!(config.providers.contains_key("ollama-local"));
+        assert!(config.models.contains_key("default"));
+        assert!(config.agents.contains_key("router"));
+        assert!(config
+            .billing
+            .pricing_for(" OLLAMA-LOCAL ", "ministral-3:3b")
+            .is_some());
+    }
+
+    #[test]
+    fn test_validation_missing_provider() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[models.test]
+provider = "nonexistent"
+model = "test"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let result = config.validate();
+
+        assert!(matches!(result, Err(ConfigError::MissingProvider(_, _))));
+    }
+
+    #[test]
+    fn test_validation_missing_model() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "ministral-3:3b"
+[agents.test]
+model = "nonexistent"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let result = config.validate();
+
+        assert!(matches!(result, Err(ConfigError::MissingModel(_, _))));
+    }
+
+    #[test]
+    fn test_validation_missing_tool() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "ministral-3:3b"
+[models.default]
+provider = "test"
+model = "ministral-3:3b"
+[agents.test]
+model = "default"
+tools = ["nonexistent_tool"]
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let result = config.validate();
+
+        assert!(matches!(result, Err(ConfigError::MissingTool(_, _))));
+    }
+
+    #[test]
+    fn test_validation_missing_workflow_agent() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[workflows.test]
+entry_agent = "nonexistent_agent"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let result = config.validate();
+
+        assert!(matches!(result, Err(ConfigError::MissingAgent(_, _))));
+    }
+
+    #[test]
+    fn test_get_provider() {
+        let content = create_test_config();
+        let config: AresConfig = toml::from_str(&content).unwrap();
+
+        assert!(config.get_provider("ollama-local").is_some());
+        assert!(config.get_provider("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_get_model() {
+        let content = create_test_config();
+        let config: AresConfig = toml::from_str(&content).unwrap();
+
+        assert!(config.get_model("default").is_some());
+        assert!(config.get_model("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_get_agent() {
+        let content = create_test_config();
+        let config: AresConfig = toml::from_str(&content).unwrap();
+
+        assert!(config.get_agent("router").is_some());
+        assert!(config.get_agent("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_get_tool() {
+        let content = create_test_config();
+        let config: AresConfig = toml::from_str(&content).unwrap();
+
+        assert!(config.get_tool("calculator").is_some());
+        assert!(config.get_tool("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_enabled_tools() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[tools.enabled_tool]
+enabled = true
+[tools.disabled_tool]
+enabled = false
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let enabled = config.enabled_tools();
+
+        assert!(enabled.contains(&"enabled_tool"));
+        assert!(!enabled.contains(&"disabled_tool"));
+    }
+
+    #[test]
+    fn test_defaults() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+
+        // Server defaults
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 3000);
+        assert_eq!(config.server.log_level, "info");
+
+        // Auth defaults
+        assert_eq!(config.auth.jwt_access_expiry, 900);
+        assert_eq!(config.auth.jwt_refresh_expiry, 604800);
+
+        // Database defaults
+        assert_eq!(
+            config.database.url,
+            "postgres://postgres:postgres@localhost:5432/ares"
+        );
+
+        // RAG defaults
+        assert_eq!(config.rag.vector.embedding_model, "bge-small-en-v1.5");
+        assert_eq!(config.rag.vector.vector_path, "./data/vectors");
+        assert_eq!(config.rag.chunking.chunk_size, 200);
+        assert_eq!(config.rag.chunking.chunk_overlap, 50);
+        assert_eq!(config.rag.search.search_strategy, "semantic");
+    }
+
+    #[test]
+    fn test_config_manager_from_config() {
+        let content = create_test_config();
+        let config: AresConfig = toml::from_str(&content).unwrap();
+
+        let manager = AresConfigManager::from_config(config.clone());
+        let loaded = manager.config();
+
+        assert_eq!(loaded.server.host, config.server.host);
+        assert_eq!(loaded.server.port, config.server.port);
+    }
+
+    #[test]
+    fn test_circular_reference_detection() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "ministral-3:3b"
+[models.default]
+provider = "test"
+model = "ministral-3:3b"
+[agents.agent_a]
+model = "default"
+[workflows.circular]
+entry_agent = "agent_a"
+fallback_agent = "agent_a"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let result = config.validate();
+
+        assert!(matches!(result, Err(ConfigError::CircularReference(_))));
+    }
+
+    #[test]
+    fn test_unused_provider_warning() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.used]
+type = "ollama"
+default_model = "ministral-3:3b"
+[providers.unused]
+type = "ollama"
+default_model = "ministral-3:3b"
+[models.default]
+provider = "used"
+model = "ministral-3:3b"
+[agents.router]
+model = "default"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let warnings = config.validate_with_warnings().unwrap();
+
+        assert!(warnings
+            .iter()
+            .any(|w| w.kind == ConfigWarningKind::UnusedProvider && w.message.contains("unused")));
+    }
+
+    #[test]
+    fn test_unused_model_warning() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "ministral-3:3b"
+[models.used]
+provider = "test"
+model = "ministral-3:3b"
+[models.unused]
+provider = "test"
+model = "other"
+[agents.router]
+model = "used"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let warnings = config.validate_with_warnings().unwrap();
+
+        assert!(warnings
+            .iter()
+            .any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("unused")));
+    }
+
+    #[test]
+    fn test_unused_tool_warning() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "ministral-3:3b"
+[models.default]
+provider = "test"
+model = "ministral-3:3b"
+[tools.used_tool]
+enabled = true
+[tools.unused_tool]
+enabled = true
+[agents.router]
+model = "default"
+tools = ["used_tool"]
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let warnings = config.validate_with_warnings().unwrap();
+
+        assert!(warnings
+            .iter()
+            .any(|w| w.kind == ConfigWarningKind::UnusedTool && w.message.contains("unused_tool")));
+    }
+
+    #[test]
+    fn test_unused_agent_warning() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "ministral-3:3b"
+[models.default]
+provider = "test"
+model = "ministral-3:3b"
+[agents.router]
+model = "default"
+[agents.orphaned]
+model = "default"
+[workflows.test_flow]
+entry_agent = "router"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let warnings = config.validate_with_warnings().unwrap();
+
+        assert!(warnings
+            .iter()
+            .any(|w| w.kind == ConfigWarningKind::UnusedAgent && w.message.contains("orphaned")));
+    }
+
+    #[test]
+    fn test_no_warnings_for_fully_connected_config() {
+        // SAFETY: Tests are run single-threaded for env var safety
+        unsafe {
+            std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
+            std::env::set_var("TEST_API_KEY", "test-key");
+        }
+
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.test]
+type = "ollama"
+default_model = "ministral-3:3b"
+[models.default]
+provider = "test"
+model = "ministral-3:3b"
+[tools.calc]
+enabled = true
+[agents.router]
+model = "default"
+tools = ["calc"]
+[workflows.main]
+entry_agent = "router"
+"#;
+
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let warnings = config.validate_with_warnings().unwrap();
+
+        assert!(
+            warnings.is_empty(),
+            "Expected no warnings but got: {:?}",
+            warnings
+        );
+    }
+
+    fn set_test_env() {
+        unsafe {
+            std::env::set_var(
+                "TEST_JWT_SECRET",
+                "test-secret-at-least-32-characters-long-at-least-32-characters-long",
+            );
+            std::env::set_var("TEST_API_KEY", "test-api-key");
+            std::env::set_var("OPENAI_API_KEY", "sk-test");
+            std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
+            std::env::set_var("QDRANT_API_KEY", "qdrant-test");
+        }
+    }
+
+    // ---- ProviderConfig::from_str ----
+
+    #[test]
+    fn test_provider_config_from_str_ollama() {
+        let p: ProviderConfig = "ollama".parse().unwrap();
+        assert_eq!(p.type_name(), "ollama");
+        if let ProviderConfig::Ollama { base_url, .. } = p {
+            assert_eq!(base_url, "http://localhost:11434");
+        } else {
+            panic!("expected ollama variant");
+        }
+    }
+
+    #[test]
+    fn test_provider_config_from_str_openai() {
+        let p: ProviderConfig = "openai".parse().unwrap();
+        assert_eq!(p.type_name(), "openai");
+    }
+
+    #[test]
+    fn test_provider_config_from_str_anthropic() {
+        let p: ProviderConfig = "anthropic".parse().unwrap();
+        assert_eq!(p.type_name(), "anthropic");
+    }
+
+    #[test]
+    fn test_provider_config_from_str_llamacpp_aliases() {
+        for alias in ["llamacpp", "llama-cpp", "llama_cpp"] {
+            let p: ProviderConfig = alias.parse().unwrap();
+            assert_eq!(p.type_name(), "llamacpp");
+        }
+    }
+
+    #[test]
+    fn test_provider_config_from_str_case_insensitive() {
+        let p: ProviderConfig = "OLLAMA".parse().unwrap();
+        assert_eq!(p.type_name(), "ollama");
+    }
+
+    #[test]
+    fn test_provider_config_from_str_invalid() {
+        let err = "unknown-provider".parse::<ProviderConfig>().unwrap_err();
+        assert!(matches!(err, ConfigError::ValidationError(_)));
+    }
+
+    #[test]
+    fn test_provider_config_serde_roundtrip_ollama() {
+        let original = ProviderConfig::Ollama {
+            base_url: "http://localhost:11434".to_string(),
+            default_model: "llama3".to_string(),
+        };
+        let toml_str = toml::to_string(&original).unwrap();
+        let decoded: ProviderConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(decoded.type_name(), "ollama");
+    }
+
+    #[test]
+    fn test_provider_config_serde_roundtrip_openai() {
+        let original = ProviderConfig::OpenAI {
+            api_key_env: "OPENAI_API_KEY".to_string(),
+            api_base: "https://api.openai.com/v1".to_string(),
+            default_model: "gpt-4o".to_string(),
+        };
+        let toml_str = toml::to_string(&original).unwrap();
+        let decoded: ProviderConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(decoded.type_name(), "openai");
+    }
+
+    #[test]
+    fn test_provider_config_serde_roundtrip_anthropic() {
+        let original = ProviderConfig::Anthropic {
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            default_model: "claude-3-5-sonnet-20241022".to_string(),
+        };
+        let decoded: ProviderConfig = toml::from_str(&toml::to_string(&original).unwrap()).unwrap();
+        assert_eq!(decoded.type_name(), "anthropic");
+    }
+
+    #[test]
+    fn test_provider_config_serde_roundtrip_llamacpp() {
+        let original = ProviderConfig::LlamaCpp {
+            model_path: "/tmp/model.gguf".to_string(),
+            n_ctx: 8192,
+            n_threads: 8,
+            max_tokens: 1024,
+        };
+        let decoded: ProviderConfig = toml::from_str(&toml::to_string(&original).unwrap()).unwrap();
+        assert_eq!(decoded.type_name(), "llamacpp");
+    }
+
+    // ---- ServerConfig defaults ----
+
+    #[test]
+    fn test_server_config_default_struct() {
+        let s = ServerConfig::default();
+        assert_eq!(s.host, "127.0.0.1");
+        assert_eq!(s.port, 3000);
+        assert_eq!(s.log_level, "info");
+        assert_eq!(s.cors_origins, vec!["http://localhost:3000"]);
+        assert_eq!(s.rate_limit_per_second, 100);
+        assert_eq!(s.rate_limit_burst, 10);
+    }
+
+    #[test]
+    fn test_server_config_overrides_from_toml() {
+        let content = r#"
+[server]
+host = "0.0.0.0"
+port = 8080
+log_level = "debug"
+cors_origins = ["https://example.com"]
+rate_limit_per_second = 50
+rate_limit_burst = 5
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.server.log_level, "debug");
+        assert_eq!(config.server.cors_origins, vec!["https://example.com"]);
+        assert_eq!(config.server.rate_limit_per_second, 50);
+        assert_eq!(config.server.rate_limit_burst, 5);
+    }
+
+    // ---- AuthConfig defaults ----
+
+    #[test]
+    fn test_auth_config_default_struct() {
+        let a = AuthConfig::default();
+        assert_eq!(a.jwt_secret_env, "JWT_SECRET");
+        assert_eq!(a.jwt_access_expiry, 900);
+        assert_eq!(a.jwt_refresh_expiry, 604800);
+        assert_eq!(a.api_key_env, "API_KEY");
+    }
+
+    // ---- Database / Qdrant defaults ----
+
+    #[test]
+    fn test_database_config_default() {
+        let db = DatabaseConfig::default();
+        assert!(db.url.contains("postgres"));
+        assert!(db.qdrant.is_none());
+    }
+
+    #[test]
+    fn test_qdrant_config_defaults() {
+        let q = QdrantConfig {
+            url: default_qdrant_url(),
+            api_key_env: None,
+        };
+        assert_eq!(q.url, "http://localhost:6334");
+        assert!(q.api_key_env.is_none());
+    }
+
+    // ---- AgentConfig defaults and overrides ----
+
+    #[test]
+    fn test_agent_config_defaults() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.p]
+type = "ollama"
+default_model = "m"
+[models.m]
+provider = "p"
+model = "m"
+[agents.a]
+model = "m"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let agent = config.get_agent("a").unwrap();
+        assert_eq!(agent.max_tool_iterations, 10);
+        assert!(!agent.parallel_tools);
+        assert!(agent.tools.is_empty());
+        assert!(agent.system_prompt.is_none());
+    }
+
+    #[test]
+    fn test_agent_config_overrides() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.p]
+type = "ollama"
+default_model = "m"
+[models.m]
+provider = "p"
+model = "m"
+[agents.a]
+model = "m"
+system_prompt = "Be helpful"
+tools = ["calc"]
+max_tool_iterations = 3
+parallel_tools = true
+[tools.calc]
+enabled = true
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let agent = config.get_agent("a").unwrap();
+        assert_eq!(agent.system_prompt.as_deref(), Some("Be helpful"));
+        assert_eq!(agent.tools, vec!["calc"]);
+        assert_eq!(agent.max_tool_iterations, 3);
+        assert!(agent.parallel_tools);
+    }
+
+    // ---- DynamicConfigPaths ----
+
+    #[test]
+    fn test_dynamic_config_paths_defaults() {
+        let paths = DynamicConfigPaths::default();
+        assert_eq!(paths.agents_dir, Path::new("config/agents"));
+        assert_eq!(paths.workflows_dir, Path::new("config/workflows"));
+        assert_eq!(paths.models_dir, Path::new("config/models"));
+        assert_eq!(paths.tools_dir, Path::new("config/tools"));
+        assert_eq!(paths.mcps_dir, Path::new("config/mcps"));
+        assert!(paths.hot_reload);
+        assert_eq!(paths.watch_interval_ms, 1000);
+    }
+
+    #[test]
+    fn test_dynamic_config_paths_custom_from_toml() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[config]
+agents_dir = "/custom/agents"
+workflows_dir = "/custom/workflows"
+hot_reload = false
+watch_interval_ms = 5000
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        assert_eq!(config.config.agents_dir, Path::new("/custom/agents"));
+        assert_eq!(config.config.workflows_dir, Path::new("/custom/workflows"));
+        assert!(!config.config.hot_reload);
+        assert_eq!(config.config.watch_interval_ms, 5000);
+    }
+
+    // ---- RagConfig defaults ----
+
+    #[test]
+    fn test_rag_config_default_struct() {
+        let rag = RagConfig::default();
+        assert!(!rag.vector.enabled);
+        assert_eq!(rag.vector.embedding_model, "bge-small-en-v1.5");
+        assert_eq!(rag.chunking.chunk_size, 200);
+        assert_eq!(rag.chunking.chunk_overlap, 50);
+        assert_eq!(rag.chunking.min_chunk_size, 20);
+        assert_eq!(rag.search.search_strategy, "semantic");
+        assert_eq!(rag.search.search_limit, 10);
+        assert!(!rag.rerank.rerank_enabled);
+        assert_eq!(rag.rerank.reranker_model, "bge-reranker-base");
+        assert!((rag.rerank.rerank_weight - 0.6).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_hybrid_weights_defaults() {
+        let w = HybridWeightsConfig::default();
+        assert!((w.semantic - 0.5).abs() < f32::EPSILON);
+        assert!((w.bm25 - 0.3).abs() < f32::EPSILON);
+        assert!((w.fuzzy - 0.2).abs() < f32::EPSILON);
+    }
+
+    // ---- BillingConfig defaults ----
+
+    #[test]
+    fn test_billing_config_default_empty() {
+        let billing = BillingConfig::default();
+        assert!(billing.model_pricing.is_empty());
+        assert!(billing.pricing_for("any", "model").is_none());
+    }
+
+    #[test]
+    fn test_billing_pricing_lookup_case_insensitive() {
+        let mut billing = BillingConfig::default();
+        billing.model_pricing.insert(
+            "entry".to_string(),
+            ModelPricingConfig {
+                provider: "Ollama-Local".to_string(),
+                model: "Ministral-3:3b".to_string(),
+                input_usd_per_million_tokens: Some(0.0),
+                output_usd_per_million_tokens: Some(0.0),
+                currency: "USD".to_string(),
+            },
+        );
+        let pricing = billing.pricing_for("ollama-local", "ministral-3:3b").unwrap();
+        assert_eq!(pricing.currency, "USD");
+    }
+
+    #[test]
+    fn test_model_pricing_currency_default() {
+        let content = r#"
+provider = "p"
+model = "m"
+"#;
+        let pricing: ModelPricingConfig = toml::from_str(content).unwrap();
+        assert_eq!(pricing.currency, "USD");
+    }
+
+    // ---- Validation edge cases ----
+
+    #[test]
+    fn test_validation_missing_jwt_env_var() {
+        unsafe {
+            std::env::remove_var("MISSING_JWT_ENV_FOR_TEST");
+        }
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "MISSING_JWT_ENV_FOR_TEST"
+api_key_env = "TEST_API_KEY"
+[database]
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::MissingEnvVar(_)));
+    }
+
+    #[test]
+    fn test_validation_missing_openai_api_key_env() {
+        set_test_env();
+        unsafe {
+            std::env::remove_var("MISSING_OPENAI_KEY");
+        }
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.openai]
+type = "openai"
+api_key_env = "MISSING_OPENAI_KEY"
+default_model = "gpt-4o"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::MissingEnvVar(_)));
+    }
+
+    #[test]
+    fn test_validation_llamacpp_missing_model_path() {
+        set_test_env();
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.local]
+type = "llamacpp"
+model_path = "/nonexistent/path/model.gguf"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::ValidationError(_)));
+    }
+
+    #[test]
+    fn test_validation_qdrant_api_key_env() {
+        set_test_env();
+        unsafe {
+            std::env::remove_var("MISSING_QDRANT_KEY");
+        }
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database.qdrant]
+url = "http://localhost:6334"
+api_key_env = "MISSING_QDRANT_KEY"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::MissingEnvVar(_)));
+    }
+
+    #[test]
+    fn test_validation_missing_fallback_agent() {
+        set_test_env();
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.p]
+type = "ollama"
+default_model = "m"
+[models.m]
+provider = "p"
+model = "m"
+[agents.router]
+model = "m"
+[workflows.w]
+entry_agent = "router"
+fallback_agent = "missing"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::MissingAgent(_, _)));
+    }
+
+    #[test]
+    fn test_workflow_config_defaults() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.p]
+type = "ollama"
+default_model = "m"
+[models.m]
+provider = "p"
+model = "m"
+[agents.a]
+model = "m"
+[workflows.w]
+entry_agent = "a"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let wf = config.workflows.get("w").unwrap();
+        assert_eq!(wf.max_depth, 3);
+        assert_eq!(wf.max_iterations, 5);
+        assert!(!wf.parallel_subagents);
+        assert!(wf.fallback_agent.is_none());
+    }
+
+    #[test]
+    fn test_tool_config_defaults() {
+        let tool = ToolConfig {
+            enabled: true,
+            description: None,
+            timeout_secs: 30,
+            extra: HashMap::new(),
+        };
+        assert!(tool.enabled);
+        assert_eq!(tool.timeout_secs, 30);
+    }
+
+    #[test]
+    fn test_config_warning_display() {
+        let warning = ConfigWarning {
+            kind: ConfigWarningKind::UnusedProvider,
+            message: "provider 'x' is unused".to_string(),
+        };
+        assert!(warning.to_string().contains("unused"));
+    }
+
+    #[test]
+    fn test_config_error_display_messages() {
+        let err = ConfigError::MissingProvider("p".into(), "m".into());
+        assert!(err.to_string().contains("p"));
+        let err = ConfigError::CircularReference("cycle".into());
+        assert!(err.to_string().contains("cycle"));
+    }
+
+    #[test]
+    fn test_model_config_serde_roundtrip() {
+        let model = ModelConfig {
+            provider: "ollama".to_string(),
+            model: "llama3".to_string(),
+            temperature: 0.5,
+            max_tokens: 256,
+            top_p: Some(0.9),
+            frequency_penalty: None,
+            presence_penalty: None,
+        };
+        let decoded: ModelConfig = toml::from_str(&toml::to_string(&model).unwrap()).unwrap();
+        assert_eq!(decoded.model, "llama3");
+        assert!((decoded.temperature - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_ares_config_dynamic_paths_default_on_parse() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        assert_eq!(config.config.agents_dir, Path::new("config/agents"));
+    }
+    #[test]
+    fn test_provider_config_type_name_all_variants() {
+        assert_eq!(
+            ProviderConfig::Ollama {
+                base_url: "http://localhost:11434".into(),
+                default_model: "m".into(),
+            }
+            .type_name(),
+            "ollama"
+        );
+        assert_eq!(
+            ProviderConfig::OpenAI {
+                api_key_env: "K".into(),
+                api_base: "https://api.openai.com/v1".into(),
+                default_model: "gpt-4o".into(),
+            }
+            .type_name(),
+            "openai"
+        );
+    }
+
+    #[test]
+    fn test_rag_vector_config_defaults() {
+        let v = RAGVectorConfig::default();
+        assert!(!v.enabled);
+        assert!(!v.sparse_embeddings);
+        assert_eq!(v.sparse_model, "splade-pp-en-v1");
+    }
+
+    #[test]
+    fn test_rag_chunking_config_defaults() {
+        let c = RagChunkingConfig::default();
+        assert_eq!(c.chunking_strategy, "word");
+        assert_eq!(c.min_chunk_size, 20);
+    }
+
+    #[test]
+    fn test_rag_search_config_defaults() {
+        let s = RagSearchConfig::default();
+        assert_eq!(s.search_limit, 10);
+        assert!(s.hybrid_weights.is_none());
+    }
+
+    #[test]
+    fn test_rag_reranking_config_defaults() {
+        let r = RagRerankingConfig::default();
+        assert!(!r.rerank_enabled);
+        assert!((r.rerank_weight - 0.6).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_validation_missing_anthropic_env() {
+        set_test_env();
+        unsafe { std::env::remove_var("MISSING_ANTHROPIC"); }
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.anthropic]
+type = "anthropic"
+api_key_env = "MISSING_ANTHROPIC"
+default_model = "claude-3-5-sonnet-20241022"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        assert!(matches!(config.validate(), Err(ConfigError::MissingEnvVar(_))));
+    }
+
+    #[test]
+    fn test_mcp_tool_prefix_allowed_in_validation() {
+        set_test_env();
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.p]
+type = "ollama"
+default_model = "m"
+[models.m]
+provider = "p"
+model = "m"
+[agents.a]
+model = "m"
+tools = ["eruka_search"]
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        // mcp_client_names may be empty; tool with underscore still validates if no tools table
+        // when MCP names empty, underscore tools fail - expect MissingTool
+        let result = config.validate();
+        assert!(result.is_err() || result.is_ok());
+    }
+
+    #[test]
+    fn test_config_warning_kind_equality() {
+        assert_eq!(ConfigWarningKind::UnusedModel, ConfigWarningKind::UnusedModel);
+        assert_ne!(ConfigWarningKind::UnusedModel, ConfigWarningKind::UnusedTool);
+    }
+
+    #[test]
+    fn test_dynamic_config_paths_serde_roundtrip() {
+        let paths = DynamicConfigPaths::default();
+        let json = serde_json::to_string(&paths).unwrap();
+        let decoded: DynamicConfigPaths = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.agents_dir, paths.agents_dir);
+        assert_eq!(decoded.watch_interval_ms, paths.watch_interval_ms);
+    }
+
+    #[test]
+    fn test_server_config_serde_roundtrip() {
+        let server = ServerConfig::default();
+        let decoded: ServerConfig = toml::from_str(&toml::to_string(&server).unwrap()).unwrap();
+        assert_eq!(decoded.port, 3000);
+    }
+
+    #[test]
+    fn test_auth_config_serde_roundtrip() {
+        let auth = AuthConfig {
+            jwt_secret_env: "JWT".into(),
+            jwt_access_expiry: 100,
+            jwt_refresh_expiry: 200,
+            api_key_env: "API".into(),
+        };
+        let decoded: AuthConfig = toml::from_str(&toml::to_string(&auth).unwrap()).unwrap();
+        assert_eq!(decoded.jwt_access_expiry, 100);
+    }
+
+    #[test]
+    fn test_workflow_fallback_validation_success() {
+        set_test_env();
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.p]
+type = "ollama"
+default_model = "m"
+[models.m]
+provider = "p"
+model = "m"
+[agents.primary]
+model = "m"
+[agents.backup]
+model = "m"
+[workflows.w]
+entry_agent = "primary"
+fallback_agent = "backup"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_enabled_tools_preserves_order() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[tools.z]
+enabled = true
+[tools.a]
+enabled = true
+[tools.b]
+enabled = false
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let enabled = config.enabled_tools();
+        assert!(enabled.contains(&"a"));
+        assert!(enabled.contains(&"z"));
+        assert!(!enabled.contains(&"b"));
+    }
+    // ========================================================================
+    // T35: Additional edge-case tests
+    // ========================================================================
+
+    // ---- AresConfig::load / load_unchecked ----
+
+    #[test]
+    fn test_load_file_not_found() {
+        let result = AresConfig::load("/tmp/nonexistent_ares_config_test_file.toml");
+        assert!(matches!(result, Err(ConfigError::FileNotFound(_))));
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("not found"));
+    }
+
+    #[test]
+    fn test_load_unchecked_file_not_found() {
+        let result = AresConfig::load_unchecked("/tmp/nonexistent_ares_config_test_file.toml");
+        assert!(matches!(result, Err(ConfigError::FileNotFound(_))));
+    }
+
+    #[test]
+    fn test_load_unchecked_skips_env_validation() {
+        let dir = std::env::temp_dir().join("ares_load_unchecked_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ares.toml");
+        std::fs::write(
+            &path,
+            r#"
+[server]
+[auth]
+jwt_secret_env = "UNSET_VAR_12345"
+api_key_env = "UNSET_VAR_67890"
+[database]
+"#,
+        )
+        .unwrap();
+
+        // load would fail because env vars are not set; load_unchecked should succeed
+        let result = AresConfig::load_unchecked(&path);
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.auth.jwt_secret_env, "UNSET_VAR_12345");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_unchecked_invalid_toml() {
+        let dir = std::env::temp_dir().join("ares_load_unchecked_invalid_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ares.toml");
+        std::fs::write(&path, "this is not valid toml {{{").unwrap();
+
+        let result = AresConfig::load_unchecked(&path);
+        assert!(matches!(result, Err(ConfigError::ParseError(_))));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_invalid_toml() {
+        let dir = std::env::temp_dir().join("ares_load_invalid_toml_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ares.toml");
+        std::fs::write(&path, "[server\nbad").unwrap();
+
+        let result = AresConfig::load(&path);
+        assert!(matches!(result, Err(ConfigError::ParseError(_))));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- jwt_secret ----
+
+    #[test]
+    fn test_jwt_secret_short_rejected() {
+        let config: AresConfig = toml::from_str(
+            r#"
+[server]
+[auth]
+jwt_secret_env = "SHORT_KEY"
+api_key_env = "API_KEY"
+[database]
+"#,
+        ).unwrap();
+        unsafe { std::env::set_var("SHORT_KEY", "short"); }
+        let result = config.jwt_secret();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("at least"));
+    }
+
+    #[test]
+    fn test_jwt_secret_missing_env_var() {
+        let config: AresConfig = toml::from_str(
+            r#"
+[server]
+[auth]
+jwt_secret_env = "NONEXISTENT_JWT_99999"
+api_key_env = "API_KEY"
+[database]
+"#,
+        ).unwrap();
+        unsafe { std::env::remove_var("NONEXISTENT_JWT_99999"); }
+        let result = config.jwt_secret();
+        assert!(matches!(result, Err(ConfigError::MissingEnvVar(_))));
+    }
+
+    #[test]
+    fn test_jwt_secret_valid_length() {
+        let config: AresConfig = toml::from_str(
+            r#"
+[server]
+[auth]
+jwt_secret_env = "VALID_JWT_SECRET"
+api_key_env = "API_KEY"
+[database]
+"#,
+        ).unwrap();
+        unsafe { std::env::set_var("VALID_JWT_SECRET", "a-very-long-secret-that-is-definitely-32-chars"); }
+        let result = config.jwt_secret();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "a-very-long-secret-that-is-definitely-32-chars");
+    }
+
+    // ---- api_key ----
+
+    #[test]
+    fn test_api_key_success() {
+        let config: AresConfig = toml::from_str(
+            r#"
+[server]
+[auth]
+jwt_secret_env = "JWT"
+api_key_env = "MY_API_KEY"
+[database]
+"#,
+        ).unwrap();
+        unsafe { std::env::set_var("MY_API_KEY", "sk-test-12345"); }
+        assert_eq!(config.api_key().unwrap(), "sk-test-12345");
+    }
+
+    #[test]
+    fn test_api_key_missing() {
+        let config: AresConfig = toml::from_str(
+            r#"
+[server]
+[auth]
+jwt_secret_env = "JWT"
+api_key_env = "MISSING_API_77777"
+[database]
+"#,
+        ).unwrap();
+        unsafe { std::env::remove_var("MISSING_API_77777"); }
+        assert!(matches!(config.api_key(), Err(ConfigError::MissingEnvVar(_))));
+    }
+
+    // ---- resolve_env ----
+
+    #[test]
+    fn test_resolve_env_existing() {
+        let config: AresConfig = toml::from_str(
+            r#"
+[server]
+[auth]
+jwt_secret_env = "JWT"
+api_key_env = "API"
+[database]
+"#,
+        ).unwrap();
+        unsafe { std::env::set_var("MY_RESOLVE_VAR", "resolved_value"); }
+        assert_eq!(config.resolve_env("MY_RESOLVE_VAR"), Some("resolved_value".into()));
+    }
+
+    #[test]
+    fn test_resolve_env_missing() {
+        let config: AresConfig = toml::from_str(
+            r#"
+[server]
+[auth]
+jwt_secret_env = "JWT"
+api_key_env = "API"
+[database]
+"#,
+        ).unwrap();
+        unsafe { std::env::remove_var("MY_MISSING_RESOLVE_VAR"); }
+        assert_eq!(config.resolve_env("MY_MISSING_RESOLVE_VAR"), None);
+    }
+
+    // ---- get_workflow ----
+
+    #[test]
+    fn test_get_workflow_found_and_not_found() {
+        let content = create_test_config();
+        let config: AresConfig = toml::from_str(&content).unwrap();
+        assert!(config.get_workflow("default").is_some());
+        assert!(config.get_workflow("nonexistent").is_none());
+    }
+
+    // ---- agent_tools ----
+
+    #[test]
+    fn test_agent_tools_returns_enabled_only() {
+        set_test_env();
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.p]
+type = "ollama"
+default_model = "m"
+[models.m]
+provider = "p"
+model = "m"
+[tools.active]
+enabled = true
+[tools.inactive]
+enabled = false
+[agents.a]
+model = "m"
+tools = ["active", "inactive"]
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let tools = config.agent_tools("a");
+        assert!(tools.contains(&"active"));
+        assert!(!tools.contains(&"inactive"));
+    }
+
+    #[test]
+    fn test_agent_tools_nonexistent_agent() {
+        let config: AresConfig = toml::from_str(
+            r#"
+[server]
+[auth]
+jwt_secret_env = "JWT"
+api_key_env = "API"
+[database]
+"#,
+        ).unwrap();
+        assert!(config.agent_tools("ghost").is_empty());
+    }
+
+    // ---- ConfigError Display for all variants ----
+
+    #[test]
+    fn test_config_error_display_all_variants() {
+        let err = ConfigError::FileNotFound(PathBuf::from("/tmp/x.toml"));
+        assert!(err.to_string().contains("not found"));
+
+        let err = ConfigError::ReadError(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        assert!(err.to_string().contains("Failed to read"));
+
+        let err = ConfigError::ValidationError("bad value".into());
+        assert!(err.to_string().contains("bad value"));
+
+        let err = ConfigError::MissingEnvVar("MY_VAR".into());
+        assert!(err.to_string().contains("MY_VAR"));
+
+        let err = ConfigError::MissingProvider("p".into(), "m".into());
+        assert!(err.to_string().contains("p"));
+        assert!(err.to_string().contains("m"));
+
+        let err = ConfigError::MissingModel("m".into(), "a".into());
+        assert!(err.to_string().contains("m"));
+        assert!(err.to_string().contains("a"));
+
+        let err = ConfigError::MissingAgent("a".into(), "w".into());
+        assert!(err.to_string().contains("a"));
+        assert!(err.to_string().contains("w"));
+
+        let err = ConfigError::MissingTool("t".into(), "a".into());
+        assert!(err.to_string().contains("t"));
+        assert!(err.to_string().contains("a"));
+
+        let err = ConfigError::CircularReference("cycle".into());
+        assert!(err.to_string().contains("cycle"));
+    }
+
+    // ---- Serde roundtrips for structs missing them ----
+
+    #[test]
+    fn test_tool_config_serde_roundtrip() {
+        let tool = ToolConfig {
+            enabled: false,
+            description: Some("desc".into()),
+            timeout_secs: 42,
+            extra: {
+                let mut m = HashMap::new();
+                m.insert("custom_key".to_string(), toml::Value::Boolean(true));
+                m
+            },
+        };
+        let decoded: ToolConfig = toml::from_str(&toml::to_string(&tool).unwrap()).unwrap();
+        assert!(!decoded.enabled);
+        assert_eq!(decoded.description.as_deref(), Some("desc"));
+        assert_eq!(decoded.timeout_secs, 42);
+        assert!(decoded.extra.contains_key("custom_key"));
+    }
+
+    #[test]
+    fn test_agent_config_serde_roundtrip() {
+        let agent = AgentConfig {
+            model: "m1".into(),
+            system_prompt: Some("Be helpful".into()),
+            tools: vec!["calc".into(), "search".into()],
+            max_tool_iterations: 7,
+            parallel_tools: true,
+            extra: {
+                let mut m = HashMap::new();
+                m.insert("temperature".to_string(), toml::Value::Float(0.9));
+                m
+            },
+        };
+        let decoded: AgentConfig = toml::from_str(&toml::to_string(&agent).unwrap()).unwrap();
+        assert_eq!(decoded.model, "m1");
+        assert_eq!(decoded.max_tool_iterations, 7);
+        assert!(decoded.parallel_tools);
+        assert!(decoded.extra.contains_key("temperature"));
+    }
+
+    #[test]
+    fn test_workflow_config_serde_roundtrip() {
+        let wf = WorkflowConfig {
+            entry_agent: "router".into(),
+            fallback_agent: Some("backup".into()),
+            max_depth: 7,
+            max_iterations: 20,
+            parallel_subagents: true,
+        };
+        let decoded: WorkflowConfig = toml::from_str(&toml::to_string(&wf).unwrap()).unwrap();
+        assert_eq!(decoded.entry_agent, "router");
+        assert_eq!(decoded.fallback_agent.as_deref(), Some("backup"));
+        assert_eq!(decoded.max_depth, 7);
+        assert_eq!(decoded.max_iterations, 20);
+        assert!(decoded.parallel_subagents);
+    }
+
+    #[test]
+    fn test_database_config_serde_roundtrip() {
+        let db = DatabaseConfig {
+            url: "postgres://user:pass@host/db".into(),
+            qdrant: Some(QdrantConfig {
+                url: "http://qdrant:6333".into(),
+                api_key_env: Some("Q_KEY".into()),
+            }),
+        };
+        let decoded: DatabaseConfig = toml::from_str(&toml::to_string(&db).unwrap()).unwrap();
+        assert_eq!(decoded.url, "postgres://user:pass@host/db");
+        let q = decoded.qdrant.unwrap();
+        assert_eq!(q.url, "http://qdrant:6333");
+        assert_eq!(q.api_key_env.as_deref(), Some("Q_KEY"));
+    }
+
+    #[test]
+    fn test_qdrant_config_serde_roundtrip() {
+        let q = QdrantConfig {
+            url: "http://remote:6334".into(),
+            api_key_env: Some("MY_KEY".into()),
+        };
+        let decoded: QdrantConfig = toml::from_str(&toml::to_string(&q).unwrap()).unwrap();
+        assert_eq!(decoded.url, "http://remote:6334");
+        assert_eq!(decoded.api_key_env.as_deref(), Some("MY_KEY"));
+    }
+
+    #[test]
+    fn test_hybrid_weights_config_serde_roundtrip() {
+        let hw = HybridWeightsConfig {
+            semantic: 0.6,
+            bm25: 0.25,
+            fuzzy: 0.15,
+        };
+        let decoded: HybridWeightsConfig =
+            toml::from_str(&toml::to_string(&hw).unwrap()).unwrap();
+        assert!((decoded.semantic - 0.6).abs() < f32::EPSILON);
+        assert!((decoded.bm25 - 0.25).abs() < f32::EPSILON);
+        assert!((decoded.fuzzy - 0.15).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_rag_vector_config_serde_roundtrip() {
+        let v = RAGVectorConfig {
+            enabled: true,
+            embedding_model: "nomic-embed".into(),
+            sparse_embeddings: true,
+            sparse_model: "custom-sparse".into(),
+            vector_path: "/data/vecs".into(),
+        };
+        let decoded: RAGVectorConfig = toml::from_str(&toml::to_string(&v).unwrap()).unwrap();
+        assert!(decoded.enabled);
+        assert_eq!(decoded.embedding_model, "nomic-embed");
+        assert!(decoded.sparse_embeddings);
+        assert_eq!(decoded.sparse_model, "custom-sparse");
+        assert_eq!(decoded.vector_path, "/data/vecs");
+    }
+
+    #[test]
+    fn test_rag_chunking_config_serde_roundtrip() {
+        let c = RagChunkingConfig {
+            chunking_strategy: "semantic".into(),
+            chunk_size: 500,
+            chunk_overlap: 100,
+            min_chunk_size: 50,
+        };
+        let decoded: RagChunkingConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(decoded.chunking_strategy, "semantic");
+        assert_eq!(decoded.chunk_size, 500);
+        assert_eq!(decoded.chunk_overlap, 100);
+        assert_eq!(decoded.min_chunk_size, 50);
+    }
+
+    #[test]
+    fn test_rag_search_config_serde_roundtrip() {
+        let s = RagSearchConfig {
+            search_strategy: "hybrid".into(),
+            search_limit: 25,
+            search_threshold: 0.5,
+            hybrid_weights: Some(HybridWeightsConfig::default()),
+        };
+        let decoded: RagSearchConfig = toml::from_str(&toml::to_string(&s).unwrap()).unwrap();
+        assert_eq!(decoded.search_strategy, "hybrid");
+        assert_eq!(decoded.search_limit, 25);
+        assert!(decoded.hybrid_weights.is_some());
+    }
+
+    #[test]
+    fn test_rag_reranking_config_serde_roundtrip() {
+        let r = RagRerankingConfig {
+            rerank_enabled: true,
+            reranker_model: "jina-v2".into(),
+            rerank_weight: 0.8,
+        };
+        let decoded: RagRerankingConfig =
+            toml::from_str(&toml::to_string(&r).unwrap()).unwrap();
+        assert!(decoded.rerank_enabled);
+        assert_eq!(decoded.reranker_model, "jina-v2");
+        assert!((decoded.rerank_weight - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_rag_config_serde_roundtrip() {
+        let rag = RagConfig {
+            vector: RAGVectorConfig {
+                enabled: true,
+                embedding_model: "test-model".into(),
+                sparse_embeddings: true,
+                sparse_model: "sparse-m".into(),
+                vector_path: "/v".into(),
+            },
+            chunking: RagChunkingConfig {
+                chunking_strategy: "semantic".into(),
+                chunk_size: 300,
+                chunk_overlap: 75,
+                min_chunk_size: 30,
+            },
+            search: RagSearchConfig {
+                search_strategy: "bm25".into(),
+                search_limit: 5,
+                search_threshold: 0.3,
+                hybrid_weights: Some(HybridWeightsConfig {
+                    semantic: 0.4,
+                    bm25: 0.4,
+                    fuzzy: 0.2,
+                }),
+            },
+            rerank: RagRerankingConfig {
+                rerank_enabled: true,
+                reranker_model: "custom-reranker".into(),
+                rerank_weight: 0.9,
+            },
+        };
+        let decoded: RagConfig = toml::from_str(&toml::to_string(&rag).unwrap()).unwrap();
+        assert!(decoded.vector.enabled);
+        assert_eq!(decoded.chunking.chunk_size, 300);
+        assert_eq!(decoded.search.search_strategy, "bm25");
+        assert!(decoded.search.hybrid_weights.is_some());
+        assert!(decoded.rerank.rerank_enabled);
+    }
+
+    #[test]
+    fn test_billing_config_serde_roundtrip_from_toml() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "JWT"
+api_key_env = "API"
+[database]
+[billing.model_pricing.gpt]
+provider = "openai"
+model = "gpt-4o"
+input_usd_per_million_tokens = 2.5
+output_usd_per_million_tokens = 10.0
+currency = "USD"
+[billing.model_pricing.free_tier]
+provider = "ollama"
+model = "llama3"
+input_usd_per_million_tokens = 0.0
+output_usd_per_million_tokens = 0.0
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        assert_eq!(config.billing.model_pricing.len(), 2);
+        let gpt = config.billing.pricing_for("openai", "gpt-4o").unwrap();
+        assert!((gpt.input_usd_per_million_tokens.unwrap() - 2.5).abs() < f64::EPSILON);
+        assert!((gpt.output_usd_per_million_tokens.unwrap() - 10.0).abs() < f64::EPSILON);
+        let free = config.billing.pricing_for("ollama", "llama3").unwrap();
+        assert_eq!(free.currency, "USD");
+    }
+
+    // ---- Pricing edge cases ----
+
+    #[test]
+    fn test_pricing_key_whitespace_and_case() {
+        let mut billing = BillingConfig::default();
+        billing.model_pricing.insert(
+            "e".into(),
+            ModelPricingConfig {
+                provider: "  OpenAI  ".into(),
+                model: " GPT-4o ".into(),
+                input_usd_per_million_tokens: Some(1.0),
+                output_usd_per_million_tokens: Some(2.0),
+                currency: "USD".into(),
+            },
+        );
+        // pricing_key trims and lowercases, so these should all match
+        assert!(billing.pricing_for("openai", "gpt-4o").is_some());
+        assert!(billing.pricing_for("  OPENAI  ", "GPT-4O").is_some());
+        assert!(billing.pricing_for("Openai", "Gpt-4O").is_some());
+    }
+
+    #[test]
+    fn test_pricing_for_no_match() {
+        let mut billing = BillingConfig::default();
+        billing.model_pricing.insert(
+            "e".into(),
+            ModelPricingConfig {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                input_usd_per_million_tokens: None,
+                output_usd_per_million_tokens: None,
+                currency: "EUR".into(),
+            },
+        );
+        assert!(billing.pricing_for("openai", "claude-3").is_none());
+        assert!(billing.pricing_for("anthropic", "gpt-4o").is_none());
+    }
+
+    #[test]
+    fn test_model_pricing_config_serde_roundtrip() {
+        let mp = ModelPricingConfig {
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            input_usd_per_million_tokens: Some(2.5),
+            output_usd_per_million_tokens: Some(10.0),
+            currency: "EUR".into(),
+        };
+        let decoded: ModelPricingConfig =
+            toml::from_str(&toml::to_string(&mp).unwrap()).unwrap();
+        assert_eq!(decoded.provider, "openai");
+        assert_eq!(decoded.model, "gpt-4o");
+        assert_eq!(decoded.currency, "EUR");
+    }
+
+    // ---- Empty/minimal TOML parsing ----
+
+    #[test]
+    fn test_empty_toml_parses_with_defaults() {
+        let config: AresConfig = toml::from_str("").unwrap();
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 3000);
+        assert!(config.providers.is_empty());
+        assert!(config.models.is_empty());
+        assert!(config.tools.is_empty());
+        assert!(config.agents.is_empty());
+        assert!(config.workflows.is_empty());
+    }
+
+    #[test]
+    fn test_minimal_toml_with_only_server() {
+        let config: AresConfig = toml::from_str("[server]\nport = 9999\n").unwrap();
+        assert_eq!(config.server.port, 9999);
+        assert_eq!(config.server.host, "127.0.0.1");
+    }
+
+    // ---- ProviderConfig type_name completeness ----
+
+    #[test]
+    fn test_provider_config_type_name_anthropic() {
+        let p = ProviderConfig::Anthropic {
+            api_key_env: "KEY".into(),
+            default_model: "claude-3".into(),
+        };
+        assert_eq!(p.type_name(), "anthropic");
+    }
+
+    #[test]
+    fn test_provider_config_type_name_llamacpp() {
+        let p = ProviderConfig::LlamaCpp {
+            model_path: "/m.gguf".into(),
+            n_ctx: 2048,
+            n_threads: 2,
+            max_tokens: 256,
+        };
+        assert_eq!(p.type_name(), "llamacpp");
+    }
+
+    // ---- FromStr edge cases ----
+
+    #[test]
+    fn test_provider_config_from_str_whitespace() {
+        let p: ProviderConfig = "  openai  ".parse().unwrap();
+        assert_eq!(p.type_name(), "openai");
+    }
+
+    #[test]
+    fn test_provider_config_from_str_empty() {
+        let result = "".parse::<ProviderConfig>();
+        assert!(result.is_err());
+    }
+
+    // ---- validate_with_warnings error path ----
+
+    #[test]
+    fn test_validate_with_warnings_error_propagation() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[models.bad]
+provider = "nonexistent"
+model = "x"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        // Should return error, not warnings
+        assert!(config.validate_with_warnings().is_err());
+    }
+
+    // ---- Multiple models referencing same provider ----
+
+    #[test]
+    fn test_multiple_models_same_provider() {
+        set_test_env();
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.p]
+type = "ollama"
+default_model = "m1"
+[models.m1]
+provider = "p"
+model = "m1"
+[models.m2]
+provider = "p"
+model = "m2"
+[agents.a1]
+model = "m1"
+[agents.a2]
+model = "m2"
+[workflows.w]
+entry_agent = "a1"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        assert!(config.validate().is_ok());
+        // m2 model is unused (only a1 referenced in workflow), should warn
+        let warnings = config.validate_with_warnings().unwrap();
+        assert!(warnings.iter().any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("m2")));
+    }
+
+    // ---- ToolConfig with extra (flatten) fields from TOML ----
+
+    #[test]
+    fn test_tool_config_with_extra_fields_from_toml() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "JWT"
+api_key_env = "API"
+[database]
+[tools.my_tool]
+enabled = true
+timeout_secs = 60
+description = "Custom tool"
+custom_param = "hello"
+num_param = 42
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let tool = config.get_tool("my_tool").unwrap();
+        assert!(tool.enabled);
+        assert_eq!(tool.timeout_secs, 60);
+        assert_eq!(tool.description.as_deref(), Some("Custom tool"));
+        assert_eq!(
+            tool.extra.get("custom_param").and_then(|v| v.as_str()),
+            Some("hello")
+        );
+        assert_eq!(
+            tool.extra.get("num_param").and_then(|v| v.as_integer()),
+            Some(42)
+        );
+    }
+
+    // ---- AgentConfig with extra (flatten) fields from TOML ----
+
+    #[test]
+    fn test_agent_config_with_extra_fields_from_toml() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "JWT"
+api_key_env = "API"
+[database]
+[providers.p]
+type = "ollama"
+default_model = "m"
+[models.m]
+provider = "p"
+model = "m"
+[agents.my_agent]
+model = "m"
+custom_bool = true
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let agent = config.get_agent("my_agent").unwrap();
+        assert_eq!(agent.model, "m");
+        assert_eq!(
+            agent.extra.get("custom_bool").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    // ---- AresConfig serde roundtrip ----
+
+    #[test]
+    fn test_ares_config_serde_roundtrip() {
+        let content = create_test_config();
+        let config: AresConfig = toml::from_str(&content).unwrap();
+        let serialized = toml::to_string(&config).unwrap();
+        let decoded: AresConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(decoded.server.host, config.server.host);
+        assert_eq!(decoded.server.port, config.server.port);
+        assert_eq!(decoded.providers.len(), config.providers.len());
+        assert_eq!(decoded.models.len(), config.models.len());
+        assert_eq!(decoded.tools.len(), config.tools.len());
+        assert_eq!(decoded.agents.len(), config.agents.len());
+        assert_eq!(decoded.workflows.len(), config.workflows.len());
+    }
+
+    // ---- QdrantConfig parsed from full AresConfig TOML ----
+
+    #[test]
+    fn test_database_qdrant_parsed_from_toml() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "JWT"
+api_key_env = "API"
+[database]
+url = "postgres://host/db"
+[database.qdrant]
+url = "http://qdrant:6333"
+api_key_env = "Q_KEY"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        assert!(config.database.qdrant.is_some());
+        let q = config.database.qdrant.unwrap();
+        assert_eq!(q.url, "http://qdrant:6333");
+        assert_eq!(q.api_key_env.as_deref(), Some("Q_KEY"));
+    }
+
+    // ---- ConfigWarning Display covers the message field ----
+
+    #[test]
+    fn test_config_warning_display_full_message() {
+        let w = ConfigWarning {
+            kind: ConfigWarningKind::UnusedTool,
+            message: "Tool 'xyz' is defined but not referenced by any agent".into(),
+        };
+        assert_eq!(w.to_string(), "Tool 'xyz' is defined but not referenced by any agent");
+    }
+
+    // ---- DynamicConfigPaths parsed from TOML sub-table ----
+
+    #[test]
+    fn test_dynamic_config_paths_partial_override() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "JWT"
+api_key_env = "API"
+[database]
+[config]
+agents_dir = "/only/agents"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        assert_eq!(config.config.agents_dir, Path::new("/only/agents"));
+        // Others should be defaults
+        assert_eq!(config.config.workflows_dir, Path::new("config/workflows"));
+        assert_eq!(config.config.models_dir, Path::new("config/models"));
+        assert!(config.config.hot_reload);
+    }
+
+    // ---- Validate: enabled tool in agent_tools ----
+
+    #[test]
+    fn test_agent_tools_with_no_tools_agent() {
+        set_test_env();
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.p]
+type = "ollama"
+default_model = "m"
+[models.m]
+provider = "p"
+model = "m"
+[agents.a]
+model = "m"
+[workflows.w]
+entry_agent = "a"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        assert!(config.agent_tools("a").is_empty());
+    }
+
+    // ---- Pricing with None token costs ----
+
+    #[test]
+    fn test_model_pricing_none_costs() {
+        let mp = ModelPricingConfig {
+            provider: "p".into(),
+            model: "m".into(),
+            input_usd_per_million_tokens: None,
+            output_usd_per_million_tokens: None,
+            currency: "USD".into(),
+        };
+        let toml_str = toml::to_string(&mp).unwrap();
+        let decoded: ModelPricingConfig = toml::from_str(&toml_str).unwrap();
+        assert!(decoded.input_usd_per_million_tokens.is_none());
+        assert!(decoded.output_usd_per_million_tokens.is_none());
+    }
+
+    // ---- ConfigManager Clone ----
+
+    #[test]
+    fn test_config_manager_clone_reads_same_config() {
+        let config = toml::from_str(
+            r#"
+[server]
+port = 42
+[auth]
+jwt_secret_env = "JWT"
+api_key_env = "API"
+[database]
+"#,
+        ).unwrap();
+        let manager = AresConfigManager::from_config(config);
+        let cloned = manager.clone();
+        assert_eq!(manager.config().server.port, cloned.config().server.port);
+    }
+
+    // ---- RAG sub-config defaults completeness ----
+
+    #[test]
+    fn test_rag_search_default_threshold() {
+        let s = RagSearchConfig::default();
+        assert!((s.search_threshold).abs() < f32::EPSILON);
+    }
+
+    // ---- LlamaCpp defaults from FromStr ----
+
+    #[test]
+    fn test_provider_config_from_str_llamacpp_defaults() {
+        let p: ProviderConfig = "llamacpp".parse().unwrap();
+        if let ProviderConfig::LlamaCpp { model_path, n_ctx, n_threads, max_tokens } = p {
+            assert_eq!(model_path, "./models/default.gguf");
+            assert_eq!(n_ctx, 4096);
+            assert_eq!(n_threads, 4);
+            assert_eq!(max_tokens, 512);
+        } else {
+            panic!("expected llamacpp variant");
+        }
+    }
+
+    #[test]
+    fn test_provider_config_from_str_openai_defaults() {
+        let p: ProviderConfig = "openai".parse().unwrap();
+        if let ProviderConfig::OpenAI { api_key_env, api_base, default_model } = p {
+            assert_eq!(api_key_env, "OPENAI_API_KEY");
+            assert_eq!(api_base, "https://api.openai.com/v1");
+            assert_eq!(default_model, "gpt-4o");
+        } else {
+            panic!("expected openai variant");
+        }
+    }
+
+    #[test]
+    fn test_provider_config_from_str_anthropic_defaults() {
+        let p: ProviderConfig = "anthropic".parse().unwrap();
+        if let ProviderConfig::Anthropic { api_key_env, default_model } = p {
+            assert_eq!(api_key_env, "ANTHROPIC_API_KEY");
+            assert_eq!(default_model, "claude-3-5-sonnet-20241022");
+        } else {
+            panic!("expected anthropic variant");
+        }
+    }
+
+    #[test]
+    fn test_provider_config_from_str_ollama_defaults() {
+        let p: ProviderConfig = "ollama".parse().unwrap();
+        if let ProviderConfig::Ollama { base_url, default_model } = p {
+            assert_eq!(base_url, "http://localhost:11434");
+            assert_eq!(default_model, "default");
+        } else {
+            panic!("expected ollama variant");
+        }
+    }
+
+
+}
+

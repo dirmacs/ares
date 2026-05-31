@@ -240,3 +240,189 @@ Example:
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ares_llm::{client::TokenUsage, LLMClient, LLMResponse};
+    use ares_types::types::{AppError, ToolDefinition};
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct ResearchMockLlm {
+        calls: Arc<AtomicUsize>,
+        fail: bool,
+    }
+
+    impl ResearchMockLlm {
+        fn new() -> Self {
+            Self {
+                calls: Arc::new(AtomicUsize::new(0)),
+                fail: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                calls: Arc::new(AtomicUsize::new(0)),
+                fail: true,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LLMClient for ResearchMockLlm {
+        fn model_name(&self) -> &str {
+            "research-mock"
+        }
+
+        async fn generate(&self, _: &str) -> Result<String> {
+            Ok(String::new())
+        }
+
+        async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
+            Ok(String::new())
+        }
+
+        async fn generate_with_history(
+            &self,
+            messages: &[(String, String)],
+        ) -> Result<LLMResponse> {
+            if self.fail {
+                return Err(AppError::Internal("mock llm failure".into()));
+            }
+
+            let _n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let prompt = messages
+                .last()
+                .map(|(_, content)| content.as_str())
+                .unwrap_or_default();
+
+            let (content, usage) = if prompt.contains("follow-up research questions") {
+                (
+                    "What is the regulatory timeline?\nWhat are adoption barriers?".to_string(),
+                    TokenUsage::new(30, 12),
+                )
+            } else if prompt.contains("Synthesize these findings") {
+                (
+                    "Comprehensive synthesized answer.".to_string(),
+                    TokenUsage::new(50, 25),
+                )
+            } else {
+                (
+                    "1. What is the core technology?\n2. Who are the main vendors?".to_string(),
+                    TokenUsage::new(20, 8),
+                )
+            };
+
+            Ok(LLMResponse {
+                content,
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+                usage: Some(usage),
+            })
+        }
+
+        async fn generate_with_tools(
+            &self,
+            _: &str,
+            _: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: String::new(),
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+                usage: None,
+            })
+        }
+
+        async fn generate_with_tools_and_history(
+            &self,
+            _: &[ares_llm::coordinator::ConversationMessage],
+            _: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: String::new(),
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+                usage: None,
+            })
+        }
+
+        async fn stream(
+            &self,
+            _: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Ok(Box::new(futures::stream::empty()))
+        }
+
+        async fn stream_with_system(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Ok(Box::new(futures::stream::empty()))
+        }
+
+        async fn stream_with_history(
+            &self,
+            _: &[(String, String)],
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Ok(Box::new(futures::stream::empty()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_research_coordinator_end_to_end() {
+        let coordinator = ResearchCoordinator::new(Box::new(ResearchMockLlm::new()), 2, 2);
+        let (report, sources) = coordinator
+            .research("quantum networking trends")
+            .await
+            .expect("research should succeed");
+
+        assert!(report.contains("Comprehensive synthesized answer"));
+        assert_eq!(sources.len(), 4);
+        assert_eq!(sources[0].title, "Research Finding 1");
+        assert_eq!(sources[0].relevance_score, 0.8);
+        assert!(sources[0].url.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_research_with_usage_accumulates_tokens() {
+        let coordinator = ResearchCoordinator::new(Box::new(ResearchMockLlm::new()), 2, 2);
+        let (_, _, usage) = coordinator
+            .research_with_usage("market landscape")
+            .await
+            .expect("research_with_usage");
+
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 45);
+    }
+
+    #[tokio::test]
+    async fn test_research_propagates_llm_errors() {
+        let coordinator = ResearchCoordinator::new(Box::new(ResearchMockLlm::failing()), 1, 1);
+        let err = coordinator
+            .research("anything")
+            .await
+            .expect_err("expected llm failure");
+        assert!(matches!(err, AppError::Internal(_)));
+    }
+
+    #[test]
+    fn test_token_usage_serde_roundtrip() {
+        let usage = TokenUsage::new(11, 7);
+        let json = serde_json::to_string(&usage).expect("serialize TokenUsage");
+        let parsed: TokenUsage = serde_json::from_str(&json).expect("deserialize TokenUsage");
+        assert_eq!(parsed, usage);
+    }
+
+    #[test]
+    fn test_research_usage_default_is_zero() {
+        let usage = ResearchUsage::default();
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+    }
+}
+

@@ -13,3 +13,23 @@ pub mod web_scrape;
 pub mod mcp_bridge;
 
 pub use registry::{Tool, ToolRegistry};
+
+#[cfg(test)]
+mod tests {
+    use super::{calculator::Calculator, registry::ToolRegistry, Tool};
+    use std::sync::Arc;
+
+    #[test]
+    fn calculator_and_registry_are_wired() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(Calculator));
+        assert!(registry.has_tool("calculator"));
+        assert_eq!(registry.get("calculator").unwrap().name(), "calculator");
+    }
+
+    #[test]
+    fn search_and_scrape_modules_compile_under_test_cfg() {
+        let _ = std::any::type_name::<crate::search::WebSearch>();
+        let _ = std::any::type_name::<crate::web_scrape::WebScrape>();
+    }
+}

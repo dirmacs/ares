@@ -109,3 +109,51 @@ pub use turso::TursoClient;
 pub use qdrant::QdrantVectorStore;
 #[cfg(feature = "postgres")]
 pub use tenants::{TenantDb, UsageSummary};
+
+#[cfg(test)]
+mod tests {
+    use super::{CollectionInfo, CollectionStats};
+    #[cfg(feature = "ares-vector")]
+    use super::VectorStoreProvider;
+    #[cfg(feature = "ares-vector")]
+    use serde_json::json;
+
+    #[test]
+    fn collection_stats_serde_roundtrip() {
+        let stats = CollectionStats {
+            name: "docs".into(),
+            document_count: 42,
+            dimensions: 384,
+            index_size_bytes: Some(1024),
+            distance_metric: "cosine".into(),
+        };
+        let value = serde_json::to_value(&stats).expect("serialize");
+        let back: CollectionStats = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(back.name, "docs");
+        assert_eq!(back.document_count, 42);
+        assert_eq!(back.dimensions, 384);
+    }
+
+    #[test]
+    fn collection_info_serde_roundtrip() {
+        let info = CollectionInfo {
+            name: "embeddings".into(),
+            dimensions: 768,
+            document_count: 10,
+        };
+        let json = serde_json::to_string(&info).expect("serialize");
+        let back: CollectionInfo = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.name, "embeddings");
+        assert_eq!(back.dimensions, 768);
+    }
+
+    #[cfg(feature = "ares-vector")]
+    #[test]
+    fn ares_vector_provider_tagged_json() {
+        let provider = VectorStoreProvider::AresVector {
+            path: Some("./data/vectors".into()),
+        };
+        let value = serde_json::to_value(&provider).expect("serialize");
+        assert_eq!(value["provider"], json!("aresvector"));
+    }
+}

@@ -5,7 +5,8 @@
 use crate::{
     auth::middleware::AuthUser,
     db::postgres::Conversation,
-    types::{AppError, Result},
+    db::traits::ConversationSummary as DbConversationSummary,
+    types::{AppError, Message, MessageRole, Result},
     AppState,
 };
 use axum::{
@@ -42,6 +43,42 @@ impl From<Conversation> for ConversationSummary {
     }
 }
 
+/// Maps a database list-row into the API summary shape.
+fn summary_from_list_row(c: DbConversationSummary) -> ConversationSummary {
+    ConversationSummary {
+        id: c.id,
+        title: Some(c.title),
+        message_count: c.message_count,
+        created_at: c.created_at,
+        updated_at: c.updated_at,
+    }
+}
+
+/// Maps a stored message into the API message shape.
+fn message_to_api(conversation_id: &str, idx: usize, msg: Message) -> ConversationMessage {
+    ConversationMessage {
+        id: format!("{conversation_id}-{idx}"),
+        role: message_role_to_api(&msg.role),
+        content: msg.content,
+        created_at: msg.timestamp.to_rfc3339(),
+    }
+}
+
+/// Lowercases the debug representation of [`MessageRole`] for API consumers.
+fn message_role_to_api(role: &MessageRole) -> String {
+    format!("{role:?}").to_lowercase()
+}
+
+/// Verifies the authenticated user owns the conversation.
+fn ensure_conversation_owner(conversation_user_id: &str, claims_sub: &str, action: &str) -> Result<()> {
+    if conversation_user_id != claims_sub {
+        return Err(AppError::Auth(format!(
+            "Not authorized to {action} this conversation"
+        )));
+    }
+    Ok(())
+}
+
 /// Full conversation with messages.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConversationDetails {
@@ -71,7 +108,7 @@ pub struct ConversationMessage {
 }
 
 /// Request to update a conversation.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct UpdateConversationRequest {
     /// New title for the conversation (None to clear)
     pub title: Option<String>,
@@ -96,13 +133,7 @@ pub async fn list_conversations(
 
     let summaries: Vec<ConversationSummary> = conversations
         .into_iter()
-        .map(|c| ConversationSummary {
-            id: c.id,
-            title: Some(c.title),
-            message_count: c.message_count,
-            created_at: c.created_at,
-            updated_at: c.updated_at,
-        })
+        .map(summary_from_list_row)
         .collect();
 
     Ok(Json(summaries))
@@ -131,23 +162,14 @@ pub async fn get_conversation(
     // Verify conversation belongs to user
     let conversation = state.db.get_conversation(&id).await?;
 
-    if conversation.user_id != claims.sub {
-        return Err(AppError::Auth(
-            "Not authorized to access this conversation".to_string(),
-        ));
-    }
+    ensure_conversation_owner(&conversation.user_id, &claims.sub, "access")?;
 
     let messages = state.db.get_conversation_history(&id).await?;
 
     let message_details: Vec<ConversationMessage> = messages
         .into_iter()
         .enumerate()
-        .map(|(idx, msg)| ConversationMessage {
-            id: format!("{}-{}", id, idx), // Generate a pseudo-ID from conversation_id and index
-            role: format!("{:?}", msg.role).to_lowercase(),
-            content: msg.content,
-            created_at: msg.timestamp.to_rfc3339(),
-        })
+        .map(|(idx, msg)| message_to_api(&id, idx, msg))
         .collect();
 
     Ok(Json(ConversationDetails {
@@ -184,11 +206,7 @@ pub async fn update_conversation(
     // Verify conversation belongs to user
     let conversation = state.db.get_conversation(&id).await?;
 
-    if conversation.user_id != claims.sub {
-        return Err(AppError::Auth(
-            "Not authorized to modify this conversation".to_string(),
-        ));
-    }
+    ensure_conversation_owner(&conversation.user_id, &claims.sub, "modify")?;
 
     state
         .db
@@ -221,13 +239,118 @@ pub async fn delete_conversation(
     // Verify conversation belongs to user
     let conversation = state.db.get_conversation(&id).await?;
 
-    if conversation.user_id != claims.sub {
-        return Err(AppError::Auth(
-            "Not authorized to delete this conversation".to_string(),
-        ));
-    }
+    ensure_conversation_owner(&conversation.user_id, &claims.sub, "delete")?;
 
     state.db.delete_conversation(&id).await?;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn conversation_summary_from_postgres_row() {
+        let summary = ConversationSummary::from(Conversation {
+            id: "conv-1".to_string(),
+            user_id: "user-1".to_string(),
+            title: Some("Notes".to_string()),
+            message_count: 3,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-02T00:00:00Z".to_string(),
+        });
+        assert_eq!(summary.id, "conv-1");
+        assert_eq!(summary.title.as_deref(), Some("Notes"));
+        assert_eq!(summary.message_count, 3);
+    }
+
+    #[test]
+    fn summary_from_list_row_wraps_title() {
+        let summary = summary_from_list_row(DbConversationSummary {
+            id: "c1".to_string(),
+            title: "My chat".to_string(),
+            created_at: "t0".to_string(),
+            updated_at: "t1".to_string(),
+            message_count: 2,
+        });
+        assert_eq!(summary.title.as_deref(), Some("My chat"));
+        assert_eq!(summary.message_count, 2);
+    }
+
+    #[test]
+    fn message_role_to_api_lowercases_debug_form() {
+        assert_eq!(message_role_to_api(&MessageRole::Assistant), "assistant");
+        assert_eq!(message_role_to_api(&MessageRole::User), "user");
+        assert_eq!(message_role_to_api(&MessageRole::System), "system");
+    }
+
+    #[test]
+    fn message_to_api_builds_pseudo_id_and_timestamp() {
+        let msg = Message {
+            role: MessageRole::User,
+            content: "hello".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap(),
+        };
+        let api = message_to_api("conv-9", 1, msg);
+        assert_eq!(api.id, "conv-9-1");
+        assert_eq!(api.role, "user");
+        assert_eq!(api.content, "hello");
+        assert!(api.created_at.contains("2024"));
+    }
+
+    #[test]
+    fn ensure_conversation_owner_rejects_foreign_user() {
+        let err = ensure_conversation_owner("owner", "other", "access").unwrap_err();
+        assert!(matches!(err, AppError::Auth(_)));
+        assert!(err.to_string().contains("Not authorized to access"));
+    }
+
+    #[test]
+    fn ensure_conversation_owner_accepts_owner() {
+        assert!(ensure_conversation_owner("owner", "owner", "modify").is_ok());
+    }
+
+    #[test]
+    fn update_conversation_request_serde_roundtrip() {
+        let req = UpdateConversationRequest {
+            title: Some("Renamed".to_string()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: UpdateConversationRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.title.as_deref(), Some("Renamed"));
+    }
+
+    #[test]
+    fn update_conversation_request_clear_title_deserializes_null() {
+        let parsed: UpdateConversationRequest =
+            serde_json::from_str(r#"{"title":null}"#).unwrap();
+        assert!(parsed.title.is_none());
+    }
+
+    #[test]
+    fn conversation_details_serializes_messages() {
+        let details = ConversationDetails {
+            id: "c1".to_string(),
+            title: None,
+            messages: vec![ConversationMessage {
+                id: "c1-0".to_string(),
+                role: "user".to_string(),
+                content: "hi".to_string(),
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+            }],
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(json.contains("\"messages\""));
+        assert!(json.contains("\"hi\""));
+    }
+
+    #[test]
+    fn ensure_conversation_owner_does_not_depend_on_env() {
+        std::env::remove_var("DATABASE_URL");
+        assert!(ensure_conversation_owner("u1", "u1", "delete").is_ok());
+    }
 }

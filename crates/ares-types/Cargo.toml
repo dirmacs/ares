@@ -1,0 +1,21 @@
+[package]
+name = "ares-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "Core types and tenant models for A.R.E.S"
+
+[dependencies]
+axum = { version = "0.8.7", features = ["macros", "multipart"] }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

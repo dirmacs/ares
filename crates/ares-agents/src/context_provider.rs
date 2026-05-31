@@ -85,6 +85,36 @@ impl ContextProvider for NoOpContextProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    struct RecordingContextProvider {
+        last_runtime: Mutex<Option<AgentRuntimeContext>>,
+        response: Option<String>,
+    }
+
+    #[async_trait]
+    impl ContextProvider for RecordingContextProvider {
+        async fn get_context_for_run(&self, runtime: &AgentRuntimeContext) -> Option<String> {
+            *self.last_runtime.lock().unwrap() = Some(runtime.clone());
+            self.response.clone()
+        }
+    }
+
+    struct SelectiveContextProvider;
+
+    #[async_trait]
+    impl ContextProvider for SelectiveContextProvider {
+        async fn get_context_for_run(&self, runtime: &AgentRuntimeContext) -> Option<String> {
+            match (runtime.tenant_id.as_str(), runtime.agent_name.as_str()) {
+                ("tenant-a", "agent-x") => Some(format!(
+                    "workspace={:?}",
+                    runtime.workspace_id.as_deref().unwrap_or("none")
+                )),
+                ("tenant-b", _) => Some("tenant-b default".into()),
+                _ => None,
+            }
+        }
+    }
 
     #[tokio::test]
     async fn test_noop_returns_none() {
@@ -100,6 +130,67 @@ mod tests {
         assert_eq!(runtime.agent_name, "agent-1");
         assert_eq!(runtime.request_source, "api_v1_chat");
         assert_eq!(runtime.workspace_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_noop_get_context_for_run_returns_none() {
+        let provider = NoOpContextProvider;
+        let runtime = AgentRuntimeContext::new("tenant-1", "agent-1", "unit_test");
+        assert!(provider.get_context_for_run(&runtime).await.is_none());
+    }
+
+    #[test]
+    fn runtime_context_optional_fields_round_trip() {
+        let runtime = AgentRuntimeContext {
+            tenant_id: "tenant-1".into(),
+            agent_name: "agent-1".into(),
+            workspace_id: Some("ws-9".into()),
+            user_id: Some("user-42".into()),
+            session_id: Some("sess-7".into()),
+            request_source: "orchestrator".into(),
+        };
+        assert_eq!(runtime.workspace_id.as_deref(), Some("ws-9"));
+        assert_eq!(runtime.user_id.as_deref(), Some("user-42"));
+        assert_eq!(runtime.session_id.as_deref(), Some("sess-7"));
+    }
+
+    #[tokio::test]
+    async fn get_context_builds_legacy_runtime_for_resolution() {
+        let provider = RecordingContextProvider {
+            last_runtime: Mutex::new(None),
+            response: Some("injected".into()),
+        };
+
+        let resolved = provider.get_context("my-agent", "my-tenant").await;
+        assert_eq!(resolved.as_deref(), Some("injected"));
+
+        let runtime = provider.last_runtime.lock().unwrap().take().unwrap();
+        assert_eq!(runtime.tenant_id, "my-tenant");
+        assert_eq!(runtime.agent_name, "my-agent");
+        assert_eq!(runtime.request_source, "legacy_context_provider");
+    }
+
+    #[tokio::test]
+    async fn context_resolution_uses_runtime_metadata() {
+        let provider = SelectiveContextProvider;
+
+        let mut runtime =
+            AgentRuntimeContext::new("tenant-a", "agent-x", "managed_platform");
+        runtime.workspace_id = Some("ws-1".into());
+
+        let resolved = provider.get_context_for_run(&runtime).await;
+        assert_eq!(resolved.as_deref(), Some("workspace=\"ws-1\""));
+
+        let unknown =
+            AgentRuntimeContext::new("tenant-z", "agent-x", "managed_platform");
+        assert!(provider.get_context_for_run(&unknown).await.is_none());
+
+        let tenant_default =
+            AgentRuntimeContext::new("tenant-b", "any-agent", "managed_platform");
+        assert_eq!(
+            provider.get_context_for_run(&tenant_default).await.as_deref(),
+            Some("tenant-b default")
+        );
     }
 
     #[tokio::test]

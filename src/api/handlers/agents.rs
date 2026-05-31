@@ -4,9 +4,9 @@ use crate::{types::AgentType, AppState};
 use axum::{extract::State, Json};
 use serde::Serialize;
 
-/// Lists all available built-in agents.
-pub async fn list_agents(State(_state): State<AppState>) -> Json<Vec<AgentInfo>> {
-    Json(vec![
+/// Static catalog of built-in agent types exposed by the API.
+pub(crate) fn builtin_agent_catalog() -> Vec<AgentInfo> {
+    vec![
         AgentInfo {
             agent_type: AgentType::Product,
             name: "Product Agent".to_string(),
@@ -32,7 +32,12 @@ pub async fn list_agents(State(_state): State<AppState>) -> Json<Vec<AgentInfo>>
             name: "HR Agent".to_string(),
             description: "Manages human resources queries".to_string(),
         },
-    ])
+    ]
+}
+
+/// Lists all available built-in agents.
+pub async fn list_agents(State(_state): State<AppState>) -> Json<Vec<AgentInfo>> {
+    Json(builtin_agent_catalog())
 }
 
 /// Information about an available agent.
@@ -44,4 +49,26 @@ pub struct AgentInfo {
     pub name: String,
     /// Description of agent capabilities
     pub description: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_lists_five_builtin_agents() {
+        let agents = builtin_agent_catalog();
+        assert_eq!(agents.len(), 5);
+        let types: Vec<_> = agents.iter().map(|a| a.agent_type.clone()).collect();
+        assert!(types.contains(&AgentType::Product));
+        assert!(types.contains(&AgentType::HR));
+    }
+
+    #[test]
+    fn catalog_entries_have_names_and_descriptions() {
+        for agent in builtin_agent_catalog() {
+            assert!(!agent.name.is_empty());
+            assert!(!agent.description.is_empty());
+        }
+    }
 }

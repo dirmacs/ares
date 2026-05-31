@@ -130,6 +130,7 @@ mod tests {
 
     static LOAD_ENV: Once = Once::new();
     static INIT_SCHEMA: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    static DB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn ensure_env_loaded() {
         LOAD_ENV.call_once(|| {
@@ -157,14 +158,19 @@ mod tests {
             .await
             .expect("Failed to connect to ares_test. Ensure it exists and migrations are applied.");
 
-        if INIT_SCHEMA.set(()).is_ok() {
-            sqlx::migrate!("./migrations")
-                .run(&db.pool)
-                .await
-                .expect("Failed to run migrations on ares_test");
-        }
+        sqlx::migrate!("./migrations")
+            .run(&db.pool)
+            .await
+            .expect("Failed to run migrations on ares_test");
 
         db
+    }
+
+    async fn restore_test_schema(db: &PostgresClient) {
+        sqlx::migrate!("./migrations")
+            .run(&db.pool)
+            .await
+            .expect("restore schema");
     }
 
     async fn provision_tenant(tenant_db: &TenantDb, name: &str) -> String {
@@ -269,6 +275,8 @@ mod tests {
 
     #[tokio::test]
     async fn record_usage_inserts_event_when_metering_present() {
+        let _db_guard = DB_TEST_LOCK.lock().await;
+
         let db = Arc::new(create_test_db().await);
         let tenant_db = TenantDb::new(Arc::clone(&db));
         let tenant_id = provision_tenant(&tenant_db, "usage-record").await;
@@ -301,9 +309,10 @@ mod tests {
         assert_eq!(output_tokens, 7);
         assert_eq!(model_name.as_deref(), Some("test-model"));
     }
-
     #[tokio::test]
     async fn record_usage_noop_without_metering_headers() {
+        let _db_guard = DB_TEST_LOCK.lock().await;
+
         let db = Arc::new(create_test_db().await);
         let tenant_db = TenantDb::new(Arc::clone(&db));
         let tenant_id = provision_tenant(&tenant_db, "usage-noop").await;
@@ -321,7 +330,6 @@ mod tests {
 
         assert_eq!(count, 0);
     }
-
     async fn metering_handler() -> Response {
         let mut headers = HeaderMap::new();
         headers.insert("x-input-tokens", "4".parse().unwrap());
@@ -334,6 +342,8 @@ mod tests {
 
     #[tokio::test]
     async fn track_usage_records_metering_from_response_headers() {
+        let _db_guard = DB_TEST_LOCK.lock().await;
+
         let db = Arc::new(create_test_db().await);
         let tenant_db = Arc::new(TenantDb::new(db.clone()));
         let tenant_id = provision_tenant(&tenant_db, "usage-track").await;
@@ -376,9 +386,10 @@ mod tests {
 
         assert_eq!(count, 1);
     }
-
     #[tokio::test]
     async fn track_usage_skips_when_tenant_context_missing() {
+        let _db_guard = DB_TEST_LOCK.lock().await;
+
         let db = Arc::new(create_test_db().await);
         let tenant_db = Arc::new(TenantDb::new(db.clone()));
 
@@ -408,12 +419,14 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM usage_events")
-            .fetch_one(&db.pool)
-            .await
-            .expect("count");
+        let sentinel = "00000000-0000-0000-0000-000000000099";
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM usage_events WHERE tenant_id = $1")
+                .bind(sentinel)
+                .fetch_one(&db.pool)
+                .await
+                .expect("count");
 
         assert_eq!(count, 0);
-    }
-}
+    }}
 

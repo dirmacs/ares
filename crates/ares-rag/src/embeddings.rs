@@ -1,0 +1,1983 @@
+//! Embedding Service for RAG
+//!
+//! This module provides a comprehensive embedding service with support for:
+//! - 30+ text embedding models (BGE, Qwen3, Gemma, E5, Jina, etc.)
+//! - Sparse embeddings for hybrid search (SPLADE, BGE-M3)
+//! - Reranking models (BGE, Jina)
+//! - Async embedding via `spawn_blocking`
+//! - In-memory LRU caching to avoid recomputing embeddings
+//!
+//! # Feature Flag
+//!
+//! This module requires the `local-embeddings` feature to be enabled.
+//! Without it, local ONNX-based embeddings are not available.
+//!
+//! ```toml
+//! [dependencies]
+//! ares-server = { version = "0.3", features = ["local-embeddings"] }
+//! ```
+//!
+//! # GPU Acceleration (TODO)
+//! GPU acceleration is planned for future iterations. See `docs/FUTURE_ENHANCEMENTS.md`.
+//! Potential approach:
+//! - Add feature flags: `cuda`, `metal`, `vulkan`
+//! - Use ORT execution providers for ONNX models
+//! - Use Candle GPU features for Qwen3 models
+//!
+//! # Embedding Cache
+//! Use `CachedEmbeddingService` to wrap the `EmbeddingService` with an LRU cache.
+//! See [`crate::cache`] for cache configuration options.
+
+use ares_types::types::{AppError, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt::Display;
+use std::str::FromStr;
+use std::sync::{Arc, Mutex, OnceLock};
+// Note: Arc is now used both for MODEL_INIT_LOCKS and for wrapping the embedding models
+use tokio::task::spawn_blocking;
+
+// Re-export fastembed types for convenience
+pub use fastembed::{EmbeddingModel as FastEmbedModel, InitOptions, SparseModel, TextEmbedding};
+
+/// Global lock for model initialization to prevent race conditions during parallel downloads.
+/// The key is the model name (from FastEmbedModel's Debug representation).
+static MODEL_INIT_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+/// Get or create a lock for a specific model to prevent concurrent initialization.
+fn get_model_lock(model_name: &str) -> Arc<Mutex<()>> {
+    let locks = MODEL_INIT_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = locks.lock().unwrap();
+    map.entry(model_name.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+/// Pre-download model files via lancor's hub client.
+///
+/// Fastembed's built-in hf_hub/ureq client fails on xethub CDN redirects.
+/// Lancor uses reqwest which handles these correctly. We download files
+/// then place them in the HF cache format that hf-hub/fastembed expects:
+///   {cache_dir}/models--{org}--{model}/snapshots/{hash}/{filename}
+///   {cache_dir}/models--{org}--{model}/refs/main → {hash}
+pub(crate) fn pre_download_model(
+    repo_id: &str,
+    files: &[&str],
+    cache_dir: &std::path::Path,
+) -> Result<()> {
+    // Build HF cache directory structure
+    let folder_name = format!("models--{}", repo_id.replace('/', "--"));
+    let snapshot_hash = "lancor-prefetch"; // deterministic hash for our downloads
+    let snapshot_dir = cache_dir.join(&folder_name).join("snapshots").join(snapshot_hash);
+    let refs_dir = cache_dir.join(&folder_name).join("refs");
+
+    std::fs::create_dir_all(&snapshot_dir).ok();
+    std::fs::create_dir_all(&refs_dir).ok();
+
+    // Write refs/main → snapshot hash
+    let ref_path = refs_dir.join("main");
+    if !ref_path.exists() {
+        std::fs::write(&ref_path, snapshot_hash).ok();
+    }
+
+    let hub = lancor::hub::HubClient::with_cache_dir(cache_dir.to_path_buf())
+        .map_err(|e| AppError::Internal(format!("Failed to create hub client: {}", e)))?;
+
+    let rt = tokio::runtime::Handle::current();
+    for filename in files {
+        let target = snapshot_dir.join(filename);
+        if target.exists() && std::fs::metadata(&target).map(|m| m.len() > 0).unwrap_or(false) {
+            tracing::debug!("Already cached: {}/{}", repo_id, filename);
+            continue;
+        }
+
+        // Create parent dirs for nested files like onnx/model.onnx
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+
+        match tokio::task::block_in_place(|| {
+            rt.block_on(hub.download(repo_id, filename, None))
+        }) {
+            Ok(downloaded_path) => {
+                // Copy from lancor's cache to HF cache format
+                if downloaded_path != target {
+                    std::fs::copy(&downloaded_path, &target).ok();
+                }
+                tracing::info!("Pre-downloaded {}/{} ({} bytes)", repo_id, filename,
+                    std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0));
+            }
+            Err(e) => {
+                tracing::warn!("Could not pre-download {}/{}: {}", repo_id, filename, e);
+            }
+        }
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Embedding Model Configuration
+// ============================================================================
+
+/// Supported embedding models with their metadata.
+///
+/// This enum wraps fastembed's EmbeddingModel with additional metadata
+/// for easier configuration and selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum EmbeddingModelType {
+    // Fast English models (recommended defaults)
+    /// BAAI/bge-small-en-v1.5 - Fast, 384 dimensions (DEFAULT)
+    #[default]
+    BgeSmallEnV15,
+    /// Quantized BAAI/bge-small-en-v1.5
+    BgeSmallEnV15Q,
+    /// sentence-transformers/all-MiniLM-L6-v2 - Very fast, 384 dimensions
+    AllMiniLmL6V2,
+    /// Quantized all-MiniLM-L6-v2
+    AllMiniLmL6V2Q,
+    /// sentence-transformers/all-MiniLM-L12-v2 - Better quality, 384 dimensions
+    AllMiniLmL12V2,
+    /// Quantized all-MiniLM-L12-v2
+    AllMiniLmL12V2Q,
+    /// sentence-transformers/all-mpnet-base-v2 - 768 dimensions
+    AllMpnetBaseV2,
+
+    // High quality English models
+    /// BAAI/bge-base-en-v1.5 - 768 dimensions
+    BgeBaseEnV15,
+    /// Quantized BAAI/bge-base-en-v1.5
+    BgeBaseEnV15Q,
+    /// BAAI/bge-large-en-v1.5 - 1024 dimensions
+    BgeLargeEnV15,
+    /// Quantized BAAI/bge-large-en-v1.5
+    BgeLargeEnV15Q,
+
+    // Multilingual models
+    // NOTE: BGE-M3 is not available in fastembed 5.5.0, use MultilingualE5 instead
+    /// intfloat/multilingual-e5-small - 384 dimensions
+    MultilingualE5Small,
+    /// intfloat/multilingual-e5-base - 768 dimensions
+    MultilingualE5Base,
+    /// intfloat/multilingual-e5-large - 1024 dimensions
+    MultilingualE5Large,
+    /// sentence-transformers/paraphrase-MiniLM-L12-v2
+    ParaphraseMiniLmL12V2,
+    /// Quantized paraphrase-MiniLM-L12-v2
+    ParaphraseMiniLmL12V2Q,
+    /// sentence-transformers/paraphrase-multilingual-mpnet-base-v2 - 768 dimensions
+    ParaphraseMultilingualMpnetBaseV2,
+
+    // Chinese models
+    /// BAAI/bge-small-zh-v1.5 - 512 dimensions
+    BgeSmallZhV15,
+    /// BAAI/bge-large-zh-v1.5 - 1024 dimensions
+    BgeLargeZhV15,
+
+    // Long context models
+    /// nomic-ai/nomic-embed-text-v1 - 768 dimensions, 8192 context
+    NomicEmbedTextV1,
+    /// nomic-ai/nomic-embed-text-v1.5 - 768 dimensions, 8192 context
+    NomicEmbedTextV15,
+    /// Quantized nomic-embed-text-v1.5
+    NomicEmbedTextV15Q,
+
+    // Specialized models
+    /// mixedbread-ai/mxbai-embed-large-v1 - 1024 dimensions
+    MxbaiEmbedLargeV1,
+    /// Quantized mxbai-embed-large-v1
+    MxbaiEmbedLargeV1Q,
+    /// Alibaba-NLP/gte-base-en-v1.5 - 768 dimensions
+    GteBaseEnV15,
+    /// Quantized gte-base-en-v1.5
+    GteBaseEnV15Q,
+    /// Alibaba-NLP/gte-large-en-v1.5 - 1024 dimensions
+    GteLargeEnV15,
+    /// Quantized gte-large-en-v1.5
+    GteLargeEnV15Q,
+    /// Qdrant/clip-ViT-B-32-text - 512 dimensions, pairs with vision model
+    ClipVitB32,
+
+    // Code models
+    /// jinaai/jina-embeddings-v2-base-code - 768 dimensions
+    JinaEmbeddingsV2BaseCode,
+    // NOTE: JinaEmbeddingsV2BaseEN is not available in fastembed 5.5.0
+
+    // Modern models
+    /// google/embeddinggemma-300m - 768 dimensions
+    EmbeddingGemma300M,
+    /// lightonai/modernbert-embed-large - 1024 dimensions
+    ModernBertEmbedLarge,
+
+    // Snowflake Arctic models
+    /// snowflake/snowflake-arctic-embed-xs - 384 dimensions
+    SnowflakeArcticEmbedXs,
+    /// Quantized snowflake-arctic-embed-xs
+    SnowflakeArcticEmbedXsQ,
+    /// snowflake/snowflake-arctic-embed-s - 384 dimensions
+    SnowflakeArcticEmbedS,
+    /// Quantized snowflake-arctic-embed-s
+    SnowflakeArcticEmbedSQ,
+    /// snowflake/snowflake-arctic-embed-m - 768 dimensions
+    SnowflakeArcticEmbedM,
+    /// Quantized snowflake-arctic-embed-m
+    SnowflakeArcticEmbedMQ,
+    /// snowflake/snowflake-arctic-embed-m-long - 768 dimensions, 2048 context
+    SnowflakeArcticEmbedMLong,
+    /// Quantized snowflake-arctic-embed-m-long
+    SnowflakeArcticEmbedMLongQ,
+    /// snowflake/snowflake-arctic-embed-l - 1024 dimensions
+    SnowflakeArcticEmbedL,
+    /// Quantized snowflake-arctic-embed-l
+    SnowflakeArcticEmbedLQ,
+}
+
+impl EmbeddingModelType {
+    /// Convert to fastembed's EmbeddingModel enum
+    pub fn to_fastembed_model(&self) -> FastEmbedModel {
+        match self {
+            // Fast English
+            Self::BgeSmallEnV15 => FastEmbedModel::BGESmallENV15,
+            Self::BgeSmallEnV15Q => FastEmbedModel::BGESmallENV15Q,
+            Self::AllMiniLmL6V2 => FastEmbedModel::AllMiniLML6V2,
+            Self::AllMiniLmL6V2Q => FastEmbedModel::AllMiniLML6V2Q,
+            Self::AllMiniLmL12V2 => FastEmbedModel::AllMiniLML12V2,
+            Self::AllMiniLmL12V2Q => FastEmbedModel::AllMiniLML12V2Q,
+            Self::AllMpnetBaseV2 => FastEmbedModel::AllMpnetBaseV2,
+
+            // High quality English
+            Self::BgeBaseEnV15 => FastEmbedModel::BGEBaseENV15,
+            Self::BgeBaseEnV15Q => FastEmbedModel::BGEBaseENV15Q,
+            Self::BgeLargeEnV15 => FastEmbedModel::BGELargeENV15,
+            Self::BgeLargeEnV15Q => FastEmbedModel::BGELargeENV15Q,
+
+            // Multilingual
+            Self::MultilingualE5Small => FastEmbedModel::MultilingualE5Small,
+            Self::MultilingualE5Base => FastEmbedModel::MultilingualE5Base,
+            Self::MultilingualE5Large => FastEmbedModel::MultilingualE5Large,
+            Self::ParaphraseMiniLmL12V2 => FastEmbedModel::ParaphraseMLMiniLML12V2,
+            Self::ParaphraseMiniLmL12V2Q => FastEmbedModel::ParaphraseMLMiniLML12V2Q,
+            Self::ParaphraseMultilingualMpnetBaseV2 => FastEmbedModel::ParaphraseMLMpnetBaseV2,
+
+            // Chinese
+            Self::BgeSmallZhV15 => FastEmbedModel::BGESmallZHV15,
+            Self::BgeLargeZhV15 => FastEmbedModel::BGELargeZHV15,
+
+            // Long context
+            Self::NomicEmbedTextV1 => FastEmbedModel::NomicEmbedTextV1,
+            Self::NomicEmbedTextV15 => FastEmbedModel::NomicEmbedTextV15,
+            Self::NomicEmbedTextV15Q => FastEmbedModel::NomicEmbedTextV15Q,
+
+            // Specialized
+            Self::MxbaiEmbedLargeV1 => FastEmbedModel::MxbaiEmbedLargeV1,
+            Self::MxbaiEmbedLargeV1Q => FastEmbedModel::MxbaiEmbedLargeV1Q,
+            Self::GteBaseEnV15 => FastEmbedModel::GTEBaseENV15,
+            Self::GteBaseEnV15Q => FastEmbedModel::GTEBaseENV15Q,
+            Self::GteLargeEnV15 => FastEmbedModel::GTELargeENV15,
+            Self::GteLargeEnV15Q => FastEmbedModel::GTELargeENV15Q,
+            Self::ClipVitB32 => FastEmbedModel::ClipVitB32,
+
+            // Code
+            Self::JinaEmbeddingsV2BaseCode => FastEmbedModel::JinaEmbeddingsV2BaseCode,
+
+            // Modern
+            Self::EmbeddingGemma300M => FastEmbedModel::EmbeddingGemma300M,
+            Self::ModernBertEmbedLarge => FastEmbedModel::ModernBertEmbedLarge,
+
+            // Snowflake Arctic
+            Self::SnowflakeArcticEmbedXs => FastEmbedModel::SnowflakeArcticEmbedXS,
+            Self::SnowflakeArcticEmbedXsQ => FastEmbedModel::SnowflakeArcticEmbedXSQ,
+            Self::SnowflakeArcticEmbedS => FastEmbedModel::SnowflakeArcticEmbedS,
+            Self::SnowflakeArcticEmbedSQ => FastEmbedModel::SnowflakeArcticEmbedSQ,
+            Self::SnowflakeArcticEmbedM => FastEmbedModel::SnowflakeArcticEmbedM,
+            Self::SnowflakeArcticEmbedMQ => FastEmbedModel::SnowflakeArcticEmbedMQ,
+            Self::SnowflakeArcticEmbedMLong => FastEmbedModel::SnowflakeArcticEmbedMLong,
+            Self::SnowflakeArcticEmbedMLongQ => FastEmbedModel::SnowflakeArcticEmbedMLongQ,
+            Self::SnowflakeArcticEmbedL => FastEmbedModel::SnowflakeArcticEmbedL,
+            Self::SnowflakeArcticEmbedLQ => FastEmbedModel::SnowflakeArcticEmbedLQ,
+        }
+    }
+
+    /// Get the HuggingFace repo ID for this model (used for pre-downloading)
+    pub fn hf_repo_id(&self) -> &'static str {
+        match self {
+            Self::BgeSmallEnV15 | Self::BgeSmallEnV15Q => "Xenova/bge-small-en-v1.5",
+            Self::AllMiniLmL6V2 | Self::AllMiniLmL6V2Q => "sentence-transformers/all-MiniLM-L6-v2",
+            Self::AllMiniLmL12V2 | Self::AllMiniLmL12V2Q => "sentence-transformers/all-MiniLM-L12-v2",
+            _ => "Xenova/bge-small-en-v1.5", // fallback to default
+        }
+    }
+
+    /// Get the dimension of the embedding output
+    pub fn dimensions(&self) -> usize {
+        match self {
+            // 384 dimensions
+            Self::BgeSmallEnV15
+            | Self::BgeSmallEnV15Q
+            | Self::AllMiniLmL6V2
+            | Self::AllMiniLmL6V2Q
+            | Self::AllMiniLmL12V2
+            | Self::AllMiniLmL12V2Q
+            | Self::MultilingualE5Small
+            | Self::SnowflakeArcticEmbedXs
+            | Self::SnowflakeArcticEmbedXsQ
+            | Self::SnowflakeArcticEmbedS
+            | Self::SnowflakeArcticEmbedSQ => 384,
+
+            // 512 dimensions
+            Self::BgeSmallZhV15 | Self::ClipVitB32 => 512,
+
+            // 768 dimensions
+            Self::AllMpnetBaseV2
+            | Self::BgeBaseEnV15
+            | Self::BgeBaseEnV15Q
+            | Self::MultilingualE5Base
+            | Self::ParaphraseMiniLmL12V2
+            | Self::ParaphraseMiniLmL12V2Q
+            | Self::ParaphraseMultilingualMpnetBaseV2
+            | Self::NomicEmbedTextV1
+            | Self::NomicEmbedTextV15
+            | Self::NomicEmbedTextV15Q
+            | Self::GteBaseEnV15
+            | Self::GteBaseEnV15Q
+            | Self::JinaEmbeddingsV2BaseCode
+            | Self::EmbeddingGemma300M
+            | Self::SnowflakeArcticEmbedM
+            | Self::SnowflakeArcticEmbedMQ
+            | Self::SnowflakeArcticEmbedMLong
+            | Self::SnowflakeArcticEmbedMLongQ => 768,
+
+            // 1024 dimensions
+            Self::BgeLargeEnV15
+            | Self::BgeLargeEnV15Q
+            | Self::BgeLargeZhV15
+            | Self::MultilingualE5Large
+            | Self::MxbaiEmbedLargeV1
+            | Self::MxbaiEmbedLargeV1Q
+            | Self::GteLargeEnV15
+            | Self::GteLargeEnV15Q
+            | Self::ModernBertEmbedLarge
+            | Self::SnowflakeArcticEmbedL
+            | Self::SnowflakeArcticEmbedLQ => 1024,
+        }
+    }
+
+    /// Check if this is a quantized model
+    pub fn is_quantized(&self) -> bool {
+        matches!(
+            self,
+            Self::BgeSmallEnV15Q
+                | Self::AllMiniLmL6V2Q
+                | Self::AllMiniLmL12V2Q
+                | Self::BgeBaseEnV15Q
+                | Self::BgeLargeEnV15Q
+                | Self::ParaphraseMiniLmL12V2Q
+                | Self::NomicEmbedTextV15Q
+                | Self::MxbaiEmbedLargeV1Q
+                | Self::GteBaseEnV15Q
+                | Self::GteLargeEnV15Q
+                | Self::SnowflakeArcticEmbedXsQ
+                | Self::SnowflakeArcticEmbedSQ
+                | Self::SnowflakeArcticEmbedMQ
+                | Self::SnowflakeArcticEmbedMLongQ
+                | Self::SnowflakeArcticEmbedLQ
+        )
+    }
+
+    /// Check if this model supports multilingual text
+    pub fn is_multilingual(&self) -> bool {
+        matches!(
+            self,
+            Self::MultilingualE5Small
+                | Self::MultilingualE5Base
+                | Self::MultilingualE5Large
+                | Self::ParaphraseMultilingualMpnetBaseV2
+                | Self::BgeSmallZhV15
+                | Self::BgeLargeZhV15
+        )
+    }
+
+    /// Get the maximum context length in tokens
+    pub fn max_context_length(&self) -> usize {
+        match self {
+            Self::NomicEmbedTextV1 | Self::NomicEmbedTextV15 | Self::NomicEmbedTextV15Q => 8192,
+            Self::SnowflakeArcticEmbedMLong | Self::SnowflakeArcticEmbedMLongQ => 2048,
+            _ => 512,
+        }
+    }
+
+    /// List all available models
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::BgeSmallEnV15,
+            Self::BgeSmallEnV15Q,
+            Self::AllMiniLmL6V2,
+            Self::AllMiniLmL6V2Q,
+            Self::AllMiniLmL12V2,
+            Self::AllMiniLmL12V2Q,
+            Self::AllMpnetBaseV2,
+            Self::BgeBaseEnV15,
+            Self::BgeBaseEnV15Q,
+            Self::BgeLargeEnV15,
+            Self::BgeLargeEnV15Q,
+            Self::MultilingualE5Small,
+            Self::MultilingualE5Base,
+            Self::MultilingualE5Large,
+            Self::ParaphraseMiniLmL12V2,
+            Self::ParaphraseMiniLmL12V2Q,
+            Self::ParaphraseMultilingualMpnetBaseV2,
+            Self::BgeSmallZhV15,
+            Self::BgeLargeZhV15,
+            Self::NomicEmbedTextV1,
+            Self::NomicEmbedTextV15,
+            Self::NomicEmbedTextV15Q,
+            Self::MxbaiEmbedLargeV1,
+            Self::MxbaiEmbedLargeV1Q,
+            Self::GteBaseEnV15,
+            Self::GteBaseEnV15Q,
+            Self::GteLargeEnV15,
+            Self::GteLargeEnV15Q,
+            Self::ClipVitB32,
+            Self::JinaEmbeddingsV2BaseCode,
+            Self::EmbeddingGemma300M,
+            Self::ModernBertEmbedLarge,
+            Self::SnowflakeArcticEmbedXs,
+            Self::SnowflakeArcticEmbedXsQ,
+            Self::SnowflakeArcticEmbedS,
+            Self::SnowflakeArcticEmbedSQ,
+            Self::SnowflakeArcticEmbedM,
+            Self::SnowflakeArcticEmbedMQ,
+            Self::SnowflakeArcticEmbedMLong,
+            Self::SnowflakeArcticEmbedMLongQ,
+            Self::SnowflakeArcticEmbedL,
+            Self::SnowflakeArcticEmbedLQ,
+        ]
+    }
+}
+
+impl Display for EmbeddingModelType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::BgeSmallEnV15 => "bge-small-en-v1.5",
+            Self::BgeSmallEnV15Q => "bge-small-en-v1.5-q",
+            Self::AllMiniLmL6V2 => "all-minilm-l6-v2",
+            Self::AllMiniLmL6V2Q => "all-minilm-l6-v2-q",
+            Self::AllMiniLmL12V2 => "all-minilm-l12-v2",
+            Self::AllMiniLmL12V2Q => "all-minilm-l12-v2-q",
+            Self::AllMpnetBaseV2 => "all-mpnet-base-v2",
+            Self::BgeBaseEnV15 => "bge-base-en-v1.5",
+            Self::BgeBaseEnV15Q => "bge-base-en-v1.5-q",
+            Self::BgeLargeEnV15 => "bge-large-en-v1.5",
+            Self::BgeLargeEnV15Q => "bge-large-en-v1.5-q",
+            Self::MultilingualE5Small => "multilingual-e5-small",
+            Self::MultilingualE5Base => "multilingual-e5-base",
+            Self::MultilingualE5Large => "multilingual-e5-large",
+            Self::ParaphraseMiniLmL12V2 => "paraphrase-minilm-l12-v2",
+            Self::ParaphraseMiniLmL12V2Q => "paraphrase-minilm-l12-v2-q",
+            Self::ParaphraseMultilingualMpnetBaseV2 => "paraphrase-multilingual-mpnet-base-v2",
+            Self::BgeSmallZhV15 => "bge-small-zh-v1.5",
+            Self::BgeLargeZhV15 => "bge-large-zh-v1.5",
+            Self::NomicEmbedTextV1 => "nomic-embed-text-v1",
+            Self::NomicEmbedTextV15 => "nomic-embed-text-v1.5",
+            Self::NomicEmbedTextV15Q => "nomic-embed-text-v1.5-q",
+            Self::MxbaiEmbedLargeV1 => "mxbai-embed-large-v1",
+            Self::MxbaiEmbedLargeV1Q => "mxbai-embed-large-v1-q",
+            Self::GteBaseEnV15 => "gte-base-en-v1.5",
+            Self::GteBaseEnV15Q => "gte-base-en-v1.5-q",
+            Self::GteLargeEnV15 => "gte-large-en-v1.5",
+            Self::GteLargeEnV15Q => "gte-large-en-v1.5-q",
+            Self::ClipVitB32 => "clip-vit-b-32",
+            Self::JinaEmbeddingsV2BaseCode => "jina-embeddings-v2-base-code",
+            Self::EmbeddingGemma300M => "embedding-gemma-300m",
+            Self::ModernBertEmbedLarge => "modernbert-embed-large",
+            Self::SnowflakeArcticEmbedXs => "snowflake-arctic-embed-xs",
+            Self::SnowflakeArcticEmbedXsQ => "snowflake-arctic-embed-xs-q",
+            Self::SnowflakeArcticEmbedS => "snowflake-arctic-embed-s",
+            Self::SnowflakeArcticEmbedSQ => "snowflake-arctic-embed-s-q",
+            Self::SnowflakeArcticEmbedM => "snowflake-arctic-embed-m",
+            Self::SnowflakeArcticEmbedMQ => "snowflake-arctic-embed-m-q",
+            Self::SnowflakeArcticEmbedMLong => "snowflake-arctic-embed-m-long",
+            Self::SnowflakeArcticEmbedMLongQ => "snowflake-arctic-embed-m-long-q",
+            Self::SnowflakeArcticEmbedL => "snowflake-arctic-embed-l",
+            Self::SnowflakeArcticEmbedLQ => "snowflake-arctic-embed-l-q",
+        };
+        write!(f, "{}", name)
+    }
+}
+
+impl FromStr for EmbeddingModelType {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "bge-small-en-v1.5" | "bge-small-en" | "bge-small" => Ok(Self::BgeSmallEnV15),
+            "bge-small-en-v1.5-q" => Ok(Self::BgeSmallEnV15Q),
+            "all-minilm-l6-v2" | "minilm-l6" => Ok(Self::AllMiniLmL6V2),
+            "all-minilm-l6-v2-q" => Ok(Self::AllMiniLmL6V2Q),
+            "all-minilm-l12-v2" | "minilm-l12" => Ok(Self::AllMiniLmL12V2),
+            "all-minilm-l12-v2-q" => Ok(Self::AllMiniLmL12V2Q),
+            "all-mpnet-base-v2" | "mpnet" => Ok(Self::AllMpnetBaseV2),
+            "bge-base-en-v1.5" | "bge-base-en" | "bge-base" => Ok(Self::BgeBaseEnV15),
+            "bge-base-en-v1.5-q" => Ok(Self::BgeBaseEnV15Q),
+            "bge-large-en-v1.5" | "bge-large-en" | "bge-large" => Ok(Self::BgeLargeEnV15),
+            "bge-large-en-v1.5-q" => Ok(Self::BgeLargeEnV15Q),
+            "multilingual-e5-small" | "e5-small" => Ok(Self::MultilingualE5Small),
+            "multilingual-e5-base" | "e5-base" => Ok(Self::MultilingualE5Base),
+            "multilingual-e5-large" | "e5-large" => Ok(Self::MultilingualE5Large),
+            "paraphrase-minilm-l12-v2" => Ok(Self::ParaphraseMiniLmL12V2),
+            "paraphrase-minilm-l12-v2-q" => Ok(Self::ParaphraseMiniLmL12V2Q),
+            "paraphrase-multilingual-mpnet-base-v2" => Ok(Self::ParaphraseMultilingualMpnetBaseV2),
+            "bge-small-zh-v1.5" | "bge-small-zh" => Ok(Self::BgeSmallZhV15),
+            "bge-large-zh-v1.5" | "bge-large-zh" => Ok(Self::BgeLargeZhV15),
+            "nomic-embed-text-v1" | "nomic-v1" => Ok(Self::NomicEmbedTextV1),
+            "nomic-embed-text-v1.5" | "nomic-v1.5" | "nomic" => Ok(Self::NomicEmbedTextV15),
+            "nomic-embed-text-v1.5-q" => Ok(Self::NomicEmbedTextV15Q),
+            "mxbai-embed-large-v1" | "mxbai" => Ok(Self::MxbaiEmbedLargeV1),
+            "mxbai-embed-large-v1-q" => Ok(Self::MxbaiEmbedLargeV1Q),
+            "gte-base-en-v1.5" | "gte-base" => Ok(Self::GteBaseEnV15),
+            "gte-base-en-v1.5-q" => Ok(Self::GteBaseEnV15Q),
+            "gte-large-en-v1.5" | "gte-large" => Ok(Self::GteLargeEnV15),
+            "gte-large-en-v1.5-q" => Ok(Self::GteLargeEnV15Q),
+            "clip-vit-b-32" | "clip" => Ok(Self::ClipVitB32),
+            "jina-embeddings-v2-base-code" | "jina-code" => Ok(Self::JinaEmbeddingsV2BaseCode),
+            "embedding-gemma-300m" | "gemma-300m" | "gemma" => Ok(Self::EmbeddingGemma300M),
+            "modernbert-embed-large" | "modernbert" => Ok(Self::ModernBertEmbedLarge),
+            "snowflake-arctic-embed-xs" => Ok(Self::SnowflakeArcticEmbedXs),
+            "snowflake-arctic-embed-xs-q" => Ok(Self::SnowflakeArcticEmbedXsQ),
+            "snowflake-arctic-embed-s" => Ok(Self::SnowflakeArcticEmbedS),
+            "snowflake-arctic-embed-s-q" => Ok(Self::SnowflakeArcticEmbedSQ),
+            "snowflake-arctic-embed-m" => Ok(Self::SnowflakeArcticEmbedM),
+            "snowflake-arctic-embed-m-q" => Ok(Self::SnowflakeArcticEmbedMQ),
+            "snowflake-arctic-embed-m-long" => Ok(Self::SnowflakeArcticEmbedMLong),
+            "snowflake-arctic-embed-m-long-q" => Ok(Self::SnowflakeArcticEmbedMLongQ),
+            "snowflake-arctic-embed-l" | "snowflake-l" => Ok(Self::SnowflakeArcticEmbedL),
+            "snowflake-arctic-embed-l-q" => Ok(Self::SnowflakeArcticEmbedLQ),
+            _ => Err(AppError::Internal(format!(
+                "Unknown embedding model: {}. Use one of: {}",
+                s,
+                EmbeddingModelType::all()
+                    .iter()
+                    .map(|m| m.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
+        }
+    }
+}
+
+// ============================================================================
+// Sparse Embedding Model Configuration
+// ============================================================================
+
+/// Supported sparse embedding models for hybrid search
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SparseModelType {
+    /// SPLADE++ v1 - English sparse embeddings
+    #[default]
+    SpladePpV1,
+    // NOTE: BGE-M3 sparse mode is not available in fastembed 5.5.0
+}
+
+impl SparseModelType {
+    /// Convert to fastembed's SparseModel enum
+    pub fn to_fastembed_model(&self) -> SparseModel {
+        match self {
+            Self::SpladePpV1 => SparseModel::SPLADEPPV1,
+        }
+    }
+}
+
+impl Display for SparseModelType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::SpladePpV1 => "splade-pp-v1",
+        };
+        write!(f, "{}", name)
+    }
+}
+
+impl FromStr for SparseModelType {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "splade-pp-v1" | "splade" => Ok(Self::SpladePpV1),
+            _ => Err(AppError::Internal(format!(
+                "Unknown sparse model: {}. Use: splade-pp-v1",
+                s
+            ))),
+        }
+    }
+}
+
+// ============================================================================
+// Embedding Service Configuration
+// ============================================================================
+
+/// Configuration for the embedding service
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingConfig {
+    /// The embedding model to use
+    #[serde(default)]
+    pub model: EmbeddingModelType,
+
+    /// Batch size for embedding multiple texts
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+
+    /// Show download progress for first-time model downloads
+    #[serde(default = "default_show_progress")]
+    pub show_download_progress: bool,
+
+    /// Enable sparse embeddings for hybrid search
+    #[serde(default)]
+    pub sparse_enabled: bool,
+
+    /// Sparse embedding model to use
+    #[serde(default)]
+    pub sparse_model: SparseModelType,
+}
+
+fn default_batch_size() -> usize {
+    32
+}
+
+fn default_show_progress() -> bool {
+    true
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            model: EmbeddingModelType::default(),
+            batch_size: default_batch_size(),
+            show_download_progress: default_show_progress(),
+            sparse_enabled: false,
+            sparse_model: SparseModelType::default(),
+        }
+    }
+}
+
+// ============================================================================
+// Embedding Service
+// ============================================================================
+
+/// Main embedding service for generating text embeddings
+///
+/// Uses `spawn_blocking` to run fastembed's synchronous operations
+/// without blocking the async runtime.
+///
+/// The model is wrapped in `Arc<Mutex<TextEmbedding>>` to allow safe
+/// reuse across async boundaries without recreating the model on each call.
+pub struct EmbeddingService {
+    /// The text embedding model, wrapped for thread-safe access
+    model: Arc<Mutex<TextEmbedding>>,
+    /// Optional sparse embedding model for hybrid search
+    sparse_model: Option<Arc<Mutex<fastembed::SparseTextEmbedding>>>,
+    config: EmbeddingConfig,
+}
+
+impl EmbeddingService {
+    /// Create a new embedding service with the given configuration
+    ///
+    /// Uses a per-model lock to prevent race conditions when multiple threads
+    /// try to download/initialize the same model simultaneously.
+    pub fn new(config: EmbeddingConfig) -> Result<Self> {
+        let model_name = format!("{:?}", config.model.to_fastembed_model());
+        let model_lock = get_model_lock(&model_name);
+
+        // Acquire lock for this specific model to prevent concurrent downloads
+        let _guard = model_lock.lock().map_err(|e| {
+            AppError::Internal(format!(
+                "Failed to acquire model initialization lock: {}",
+                e
+            ))
+        })?;
+
+        let cache_dir = std::env::var("FASTEMBED_CACHE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from(".fastembed_cache"));
+        std::fs::create_dir_all(&cache_dir).ok();
+
+        // Pre-download ONNX model via lancor's hub client (handles CDN redirects
+        // that fastembed's ureq-based hf_hub client fails on)
+        let model_repo = config.model.hf_repo_id();
+        pre_download_model(model_repo, &["onnx/model.onnx", "tokenizer.json", "config.json"], &cache_dir)?;
+
+        // Try loading from local cache first to bypass hf-hub's broken ureq xethub client.
+        // Uses UserDefinedEmbeddingModel with raw ONNX bytes when cache exists.
+        let folder_name = format!("models--{}", model_repo.replace('/', "--"));
+        let model_base = cache_dir.join(&folder_name).join("snapshots");
+        let snapshot_dir = if model_base.exists() {
+            std::fs::read_dir(&model_base).ok().and_then(|entries| {
+                entries.filter_map(|e| e.ok()).find(|e| {
+                    let p = e.path();
+                    p.join("onnx").join("model.onnx").exists()
+                        && p.join("tokenizer.json").exists()
+                        && p.join("config.json").exists()
+                        && p.join("special_tokens_map.json").exists()
+                }).map(|e| e.path())
+            })
+        } else {
+            let native = cache_dir.join(model_repo.replace('/', "--"));
+            if native.join("onnx").join("model.onnx").exists() { Some(native) } else { None }
+        };
+
+        let model = if let Some(ref snap) = snapshot_dir {
+            tracing::info!("Loading embedding model from local cache: {}", snap.display());
+            let onnx_bytes = std::fs::read(snap.join("onnx").join("model.onnx"))
+                .map_err(|e| AppError::Internal(format!("Failed to read ONNX: {}", e)))?;
+            let tokenizer_file = std::fs::read(snap.join("tokenizer.json"))
+                .map_err(|e| AppError::Internal(format!("Failed to read tokenizer.json: {}", e)))?;
+            let config_file = std::fs::read(snap.join("config.json"))
+                .map_err(|e| AppError::Internal(format!("Failed to read config.json: {}", e)))?;
+            let special_tokens_map_file = std::fs::read(snap.join("special_tokens_map.json"))
+                .map_err(|e| AppError::Internal(format!("Failed to read special_tokens_map.json: {}", e)))?;
+            let tokenizer_config_file = std::fs::read(snap.join("tokenizer_config.json"))
+                .map_err(|e| AppError::Internal(format!("Failed to read tokenizer_config.json: {}", e)))?;
+
+            let tokenizer_files = fastembed::TokenizerFiles {
+                tokenizer_file,
+                config_file,
+                special_tokens_map_file,
+                tokenizer_config_file,
+            };
+
+            let user_model = fastembed::UserDefinedEmbeddingModel::new(onnx_bytes, tokenizer_files);
+            TextEmbedding::try_new_from_user_defined(user_model, fastembed::InitOptionsUserDefined::new())
+                .map_err(|e| AppError::Internal(format!("Failed to load local model: {}", e)))?
+        } else {
+            tracing::warn!("No local ONNX cache, attempting HF download (may fail on xethub)");
+            TextEmbedding::try_new(
+                InitOptions::new(config.model.to_fastembed_model())
+                    .with_cache_dir(cache_dir.clone())
+                    .with_show_download_progress(true),
+            )
+            .map_err(|e| AppError::Internal(format!("Failed to init embedding model: {}", e)))?
+        };
+
+        let sparse_model = if config.sparse_enabled {
+            let sparse_model_name = format!("{:?}", config.sparse_model.to_fastembed_model());
+            let sparse_lock = get_model_lock(&sparse_model_name);
+            let _sparse_guard = sparse_lock.lock().map_err(|e| {
+                AppError::Internal(format!("Failed to acquire sparse model lock: {}", e))
+            })?;
+
+            Some(
+                fastembed::SparseTextEmbedding::try_new(
+                    fastembed::SparseInitOptions::new(config.sparse_model.to_fastembed_model())
+                        .with_show_download_progress(config.show_download_progress),
+                )
+                .map_err(|e| {
+                    AppError::Internal(format!(
+                        "Failed to initialize sparse embedding model: {}",
+                        e
+                    ))
+                })?,
+            )
+        } else {
+            None
+        };
+
+        Ok(Self {
+            model: Arc::new(Mutex::new(model)),
+            sparse_model: sparse_model.map(|m| Arc::new(Mutex::new(m))),
+            config,
+        })
+    }
+
+    /// Create a new embedding service with the default model
+    pub fn with_default_model() -> Result<Self> {
+        Self::new(EmbeddingConfig::default())
+    }
+
+    /// Create a new embedding service with a specific model
+    pub fn with_model(model: EmbeddingModelType) -> Result<Self> {
+        Self::new(EmbeddingConfig {
+            model,
+            ..Default::default()
+        })
+    }
+
+    /// Get the current model type
+    pub fn model_type(&self) -> EmbeddingModelType {
+        self.config.model
+    }
+
+    /// Get the embedding dimensions
+    pub fn dimensions(&self) -> usize {
+        self.config.model.dimensions()
+    }
+
+    /// Get the configuration
+    pub fn config(&self) -> &EmbeddingConfig {
+        &self.config
+    }
+
+    /// Embed a single text (async via spawn_blocking)
+    pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
+        let embeddings = self.embed_texts(&[text.to_string()]).await?;
+        embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::Internal("No embedding generated".to_string()))
+    }
+
+    /// Embed multiple texts in batches (async via spawn_blocking)
+    ///
+    /// This is more efficient than calling `embed_text` multiple times
+    /// as it batches the texts and processes them together.
+    ///
+    /// The model is reused across calls via `Arc<Mutex<TextEmbedding>>`.
+    pub async fn embed_texts<S: AsRef<str> + Send + Sync + 'static>(
+        &self,
+        texts: &[S],
+    ) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Clone texts to owned strings for the spawn_blocking closure
+        let texts_owned: Vec<String> = texts.iter().map(|s| s.as_ref().to_string()).collect();
+        let batch_size = self.config.batch_size;
+
+        // Clone the Arc to move into the blocking task
+        let model = Arc::clone(&self.model);
+
+        spawn_blocking(move || {
+            // Lock the model for use
+            let mut model_guard = model
+                .lock()
+                .map_err(|e| AppError::Internal(format!("Failed to acquire model lock: {}", e)))?;
+
+            let refs: Vec<&str> = texts_owned.iter().map(|s| s.as_str()).collect();
+            model_guard
+                .embed(refs, Some(batch_size))
+                .map_err(|e| AppError::Internal(format!("Embedding failed: {}", e)))
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("Blocking task failed: {}", e)))?
+    }
+
+    /// Generate sparse embeddings for hybrid search
+    ///
+    /// The sparse model is reused across calls via `Arc<Mutex<SparseTextEmbedding>>`.
+    pub async fn embed_sparse<S: AsRef<str> + Send + Sync + 'static>(
+        &self,
+        texts: &[S],
+    ) -> Result<Vec<fastembed::SparseEmbedding>> {
+        let sparse_model = self.sparse_model.as_ref().ok_or_else(|| {
+            AppError::Internal(
+                "Sparse embeddings not enabled. Set sparse_enabled: true in config.".to_string(),
+            )
+        })?;
+
+        let texts_owned: Vec<String> = texts.iter().map(|s| s.as_ref().to_string()).collect();
+        let batch_size = self.config.batch_size;
+
+        // Clone the Arc to move into the blocking task
+        let model = Arc::clone(sparse_model);
+
+        spawn_blocking(move || {
+            // Lock the model for use
+            let mut model_guard = model.lock().map_err(|e| {
+                AppError::Internal(format!("Failed to acquire sparse model lock: {}", e))
+            })?;
+
+            let refs: Vec<&str> = texts_owned.iter().map(|s| s.as_str()).collect();
+            model_guard
+                .embed(refs, Some(batch_size))
+                .map_err(|e| AppError::Internal(format!("Sparse embedding failed: {}", e)))
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("Blocking task failed: {}", e)))?
+    }
+}
+
+// ============================================================================
+// Cached Embedding Service
+// ============================================================================
+
+use crate::cache::{CacheConfig, CacheStats, EmbeddingCache, LruEmbeddingCache, NoOpCache};
+
+/// An embedding service with integrated caching
+///
+/// Wraps an `EmbeddingService` with an `EmbeddingCache` to avoid recomputing
+/// embeddings for previously seen texts. The cache key is computed as a hash
+/// of the text content and model name.
+///
+/// # Example
+///
+/// ```ignore
+/// use ares::rag::embeddings::{CachedEmbeddingService, EmbeddingConfig};
+/// use ares::rag::cache::CacheConfig;
+///
+/// let service = CachedEmbeddingService::new(
+///     EmbeddingConfig::default(),
+///     CacheConfig::default(),
+/// )?;
+///
+/// // First call computes the embedding
+/// let emb1 = service.embed_text("hello world").await?;
+///
+/// // Second call returns cached result
+/// let emb2 = service.embed_text("hello world").await?;
+/// assert_eq!(emb1, emb2);
+/// ```
+pub struct CachedEmbeddingService {
+    /// The underlying embedding service
+    inner: EmbeddingService,
+    /// The embedding cache
+    cache: Box<dyn EmbeddingCache>,
+}
+
+impl CachedEmbeddingService {
+    /// Create a new cached embedding service
+    pub fn new(embedding_config: EmbeddingConfig, cache_config: CacheConfig) -> Result<Self> {
+        let inner = EmbeddingService::new(embedding_config)?;
+        let cache: Box<dyn EmbeddingCache> = if cache_config.enabled {
+            Box::new(LruEmbeddingCache::new(cache_config))
+        } else {
+            Box::new(NoOpCache::new())
+        };
+
+        Ok(Self { inner, cache })
+    }
+
+    /// Create with default configurations
+    pub fn with_defaults() -> Result<Self> {
+        Self::new(EmbeddingConfig::default(), CacheConfig::default())
+    }
+
+    /// Create with a specific model and default cache
+    pub fn with_model(model: EmbeddingModelType) -> Result<Self> {
+        Self::new(
+            EmbeddingConfig {
+                model,
+                ..Default::default()
+            },
+            CacheConfig::default(),
+        )
+    }
+
+    /// Create with caching disabled
+    pub fn without_cache(embedding_config: EmbeddingConfig) -> Result<Self> {
+        Self::new(
+            embedding_config,
+            CacheConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Get the model name for cache key computation
+    fn model_name(&self) -> String {
+        self.inner.model_type().to_string()
+    }
+
+    /// Embed a single text with caching
+    pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
+        let cache_key = self.cache.compute_key(text, &self.model_name());
+
+        // Check cache first
+        if let Some(cached) = self.cache.get(&cache_key) {
+            return Ok(cached);
+        }
+
+        // Compute embedding
+        let embedding = self.inner.embed_text(text).await?;
+
+        // Store in cache
+        self.cache.set(&cache_key, embedding.clone(), None)?;
+
+        Ok(embedding)
+    }
+
+    /// Embed multiple texts with caching
+    ///
+    /// Checks cache for each text individually, computes embeddings only
+    /// for uncached texts, and caches the new results.
+    pub async fn embed_texts<S: AsRef<str> + Send + Sync + 'static>(
+        &self,
+        texts: &[S],
+    ) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let model_name = self.model_name();
+        let mut results: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
+        let mut uncached_indices: Vec<usize> = Vec::new();
+        let mut uncached_texts: Vec<String> = Vec::new();
+
+        // Check cache for each text
+        for (i, text) in texts.iter().enumerate() {
+            let text_str = text.as_ref();
+            let cache_key = self.cache.compute_key(text_str, &model_name);
+
+            if let Some(cached) = self.cache.get(&cache_key) {
+                results[i] = Some(cached);
+            } else {
+                uncached_indices.push(i);
+                uncached_texts.push(text_str.to_string());
+            }
+        }
+
+        // Compute embeddings for uncached texts
+        if !uncached_texts.is_empty() {
+            let new_embeddings = self.inner.embed_texts(&uncached_texts).await?;
+
+            // Store results and cache them
+            for (j, embedding) in new_embeddings.into_iter().enumerate() {
+                let idx = uncached_indices[j];
+                let cache_key = self.cache.compute_key(&uncached_texts[j], &model_name);
+                self.cache.set(&cache_key, embedding.clone(), None)?;
+                results[idx] = Some(embedding);
+            }
+        }
+
+        // Unwrap all results (should all be Some at this point)
+        Ok(results.into_iter().flatten().collect())
+    }
+
+    /// Get the current model type
+    pub fn model_type(&self) -> EmbeddingModelType {
+        self.inner.model_type()
+    }
+
+    /// Get the embedding dimensions
+    pub fn dimensions(&self) -> usize {
+        self.inner.dimensions()
+    }
+
+    /// Get the embedding configuration
+    pub fn config(&self) -> &EmbeddingConfig {
+        self.inner.config()
+    }
+
+    /// Get cache statistics
+    pub fn cache_stats(&self) -> CacheStats {
+        self.cache.stats()
+    }
+
+    /// Clear the cache
+    pub fn clear_cache(&self) -> Result<()> {
+        self.cache.clear()
+    }
+
+    /// Invalidate a specific cache entry
+    pub fn invalidate(&self, text: &str) -> Result<()> {
+        let cache_key = self.cache.compute_key(text, &self.model_name());
+        self.cache.invalidate(&cache_key)
+    }
+
+    /// Check if caching is enabled
+    pub fn is_cache_enabled(&self) -> bool {
+        self.cache.is_enabled()
+    }
+}
+
+// ============================================================================
+// GPU Acceleration Stubs (TODO)
+// ============================================================================
+
+/// GPU acceleration backend (STUB - see docs/FUTURE_ENHANCEMENTS.md)
+///
+/// This enum represents potential GPU acceleration options for embedding models.
+/// Currently not implemented - all models run on CPU.
+///
+/// # Future Implementation
+///
+/// - **CUDA**: NVIDIA GPU acceleration via ONNX Runtime CUDA provider
+/// - **Metal**: Apple Silicon GPU acceleration via ONNX Runtime CoreML provider
+/// - **Vulkan**: Cross-platform GPU acceleration via ONNX Runtime Vulkan provider
+/// - **Candle**: GPU support for Qwen3 models via Candle's CUDA backend
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
+#[derive(Default)]
+pub enum AccelerationBackend {
+    /// CPU execution (default, always available)
+    #[default]
+    Cpu,
+    /// NVIDIA CUDA acceleration
+    Cuda {
+        /// The CUDA device ID to use for computation.
+        device_id: usize,
+    },
+    /// Apple Metal acceleration
+    Metal,
+    /// Vulkan GPU acceleration
+    Vulkan,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_model_dimensions() {
+        assert_eq!(EmbeddingModelType::BgeSmallEnV15.dimensions(), 384);
+        assert_eq!(EmbeddingModelType::BgeBaseEnV15.dimensions(), 768);
+        assert_eq!(EmbeddingModelType::BgeLargeEnV15.dimensions(), 1024);
+        assert_eq!(EmbeddingModelType::MultilingualE5Large.dimensions(), 1024);
+    }
+
+    #[test]
+    fn test_model_from_str() {
+        assert_eq!(
+            "bge-small-en-v1.5".parse::<EmbeddingModelType>().unwrap(),
+            EmbeddingModelType::BgeSmallEnV15
+        );
+        assert_eq!(
+            "multilingual-e5-large"
+                .parse::<EmbeddingModelType>()
+                .unwrap(),
+            EmbeddingModelType::MultilingualE5Large
+        );
+        assert_eq!(
+            "minilm-l6".parse::<EmbeddingModelType>().unwrap(),
+            EmbeddingModelType::AllMiniLmL6V2
+        );
+    }
+
+    #[test]
+    fn test_model_is_multilingual() {
+        assert!(EmbeddingModelType::MultilingualE5Small.is_multilingual());
+        assert!(EmbeddingModelType::MultilingualE5Large.is_multilingual());
+        assert!(!EmbeddingModelType::BgeSmallEnV15.is_multilingual());
+    }
+
+    #[test]
+    fn test_model_max_context() {
+        assert_eq!(
+            EmbeddingModelType::NomicEmbedTextV15.max_context_length(),
+            8192
+        );
+        assert_eq!(
+            EmbeddingModelType::NomicEmbedTextV1.max_context_length(),
+            8192
+        );
+        assert_eq!(EmbeddingModelType::BgeSmallEnV15.max_context_length(), 512);
+    }
+
+    #[test]
+    fn test_default_config() {
+        let config = EmbeddingConfig::default();
+        assert_eq!(config.model, EmbeddingModelType::BgeSmallEnV15);
+        assert_eq!(config.batch_size, 32);
+        assert!(config.show_download_progress);
+        assert!(!config.sparse_enabled);
+    }
+
+    #[test]
+    fn test_all_models_listed() {
+        let all = EmbeddingModelType::all();
+        assert!(all.len() >= 38); // We have 38+ models
+        assert!(all.contains(&EmbeddingModelType::BgeSmallEnV15));
+        assert!(all.contains(&EmbeddingModelType::MultilingualE5Large));
+    }
+
+    #[test]
+    fn test_display_roundtrip_all_models() {
+        // Every model's Display output should parse back via FromStr
+        for model in EmbeddingModelType::all() {
+            let display = model.to_string();
+            let parsed: EmbeddingModelType = display.parse().unwrap_or_else(|_| {
+                panic!("Display→FromStr roundtrip failed for {:?} ('{}')", model, display)
+            });
+            assert_eq!(parsed, model, "Roundtrip mismatch for {}", display);
+        }
+    }
+
+    #[test]
+    fn test_from_str_aliases() {
+        // Test short aliases resolve correctly
+        let aliases = vec![
+            ("bge-small", EmbeddingModelType::BgeSmallEnV15),
+            ("bge-small-en", EmbeddingModelType::BgeSmallEnV15),
+            ("bge-base", EmbeddingModelType::BgeBaseEnV15),
+            ("bge-large", EmbeddingModelType::BgeLargeEnV15),
+            ("e5-small", EmbeddingModelType::MultilingualE5Small),
+            ("e5-large", EmbeddingModelType::MultilingualE5Large),
+            ("mpnet", EmbeddingModelType::AllMpnetBaseV2),
+            ("nomic", EmbeddingModelType::NomicEmbedTextV15),
+            ("mxbai", EmbeddingModelType::MxbaiEmbedLargeV1),
+            ("gte-base", EmbeddingModelType::GteBaseEnV15),
+            ("gte-large", EmbeddingModelType::GteLargeEnV15),
+            ("clip", EmbeddingModelType::ClipVitB32),
+            ("jina-code", EmbeddingModelType::JinaEmbeddingsV2BaseCode),
+            ("gemma", EmbeddingModelType::EmbeddingGemma300M),
+            ("modernbert", EmbeddingModelType::ModernBertEmbedLarge),
+            ("snowflake-l", EmbeddingModelType::SnowflakeArcticEmbedL),
+        ];
+        for (alias, expected) in aliases {
+            let parsed: EmbeddingModelType = alias.parse().unwrap_or_else(|_| {
+                panic!("Alias '{}' should parse", alias)
+            });
+            assert_eq!(parsed, expected, "Alias '{}' mismatch", alias);
+        }
+    }
+
+    #[test]
+    fn test_from_str_case_insensitive() {
+        let upper: EmbeddingModelType = "BGE-SMALL-EN-V1.5".parse().unwrap();
+        assert_eq!(upper, EmbeddingModelType::BgeSmallEnV15);
+        let mixed: EmbeddingModelType = "Nomic-Embed-Text-V1.5".parse().unwrap();
+        assert_eq!(mixed, EmbeddingModelType::NomicEmbedTextV15);
+    }
+
+    #[test]
+    fn test_from_str_invalid_model() {
+        let result = "totally-fake-model".parse::<EmbeddingModelType>();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Unknown embedding model"), "Error should mention 'Unknown': {}", msg);
+    }
+
+    #[test]
+    fn test_hf_repo_id_known_models() {
+        assert_eq!(EmbeddingModelType::BgeSmallEnV15.hf_repo_id(), "Xenova/bge-small-en-v1.5");
+        assert_eq!(EmbeddingModelType::AllMiniLmL6V2.hf_repo_id(), "sentence-transformers/all-MiniLM-L6-v2");
+        assert_eq!(EmbeddingModelType::AllMiniLmL12V2.hf_repo_id(), "sentence-transformers/all-MiniLM-L12-v2");
+    }
+
+    #[test]
+    fn test_hf_repo_id_quantized_same_as_base() {
+        // Quantized variants should map to same repo as base
+        assert_eq!(
+            EmbeddingModelType::BgeSmallEnV15.hf_repo_id(),
+            EmbeddingModelType::BgeSmallEnV15Q.hf_repo_id()
+        );
+        assert_eq!(
+            EmbeddingModelType::AllMiniLmL6V2.hf_repo_id(),
+            EmbeddingModelType::AllMiniLmL6V2Q.hf_repo_id()
+        );
+    }
+
+    #[test]
+    fn test_dimensions_categories() {
+        // Verify dimension categories: 384, 512, 768, 1024
+        for model in EmbeddingModelType::all() {
+            let dim = model.dimensions();
+            assert!(
+                dim == 384 || dim == 512 || dim == 768 || dim == 1024,
+                "{:?} has unexpected dimension {}",
+                model,
+                dim
+            );
+        }
+    }
+
+    #[test]
+    fn test_sparse_model_display_roundtrip() {
+        let model = SparseModelType::SpladePpV1;
+        let display = model.to_string();
+        assert_eq!(display, "splade-pp-v1");
+        let parsed: SparseModelType = display.parse().unwrap();
+        assert_eq!(parsed, model);
+    }
+
+    #[test]
+    fn test_sparse_model_alias() {
+        let parsed: SparseModelType = "splade".parse().unwrap();
+        assert_eq!(parsed, SparseModelType::SpladePpV1);
+    }
+
+    #[test]
+    fn test_sparse_model_invalid() {
+        let result = "nonexistent-sparse".parse::<SparseModelType>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_embedding_config_serialization_roundtrip() {
+        let config = EmbeddingConfig {
+            model: EmbeddingModelType::NomicEmbedTextV15,
+            batch_size: 64,
+            show_download_progress: false,
+            sparse_enabled: true,
+            sparse_model: SparseModelType::SpladePpV1,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: EmbeddingConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.model, EmbeddingModelType::NomicEmbedTextV15);
+        assert_eq!(parsed.batch_size, 64);
+        assert!(!parsed.show_download_progress);
+        assert!(parsed.sparse_enabled);
+    }
+
+    #[test]
+    fn test_to_fastembed_model_all_variants() {
+        // Ensure every model maps to a fastembed variant without panicking
+        for model in EmbeddingModelType::all() {
+            let _ = model.to_fastembed_model(); // should not panic
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pre_download_creates_cache_structure() {
+        // Test that pre_download_model creates the correct directory structure
+        // (without actually downloading — lancor will fail on fake repo, but dirs should be created)
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_dir = tmp.path().to_path_buf();
+
+        // This will fail on download (fake repo) but should create dir structure
+        let _ = pre_download_model(
+            "fake-org/fake-model",
+            &["onnx/model.onnx"],
+            &cache_dir,
+        );
+
+        // Verify HF cache structure was created
+        let folder = cache_dir.join("models--fake-org--fake-model");
+        assert!(folder.join("snapshots").join("lancor-prefetch").exists(),
+            "snapshot dir should be created");
+        assert!(folder.join("refs").exists(),
+            "refs dir should be created");
+        let ref_main = folder.join("refs").join("main");
+        if ref_main.exists() {
+            let content = std::fs::read_to_string(&ref_main).unwrap();
+            assert_eq!(content, "lancor-prefetch");
+        }
+    }
+
+    #[test]
+    fn test_model_lock_creation() {
+        // get_model_lock should return same Arc for same model
+        let lock1 = get_model_lock("test-model");
+        let lock2 = get_model_lock("test-model");
+        assert!(Arc::ptr_eq(&lock1, &lock2), "Same model should return same lock");
+
+        let lock3 = get_model_lock("other-model");
+        assert!(!Arc::ptr_eq(&lock1, &lock3), "Different models should have different locks");
+    }
+
+    #[test]
+    fn test_display_canonical_names_are_unique() {
+        let mut names = std::collections::HashSet::new();
+        for model in EmbeddingModelType::all() {
+            let name = model.to_string();
+            assert!(
+                names.insert(name.clone()),
+                "Duplicate display name '{}' for {:?}",
+                name,
+                model
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_str_accepts_every_display_name() {
+        for model in EmbeddingModelType::all() {
+            let name = model.to_string();
+            let parsed: EmbeddingModelType = name.parse().unwrap_or_else(|_| {
+                panic!("Canonical display name '{}' should parse for {:?}", name, model)
+            });
+            assert_eq!(parsed, model);
+        }
+    }
+
+    #[test]
+    fn test_from_str_all_documented_aliases() {
+        let aliases = [
+            ("bge-small-en", EmbeddingModelType::BgeSmallEnV15),
+            ("bge-base-en", EmbeddingModelType::BgeBaseEnV15),
+            ("bge-large-en", EmbeddingModelType::BgeLargeEnV15),
+            ("minilm-l6", EmbeddingModelType::AllMiniLmL6V2),
+            ("minilm-l12", EmbeddingModelType::AllMiniLmL12V2),
+            ("e5-base", EmbeddingModelType::MultilingualE5Base),
+            ("bge-small-zh", EmbeddingModelType::BgeSmallZhV15),
+            ("bge-large-zh", EmbeddingModelType::BgeLargeZhV15),
+            ("nomic-v1", EmbeddingModelType::NomicEmbedTextV1),
+            ("nomic-v1.5", EmbeddingModelType::NomicEmbedTextV15),
+            ("gemma-300m", EmbeddingModelType::EmbeddingGemma300M),
+            ("BGE-SMALL-EN-V1.5-Q", EmbeddingModelType::BgeSmallEnV15Q),
+            ("ALL-MINILM-L12-V2-Q", EmbeddingModelType::AllMiniLmL12V2Q),
+            ("SNOWFLAKE-ARCTIC-EMBED-M-LONG-Q", EmbeddingModelType::SnowflakeArcticEmbedMLongQ),
+        ];
+        for (alias, expected) in aliases {
+            let parsed: EmbeddingModelType = alias.parse().unwrap_or_else(|_| {
+                panic!("Alias '{}' should parse", alias)
+            });
+            assert_eq!(parsed, expected, "Alias '{}' mismatch", alias);
+        }
+    }
+
+    #[test]
+    fn test_from_str_quantized_variants() {
+        let quantized = [
+            ("bge-small-en-v1.5-q", EmbeddingModelType::BgeSmallEnV15Q),
+            ("all-minilm-l6-v2-q", EmbeddingModelType::AllMiniLmL6V2Q),
+            ("all-minilm-l12-v2-q", EmbeddingModelType::AllMiniLmL12V2Q),
+            ("bge-base-en-v1.5-q", EmbeddingModelType::BgeBaseEnV15Q),
+            ("bge-large-en-v1.5-q", EmbeddingModelType::BgeLargeEnV15Q),
+            ("paraphrase-minilm-l12-v2-q", EmbeddingModelType::ParaphraseMiniLmL12V2Q),
+            ("nomic-embed-text-v1.5-q", EmbeddingModelType::NomicEmbedTextV15Q),
+            ("mxbai-embed-large-v1-q", EmbeddingModelType::MxbaiEmbedLargeV1Q),
+            ("gte-base-en-v1.5-q", EmbeddingModelType::GteBaseEnV15Q),
+            ("gte-large-en-v1.5-q", EmbeddingModelType::GteLargeEnV15Q),
+            ("snowflake-arctic-embed-xs-q", EmbeddingModelType::SnowflakeArcticEmbedXsQ),
+            ("snowflake-arctic-embed-s-q", EmbeddingModelType::SnowflakeArcticEmbedSQ),
+            ("snowflake-arctic-embed-m-q", EmbeddingModelType::SnowflakeArcticEmbedMQ),
+            ("snowflake-arctic-embed-m-long-q", EmbeddingModelType::SnowflakeArcticEmbedMLongQ),
+            ("snowflake-arctic-embed-l-q", EmbeddingModelType::SnowflakeArcticEmbedLQ),
+        ];
+        for (name, expected) in quantized {
+            let parsed: EmbeddingModelType = name.parse().unwrap();
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.to_string(), name);
+        }
+    }
+
+    #[test]
+    fn test_to_fastembed_model_maps_each_variant() {
+        let mut seen = std::collections::HashSet::new();
+        for model in EmbeddingModelType::all() {
+            let fastembed_model = model.to_fastembed_model();
+            let debug = format!("{:?}", fastembed_model);
+            assert!(
+                seen.insert(debug.clone()),
+                "Duplicate fastembed mapping {:?} -> {}",
+                model,
+                debug
+            );
+        }
+    }
+
+    #[test]
+    fn test_display_matches_from_str_for_every_model() {
+        let expected_names = [
+            (EmbeddingModelType::BgeSmallEnV15, "bge-small-en-v1.5"),
+            (EmbeddingModelType::AllMiniLmL6V2, "all-minilm-l6-v2"),
+            (EmbeddingModelType::AllMpnetBaseV2, "all-mpnet-base-v2"),
+            (EmbeddingModelType::MultilingualE5Large, "multilingual-e5-large"),
+            (EmbeddingModelType::BgeSmallZhV15, "bge-small-zh-v1.5"),
+            (EmbeddingModelType::NomicEmbedTextV15, "nomic-embed-text-v1.5"),
+            (EmbeddingModelType::MxbaiEmbedLargeV1, "mxbai-embed-large-v1"),
+            (EmbeddingModelType::ClipVitB32, "clip-vit-b-32"),
+            (EmbeddingModelType::JinaEmbeddingsV2BaseCode, "jina-embeddings-v2-base-code"),
+            (EmbeddingModelType::EmbeddingGemma300M, "embedding-gemma-300m"),
+            (EmbeddingModelType::ModernBertEmbedLarge, "modernbert-embed-large"),
+            (EmbeddingModelType::SnowflakeArcticEmbedL, "snowflake-arctic-embed-l"),
+        ];
+        for (model, expected) in expected_names {
+            assert_eq!(model.to_string(), expected);
+            assert_eq!(expected.parse::<EmbeddingModelType>().unwrap(), model);
+            assert!(format!("{model}") == expected);
+        }
+    }
+    // ---- is_quantized ----
+
+    #[test]
+    fn test_is_quantized_quantized_models() {
+        let quantized = [
+            EmbeddingModelType::BgeSmallEnV15Q,
+            EmbeddingModelType::AllMiniLmL6V2Q,
+            EmbeddingModelType::AllMiniLmL12V2Q,
+            EmbeddingModelType::BgeBaseEnV15Q,
+            EmbeddingModelType::BgeLargeEnV15Q,
+            EmbeddingModelType::ParaphraseMiniLmL12V2Q,
+            EmbeddingModelType::NomicEmbedTextV15Q,
+            EmbeddingModelType::MxbaiEmbedLargeV1Q,
+            EmbeddingModelType::GteBaseEnV15Q,
+            EmbeddingModelType::GteLargeEnV15Q,
+            EmbeddingModelType::SnowflakeArcticEmbedXsQ,
+            EmbeddingModelType::SnowflakeArcticEmbedSQ,
+            EmbeddingModelType::SnowflakeArcticEmbedMQ,
+            EmbeddingModelType::SnowflakeArcticEmbedMLongQ,
+            EmbeddingModelType::SnowflakeArcticEmbedLQ,
+        ];
+        for model in &quantized {
+            assert!(model.is_quantized(), "{:?} should be quantized", model);
+        }
+    }
+
+    #[test]
+    fn test_is_quantized_non_quantized_models() {
+        let non_quantized = [
+            EmbeddingModelType::BgeSmallEnV15,
+            EmbeddingModelType::AllMiniLmL6V2,
+            EmbeddingModelType::AllMiniLmL12V2,
+            EmbeddingModelType::AllMpnetBaseV2,
+            EmbeddingModelType::BgeBaseEnV15,
+            EmbeddingModelType::BgeLargeEnV15,
+            EmbeddingModelType::MultilingualE5Small,
+            EmbeddingModelType::MultilingualE5Base,
+            EmbeddingModelType::MultilingualE5Large,
+            EmbeddingModelType::NomicEmbedTextV1,
+            EmbeddingModelType::NomicEmbedTextV15,
+            EmbeddingModelType::ClipVitB32,
+            EmbeddingModelType::JinaEmbeddingsV2BaseCode,
+            EmbeddingModelType::EmbeddingGemma300M,
+            EmbeddingModelType::ModernBertEmbedLarge,
+            EmbeddingModelType::SnowflakeArcticEmbedXs,
+            EmbeddingModelType::SnowflakeArcticEmbedS,
+            EmbeddingModelType::SnowflakeArcticEmbedM,
+            EmbeddingModelType::SnowflakeArcticEmbedMLong,
+            EmbeddingModelType::SnowflakeArcticEmbedL,
+        ];
+        for model in &non_quantized {
+            assert!(!model.is_quantized(), "{:?} should NOT be quantized", model);
+        }
+    }
+
+    #[test]
+    fn test_is_quantized_count() {
+        let count = EmbeddingModelType::all()
+            .iter()
+            .filter(|m| m.is_quantized())
+            .count();
+        assert_eq!(count, 15, "Expected 15 quantized models");
+    }
+
+    // ---- EmbeddingModelType::default ----
+
+    #[test]
+    fn test_embedding_model_type_default_is_bge_small() {
+        let default = EmbeddingModelType::default();
+        assert_eq!(default, EmbeddingModelType::BgeSmallEnV15);
+    }
+
+    // ---- all() count ----
+
+    #[test]
+    fn test_all_model_count_exact() {
+        let all = EmbeddingModelType::all();
+        assert_eq!(all.len(), 42, "Expected exactly 42 embedding models");
+    }
+
+    // ---- hf_repo_id for all models ----
+
+    #[test]
+    fn test_hf_repo_id_all_models_non_empty() {
+        for model in EmbeddingModelType::all() {
+            let repo = model.hf_repo_id();
+            assert!(!repo.is_empty(), "{:?} has empty hf_repo_id", model);
+            assert!(repo.contains('/'), "{:?} hf_repo_id '{}' missing '/'", model, repo);
+        }
+    }
+
+    // ---- max_context_length edge cases ----
+
+    #[test]
+    fn test_max_context_length_snowflake_mlong() {
+        assert_eq!(
+            EmbeddingModelType::SnowflakeArcticEmbedMLong.max_context_length(),
+            2048
+        );
+        assert_eq!(
+            EmbeddingModelType::SnowflakeArcticEmbedMLongQ.max_context_length(),
+            2048
+        );
+    }
+
+    #[test]
+    fn test_max_context_length_all_models_positive() {
+        for model in EmbeddingModelType::all() {
+            let ctx = model.max_context_length();
+            assert!(ctx > 0, "{:?} has zero context length", model);
+        }
+    }
+
+    // ---- quantized ↔ base dimension consistency ----
+
+    #[test]
+    fn test_quantized_base_same_dimensions() {
+        let pairs = [
+            (EmbeddingModelType::BgeSmallEnV15, EmbeddingModelType::BgeSmallEnV15Q),
+            (EmbeddingModelType::AllMiniLmL6V2, EmbeddingModelType::AllMiniLmL6V2Q),
+            (EmbeddingModelType::AllMiniLmL12V2, EmbeddingModelType::AllMiniLmL12V2Q),
+            (EmbeddingModelType::BgeBaseEnV15, EmbeddingModelType::BgeBaseEnV15Q),
+            (EmbeddingModelType::BgeLargeEnV15, EmbeddingModelType::BgeLargeEnV15Q),
+            (EmbeddingModelType::ParaphraseMiniLmL12V2, EmbeddingModelType::ParaphraseMiniLmL12V2Q),
+            (EmbeddingModelType::NomicEmbedTextV15, EmbeddingModelType::NomicEmbedTextV15Q),
+            (EmbeddingModelType::MxbaiEmbedLargeV1, EmbeddingModelType::MxbaiEmbedLargeV1Q),
+            (EmbeddingModelType::GteBaseEnV15, EmbeddingModelType::GteBaseEnV15Q),
+            (EmbeddingModelType::GteLargeEnV15, EmbeddingModelType::GteLargeEnV15Q),
+            (EmbeddingModelType::SnowflakeArcticEmbedXs, EmbeddingModelType::SnowflakeArcticEmbedXsQ),
+            (EmbeddingModelType::SnowflakeArcticEmbedS, EmbeddingModelType::SnowflakeArcticEmbedSQ),
+            (EmbeddingModelType::SnowflakeArcticEmbedM, EmbeddingModelType::SnowflakeArcticEmbedMQ),
+            (EmbeddingModelType::SnowflakeArcticEmbedMLong, EmbeddingModelType::SnowflakeArcticEmbedMLongQ),
+            (EmbeddingModelType::SnowflakeArcticEmbedL, EmbeddingModelType::SnowflakeArcticEmbedLQ),
+        ];
+        for (base, quantized) in &pairs {
+            assert_eq!(
+                base.dimensions(),
+                quantized.dimensions(),
+                "{:?} and {:?} should have same dimensions",
+                base,
+                quantized
+            );
+        }
+    }
+
+    // ---- quantized ↔ base hf_repo_id consistency ----
+
+    #[test]
+    fn test_quantized_base_same_hf_repo() {
+        let pairs = [
+            (EmbeddingModelType::BgeSmallEnV15, EmbeddingModelType::BgeSmallEnV15Q),
+            (EmbeddingModelType::AllMiniLmL6V2, EmbeddingModelType::AllMiniLmL6V2Q),
+            (EmbeddingModelType::AllMiniLmL12V2, EmbeddingModelType::AllMiniLmL12V2Q),
+        ];
+        for (base, quantized) in &pairs {
+            assert_eq!(
+                base.hf_repo_id(),
+                quantized.hf_repo_id(),
+                "{:?} and {:?} should share hf_repo_id",
+                base,
+                quantized
+            );
+        }
+    }
+
+    // ---- is_multilingual coverage ----
+
+    #[test]
+    fn test_is_multilingual_chinese_models() {
+        assert!(EmbeddingModelType::BgeSmallZhV15.is_multilingual());
+        assert!(EmbeddingModelType::BgeLargeZhV15.is_multilingual());
+    }
+
+    #[test]
+    fn test_is_multilingual_paraphrase_multilingual() {
+        assert!(EmbeddingModelType::ParaphraseMultilingualMpnetBaseV2.is_multilingual());
+    }
+
+    #[test]
+    fn test_is_multilingual_english_only() {
+        let english_only = [
+            EmbeddingModelType::AllMiniLmL6V2,
+            EmbeddingModelType::AllMpnetBaseV2,
+            EmbeddingModelType::BgeBaseEnV15,
+            EmbeddingModelType::BgeLargeEnV15,
+            EmbeddingModelType::ClipVitB32,
+            EmbeddingModelType::NomicEmbedTextV15,
+            EmbeddingModelType::MxbaiEmbedLargeV1,
+            EmbeddingModelType::JinaEmbeddingsV2BaseCode,
+            EmbeddingModelType::EmbeddingGemma300M,
+            EmbeddingModelType::ModernBertEmbedLarge,
+            EmbeddingModelType::SnowflakeArcticEmbedL,
+        ];
+        for model in &english_only {
+            assert!(!model.is_multilingual(), "{:?} should NOT be multilingual", model);
+        }
+    }
+
+    // ---- EmbeddingModelType serde roundtrip ----
+
+    #[test]
+    fn test_embedding_model_type_serde_roundtrip() {
+        for model in EmbeddingModelType::all() {
+            let json = serde_json::to_string(&model).unwrap();
+            let parsed: EmbeddingModelType = serde_json::from_str(&json).unwrap_or_else(|_| {
+                panic!("Serde roundtrip failed for {:?} (json: {})", model, json)
+            });
+            assert_eq!(parsed, model, "Serde mismatch for {}", json);
+        }
+    }
+
+    #[test]
+    fn test_embedding_model_type_serde_kebab_case() {
+        // serde rename_all="kebab-case" strips dots: V15 → v15, not v1.5
+        let json = serde_json::to_string(&EmbeddingModelType::BgeSmallEnV15).unwrap();
+        assert_eq!(json, "\"bge-small-en-v15\"");
+        let json = serde_json::to_string(&EmbeddingModelType::MultilingualE5Large).unwrap();
+        assert_eq!(json, "\"multilingual-e5-large\"");
+        let json = serde_json::to_string(&EmbeddingModelType::NomicEmbedTextV15Q).unwrap();
+        assert_eq!(json, "\"nomic-embed-text-v15-q\"");
+    }
+
+    #[test]
+    fn test_embedding_model_type_serde_from_json_string() {
+        // serde names strip dots, use serde-generated name not Display name
+        let model: EmbeddingModelType = serde_json::from_str("\"bge-large-en-v15\"").unwrap();
+        assert_eq!(model, EmbeddingModelType::BgeLargeEnV15);
+    }
+
+    // ---- AccelerationBackend tests ----
+
+    #[test]
+    fn test_acceleration_backend_default_is_cpu() {
+        assert_eq!(AccelerationBackend::default(), AccelerationBackend::Cpu);
+    }
+
+    #[test]
+    fn test_acceleration_backend_partial_eq() {
+        assert_eq!(AccelerationBackend::Cpu, AccelerationBackend::Cpu);
+        assert_eq!(
+            AccelerationBackend::Cuda { device_id: 0 },
+            AccelerationBackend::Cuda { device_id: 0 }
+        );
+        assert_ne!(
+            AccelerationBackend::Cuda { device_id: 0 },
+            AccelerationBackend::Cuda { device_id: 1 }
+        );
+        assert_ne!(AccelerationBackend::Cpu, AccelerationBackend::Metal);
+        assert_ne!(AccelerationBackend::Metal, AccelerationBackend::Vulkan);
+    }
+
+    #[test]
+    fn test_acceleration_backend_debug() {
+        let dbg = format!("{:?}", AccelerationBackend::Cpu);
+        assert_eq!(dbg, "Cpu");
+        let dbg = format!("{:?}", AccelerationBackend::Metal);
+        assert_eq!(dbg, "Metal");
+        let dbg = format!("{:?}", AccelerationBackend::Cuda { device_id: 2 });
+        assert!(dbg.contains("Cuda"), "Debug should contain 'Cuda': {}", dbg);
+        assert!(dbg.contains("2"), "Debug should contain device_id: {}", dbg);
+    }
+
+    #[test]
+    fn test_acceleration_backend_clone() {
+        let backend = AccelerationBackend::Cuda { device_id: 3 };
+        let cloned = backend.clone();
+        assert_eq!(backend, cloned);
+    }
+
+    #[test]
+    fn test_acceleration_backend_serde_cpu() {
+        let backend = AccelerationBackend::Cpu;
+        let json = serde_json::to_string(&backend).unwrap();
+        assert_eq!(json, "\"cpu\"");
+        let parsed: AccelerationBackend = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, AccelerationBackend::Cpu);
+    }
+
+    #[test]
+    fn test_acceleration_backend_serde_cuda() {
+        let backend = AccelerationBackend::Cuda { device_id: 1 };
+        let json = serde_json::to_string(&backend).unwrap();
+        let parsed: AccelerationBackend = serde_json::from_str(&json).unwrap();
+        match parsed {
+            AccelerationBackend::Cuda { device_id } => assert_eq!(device_id, 1),
+            _ => panic!("Expected Cuda variant, got {:?}", parsed),
+        }
+    }
+
+    #[test]
+    fn test_acceleration_backend_serde_metal() {
+        let json = "\"metal\"";
+        let parsed: AccelerationBackend = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed, AccelerationBackend::Metal);
+    }
+
+    #[test]
+    fn test_acceleration_backend_serde_vulkan() {
+        let json = "\"vulkan\"";
+        let parsed: AccelerationBackend = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed, AccelerationBackend::Vulkan);
+    }
+
+    #[test]
+    fn test_acceleration_backend_serde_invalid() {
+        let result = serde_json::from_str::<AccelerationBackend>("\"opencl\"");
+        assert!(result.is_err());
+    }
+
+    // ---- SparseModelType tests ----
+
+    #[test]
+    fn test_sparse_model_default_is_splade_pp_v1() {
+        assert_eq!(SparseModelType::default(), SparseModelType::SpladePpV1);
+    }
+
+    #[test]
+    fn test_sparse_model_to_fastembed() {
+        // Should not panic and should return a valid SparseModel
+        let _ = SparseModelType::SpladePpV1.to_fastembed_model();
+    }
+
+    #[test]
+    fn test_sparse_model_debug() {
+        let dbg = format!("{:?}", SparseModelType::SpladePpV1);
+        assert_eq!(dbg, "SpladePpV1");
+    }
+
+    #[test]
+    fn test_sparse_model_clone() {
+        let model = SparseModelType::SpladePpV1;
+        let cloned = model;
+        assert_eq!(model, cloned);
+    }
+
+    #[test]
+    fn test_sparse_model_serde_roundtrip() {
+        let model = SparseModelType::SpladePpV1;
+        let json = serde_json::to_string(&model).unwrap();
+        assert_eq!(json, "\"splade-pp-v1\"");
+        let parsed: SparseModelType = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, model);
+    }
+
+    // ---- EmbeddingConfig serde edge cases ----
+
+    #[test]
+    fn test_embedding_config_serde_empty_object() {
+        // All fields have #[serde(default)] so empty JSON should deserialize
+        let config: EmbeddingConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.model, EmbeddingModelType::BgeSmallEnV15);
+        assert_eq!(config.batch_size, 32);
+        assert!(config.show_download_progress);
+        assert!(!config.sparse_enabled);
+        assert_eq!(config.sparse_model, SparseModelType::SpladePpV1);
+    }
+
+    #[test]
+    fn test_embedding_config_serde_partial_fields() {
+        // Only set batch_size; rest should default
+        let config: EmbeddingConfig = serde_json::from_str(r#"{"batch_size": 128}"#).unwrap();
+        assert_eq!(config.batch_size, 128);
+        assert_eq!(config.model, EmbeddingModelType::BgeSmallEnV15);
+        assert!(config.show_download_progress);
+    }
+
+    #[test]
+    fn test_embedding_config_serde_override_model() {
+        // Use serde variant name (kebab-case), not FromStr alias
+        let config: EmbeddingConfig = serde_json::from_str(r#"{"model": "nomic-embed-text-v15"}"#).unwrap();
+        assert_eq!(config.model, EmbeddingModelType::NomicEmbedTextV15);
+    }
+
+    #[test]
+    fn test_embedding_config_serde_sparse_model_field() {
+        // serde uses full variant name, not FromStr alias "splade"
+        let config: EmbeddingConfig = serde_json::from_str(
+            r#"{"sparse_enabled": true, "sparse_model": "splade-pp-v1"}"#
+        ).unwrap();
+        assert!(config.sparse_enabled);
+        assert_eq!(config.sparse_model, SparseModelType::SpladePpV1);
+    }
+
+    #[test]
+    fn test_embedding_config_serde_json_output() {
+        let config = EmbeddingConfig::default();
+        let json = serde_json::to_string_pretty(&config).unwrap();
+        // Should contain all field names
+        assert!(json.contains("\"model\""));
+        assert!(json.contains("\"batch_size\""));
+        assert!(json.contains("\"show_download_progress\""));
+        assert!(json.contains("\"sparse_enabled\""));
+        assert!(json.contains("\"sparse_model\""));
+    }
+
+    // ---- FromStr edge cases ----
+
+    #[test]
+    fn test_from_str_empty_string() {
+        let result = "".parse::<EmbeddingModelType>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_str_whitespace() {
+        let result = "  ".parse::<EmbeddingModelType>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_str_sparse_empty_string() {
+        let result = "".parse::<SparseModelType>();
+        assert!(result.is_err());
+    }
+
+    // ---- Debug format for EmbeddingModelType ----
+
+    #[test]
+    fn test_embedding_model_type_debug_format() {
+        let dbg = format!("{:?}", EmbeddingModelType::BgeSmallEnV15);
+        assert_eq!(dbg, "BgeSmallEnV15");
+        let dbg = format!("{:?}", EmbeddingModelType::NomicEmbedTextV15);
+        assert_eq!(dbg, "NomicEmbedTextV15");
+    }
+
+    // ---- EmbeddingModelType Copy/Clone ----
+
+    #[test]
+    fn test_embedding_model_type_copy_clone() {
+        let original = EmbeddingModelType::GteLargeEnV15;
+        let copied = original;
+        let cloned = original.clone();
+        assert_eq!(original, copied);
+        assert_eq!(original, cloned);
+    }
+
+    // ---- EmbeddingModelType Hash ----
+
+    #[test]
+    fn test_embedding_model_type_hash_in_set() {
+        let mut set = std::collections::HashSet::new();
+        for model in EmbeddingModelType::all() {
+            set.insert(model);
+        }
+        // All 42 unique models should be in the set
+        assert_eq!(set.len(), 42);
+    }
+
+    // ---- dimensions for specific categories ----
+
+    #[test]
+    fn test_dimensions_512_models() {
+        assert_eq!(EmbeddingModelType::BgeSmallZhV15.dimensions(), 512);
+        assert_eq!(EmbeddingModelType::ClipVitB32.dimensions(), 512);
+    }
+
+    #[test]
+    fn test_dimensions_384_models() {
+        assert_eq!(EmbeddingModelType::MultilingualE5Small.dimensions(), 384);
+        assert_eq!(EmbeddingModelType::SnowflakeArcticEmbedXs.dimensions(), 384);
+        assert_eq!(EmbeddingModelType::SnowflakeArcticEmbedS.dimensions(), 384);
+    }
+
+    #[test]
+    fn test_dimensions_768_models() {
+        assert_eq!(EmbeddingModelType::AllMpnetBaseV2.dimensions(), 768);
+        assert_eq!(EmbeddingModelType::BgeBaseEnV15.dimensions(), 768);
+        assert_eq!(EmbeddingModelType::MultilingualE5Base.dimensions(), 768);
+        assert_eq!(EmbeddingModelType::NomicEmbedTextV1.dimensions(), 768);
+        assert_eq!(EmbeddingModelType::EmbeddingGemma300M.dimensions(), 768);
+        assert_eq!(EmbeddingModelType::SnowflakeArcticEmbedM.dimensions(), 768);
+    }
+
+    #[test]
+    fn test_dimensions_1024_models() {
+        assert_eq!(EmbeddingModelType::BgeLargeEnV15.dimensions(), 1024);
+        assert_eq!(EmbeddingModelType::MultilingualE5Large.dimensions(), 1024);
+        assert_eq!(EmbeddingModelType::MxbaiEmbedLargeV1.dimensions(), 1024);
+        assert_eq!(EmbeddingModelType::GteLargeEnV15.dimensions(), 1024);
+        assert_eq!(EmbeddingModelType::ModernBertEmbedLarge.dimensions(), 1024);
+        assert_eq!(EmbeddingModelType::SnowflakeArcticEmbedL.dimensions(), 1024);
+    }
+
+    // ---- to_fastembed_model uniqueness per dimension category ----
+
+    #[test]
+    fn test_to_fastembed_model_does_not_panic() {
+        // Exhaustive: call to_fastembed_model on every variant
+        let count = EmbeddingModelType::all()
+            .into_iter()
+            .map(|m| {
+                let _ = m.to_fastembed_model();
+                1
+            })
+            .sum::<usize>();
+        assert_eq!(count, 42);
+    }
+
+    // ---- AccelerationBackend Copy ----
+
+    #[test]
+    fn test_acceleration_backend_copy() {
+        let a = AccelerationBackend::Cuda { device_id: 5 };
+        let b = a;
+        assert_eq!(a, b);
+    }
+}

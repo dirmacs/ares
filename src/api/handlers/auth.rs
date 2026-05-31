@@ -1,5 +1,4 @@
 use crate::{
-    db::traits::DatabaseClient,
     types::{AppError, LoginRequest, RegisterRequest, Result, TokenResponse},
     AppState,
 };
@@ -13,6 +12,24 @@ use uuid::Uuid;
 pub struct RefreshTokenRequest {
     /// The refresh token issued during login or registration
     pub refresh_token: String,
+}
+
+/// Validates registration email and password before hitting the database.
+fn validate_register_input(email: &str, password: &str) -> Result<()> {
+    if email.is_empty() || password.len() < 8 {
+        return Err(AppError::InvalidInput(
+            "Email required and password must be at least 8 characters".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Ensures the refresh-token session user matches JWT subject claims.
+fn validate_token_user_match(session_user_id: &str, claims_sub: &str) -> Result<()> {
+    if session_user_id != claims_sub {
+        return Err(AppError::Auth("Token mismatch".to_string()));
+    }
+    Ok(())
 }
 
 /// Register a new user
@@ -31,12 +48,7 @@ pub async fn register(
     State(state): State<AppState>,
     Json(payload): Json<RegisterRequest>,
 ) -> Result<Json<TokenResponse>> {
-    // Validate input
-    if payload.email.is_empty() || payload.password.len() < 8 {
-        return Err(AppError::InvalidInput(
-            "Email required and password must be at least 8 characters".to_string(),
-        ));
-    }
+    validate_register_input(&payload.email, &payload.password)?;
 
     // Check if user exists
     if state.db.get_user_by_email(&payload.email).await?.is_some() {
@@ -192,10 +204,7 @@ pub async fn refresh_token(
         .await?
         .ok_or_else(|| AppError::Auth("Refresh token has been revoked or expired".to_string()))?;
 
-    // Ensure the token belongs to the claimed user
-    if user_id != claims.sub {
-        return Err(AppError::Auth("Token mismatch".to_string()));
-    }
+    validate_token_user_match(&user_id, &claims.sub)?;
 
     // Invalidate the old refresh token (one-time use)
     state.db.delete_session_by_token_hash(&token_hash).await?;
@@ -219,4 +228,79 @@ pub async fn refresh_token(
         .await?;
 
     Ok(Json(tokens))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::AppError;
+
+    #[test]
+    fn refresh_token_request_deserializes_from_json() {
+        let json = r#"{"refresh_token":"rt-abc123"}"#;
+        let req: RefreshTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.refresh_token, "rt-abc123");
+    }
+
+    #[test]
+    fn refresh_token_request_rejects_missing_field() {
+        let err = serde_json::from_str::<RefreshTokenRequest>(r#"{}"#).unwrap_err();
+        assert!(err.to_string().contains("refresh_token"));
+    }
+
+    #[test]
+    fn logout_request_deserializes_from_json() {
+        let json = r#"{"refresh_token":"logout-token"}"#;
+        let req: LogoutRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.refresh_token, "logout-token");
+    }
+
+    #[test]
+    fn logout_response_serializes_message() {
+        let resp = LogoutResponse {
+            message: "Logged out successfully".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("Logged out successfully"));
+    }
+
+    #[test]
+    fn validate_register_input_rejects_empty_email() {
+        let err = validate_register_input("", "longpassword").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(
+            err.to_string()
+                .contains("Email required and password must be at least 8 characters")
+        );
+    }
+
+    #[test]
+    fn validate_register_input_rejects_short_password() {
+        let err = validate_register_input("user@example.com", "short").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn validate_register_input_accepts_valid_payload() {
+        assert!(validate_register_input("user@example.com", "password123").is_ok());
+    }
+
+    #[test]
+    fn validate_token_user_match_rejects_mismatch() {
+        let err = validate_token_user_match("user-a", "user-b").unwrap_err();
+        assert!(matches!(err, AppError::Auth(_)));
+        assert!(err.to_string().contains("Token mismatch"));
+    }
+
+    #[test]
+    fn validate_token_user_match_accepts_matching_ids() {
+        assert!(validate_token_user_match("same-user", "same-user").is_ok());
+    }
+
+    #[test]
+    fn validate_register_input_does_not_depend_on_env() {
+        std::env::remove_var("DATABASE_URL");
+        std::env::remove_var("JWT_SECRET");
+        assert!(validate_register_input("user@example.com", "password123").is_ok());
+    }
 }

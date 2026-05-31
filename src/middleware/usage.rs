@@ -115,7 +115,65 @@ async fn record_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderMap;
+    use crate::db::PostgresClient;
+    use crate::models::{TenantContext, TenantTier};
+    use axum::{
+        body::Body,
+        http::{HeaderMap, Request, StatusCode},
+        middleware::Next,
+        response::{IntoResponse, Response},
+        routing::get,
+        Router,
+    };
+    use std::sync::{Arc, Once};
+    use tower::ServiceExt;
+
+    static LOAD_ENV: Once = Once::new();
+    static INIT_SCHEMA: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    fn ensure_env_loaded() {
+        LOAD_ENV.call_once(|| {
+            let _ = dotenvy::dotenv();
+        });
+    }
+
+    fn test_db_url() -> String {
+        ensure_env_loaded();
+        if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
+            return url;
+        }
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            if url.contains("/ares") && !url.contains("ares_test") {
+                return url.replace("/ares", "/ares_test");
+            }
+            return url;
+        }
+        "postgres://dirmacs@localhost:5432/ares_test".to_string()
+    }
+
+    async fn create_test_db() -> PostgresClient {
+        let url = test_db_url();
+        let db = PostgresClient::new_remote(url, String::new())
+            .await
+            .expect("Failed to connect to ares_test. Ensure it exists and migrations are applied.");
+
+        if INIT_SCHEMA.set(()).is_ok() {
+            sqlx::migrate!("./migrations")
+                .run(&db.pool)
+                .await
+                .expect("Failed to run migrations on ares_test");
+        }
+
+        db
+    }
+
+    async fn provision_tenant(tenant_db: &TenantDb, name: &str) -> String {
+        let tenant = tenant_db
+            .create_tenant(name.to_string(), TenantTier::Free)
+            .await
+            .expect("create tenant");
+        tenant.id
+    }
 
     #[test]
     fn has_metering_headers_false_when_empty() {
@@ -126,6 +184,27 @@ mod tests {
     fn has_metering_headers_true_for_input_tokens() {
         let mut headers = HeaderMap::new();
         headers.insert("x-input-tokens", "10".parse().unwrap());
+        assert!(has_metering_headers(&headers));
+    }
+
+    #[test]
+    fn has_metering_headers_true_for_output_tokens() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-output-tokens", "5".parse().unwrap());
+        assert!(has_metering_headers(&headers));
+    }
+
+    #[test]
+    fn has_metering_headers_true_for_model_name() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-model-name", "gpt-4".parse().unwrap());
+        assert!(has_metering_headers(&headers));
+    }
+
+    #[test]
+    fn has_metering_headers_true_for_provider_name() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-provider-name", "openai".parse().unwrap());
         assert!(has_metering_headers(&headers));
     }
 
@@ -158,4 +237,183 @@ mod tests {
         assert_eq!(snapshot.output_tokens, 0);
         assert_eq!(snapshot.agent_name.as_deref(), Some("router"));
     }
+
+    #[test]
+    fn parse_metering_headers_invalid_numeric_values_default_to_zero() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-input-tokens", "not-a-number".parse().unwrap());
+        headers.insert("x-output-tokens", "also-bad".parse().unwrap());
+        headers.insert("x-provider-name", "anthropic".parse().unwrap());
+
+        let snapshot = parse_metering_headers(&headers).expect("snapshot");
+        assert_eq!(snapshot.input_tokens, 0);
+        assert_eq!(snapshot.output_tokens, 0);
+        assert_eq!(snapshot.token_count, 0);
+        assert_eq!(snapshot.provider_name.as_deref(), Some("anthropic"));
+    }
+
+    #[test]
+    fn parse_metering_headers_includes_all_optional_fields() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-input-tokens", "1".parse().unwrap());
+        headers.insert("x-output-tokens", "2".parse().unwrap());
+        headers.insert("x-model-name", "m".parse().unwrap());
+        headers.insert("x-agent-name", "a".parse().unwrap());
+        headers.insert("x-provider-name", "p".parse().unwrap());
+
+        let snapshot = parse_metering_headers(&headers).expect("snapshot");
+        assert_eq!(snapshot.model_name.as_deref(), Some("m"));
+        assert_eq!(snapshot.agent_name.as_deref(), Some("a"));
+        assert_eq!(snapshot.provider_name.as_deref(), Some("p"));
+    }
+
+    #[tokio::test]
+    async fn record_usage_inserts_event_when_metering_present() {
+        let db = Arc::new(create_test_db().await);
+        let tenant_db = TenantDb::new(Arc::clone(&db));
+        let tenant_id = provision_tenant(&tenant_db, "usage-record").await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-input-tokens", "3".parse().unwrap());
+        headers.insert("x-output-tokens", "7".parse().unwrap());
+        headers.insert("x-model-name", "test-model".parse().unwrap());
+
+        record_usage(&tenant_id, &headers, &db.pool)
+            .await
+            .expect("record usage");
+
+        let row = sqlx::query(
+            "SELECT token_count, input_tokens, output_tokens, model_name FROM usage_events WHERE tenant_id = $1",
+        )
+        .bind(&tenant_id)
+        .fetch_one(&db.pool)
+        .await
+        .expect("usage row");
+
+        use sqlx::Row;
+        let token_count: i64 = row.get(0);
+        let input_tokens: i64 = row.get(1);
+        let output_tokens: i64 = row.get(2);
+        let model_name: Option<String> = row.get(3);
+
+        assert_eq!(token_count, 10);
+        assert_eq!(input_tokens, 3);
+        assert_eq!(output_tokens, 7);
+        assert_eq!(model_name.as_deref(), Some("test-model"));
+    }
+
+    #[tokio::test]
+    async fn record_usage_noop_without_metering_headers() {
+        let db = Arc::new(create_test_db().await);
+        let tenant_db = TenantDb::new(Arc::clone(&db));
+        let tenant_id = provision_tenant(&tenant_db, "usage-noop").await;
+
+        record_usage(&tenant_id, &HeaderMap::new(), &db.pool)
+            .await
+            .expect("noop");
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM usage_events WHERE tenant_id = $1")
+                .bind(&tenant_id)
+                .fetch_one(&db.pool)
+                .await
+                .expect("count");
+
+        assert_eq!(count, 0);
+    }
+
+    async fn metering_handler() -> Response {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-input-tokens", "4".parse().unwrap());
+        headers.insert("x-output-tokens", "6".parse().unwrap());
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::OK;
+        *response.headers_mut() = headers;
+        response
+    }
+
+    #[tokio::test]
+    async fn track_usage_records_metering_from_response_headers() {
+        let db = Arc::new(create_test_db().await);
+        let tenant_db = Arc::new(TenantDb::new(db.clone()));
+        let tenant_id = provision_tenant(&tenant_db, "usage-track").await;
+        let ctx = TenantContext::new(tenant_id.clone(), TenantTier::Free);
+
+        let app = Router::new()
+            .route("/metered", get(metering_handler))
+            .layer(axum::middleware::from_fn(track_usage))
+            .layer(axum::middleware::from_fn(
+                move |mut req: Request<Body>, next: Next| {
+                    let db = tenant_db.clone();
+                    let ctx = ctx.clone();
+                    async move {
+                        req.extensions_mut().insert(db);
+                        req.extensions_mut().insert(ctx);
+                        next.run(req).await
+                    }
+                },
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metered")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM usage_events WHERE tenant_id = $1")
+                .bind(&tenant_id)
+                .fetch_one(&db.pool)
+                .await
+                .expect("count");
+
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn track_usage_skips_when_tenant_context_missing() {
+        let db = Arc::new(create_test_db().await);
+        let tenant_db = Arc::new(TenantDb::new(db.clone()));
+
+        let app = Router::new()
+            .route("/metered", get(metering_handler))
+            .layer(axum::middleware::from_fn(track_usage))
+            .layer(axum::middleware::from_fn(
+                move |mut req: Request<Body>, next: Next| {
+                    let db = tenant_db.clone();
+                    async move {
+                        req.extensions_mut().insert(db);
+                        next.run(req).await
+                    }
+                },
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metered")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM usage_events")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+
+        assert_eq!(count, 0);
+    }
 }
+

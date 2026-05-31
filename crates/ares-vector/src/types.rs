@@ -234,5 +234,87 @@ mod tests {
         assert_eq!(result.id, "doc1");
         assert_eq!(result.score, 0.95);
         assert!(result.metadata.is_some());
+
+        let bare = SearchResult::new("doc2".to_string(), 0.5, None);
+        assert!(bare.metadata.is_none());
+    }
+
+    #[test]
+    fn test_metadata_get_and_empty() {
+        let empty = VectorMetadata::new();
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+        assert!(empty.get("missing").is_none());
+
+        let mut meta = VectorMetadata::new();
+        meta.insert("tag", "alpha");
+        assert!(!meta.is_empty());
+        assert_eq!(meta.len(), 1);
+        assert_eq!(
+            meta.get("tag"),
+            Some(&MetadataValue::String("alpha".to_string()))
+        );
+        assert!(meta.get("missing").is_none());
+    }
+
+    #[test]
+    fn test_metadata_typed_getters_wrong_type() {
+        let mut meta = VectorMetadata::new();
+        meta.insert("name", "hello");
+        meta.insert("count", 7i64);
+        meta.insert("ratio", 0.5f64);
+        meta.insert("active", false);
+
+        assert_eq!(meta.get_string("name"), Some("hello"));
+        assert_eq!(meta.get_string("count"), None);
+        assert_eq!(meta.get_int("count"), Some(7));
+        assert_eq!(meta.get_int("name"), None);
+        assert_eq!(meta.get_float("ratio"), Some(0.5));
+        assert_eq!(meta.get_float("count"), None);
+        assert_eq!(meta.get_bool("active"), Some(false));
+        assert_eq!(meta.get_bool("ratio"), None);
+    }
+
+    #[test]
+    fn test_metadata_value_from_impls() {
+        let from_string: MetadataValue = MetadataValue::from(String::from("text"));
+        let from_str: MetadataValue = "text".into();
+        let from_i32: MetadataValue = 42i32.into();
+        let from_i64: MetadataValue = 99i64.into();
+        let from_f32: MetadataValue = 1.5f32.into();
+        let from_f64: MetadataValue = 2.5f64.into();
+        let from_bool: MetadataValue = true.into();
+        let from_list: MetadataValue = vec!["a", "b"].into();
+
+        assert_eq!(from_string, MetadataValue::String("text".to_string()));
+        assert_eq!(from_str, MetadataValue::String("text".to_string()));
+        assert_eq!(from_i32, MetadataValue::Int(42));
+        assert_eq!(from_i64, MetadataValue::Int(99));
+        assert_eq!(from_f32, MetadataValue::Float(1.5));
+        assert_eq!(from_f64, MetadataValue::Float(2.5));
+        assert_eq!(from_bool, MetadataValue::Bool(true));
+        assert_eq!(
+            from_list,
+            MetadataValue::List(vec![
+                MetadataValue::String("a".to_string()),
+                MetadataValue::String("b".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_stored_vector_roundtrip() {
+        let stored = StoredVector {
+            id: "vec-1".to_string(),
+            internal_id: 0,
+            vector: vec![1.0, 2.0, 3.0],
+            metadata: Some(VectorMetadata::from_pairs([("k", "v")])),
+        };
+        let json = serde_json::to_string(&stored).unwrap();
+        let decoded: StoredVector = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.id, "vec-1");
+        assert_eq!(decoded.internal_id, 0);
+        assert_eq!(decoded.vector, vec![1.0, 2.0, 3.0]);
+        assert_eq!(decoded.metadata.as_ref().unwrap().get_string("k"), Some("v"));
     }
 }

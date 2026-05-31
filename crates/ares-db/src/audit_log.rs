@@ -1,6 +1,6 @@
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
+use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const INSERT_ADMIN_AUDIT_LOG_SQL: &str = "\
@@ -106,6 +106,13 @@ mod tests {
             admin_ip: Some("203.0.113.10".into()),
             created_at: 1_700_000_100,
         }
+    }
+
+    fn unreachable_postgres_pool() -> PgPool {
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/nope")
+            .expect("connect_lazy should not fail for malformed URLs")
     }
 
     // ---- now_ts ---------------------------------------------------------
@@ -228,6 +235,65 @@ mod tests {
         assert_eq!(restored[1].id, "log-002");
     }
 
+    // ---- AuditLogEntry serde: error handling ----------------------------
+
+    #[test]
+    fn audit_log_entry_deserialize_rejects_missing_id() {
+        let json = r#"{
+            "action": "create",
+            "resource_type": "tenant",
+            "resource_id": "t-1",
+            "created_at": 1
+        }"#;
+        let err = serde_json::from_str::<AuditLogEntry>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("id"),
+            "error should mention missing field: {err}"
+        );
+    }
+
+    #[test]
+    fn audit_log_entry_deserialize_rejects_wrong_created_at_type() {
+        let json = r#"{
+            "id": "log-1",
+            "action": "create",
+            "resource_type": "tenant",
+            "resource_id": "t-1",
+            "created_at": "not-a-number"
+        }"#;
+        assert!(serde_json::from_str::<AuditLogEntry>(json).is_err());
+    }
+
+    #[test]
+    fn audit_log_entry_deserialize_rejects_null_action() {
+        let json = r#"{
+            "id": "log-1",
+            "action": null,
+            "resource_type": "tenant",
+            "resource_id": "t-1",
+            "created_at": 1
+        }"#;
+        assert!(serde_json::from_str::<AuditLogEntry>(json).is_err());
+    }
+
+    #[test]
+    fn audit_log_entry_deserialize_rejects_malformed_json() {
+        let err = serde_json::from_str::<AuditLogEntry>("{not json}").unwrap_err();
+        assert!(
+            err.is_syntax() || err.is_data(),
+            "expected syntax or data error, got {err}"
+        );
+    }
+
+    #[test]
+    fn audit_log_entries_vec_deserialize_rejects_non_array() {
+        let err = serde_json::from_str::<Vec<AuditLogEntry>>("{\"id\":\"x\"}").unwrap_err();
+        assert!(
+            err.is_data() || err.to_string().contains("array"),
+            "expected array type mismatch: {err}"
+        );
+    }
+
     // ---- AuditLogEntry field access / Clone / Debug ---------------------
 
     #[test]
@@ -258,7 +324,7 @@ mod tests {
         assert!(dbg.contains("create"));
     }
 
-    // ---- SQL constants --------------------------------------------------
+    // ---- SQL constants / query building ---------------------------------
 
     #[test]
     fn insert_sql_targets_admin_audit_log_table() {
@@ -313,5 +379,37 @@ mod tests {
         }
         assert!(LIST_ADMIN_AUDIT_LOG_SQL.starts_with("SELECT"));
         assert!(LIST_ADMIN_AUDIT_LOG_SQL.contains("FROM admin_audit_log"));
+    }
+
+    #[test]
+    fn insert_and_list_sql_use_sequential_placeholders_only() {
+        for sql in [INSERT_ADMIN_AUDIT_LOG_SQL, LIST_ADMIN_AUDIT_LOG_SQL] {
+            assert!(
+                !sql.contains("$0"),
+                "postgres placeholders are 1-indexed: {sql}"
+            );
+            assert!(
+                !sql.contains(';'),
+                "sqlx statements should not include trailing semicolons: {sql}"
+            );
+        }
+    }
+
+    // ---- Database error mapping (no live Postgres required) ---------------
+
+    #[tokio::test]
+    async fn log_admin_action_maps_execute_error_to_database() {
+        let pool = unreachable_postgres_pool();
+        let err = log_admin_action(&pool, "create", "tenant", "t-1", None, None)
+            .await
+            .unwrap_err();
+        matches::assert_matches!(err, AppError::Database(msg) if !msg.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_audit_log_maps_fetch_error_to_database() {
+        let pool = unreachable_postgres_pool();
+        let err = list_audit_log(&pool, 10, 0).await.unwrap_err();
+        matches::assert_matches!(err, AppError::Database(msg) if !msg.is_empty());
     }
 }

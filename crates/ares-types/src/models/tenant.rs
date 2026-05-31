@@ -412,4 +412,149 @@ mod tests {
         assert!(ctx.can_make_request(u64::MAX - 1, u64::MAX - 1));
         assert!(ctx.can_use_tokens(u64::MAX - 1, 1));
     }
+
+    #[test]
+    fn test_enterprise_quota_full_limits() {
+        let quota = TenantQuota::enterprise();
+        assert_eq!(quota.max_agents, u32::MAX);
+        assert_eq!(quota.requests_per_day, u64::MAX);
+    }
+
+    #[test]
+    fn test_quota_from_tier_enterprise() {
+        let quota = TenantQuota::from_tier(&TenantTier::Enterprise);
+        assert_eq!(quota.tier, TenantTier::Enterprise);
+        assert_eq!(quota.requests_per_month, u64::MAX);
+        assert_eq!(quota.tokens_per_month, u64::MAX);
+        assert_eq!(quota.max_agents, u32::MAX);
+        assert_eq!(quota.requests_per_day, u64::MAX);
+    }
+
+    #[test]
+    fn test_tenant_tier_serde_json_is_lowercase() {
+        let json = serde_json::to_string(&TenantTier::Pro).unwrap();
+        assert_eq!(json, "\"pro\"");
+        assert_eq!(
+            serde_json::from_str::<TenantTier>("\"pro\"").unwrap(),
+            TenantTier::Pro
+        );
+    }
+
+    #[test]
+    fn test_tenant_tier_serde_rejects_unknown_variant() {
+        let err = serde_json::from_str::<TenantTier>("\"platinum\"").unwrap_err();
+        assert!(err.is_data());
+    }
+
+    #[test]
+    fn test_tier_from_str_rejects_whitespace_and_garbage() {
+        assert_eq!(TenantTier::from_str(" free"), None);
+        assert_eq!(TenantTier::from_str("free "), None);
+        assert_eq!(TenantTier::from_str("free\n"), None);
+        assert_eq!(TenantTier::from_str("pro "), None);
+    }
+
+    #[test]
+    fn test_api_key_serde_roundtrip_from_new() {
+        let key = ApiKey::new(
+            "k-new".into(),
+            "tenant".into(),
+            "hash".into(),
+            "ares_xyz".into(),
+            "Primary".into(),
+        );
+        let parsed: ApiKey =
+            serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
+        assert_eq!(parsed.id, key.id);
+        assert_eq!(parsed.tenant_id, key.tenant_id);
+        assert_eq!(parsed.key_hash, key.key_hash);
+        assert_eq!(parsed.key_prefix, key.key_prefix);
+        assert_eq!(parsed.name, key.name);
+        assert!(parsed.is_active);
+        assert_eq!(parsed.created_at, key.created_at);
+        assert_eq!(parsed.expires_at, None);
+    }
+
+    #[test]
+    fn test_tenant_serde_preserves_timestamps_and_id() {
+        let tenant = Tenant {
+            id: "fixed-id".into(),
+            name: "Acme".into(),
+            tier: TenantTier::Dev,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_001,
+        };
+        let parsed: Tenant =
+            serde_json::from_str(&serde_json::to_string(&tenant).unwrap()).unwrap();
+        assert_eq!(parsed.id, "fixed-id");
+        assert_eq!(parsed.created_at, 1_700_000_000);
+        assert_eq!(parsed.updated_at, 1_700_000_001);
+    }
+
+    #[test]
+    fn test_tenant_quota_serde_rejects_missing_field() {
+        let err = serde_json::from_str::<TenantQuota>(r#"{"tier":"free"}"#).unwrap_err();
+        assert!(err.is_data());
+    }
+
+    #[test]
+    fn test_tenant_quota_serde_all_tiers_roundtrip() {
+        for factory in [
+            TenantQuota::free,
+            TenantQuota::dev,
+            TenantQuota::pro,
+            TenantQuota::enterprise,
+        ] {
+            let quota = factory();
+            let parsed: TenantQuota =
+                serde_json::from_str(&serde_json::to_string(&quota).unwrap()).unwrap();
+            assert_eq!(parsed.tier, quota.tier);
+            assert_eq!(parsed.requests_per_month, quota.requests_per_month);
+            assert_eq!(parsed.tokens_per_month, quota.tokens_per_month);
+            assert_eq!(parsed.max_agents, quota.max_agents);
+            assert_eq!(parsed.requests_per_day, quota.requests_per_day);
+        }
+    }
+
+    #[test]
+    fn test_can_make_request_exact_monthly_and_daily_boundaries() {
+        let ctx = TenantContext::new("t".into(), TenantTier::Free);
+        assert!(ctx.can_make_request(999, 49));
+        assert!(!ctx.can_make_request(1_000, 0));
+        assert!(!ctx.can_make_request(0, 50));
+        assert!(!ctx.can_make_request(1_000, 50));
+    }
+
+    #[test]
+    fn test_can_use_tokens_exact_monthly_ceiling() {
+        let ctx = TenantContext::new("t".into(), TenantTier::Free);
+        assert!(ctx.can_use_tokens(99_999, 1));
+        assert!(ctx.can_use_tokens(100_000, 0));
+        assert!(!ctx.can_use_tokens(100_000, 1));
+        assert!(!ctx.can_use_tokens(99_999, 2));
+    }
+
+    #[test]
+    fn test_dev_context_daily_request_boundary() {
+        let ctx = TenantContext::new("dev-tenant".into(), TenantTier::Dev);
+        assert!(ctx.can_make_request(0, 1_999));
+        assert!(!ctx.can_make_request(0, 2_000));
+    }
+
+    #[test]
+    fn test_tenant_context_clone_matches_original() {
+        let ctx = TenantContext::new("clone-me".into(), TenantTier::Pro);
+        let cloned = ctx.clone();
+        assert_eq!(cloned.tenant_id, ctx.tenant_id);
+        assert_eq!(cloned.tier, ctx.tier);
+        assert_eq!(cloned.quota.requests_per_month, ctx.quota.requests_per_month);
+    }
+
+    #[test]
+    fn test_enterprise_context_rejects_at_hard_ceiling() {
+        let ctx = TenantContext::new("ent".into(), TenantTier::Enterprise);
+        assert!(!ctx.can_make_request(u64::MAX, 0));
+        assert!(!ctx.can_make_request(0, u64::MAX));
+        assert!(!ctx.can_use_tokens(u64::MAX, 1));
+    }
 }

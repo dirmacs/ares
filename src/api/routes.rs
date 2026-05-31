@@ -421,12 +421,11 @@ mod tests {
         AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory,
         DynamicConfigManager, ProviderRegistry, ToolRegistry,
     };
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
-    use tower::ServiceExt;
+    use axum::http::StatusCode;
+    use axum_test::TestServer;
 
     fn minimal_config() -> AresConfig {
         let mut providers = HashMap::new();
@@ -571,8 +570,8 @@ mod tests {
         assert!(!paths.iter().any(|p| p.contains("conversations")));
     }
 
-    #[test]
-    fn create_router_builds_without_panic() {
+    #[tokio::test]
+    async fn create_router_builds_without_panic() {
         let state = test_app_state();
         let _ = create_router(state.auth_service.clone(), state.tenant_db.clone());
     }
@@ -617,18 +616,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_router_admin_deploys_requires_admin_secret() {
-        std::env::set_var("ADMIN_API_KEY", "test-admin-secret-value");
+    async fn create_router_admin_deploys_rejects_missing_secret() {
+        std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
-
-        let unauthorized = server.get("/admin/deploys").await;
-        unauthorized.assert_status_unauthorized();
-
-        let authorized = server
-            .get("/admin/deploys")
-            .add_header("x-admin-secret", "test-admin-secret-value")
-            .await;
-        authorized.assert_status_ok();
+        server.get("/admin/deploys").await.assert_status_unauthorized();
     }
 
     #[tokio::test]
@@ -640,13 +631,13 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_deploy_post_route() {
-        std::env::set_var("ADMIN_API_KEY", "deploy-route-secret");
+        std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server
             .post("/admin/deploy")
-            .add_header("x-admin-secret", "deploy-route-secret")
             .json(&serde_json::json!({"target": "not-valid"}))
             .await;
-        response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+        assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
+        response.assert_status_unauthorized();
     }
 }

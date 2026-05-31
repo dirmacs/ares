@@ -15,6 +15,7 @@ eruka-context = []
 
 [dependencies]
 ares-types = { workspace = true }
+ares-memory = { workspace = true }
 ares-config = { workspace = true }
 ares-llm = { workspace = true }
 ares-tools = { workspace = true }

@@ -201,14 +201,182 @@ dependencies = [
 ]
 
 [[package]]
+name = "ares-agents"
+version = "0.7.3"
+dependencies = [
+ "ares-config",
+ "ares-db",
+ "ares-llm",
+ "ares-memory",
+ "ares-tools",
+ "ares-types",
+ "async-trait",
+ "axum 0.8.8",
+ "chrono",
+ "dirs 6.0.0",
+ "dotenvy",
+ "futures",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ares-auth"
+version = "0.7.3"
+dependencies = [
+ "ares-types",
+ "argon2",
+ "chrono",
+ "jsonwebtoken 10.3.0",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
+name = "ares-config"
+version = "0.7.3"
+dependencies = [
+ "arc-swap",
+ "ares-types",
+ "notify",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "thulp-skill-files",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "toon-format",
+ "tracing",
+]
+
+[[package]]
+name = "ares-db"
+version = "0.7.3"
+dependencies = [
+ "anyhow",
+ "ares-config",
+ "ares-types",
+ "ares-vector",
+ "async-trait",
+ "chromadb",
+ "chrono",
+ "hex",
+ "lance",
+ "lancedb",
+ "libsql",
+ "matches",
+ "parking_lot",
+ "pinecone-sdk",
+ "qdrant-client",
+ "rand 0.9.2",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ares-llm"
+version = "0.7.3"
+dependencies = [
+ "ares-config",
+ "ares-tools",
+ "ares-types",
+ "async-openai",
+ "async-stream",
+ "async-trait",
+ "claude-sdk",
+ "futures",
+ "llama-cpp-2",
+ "ollama-rs",
+ "parking_lot",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
+name = "ares-mcp"
+version = "0.7.3"
+dependencies = [
+ "ares-db",
+ "ares-types",
+ "async-trait",
+ "chrono",
+ "reqwest 0.12.28",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "toon-format",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ares-memory"
+version = "0.7.3"
+dependencies = [
+ "ares-types",
+ "chrono",
+]
+
+[[package]]
+name = "ares-rag"
+version = "0.7.3"
+dependencies = [
+ "ares-types",
+ "fastembed",
+ "lancor",
+ "lru 0.16.3",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "text-splitter",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ares-server"
 version = "0.7.3"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "ares-agents",
+ "ares-auth",
+ "ares-config",
+ "ares-db",
+ "ares-llm",
+ "ares-mcp",
+ "ares-rag",
+ "ares-tools",
+ "ares-types",
  "ares-vector",
  "argon2",
- "async-openai",
  "async-stream",
  "async-trait",
  "axum 0.8.8",
@@ -216,12 +384,9 @@ dependencies = [
  "chromadb",
  "chrono",
  "clap",
- "claude-sdk",
  "config",
- "daedra",
  "dirs 6.0.0",
  "dotenvy",
- "fastembed",
  "futures",
  "hex",
  "jsonwebtoken 10.3.0",
@@ -230,12 +395,9 @@ dependencies = [
  "lancor",
  "lettre",
  "libsql",
- "llama-cpp-2",
- "lru 0.16.3",
  "mime_guess",
  "mockall",
  "notify",
- "ollama-rs",
  "owo-colors",
  "parking_lot",
  "pinecone-sdk",
@@ -246,13 +408,11 @@ dependencies = [
  "rstest",
  "rust-embed",
  "schemars 1.2.1",
- "scraper 0.25.0",
  "serde",
  "serde_json",
  "sha2",
  "sqlx",
  "tempfile",
- "text-splitter",
  "thiserror 2.0.18",
  "thulp-skill-files",
  "tokio",
@@ -268,6 +428,35 @@ dependencies = [
  "utoipa-swagger-ui",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "ares-tools"
+version = "0.7.3"
+dependencies = [
+ "ares-config",
+ "ares-mcp",
+ "ares-types",
+ "async-trait",
+ "daedra",
+ "reqwest 0.12.28",
+ "scraper 0.25.0",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "ares-types"
+version = "0.7.3"
+dependencies = [
+ "axum 0.8.8",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "utoipa",
 ]
 
 [[package]]
@@ -613,6 +802,8 @@ dependencies = [
 [[package]]
 name = "async-openai"
 version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc48c3deb4ad9a2ee8c8e364c79eb0f74e69e17ed7e883d55988b90ea44fe986"
 dependencies = [
  "async-openai-macros",
  "backoff",
@@ -6661,6 +6852,12 @@ checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
 ]
+
+[[package]]
+name = "matches"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2532096657941c2fea9c289d370a250971c689d4f143798ff67113ec042024a5"
 
 [[package]]
 name = "matchit"

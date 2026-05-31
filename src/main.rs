@@ -410,8 +410,8 @@ async fn run_server(
     {
         if let Ok(mcp_reg) = ares::mcp::McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref()) {
             for client_name in mcp_reg.client_names() {
-                if let Some(client) = mcp_reg.get_client(&client_name) {
-                    ares::tools::mcp_bridge::register_mcp_tools(&mut tool_registry, &client_name, client.clone());
+                if mcp_reg.get_client(&client_name).is_some() {
+                    ares::tools::mcp_bridge::register_mcp_tools(&mut tool_registry, &client_name);
                 }
             }
         }

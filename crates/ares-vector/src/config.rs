@@ -221,8 +221,69 @@ mod tests {
     fn test_hnsw_presets() {
         let fast = HnswConfig::fast();
         let accurate = HnswConfig::accurate();
+        let memory_efficient = HnswConfig::memory_efficient();
 
         assert!(fast.m < accurate.m);
         assert!(fast.ef_construction < accurate.ef_construction);
+        assert_eq!(memory_efficient.m, 8);
+        assert!(!memory_efficient.parallel_construction);
+        assert_eq!(memory_efficient.num_threads, 1);
+    }
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        assert!(config.data_path.is_none());
+        assert_eq!(config.max_vectors, 0);
+        assert!(!config.auto_persist);
+        assert_eq!(config.persist_interval_secs, 300);
+    }
+
+    #[test]
+    fn test_config_builder_methods() {
+        let hnsw = HnswConfig::fast()
+            .with_m(12)
+            .with_ef_construction(150)
+            .with_ef_search(75);
+        let config = Config::persistent("/data/vectors")
+            .with_hnsw_config(hnsw.clone())
+            .with_max_vectors(10_000)
+            .with_auto_persist(false)
+            .with_persist_interval(60);
+
+        assert_eq!(config.data_path, Some(PathBuf::from("/data/vectors")));
+        assert!(!config.auto_persist);
+        assert_eq!(config.max_vectors, 10_000);
+        assert_eq!(config.persist_interval_secs, 60);
+        assert_eq!(config.hnsw_config.m, 12);
+        assert_eq!(config.hnsw_config.m_max, 24);
+        assert_eq!(config.hnsw_config.ef_construction, 150);
+        assert_eq!(config.hnsw_config.ef_search, 75);
+    }
+
+    #[test]
+    fn test_hnsw_builder_methods() {
+        let config = HnswConfig::default()
+            .with_m(20)
+            .with_ef_construction(300)
+            .with_ef_search(150)
+            .with_num_threads(4);
+
+        assert_eq!(config.m, 20);
+        assert_eq!(config.m_max, 40);
+        assert_eq!(config.ef_construction, 300);
+        assert_eq!(config.ef_search, 150);
+        assert_eq!(config.num_threads, 4);
+    }
+
+    #[test]
+    fn test_hnsw_default() {
+        let config = HnswConfig::default();
+        assert_eq!(config.m, 16);
+        assert_eq!(config.m_max, 32);
+        assert_eq!(config.ef_construction, 200);
+        assert_eq!(config.ef_search, 100);
+        assert!(config.parallel_construction);
+        assert_eq!(config.num_threads, 0);
     }
 }

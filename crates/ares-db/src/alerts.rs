@@ -153,6 +153,91 @@ mod alert_tests {
     use super::*;
     use crate::query_builders::{build_list_alerts_sql, list_alerts_select_sql};
 
+
+    use sqlx::postgres::PgPoolOptions;
+    use sqlx::PgPool;
+
+    fn unreachable_postgres_pool() -> PgPool {
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/nope")
+            .expect("connect_lazy should not fail for malformed URLs")
+    }
+
+    fn assert_database_error<T: std::fmt::Debug>(result: Result<T>) {
+        matches::assert_matches!(
+            result.unwrap_err(),
+            AppError::Database(msg) if !msg.is_empty()
+        );
+    }
+
+    // ---- SQL constants (no live Postgres) --------------------------------
+
+    #[test]
+    fn create_alert_sql_inserts_unresolved_row() {
+        assert!(CREATE_ALERT_SQL.contains("INSERT INTO alerts"));
+        assert!(CREATE_ALERT_SQL.contains("FALSE"));
+        assert!(CREATE_ALERT_SQL.contains("$6"));
+    }
+
+    #[test]
+    fn resolve_alert_sql_requires_unresolved_target() {
+        assert!(RESOLVE_ALERT_SQL.contains("resolved = TRUE"));
+        assert!(RESOLVE_ALERT_SQL.contains("WHERE id = $3 AND resolved = FALSE"));
+    }
+
+    #[test]
+    fn active_alert_count_sql_counts_unresolved_only() {
+        assert!(ACTIVE_ALERT_COUNT_SQL.contains("resolved = FALSE"));
+        assert!(ACTIVE_ALERT_COUNT_SQL.contains("COUNT(*)"));
+    }
+
+    // ---- Async DB error mapping (no live Postgres) -----------------------
+
+    #[tokio::test]
+    async fn create_alert_maps_execute_error_to_database() {
+        let pool = unreachable_postgres_pool();
+        assert_database_error(
+            create_alert(&pool, "critical", "health", "disk", "full").await,
+        );
+    }
+
+    #[tokio::test]
+    async fn list_alerts_no_filters_maps_fetch_error() {
+        let pool = unreachable_postgres_pool();
+        assert_database_error(list_alerts(&pool, None, None, 10).await);
+    }
+
+    #[tokio::test]
+    async fn list_alerts_severity_only_maps_fetch_error() {
+        let pool = unreachable_postgres_pool();
+        assert_database_error(list_alerts(&pool, Some("warn"), None, 10).await);
+    }
+
+    #[tokio::test]
+    async fn list_alerts_resolved_only_maps_fetch_error() {
+        let pool = unreachable_postgres_pool();
+        assert_database_error(list_alerts(&pool, None, Some(false), 10).await);
+    }
+
+    #[tokio::test]
+    async fn list_alerts_both_filters_maps_fetch_error() {
+        let pool = unreachable_postgres_pool();
+        assert_database_error(list_alerts(&pool, Some("critical"), Some(true), 5).await);
+    }
+
+    #[tokio::test]
+    async fn resolve_alert_maps_execute_error_to_database() {
+        let pool = unreachable_postgres_pool();
+        assert_database_error(resolve_alert(&pool, "missing-id", Some("ops")).await);
+    }
+
+    #[tokio::test]
+    async fn get_active_alert_count_maps_fetch_error_to_database() {
+        let pool = unreachable_postgres_pool();
+        assert_database_error(get_active_alert_count(&pool).await);
+    }
+
     // ---- helpers --------------------------------------------------------
 
     fn sample_alert() -> Alert {

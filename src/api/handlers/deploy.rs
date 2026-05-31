@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct DeployStatus {
     pub id: String,
     pub target: String,
@@ -262,4 +262,351 @@ pub async fn get_service_logs(Path(service_name): Path<String>) -> Result<Json<s
         "service": service_name,
         "lines": logs.lines().collect::<Vec<_>>(),
     })))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::{Path, State};
+
+    #[test]
+    fn deploy_state_serializes_snake_case() {
+        let json = serde_json::to_string(&DeployState::Running).unwrap();
+        assert_eq!(json, "\"running\"");
+        let parsed: DeployState = serde_json::from_str("\"success\"").unwrap();
+        assert_eq!(parsed, DeployState::Success);
+    }
+
+    #[test]
+    fn deploy_request_deserializes_target() {
+        let req: DeployRequest = serde_json::from_str(r#"{"target":"ARES"}"#).unwrap();
+        assert_eq!(req.target, "ARES");
+    }
+
+    #[test]
+    fn service_health_skips_none_fields_in_json() {
+        let health = ServiceHealth {
+            status: "ok".into(),
+            pid: None,
+            port: None,
+        };
+        let json = serde_json::to_string(&health).unwrap();
+        assert!(json.contains("ok"));
+        assert!(!json.contains("pid"));
+        assert!(!json.contains("port"));
+    }
+
+    #[tokio::test]
+    async fn new_deploy_registry_starts_empty() {
+        let registry = new_deploy_registry();
+        let deploys = registry.read().await;
+        assert!(deploys.is_empty());
+    }
+
+    #[test]
+    fn deploy_script_defaults_without_env() {
+        std::env::remove_var("DEPLOY_SCRIPT");
+        assert_eq!(deploy_script(), "./scripts/deploy.sh");
+    }
+
+    #[test]
+    fn health_script_defaults_without_env() {
+        std::env::remove_var("HEALTH_SCRIPT");
+        assert_eq!(health_script(), "./scripts/health.sh");
+    }
+
+    #[cfg(feature = "postgres")]
+    mod handler_tests {
+        use super::*;
+        use crate::agents::context_provider::NoOpContextProvider;
+        use crate::auth::jwt::AuthService;
+        use crate::db::{PostgresClient, TenantDb};
+        use crate::utils::toml_config::{
+            AgentConfig, AresConfig, AuthConfig, BillingConfig, DatabaseConfig,
+            DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig, ServerConfig,
+        };
+        use crate::{
+            AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory,
+            DynamicConfigManager, ProviderRegistry, ToolRegistry,
+        };
+        use std::collections::HashMap;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        fn minimal_config() -> AresConfig {
+            let mut providers = HashMap::new();
+            providers.insert(
+                "p".into(),
+                ProviderConfig::Ollama {
+                    base_url: "http://127.0.0.1:11434".into(),
+                    default_model: "m".into(),
+                },
+            );
+            let mut models = HashMap::new();
+            models.insert(
+                "default".into(),
+                ModelConfig {
+                    provider: "p".into(),
+                    model: "m".into(),
+                    temperature: 0.7,
+                    max_tokens: 512,
+                    top_p: None,
+                    frequency_penalty: None,
+                    presence_penalty: None,
+                },
+            );
+            let mut agents = HashMap::new();
+            agents.insert(
+                "a".into(),
+                AgentConfig {
+                    model: "default".into(),
+                    system_prompt: None,
+                    tools: vec![],
+                    max_tool_iterations: 1,
+                    parallel_tools: false,
+                    extra: HashMap::new(),
+                },
+            );
+            AresConfig {
+                server: ServerConfig::default(),
+                auth: AuthConfig {
+                    jwt_secret_env: "JWT_SECRET".into(),
+                    jwt_access_expiry: 900,
+                    jwt_refresh_expiry: 604800,
+                    api_key_env: "API_KEY".into(),
+                },
+                database: DatabaseConfig::default(),
+                config: DynamicConfigPaths::default(),
+                providers,
+                models,
+                tools: HashMap::new(),
+                agents,
+                workflows: HashMap::new(),
+                rag: RagConfig::default(),
+                billing: BillingConfig::default(),
+                #[cfg(feature = "skills")]
+                skills: None,
+            }
+        }
+
+        fn test_app_state(deploy_registry: DeployRegistry) -> AppState {
+            let config = minimal_config();
+            let config_manager = Arc::new(AresConfigManager::from_config(config));
+            let provider_registry =
+                Arc::new(ProviderRegistry::from_config(&config_manager.config()));
+            let tool_registry = Arc::new(ToolRegistry::new());
+            let agent_registry = Arc::new(AgentRegistry::from_config(
+                &config_manager.config(),
+                provider_registry.clone(),
+                tool_registry.clone(),
+            ));
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let base = temp_dir.path();
+            for sub in ["agents", "models", "tools", "workflows", "mcps"] {
+                std::fs::create_dir_all(base.join(sub)).expect("mkdir");
+            }
+            let dynamic_config = Arc::new(
+                DynamicConfigManager::new(
+                    base.join("agents"),
+                    base.join("models"),
+                    base.join("tools"),
+                    base.join("workflows"),
+                    base.join("mcps"),
+                    false,
+                )
+                .expect("dynamic config"),
+            );
+            std::mem::forget(temp_dir);
+
+            let db = Arc::new(PostgresClient::new_test());
+            AppState {
+                config_manager,
+                dynamic_config,
+                db: db.clone(),
+                tenant_db: Arc::new(TenantDb::new(db)),
+                llm_factory: Arc::new(ConfigBasedLLMFactory::new(
+                    provider_registry.clone(),
+                    "default",
+                )),
+                provider_registry,
+                agent_registry,
+                tool_registry,
+                auth_service: Arc::new(AuthService::new(
+                    "test-secret-at-least-32-characters-long".into(),
+                    900,
+                    604800,
+                )),
+                deploy_registry,
+                loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
+                emergency_stop: Arc::new(AtomicBool::new(false)),
+                context_provider: Arc::new(NoOpContextProvider),
+                #[cfg(feature = "mcp")]
+                mcp_registry: None,
+            }
+        }
+
+        fn write_executable_script(dir: &std::path::Path, name: &str, body: &str) -> String {
+            let path = dir.join(name);
+            std::fs::write(&path, body).expect("write script");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod");
+            }
+            path.to_string_lossy().into_owned()
+        }
+
+        #[tokio::test]
+        async fn trigger_deploy_rejects_invalid_target() {
+            let state = test_app_state(new_deploy_registry());
+            let err = trigger_deploy(
+                State(state),
+                Json(DeployRequest {
+                    target: "not-a-service".into(),
+                }),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, AppError::InvalidInput(_)));
+        }
+
+        #[tokio::test]
+        async fn trigger_deploy_rejects_duplicate_running() {
+            let registry = new_deploy_registry();
+            let now = 1_700_000_000_i64;
+            registry.write().await.insert(
+                "ares-1".into(),
+                DeployStatus {
+                    id: "ares-1".into(),
+                    target: "ares".into(),
+                    status: DeployState::Running,
+                    started_at: now,
+                    finished_at: None,
+                    output: String::new(),
+                },
+            );
+            let state = test_app_state(registry);
+            let err = trigger_deploy(
+                State(state),
+                Json(DeployRequest {
+                    target: "ares".into(),
+                }),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.to_string().contains("already running"));
+        }
+
+        #[tokio::test]
+        async fn trigger_deploy_starts_and_background_script_updates_registry() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let script = write_executable_script(
+                dir.path(),
+                "deploy.sh",
+                "#!/bin/sh\necho deployed\nexit 0\n",
+            );
+            std::env::set_var("DEPLOY_SCRIPT", &script);
+
+            let registry = new_deploy_registry();
+            let state = test_app_state(registry.clone());
+            let resp = trigger_deploy(
+                State(state),
+                Json(DeployRequest {
+                    target: "ares".into(),
+                }),
+            )
+            .await
+            .expect("trigger");
+            assert_eq!(resp.0.status, DeployState::Running);
+
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+            let deploys = registry.read().await;
+            let deploy = deploys.get(&resp.0.id).expect("deploy row");
+            assert_eq!(deploy.status, DeployState::Success);
+            assert!(deploy.output.contains("deployed"));
+            assert!(deploy.finished_at.is_some());
+        }
+
+        #[tokio::test]
+        async fn get_deploy_status_returns_not_found() {
+            let state = test_app_state(new_deploy_registry());
+            let err = get_deploy_status(State(state), Path("missing".into()))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, AppError::NotFound(_)));
+        }
+
+        #[tokio::test]
+        async fn get_deploy_status_returns_existing_deploy() {
+            let registry = new_deploy_registry();
+            let status = DeployStatus {
+                id: "ares-99".into(),
+                target: "ares".into(),
+                status: DeployState::Success,
+                started_at: 1,
+                finished_at: Some(2),
+                output: "done".into(),
+            };
+            registry
+                .write()
+                .await
+                .insert(status.id.clone(), status.clone());
+            let state = test_app_state(registry);
+            let got = get_deploy_status(State(state), Path("ares-99".into()))
+                .await
+                .expect("status");
+            assert_eq!(got.0, status);
+        }
+
+        #[tokio::test]
+        async fn list_deploys_sorts_newest_first_and_truncates_to_twenty() {
+            let registry = new_deploy_registry();
+            for i in 0..25 {
+                registry.write().await.insert(
+                    format!("ares-{i}"),
+                    DeployStatus {
+                        id: format!("ares-{i}"),
+                        target: "ares".into(),
+                        status: DeployState::Success,
+                        started_at: i as i64,
+                        finished_at: Some(i as i64),
+                        output: String::new(),
+                    },
+                );
+            }
+            let state = test_app_state(registry);
+            let list = list_deploys(State(state)).await.0;
+            assert_eq!(list.len(), 20);
+            assert_eq!(list[0].started_at, 24);
+            assert_eq!(list[19].started_at, 5);
+        }
+
+        #[tokio::test]
+        async fn get_services_health_parses_mock_script_output() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let script = write_executable_script(
+                dir.path(),
+                "health.sh",
+                "#!/bin/sh\necho '{\"ares\":{\"status\":\"active\",\"pid\":\"123\",\"port\":3000}}'\n",
+            );
+            std::env::set_var("HEALTH_SCRIPT", &script);
+
+            let result = get_services_health().await.expect("health");
+            let ares = result.0.get("ares").expect("ares service");
+            assert_eq!(ares.status, "active");
+            assert_eq!(ares.pid.as_deref(), Some("123"));
+            assert_eq!(ares.port, Some(3000));
+        }
+
+        #[tokio::test]
+        async fn get_service_logs_rejects_unknown_service() {
+            let err = get_service_logs(Path("unknown".into()))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, AppError::InvalidInput(_)));
+        }
+    }
 }

@@ -130,7 +130,7 @@
 #![warn(rustdoc::missing_crate_level_docs)]
 
 /// AI agent orchestration and management.
-pub mod agents;
+pub mod agents { pub use ares_agents::*; }
 /// HTTP API handlers and routes.
 #[cfg(feature = "postgres")]
 pub mod api;
@@ -140,14 +140,14 @@ pub mod auth;
 /// Command-line interface and scaffolding.
 pub mod cli;
 /// Database clients (Turso/SQLite, Qdrant).
-pub mod db;
+pub mod db { pub use ares_db::*; }
 /// LLM provider clients and abstractions.
 pub mod llm;
 /// Model Context Protocol (MCP) server integration.
 #[cfg(feature = "mcp")]
-pub mod mcp;
+pub mod mcp { pub use ares_mcp::*; }
 /// Conversation memory and context management.
-pub mod memory;
+pub mod memory { pub use ares_agents::memory::*; }
 /// Middleware for API key auth and usage tracking.
 #[cfg(feature = "postgres")]
 pub mod middleware;
@@ -157,7 +157,7 @@ pub mod models;
 pub mod rag;
 /// Multi-agent research coordination.
 #[cfg(feature = "postgres")]
-pub mod research;
+pub mod research { pub use ares_agents::research::*; }
 /// SKILL.md file discovery and loading (requires `skills` feature).
 #[cfg(feature = "skills")]
 pub mod skills;

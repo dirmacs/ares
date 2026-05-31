@@ -16,7 +16,7 @@ use ares::{
     llm::LLMClient,
     types::{ToolCall, ToolDefinition},
     utils::toml_config::{
-        AgentConfig, AresConfig, AuthConfig as TomlAuthConfig,
+        AgentConfig, AresConfig, AuthConfig as TomlAuthConfig, BillingConfig,
         DatabaseConfig as TomlDatabaseConfig, DynamicConfigPaths, ModelConfig, ProviderConfig,
         RagConfig, ServerConfig as TomlServerConfig,
     },
@@ -121,6 +121,9 @@ async fn create_test_app() -> Router {
         agents,
         workflows: HashMap::new(),
         rag: RagConfig::default(),
+        billing: BillingConfig {
+            model_pricing: HashMap::new(),
+        },
         #[cfg(feature = "skills")]
         skills: None,
     };
@@ -180,6 +183,7 @@ async fn create_test_app() -> Router {
         auth_service: Arc::new(auth_service),
         dynamic_config,
         deploy_registry: ares::api::handlers::deploy::DeployRegistry::default(),
+        loop_registry: ares::api::handlers::loops::LoopRegistry::new(),
         emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         context_provider: Arc::new(ares::agents::context_provider::NoOpContextProvider),
         #[cfg(feature = "mcp")]

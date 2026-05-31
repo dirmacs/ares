@@ -290,7 +290,40 @@ mod tests {
     };
     use crate::{AgentRegistry, AresConfigManager, DynamicConfigManager};
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Once};
+
+
+    static WF_LOAD_ENV: Once = Once::new();
+    static WF_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    static WF_DB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn workflow_test_db_url() -> String {
+        WF_LOAD_ENV.call_once(|| {
+            let _ = dotenvy::dotenv();
+        });
+        if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
+            return url;
+        }
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            if url.contains("/ares") && !url.contains("ares_test") {
+                return url.replace("/ares", "/ares_test");
+            }
+            return url;
+        }
+        "postgres://dirmacs@localhost:5432/ares_test".to_string()
+    }
+
+    async fn create_workflow_test_db() -> Arc<dyn crate::db::traits::DatabaseClient> {
+        let url = workflow_test_db_url();
+        let db = crate::db::PostgresClient::new_remote(url, String::new())
+            .await
+            .expect("workflow test db");
+        sqlx::migrate!("./migrations")
+            .run(&db.pool)
+            .await
+            .expect("migrations");
+        Arc::new(db)
+    }
 
     fn create_test_config() -> AresConfig {
         let mut providers = HashMap::new();
@@ -415,9 +448,11 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            db: Arc::new(crate::db::PostgresClient::new_test()),
+            db: create_workflow_test_db().await,
             tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                crate::db::PostgresClient::new_test(),
+                crate::db::PostgresClient::new_remote(workflow_test_db_url(), String::new())
+                    .await
+                    .expect("tenant db"),
             ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
@@ -470,9 +505,11 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            db: Arc::new(crate::db::PostgresClient::new_test()),
+            db: create_workflow_test_db().await,
             tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                crate::db::PostgresClient::new_test(),
+                crate::db::PostgresClient::new_remote(workflow_test_db_url(), String::new())
+                    .await
+                    .expect("tenant db"),
             ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
@@ -525,9 +562,11 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            db: Arc::new(crate::db::PostgresClient::new_test()),
+            db: create_workflow_test_db().await,
             tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                crate::db::PostgresClient::new_test(),
+                crate::db::PostgresClient::new_remote(workflow_test_db_url(), String::new())
+                    .await
+                    .expect("tenant db"),
             ))),
             llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
@@ -595,4 +634,245 @@ mod tests {
         let deserialized: WorkflowOutput = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.steps_executed, 2);
     }
+
+    fn test_agent_context() -> AgentContext {
+        AgentContext {
+            user_id: "user-1".to_string(),
+            session_id: "session-1".to_string(),
+            conversation_history: vec![],
+            user_memory: None,
+        }
+    }
+
+    fn create_test_config_with_ollama(base_url: &str) -> AresConfig {
+        let mut config = create_test_config();
+        if let Some(provider) = config.providers.get_mut("ollama-local") {
+            if let ProviderConfig::Ollama { base_url: url, .. } = provider {
+                *url = base_url.to_string();
+            }
+        }
+        config
+    }
+
+    async fn build_engine_from_config(config: AresConfig) -> WorkflowEngine {
+        let config = Arc::new(config);
+        let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let agent_registry = Arc::new(AgentRegistry::from_config(
+            &config,
+            provider_registry.clone(),
+            tool_registry.clone(),
+        ));
+
+        let state = AppState {
+            config_manager: Arc::new(AresConfigManager::from_config((*config).clone())),
+            dynamic_config: Arc::new(
+                DynamicConfigManager::new(
+                    std::path::PathBuf::from("config/agents"),
+                    std::path::PathBuf::from("config/models"),
+                    std::path::PathBuf::from("config/tools"),
+                    std::path::PathBuf::from("config/workflows"),
+                    std::path::PathBuf::from("config/mcps"),
+                    false,
+                )
+                .unwrap(),
+            ),
+            db: create_workflow_test_db().await,
+            tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
+                crate::db::PostgresClient::new_remote(workflow_test_db_url(), String::new())
+                    .await
+                    .expect("tenant db"),
+            ))),
+            llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
+                provider_registry.clone(),
+                "default",
+            )),
+            provider_registry,
+            agent_registry,
+            tool_registry,
+            auth_service: Arc::new(crate::auth::jwt::AuthService::new(
+                "secret".to_string(),
+                900,
+                604800,
+            )),
+            mcp_registry: None,
+            deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
+            loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
+            emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            context_provider: Arc::new(crate::agents::NoOpContextProvider),
+        };
+
+        WorkflowEngine::new(state)
+    }
+
+    fn mock_ollama_chat_response(content: &str) -> serde_json::Value {
+        serde_json::json!({
+            "model": "ministral-3:3b",
+            "created_at": "2024-01-01T00:00:00Z",
+            "message": {
+                "role": "assistant",
+                "content": content
+            },
+            "done": true
+        })
+    }
+
+    #[test]
+    fn test_parse_routing_decision_exact_match() {
+        assert_eq!(
+            WorkflowEngine::parse_routing_decision("product").as_deref(),
+            Some("product")
+        );
+        assert_eq!(
+            WorkflowEngine::parse_routing_decision("  SALES  ").as_deref(),
+            Some("sales")
+        );
+    }
+
+    #[test]
+    fn test_parse_routing_decision_word_split() {
+        assert_eq!(
+            WorkflowEngine::parse_routing_decision("route to: product.").as_deref(),
+            Some("product")
+        );
+        assert_eq!(
+            WorkflowEngine::parse_routing_decision("invoice agent").as_deref(),
+            Some("invoice")
+        );
+    }
+
+    #[test]
+    fn test_parse_routing_decision_substring_match() {
+        assert_eq!(
+            WorkflowEngine::parse_routing_decision("I would route this to finance")
+                .as_deref(),
+            Some("finance")
+        );
+    }
+
+    #[test]
+    fn test_parse_routing_decision_none_for_unknown() {
+        assert!(WorkflowEngine::parse_routing_decision("unknown-agent").is_none());
+        assert!(WorkflowEngine::parse_routing_decision("").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_execute_workflow_unknown_name() {
+        let engine = build_engine_from_config(create_test_config()).await;
+        let err = engine
+            .execute_workflow("missing", "hello", &test_agent_context())
+            .await
+            .expect_err("missing workflow");
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_workflow_orchestrator_single_step() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(mock_ollama_chat_response(
+                "Orchestrator handled the request",
+            )))
+            .mount(&mock_server)
+            .await;
+
+        let engine = build_engine_from_config(create_test_config_with_ollama(&mock_server.uri())).await;
+        let output = engine
+            .execute_workflow("research", "complex task", &test_agent_context())
+            .await
+            .expect("workflow output");
+
+        assert_eq!(output.steps_executed, 1);
+        assert_eq!(output.agents_used, vec!["orchestrator".to_string()]);
+        assert!(output.final_response.contains("Orchestrator"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_workflow_router_routes_to_product() {
+        use std::sync::{Arc, Mutex};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
+
+        struct SequentialResponder {
+            responses: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl Respond for SequentialResponder {
+            fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+                let mut queue = self.responses.lock().unwrap();
+                let content = queue.remove(0);
+                ResponseTemplate::new(200).set_body_json(mock_ollama_chat_response(&content))
+            }
+        }
+
+        let mock_server = MockServer::start().await;
+        let responses = Arc::new(Mutex::new(vec![
+            "product".to_string(),
+            "We sell widgets and gadgets".to_string(),
+        ]));
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(SequentialResponder {
+                responses: responses.clone(),
+            })
+            .mount(&mock_server)
+            .await;
+
+        let engine = build_engine_from_config(create_test_config_with_ollama(&mock_server.uri())).await;
+        let output = engine
+            .execute_workflow("default", "What products do we have?", &test_agent_context())
+            .await
+            .expect("routed workflow");
+
+        assert_eq!(output.steps_executed, 2);
+        assert_eq!(output.agents_used, vec!["router".to_string(), "product".to_string()]);
+        assert!(output.final_response.contains("widgets"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_workflow_router_invalid_route_uses_fallback() {
+        use std::sync::{Arc, Mutex};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
+
+        struct SequentialResponder {
+            responses: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl Respond for SequentialResponder {
+            fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+                let mut queue = self.responses.lock().unwrap();
+                let content = queue.remove(0);
+                ResponseTemplate::new(200).set_body_json(mock_ollama_chat_response(&content))
+            }
+        }
+
+        let mock_server = MockServer::start().await;
+        let responses = Arc::new(Mutex::new(vec![
+            "not-a-valid-xyz".to_string(),
+            "Fallback orchestrator response".to_string(),
+        ]));
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(SequentialResponder {
+                responses: responses.clone(),
+            })
+            .mount(&mock_server)
+            .await;
+
+        let engine = build_engine_from_config(create_test_config_with_ollama(&mock_server.uri())).await;
+        let output = engine
+            .execute_workflow("default", "weird query", &test_agent_context())
+            .await
+            .expect("fallback workflow");
+
+        assert!(output.agents_used.contains(&"router".to_string()));
+        assert!(output.agents_used.contains(&"orchestrator".to_string()));
+        assert!(output.final_response.contains("Fallback"));
+    }
+
 }

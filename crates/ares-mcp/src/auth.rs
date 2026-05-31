@@ -93,6 +93,21 @@ mod tests {
     use super::*;
     #[cfg(feature = "postgres")]
     use ares_types::{TenantContext, TenantTier};
+    use ares_types::types::AppError;
+    use std::sync::Mutex;
+
+    /// Serializes tests that read `ARES_API_KEY` while another test may remove it.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn assert_invalid_prefix(api_key: &str) {
+        let err = validate_api_key_format(api_key).unwrap_err();
+        match err {
+            McpAuthError::InvalidKey(msg) => {
+                assert_eq!(msg, "API key must start with 'ares_' prefix");
+            }
+            other => panic!("expected InvalidKey, got {other:?}"),
+        }
+    }
 
     #[test]
     fn validate_api_key_format_requires_ares_prefix() {
@@ -101,12 +116,46 @@ mod tests {
     }
 
     #[test]
+    fn validate_api_key_format_invalid_returns_prefix_message() {
+        assert_invalid_prefix("sk-live-abc");
+        assert_invalid_prefix("not-a-key");
+    }
+
+    #[test]
+    fn validate_api_key_format_almost_valid_prefixes_fail() {
+        assert_invalid_prefix("");
+        assert_invalid_prefix("ares");
+        assert_invalid_prefix("are_");
+        assert_invalid_prefix("aresx_");
+        assert_invalid_prefix(" ares_key");
+        assert_invalid_prefix("\tares_key");
+        assert_invalid_prefix("Ares_key");
+    }
+
+    #[test]
+    fn validate_api_key_format_valid_prefixes_pass() {
+        assert!(validate_api_key_format("ares_").is_ok());
+        assert!(validate_api_key_format("ares_a").is_ok());
+        assert!(validate_api_key_format("ares_0123456789abcdef").is_ok());
+    }
+
+    #[test]
     fn extract_api_key_from_env_reads_variable_when_set() {
         let Ok(expected) = std::env::var("ARES_API_KEY") else {
             return;
         };
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let key = extract_api_key_from_env().expect("key");
         assert_eq!(key, expected);
+    }
+
+    #[test]
+    fn extract_api_key_from_env_errors_when_var_already_unset() {
+        if std::env::var("ARES_API_KEY").is_ok() {
+            return;
+        }
+        let result = extract_api_key_from_env();
+        assert!(matches!(result, Err(McpAuthError::NoApiKey)));
     }
 
     #[test]
@@ -128,6 +177,31 @@ mod tests {
         assert!(validate_api_key_format("🔑notares").is_err());
     }
 
+    #[test]
+    fn mcp_auth_error_display_messages() {
+        assert_eq!(
+            McpAuthError::NoApiKey.to_string(),
+            "No API key provided. Set ARES_API_KEY environment variable."
+        );
+        assert_eq!(
+            McpAuthError::InvalidKey("bad prefix".into()).to_string(),
+            "Invalid API key: bad prefix"
+        );
+        let db_err: McpAuthError =
+            AppError::Database("connection refused".into()).into();
+        assert_eq!(
+            db_err.to_string(),
+            "Database error during auth: Database error: connection refused"
+        );
+    }
+
+    #[test]
+    fn mcp_auth_error_debug_includes_variant_name() {
+        let err = McpAuthError::NoApiKey;
+        let debug = format!("{err:?}");
+        assert!(debug.contains("NoApiKey"));
+    }
+
     #[cfg(feature = "postgres")]
     #[test]
     fn mcp_session_new_and_accessors() {
@@ -136,6 +210,7 @@ mod tests {
         assert_eq!(session.tenant_id(), "test-tenant-001");
         assert_eq!(session.tier(), "free");
         assert_eq!(session.api_key, "ares_testkey12345678");
+        assert_eq!(session.eruka_workspace_id, "test-tenant-001");
     }
 
     #[cfg(feature = "postgres")]
@@ -150,9 +225,19 @@ mod tests {
         assert_eq!(cloned.eruka_workspace_id, session.eruka_workspace_id);
     }
 
-    #[ignore] // flaky: env-var race condition in parallel execution
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn mcp_session_tier_reflects_tenant_context() {
+        let ctx = TenantContext::new("tenant-enterprise".into(), TenantTier::Enterprise);
+        let session = McpSession::new(ctx, "ares_ent_key".into());
+        assert_eq!(session.tier(), "enterprise");
+        assert_eq!(session.eruka_workspace_id, "tenant-enterprise");
+    }
+
+    #[ignore] // flaky: env-var race condition in parallel execution across crates
     #[test]
     fn extract_api_key_from_env_missing_returns_error() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ARES_API_KEY");
         let result = extract_api_key_from_env();
         assert!(result.is_err());

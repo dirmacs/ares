@@ -303,4 +303,45 @@ mod tests {
         std::env::remove_var("JWT_SECRET");
         assert!(validate_register_input("user@example.com", "password123").is_ok());
     }
+
+    #[test]
+    fn validate_register_input_accepts_password_exactly_eight_chars() {
+        assert!(validate_register_input("user@example.com", "12345678").is_ok());
+    }
+
+    #[test]
+    fn validate_register_input_rejects_password_seven_chars() {
+        let err = validate_register_input("user@example.com", "1234567").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn register_request_deserializes_email_and_password() {
+        let req: RegisterRequest =
+            serde_json::from_str(r#"{"email":"a@b.co","password":"secret123","name":"Alice"}"#).unwrap();
+        assert_eq!(req.email, "a@b.co");
+        assert_eq!(req.password, "secret123");
+        assert_eq!(req.name, "Alice");
+    }
+
+    #[test]
+    fn login_request_deserializes_from_json() {
+        let req: LoginRequest =
+            serde_json::from_str(r#"{"email":"login@example.com","password":"pw"}"#).unwrap();
+        assert_eq!(req.email, "login@example.com");
+        assert_eq!(req.password, "pw");
+    }
+
+    #[test]
+    fn token_response_serializes_token_fields() {
+        let resp = TokenResponse {
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_in: 3600,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"access_token\":\"access\""));
+        assert!(json.contains("\"refresh_token\":\"refresh\""));
+        assert!(json.contains("\"expires_in\":3600"));
+    }
 }

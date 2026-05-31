@@ -1,3 +1,1 @@
-pub mod tenant;
-
-pub use tenant::{ApiKey, Tenant, TenantContext, TenantQuota, TenantTier};
+pub use ares_types::models::*;

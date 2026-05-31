@@ -289,9 +289,9 @@ pub async fn search(
 ) -> Result<Json<RagSearchResponse>> {
     let start = Instant::now();
     // Respect RAG feature flag
-    if !state.config_manager.config().rag.enabled {
+    if !state.config_manager.config().rag.vector.enabled {
         return Err(AppError::FeatureDisabled(
-            "RAG feature is disabled. Set `features.rag.enabled = true` in ares.toml".into(),
+            "RAG feature is disabled. Set `[rag.vector] enabled = true` in ares.toml".into(),
         ));
     }
 

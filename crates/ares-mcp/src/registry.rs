@@ -7,13 +7,33 @@ pub struct McpRegistry {
 }
 
 impl McpRegistry {
+    pub fn new() -> Self {
+        Self {
+            clients: HashMap::new(),
+        }
+    }
+
+    /// Register (or replace) an MCP client by config name.
+    pub fn register(&mut self, config: McpServerConfig) -> Arc<McpClient> {
+        let client = McpClient::new(config);
+        let name = client.name().to_string();
+        let arc = Arc::new(client);
+        self.clients.insert(name, arc.clone());
+        arc
+    }
+
+    /// Remove a client by name. Returns true if it existed.
+    pub fn deregister(&mut self, name: &str) -> bool {
+        self.clients.remove(name).is_some()
+    }
+
     pub fn from_dir(config_dir: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let mut clients = HashMap::new();
         let path = Path::new(config_dir);
 
         if !path.exists() {
             tracing::warn!("MCP config directory not found: {}", config_dir);
-            return Ok(Self { clients });
+            return Ok(Self::new());
         }
 
         for entry in std::fs::read_dir(path)? {
@@ -44,7 +64,9 @@ impl McpRegistry {
             }
         }
 
-        Ok(Self { clients })
+        let mut registry = Self::new();
+        registry.clients = clients;
+        Ok(registry)
     }
 
     pub fn get_client(&self, name: &str) -> Option<&Arc<McpClient>> {
@@ -131,6 +153,30 @@ command: eruka-mcp
 
         assert_eq!(names, vec!["eruka".to_string(), "filesystem".to_string()]);
         assert!(registry.eruka().is_some());
+    }
+
+    #[test]
+    fn register_and_deregister_client() {
+        let mut registry = McpRegistry::new();
+        assert!(registry.get_client("pom").is_none());
+
+        registry.register(McpServerConfig {
+            name: "pom".into(),
+            enabled: true,
+            command: None,
+            args: None,
+            timeout_secs: Some(15),
+            endpoint: Some("http://localhost:3002/mcp".into()),
+            transport: Some("http".into()),
+            api_key: None,
+        });
+
+        assert!(registry.get_client("pom").is_some());
+        assert_eq!(registry.client_names(), vec!["pom".to_string()]);
+
+        assert!(registry.deregister("pom"));
+        assert!(!registry.deregister("pom"));
+        assert!(registry.get_client("pom").is_none());
     }
 
     #[test]

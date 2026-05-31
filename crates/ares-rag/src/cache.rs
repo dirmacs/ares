@@ -50,7 +50,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::types::Result;
+use ares_types::types::Result;
 
 // ============================================================================
 // Cache Types
@@ -447,6 +447,30 @@ impl EmbeddingCache for NoOpCache {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_cache_concurrent_reads_and_writes() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cache = Arc::new(LruEmbeddingCache::with_max_entries(100));
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let cache = Arc::clone(&cache);
+            handles.push(thread::spawn(move || {
+                let key = format!("key-{i}");
+                let embedding = vec![i as f32; 4];
+                cache.set(&key, embedding, None).unwrap();
+                for _ in 0..10 {
+                    let _ = cache.get(&key);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert!(cache.len() > 0);
+    }
+
     use super::*;
 
     #[test]

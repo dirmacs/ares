@@ -323,4 +323,224 @@ mod tests {
         assert!((loaded_meta.get_float("score").unwrap() - 0.95).abs() < 0.0001);
         assert_eq!(loaded_meta.get_bool("published"), Some(true));
     }
+
+    #[tokio::test]
+    async fn test_load_collection_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = load_collection(temp_dir.path(), "missing").await;
+        assert!(matches!(
+            result,
+            Err(Error::CollectionNotFound(name)) if name == "missing"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_load_without_vectors_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path();
+        let collection_path = base_path.join("metadata_only");
+        tokio::fs::create_dir_all(&collection_path).await.unwrap();
+
+        let metadata = CollectionMetadata {
+            name: "metadata_only".to_string(),
+            dimensions: 3,
+            metric: "cosine".to_string(),
+            hnsw_m: 16,
+            hnsw_ef_construction: 200,
+            hnsw_ef_search: 100,
+        };
+        let metadata_json = serde_json::to_string_pretty(&metadata).unwrap();
+        tokio::fs::write(collection_path.join("metadata.json"), metadata_json)
+            .await
+            .unwrap();
+
+        let loaded = load_collection(base_path, "metadata_only")
+            .await
+            .unwrap();
+        assert_eq!(loaded.name(), "metadata_only");
+        assert_eq!(loaded.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_load_skips_invalid_vectors() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path();
+        let collection_path = base_path.join("bad_vectors");
+        tokio::fs::create_dir_all(&collection_path).await.unwrap();
+
+        let metadata = CollectionMetadata {
+            name: "bad_vectors".to_string(),
+            dimensions: 3,
+            metric: "cosine".to_string(),
+            hnsw_m: 16,
+            hnsw_ef_construction: 200,
+            hnsw_ef_search: 100,
+        };
+        tokio::fs::write(
+            collection_path.join("metadata.json"),
+            serde_json::to_string_pretty(&metadata).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let vectors = vec![
+            StoredVectorData {
+                id: "good".to_string(),
+                vector: vec![1.0, 0.0, 0.0],
+                metadata: None,
+            },
+            StoredVectorData {
+                id: "bad-dim".to_string(),
+                vector: vec![1.0, 0.0],
+                metadata: None,
+            },
+        ];
+        tokio::fs::write(
+            collection_path.join("vectors.json"),
+            serde_json::to_string(&vectors).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let loaded = load_collection(base_path, "bad_vectors").await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.get("good").is_some());
+        assert!(loaded.get("bad-dim").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_load_invalid_metadata_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path();
+        let collection_path = base_path.join("broken_meta");
+        tokio::fs::create_dir_all(&collection_path).await.unwrap();
+        tokio::fs::write(collection_path.join("metadata.json"), "{not json")
+            .await
+            .unwrap();
+
+        let result = load_collection(base_path, "broken_meta").await;
+        assert!(matches!(result, Err(Error::Persistence(_))));
+    }
+
+    #[tokio::test]
+    async fn test_load_invalid_metric() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path();
+        let collection_path = base_path.join("bad_metric");
+        tokio::fs::create_dir_all(&collection_path).await.unwrap();
+
+        let metadata = CollectionMetadata {
+            name: "bad_metric".to_string(),
+            dimensions: 3,
+            metric: "not-a-real-metric".to_string(),
+            hnsw_m: 16,
+            hnsw_ef_construction: 200,
+            hnsw_ef_search: 100,
+        };
+        tokio::fs::write(
+            collection_path.join("metadata.json"),
+            serde_json::to_string_pretty(&metadata).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let result = load_collection(base_path, "bad_metric").await;
+        assert!(matches!(result, Err(Error::Persistence(_))));
+    }
+
+    #[tokio::test]
+    async fn test_load_invalid_dimensions() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path();
+        let collection_path = base_path.join("bad_dims");
+        tokio::fs::create_dir_all(&collection_path).await.unwrap();
+
+        let metadata = CollectionMetadata {
+            name: "bad_dims".to_string(),
+            dimensions: 0,
+            metric: "cosine".to_string(),
+            hnsw_m: 16,
+            hnsw_ef_construction: 200,
+            hnsw_ef_search: 100,
+        };
+        tokio::fs::write(
+            collection_path.join("metadata.json"),
+            serde_json::to_string_pretty(&metadata).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let result = load_collection(base_path, "bad_dims").await;
+        assert!(matches!(result, Err(Error::InvalidVector(_))));
+    }
+
+    #[tokio::test]
+    async fn test_load_invalid_vectors_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path();
+        let collection_path = base_path.join("broken_vectors");
+        tokio::fs::create_dir_all(&collection_path).await.unwrap();
+
+        let metadata = CollectionMetadata {
+            name: "broken_vectors".to_string(),
+            dimensions: 3,
+            metric: "cosine".to_string(),
+            hnsw_m: 16,
+            hnsw_ef_construction: 200,
+            hnsw_ef_search: 100,
+        };
+        tokio::fs::write(
+            collection_path.join("metadata.json"),
+            serde_json::to_string_pretty(&metadata).unwrap(),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(collection_path.join("vectors.json"), "[not valid")
+            .await
+            .unwrap();
+
+        let result = load_collection(base_path, "broken_vectors").await;
+        assert!(matches!(result, Err(Error::Persistence(_))));
+    }
+
+    #[cfg(feature = "serde")]
+    mod postcard_tests {
+        use super::postcard_persistence::{load_vectors_postcard, save_vectors_postcard};
+        use super::*;
+        use tempfile::TempDir;
+
+        #[tokio::test]
+        async fn test_postcard_save_load_vectors() {
+            let temp_dir = TempDir::new().unwrap();
+            let path = temp_dir.path().join("vectors.pdat");
+
+            let vectors = vec![
+                StoredVectorData {
+                    id: "v1".to_string(),
+                    vector: vec![1.0, 0.0, 0.0],
+                    metadata: None,
+                },
+                StoredVectorData {
+                    id: "v2".to_string(),
+                    vector: vec![0.0, 1.0, 0.0],
+                    metadata: Some(VectorMetadata::from_pairs([("tag", "rust")])),
+                },
+            ];
+
+            save_vectors_postcard(&path, &vectors).await.unwrap();
+            let loaded = load_vectors_postcard(&path).await.unwrap();
+
+            assert_eq!(loaded.len(), 2);
+            assert_eq!(loaded[0].id, "v1");
+            assert_eq!(loaded[1].id, "v2");
+            assert_eq!(
+                loaded[1]
+                    .metadata
+                    .as_ref()
+                    .unwrap()
+                    .get_string("tag"),
+                Some("rust")
+            );
+        }
+    }
 }

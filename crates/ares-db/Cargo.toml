@@ -16,7 +16,7 @@ lancedb = ["dep:lancedb", "dep:lance"]
 qdrant = ["dep:qdrant-client"]
 chromadb = ["dep:chromadb"]
 pinecone = ["dep:pinecone-sdk"]
-pgvector = []
+pgvector = ["postgres"]
 [dependencies]
 ares-types = { workspace = true }
 ares-config = { workspace = true }

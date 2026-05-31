@@ -50,13 +50,13 @@ pub mod vectorstore;
 pub mod ares_vector;
 #[cfg(feature = "chromadb")]
 pub mod chromadb;
-#[cfg(feature = "lancedb")]
+#[cfg(any(feature = "lancedb", feature = "postgres"))]
 pub mod lancedb;
 #[cfg(any(feature = "pgvector", feature = "postgres"))]
 pub mod pgvector;
-#[cfg(feature = "pinecone")]
+#[cfg(any(feature = "pinecone", feature = "postgres"))]
 pub mod pinecone;
-#[cfg(feature = "qdrant")]
+#[cfg(any(feature = "qdrant", feature = "postgres"))]
 pub mod qdrant;
 
 // Relational database (requires postgres feature for sqlx)

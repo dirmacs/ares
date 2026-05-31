@@ -43,4 +43,5 @@ pinecone-sdk = { workspace = true, optional = true }
 [dev-dependencies]
 chrono = { workspace = true }
 matches = "0.1"
+tempfile = "3"
 tokio = { workspace = true }

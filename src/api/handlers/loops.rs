@@ -286,5 +286,236 @@ mod tests {
             let running = e.finish_reason.is_none() && !e.stop.load(Ordering::Relaxed);
             assert!(!running);
         }
+
+    #[test]
+    fn start_loop_request_deserializes_defaults() {
+        let req: StartLoopRequest =
+            serde_json::from_str(r#"{"agent":"support"}"#).unwrap();
+        assert_eq!(req.agent, "support");
+        assert_eq!(req.config, LoopModeConfig::default());
+        assert!(req.prompt.is_empty());
+    }
+
+    #[test]
+    fn loop_summary_serializes_running_flag() {
+        let summary = LoopSummary {
+            id: "id-1".into(),
+            agent_name: "agent".into(),
+            config: LoopModeConfig::default(),
+            state: LoopModeState::default(),
+            started_at: 42,
+            finish_reason: None,
+            running: true,
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"running\":true"));
+    }
+
+    #[tokio::test]
+    async fn build_tick_executes_successfully() {
+        let tick = build_tick("agent".into(), "prompt".into());
+        assert!(tick().await.is_ok());
+    }
+
+    #[cfg(feature = "postgres")]
+    mod handler_tests {
+        use super::*;
+        use crate::agents::context_provider::NoOpContextProvider;
+        use crate::agents::loop_mode::LoopModeConfig;
+        use crate::auth::jwt::AuthService;
+        use crate::db::{PostgresClient, TenantDb};
+        use crate::utils::toml_config::{
+            AgentConfig, AresConfig, AuthConfig, BillingConfig, DatabaseConfig,
+            DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig, ServerConfig,
+        };
+        use crate::{
+            AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory,
+            DynamicConfigManager, ProviderRegistry, ToolRegistry,
+        };
+        use axum::extract::{Path, State};
+        use std::collections::HashMap;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        fn minimal_config() -> AresConfig {
+            let mut providers = HashMap::new();
+            providers.insert(
+                "p".into(),
+                ProviderConfig::Ollama {
+                    base_url: "http://127.0.0.1:11434".into(),
+                    default_model: "m".into(),
+                },
+            );
+            let mut models = HashMap::new();
+            models.insert(
+                "default".into(),
+                ModelConfig {
+                    provider: "p".into(),
+                    model: "m".into(),
+                    temperature: 0.7,
+                    max_tokens: 512,
+                    top_p: None,
+                    frequency_penalty: None,
+                    presence_penalty: None,
+                },
+            );
+            let mut agents = HashMap::new();
+            agents.insert(
+                "a".into(),
+                AgentConfig {
+                    model: "default".into(),
+                    system_prompt: None,
+                    tools: vec![],
+                    max_tool_iterations: 1,
+                    parallel_tools: false,
+                    extra: HashMap::new(),
+                },
+            );
+            AresConfig {
+                server: ServerConfig::default(),
+                auth: AuthConfig {
+                    jwt_secret_env: "JWT_SECRET".into(),
+                    jwt_access_expiry: 900,
+                    jwt_refresh_expiry: 604800,
+                    api_key_env: "API_KEY".into(),
+                },
+                database: DatabaseConfig::default(),
+                config: DynamicConfigPaths::default(),
+                providers,
+                models,
+                tools: HashMap::new(),
+                agents,
+                workflows: HashMap::new(),
+                rag: RagConfig::default(),
+                billing: BillingConfig::default(),
+                #[cfg(feature = "skills")]
+                skills: None,
+            }
+        }
+
+        fn test_app_state() -> AppState {
+            let config = minimal_config();
+            let config_manager = Arc::new(AresConfigManager::from_config(config));
+            let provider_registry =
+                Arc::new(ProviderRegistry::from_config(&config_manager.config()));
+            let tool_registry = Arc::new(ToolRegistry::new());
+            let agent_registry = Arc::new(AgentRegistry::from_config(
+                &config_manager.config(),
+                provider_registry.clone(),
+                tool_registry.clone(),
+            ));
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let base = temp_dir.path();
+            for sub in ["agents", "models", "tools", "workflows", "mcps"] {
+                std::fs::create_dir_all(base.join(sub)).expect("mkdir");
+            }
+            let dynamic_config = Arc::new(
+                DynamicConfigManager::new(
+                    base.join("agents"),
+                    base.join("models"),
+                    base.join("tools"),
+                    base.join("workflows"),
+                    base.join("mcps"),
+                    false,
+                )
+                .expect("dynamic config"),
+            );
+            std::mem::forget(temp_dir);
+
+            let db = Arc::new(PostgresClient::new_test());
+            AppState {
+                config_manager,
+                dynamic_config,
+                db: db.clone(),
+                tenant_db: Arc::new(TenantDb::new(db)),
+                llm_factory: Arc::new(ConfigBasedLLMFactory::new(
+                    provider_registry.clone(),
+                    "default",
+                )),
+                provider_registry,
+                agent_registry,
+                tool_registry,
+                auth_service: Arc::new(AuthService::new(
+                    "test-secret-at-least-32-characters-long".into(),
+                    900,
+                    604800,
+                )),
+                deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
+                loop_registry: LoopRegistry::new(),
+                emergency_stop: Arc::new(AtomicBool::new(false)),
+                context_provider: Arc::new(NoOpContextProvider),
+                #[cfg(feature = "mcp")]
+                mcp_registry: None,
+            }
+        }
+
+        #[tokio::test]
+        async fn start_loop_registers_entry() {
+            let state = test_app_state();
+            let config = LoopModeConfig {
+                interval_secs: 0,
+                max_iterations: Some(1),
+                ..LoopModeConfig::default()
+            };
+            let resp = start_loop(
+                State(state.clone()),
+                Json(StartLoopRequest {
+                    agent: "test-agent".into(),
+                    config,
+                    prompt: "tick".into(),
+                }),
+            )
+            .await
+            .expect("start");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let list = list_loops(State(state)).await.0;
+            assert!(list.iter().any(|l| l.id == resp.0.id));
+        }
+
+        #[tokio::test]
+        async fn stop_loop_sets_stop_flag_for_existing_loop() {
+            let state = test_app_state();
+            let resp = start_loop(
+                State(state.clone()),
+                Json(StartLoopRequest {
+                    agent: "agent".into(),
+                    config: LoopModeConfig {
+                        interval_secs: 60,
+                        max_iterations: None,
+                        ..LoopModeConfig::default()
+                    },
+                    prompt: String::new(),
+                }),
+            )
+            .await
+            .expect("start");
+            let status = stop_loop(State(state), Path(resp.0.id)).await.expect("stop");
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+
+        #[tokio::test]
+        async fn stop_loop_returns_not_found_for_missing_id() {
+            let state = test_app_state();
+            let err = stop_loop(State(state), Path("missing".into()))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, AppError::NotFound(_)));
+        }
+
+        #[tokio::test]
+        async fn list_loops_marks_stopped_loop_not_running() {
+            let registry = LoopRegistry::new();
+            let stop = insert_dummy(&registry, "loop-run").await;
+            let state = test_app_state();
+            // Replace default registry with our prepared one
+            let mut state = state;
+            state.loop_registry = registry;
+            stop.store(true, Ordering::Relaxed);
+            let list = list_loops(State(state)).await.0;
+            let entry = list.iter().find(|l| l.id == "loop-run").expect("entry");
+            assert!(!entry.running);
+        }
+    }
     }
 }

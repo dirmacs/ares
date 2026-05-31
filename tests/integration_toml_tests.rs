@@ -106,6 +106,9 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
         agents,
         workflows,
         rag: RagConfig::default(),
+        billing: BillingConfig {
+            model_pricing: HashMap::new(),
+        },
         #[cfg(feature = "skills")]
         skills: None,
     }
@@ -235,6 +238,7 @@ async fn test_workflow_engine_from_config() {
             604800,
         )),
         deploy_registry: ares::api::handlers::deploy::DeployRegistry::default(),
+        loop_registry: ares::api::handlers::loops::LoopRegistry::new(),
         emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         context_provider: Arc::new(ares::agents::context_provider::NoOpContextProvider),
         #[cfg(feature = "mcp")]

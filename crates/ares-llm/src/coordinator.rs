@@ -29,9 +29,9 @@
 //! println!("Tool calls made: {}", result.tool_calls.len());
 //! ```
 
-use crate::llm::client::{LLMClient, TokenUsage};
-use crate::tools::registry::ToolRegistry;
-use crate::types::{Result, ToolCall};
+use crate::client::{LLMClient, TokenUsage};
+use ares_tools::ToolRegistry;
+use ares_types::types::{Result, ToolCall};
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -493,6 +493,8 @@ impl ToolCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::{LLMClient, LLMResponse, TokenUsage};
+    use ares_types::types::{Result, ToolCall, ToolDefinition};
 
     #[test]
     fn test_tool_calling_config_default() {
@@ -571,6 +573,221 @@ mod tests {
         let json = serde_json::to_string(&record).unwrap();
         assert!(json.contains("test_tool"));
         assert!(json.contains("\"success\":true"));
+    }
+
+    struct MockToolFlowClient {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MockToolFlowClient {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMClient for MockToolFlowClient {
+        async fn generate(&self, _prompt: &str) -> Result<String> {
+            Ok(String::new())
+        }
+
+        async fn generate_with_system(&self, _system: &str, _prompt: &str) -> Result<String> {
+            Ok(String::new())
+        }
+
+        async fn generate_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: String::new(),
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+            })
+        }
+
+        async fn generate_with_tools(
+            &self,
+            _prompt: &str,
+            _tools: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: String::new(),
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+            })
+        }
+
+        async fn generate_with_tools_and_history(
+            &self,
+            _messages: &[ConversationMessage],
+            _tools: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            let n = self
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                Ok(LLMResponse {
+                    content: "Let me calculate".to_string(),
+                    tool_calls: vec![ToolCall {
+                        id: "call_1".to_string(),
+                        name: "calculator".to_string(),
+                        arguments: serde_json::json!({"operation": "add", "a": 2, "b": 2}),
+                    }],
+                    finish_reason: "tool_calls".to_string(),
+                    usage: Some(TokenUsage::new(10, 5)),
+                })
+            } else {
+                Ok(LLMResponse {
+                    content: "The answer is 4".to_string(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".to_string(),
+                    usage: Some(TokenUsage::new(5, 3)),
+                })
+            }
+        }
+
+        async fn stream(
+            &self,
+            _prompt: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(ares_types::types::AppError::Internal("not used".into()))
+        }
+
+        async fn stream_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(ares_types::types::AppError::Internal("not used".into()))
+        }
+
+        async fn stream_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(ares_types::types::AppError::Internal("not used".into()))
+        }
+
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tool_calling_flow_with_mock() {
+        use ares_tools::calculator::Calculator;
+        use std::sync::Arc;
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(Calculator));
+
+        let coordinator = ToolCoordinator::new(
+            Box::new(MockToolFlowClient::new()),
+            Arc::new(registry),
+            ToolCallingConfig::default(),
+        );
+
+        let result = coordinator
+            .execute(None, "What is 2 + 2?")
+            .await
+            .expect("coordinator should succeed");
+
+        assert_eq!(result.finish_reason, FinishReason::Stop);
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "calculator");
+        assert!(result.tool_calls[0].success);
+        assert_eq!(result.iterations, 2);
+        assert!(result.content.contains('4'));
+    }
+
+    #[tokio::test]
+    async fn test_tool_calling_unknown_tool_stops() {
+        struct UnknownToolClient;
+
+        #[async_trait::async_trait]
+        impl LLMClient for UnknownToolClient {
+            async fn generate(&self, _prompt: &str) -> Result<String> {
+                Ok(String::new())
+            }
+            async fn generate_with_system(&self, _system: &str, _prompt: &str) -> Result<String> {
+                Ok(String::new())
+            }
+            async fn generate_with_history(
+                &self,
+                _messages: &[(String, String)],
+            ) -> Result<LLMResponse> {
+                Ok(LLMResponse {
+                    content: String::new(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".into(),
+                    usage: None,
+                })
+            }
+            async fn generate_with_tools(
+                &self,
+                _prompt: &str,
+                _tools: &[ToolDefinition],
+            ) -> Result<LLMResponse> {
+                Ok(LLMResponse {
+                    content: String::new(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".into(),
+                    usage: None,
+                })
+            }
+            async fn generate_with_tools_and_history(
+                &self,
+                _messages: &[ConversationMessage],
+                _tools: &[ToolDefinition],
+            ) -> Result<LLMResponse> {
+                Ok(LLMResponse {
+                    content: "calling".into(),
+                    tool_calls: vec![ToolCall {
+                        id: "1".into(),
+                        name: "missing_tool".into(),
+                        arguments: serde_json::json!({}),
+                    }],
+                    finish_reason: "tool_calls".into(),
+                    usage: None,
+                })
+            }
+            async fn stream(
+                &self,
+                _prompt: &str,
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+                Err(ares_types::types::AppError::Internal("n/a".into()))
+            }
+            async fn stream_with_system(
+                &self,
+                _system: &str,
+                _prompt: &str,
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+                Err(ares_types::types::AppError::Internal("n/a".into()))
+            }
+            async fn stream_with_history(
+                &self,
+                _messages: &[(String, String)],
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+                Err(ares_types::types::AppError::Internal("n/a".into()))
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+        }
+
+        let registry = Arc::new(ToolRegistry::new());
+        let coordinator = ToolCoordinator::new(
+            Box::new(UnknownToolClient),
+            registry,
+            ToolCallingConfig::default(),
+        );
+        let result = coordinator.execute(None, "go").await.unwrap();
+        assert!(matches!(result.finish_reason, FinishReason::UnknownTool(_)));
     }
 
     #[test]

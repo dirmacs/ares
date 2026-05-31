@@ -20,9 +20,9 @@ pub mod server;
 #[cfg(feature = "mcp")]
 pub mod tools;
 
-// auth.rs uses crate::db::tenants::TenantDb (postgres-only), so the whole
+// auth.rs uses ares_db::tenants::TenantDb (postgres-only), so the whole
 // module is gated alongside the server. Its only consumer is mcp::server.
-#[cfg(all(feature = "mcp", feature = "postgres"))]
+#[cfg(feature = "mcp")]
 pub mod auth;
 
 #[cfg(all(feature = "mcp", feature = "postgres"))]

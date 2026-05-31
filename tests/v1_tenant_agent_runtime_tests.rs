@@ -19,7 +19,7 @@ use ares::{
     },
     models::TenantTier,
     utils::toml_config::{
-        AgentConfig, AresConfig, AuthConfig as TomlAuthConfig,
+        AgentConfig, AresConfig, AuthConfig as TomlAuthConfig, BillingConfig,
         DatabaseConfig as TomlDatabaseConfig, DynamicConfigPaths, ModelConfig, ProviderConfig,
         RagConfig, ServerConfig as TomlServerConfig,
     },
@@ -159,6 +159,9 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
         agents,
         workflows: HashMap::new(),
         rag: RagConfig::default(),
+        billing: BillingConfig {
+            model_pricing: HashMap::new(),
+        },
         #[cfg(feature = "skills")]
         skills: None,
     };

@@ -19,7 +19,7 @@
 //! let results = store.search("documents", &embedding, 10, 0.5).await?;
 //! ```
 
-use crate::types::{AppError, Document, Result, SearchResult};
+use ares_types::types::{AppError, Document, Result, SearchResult};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -394,7 +394,7 @@ impl Default for AresVectorStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::DocumentMetadata;
+    use ares_types::types::DocumentMetadata;
     use chrono::Utc;
 
     #[tokio::test]

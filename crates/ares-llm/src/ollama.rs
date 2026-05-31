@@ -714,4 +714,36 @@ mod tests {
         ).await.unwrap();
         assert_eq!(client.model_name(), "my-custom-model");
     }
+    #[test]
+    fn test_tool_definition_conversion() {
+        let tool = ToolDefinition {
+            name: "calculator".to_string(),
+            description: "Performs basic math".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string"},
+                    "a": {"type": "number"},
+                    "b": {"type": "number"}
+                },
+                "required": ["operation", "a", "b"]
+            }),
+        };
+        let ollama_tool = OllamaClient::convert_tool_definition(&tool);
+        assert_eq!(ollama_tool.function.name, "calculator");
+        assert_eq!(ollama_tool.function.description, "Performs basic math");
+    }
+    #[test]
+    fn test_tool_call_conversion() {
+        let ollama_call = OllamaToolCall {
+            function: ollama_rs::generation::tools::ToolCallFunction {
+                name: "test_tool".to_string(),
+                arguments: serde_json::json!({"arg1": "value1"}),
+            },
+        };
+        let tool_call = OllamaClient::convert_tool_call(&ollama_call);
+        assert_eq!(tool_call.name, "test_tool");
+        assert_eq!(tool_call.arguments["arg1"], "value1");
+        assert!(!tool_call.id.is_empty());
+    }
 }

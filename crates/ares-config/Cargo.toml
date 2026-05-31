@@ -1,0 +1,31 @@
+[package]
+name = "ares-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "TOML and TOON configuration for A.R.E.S"
+
+[features]
+default = []
+skills = ["dep:thulp-skill-files"]
+
+[dependencies]
+ares-types = { workspace = true }
+arc-swap = "1.7.1"
+notify = "8.2.0"
+parking_lot = "0.12.5"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+toml = "0.9.8"
+toon-format = { version = "0.4.1", default-features = false }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+thulp-skill-files = { version = "0.3", optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = "3.23.0"

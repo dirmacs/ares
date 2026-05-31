@@ -105,7 +105,98 @@ pub struct AgentVersionRecord {
 
 #[cfg(test)]
 mod version_tests {
-    use super::AgentVersionRecord;
+    use super::{get_agent_version_history, record_agent_versions, AgentVersionRecord};
+
+
+    use ares_config::toon_config::ToonAgentConfig;
+    use sqlx::postgres::PgPoolOptions;
+    use sqlx::PgPool;
+
+    fn unreachable_postgres_pool() -> PgPool {
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/nope")
+            .expect("connect_lazy should not fail for malformed URLs")
+    }
+
+    fn sample_agent(name: &str, version: &str) -> ToonAgentConfig {
+        let mut agent = ToonAgentConfig::new(name, "fast");
+        agent.version = version.into();
+        agent
+    }
+
+    // ---- SQL / query wiring (no live Postgres) ---------------------------
+
+    #[test]
+    fn agent_version_history_sql_targets_table_and_ordering() {
+        use crate::query_builders::AGENT_VERSION_HISTORY_SQL;
+        assert!(AGENT_VERSION_HISTORY_SQL.contains("FROM agent_config_versions"));
+        assert!(AGENT_VERSION_HISTORY_SQL.contains("agent_id = $1"));
+        assert!(AGENT_VERSION_HISTORY_SQL.contains("ORDER BY created_at DESC"));
+        assert!(AGENT_VERSION_HISTORY_SQL.contains("LIMIT $2"));
+    }
+
+    #[test]
+    fn agent_version_upsert_sql_startup_is_idempotent() {
+        use crate::query_builders::agent_version_upsert_sql;
+        let sql = agent_version_upsert_sql("startup");
+        assert!(sql.contains("DO NOTHING"));
+        assert!(!sql.contains("DO UPDATE"));
+    }
+
+    #[test]
+    fn agent_version_upsert_sql_rollback_updates_on_conflict() {
+        use crate::query_builders::agent_version_upsert_sql;
+        let sql = agent_version_upsert_sql("rollback");
+        assert!(sql.contains("DO UPDATE"));
+        assert!(sql.contains("is_active = true"));
+    }
+
+    // ---- Async DB error mapping (no live Postgres) -----------------------
+
+    #[tokio::test]
+    async fn record_agent_versions_swallows_execute_errors() {
+        let pool = unreachable_postgres_pool();
+        let agents = [sample_agent("router", "1.0.0")];
+        record_agent_versions(&pool, &agents, "startup")
+            .await
+            .expect("per-agent failures are logged, not propagated");
+    }
+
+    #[tokio::test]
+    async fn record_agent_versions_accepts_empty_batch() {
+        let pool = unreachable_postgres_pool();
+        record_agent_versions(&pool, &[], "startup")
+            .await
+            .expect("empty batch should not fail before loop");
+    }
+
+    #[tokio::test]
+    async fn record_agent_versions_rollback_source_still_returns_ok_on_error() {
+        let pool = unreachable_postgres_pool();
+        let agents = [sample_agent("router", "2.0.0")];
+        record_agent_versions(&pool, &agents, "rollback")
+            .await
+            .expect("rollback upsert errors are swallowed like startup");
+    }
+
+    #[tokio::test]
+    async fn record_agent_versions_serializes_agent_config_json() {
+        let pool = unreachable_postgres_pool();
+        let agents = [sample_agent("coder", "3.1.4")];
+        record_agent_versions(&pool, &agents, "hot_reload")
+            .await
+            .expect("serialization + execute path should complete");
+    }
+
+    #[tokio::test]
+    async fn get_agent_version_history_maps_fetch_error() {
+        let pool = unreachable_postgres_pool();
+        let err = get_agent_version_history(&pool, "router", 5)
+            .await
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
 
     /// Helper: build a record with overridable fields for concise test setup.
     fn make_record(

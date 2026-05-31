@@ -1,0 +1,37 @@
+[package]
+name = "ares-agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "AI agent orchestration for A.R.E.S"
+
+[features]
+default = []
+postgres = ["dep:sqlx", "dep:ares-db", "ares-db/postgres", "ares-llm/ollama"]
+eruka-context = []
+
+[dependencies]
+ares-types = { workspace = true }
+ares-config = { workspace = true }
+ares-llm = { workspace = true }
+ares-tools = { workspace = true }
+ares-db = { workspace = true, optional = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true, optional = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }
+futures = "0.3.31"
+
+[dev-dependencies]
+tempfile = "3.14"
+dotenvy = "0.15.7"
+uuid = { workspace = true }
+axum = { version = "0.8.7", features = ["macros"] }

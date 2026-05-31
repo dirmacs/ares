@@ -353,4 +353,24 @@ mod tests {
         std::env::remove_var("DATABASE_URL");
         assert!(ensure_conversation_owner("u1", "u1", "delete").is_ok());
     }
+
+    #[test]
+    fn conversation_summary_serializes_optional_title() {
+        let summary = ConversationSummary {
+            id: "c2".to_string(),
+            title: Some("Title".to_string()),
+            message_count: 0,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"title\":\"Title\""));
+        assert!(json.contains("\"message_count\":0"));
+    }
+
+    #[test]
+    fn ensure_conversation_owner_error_includes_action() {
+        let err = ensure_conversation_owner("owner", "intruder", "delete").unwrap_err();
+        assert!(err.to_string().contains("delete"));
+    }
 }

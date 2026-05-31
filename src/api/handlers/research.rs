@@ -224,4 +224,23 @@ mod tests {
         let config = config_with_orchestrator("local-model");
         assert_eq!(orchestrator_model_name(&config), "local-model");
     }
+
+    #[test]
+    fn research_request_deserializes_query_only() {
+        let req: ResearchRequest =
+            serde_json::from_str(r#"{"query":"quantum computing"}"#).unwrap();
+        assert_eq!(req.query, "quantum computing");
+        assert!(req.depth.is_none());
+        assert!(req.max_iterations.is_none());
+    }
+
+    #[test]
+    fn research_request_deserializes_with_overrides() {
+        let req: ResearchRequest = serde_json::from_str(
+            r#"{"query":"ai safety","depth":3,"max_iterations":7}"#,
+        )
+        .unwrap();
+        assert_eq!(req.depth, Some(3));
+        assert_eq!(req.max_iterations, Some(7));
+    }
 }

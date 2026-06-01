@@ -1,7 +1,6 @@
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use ares_types::types::ToolDefinition;
-use async_trait::async_trait;
 use rmcp::model::{CallToolResult, Tool};
 use serde::{Deserialize, Serialize};
 use serde_json::json;

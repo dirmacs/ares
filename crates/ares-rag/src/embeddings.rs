@@ -1222,7 +1222,7 @@ pub enum AccelerationBackend {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, feature = "local-embeddings"))]
 mod tests {
     use super::*;
 
@@ -1343,6 +1343,7 @@ mod tests {
         let result = "totally-fake-model".parse::<EmbeddingModelType>();
         assert!(result.is_err());
         let err = result.unwrap_err();
+        assert!(matches!(err, AppError::Internal(_)));
         let msg = err.to_string();
         assert!(msg.contains("Unknown embedding model"), "Error should mention 'Unknown': {}", msg);
     }
@@ -1400,6 +1401,9 @@ mod tests {
     fn test_sparse_model_invalid() {
         let result = "nonexistent-sparse".parse::<SparseModelType>();
         assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, AppError::Internal(_)));
+        assert!(err.to_string().contains("Unknown sparse model"));
     }
 
     #[test]
@@ -2215,6 +2219,68 @@ mod tests {
         let a: Vec<f32> = (0..dim).map(|i| i as f32).collect();
         let b = a.clone();
         assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn cosine_similarity_clamps_to_unit_interval() {
+        // Same direction at large scale should still yield ~1.0 (not overflow past clamp range)
+        let a = [1_000.0f32, 2_000.0, 3_000.0];
+        let b = [2_000.0, 4_000.0, 6_000.0];
+        let sim = cosine_similarity(&a, &b);
+        assert!((sim - 1.0).abs() < 1e-5, "parallel vectors should score ~1.0, got {}", sim);
+        assert!((-1.0..=1.0).contains(&sim), "similarity should stay in [-1, 1]: {}", sim);
+    }
+
+    #[test]
+    fn test_embedding_config_debug_and_clone() {
+        let config = EmbeddingConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.model, config.model);
+        assert_eq!(cloned.batch_size, config.batch_size);
+        assert_eq!(cloned.show_download_progress, config.show_download_progress);
+        assert_eq!(cloned.sparse_enabled, config.sparse_enabled);
+        assert_eq!(cloned.sparse_model, config.sparse_model);
+        let dbg = format!("{:?}", config);
+        assert!(dbg.contains("EmbeddingConfig"));
+        assert!(dbg.contains("BgeSmallEnV15"));
+    }
+
+    #[test]
+    fn test_embedding_config_serde_rejects_invalid_model() {
+        let result = serde_json::from_str::<EmbeddingConfig>(r#"{"model": "not-a-real-model"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dense_embedding_uses_model_dimensions() {
+        let model = EmbeddingModelType::BgeSmallEnV15;
+        let values = vec![0.1f32; model.dimensions()];
+        let embedding = dense_embedding(values.clone(), model.dimensions()).unwrap();
+        assert_eq!(embedding.len(), model.dimensions());
+        assert_eq!(embedding, values);
+    }
+
+    #[test]
+    fn sparse_embeddings_disabled_error_is_internal() {
+        let err = sparse_embeddings_disabled_error();
+        assert!(matches!(err, AppError::Internal(_)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pre_download_creates_nested_file_parent_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_dir = tmp.path().to_path_buf();
+        let _ = pre_download_model(
+            "fake-org/nested-model",
+            &["onnx/model.onnx"],
+            &cache_dir,
+        );
+        let nested = cache_dir
+            .join("models--fake-org--nested-model")
+            .join("snapshots")
+            .join("lancor-prefetch")
+            .join("onnx");
+        assert!(nested.exists(), "nested onnx parent dir should be created");
     }
 
 }

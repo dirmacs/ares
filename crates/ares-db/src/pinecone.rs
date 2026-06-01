@@ -234,6 +234,69 @@ mod tests {
         assert!(validate_index_name("has space").is_err());
     }
 
+    #[test]
+    fn validate_index_name_accepts_underscore_start() {
+        assert!(validate_index_name("_leading").is_ok());
+        assert!(validate_index_name("_").is_ok());
+    }
+
+    #[test]
+    fn validate_index_name_rejects_special_characters() {
+        assert!(validate_index_name("has.dot").is_err());
+        assert!(validate_index_name("has@at").is_err());
+        assert!(validate_index_name("has!bang").is_err());
+    }
+
+    #[test]
+    fn validate_index_name_trims_whitespace() {
+        assert!(validate_index_name("  valid  ").is_ok());
+        assert!(validate_index_name("  ").is_err());
+    }
+
+    #[test]
+    fn build_index_host_trims_environment() {
+        let host = build_index_host("  us-east-1-aws  ", "test")
+            .expect("host");
+        assert_eq!(host, "https://test-us-east-1-aws.svc.pinecone.io");
+    }
+
+    #[test]
+    fn build_index_host_rejects_empty_environment() {
+        assert!(build_index_host("", "test").is_err());
+        assert!(build_index_host("   ", "test").is_err());
+    }
+
+    #[test]
+    fn validate_pinecone_config_accepts_valid_config() {
+        let config = PineconeConfig {
+            api_key: Some("valid-key".into()),
+            environment: "us-east-1-aws".into(),
+            dimensions: 1536,
+        };
+        assert!(validate_pinecone_config(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_pinecone_config_rejects_blank_api_key() {
+        let config = PineconeConfig {
+            api_key: Some("   ".into()),
+            ..PineconeConfig::default()
+        };
+        let err = validate_pinecone_config(&config).unwrap_err();
+        matches::assert_matches!(err, AppError::Configuration(msg) if msg.contains("api key"));
+    }
+
+    #[test]
+    fn validate_pinecone_config_rejects_blank_environment() {
+        let config = PineconeConfig {
+            api_key: Some("key".into()),
+            environment: "   ".into(),
+            ..PineconeConfig::default()
+        };
+        let err = validate_pinecone_config(&config).unwrap_err();
+        matches::assert_matches!(err, AppError::Configuration(msg) if msg.contains("environment"));
+    }
+
     // ── Serde: PineconeConfig ────────────────────────────────────────────
 
     #[test]

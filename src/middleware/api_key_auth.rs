@@ -1,44 +1,122 @@
 use crate::db::tenants::TenantDb;
+use crate::models::TenantContext;
 use axum::{
     extract::Request,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
     Json,
 };
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-pub async fn api_key_auth_middleware(req: Request, next: Next) -> Response {
-    let auth_header = match req.headers().get("authorization") {
-        Some(h) => h,
-        None => {
-            return error_response(StatusCode::UNAUTHORIZED, "Missing Authorization header");
-        }
-    };
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApiKeyAuthError {
+    MissingAuthorizationHeader,
+    InvalidAuthorizationHeader,
+    InvalidAuthorizationFormat,
+    InvalidApiKeyFormat,
+}
 
-    let auth_str = match auth_header.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            return error_response(StatusCode::UNAUTHORIZED, "Invalid Authorization header");
-        }
-    };
-
-    let api_key = match auth_str.strip_prefix("Bearer ") {
-        Some(k) => k,
-        None => {
-            return error_response(
-                StatusCode::UNAUTHORIZED,
-                "Invalid Authorization format. Expected: Bearer ares_...",
-            );
-        }
-    };
-
-    if !api_key.starts_with("ares_") {
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "Invalid API key format. Must start with ares_",
-        );
+impl ApiKeyAuthError {
+    pub(crate) fn status_code(self) -> StatusCode {
+        StatusCode::UNAUTHORIZED
     }
+
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::MissingAuthorizationHeader => "Missing Authorization header",
+            Self::InvalidAuthorizationHeader => "Invalid Authorization header",
+            Self::InvalidAuthorizationFormat => {
+                "Invalid Authorization format. Expected: Bearer ares_..."
+            }
+            Self::InvalidApiKeyFormat => "Invalid API key format. Must start with ares_",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ErrorResponseBody {
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuotaExceeded {
+    Monthly,
+    Daily,
+}
+
+pub(crate) fn parse_authorization_header(
+    header: Option<&HeaderValue>,
+) -> Result<&str, ApiKeyAuthError> {
+    let auth_header = header.ok_or(ApiKeyAuthError::MissingAuthorizationHeader)?;
+    auth_header
+        .to_str()
+        .map_err(|_| ApiKeyAuthError::InvalidAuthorizationHeader)
+}
+
+pub(crate) fn extract_api_key(auth_str: &str) -> Result<&str, ApiKeyAuthError> {
+    auth_str
+        .strip_prefix("Bearer ")
+        .ok_or(ApiKeyAuthError::InvalidAuthorizationFormat)
+}
+
+pub(crate) fn validate_api_key_format(api_key: &str) -> Result<(), ApiKeyAuthError> {
+    if api_key.starts_with("ares_") {
+        Ok(())
+    } else {
+        Err(ApiKeyAuthError::InvalidApiKeyFormat)
+    }
+}
+
+pub(crate) fn parse_bearer_api_key(auth_str: &str) -> Result<&str, ApiKeyAuthError> {
+    let api_key = extract_api_key(auth_str)?;
+    validate_api_key_format(api_key)?;
+    Ok(api_key)
+}
+
+pub(crate) fn check_quota(
+    tenant_ctx: &TenantContext,
+    monthly_usage: u64,
+    daily_usage: u64,
+) -> Option<QuotaExceeded> {
+    if tenant_ctx.can_make_request(monthly_usage, daily_usage) {
+        return None;
+    }
+    if monthly_usage >= tenant_ctx.quota.requests_per_month {
+        return Some(QuotaExceeded::Monthly);
+    }
+    if daily_usage >= tenant_ctx.quota.requests_per_day {
+        return Some(QuotaExceeded::Daily);
+    }
+    None
+}
+
+fn auth_error_response(err: ApiKeyAuthError) -> Response {
+    error_response(err.status_code(), err.message())
+}
+
+fn quota_exceeded_response(exceeded: QuotaExceeded) -> Response {
+    match exceeded {
+        QuotaExceeded::Monthly => {
+            error_response(StatusCode::TOO_MANY_REQUESTS, "Monthly request quota exceeded")
+        }
+        QuotaExceeded::Daily => {
+            error_response(StatusCode::TOO_MANY_REQUESTS, "Daily rate limit exceeded")
+        }
+    }
+}
+
+pub async fn api_key_auth_middleware(req: Request, next: Next) -> Response {
+    let auth_str = match parse_authorization_header(req.headers().get("authorization")) {
+        Ok(s) => s,
+        Err(e) => return auth_error_response(e),
+    };
+
+    let api_key = match parse_bearer_api_key(auth_str) {
+        Ok(k) => k,
+        Err(e) => return auth_error_response(e),
+    };
 
     let extensions = req.extensions();
     let tenant_db: Arc<TenantDb> = match extensions.get::<Arc<TenantDb>>() {
@@ -82,16 +160,8 @@ pub async fn api_key_auth_middleware(req: Request, next: Next) -> Response {
         }
     };
 
-    if !tenant_ctx.can_make_request(monthly_usage, daily_usage) {
-        if monthly_usage >= tenant_ctx.quota.requests_per_month {
-            return error_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                "Monthly request quota exceeded",
-            );
-        }
-        if daily_usage >= tenant_ctx.quota.requests_per_day {
-            return error_response(StatusCode::TOO_MANY_REQUESTS, "Daily rate limit exceeded");
-        }
+    if let Some(exceeded) = check_quota(&tenant_ctx, monthly_usage, daily_usage) {
+        return quota_exceeded_response(exceeded);
     }
 
     let mut req = req;
@@ -117,7 +187,7 @@ mod tests {
     use axum::{
         body::Body,
         extract::Extension,
-        http::{Request, StatusCode},
+        http::{HeaderValue, Request, StatusCode},
         middleware::Next,
         routing::get,
         Router,
@@ -128,6 +198,14 @@ mod tests {
     static LOAD_ENV: Once = Once::new();
     static INIT_SCHEMA: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     static DB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn response_error_message(response: axum::response::Response) -> String {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        json["error"].as_str().unwrap().to_string()
+    }
 
     fn ensure_env_loaded() {
         LOAD_ENV.call_once(|| {
@@ -181,7 +259,6 @@ mod tests {
             ))
     }
 
-
     async fn ensure_test_schema(db: &PostgresClient) {
         let exists: (bool,) = sqlx::query_as(
             "SELECT EXISTS (
@@ -224,6 +301,317 @@ mod tests {
         (tenant.id, api_key)
     }
 
+    // --- pure helper unit tests (no DB / HTTP) ---
+
+    #[test]
+    fn test_parse_authorization_header_missing() {
+        assert_eq!(
+            parse_authorization_header(None),
+            Err(ApiKeyAuthError::MissingAuthorizationHeader)
+        );
+    }
+
+    #[test]
+    fn test_parse_authorization_header_valid() {
+        let header = HeaderValue::from_static("Bearer ares_test");
+        assert_eq!(
+            parse_authorization_header(Some(&header)),
+            Ok("Bearer ares_test")
+        );
+    }
+
+    #[test]
+    fn test_parse_authorization_header_invalid_bytes() {
+        let header = HeaderValue::from_bytes(b"Bearer \xFF\xFE").unwrap();
+        assert_eq!(
+            parse_authorization_header(Some(&header)),
+            Err(ApiKeyAuthError::InvalidAuthorizationHeader)
+        );
+    }
+
+    #[test]
+    fn test_parse_authorization_header_basic_auth_value() {
+        let header = HeaderValue::from_static("Basic dXNlcjpwYXNz");
+        assert_eq!(
+            parse_authorization_header(Some(&header)),
+            Ok("Basic dXNlcjpwYXNz")
+        );
+    }
+
+    #[test]
+    fn test_extract_api_key_strips_bearer_prefix() {
+        assert_eq!(
+            extract_api_key("Bearer ares_abc123"),
+            Ok("ares_abc123")
+        );
+    }
+
+    #[test]
+    fn test_extract_api_key_rejects_basic_auth() {
+        assert_eq!(
+            extract_api_key("Basic abc123"),
+            Err(ApiKeyAuthError::InvalidAuthorizationFormat)
+        );
+    }
+
+    #[test]
+    fn test_extract_api_key_rejects_lowercase_bearer() {
+        assert_eq!(
+            extract_api_key("bearer ares_abc"),
+            Err(ApiKeyAuthError::InvalidAuthorizationFormat)
+        );
+    }
+
+    #[test]
+    fn test_extract_api_key_rejects_missing_space() {
+        assert_eq!(
+            extract_api_key("Bearerares_abc"),
+            Err(ApiKeyAuthError::InvalidAuthorizationFormat)
+        );
+    }
+
+    #[test]
+    fn test_extract_api_key_accepts_empty_token() {
+        assert_eq!(extract_api_key("Bearer "), Ok(""));
+    }
+
+    #[test]
+    fn test_extract_api_key_rejects_token_without_bearer() {
+        assert_eq!(
+            extract_api_key("ares_abc123"),
+            Err(ApiKeyAuthError::InvalidAuthorizationFormat)
+        );
+    }
+
+    #[test]
+    fn test_extract_api_key_preserves_trailing_segments() {
+        assert_eq!(
+            extract_api_key("Bearer ares_key extra"),
+            Ok("ares_key extra")
+        );
+    }
+
+    #[test]
+    fn test_validate_api_key_format_accepts_ares_prefix() {
+        assert!(validate_api_key_format("ares_live_abc123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_api_key_format_accepts_ares_only() {
+        assert!(validate_api_key_format("ares_").is_ok());
+    }
+
+    #[test]
+    fn test_validate_api_key_format_rejects_missing_prefix() {
+        assert_eq!(
+            validate_api_key_format("abc123"),
+            Err(ApiKeyAuthError::InvalidApiKeyFormat)
+        );
+    }
+
+    #[test]
+    fn test_validate_api_key_format_rejects_wrong_prefix() {
+        assert_eq!(
+            validate_api_key_format("openai_sk_test"),
+            Err(ApiKeyAuthError::InvalidApiKeyFormat)
+        );
+    }
+
+    #[test]
+    fn test_validate_api_key_format_rejects_ares_without_underscore() {
+        assert_eq!(
+            validate_api_key_format("aresabc"),
+            Err(ApiKeyAuthError::InvalidApiKeyFormat)
+        );
+    }
+
+    #[test]
+    fn test_validate_api_key_format_rejects_uppercase_ares() {
+        assert_eq!(
+            validate_api_key_format("ARES_abc"),
+            Err(ApiKeyAuthError::InvalidApiKeyFormat)
+        );
+    }
+
+    #[test]
+    fn test_validate_api_key_format_rejects_empty() {
+        assert_eq!(
+            validate_api_key_format(""),
+            Err(ApiKeyAuthError::InvalidApiKeyFormat)
+        );
+    }
+
+    #[test]
+    fn test_validate_api_key_format_rejects_leading_whitespace() {
+        assert_eq!(
+            validate_api_key_format(" ares_abc"),
+            Err(ApiKeyAuthError::InvalidApiKeyFormat)
+        );
+    }
+
+    #[test]
+    fn test_validate_api_key_format_rejects_embedded_ares_prefix() {
+        assert_eq!(
+            validate_api_key_format("prefix_ares_abc"),
+            Err(ApiKeyAuthError::InvalidApiKeyFormat)
+        );
+    }
+
+    #[test]
+    fn test_parse_bearer_api_key_success() {
+        assert_eq!(
+            parse_bearer_api_key("Bearer ares_valid_key"),
+            Ok("ares_valid_key")
+        );
+    }
+
+    #[test]
+    fn test_parse_bearer_api_key_fails_on_bad_format() {
+        assert_eq!(
+            parse_bearer_api_key("Token ares_valid_key"),
+            Err(ApiKeyAuthError::InvalidAuthorizationFormat)
+        );
+    }
+
+    #[test]
+    fn test_parse_bearer_api_key_fails_on_bad_prefix() {
+        assert_eq!(
+            parse_bearer_api_key("Bearer sk_test_key"),
+            Err(ApiKeyAuthError::InvalidApiKeyFormat)
+        );
+    }
+
+    #[test]
+    fn test_check_quota_none_under_limits() {
+        let ctx = TenantContext::new("t1".into(), TenantTier::Free);
+        assert_eq!(check_quota(&ctx, 0, 0), None);
+        assert_eq!(check_quota(&ctx, 999, 49), None);
+    }
+
+    #[test]
+    fn test_check_quota_monthly_at_boundary() {
+        let ctx = TenantContext::new("t1".into(), TenantTier::Free);
+        assert_eq!(check_quota(&ctx, 1_000, 0), Some(QuotaExceeded::Monthly));
+    }
+
+    #[test]
+    fn test_check_quota_daily_at_boundary() {
+        let ctx = TenantContext::new("t1".into(), TenantTier::Free);
+        assert_eq!(check_quota(&ctx, 0, 50), Some(QuotaExceeded::Daily));
+    }
+
+    #[test]
+    fn test_check_quota_monthly_takes_precedence() {
+        let ctx = TenantContext::new("t1".into(), TenantTier::Free);
+        assert_eq!(
+            check_quota(&ctx, 1_000, 50),
+            Some(QuotaExceeded::Monthly)
+        );
+    }
+
+    #[test]
+    fn test_check_quota_dev_tier_daily_boundary() {
+        let ctx = TenantContext::new("dev".into(), TenantTier::Dev);
+        assert_eq!(check_quota(&ctx, 0, 1_999), None);
+        assert_eq!(check_quota(&ctx, 0, 2_000), Some(QuotaExceeded::Daily));
+    }
+
+    #[test]
+    fn test_check_quota_enterprise_allows_large_usage() {
+        let ctx = TenantContext::new("ent".into(), TenantTier::Enterprise);
+        assert_eq!(check_quota(&ctx, 1_000_000, 1_000_000), None);
+    }
+
+    #[test]
+    fn test_api_key_auth_error_messages() {
+        assert_eq!(
+            ApiKeyAuthError::MissingAuthorizationHeader.message(),
+            "Missing Authorization header"
+        );
+        assert_eq!(
+            ApiKeyAuthError::InvalidAuthorizationHeader.message(),
+            "Invalid Authorization header"
+        );
+        assert_eq!(
+            ApiKeyAuthError::InvalidAuthorizationFormat.message(),
+            "Invalid Authorization format. Expected: Bearer ares_..."
+        );
+        assert_eq!(
+            ApiKeyAuthError::InvalidApiKeyFormat.message(),
+            "Invalid API key format. Must start with ares_"
+        );
+    }
+
+    #[test]
+    fn test_api_key_auth_error_status_codes() {
+        assert_eq!(
+            ApiKeyAuthError::MissingAuthorizationHeader.status_code(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            ApiKeyAuthError::InvalidApiKeyFormat.status_code(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[test]
+    fn test_error_response_body_serde_roundtrip() {
+        let body = ErrorResponseBody {
+            error: "quota exceeded".to_string(),
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        let decoded: ErrorResponseBody = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, body);
+    }
+
+    #[test]
+    fn test_error_response_body_deserialize_from_json() {
+        let decoded: ErrorResponseBody =
+            serde_json::from_str(r#"{"error":"Invalid API key"}"#).unwrap();
+        assert_eq!(decoded.error, "Invalid API key");
+    }
+
+    #[test]
+    fn test_error_response_body_serialize_shape() {
+        let body = ErrorResponseBody {
+            error: "test".to_string(),
+        };
+        let value: serde_json::Value = serde_json::to_value(body).unwrap();
+        assert_eq!(value["error"], "test");
+    }
+
+    #[tokio::test]
+    async fn test_auth_error_response_missing_header() {
+        let response = auth_error_response(ApiKeyAuthError::MissingAuthorizationHeader);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response_error_message(response).await,
+            "Missing Authorization header"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_quota_exceeded_response_monthly() {
+        let response = quota_exceeded_response(QuotaExceeded::Monthly);
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response_error_message(response).await,
+            "Monthly request quota exceeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_quota_exceeded_response_daily() {
+        let response = quota_exceeded_response(QuotaExceeded::Daily);
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response_error_message(response).await,
+            "Daily rate limit exceeded"
+        );
+    }
+
+    // --- integration middleware tests (existing, extended where noted) ---
+
     #[tokio::test]
     async fn test_middleware_no_auth_header() {
         let app = Router::new()
@@ -241,6 +629,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response_error_message(response).await,
+            "Missing Authorization header"
+        );
     }
 
     #[tokio::test]
@@ -261,6 +653,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response_error_message(response).await,
+            "Invalid Authorization format. Expected: Bearer ares_..."
+        );
     }
 
     #[tokio::test]
@@ -281,6 +677,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response_error_message(response).await,
+            "Invalid API key format. Must start with ares_"
+        );
     }
 
     #[tokio::test]
@@ -301,6 +701,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response_error_message(response).await,
+            "Tenant database not configured"
+        );
     }
 
     #[tokio::test]
@@ -350,6 +754,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response_error_message(response).await, "Invalid API key");
     }
     #[tokio::test]
     async fn test_middleware_monthly_quota_exceeded() {
@@ -379,6 +784,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response_error_message(response).await,
+            "Monthly request quota exceeded"
+        );
     }
     #[tokio::test]
     async fn test_middleware_daily_quota_exceeded() {
@@ -408,6 +817,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response_error_message(response).await,
+            "Daily rate limit exceeded"
+        );
     }
     #[tokio::test]
     async fn test_middleware_invalid_auth_header_bytes() {
@@ -432,6 +845,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response_error_message(response).await,
+            "Invalid Authorization header"
+        );
     }
     #[tokio::test]
     async fn test_middleware_verify_api_key_db_error() {
@@ -459,6 +876,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response_error_message(response).await,
+            "Failed to verify API key"
+        );
         sqlx::query("ALTER TABLE api_keys_hidden RENAME TO api_keys")
             .execute(&db.pool)
             .await
@@ -492,6 +913,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response_error_message(response).await,
+            "Failed to check usage"
+        );
         sqlx::query(
             "ALTER TABLE monthly_usage_cache_hidden RENAME TO monthly_usage_cache",
         )
@@ -525,6 +950,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response_error_message(response).await,
+            "Failed to check rate limit"
+        );
         sqlx::query("ALTER TABLE daily_rate_limits_hidden RENAME TO daily_rate_limits")
             .execute(&db.pool)
             .await
@@ -539,6 +968,15 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"], "test message");
+
+        let decoded: ErrorResponseBody = serde_json::from_slice(&body).unwrap();
+        assert_eq!(decoded.error, "test message");
     }
 
+    #[tokio::test]
+    async fn test_error_response_internal_server_error_body() {
+        let response = error_response(StatusCode::INTERNAL_SERVER_ERROR, "db unavailable");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response_error_message(response).await, "db unavailable");
+    }
 }

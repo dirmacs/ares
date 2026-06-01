@@ -494,6 +494,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_client_memory_returns_working_client() {
+        let provider = DatabaseProvider::Memory;
+        let client = provider.create_client().await.expect("memory client");
+        assert!(client.list_user_agents("user-1").await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_database_provider_postgres_clone() {
+        let provider = DatabaseProvider::Postgres {
+            url: "postgres://clone/db".into(),
+        };
+        let cloned = provider.clone();
+        matches::assert_matches!(
+            cloned,
+            DatabaseProvider::Postgres { url } if url == "postgres://clone/db"
+        );
+    }
+
+    #[test]
+    fn test_app_error_database_variant_has_message() {
+        let err = AppError::Database("connection refused".into());
+        let msg = format!("{}", err);
+        assert!(msg.contains("connection refused"));
+    }
+
+    #[tokio::test]
     async fn create_client_postgres_rejects_unreachable_host() {
         let provider = DatabaseProvider::Postgres {
             url: "postgres://invalid:invalid@127.0.0.1:1/nope".into(),

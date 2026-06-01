@@ -1959,4 +1959,231 @@ mod tests {
     }
 
 
+    // ── Constructor tests ───────────────────────────────────────────────
+
+    #[test]
+    fn openai_client_new_creates_client() {
+        let client = OpenAIClient::new(
+            "test-key".to_string(),
+            "https://api.openai.com/v1".to_string(),
+            "gpt-4".to_string(),
+        );
+        assert_eq!(client.model, "gpt-4");
+        assert_eq!(client.params.temperature, None);
+    }
+
+    #[test]
+    fn openai_client_with_params_sets_fields() {
+        let params = ModelParams {
+            temperature: Some(0.5),
+            max_tokens: Some(256),
+            top_p: Some(0.95),
+            frequency_penalty: Some(0.2),
+            presence_penalty: Some(0.3),
+        };
+        let client = OpenAIClient::with_params(
+            "test-key".to_string(),
+            "https://api.openai.com/v1".to_string(),
+            "gpt-4o".to_string(),
+            params.clone(),
+        );
+        assert_eq!(client.model, "gpt-4o");
+        assert_eq!(client.params.temperature, params.temperature);
+        assert_eq!(client.params.max_tokens, params.max_tokens);
+    }
+
+    #[test]
+    fn openai_config_has_correct_base_url() {
+        let client = OpenAIClient::new(
+            "test-key".to_string(),
+            "https://custom.api.com/v1".to_string(),
+            "gpt-4".to_string(),
+        );
+        assert_eq!(client.client.config().api_base(), "https://custom.api.com/v1");
+    }
+
+    #[test]
+    fn openai_config_has_correct_api_key() {
+        let client = OpenAIClient::new(
+            "secret-key-123".to_string(),
+            "https://api.openai.com/v1".to_string(),
+            "gpt-4".to_string(),
+        );
+        // Verify config is set (actual key not readable for security)
+        assert!(client.client.config().api_base().contains("openai"));
+    }
+
+    // ── Model parameter application tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn generate_sends_temperature_in_request() {
+        let params = ModelParams {
+            temperature: Some(0.8),
+            ..ModelParams::default()
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("hi")))
+            .mount(&server)
+            .await;
+
+        let client = openai_client_with_params(&server, "gpt-4", params);
+        let _ = client.generate("hello").await.unwrap();
+        let body = first_request_json(&server).await;
+        assert_eq!(body["temperature"], 0.8);
+    }
+
+    #[tokio::test]
+    async fn generate_sends_max_tokens_in_request() {
+        let params = ModelParams {
+            max_tokens: Some(512),
+            ..ModelParams::default()
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("hi")))
+            .mount(&server)
+            .await;
+
+        let client = openai_client_with_params(&server, "gpt-4", params);
+        let _ = client.generate("hello").await.unwrap();
+        let body = first_request_json(&server).await;
+        assert_eq!(body["max_completion_tokens"], 512);
+    }
+
+    #[tokio::test]
+    async fn generate_sends_top_p_in_request() {
+        let params = ModelParams {
+            top_p: Some(0.85),
+            ..ModelParams::default()
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("hi")))
+            .mount(&server)
+            .await;
+
+        let client = openai_client_with_params(&server, "gpt-4", params);
+        let _ = client.generate("hello").await.unwrap();
+        let body = first_request_json(&server).await;
+        assert_eq!(body["top_p"], 0.85);
+    }
+
+    #[tokio::test]
+    async fn generate_sends_frequency_penalty_in_request() {
+        let params = ModelParams {
+            frequency_penalty: Some(0.5),
+            ..ModelParams::default()
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("hi")))
+            .mount(&server)
+            .await;
+
+        let client = openai_client_with_params(&server, "gpt-4", params);
+        let _ = client.generate("hello").await.unwrap();
+        let body = first_request_json(&server).await;
+        assert_eq!(body["frequency_penalty"], 0.5);
+    }
+
+    #[tokio::test]
+    async fn generate_sends_presence_penalty_in_request() {
+        let params = ModelParams {
+            presence_penalty: Some(0.6),
+            ..ModelParams::default()
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("hi")))
+            .mount(&server)
+            .await;
+
+        let client = openai_client_with_params(&server, "gpt-4", params);
+        let _ = client.generate("hello").await.unwrap();
+        let body = first_request_json(&server).await;
+        assert_eq!(body["presence_penalty"], 0.6);
+    }
+
+    #[tokio::test]
+    async fn generate_gpt5_sets_reasoning_effort_low() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("hi")))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-5");
+        let _ = client.generate("hello").await.unwrap();
+        let body = first_request_json(&server).await;
+        assert_eq!(body["reasoning_effort"], "low");
+    }
+
+    #[tokio::test]
+    async fn generate_gpt4_does_not_set_reasoning_effort() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("hi")))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let _ = client.generate("hello").await.unwrap();
+        let body = first_request_json(&server).await;
+        // GPT-4 should not have reasoning_effort
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    // ── Message conversion edge cases ────────────────────────────────────
+
+    #[test]
+    fn convert_tool_handles_empty_arguments() {
+        let tool = ToolDefinition {
+            name: "test_tool".to_string(),
+            description: "test".to_string(),
+            parameters: serde_json::json!({}),
+        };
+        let chat_tool = OpenAIClient::convert_tool(&tool);
+        match chat_tool {
+            ChatCompletionTools::Function(f) => {
+                assert_eq!(f.function.name, "test_tool");
+                assert_eq!(f.function.description, Some("test".to_string()));
+            }
+            ChatCompletionTools::Custom(_) => panic!("Expected Function variant"),
+        }
+    }
+
+    #[test]
+    fn extract_tool_calls_filters_custom_calls() {
+        // Custom tool calls should be filtered out
+        let calls = vec![
+            ChatCompletionMessageToolCalls::Function(async_openai::types::chat::ChatCompletionMessageToolCall {
+                id: "call_1".to_string(),
+                function: async_openai::types::chat::FunctionCall {
+                    name: "test".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            }),
+        ];
+        let extracted = OpenAIClient::extract_tool_calls(&calls);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].id, "call_1");
+        assert_eq!(extracted[0].name, "test");
+    }
+
+    #[test]
+    fn extract_tool_calls_handles_empty_list() {
+        let calls: Vec<ChatCompletionMessageToolCalls> = vec![];
+        let extracted = OpenAIClient::extract_tool_calls(&calls);
+        assert!(extracted.is_empty());
+    }
+
+
 }

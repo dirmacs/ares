@@ -295,4 +295,69 @@ mod tests {
         // Should be unauthorized - we require exact "Bearer " prefix
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+    #[tokio::test]
+    async fn auth_user_extracts_claims_from_request_extensions() {
+        let claims = Claims {
+            sub: "user-42".into(),
+            email: "dev@example.com".into(),
+            exp: 4_000_000_000,
+            iat: 1_700_000_000,
+            jti: "session-1".into(),
+        };
+        let mut parts = Request::builder()
+            .uri("/api/chat")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts()
+            .0;
+        parts.extensions.insert(claims.clone());
+
+        let AuthUser(extracted) = AuthUser::from_request_parts(&mut parts, &())
+            .await
+            .expect("claims in extensions");
+        assert_eq!(extracted.sub, claims.sub);
+        assert_eq!(extracted.email, claims.email);
+        assert_eq!(extracted.jti, claims.jti);
+    }
+
+    #[tokio::test]
+    async fn auth_user_missing_claims_returns_unauthorized_json() {
+        let mut parts = Request::builder()
+            .uri("/api/chat")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        match AuthUser::from_request_parts(&mut parts, &()).await {
+            Err((status, body)) => {
+                assert_eq!(status, StatusCode::UNAUTHORIZED);
+                assert_eq!(body.0["error"], "Unauthorized");
+            }
+            Ok(_) => panic!("expected missing claims to be rejected"),
+        }
+    }
+
+    #[tokio::test]
+    async fn middleware_unauthorized_response_is_json() {
+        let auth_service = create_test_auth_service();
+        let app = create_test_app(auth_service);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+    }
+
 }

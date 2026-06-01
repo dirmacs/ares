@@ -1301,4 +1301,77 @@ mod tests {
         assert_eq!(json["total_runs"], 10);
         assert_eq!(json["daily_usage"][0]["date"], "2024-01-15");
     }
+    #[test]
+    fn v1_agent_run_serializes_optional_fields() {
+        let started = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        let run = V1AgentRun {
+            id: "run-1".into(),
+            agent_id: "agent-1".into(),
+            status: "completed".into(),
+            input: serde_json::json!({"prompt": "hi"}),
+            output: Some(serde_json::json!({"text": "hello"})),
+            error: None,
+            started_at: started,
+            finished_at: Some(started + chrono::Duration::seconds(2)),
+            duration_ms: Some(2000),
+            tokens_used: Some(42),
+        };
+
+        let json = serde_json::to_value(&run).expect("serialize run");
+        assert_eq!(json["status"], "completed");
+        assert_eq!(json["duration_ms"], 2000);
+        assert!(json["error"].is_null());
+    }
+
+    #[test]
+    fn v1_agent_log_serializes_metadata() {
+        let log = V1AgentLog {
+            id: "log-1".into(),
+            agent_id: "agent-1".into(),
+            run_id: Some("run-1".into()),
+            level: "info".into(),
+            message: "started".into(),
+            metadata: Some(serde_json::json!({"step": 1})),
+            timestamp: Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 1).unwrap(),
+        };
+
+        let json = serde_json::to_value(&log).expect("serialize log");
+        assert_eq!(json["level"], "info");
+        assert_eq!(json["metadata"]["step"], 1);
+    }
+
+    #[test]
+    fn v1_api_key_and_create_response_round_trip() {
+        let created = Utc.with_ymd_and_hms(2024, 3, 1, 0, 0, 0).unwrap();
+        let key = V1ApiKey {
+            id: "key-1".into(),
+            name: "ci".into(),
+            prefix: "ares_ab".into(),
+            created_at: created,
+            last_used: None,
+            expires_at: Some(created + chrono::Duration::days(30)),
+        };
+        let response = CreateApiKeyResponse {
+            key,
+            secret: "ares_secret_value".into(),
+        };
+
+        let json = serde_json::to_value(&response).expect("serialize response");
+        assert_eq!(json["secret"], "ares_secret_value");
+        assert_eq!(json["key"]["prefix"], "ares_ab");
+        assert!(json["key"]["last_used"].is_null());
+    }
+
+    #[test]
+    fn v1_agent_status_idle_and_error_serialize() {
+        assert_eq!(
+            serde_json::to_string(&V1AgentStatus::Idle).unwrap(),
+            "\"idle\""
+        );
+        assert_eq!(
+            serde_json::to_string(&V1AgentStatus::Error).unwrap(),
+            "\"error\""
+        );
+    }
+
 }

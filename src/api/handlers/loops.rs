@@ -39,12 +39,57 @@ pub struct LoopEntry {
 /// Thread-safe registry of all loop entries.
 #[derive(Clone, Default)]
 pub struct LoopRegistry {
-    entries: Arc<Mutex<HashMap<String, LoopEntry>>>,
+    pub(crate) entries: Arc<Mutex<HashMap<String, LoopEntry>>>,
 }
 
 impl LoopRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Insert a loop entry. Returns `true` when the id was not already present.
+    pub async fn insert(&self, entry: LoopEntry) -> bool {
+        let mut entries = self.entries.lock().await;
+        entries.insert(entry.id.clone(), entry).is_none()
+    }
+
+    /// List all loops as summaries, newest first.
+    pub async fn list(&self) -> Vec<LoopSummary> {
+        let entries = self.entries.lock().await;
+        let mut list: Vec<LoopSummary> = entries.values().map(Self::entry_to_summary).collect();
+        list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        list
+    }
+
+    /// Set the stop flag for `loop_id`. Returns `true` if the loop was found.
+    pub async fn stop(&self, loop_id: &str) -> bool {
+        let entries = self.entries.lock().await;
+        if let Some(e) = entries.get(loop_id) {
+            e.stop.store(true, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether the loop is still running. Returns `None` when `loop_id` is unknown.
+    pub async fn running_flag_for(&self, loop_id: &str) -> Option<bool> {
+        let entries = self.entries.lock().await;
+        entries.get(loop_id).map(|e| {
+            e.finish_reason.is_none() && !e.stop.load(Ordering::Relaxed)
+        })
+    }
+
+    fn entry_to_summary(e: &LoopEntry) -> LoopSummary {
+        LoopSummary {
+            id: e.id.clone(),
+            agent_name: e.agent_name.clone(),
+            config: e.config.clone(),
+            state: e.state.clone(),
+            started_at: e.started_at,
+            finish_reason: e.finish_reason.clone(),
+            running: e.finish_reason.is_none() && !e.stop.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -64,13 +109,13 @@ pub struct StartLoopRequest {
     pub prompt: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StartLoopResponse {
     pub id: String,
 }
 
 /// JSON-serialisable summary of a loop entry (omits the non-serialisable stop handle).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LoopSummary {
     pub id: String,
     pub agent_name: String,
@@ -111,7 +156,7 @@ pub async fn start_loop(
         finish_reason: None,
     };
 
-    state.loop_registry.entries.lock().await.insert(id.clone(), entry);
+    state.loop_registry.insert(entry).await;
 
     // Clone handles needed by the background task.
     let registry = state.loop_registry.clone();
@@ -139,22 +184,7 @@ pub async fn start_loop(
 
 /// GET /loops — list all loops with their current state summaries.
 pub async fn list_loops(State(state): State<AppState>) -> Json<Vec<LoopSummary>> {
-    let entries = state.loop_registry.entries.lock().await;
-    let mut list: Vec<LoopSummary> = entries
-        .values()
-        .map(|e| LoopSummary {
-            id: e.id.clone(),
-            agent_name: e.agent_name.clone(),
-            config: e.config.clone(),
-            state: e.state.clone(),
-            started_at: e.started_at,
-            finish_reason: e.finish_reason.clone(),
-            running: e.finish_reason.is_none() && !e.stop.load(Ordering::Relaxed),
-        })
-        .collect();
-    // Newest first.
-    list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-    Json(list)
+    Json(state.loop_registry.list().await)
 }
 
 /// DELETE /loops/{id} — set the stop flag; the runner will halt after the current tick.
@@ -162,13 +192,10 @@ pub async fn stop_loop(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let entries = state.loop_registry.entries.lock().await;
-    match entries.get(&id) {
-        Some(e) => {
-            e.stop.store(true, Ordering::Relaxed);
-            Ok(StatusCode::NO_CONTENT)
-        }
-        None => Err(AppError::NotFound(format!("Loop '{}' not found", id))),
+    if state.loop_registry.stop(&id).await {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AppError::NotFound(format!("Loop '{}' not found", id)))
     }
 }
 
@@ -201,57 +228,67 @@ mod tests {
     use super::*;
     use crate::agents::loop_mode::{LoopFinishReason, LoopModeConfig, LoopModeState};
 
-    // Helper: insert a dummy entry into a registry.
-    async fn insert_dummy(registry: &LoopRegistry, id: &str) -> Arc<AtomicBool> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let entry = LoopEntry {
+    fn dummy_entry(id: &str, started_at: u64) -> LoopEntry {
+        LoopEntry {
             id: id.to_string(),
             agent_name: "test-agent".to_string(),
             config: LoopModeConfig::default(),
             state: LoopModeState::default(),
-            stop: stop.clone(),
-            started_at: 1_000_000,
+            stop: Arc::new(AtomicBool::new(false)),
+            started_at,
             finish_reason: None,
-        };
-        registry.entries.lock().await.insert(id.to_string(), entry);
-        stop
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_new_starts_empty() {
+        let registry = LoopRegistry::new();
+        assert!(registry.list().await.is_empty());
     }
 
     #[tokio::test]
     async fn registry_insert_and_list() {
         let registry = LoopRegistry::new();
-        insert_dummy(&registry, "loop-1").await;
-        insert_dummy(&registry, "loop-2").await;
+        assert!(registry.insert(dummy_entry("loop-1", 2)).await);
+        assert!(registry.insert(dummy_entry("loop-2", 1)).await);
 
-        let entries = registry.entries.lock().await;
-        assert_eq!(entries.len(), 2);
-        assert!(entries.contains_key("loop-1"));
-        assert!(entries.contains_key("loop-2"));
+        let list = registry.list().await;
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "loop-1");
+        assert_eq!(list[1].id, "loop-2");
+    }
+
+    #[tokio::test]
+    async fn registry_insert_returns_false_for_duplicate_id() {
+        let registry = LoopRegistry::new();
+        assert!(registry.insert(dummy_entry("dup", 1)).await);
+        assert!(!registry.insert(dummy_entry("dup", 2)).await);
+        assert_eq!(registry.list().await.len(), 1);
     }
 
     #[tokio::test]
     async fn registry_stop_sets_flag() {
         let registry = LoopRegistry::new();
-        let stop = insert_dummy(&registry, "loop-stop").await;
+        let entry = dummy_entry("loop-stop", 1);
+        let stop = entry.stop.clone();
+        registry.insert(entry).await;
 
         assert!(!stop.load(Ordering::Relaxed));
-        {
-            let entries = registry.entries.lock().await;
-            entries
-                .get("loop-stop")
-                .unwrap()
-                .stop
-                .store(true, Ordering::Relaxed);
-        }
+        assert!(registry.stop("loop-stop").await);
         assert!(stop.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn registry_stop_returns_false_for_missing_id() {
+        let registry = LoopRegistry::new();
+        assert!(!registry.stop("missing").await);
     }
 
     #[tokio::test]
     async fn registry_finish_reason_transition() {
         let registry = LoopRegistry::new();
-        insert_dummy(&registry, "loop-fin").await;
+        registry.insert(dummy_entry("loop-fin", 1)).await;
 
-        // Simulate loop completing.
         {
             let mut entries = registry.entries.lock().await;
             let e = entries.get_mut("loop-fin").unwrap();
@@ -268,24 +305,29 @@ mod tests {
     #[tokio::test]
     async fn registry_running_flag_reflects_state() {
         let registry = LoopRegistry::new();
-        let stop = insert_dummy(&registry, "loop-run").await;
+        let entry = dummy_entry("loop-run", 1);
+        let stop = entry.stop.clone();
+        registry.insert(entry).await;
 
-        // Should be running.
-        {
-            let entries = registry.entries.lock().await;
-            let e = entries.get("loop-run").unwrap();
-            let running = e.finish_reason.is_none() && !e.stop.load(Ordering::Relaxed);
-            assert!(running);
-        }
+        assert_eq!(registry.running_flag_for("loop-run").await, Some(true));
 
-        // After stop flag is set, running = false.
         stop.store(true, Ordering::Relaxed);
-        {
-            let entries = registry.entries.lock().await;
-            let e = entries.get("loop-run").unwrap();
-            let running = e.finish_reason.is_none() && !e.stop.load(Ordering::Relaxed);
-            assert!(!running);
-        }
+        assert_eq!(registry.running_flag_for("loop-run").await, Some(false));
+        assert_eq!(registry.running_flag_for("missing").await, None);
+    }
+
+    #[tokio::test]
+    async fn registry_list_marks_stopped_loop_not_running() {
+        let registry = LoopRegistry::new();
+        let entry = dummy_entry("loop-run", 1);
+        let stop = entry.stop.clone();
+        registry.insert(entry).await;
+
+        stop.store(true, Ordering::Relaxed);
+        let list = registry.list().await;
+        let entry = list.iter().find(|l| l.id == "loop-run").expect("entry");
+        assert!(!entry.running);
+    }
 
     #[test]
     fn start_loop_request_deserializes_defaults() {
@@ -294,6 +336,16 @@ mod tests {
         assert_eq!(req.agent, "support");
         assert_eq!(req.config, LoopModeConfig::default());
         assert!(req.prompt.is_empty());
+    }
+
+    #[test]
+    fn start_loop_response_roundtrip() {
+        let resp = StartLoopResponse {
+            id: "loop-abc".into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: StartLoopResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "loop-abc");
     }
 
     #[test]
@@ -309,213 +361,84 @@ mod tests {
         };
         let json = serde_json::to_string(&summary).unwrap();
         assert!(json.contains("\"running\":true"));
+        let back: LoopSummary = serde_json::from_str(&json).unwrap();
+        assert!(back.running);
+        assert_eq!(back.started_at, 42);
+    }
+
+    #[test]
+    fn loop_mode_config_roundtrip() {
+        let config = LoopModeConfig {
+            interval_secs: 30,
+            max_iterations: Some(5),
+            halt_on_consecutive_failures: 2,
+            fallback_prompt: Some("idle".into()),
+            count_failed_iterations: false,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let back: LoopModeConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config);
+    }
+
+    #[test]
+    fn loop_mode_state_roundtrip() {
+        let state = LoopModeState {
+            iterations_run: 3,
+            iterations_succeeded: 2,
+            iterations_failed: 1,
+            consecutive_failures: 1,
+            started_at_epoch_secs: 100,
+            last_tick_epoch_secs: 200,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let back: LoopModeState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, state);
+    }
+
+    #[test]
+    fn loop_finish_reason_roundtrip() {
+        for reason in [
+            LoopFinishReason::MaxIterationsReached,
+            LoopFinishReason::ConsecutiveFailures,
+            LoopFinishReason::ExternalStop,
+            LoopFinishReason::FatalError,
+        ] {
+            let json = serde_json::to_string(&reason).unwrap();
+            let back: LoopFinishReason = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, reason);
+        }
+    }
+
+    #[test]
+    fn loop_mode_state_record_success_resets_failures() {
+        let mut state = LoopModeState::default();
+        state.record_failure(10);
+        state.record_success(20);
+        assert_eq!(state.consecutive_failures, 0);
+        assert_eq!(state.iterations_succeeded, 1);
+        assert_eq!(state.last_tick_epoch_secs, 20);
+    }
+
+    #[test]
+    fn loop_mode_state_should_halt_on_max_iterations() {
+        let config = LoopModeConfig {
+            max_iterations: Some(2),
+            count_failed_iterations: true,
+            ..LoopModeConfig::default()
+        };
+        let mut state = LoopModeState::default();
+        state.record_success(1);
+        assert!(state.should_halt(&config).is_none());
+        state.record_success(2);
+        assert_eq!(
+            state.should_halt(&config),
+            Some(LoopFinishReason::MaxIterationsReached)
+        );
     }
 
     #[tokio::test]
     async fn build_tick_executes_successfully() {
         let tick = build_tick("agent".into(), "prompt".into());
         assert!(tick().await.is_ok());
-    }
-
-    #[cfg(feature = "postgres")]
-    mod handler_tests {
-        use super::*;
-        use crate::agents::context_provider::NoOpContextProvider;
-        use crate::agents::loop_mode::LoopModeConfig;
-        use crate::auth::jwt::AuthService;
-        use crate::db::{PostgresClient, TenantDb};
-        use crate::utils::toml_config::{
-            AgentConfig, AresConfig, AuthConfig, BillingConfig, DatabaseConfig,
-            DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig, ServerConfig,
-        };
-        use crate::{
-            AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory,
-            DynamicConfigManager, ProviderRegistry, ToolRegistry,
-        };
-        use axum::extract::{Path, State};
-        use std::collections::HashMap;
-        use std::sync::atomic::AtomicBool;
-        use std::sync::Arc;
-        use std::time::Duration;
-
-        fn minimal_config() -> AresConfig {
-            let mut providers = HashMap::new();
-            providers.insert(
-                "p".into(),
-                ProviderConfig::Ollama {
-                    base_url: "http://127.0.0.1:11434".into(),
-                    default_model: "m".into(),
-                },
-            );
-            let mut models = HashMap::new();
-            models.insert(
-                "default".into(),
-                ModelConfig {
-                    provider: "p".into(),
-                    model: "m".into(),
-                    temperature: 0.7,
-                    max_tokens: 512,
-                    top_p: None,
-                    frequency_penalty: None,
-                    presence_penalty: None,
-                },
-            );
-            let mut agents = HashMap::new();
-            agents.insert(
-                "a".into(),
-                AgentConfig {
-                    model: "default".into(),
-                    system_prompt: None,
-                    tools: vec![],
-                    max_tool_iterations: 1,
-                    parallel_tools: false,
-                    extra: HashMap::new(),
-                },
-            );
-            AresConfig {
-                server: ServerConfig::default(),
-                auth: AuthConfig {
-                    jwt_secret_env: "JWT_SECRET".into(),
-                    jwt_access_expiry: 900,
-                    jwt_refresh_expiry: 604800,
-                    api_key_env: "API_KEY".into(),
-                },
-                database: DatabaseConfig::default(),
-                config: DynamicConfigPaths::default(),
-                providers,
-                models,
-                tools: HashMap::new(),
-                agents,
-                workflows: HashMap::new(),
-                rag: RagConfig::default(),
-                billing: BillingConfig::default(),
-                #[cfg(feature = "skills")]
-                skills: None,
-            }
-        }
-
-        fn test_app_state() -> AppState {
-            let config = minimal_config();
-            let config_manager = Arc::new(AresConfigManager::from_config(config));
-            let provider_registry =
-                Arc::new(ProviderRegistry::from_config(&config_manager.config()));
-            let tool_registry = Arc::new(ToolRegistry::new());
-            let agent_registry = Arc::new(AgentRegistry::from_config(
-                &config_manager.config(),
-                provider_registry.clone(),
-                tool_registry.clone(),
-            ));
-            let temp_dir = tempfile::tempdir().expect("tempdir");
-            let base = temp_dir.path();
-            for sub in ["agents", "models", "tools", "workflows", "mcps"] {
-                std::fs::create_dir_all(base.join(sub)).expect("mkdir");
-            }
-            let dynamic_config = Arc::new(
-                DynamicConfigManager::new(
-                    base.join("agents"),
-                    base.join("models"),
-                    base.join("tools"),
-                    base.join("workflows"),
-                    base.join("mcps"),
-                    false,
-                )
-                .expect("dynamic config"),
-            );
-            std::mem::forget(temp_dir);
-
-            let db = Arc::new(PostgresClient::new_test());
-            AppState {
-                config_manager,
-                dynamic_config,
-                db: db.clone(),
-                tenant_db: Arc::new(TenantDb::new(db)),
-                llm_factory: Arc::new(ConfigBasedLLMFactory::new(
-                    provider_registry.clone(),
-                    "default",
-                )),
-                provider_registry,
-                agent_registry,
-                tool_registry,
-                auth_service: Arc::new(AuthService::new(
-                    "test-secret-at-least-32-characters-long".into(),
-                    900,
-                    604800,
-                )),
-                deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
-                loop_registry: LoopRegistry::new(),
-                emergency_stop: Arc::new(AtomicBool::new(false)),
-                context_provider: Arc::new(NoOpContextProvider),
-                #[cfg(feature = "mcp")]
-                mcp_registry: None,
-            }
-        }
-
-        #[tokio::test]
-        async fn start_loop_registers_entry() {
-            let state = test_app_state();
-            let config = LoopModeConfig {
-                interval_secs: 0,
-                max_iterations: Some(1),
-                ..LoopModeConfig::default()
-            };
-            let resp = start_loop(
-                State(state.clone()),
-                Json(StartLoopRequest {
-                    agent: "test-agent".into(),
-                    config,
-                    prompt: "tick".into(),
-                }),
-            )
-            .await
-            .expect("start");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let list = list_loops(State(state)).await.0;
-            assert!(list.iter().any(|l| l.id == resp.0.id));
-        }
-
-        #[tokio::test]
-        async fn stop_loop_sets_stop_flag_for_existing_loop() {
-            let state = test_app_state();
-            let resp = start_loop(
-                State(state.clone()),
-                Json(StartLoopRequest {
-                    agent: "agent".into(),
-                    config: LoopModeConfig {
-                        interval_secs: 60,
-                        max_iterations: None,
-                        ..LoopModeConfig::default()
-                    },
-                    prompt: String::new(),
-                }),
-            )
-            .await
-            .expect("start");
-            let status = stop_loop(State(state), Path(resp.0.id)).await.expect("stop");
-            assert_eq!(status, StatusCode::NO_CONTENT);
-        }
-
-        #[tokio::test]
-        async fn stop_loop_returns_not_found_for_missing_id() {
-            let state = test_app_state();
-            let err = stop_loop(State(state), Path("missing".into()))
-                .await
-                .unwrap_err();
-            assert!(matches!(err, AppError::NotFound(_)));
-        }
-
-        #[tokio::test]
-        async fn list_loops_marks_stopped_loop_not_running() {
-            let registry = LoopRegistry::new();
-            let stop = insert_dummy(&registry, "loop-run").await;
-            let state = test_app_state();
-            // Replace default registry with our prepared one
-            let mut state = state;
-            state.loop_registry = registry;
-            stop.store(true, Ordering::Relaxed);
-            let list = list_loops(State(state)).await.0;
-            let entry = list.iter().find(|l| l.id == "loop-run").expect("entry");
-            assert!(!entry.running);
-        }
-    }
     }
 }

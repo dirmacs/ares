@@ -495,6 +495,7 @@ mod tests {
         assert_eq!(config.strategy, ChunkingStrategy::Word);
         assert_eq!(config.chunk_size, 512);
         assert_eq!(config.chunk_overlap, 50);
+        assert_eq!(config.min_chunk_size, 20);
     }
 
     #[test]
@@ -682,11 +683,123 @@ mod tests {
 
     #[test]
     fn test_chunk_metadata_indices_are_sequential() {
-        let chunker = TextChunker::with_character_chunking(8, 2);
+        let config = ChunkerConfig {
+            strategy: ChunkingStrategy::Character,
+            chunk_size: 8,
+            chunk_overlap: 2,
+            min_chunk_size: 4,
+        };
+        let chunker = TextChunker::new(config);
         let chunks = chunker.chunk_with_metadata("0123456789abcdef");
+        assert!(
+            chunks.len() >= 2,
+            "expected multiple character chunks, got {:?}",
+            chunks
+        );
         for (i, chunk) in chunks.iter().enumerate() {
             assert_eq!(chunk.index, i);
-            assert!(chunk.start_offset <= chunk.end_offset);
+            assert!(chunk.start_offset < chunk.end_offset);
+            assert!(!chunk.content.is_empty());
         }
+    }
+
+    #[test]
+    fn test_chunk_serde_roundtrip() {
+        let chunk = Chunk {
+            index: 2,
+            content: "chunk body".into(),
+            start_offset: 10,
+            end_offset: 20,
+        };
+        let json = serde_json::to_string(&chunk).unwrap();
+        let parsed: Chunk = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.index, 2);
+        assert_eq!(parsed.content, "chunk body");
+        assert_eq!(parsed.start_offset, 10);
+        assert_eq!(parsed.end_offset, 20);
+    }
+
+    #[test]
+    fn test_word_chunk_metadata_nonzero_start_offset() {
+        let config = ChunkerConfig {
+            strategy: ChunkingStrategy::Word,
+            chunk_size: 3,
+            chunk_overlap: 0,
+            min_chunk_size: 1,
+        };
+        let chunker = TextChunker::new(config);
+        let chunks = chunker.chunk_with_metadata("one two three four five");
+        assert!(chunks.len() >= 2);
+        assert_eq!(chunks[0].start_offset, 0);
+        assert!(chunks[1].start_offset > 0);
+        assert!(chunks[1].end_offset > chunks[1].start_offset);
+    }
+
+    #[test]
+    fn test_public_types_debug_clone_hash() {
+        let strategy = ChunkingStrategy::Semantic;
+        assert_eq!(format!("{:?}", strategy), "Semantic");
+        assert_eq!(strategy, strategy);
+
+        let config = ChunkerConfig::default();
+        let cloned_config = config.clone();
+        assert_eq!(cloned_config.chunk_size, config.chunk_size);
+
+        let chunker = TextChunker::default();
+        let cloned_chunker = chunker.clone();
+        assert_eq!(
+            cloned_chunker.config().strategy,
+            chunker.config().strategy
+        );
+
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(ChunkingStrategy::Word);
+        set.insert(ChunkingStrategy::Word);
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn test_chunking_strategy_default_is_word() {
+        assert_eq!(ChunkingStrategy::default(), ChunkingStrategy::Word);
+    }
+
+    #[test]
+    fn test_special_characters_preserved_in_word_chunks() {
+        let chunker = TextChunker::with_word_chunking(10, 0);
+        let text = "Hello, world! — café naïve…";
+        let chunks = chunker.chunk(text);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].contains("café"));
+        assert!(chunks[0].contains("…"));
+    }
+
+    #[test]
+    fn test_single_word_input() {
+        let config = ChunkerConfig {
+            strategy: ChunkingStrategy::Word,
+            chunk_size: 5,
+            chunk_overlap: 0,
+            min_chunk_size: 1,
+        };
+        let chunker = TextChunker::new(config);
+        let chunks = chunker.chunk("lonely");
+        assert_eq!(chunks, vec!["lonely"]);
+    }
+
+    #[test]
+    fn test_character_chunking_unicode_codepoints() {
+        let config = ChunkerConfig {
+            strategy: ChunkingStrategy::Character,
+            chunk_size: 4,
+            chunk_overlap: 0,
+            min_chunk_size: 1,
+        };
+        let chunker = TextChunker::new(config);
+        let text = "🌍🌎🌏";
+        let chunks = chunker.chunk(text);
+        assert!(!chunks.is_empty());
+        let rejoined: String = chunks.concat();
+        assert_eq!(rejoined, text);
     }
 }

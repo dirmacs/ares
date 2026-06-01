@@ -155,6 +155,7 @@ mod tests {
     struct ScriptedLlm {
         responses: Arc<Mutex<VecDeque<String>>>,
         system_prompts: Arc<Mutex<Vec<String>>>,
+        generate_prompts: Arc<Mutex<Vec<String>>>,
     }
 
     impl ScriptedLlm {
@@ -162,11 +163,16 @@ mod tests {
             Self {
                 responses: Arc::new(Mutex::new(responses.into_iter().map(str::to_string).collect())),
                 system_prompts: Arc::new(Mutex::new(Vec::new())),
+                generate_prompts: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
         fn system_prompts(&self) -> Vec<String> {
             self.system_prompts.lock().unwrap().clone()
+        }
+
+        fn generate_prompts(&self) -> Vec<String> {
+            self.generate_prompts.lock().unwrap().clone()
         }
 
         fn next_response(&self) -> String {
@@ -183,7 +189,8 @@ mod tests {
         fn model_name(&self) -> &str {
             "scripted-test"
         }
-        async fn generate(&self, _: &str) -> Result<String> {
+        async fn generate(&self, prompt: &str) -> Result<String> {
+            self.generate_prompts.lock().unwrap().push(prompt.to_string());
             Ok(self.next_response())
         }
         async fn generate_with_system(&self, system: &str, _: &str) -> Result<String> {
@@ -476,5 +483,160 @@ mod tests {
             .expect("execute with subtasks");
         assert_eq!(resp.content, "synthesized final answer");
     }
+
+    #[tokio::test]
+    async fn test_decompose_task_defaults_missing_json_fields() {
+        let orch = build_orchestrator(
+            ScriptedLlm::new(vec![r#"[{"task":"task-only"},{"agent":"sales"}]"#]),
+            &["sales", "product"],
+            create_test_ares_config(HashMap::new()),
+        );
+        let tasks = orch.decompose_task("plan").await.expect("decompose");
+        assert_eq!(
+            tasks,
+            vec![
+                ("product".to_string(), "task-only".to_string()),
+                ("sales".to_string(), String::new()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_decompose_task_mixed_known_and_unknown_agents() {
+        let orch = build_orchestrator(
+            ScriptedLlm::new(vec![
+                r#"[{"agent":"sales","task":"Revenue"},{"agent":"ghost","task":"Haunt"},{"agent":"finance","task":"Budget"}]"#,
+            ]),
+            &["sales", "finance", "product"],
+            create_test_ares_config(HashMap::new()),
+        );
+        let tasks = orch.decompose_task("mixed").await.expect("decompose");
+        assert_eq!(
+            tasks,
+            vec![
+                ("sales".to_string(), "Revenue".to_string()),
+                ("product".to_string(), "Haunt".to_string()),
+                ("finance".to_string(), "Budget".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_decompose_task_only_orchestrator_router_yields_empty_agent_list() {
+        let llm = ScriptedLlm::new(vec![r#"[]"#]);
+        let llm_clone = llm.clone();
+        let orch = build_orchestrator(llm, &[], create_test_ares_config(HashMap::new()));
+        orch.decompose_task("plan").await.expect("decompose");
+        let system = llm_clone.system_prompts().into_iter().next().expect("system prompt");
+        assert!(system.contains("Available agents: "));
+        assert!(!system.contains("orchestrator"));
+        assert!(!system.contains("router"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_subtask_returns_registered_agent_content() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_done_json("subtask-body")))
+            .mount(&server)
+            .await;
+
+        let orch = OrchestratorAgent::new(
+            Box::new(ScriptedLlm::new(vec![])),
+            Arc::new(AresConfigManager::from_config(create_test_ares_config(HashMap::new()))),
+            build_registry_with_provider(&["sales"], &server.uri()),
+        );
+        let content = orch
+            .execute_subtask("sales", "Get Q1 revenue", &test_context())
+            .await
+            .expect("subtask");
+        assert_eq!(content, "subtask-body");
+    }
+
+    #[tokio::test]
+    async fn test_execute_subtask_unknown_agent_errors() {
+        let orch = build_orchestrator(
+            ScriptedLlm::new(vec![]),
+            &["product"],
+            create_test_ares_config(HashMap::new()),
+        );
+        let err = orch
+            .execute_subtask("missing-agent", "task", &test_context())
+            .await
+            .unwrap_err();
+        assert!(!matches!(err, AppError::LLM(_)));
+    }
+
+    #[tokio::test]
+    async fn test_execute_multiple_subtasks_formats_results_for_synthesis() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_done_json("agent-output")))
+            .mount(&server)
+            .await;
+
+        let llm = ScriptedLlm::new(vec![
+            r#"[{"agent":"sales","task":"Revenue"},{"agent":"finance","task":"Budget"}]"#,
+            "combined answer",
+        ]);
+        let llm_clone = llm.clone();
+        let orch = OrchestratorAgent::new(
+            Box::new(llm),
+            Arc::new(AresConfigManager::from_config(create_test_ares_config(HashMap::new()))),
+            build_registry_with_provider(&["sales", "finance"], &server.uri()),
+        );
+
+        let resp = orch
+            .execute("annual review", &test_context())
+            .await
+            .expect("execute");
+        assert_eq!(resp.content, "combined answer");
+        let synthesis = llm_clone.generate_prompts().into_iter().next().expect("synthesis prompt");
+        assert!(synthesis.contains("Original query: annual review"));
+        assert!(synthesis.contains("[sales] agent-output"));
+        assert!(synthesis.contains("[finance] agent-output"));
+        assert!(synthesis.contains("Subtask results:"));
+    }
+
+    #[test]
+    fn test_agent_type_orchestrator_serde_roundtrip() {
+        let agent = AgentType::Orchestrator;
+        let json = serde_json::to_string(&agent).expect("serialize");
+        assert_eq!(json, "\"orchestrator\"");
+        let parsed: AgentType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, agent);
+        assert_eq!(format!("{parsed:?}"), "Orchestrator");
+        assert_eq!(agent.clone(), AgentType::Orchestrator);
+    }
+
+    #[test]
+    fn test_agent_context_debug_clone() {
+        let ctx = test_context();
+        let cloned = ctx.clone();
+        assert_eq!(cloned.user_id, "test-user");
+        assert_eq!(cloned.session_id, "test-session");
+        assert!(format!("{ctx:?}").contains("AgentContext"));
+    }
+
+    #[test]
+    fn test_agent_response_none_usage_and_metadata() {
+        let resp = AgentResponse {
+            content: "ok".to_string(),
+            usage: None,
+            metadata: None,
+        };
+        assert_eq!(resp.content, "ok");
+        assert!(resp.usage.is_none());
+        assert!(resp.metadata.is_none());
+    }
+
 
 }

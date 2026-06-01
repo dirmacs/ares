@@ -1233,6 +1233,291 @@ mod tests {
     }
 
     #[test]
+    fn tokens_to_cost_zero_tokens_returns_zero() {
+        assert_eq!(tokens_to_cost(0, 99.0), 0.0);
+    }
+
+    #[test]
+    fn estimate_run_cost_uses_pricing_currency() {
+        let estimate = estimate_run_cost(&billing(), &run("openai", "gpt-test"));
+        assert_eq!(estimate.currency, "USD");
+    }
+
+    #[test]
+    fn estimate_run_cost_partial_input_only_pricing_has_no_total() {
+        let mut billing = BillingConfig::default();
+        billing.model_pricing.insert(
+            "partial".into(),
+            ModelPricingConfig {
+                provider: "openai".into(),
+                model: "gpt-partial".into(),
+                input_usd_per_million_tokens: Some(5.0),
+                output_usd_per_million_tokens: None,
+                currency: "EUR".into(),
+            },
+        );
+        let mut r = run("openai", "gpt-partial");
+        r.input_tokens = 1_000_000;
+        r.output_tokens = 0;
+        let estimate = estimate_run_cost(&billing, &r);
+        assert!(estimate.pricing_known);
+        assert_eq!(estimate.currency, "EUR");
+        assert_eq!(estimate.input_cost_usd, Some(5.0));
+        assert_eq!(estimate.output_cost_usd, None);
+        assert_eq!(estimate.total_cost_usd, None);
+    }
+
+    #[test]
+    fn has_admin_role_rejects_empty_roles_map() {
+        assert!(!has_admin_role(&admin_claims(HashMap::new())));
+    }
+
+    #[test]
+    fn has_admin_role_rejects_admin_in_unlisted_product() {
+        let mut roles = HashMap::new();
+        roles.insert("other".into(), vec![role_entry("admin")]);
+        assert!(!has_admin_role(&admin_claims(roles)));
+    }
+
+    #[test]
+    fn has_admin_role_accepts_super_admin_in_admin_product() {
+        let mut roles = HashMap::new();
+        roles.insert("admin".into(), vec![role_entry("super_admin")]);
+        assert!(has_admin_role(&admin_claims(roles)));
+    }
+
+    #[test]
+    fn has_admin_role_rejects_multiple_non_admin_roles() {
+        let mut roles = HashMap::new();
+        roles.insert(
+            "ares".into(),
+            vec![role_entry("viewer"), role_entry("editor")],
+        );
+        assert!(!has_admin_role(&admin_claims(roles)));
+    }
+
+    #[test]
+    fn parse_tenant_tier_accepts_free_and_dev() {
+        assert!(matches!(parse_tenant_tier("free").unwrap(), TenantTier::Free));
+        assert!(matches!(parse_tenant_tier("DEV").unwrap(), TenantTier::Dev));
+    }
+
+    #[test]
+    fn provision_client_request_deserializes() {
+        let req: ProvisionClientRequest = serde_json::from_str(
+            r#"{"name":"Acme","tier":"pro","product_type":"ares","api_key_name":"bootstrap"}"#,
+        )
+        .unwrap();
+        assert_eq!(req.name, "Acme");
+        assert_eq!(req.tier, "pro");
+        assert_eq!(req.product_type, "ares");
+        assert_eq!(req.api_key_name, "bootstrap");
+    }
+
+    #[test]
+    fn test_tenant_agent_request_deserializes_defaults() {
+        let req: TestTenantAgentRequest =
+            serde_json::from_str(r#"{"message":"hi","config":{"model":"gpt-4"}}"#).unwrap();
+        assert_eq!(req.message, "hi");
+        assert!(!req.use_eruka_context);
+        assert!(req.workspace_id.is_none());
+    }
+
+    #[test]
+    fn tenant_response_serializes_fields() {
+        let resp = TenantResponse {
+            id: "t1".into(),
+            name: "Acme".into(),
+            tier: "enterprise".into(),
+            created_at: 1_700_000_000,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["id"], "t1");
+        assert_eq!(json["tier"], "enterprise");
+        assert_eq!(json["created_at"], 1_700_000_000);
+    }
+
+    #[test]
+    fn daily_usage_query_deserializes_optional_days() {
+        let q: DailyUsageQuery = serde_json::from_str(r#"{"days":7}"#).unwrap();
+        assert_eq!(q.days, Some(7));
+        let default: DailyUsageQuery = serde_json::from_str("{}").unwrap();
+        assert!(default.days.is_none());
+    }
+
+    #[test]
+    fn daily_usage_entry_serializes_counters() {
+        let entry = DailyUsageEntry {
+            date: 1_700_000_000,
+            requests: 5,
+            tokens: 100,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["requests"], 5);
+        assert_eq!(json["tokens"], 100);
+    }
+
+    #[test]
+    fn agent_runs_query_deserializes_pagination() {
+        let q: AgentRunsQuery = serde_json::from_str(r#"{"limit":25,"offset":10}"#).unwrap();
+        assert_eq!(q.limit, Some(25));
+        assert_eq!(q.offset, Some(10));
+    }
+
+    #[test]
+    fn agent_feedback_summary_query_deserializes_days() {
+        let q: AgentFeedbackSummaryQuery = serde_json::from_str(r#"{"days":14}"#).unwrap();
+        assert_eq!(q.days, Some(14));
+    }
+
+    #[test]
+    fn create_agent_run_feedback_request_deserializes_with_defaults() {
+        let req: CreateAgentRunFeedbackRequest =
+            serde_json::from_str(r#"{"feedback_type":"quality","score":4.5}"#).unwrap();
+        assert_eq!(req.feedback_type, "quality");
+        assert_eq!(req.score, Some(4.5));
+        assert!(req.flags.is_empty());
+        assert!(req.notes.is_none());
+    }
+
+    #[test]
+    fn alerts_query_deserializes_filters() {
+        let q: AlertsQuery =
+            serde_json::from_str(r#"{"severity":"critical","resolved":false,"limit":10}"#).unwrap();
+        assert_eq!(q.severity.as_deref(), Some("critical"));
+        assert_eq!(q.resolved, Some(false));
+        assert_eq!(q.limit, Some(10));
+    }
+
+    #[test]
+    fn audit_log_query_deserializes_pagination() {
+        let q: AuditLogQuery = serde_json::from_str(r#"{"limit":100,"offset":50}"#).unwrap();
+        assert_eq!(q.limit, Some(100));
+        assert_eq!(q.offset, Some(50));
+    }
+
+    #[test]
+    fn resolve_alert_request_deserializes_optional_reviewer() {
+        let req: ResolveAlertRequest =
+            serde_json::from_str(r#"{"resolved_by":"alice"}"#).unwrap();
+        assert_eq!(req.resolved_by.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn emergency_stop_request_deserializes_inactive_flag() {
+        let req: EmergencyStopRequest = serde_json::from_str(r#"{"active":false}"#).unwrap();
+        assert!(!req.active);
+    }
+
+    #[test]
+    fn cost_estimate_known_serializes_cost_fields() {
+        let estimate = estimate_run_cost(&billing(), &run("openai", "gpt-test"));
+        let json = serde_json::to_value(&estimate).unwrap();
+        assert_eq!(json["pricing_known"], true);
+        assert_eq!(json["currency"], "USD");
+        assert!(json["total_cost_usd"].is_number());
+    }
+
+    #[test]
+    fn agent_run_response_serializes_nested_run() {
+        let response = AgentRunResponse::from_run(run("openai", "gpt-test"), &billing());
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["id"], "run-1");
+        assert_eq!(json["cost_estimate"]["pricing_known"], true);
+    }
+
+    #[test]
+    fn usage_response_serializes_counters() {
+        let resp = UsageResponse::from(UsageSummary {
+            monthly_requests: 1,
+            monthly_tokens: 2,
+            daily_requests: 3,
+        });
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["monthly_requests"], 1);
+        assert_eq!(json["daily_requests"], 3);
+    }
+
+    #[test]
+    fn api_key_response_serializes_fields() {
+        use crate::models::ApiKey;
+        let key = ApiKey::new(
+            "k".into(),
+            "t".into(),
+            "hash".into(),
+            "prefix".into(),
+            "name".into(),
+        );
+        let json = serde_json::to_value(ApiKeyResponse::from(key)).unwrap();
+        assert_eq!(json["key_prefix"], "prefix");
+        assert_eq!(json["is_active"], true);
+    }
+
+    #[test]
+    fn tenant_response_from_tenant_maps_free_dev_enterprise() {
+        use crate::models::Tenant;
+        for (tier, expected) in [
+            (TenantTier::Free, "free"),
+            (TenantTier::Dev, "dev"),
+            (TenantTier::Enterprise, "enterprise"),
+        ] {
+            let tenant = Tenant::new("id".into(), "n".into(), tier);
+            assert_eq!(TenantResponse::from(tenant).tier, expected);
+        }
+    }
+
+    #[test]
+    fn test_tenant_agent_response_serializes_status() {
+        let resp = TestTenantAgentResponse {
+            status: "ok".into(),
+            response: Some("hello".into()),
+            error: None,
+            input_tokens: 1,
+            output_tokens: 2,
+            duration_ms: 3,
+            model_name: Some("gpt".into()),
+            provider_name: Some("openai".into()),
+            config_source: "tenant_db".into(),
+            config_version: "v1".into(),
+            workspace_id: None,
+            eruka_context_injected: false,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["eruka_context_injected"], false);
+    }
+
+    #[test]
+    fn provision_client_response_serializes() {
+        let resp = ProvisionClientResponse {
+            tenant_id: "t".into(),
+            tenant_name: "Acme".into(),
+            tier: "pro".into(),
+            product_type: "ares".into(),
+            api_key_id: "key".into(),
+            api_key_prefix: "ares_".into(),
+            raw_api_key: "secret".into(),
+            agents_created: vec!["a1".into()],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["agents_created"][0], "a1");
+    }
+
+    #[test]
+    fn role_entry_deserializes_resource_id() {
+        let entry: RoleEntry =
+            serde_json::from_str(r#"{"role":"admin","resource_id":"res-1"}"#).unwrap();
+        assert_eq!(entry.role, "admin");
+        assert_eq!(entry.resource_id.as_deref(), Some("res-1"));
+    }
+
+    #[test]
+    fn invalid_tier_message_lists_allowed_values() {
+        assert!(INVALID_TIER_MSG.contains("free"));
+        assert!(INVALID_TIER_MSG.contains("enterprise"));
+    }
+
+    #[test]
     fn app_error_not_found_serializes_for_admin_handlers() {
         let err = AppError::NotFound("Tenant not found".to_string());
         assert!(matches!(err, AppError::NotFound(_)));

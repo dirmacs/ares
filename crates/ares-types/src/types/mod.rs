@@ -1284,4 +1284,88 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&max).unwrap()).unwrap();
         assert!((parsed.relevance_score - 1.0).abs() < f32::EPSILON);
     }
+
+    #[test]
+    fn test_chat_request_workspace_id_serde_roundtrip() {
+        let req = ChatRequest {
+            message: "ping".into(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: Some("ws-éruka-42".into()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("workspace_id"));
+        let parsed: ChatRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.workspace_id.as_deref(), Some("ws-éruka-42"));
+    }
+
+    #[test]
+    fn test_rag_search_result_serde_roundtrip() {
+        let result = RagSearchResult {
+            id: "chunk-1".into(),
+            content: "snippet".into(),
+            score: 0.75,
+            metadata: DocumentMetadata {
+                title: "Guide".into(),
+                source: "docs/guide.md".into(),
+                tags: vec!["rag".into()],
+                ..Default::default()
+            },
+        };
+        let parsed: RagSearchResult =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        assert_eq!(parsed.id, "chunk-1");
+        assert!((parsed.score - 0.75).abs() < f32::EPSILON);
+        assert_eq!(parsed.metadata.tags, vec!["rag"]);
+    }
+
+    #[test]
+    fn test_semantic_search_result_serde_roundtrip() {
+        let result = SemanticSearchResult {
+            id: "doc-9".into(),
+            content: "semantic hit".into(),
+            similarity: 0.91,
+            metadata: DocumentMetadata::default(),
+        };
+        let parsed: SemanticSearchResult =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        assert_eq!(parsed.content, "semantic hit");
+        assert!((parsed.similarity - 0.91).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_app_error_into_response_status_codes() {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+
+        let cases = [
+            (AppError::Auth("denied".into()), StatusCode::UNAUTHORIZED),
+            (AppError::NotFound("gone".into()), StatusCode::NOT_FOUND),
+            (AppError::InvalidInput("bad".into()), StatusCode::BAD_REQUEST),
+            (AppError::External("upstream".into()), StatusCode::BAD_GATEWAY),
+            (
+                AppError::Unavailable("maintenance".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (AppError::RateLimited("slow".into()), StatusCode::TOO_MANY_REQUESTS),
+            (AppError::FeatureDisabled("off".into()), StatusCode::BAD_REQUEST),
+            (
+                AppError::Database("db".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(err.into_response().status(), expected);
+        }
+    }
+
+    #[test]
+    fn test_agent_type_from_string_is_case_insensitive() {
+        assert_eq!(AgentType::from_string("ROUTER"), AgentType::Router);
+        assert_eq!(AgentType::from_string("Hr"), AgentType::HR);
+        assert_eq!(
+            AgentType::from_string("MyCustom"),
+            AgentType::Custom("MyCustom".into())
+        );
+    }
 }

@@ -328,6 +328,7 @@ impl AuthService {
 mod tests {
     use super::*;
     use std::fmt::Write as _;
+    use std::time::Duration;
 
     const TEST_SECRET: &str = "test-secret-key-that-is-at-least-32-chars";
 
@@ -824,8 +825,8 @@ mod tests {
         let expired_claims = Claims {
             sub: "expired-user".into(),
             email: "expired@example.com".into(),
-            exp: (Utc::now() - Duration::seconds(60)).timestamp() as usize,
-            iat: (Utc::now() - Duration::seconds(120)).timestamp() as usize,
+            exp: (Utc::now() - Duration::from_secs(60)).timestamp() as usize,
+            iat: (Utc::now() - Duration::from_secs(120)).timestamp() as usize,
             jti: String::new(),
         };
         let expired_token = encode(

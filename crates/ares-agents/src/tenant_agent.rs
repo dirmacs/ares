@@ -87,6 +87,27 @@ pub fn agent_config_from_json(json: &serde_json::Value) -> Result<AgentConfig> {
     })
 }
 
+
+pub(crate) fn tenant_agent_disabled_error(agent_name: &str, tenant_id: &str) -> AppError {
+    AppError::NotFound(format!(
+        "Agent '{}' is disabled for tenant '{}'",
+        agent_name, tenant_id
+    ))
+}
+
+pub(crate) fn tenant_agent_not_found_error(agent_name: &str, tenant_id: &str) -> AppError {
+    AppError::NotFound(format!(
+        "Agent '{}' not found for tenant '{}'",
+        agent_name, tenant_id
+    ))
+}
+
+pub(crate) fn legacy_create_should_use_tenant_config(
+    load_result: &Result<Option<(AgentConfig, String)>>,
+) -> bool {
+    matches!(load_result, Ok(Some(_)))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentConfigSource {
     TenantDb,
@@ -139,10 +160,7 @@ async fn load_tenant_agent_config(
 
     let enabled: bool = row.get("enabled");
     if !enabled {
-        return Err(AppError::NotFound(format!(
-            "Agent '{}' is disabled for tenant '{}'",
-            agent_name, tenant_id
-        )));
+        return Err(tenant_agent_disabled_error(agent_name, tenant_id));
     }
 
     let config_json: serde_json::Value = row.get("config");
@@ -192,10 +210,7 @@ pub async fn resolve_required_tenant_agent(
     let Some((agent_config, config_version)) =
         load_tenant_agent_config(pool, tenant_id, agent_name).await?
     else {
-        return Err(AppError::NotFound(format!(
-            "Agent '{}' not found for tenant '{}'",
-            agent_name, tenant_id
-        )));
+        return Err(tenant_agent_not_found_error(agent_name, tenant_id));
     };
 
     let agent = agent_registry
@@ -218,18 +233,29 @@ pub async fn create_tenant_agent(
     tenant_id: &str,
     agent_name: &str,
 ) -> Option<ConfigurableAgent> {
-    match load_tenant_agent_config(pool, tenant_id, agent_name).await {
-        Ok(Some((agent_config, _))) => agent_registry
-            .create_agent_from_config(agent_name, &agent_config)
-            .await
-            .ok(),
-        _ => None,
+    let load_result = load_tenant_agent_config(pool, tenant_id, agent_name).await;
+    if !legacy_create_should_use_tenant_config(&load_result) {
+        return None;
     }
+    let (agent_config, _) = load_result
+        .ok()
+        .and_then(|loaded| loaded)
+        .expect("legacy_create_should_use_tenant_config implies Ok(Some(_))");
+    agent_registry
+        .create_agent_from_config(agent_name, &agent_config)
+        .await
+        .ok()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_config_from_json, tenant_config_version, AgentConfigSource};
+    use super::{
+        agent_config_from_json, legacy_create_should_use_tenant_config,
+        tenant_agent_disabled_error, tenant_agent_not_found_error, tenant_config_version,
+        AgentConfigSource,
+    };
+    use ares_config::toml_config::AgentConfig;
+    use ares_types::types::{AppError, Result as AresResult};
 
     #[test]
     fn tenant_config_requires_model() {
@@ -395,6 +421,173 @@ mod tests {
     fn agent_config_source_as_str() {
         assert_eq!(AgentConfigSource::TenantDb.as_str(), "tenant_db");
         assert_eq!(AgentConfigSource::Registry.as_str(), "registry");
+    }
+
+    #[test]
+    fn tenant_config_version_empty_string_falls_back_to_updated_at() {
+        let version = tenant_config_version(
+            &serde_json::json!({ "version": "" }),
+            99,
+        );
+        assert_eq!(version, "tenant-db:99");
+    }
+
+    #[test]
+    fn tenant_config_version_whitespace_only_falls_back_to_updated_at() {
+        let version = tenant_config_version(
+            &serde_json::json!({ "version": "   " }),
+            77,
+        );
+        assert_eq!(version, "tenant-db:77");
+    }
+
+    #[test]
+    fn tenant_config_version_trims_explicit_version() {
+        let version = tenant_config_version(
+            &serde_json::json!({ "version": "  fleet-9  " }),
+            1,
+        );
+        assert_eq!(version, "fleet-9");
+    }
+
+    #[test]
+    fn tenant_config_minimal_json_uses_defaults() {
+        let config = agent_config_from_json(&serde_json::json!({ "model": "default" }))
+            .expect("model-only config");
+
+        assert_eq!(config.model, "default");
+        assert!(config.system_prompt.is_none());
+        assert!(config.tools.is_empty());
+        assert_eq!(config.max_tool_iterations, 5);
+        assert!(!config.parallel_tools);
+        assert!(config.extra.is_empty());
+    }
+
+    #[test]
+    fn tenant_config_accepts_empty_system_prompt_string() {
+        let config = agent_config_from_json(&serde_json::json!({
+            "model": "default",
+            "system_prompt": ""
+        }))
+        .expect("empty system_prompt string");
+
+        assert_eq!(config.system_prompt.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn tenant_config_accepts_empty_tools_array() {
+        let config = agent_config_from_json(&serde_json::json!({
+            "model": "default",
+            "tools": []
+        }))
+        .expect("empty tools");
+
+        assert!(config.tools.is_empty());
+    }
+
+    #[test]
+    fn tenant_config_accepts_zero_max_tool_iterations() {
+        let config = agent_config_from_json(&serde_json::json!({
+            "model": "default",
+            "max_tool_iterations": 0
+        }))
+        .expect("zero iterations");
+
+        assert_eq!(config.max_tool_iterations, 0);
+    }
+
+    #[test]
+    fn tenant_config_ignores_unknown_top_level_fields() {
+        let config = agent_config_from_json(&serde_json::json!({
+            "model": "default",
+            "memory": { "enabled": true },
+            "custom_flag": true
+        }))
+        .expect("unknown fields ignored");
+
+        assert_eq!(config.model, "default");
+        assert!(config.extra.is_empty());
+    }
+
+    #[test]
+    fn agent_config_source_debug_clone_partial_eq() {
+        let tenant = AgentConfigSource::TenantDb;
+        let registry = AgentConfigSource::Registry;
+        assert_eq!(tenant, tenant);
+        assert_ne!(tenant, registry);
+        assert_eq!(format!("{:?}", tenant), "TenantDb");
+        let copied = tenant;
+        assert_eq!(copied.as_str(), "tenant_db");
+    }
+
+    #[test]
+    fn agent_config_from_json_roundtrips_through_serde_json() {
+        let config = agent_config_from_json(&serde_json::json!({
+            "model": "default",
+            "system_prompt": "roundtrip",
+            "tools": ["search"],
+            "max_tool_iterations": 3,
+            "parallel_tools": true
+        }))
+        .expect("parse config");
+
+        let encoded = serde_json::to_string(&config).expect("encode");
+        let decoded: AgentConfig = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(decoded.model, "default");
+        assert_eq!(decoded.system_prompt.as_deref(), Some("roundtrip"));
+        assert_eq!(decoded.tools, vec!["search".to_string()]);
+        assert_eq!(decoded.max_tool_iterations, 3);
+        assert!(decoded.parallel_tools);
+    }
+
+    #[test]
+    fn tenant_agent_disabled_error_is_not_found() {
+        let err = tenant_agent_disabled_error("product", "tenant-1");
+        assert!(matches!(err, AppError::NotFound(_)));
+        assert!(err.to_string().contains("disabled"));
+        assert!(err.to_string().contains("product"));
+        assert!(err.to_string().contains("tenant-1"));
+    }
+
+    #[test]
+    fn tenant_agent_not_found_error_is_not_found() {
+        let err = tenant_agent_not_found_error("product", "tenant-1");
+        assert!(matches!(err, AppError::NotFound(_)));
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn legacy_create_should_use_tenant_config_only_for_ok_some() {
+        let ok_some: AresResult<Option<(AgentConfig, String)>> = Ok(Some((
+            AgentConfig {
+                model: "default".to_string(),
+                system_prompt: None,
+                tools: vec![],
+                max_tool_iterations: 5,
+                parallel_tools: false,
+                extra: std::collections::HashMap::new(),
+            },
+            "v1".to_string(),
+        )));
+        assert!(legacy_create_should_use_tenant_config(&ok_some));
+
+        let ok_none: AresResult<Option<(AgentConfig, String)>> = Ok(None);
+        assert!(!legacy_create_should_use_tenant_config(&ok_none));
+
+        let err_load: AresResult<Option<(AgentConfig, String)>> = Err(AppError::Database("x".into()));
+        assert!(!legacy_create_should_use_tenant_config(&err_load));
+    }
+
+    #[test]
+    fn tenant_config_rejects_non_integer_max_tool_iterations_float() {
+        let err = agent_config_from_json(&serde_json::json!({
+            "model": "default",
+            "max_tool_iterations": 1.5
+        }))
+        .expect_err("float max_tool_iterations");
+        assert!(err
+            .to_string()
+            .contains("'max_tool_iterations' must be a non-negative integer"));
     }
 
     #[cfg(feature = "postgres")]

@@ -908,19 +908,28 @@ mod tests {
             let registry = registry_with_product("http://127.0.0.1:9");
             let tenant_id = unique_id("invalid-config");
 
-            db_create_tenant_agent(
-                &pool,
+            // Insert invalid config directly via SQL to bypass validation
+            let id = format!("{}-invalid", tenant_id);
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            sqlx::query!(
+                r#"
+                INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, true, $7, $7)
+                "#,
+                &id,
                 &tenant_id,
-                CreateTenantAgentRequest {
-                    agent_name: "product".to_string(),
-                    display_name: "Broken".to_string(),
-                    description: None,
-                    config: json!({ "model": "default", "parallel_tools": "yes" }),
-                },
+                "product",
+                "Broken",
+                Option::<String>::None,
+                &serde_json::json!({ "model": "default", "parallel_tools": "yes" }),
+                now_ts
             )
+            .execute(&pool)
             .await
-            .expect("insert invalid tenant config");
-
+            .expect("insert invalid tenant config via raw SQL");
             let err = match resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product").await {
                 Err(err) => err,
                 Ok(_) => panic!("invalid tenant config should fail"),
@@ -935,23 +944,33 @@ mod tests {
             let registry = registry_with_product("http://127.0.0.1:9");
             let tenant_id = unique_id("legacy-invalid");
 
-            db_create_tenant_agent(
-                &pool,
+            // Insert invalid config directly via SQL to bypass validation
+            let id = format!("{}-invalid", tenant_id);
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            sqlx::query!(
+                r#"
+                INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, true, $7, $7)
+                "#,
+                &id,
                 &tenant_id,
-                CreateTenantAgentRequest {
-                    agent_name: "product".to_string(),
-                    display_name: "Broken".to_string(),
-                    description: None,
-                    config: json!({ "model": "" }),
-                },
+                "product",
+                "Broken",
+                Option::<String>::None,
+                &serde_json::json!({ "model": "" }),
+                now_ts
             )
+            .execute(&pool)
             .await
-            .expect("insert empty-model tenant config");
+            .expect("insert empty-model tenant config via raw SQL");
 
             let agent = create_tenant_agent(&pool, &registry, &tenant_id, "product").await;
             assert!(agent.is_none());
-        }
 
+        }
         #[test]
         fn agent_config_from_json_matches_tenant_db_shape() {
             let config = agent_config_from_json(&json!({

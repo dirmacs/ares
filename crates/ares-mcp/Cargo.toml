@@ -8,7 +8,7 @@ authors.workspace = true
 publish = false
 description = "Model Context Protocol integration for A.R.E.S"
 [features]
-default = []
+default = ["mcp", "postgres"]
 mcp = ["dep:rmcp","dep:reqwest","dep:serde","dep:serde_json","dep:thiserror","dep:tokio","dep:tracing","dep:toml","dep:toon-format"]
 postgres = ["dep:sqlx","dep:ares-db","ares-db/postgres"]
 [dependencies]

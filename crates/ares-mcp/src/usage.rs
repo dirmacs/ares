@@ -427,4 +427,44 @@ mod tests {
             assert_eq!(back, record);
         }
     }
+
+    #[cfg(feature = "postgres")]
+    mod postgres_usage_tests {
+        use super::*;
+        use ares_db::PostgresClient;
+
+        #[tokio::test]
+        async fn record_mcp_usage_does_not_fail_when_database_unavailable() {
+            let pool = PostgresClient::new_test().pool.clone();
+            let result = record_mcp_usage(
+                &pool,
+                "tenant-test-001",
+                McpOperation::ListAgents,
+                0,
+                true,
+                25,
+            )
+            .await;
+
+            assert!(result.is_ok(), "usage tracking must not block tool calls");
+        }
+
+        #[tokio::test]
+        async fn check_quota_returns_error_when_database_unavailable() {
+            let pool = PostgresClient::new_test().pool.clone();
+            let result = check_quota(&pool, "tenant-test-001", "free").await;
+
+            let err = result.expect_err("expected database error");
+            match err {
+                AppError::Database(msg) => {
+                    assert!(
+                        msg.contains("Failed to check quota"),
+                        "unexpected message: {msg}"
+                    );
+                }
+                other => panic!("expected Database error, got {other:?}"),
+            }
+        }
+    }
+
 }

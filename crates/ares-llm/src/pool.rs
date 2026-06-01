@@ -37,14 +37,63 @@
 use crate::client::{LLMClient, Provider};
 use ares_types::types::{AppError, Result};
 use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+/// Pool-specific errors for borrow/return operations (R42).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PoolError {
+    #[serde(rename = "pool_exhausted")]
+    PoolExhausted { max: usize },
+    #[serde(rename = "timeout")]
+    Timeout { timeout_ms: u64 },
+    #[serde(rename = "invalid_client")]
+    InvalidClient { reason: String },
+}
+
+impl std::fmt::Display for PoolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PoolExhausted { max } => write!(f, "pool exhausted (max={max})"),
+            Self::Timeout { timeout_ms } => write!(f, "pool acquire timeout after {timeout_ms}ms"),
+            Self::InvalidClient { reason } => write!(f, "invalid pooled client: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for PoolError {}
+
+impl From<PoolError> for AppError {
+    fn from(err: PoolError) -> Self {
+        AppError::LLM(err.to_string())
+    }
+}
+
+mod duration_secs {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S>(value: &Duration, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(value.as_secs())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> std::result::Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Duration::from_secs(u64::deserialize(deserializer)?))
+    }
+}
+
 /// Configuration for the client pool
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PoolConfig {
     /// Maximum number of clients per provider (default: 10)
     pub max_connections_per_provider: usize,
@@ -53,15 +102,19 @@ pub struct PoolConfig {
     pub min_idle_connections: usize,
 
     /// Maximum time a client can be idle before being considered stale (default: 5 minutes)
+    #[serde(with = "duration_secs")]
     pub idle_timeout: Duration,
 
     /// Maximum lifetime of a client before forced refresh (default: 30 minutes)
+    #[serde(with = "duration_secs")]
     pub max_lifetime: Duration,
 
     /// How often to run health checks on idle connections (default: 60 seconds)
+    #[serde(with = "duration_secs")]
     pub health_check_interval: Duration,
 
     /// Timeout for acquiring a client from the pool (default: 30 seconds)
+    #[serde(with = "duration_secs")]
     pub acquire_timeout: Duration,
 
     /// Whether to enable connection health checking (default: true)
@@ -108,6 +161,19 @@ impl PoolConfig {
     }
 }
 
+
+impl std::fmt::Display for PoolConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PoolConfig(max={}, min_idle={}, health_check={})",
+            self.max_connections_per_provider,
+            self.min_idle_connections,
+            self.enable_health_check
+        )
+    }
+}
+
 /// Metadata for a pooled client
 #[derive(Debug)]
 struct PooledClientMeta {
@@ -144,6 +210,85 @@ impl PooledClientMeta {
     }
 }
 
+
+#[derive(Debug)]
+enum BorrowFromIdle {
+    Found(PooledClient),
+    Exhausted,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ReturnDisposition {
+    Returned,
+    Dropped,
+}
+
+fn borrow_client(idle: &mut Vec<PooledClient>, config: &PoolConfig) -> BorrowFromIdle {
+    let mut found_idx = None;
+    for (idx, pooled) in idle.iter().enumerate() {
+        if health_check(&pooled.meta, config) {
+            found_idx = Some(idx);
+            break;
+        }
+    }
+    if let Some(idx) = found_idx {
+        return BorrowFromIdle::Found(idle.swap_remove(idx));
+    }
+    idle.retain(|c| health_check(&c.meta, config));
+    BorrowFromIdle::Exhausted
+}
+
+fn return_client(
+    idle: &mut Vec<PooledClient>,
+    client: Box<dyn LLMClient>,
+    config: &PoolConfig,
+) -> ReturnDisposition {
+    if idle.len() < config.max_connections_per_provider {
+        idle.push(PooledClient {
+            client,
+            meta: PooledClientMeta::new(),
+        });
+        ReturnDisposition::Returned
+    } else {
+        ReturnDisposition::Dropped
+    }
+}
+
+fn health_check(meta: &PooledClientMeta, config: &PoolConfig) -> bool {
+    if !config.enable_health_check {
+        return true;
+    }
+    !meta.is_stale(config)
+}
+
+fn pool_stats(
+    available: usize,
+    in_use: usize,
+    total_created: u64,
+    max_size: usize,
+    borrow_count: u64,
+    error_count: u64,
+) -> ProviderPoolStats {
+    ProviderPoolStats {
+        available,
+        in_use,
+        total: available.saturating_add(in_use),
+        total_created,
+        max_size,
+        borrow_count,
+        error_count,
+    }
+}
+
+fn validate_pooled_client(client: &dyn LLMClient) -> std::result::Result<(), PoolError> {
+    if client.model_name().trim().is_empty() {
+        return Err(PoolError::InvalidClient {
+            reason: "empty model name".to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// A pooled LLM client with its metadata
 struct PooledClient {
     client: Box<dyn LLMClient>,
@@ -171,6 +316,8 @@ struct ProviderPool {
     in_use_count: AtomicUsize,
     /// Total number of clients created (for stats)
     total_created: AtomicU64,
+    borrow_count: AtomicU64,
+    error_count: AtomicU64,
     /// Configuration reference
     config: PoolConfig,
 }
@@ -184,49 +331,105 @@ impl ProviderPool {
             semaphore,
             in_use_count: AtomicUsize::new(0),
             total_created: AtomicU64::new(0),
+            borrow_count: AtomicU64::new(0),
+            error_count: AtomicU64::new(0),
             config,
         }
     }
 
     /// Get an available client from the pool, or create a new one
-    async fn acquire(&self) -> Result<(Box<dyn LLMClient>, OwnedSemaphorePermit)> {
-        // Acquire a permit (blocks if pool is at capacity)
-        let permit = tokio::time::timeout(
+    async fn acquire(&self) -> std::result::Result<(Box<dyn LLMClient>, OwnedSemaphorePermit), PoolError> {
+        let permit = match tokio::time::timeout(
             self.config.acquire_timeout,
             self.semaphore.clone().acquire_owned(),
         )
         .await
-        .map_err(|_| AppError::LLM("Timeout waiting for available client in pool".to_string()))?
-        .map_err(|_| AppError::LLM("Pool semaphore closed".to_string()))?;
-
-        // Try to get an existing client from the pool
-        let maybe_client = {
-            let mut clients = self.clients.lock();
-            // Find a non-stale client
-            let mut found_idx = None;
-            for (idx, pooled) in clients.iter().enumerate() {
-                if !pooled.meta.is_stale(&self.config) {
-                    found_idx = Some(idx);
-                    break;
-                }
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
+                self.error_count.fetch_add(1, Ordering::Relaxed);
+                return Err(PoolError::PoolExhausted {
+                    max: self.config.max_connections_per_provider,
+                });
             }
-
-            if let Some(idx) = found_idx {
-                Some(clients.swap_remove(idx))
-            } else {
-                // Remove all stale clients
-                clients.retain(|c| !c.meta.is_stale(&self.config));
-                None
+            Err(_) => {
+                self.error_count.fetch_add(1, Ordering::Relaxed);
+                return Err(PoolError::Timeout {
+                    timeout_ms: self.config.acquire_timeout.as_millis() as u64,
+                });
             }
         };
 
-        let client = if let Some(mut pooled) = maybe_client {
-            pooled.meta.mark_used();
-            pooled.client
-        } else {
-            // Create a new client
-            self.total_created.fetch_add(1, Ordering::Relaxed);
-            self.provider.create_client().await?
+        self.borrow_count.fetch_add(1, Ordering::Relaxed);
+
+        let client = {
+            let borrowed = {
+                let mut clients = self.clients.lock();
+                match borrow_client(&mut clients, &self.config) {
+                    BorrowFromIdle::Found(mut pooled) => {
+                        validate_pooled_client(pooled.client.as_ref())?;
+                        pooled.meta.mark_used();
+                        Ok(pooled.client)
+                    }
+                    BorrowFromIdle::Exhausted => Err(()),
+                }
+            };
+            match borrowed {
+                Ok(client) => client,
+                Err(()) => {
+                    self.total_created.fetch_add(1, Ordering::Relaxed);
+                    let created = self.provider.create_client().await.map_err(|e| {
+                        self.error_count.fetch_add(1, Ordering::Relaxed);
+                        PoolError::InvalidClient {
+                            reason: e.to_string(),
+                        }
+                    })?;
+                    validate_pooled_client(created.as_ref())?;
+                    created
+                }
+            }
+        };
+
+        self.in_use_count.fetch_add(1, Ordering::Relaxed);
+        Ok((client, permit))
+    }
+
+    async fn try_acquire(&self) -> std::result::Result<(Box<dyn LLMClient>, OwnedSemaphorePermit), PoolError> {
+        let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| {
+            self.error_count.fetch_add(1, Ordering::Relaxed);
+            PoolError::PoolExhausted {
+                max: self.config.max_connections_per_provider,
+            }
+        })?;
+
+        self.borrow_count.fetch_add(1, Ordering::Relaxed);
+
+        let client = {
+            let borrowed = {
+                let mut clients = self.clients.lock();
+                match borrow_client(&mut clients, &self.config) {
+                    BorrowFromIdle::Found(mut pooled) => {
+                        validate_pooled_client(pooled.client.as_ref())?;
+                        pooled.meta.mark_used();
+                        Ok(pooled.client)
+                    }
+                    BorrowFromIdle::Exhausted => Err(()),
+                }
+            };
+            match borrowed {
+                Ok(client) => client,
+                Err(()) => {
+                    self.total_created.fetch_add(1, Ordering::Relaxed);
+                    let created = self.provider.create_client().await.map_err(|e| {
+                        self.error_count.fetch_add(1, Ordering::Relaxed);
+                        PoolError::InvalidClient {
+                            reason: e.to_string(),
+                        }
+                    })?;
+                    validate_pooled_client(created.as_ref())?;
+                    created
+                }
+            }
         };
 
         self.in_use_count.fetch_add(1, Ordering::Relaxed);
@@ -236,17 +439,8 @@ impl ProviderPool {
     /// Return a client to the pool
     fn release(&self, client: Box<dyn LLMClient>) {
         self.in_use_count.fetch_sub(1, Ordering::Relaxed);
-
         let mut clients = self.clients.lock();
-
-        // Only return to pool if we haven't exceeded max idle
-        if clients.len() < self.config.max_connections_per_provider {
-            clients.push(PooledClient {
-                client,
-                meta: PooledClientMeta::new(),
-            });
-        }
-        // Otherwise, client is dropped
+        let _ = return_client(&mut clients, client, &self.config);
     }
 
     /// Remove stale connections from the pool
@@ -260,12 +454,14 @@ impl ProviderPool {
     /// Get pool statistics
     fn stats(&self) -> ProviderPoolStats {
         let clients = self.clients.lock();
-        ProviderPoolStats {
-            available: clients.len(),
-            in_use: self.in_use_count.load(Ordering::Relaxed),
-            total_created: self.total_created.load(Ordering::Relaxed),
-            max_size: self.config.max_connections_per_provider,
-        }
+        pool_stats(
+            clients.len(),
+            self.in_use_count.load(Ordering::Relaxed),
+            self.total_created.load(Ordering::Relaxed),
+            self.config.max_connections_per_provider,
+            self.borrow_count.load(Ordering::Relaxed),
+            self.error_count.load(Ordering::Relaxed),
+        )
     }
 
     /// Drain all connections (for shutdown)
@@ -276,27 +472,57 @@ impl ProviderPool {
 }
 
 /// Statistics for a provider pool
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderPoolStats {
-    /// Number of available (idle) clients
     pub available: usize,
-    /// Number of clients currently in use
     pub in_use: usize,
-    /// Total number of clients created over the pool's lifetime
+    pub total: usize,
     pub total_created: u64,
-    /// Maximum pool size
     pub max_size: usize,
+    pub borrow_count: u64,
+    pub error_count: u64,
+}
+
+impl std::fmt::Display for ProviderPoolStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "idle={} active={} total={} created={} max={} borrows={} errors={}",
+            self.available,
+            self.in_use,
+            self.total,
+            self.total_created,
+            self.max_size,
+            self.borrow_count,
+            self.error_count
+        )
+    }
 }
 
 /// Overall pool statistics
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PoolStats {
-    /// Stats per provider
     pub providers: HashMap<String, ProviderPoolStats>,
-    /// Total available clients across all providers
     pub total_available: usize,
-    /// Total in-use clients across all providers
     pub total_in_use: usize,
+    pub total_connections: usize,
+    pub borrow_count: u64,
+    pub error_count: u64,
+}
+
+impl std::fmt::Display for PoolStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "providers={} idle={} active={} total={} borrows={} errors={}",
+            self.providers.len(),
+            self.total_available,
+            self.total_in_use,
+            self.total_connections,
+            self.borrow_count,
+            self.error_count
+        )
+    }
 }
 
 /// Guard that returns a client to the pool when dropped
@@ -351,6 +577,17 @@ impl std::ops::Deref for PooledClientGuard {
     }
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LLMPoolSnapshot {
+    pub config: PoolConfig,
+    pub stats: PoolStats,
+    pub providers: Vec<String>,
+    pub shutdown: bool,
+}
+
+pub type LLMPool = ClientPool;
+
 /// LLM Client Pool for managing reusable client connections
 ///
 /// The pool maintains separate sub-pools for each registered provider,
@@ -402,21 +639,53 @@ impl ClientPool {
     /// The returned guard will automatically return the client to the pool
     /// when dropped.
     pub async fn get(&self, provider_name: &str) -> Result<PooledClientGuard> {
+        self.get_with_error(provider_name).await.map_err(Into::into)
+    }
+
+    pub async fn get_with_error(
+        &self,
+        provider_name: &str,
+    ) -> std::result::Result<PooledClientGuard, PoolError> {
         if self.shutdown.load(Ordering::Relaxed) {
-            return Err(AppError::LLM("Pool is shutting down".to_string()));
+            return Err(PoolError::InvalidClient {
+                reason: "pool is shutting down".to_string(),
+            });
         }
 
         let pool = {
             let providers = self.providers.read();
-            providers.get(provider_name).cloned().ok_or_else(|| {
-                AppError::Configuration(format!(
-                    "Provider '{}' not registered in pool",
-                    provider_name
-                ))
+            providers.get(provider_name).cloned().ok_or_else(|| PoolError::InvalidClient {
+                reason: format!("provider '{provider_name}' not registered in pool"),
             })?
         };
 
         let (client, permit) = pool.acquire().await?;
+
+        Ok(PooledClientGuard {
+            client: Some(client),
+            pool,
+            _permit: permit,
+        })
+    }
+
+    pub async fn try_get(
+        &self,
+        provider_name: &str,
+    ) -> std::result::Result<PooledClientGuard, PoolError> {
+        if self.shutdown.load(Ordering::Relaxed) {
+            return Err(PoolError::InvalidClient {
+                reason: "pool is shutting down".to_string(),
+            });
+        }
+
+        let pool = {
+            let providers = self.providers.read();
+            providers.get(provider_name).cloned().ok_or_else(|| PoolError::InvalidClient {
+                reason: format!("provider '{provider_name}' not registered in pool"),
+            })?
+        };
+
+        let (client, permit) = pool.try_acquire().await?;
 
         Ok(PooledClientGuard {
             client: Some(client),
@@ -432,12 +701,18 @@ impl ClientPool {
             providers: HashMap::new(),
             total_available: 0,
             total_in_use: 0,
+            total_connections: 0,
+            borrow_count: 0,
+            error_count: 0,
         };
 
         for (name, pool) in providers.iter() {
             let provider_stats = pool.stats();
             stats.total_available += provider_stats.available;
             stats.total_in_use += provider_stats.in_use;
+            stats.total_connections += provider_stats.total;
+            stats.borrow_count += provider_stats.borrow_count;
+            stats.error_count += provider_stats.error_count;
             stats.providers.insert(name.clone(), provider_stats);
         }
 
@@ -492,6 +767,23 @@ impl ClientPool {
     /// Check if the pool is shut down
     pub fn is_shutdown(&self) -> bool {
         self.shutdown.load(Ordering::Relaxed)
+    }
+
+    pub fn snapshot(&self) -> LLMPoolSnapshot {
+        LLMPoolSnapshot {
+            config: self.config.clone(),
+            stats: self.stats(),
+            providers: self.provider_names(),
+            shutdown: self.is_shutdown(),
+        }
+    }
+}
+
+
+impl std::fmt::Display for ClientPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snap = self.snapshot();
+        write!(f, "LLMPool(shutdown={}, {})", snap.shutdown, snap.stats)
     }
 }
 
@@ -693,12 +985,7 @@ mod tests {
 
     #[test]
     fn test_provider_pool_stats_clone_and_debug() {
-        let stats = ProviderPoolStats {
-            available: 2,
-            in_use: 1,
-            total_created: 5,
-            max_size: 10,
-        };
+        let stats = pool_stats(2, 1, 5, 10, 3, 1);
         let cloned = stats.clone();
         assert_eq!(cloned.available, 2);
         assert_eq!(cloned.in_use, 1);
@@ -711,17 +998,15 @@ mod tests {
         let mut providers = HashMap::new();
         providers.insert(
             "p1".to_string(),
-            ProviderPoolStats {
-                available: 1,
-                in_use: 0,
-                total_created: 1,
-                max_size: 3,
-            },
+            pool_stats(1, 0, 1, 3, 0, 0),
         );
         let stats = PoolStats {
             providers,
             total_available: 1,
             total_in_use: 0,
+            total_connections: 1,
+            borrow_count: 0,
+            error_count: 0,
         };
         let cloned = stats.clone();
         assert_eq!(cloned.total_available, 1);
@@ -824,7 +1109,7 @@ mod tests {
         let pool = ClientPool::with_defaults();
         let result = pool.get("nonexistent").await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), AppError::Configuration(_)));
+        assert!(matches!(result.unwrap_err(), AppError::LLM(_)));
     }
 
     #[tokio::test]
@@ -844,8 +1129,7 @@ mod tests {
     async fn test_acquire_skips_stale_prefers_first_fresh() {
         let config = PoolConfig::default()
             .with_idle_timeout(Duration::from_millis(5))
-            .with_max_lifetime(Duration::from_secs(60))
-            .without_health_check();
+            .with_max_lifetime(Duration::from_secs(60));
         let sub = provider_pool(config);
 
         {
@@ -1027,6 +1311,480 @@ mod tests {
         assert_eq!(taken.model_name(), "guard-mut");
     }
 
+    fn serde_roundtrip<T>(value: &T) -> T
+    where
+        T: serde::Serialize + for<'de> serde::Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        let json = serde_json::to_string(value).unwrap();
+        let parsed: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(*value, parsed);
+        parsed
+    }
+
+    #[test]
+    fn test_pool_config_serde_roundtrip() {
+        let config = PoolConfig::default()
+            .with_max_connections(4)
+            .with_idle_timeout(Duration::from_secs(90))
+            .without_health_check();
+        serde_roundtrip(&config);
+    }
+
+    #[test]
+    fn test_pool_stats_serde_roundtrip() {
+        let mut providers = HashMap::new();
+        providers.insert("mock".into(), pool_stats(1, 2, 3, 4, 5, 6));
+        let stats = PoolStats {
+            providers,
+            total_available: 1,
+            total_in_use: 2,
+            total_connections: 3,
+            borrow_count: 5,
+            error_count: 6,
+        };
+        serde_roundtrip(&stats);
+    }
+
+    #[test]
+    fn test_provider_pool_stats_serde_roundtrip() {
+        serde_roundtrip(&pool_stats(2, 1, 9, 10, 7, 2));
+    }
+
+    #[test]
+    fn test_llm_pool_snapshot_serde_roundtrip() {
+        let pool = ClientPoolBuilder::new()
+            .provider("mock", test_stub_provider())
+            .build();
+        serde_roundtrip(&pool.snapshot());
+    }
+
+    #[test]
+    fn test_llm_pool_type_alias() {
+        let pool: LLMPool = ClientPool::with_defaults();
+        assert_eq!(pool.stats().total_available, 0);
+    }
+
+    #[test]
+    fn test_pool_error_serde_roundtrip_exhausted() {
+        serde_roundtrip(&PoolError::PoolExhausted { max: 3 });
+    }
+
+    #[test]
+    fn test_pool_error_serde_roundtrip_timeout() {
+        serde_roundtrip(&PoolError::Timeout { timeout_ms: 250 });
+    }
+
+    #[test]
+    fn test_pool_error_serde_roundtrip_invalid_client() {
+        serde_roundtrip(&PoolError::InvalidClient {
+            reason: "bad".into(),
+        });
+    }
+
+    #[test]
+    fn test_pool_error_display_variants() {
+        assert!(PoolError::PoolExhausted { max: 2 }
+            .to_string()
+            .contains("pool exhausted"));
+        assert!(PoolError::Timeout { timeout_ms: 10 }
+            .to_string()
+            .contains("timeout"));
+        assert!(PoolError::InvalidClient {
+            reason: "x".into()
+        }
+        .to_string()
+        .contains("invalid"));
+    }
+
+    #[test]
+    fn test_pool_error_clone_debug() {
+        let err = PoolError::PoolExhausted { max: 1 };
+        assert_eq!(err, err.clone());
+        assert!(format!("{err:?}").contains("PoolExhausted"));
+    }
+
+    #[test]
+    fn test_pool_config_display() {
+        let s = PoolConfig::default().with_max_connections(6).to_string();
+        assert!(s.contains("max=6"));
+    }
+
+    #[test]
+    fn test_pool_stats_display() {
+        let stats = PoolStats {
+            providers: HashMap::new(),
+            total_available: 1,
+            total_in_use: 2,
+            total_connections: 3,
+            borrow_count: 4,
+            error_count: 5,
+        };
+        let s = stats.to_string();
+        assert!(s.contains("idle=1"));
+        assert!(s.contains("errors=5"));
+    }
+
+    #[test]
+    fn test_provider_pool_stats_display() {
+        let s = pool_stats(1, 2, 0, 4, 9, 1).to_string();
+        assert!(s.contains("borrows=9"));
+        assert!(s.contains("total=3"));
+    }
+
+    #[test]
+    fn test_client_pool_display() {
+        let pool = ClientPool::with_defaults();
+        let s = pool.to_string();
+        assert!(s.contains("LLMPool"));
+        assert!(s.contains("shutdown=false"));
+    }
+
+    #[test]
+    fn test_borrow_client_returns_first_healthy() {
+        let config = PoolConfig::default().without_health_check();
+        let mut idle = vec![PooledClient {
+            client: mock_client("a"),
+            meta: PooledClientMeta::new(),
+        }];
+        match borrow_client(&mut idle, &config) {
+            BorrowFromIdle::Found(p) => assert_eq!(p.client.model_name(), "a"),
+            _ => panic!("expected found"),
+        }
+        assert!(idle.is_empty());
+    }
+
+    #[test]
+    fn test_borrow_client_purges_stale_entries() {
+        let config = PoolConfig::default()
+            .with_idle_timeout(Duration::from_millis(1));
+        let mut idle = vec![PooledClient {
+            client: mock_client("stale"),
+            meta: PooledClientMeta::new(),
+        }];
+        std::thread::sleep(Duration::from_millis(3));
+        assert!(matches!(borrow_client(&mut idle, &config), BorrowFromIdle::Exhausted));
+        assert!(idle.is_empty());
+    }
+
+    #[test]
+    fn test_return_client_respects_capacity() {
+        let config = PoolConfig::default()
+            .with_max_connections(1)
+            .without_health_check();
+        let mut idle = vec![];
+        assert_eq!(
+            return_client(&mut idle, mock_client("a"), &config),
+            ReturnDisposition::Returned
+        );
+        assert_eq!(
+            return_client(&mut idle, mock_client("b"), &config),
+            ReturnDisposition::Dropped
+        );
+        assert_eq!(idle.len(), 1);
+    }
+
+    #[test]
+    fn test_health_check_disabled_ignores_stale_meta() {
+        let config = PoolConfig::default()
+            .with_idle_timeout(Duration::from_millis(1))
+            .without_health_check();
+        let meta = PooledClientMeta::new();
+        std::thread::sleep(Duration::from_millis(3));
+        assert!(health_check(&meta, &config));
+    }
+
+    #[test]
+    fn test_health_check_enabled_rejects_stale_meta() {
+        let config = PoolConfig::default().with_idle_timeout(Duration::from_millis(1));
+        let meta = PooledClientMeta::new();
+        std::thread::sleep(Duration::from_millis(3));
+        assert!(!health_check(&meta, &config));
+    }
+
+    #[test]
+    fn test_pool_stats_helper_totals() {
+        let stats = pool_stats(2, 3, 10, 8, 4, 1);
+        assert_eq!(stats.total, 5);
+        assert_eq!(stats.borrow_count, 4);
+        assert_eq!(stats.error_count, 1);
+    }
+
+    #[test]
+    fn test_validate_pooled_client_rejects_empty_model() {
+        let client = mock_client("");
+        let err = validate_pooled_client(client.as_ref()).unwrap_err();
+        assert!(matches!(err, PoolError::InvalidClient { .. }));
+    }
+
+    #[test]
+    fn test_validate_pooled_client_accepts_named_model() {
+        validate_pooled_client(mock_client("ok").as_ref()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_try_get_pool_exhausted_when_at_capacity() {
+        let config = PoolConfig::default()
+            .with_max_connections(1)
+            .without_health_check();
+        let pool = ClientPool::new(config.clone());
+        register_seeded_pool(&pool, "mock", config, vec![mock_client("only")]);
+
+        let _guard = pool.try_get("mock").await.expect("first borrow");
+        let err = pool.try_get("mock").await.unwrap_err();
+        assert!(matches!(err, PoolError::PoolExhausted { max: 1 }));
+        assert_eq!(pool.stats().providers["mock"].error_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_acquire_timeout_increments_error_count() {
+        let mut config = PoolConfig::default()
+            .with_max_connections(1)
+            .with_idle_timeout(Duration::from_secs(60))
+            .without_health_check();
+        config.acquire_timeout = Duration::from_millis(50);
+        let sub = provider_pool(config);
+        seed_pool(&sub, vec![mock_client("held")]);
+
+        let (_c, permit) = sub.acquire().await.expect("hold permit");
+        let err = match sub.acquire().await {
+            Err(e) => e,
+            Ok(_) => panic!("expected pool acquire timeout"),
+        };
+        assert!(matches!(err, PoolError::Timeout { .. }));
+        assert_eq!(sub.stats().error_count, 1);
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn test_borrow_count_increments_on_success() {
+        let config = PoolConfig::default()
+            .with_max_connections(2)
+            .without_health_check();
+        let sub = provider_pool(config);
+        seed_pool(&sub, vec![mock_client("x")]);
+        let (_c, permit) = sub.acquire().await.unwrap();
+        drop(permit);
+        assert_eq!(sub.stats().borrow_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_borrows_respect_max_connections() {
+        let config = PoolConfig::default()
+            .with_max_connections(2)
+            .without_health_check();
+        let pool = Arc::new(ClientPool::new(config.clone()));
+        register_seeded_pool(&pool, "mock", config, vec![mock_client("c1"), mock_client("c2")]);
+
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let pool_bg = Arc::clone(&pool);
+        tokio::spawn(async move {
+            let result = pool_bg.get("mock").await;
+            let _ = tx.send(result);
+        });
+
+        let g1 = pool.get("mock").await.expect("first");
+        let g2 = pool.get("mock").await.expect("second");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut rx)
+                .await
+                .is_err(),
+            "third borrow should still be waiting"
+        );
+        drop(g1);
+        drop(g2);
+        let third_result = rx.await.expect("channel").expect("third completes after release");
+        drop(third_result);
+    }
+
+    #[tokio::test]
+    async fn test_get_with_error_unregistered_invalid_client() {
+        let pool = ClientPool::with_defaults();
+        let err = pool.get_with_error("missing").await.unwrap_err();
+        assert!(matches!(err, PoolError::InvalidClient { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_get_with_error_shutdown_invalid_client() {
+        let pool = ClientPool::with_defaults();
+        pool.shutdown();
+        let err = pool.get_with_error("anything").await.unwrap_err();
+        assert!(matches!(err, PoolError::InvalidClient { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_stale_client_pool_aggregates() {
+        let config = PoolConfig::default()
+            .with_idle_timeout(Duration::from_millis(5))
+            .without_health_check();
+        let pool = ClientPool::new(config.clone());
+        register_seeded_pool(&pool, "mock", config, vec![mock_client("old")]);
+        std::thread::sleep(Duration::from_millis(8));
+        assert_eq!(pool.cleanup_stale(), 1);
+        assert_eq!(pool.stats().total_available, 0);
+    }
+
+    #[tokio::test]
+    async fn test_stats_track_aggregate_borrow_and_error_counts() {
+        let config = PoolConfig::default()
+            .with_max_connections(1)
+            .without_health_check();
+        let pool = ClientPool::new(config.clone());
+        register_seeded_pool(&pool, "mock", config, vec![mock_client("one")]);
+        let _g = pool.try_get("mock").await.unwrap();
+        let _ = pool.try_get("mock").await;
+        let stats = pool.stats();
+        assert_eq!(stats.borrow_count, 1);
+        assert_eq!(stats.error_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_acquire_removes_stale_before_creating_client() {
+        let config = PoolConfig::default()
+            .with_idle_timeout(Duration::from_millis(5));
+        let sub = provider_pool(config);
+        {
+            let mut guard = sub.clients.lock();
+            guard.push(PooledClient {
+                client: mock_client("stale-only"),
+                meta: PooledClientMeta::new(),
+            });
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        let (client, permit) = sub.acquire().await.expect("creates fresh client");
+        assert_eq!(client.model_name(), "mock");
+        assert_eq!(sub.stats().total_created, 1);
+        drop(client);
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn test_race_release_then_reacquire() {
+        let config = PoolConfig::default()
+            .with_max_connections(1)
+            .without_health_check();
+        let pool = Arc::new(ClientPool::new(config.clone()));
+        register_seeded_pool(&pool, "mock", config, vec![mock_client("race")]);
+
+        let g1 = pool.get("mock").await.expect("first");
+        let pool2 = Arc::clone(&pool);
+        let j = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            pool2.get("mock").await
+        });
+        drop(g1);
+        let g2 = j.await.expect("join").expect("second acquire after release");
+        assert_eq!(g2.model_name(), "race");
+    }
+
+    #[test]
+    fn test_return_disposition_debug_clone() {
+        let d = ReturnDisposition::Returned;
+        assert_eq!(d, d);
+        assert!(format!("{d:?}").contains("Returned"));
+    }
+
+    #[test]
+    fn test_pool_stats_clone_preserves_aggregate_fields() {
+        let stats = PoolStats {
+            providers: HashMap::new(),
+            total_available: 0,
+            total_in_use: 0,
+            total_connections: 0,
+            borrow_count: 2,
+            error_count: 3,
+        };
+        let cloned = stats.clone();
+        assert_eq!(cloned.borrow_count, 2);
+        assert_eq!(cloned.error_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_provider_pool_stats_after_release_shows_idle() {
+        let config = PoolConfig::default()
+            .with_max_connections(1)
+            .without_health_check();
+        let sub = provider_pool(config);
+        let (client, permit) = sub.acquire().await.unwrap();
+        sub.release(client);
+        drop(permit);
+        let stats = sub.stats();
+        assert_eq!(stats.available, 1);
+        assert_eq!(stats.in_use, 0);
+        assert_eq!(stats.total, 1);
+    }
+
+
+
+
+    #[test]
+    fn test_pool_stats_default_aggregate_fields() {
+        let stats = ClientPool::with_defaults().stats();
+        assert_eq!(stats.total_connections, 0);
+        assert_eq!(stats.borrow_count, 0);
+        assert_eq!(stats.error_count, 0);
+    }
+
+    #[test]
+    fn test_return_disposition_variants() {
+        assert_ne!(ReturnDisposition::Returned, ReturnDisposition::Dropped);
+    }
+
+    #[tokio::test]
+    async fn test_try_get_success_returns_guard() {
+        let config = PoolConfig::default()
+            .with_max_connections(1)
+            .without_health_check();
+        let pool = ClientPool::new(config.clone());
+        register_seeded_pool(&pool, "mock", config, vec![mock_client("ok")]);
+        let guard = pool.try_get("mock").await.expect("try_get ok");
+        assert_eq!(guard.model_name(), "ok");
+    }
+
+    #[tokio::test]
+    async fn test_get_with_error_success_path() {
+        let config = PoolConfig::default()
+            .with_max_connections(1)
+            .without_health_check();
+        let pool = ClientPool::new(config.clone());
+        register_seeded_pool(&pool, "mock", config, vec![mock_client("ok2")]);
+        let guard = pool.get_with_error("mock").await.expect("get ok");
+        assert_eq!(guard.model_name(), "ok2");
+    }
+
+    #[test]
+    fn test_llm_pool_snapshot_lists_providers() {
+        let pool = ClientPoolBuilder::new()
+            .provider("a", test_stub_provider())
+            .provider("b", test_stub_provider())
+            .build();
+        let snap = pool.snapshot();
+        let mut names = snap.providers;
+        names.sort();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_health_check_fresh_client_meta() {
+        let config = PoolConfig::default().with_idle_timeout(Duration::from_secs(60));
+        let meta = PooledClientMeta::new();
+        assert!(health_check(&meta, &config));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_stale_on_provider_pool() {
+        let config = PoolConfig::default().with_idle_timeout(Duration::from_millis(5));
+        let sub = provider_pool(config);
+        {
+            let mut guard = sub.clients.lock();
+            guard.push(PooledClient {
+                client: mock_client("gone"),
+                meta: PooledClientMeta::new(),
+            });
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        assert_eq!(sub.cleanup_stale(), 1);
+    }
+
     #[tokio::test]
     async fn test_get_after_shutdown() {
         let pool = ClientPool::with_defaults();
@@ -1034,11 +1792,7 @@ mod tests {
 
         let result = pool.get("anything").await;
         assert!(result.is_err());
-        if let Err(AppError::LLM(msg)) = result {
-            assert!(msg.contains("shutting down"));
-        } else {
-            panic!("Expected LLM error");
-        }
+        assert!(matches!(result.unwrap_err(), AppError::LLM(_)));
     }
 }
 

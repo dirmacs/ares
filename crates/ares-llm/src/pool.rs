@@ -552,123 +552,22 @@ impl Default for ClientPoolBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::LLMResponse;
-    #[cfg(feature = "ollama")]
-    use crate::client::ModelParams;
-    use ares_types::types::ToolDefinition;
-    use async_trait::async_trait;
-    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-
-    /// Minimal LLM client for pool tests — never performs network I/O.
-    struct MockLLMClient {
-        model: String,
-        id: u64,
-    }
-
-    impl MockLLMClient {
-        fn new(model: impl Into<String>) -> Self {
-            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-            Self {
-                model: model.into(),
-                id: NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl LLMClient for MockLLMClient {
-        async fn generate(&self, _prompt: &str) -> Result<String> {
-            Ok(format!("mock-{}", self.id))
-        }
-
-        async fn generate_with_system(&self, _system: &str, _prompt: &str) -> Result<String> {
-            Ok(format!("mock-{}", self.id))
-        }
-
-        async fn generate_with_history(
-            &self,
-            _messages: &[(String, String)],
-        ) -> Result<LLMResponse> {
-            Ok(LLMResponse {
-                content: format!("mock-{}", self.id),
-                tool_calls: vec![],
-                finish_reason: "stop".into(),
-                usage: None,
-            })
-        }
-
-        async fn generate_with_tools(
-            &self,
-            _prompt: &str,
-            _tools: &[ToolDefinition],
-        ) -> Result<LLMResponse> {
-            Ok(LLMResponse {
-                content: format!("mock-{}", self.id),
-                tool_calls: vec![],
-                finish_reason: "stop".into(),
-                usage: None,
-            })
-        }
-
-        async fn generate_with_tools_and_history(
-            &self,
-            _messages: &[crate::coordinator::ConversationMessage],
-            _tools: &[ToolDefinition],
-        ) -> Result<LLMResponse> {
-            Ok(LLMResponse {
-                content: format!("mock-{}", self.id),
-                tool_calls: vec![],
-                finish_reason: "stop".into(),
-                usage: None,
-            })
-        }
-
-        async fn stream(
-            &self,
-            _prompt: &str,
-        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
-            Err(AppError::Internal("mock stream not implemented".into()))
-        }
-
-        async fn stream_with_system(
-            &self,
-            _system: &str,
-            _prompt: &str,
-        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
-            Err(AppError::Internal("mock stream not implemented".into()))
-        }
-
-        async fn stream_with_history(
-            &self,
-            _messages: &[(String, String)],
-        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
-            Err(AppError::Internal("mock stream not implemented".into()))
-        }
-
-        fn model_name(&self) -> &str {
-            &self.model
-        }
-    }
-
+    use crate::client::test_support::MockLLMClient;
+    use std::sync::atomic::Ordering as AtomicOrdering;
     fn mock_client(model: &str) -> Box<dyn LLMClient> {
         Box::new(MockLLMClient::new(model))
     }
 
-    #[cfg(feature = "ollama")]
-    fn ollama_stub_provider() -> Provider {
-        Provider::Ollama {
-            base_url: "http://127.0.0.1:1".to_string(),
+    fn test_stub_provider() -> Provider {
+        Provider::TestStub {
             model: "mock".to_string(),
-            params: ModelParams::default(),
         }
     }
 
-    #[cfg(feature = "ollama")]
     fn provider_pool(config: PoolConfig) -> Arc<ProviderPool> {
-        Arc::new(ProviderPool::new(ollama_stub_provider(), config))
+        Arc::new(ProviderPool::new(test_stub_provider(), config))
     }
 
-    #[cfg(feature = "ollama")]
     fn seed_pool(pool: &ProviderPool, clients: Vec<Box<dyn LLMClient>>) {
         let mut guard = pool.clients.lock();
         for client in clients {
@@ -679,7 +578,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "ollama")]
     fn register_seeded_pool(
         client_pool: &ClientPool,
         name: &str,
@@ -892,39 +790,35 @@ mod tests {
         assert!(pool.is_shutdown());
     }
 
-    #[cfg(feature = "ollama")]
     #[test]
     fn test_provider_registration() {
         let pool = ClientPool::with_defaults();
-        pool.register_provider("ollama", ollama_stub_provider());
+        pool.register_provider("ollama", test_stub_provider());
         assert!(pool.has_provider("ollama"));
         assert!(!pool.has_provider("openai"));
         assert_eq!(pool.provider_names(), vec!["ollama"]);
     }
 
-    #[cfg(feature = "ollama")]
     #[test]
     fn test_builder_pattern() {
         let pool = ClientPoolBuilder::new()
             .config(PoolConfig::default().with_max_connections(5))
-            .provider("ollama", ollama_stub_provider())
+            .provider("ollama", test_stub_provider())
             .build();
         assert!(pool.has_provider("ollama"));
     }
 
-    #[cfg(feature = "ollama")]
     #[test]
     fn test_builder_multiple_providers() {
         let pool = ClientPoolBuilder::new()
-            .provider("a", ollama_stub_provider())
-            .provider("b", ollama_stub_provider())
+            .provider("a", test_stub_provider())
+            .provider("b", test_stub_provider())
             .build();
         let mut names = pool.provider_names();
         names.sort();
         assert_eq!(names, vec!["a", "b"]);
     }
 
-    #[cfg(feature = "ollama")]
     #[tokio::test]
     async fn test_get_unregistered_provider_error() {
         let pool = ClientPool::with_defaults();
@@ -933,7 +827,6 @@ mod tests {
         assert!(matches!(result.unwrap_err(), AppError::Configuration(_)));
     }
 
-    #[cfg(feature = "ollama")]
     #[tokio::test]
     async fn test_acquire_reuses_seeded_mock_without_network() {
         let config = PoolConfig::default()
@@ -947,7 +840,6 @@ mod tests {
         assert_eq!(pool.stats().providers["mock"].total_created, 0);
     }
 
-    #[cfg(feature = "ollama")]
     #[tokio::test]
     async fn test_acquire_skips_stale_prefers_first_fresh() {
         let config = PoolConfig::default()
@@ -975,7 +867,6 @@ mod tests {
         drop(permit);
     }
 
-    #[cfg(feature = "ollama")]
     #[tokio::test]
     async fn test_release_and_reacquire_reuses_pooled_client() {
         let config = PoolConfig::default()
@@ -996,7 +887,6 @@ mod tests {
         assert_eq!(stats.in_use, 1);
     }
 
-    #[cfg(feature = "ollama")]
     #[tokio::test]
     async fn test_release_drops_client_when_idle_pool_full() {
         let config = PoolConfig::default()
@@ -1021,7 +911,6 @@ mod tests {
         assert_eq!(stats.total_created, 0);
     }
 
-    #[cfg(feature = "ollama")]
     #[tokio::test]
     async fn test_provider_pool_in_use_accounting() {
         let config = PoolConfig::default()
@@ -1037,7 +926,6 @@ mod tests {
         drop(permit);
     }
 
-    #[cfg(feature = "ollama")]
     #[tokio::test]
     async fn test_cleanup_stale_removes_idle_clients() {
         let config = PoolConfig::default()
@@ -1057,7 +945,6 @@ mod tests {
         assert_eq!(sub.stats().available, 0);
     }
 
-    #[cfg(feature = "ollama")]
     #[tokio::test]
     async fn test_pooled_client_guard_debug_and_deref() {
         let config = PoolConfig::default()
@@ -1073,16 +960,14 @@ mod tests {
         assert_eq!(guard.model_name(), "guard");
     }
 
-    #[cfg(feature = "ollama")]
     #[test]
     fn test_register_provider_overwrites_existing_name() {
         let pool = ClientPool::with_defaults();
-        pool.register_provider("ollama", ollama_stub_provider());
-        pool.register_provider("ollama", ollama_stub_provider());
+        pool.register_provider("ollama", test_stub_provider());
+        pool.register_provider("ollama", test_stub_provider());
         assert_eq!(pool.provider_names(), vec!["ollama"]);
     }
 
-    #[cfg(feature = "ollama")]
     #[tokio::test]
     async fn test_stats_aggregate_multiple_providers() {
         let config = PoolConfig::default()
@@ -1099,7 +984,6 @@ mod tests {
         assert_eq!(stats.total_available, 1);
     }
 
-    #[cfg(feature = "ollama")]
     #[tokio::test]
     async fn test_shutdown_drains_seeded_clients() {
         let config = PoolConfig::default()
@@ -1112,6 +996,35 @@ mod tests {
         pool.shutdown();
         assert!(pool.is_shutdown());
         assert_eq!(pool.stats().total_available, 0);
+    }
+
+
+    #[tokio::test]
+    async fn test_acquire_creates_client_when_pool_empty() {
+        let config = PoolConfig::default()
+            .with_max_connections(1)
+            .without_health_check();
+        let sub = provider_pool(config);
+
+        let (client, permit) = sub.acquire().await.expect("create via TestStub");
+        assert_eq!(client.model_name(), "mock");
+        drop(client);
+        drop(permit);
+        assert_eq!(sub.stats().total_created, 1);
+    }
+
+    #[tokio::test]
+    async fn test_pooled_client_guard_client_mut_and_take() {
+        let config = PoolConfig::default()
+            .with_max_connections(1)
+            .without_health_check();
+        let pool = ClientPool::new(config.clone());
+        register_seeded_pool(&pool, "mock", config, vec![mock_client("guard-mut")]);
+
+        let mut guard = pool.get("mock").await.expect("guard acquire");
+        assert_eq!(guard.client_mut().model_name(), "guard-mut");
+        let taken = guard.take();
+        assert_eq!(taken.model_name(), "guard-mut");
     }
 
     #[tokio::test]

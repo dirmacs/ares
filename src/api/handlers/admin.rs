@@ -1037,6 +1037,125 @@ mod tests {
         assert_eq!(estimate.output_cost_usd, Some(0.0075));
         assert_eq!(estimate.total_cost_usd, Some(0.0175));
     }
+
+    fn admin_claims(roles: HashMap<String, Vec<RoleEntry>>) -> AdminClaims {
+        AdminClaims {
+            sub: "admin-user".into(),
+            email: "admin@example.com".into(),
+            exp: 9_999_999_999,
+            iat: 1_700_000_000,
+            roles,
+        }
+    }
+
+    fn role_entry(role: &str) -> RoleEntry {
+        RoleEntry {
+            role: role.into(),
+            resource_id: None,
+        }
+    }
+
+    #[test]
+    fn has_admin_role_accepts_super_admin_in_ares_product() {
+        let mut roles = HashMap::new();
+        roles.insert("ares".into(), vec![role_entry("super_admin")]);
+        assert!(has_admin_role(&admin_claims(roles)));
+    }
+
+    #[test]
+    fn has_admin_role_accepts_admin_in_eruka_product() {
+        let mut roles = HashMap::new();
+        roles.insert("eruka".into(), vec![role_entry("admin")]);
+        assert!(has_admin_role(&admin_claims(roles)));
+    }
+
+    #[test]
+    fn has_admin_role_rejects_non_admin_roles() {
+        let mut roles = HashMap::new();
+        roles.insert("admin".into(), vec![role_entry("viewer")]);
+        assert!(!has_admin_role(&admin_claims(roles)));
+    }
+
+    #[test]
+    fn tokens_to_cost_clamps_negative_tokens_to_zero() {
+        assert_eq!(tokens_to_cost(-100, 10.0), 0.0);
+    }
+
+    #[test]
+    fn tokens_to_cost_scales_per_million() {
+        let cost = tokens_to_cost(2_000_000, 5.0);
+        assert!((cost - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cost_estimate_unknown_serializes_pricing_flag() {
+        let estimate = CostEstimateResponse::unknown();
+        let json = serde_json::to_value(&estimate).unwrap();
+        assert_eq!(json["pricing_known"], false);
+        assert!(json["total_cost_usd"].is_null());
+    }
+
+    #[test]
+    fn agent_run_response_from_run_attaches_cost_estimate() {
+        let response = AgentRunResponse::from_run(run("openai", "gpt-test"), &billing());
+        assert!(response.cost_estimate.pricing_known);
+        assert_eq!(response.run.id, "run-1");
+    }
+
+    #[test]
+    fn create_tenant_request_roundtrip() {
+        let req = CreateTenantRequest {
+            name: "Acme".into(),
+            tier: "pro".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: CreateTenantRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "Acme");
+        assert_eq!(back.tier, "pro");
+    }
+
+    #[test]
+    fn tenant_response_from_tenant_maps_tier_string() {
+        use crate::models::{Tenant, TenantTier};
+        let tenant = Tenant::new("t-1".into(), "Acme".into(), TenantTier::Pro);
+        let resp = TenantResponse::from(tenant);
+        assert_eq!(resp.id, "t-1");
+        assert_eq!(resp.tier, "pro");
+    }
+
+    #[test]
+    fn api_key_response_from_model_maps_prefix() {
+        use crate::models::ApiKey;
+        let key = ApiKey::new(
+            "key-1".into(),
+            "tenant-1".into(),
+            "hash".into(),
+            "ares_ab".into(),
+            "Primary".into(),
+        );
+        let resp = ApiKeyResponse::from(key);
+        assert_eq!(resp.key_prefix, "ares_ab");
+        assert!(resp.is_active);
+    }
+
+    #[test]
+    fn usage_response_from_summary_copies_counters() {
+        let summary = UsageSummary {
+            monthly_requests: 10,
+            monthly_tokens: 20,
+            daily_requests: 3,
+        };
+        let resp = UsageResponse::from(summary);
+        assert_eq!(resp.monthly_requests, 10);
+        assert_eq!(resp.monthly_tokens, 20);
+        assert_eq!(resp.daily_requests, 3);
+    }
+
+    #[test]
+    fn emergency_stop_request_deserializes_active_flag() {
+        let req: EmergencyStopRequest = serde_json::from_str(r#"{"active":true}"#).unwrap();
+        assert!(req.active);
+    }
 }
 
 pub async fn get_agent_stats_handler(

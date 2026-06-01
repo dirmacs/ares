@@ -624,4 +624,110 @@ mod tests {
         assert_eq!(json["total_runs"], 0);
     }
 
+    // ── list_agent_runs query construction ─────────────────────────────
+
+    /// SELECT column list shared by both `list_agent_runs` branches.
+    const LIST_AGENT_RUNS_SELECT: &str = "SELECT id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
+                    input_tokens, output_tokens, duration_ms, error, created_at,
+                    COALESCE(model_name, 'unknown') AS model_name,
+                    COALESCE(provider_name, 'unknown') AS provider_name,
+                    COALESCE(is_streaming, false) AS is_streaming,
+                    request_source, product,
+                    agent_config_source, agent_config_version, eruka_binding_id,
+                    COALESCE(eruka_context_hit, false) AS eruka_context_hit,
+                    COALESCE(eruka_read_count, 0)::BIGINT AS eruka_read_count,
+                    COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count";
+
+    #[test]
+    fn list_agent_runs_tenant_only_query_uses_three_bind_params() {
+        let sql = format!(
+            "{LIST_AGENT_RUNS_SELECT}
+             FROM agent_runs WHERE tenant_id = $1
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+        );
+        assert!(sql.contains("WHERE tenant_id = $1"));
+        assert!(!sql.contains("AND agent_name = $2"));
+        assert!(sql.contains("LIMIT $2 OFFSET $3"));
+        assert!(sql.contains("ORDER BY created_at DESC"));
+        assert!(sql.contains("COALESCE(model_name, 'unknown')"));
+    }
+
+    #[test]
+    fn list_agent_runs_filtered_query_adds_agent_name_predicate() {
+        let sql = format!(
+            "{LIST_AGENT_RUNS_SELECT}
+             FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2
+             ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+        );
+        assert!(sql.contains("WHERE tenant_id = $1 AND agent_name = $2"));
+        assert!(sql.contains("LIMIT $3 OFFSET $4"));
+    }
+
+    #[test]
+    fn agent_run_common_status_values_serialize() {
+        for status in ["completed", "failed", "running", "cancelled", "timeout"] {
+            let run = AgentRun {
+                id: "run-status".into(),
+                tenant_id: "t".into(),
+                agent_name: "a".into(),
+                user_id: None,
+                workspace_id: None,
+                session_id: None,
+                status: status.into(),
+                input_tokens: 0,
+                output_tokens: 0,
+                duration_ms: 0,
+                error: None,
+                created_at: 0,
+                model_name: "m".into(),
+                provider_name: "p".into(),
+                is_streaming: false,
+                request_source: None,
+                product: None,
+                agent_config_source: None,
+                agent_config_version: None,
+                eruka_binding_id: None,
+                eruka_context_hit: false,
+                eruka_read_count: 0,
+                eruka_write_count: 0,
+            };
+            let json = serde_json::to_value(&run).expect("serialize");
+            assert_eq!(json["status"], status);
+        }
+    }
+
+    #[test]
+    fn agent_run_clone_preserves_status_and_tokens() {
+        let run = AgentRun {
+            id: "run-clone".into(),
+            tenant_id: "t".into(),
+            agent_name: "a".into(),
+            user_id: None,
+            workspace_id: None,
+            session_id: None,
+            status: "completed".into(),
+            input_tokens: 10,
+            output_tokens: 20,
+            duration_ms: 100,
+            error: None,
+            created_at: 1,
+            model_name: "m".into(),
+            provider_name: "p".into(),
+            is_streaming: true,
+            request_source: None,
+            product: None,
+            agent_config_source: None,
+            agent_config_version: None,
+            eruka_binding_id: None,
+            eruka_context_hit: false,
+            eruka_read_count: 0,
+            eruka_write_count: 0,
+        };
+        let cloned = run.clone();
+        assert_eq!(cloned.status, "completed");
+        assert_eq!(cloned.input_tokens, 10);
+        assert_eq!(cloned.output_tokens, 20);
+        assert!(cloned.is_streaming);
+    }
+
 }

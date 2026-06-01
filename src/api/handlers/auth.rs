@@ -14,14 +14,56 @@ pub struct RefreshTokenRequest {
     pub refresh_token: String,
 }
 
+const REGISTER_VALIDATION_MSG: &str =
+    "Email required and password must be at least 8 characters";
+const LOGIN_VALIDATION_MSG: &str = "Email and password are required";
+const LOGOUT_SUCCESS_MESSAGE: &str = "Logged out successfully";
+
 /// Validates registration email and password before hitting the database.
 fn validate_register_input(email: &str, password: &str) -> Result<()> {
-    if email.is_empty() || password.len() < 8 {
-        return Err(AppError::InvalidInput(
-            "Email required and password must be at least 8 characters".to_string(),
-        ));
+    if email.is_empty() || !password_meets_minimum_length(password) {
+        return Err(AppError::InvalidInput(REGISTER_VALIDATION_MSG.to_string()));
     }
     Ok(())
+}
+
+fn password_meets_minimum_length(password: &str) -> bool {
+    password.len() >= 8
+}
+
+/// Validates login email and password before hitting the database.
+fn validate_login_input(email: &str, password: &str) -> Result<()> {
+    if email.is_empty() || password.is_empty() {
+        return Err(AppError::InvalidInput(LOGIN_VALIDATION_MSG.to_string()));
+    }
+    Ok(())
+}
+
+/// Unix timestamp when a refresh-token session should expire.
+fn session_expires_at(expires_in: i64) -> i64 {
+    chrono::Utc::now().timestamp() + expires_in
+}
+
+fn user_already_exists_error() -> AppError {
+    AppError::InvalidInput("User already exists".to_string())
+}
+
+fn invalid_credentials_error() -> AppError {
+    AppError::Auth("Invalid credentials".to_string())
+}
+
+fn revoked_refresh_token_error() -> AppError {
+    AppError::Auth("Refresh token has been revoked or expired".to_string())
+}
+
+fn build_logout_response() -> LogoutResponse {
+    LogoutResponse {
+        message: LOGOUT_SUCCESS_MESSAGE.to_string(),
+    }
+}
+
+fn refresh_token_from_request(payload: &RefreshTokenRequest) -> &str {
+    &payload.refresh_token
 }
 
 /// Ensures the refresh-token session user matches JWT subject claims.
@@ -52,7 +94,7 @@ pub async fn register(
 
     // Check if user exists
     if state.db.get_user_by_email(&payload.email).await?.is_some() {
-        return Err(AppError::InvalidInput("User already exists".to_string()));
+        return Err(user_already_exists_error());
     }
 
     // Hash password
@@ -79,7 +121,7 @@ pub async fn register(
             &session_id,
             &user_id,
             &token_hash,
-            chrono::Utc::now().timestamp() + tokens.expires_in,
+            session_expires_at(tokens.expires_in),
         )
         .await?;
 
@@ -101,19 +143,21 @@ pub async fn login(
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Json<TokenResponse>> {
+    validate_login_input(&payload.email, &payload.password)?;
+
     // Get user
     let user = state
         .db
         .get_user_by_email(&payload.email)
         .await?
-        .ok_or_else(|| AppError::Auth("Invalid credentials".to_string()))?;
+        .ok_or_else(invalid_credentials_error)?;
 
     // Verify password
     if !state
         .auth_service
         .verify_password(&payload.password, &user.password_hash)?
     {
-        return Err(AppError::Auth("Invalid credentials".to_string()));
+        return Err(invalid_credentials_error());
     }
 
     // Generate tokens
@@ -128,7 +172,7 @@ pub async fn login(
             &session_id,
             &user.id,
             &token_hash,
-            chrono::Utc::now().timestamp() + tokens.expires_in,
+            session_expires_at(tokens.expires_in),
         )
         .await?;
 
@@ -171,9 +215,7 @@ pub async fn logout(
     // (token may already be expired/revoked, which is fine for logout)
     state.db.delete_session_by_token_hash(&token_hash).await?;
 
-    Ok(Json(LogoutResponse {
-        message: "Logged out successfully".to_string(),
-    }))
+    Ok(Json(build_logout_response()))
 }
 
 /// Refresh access token
@@ -191,7 +233,7 @@ pub async fn refresh_token(
     State(state): State<AppState>,
     Json(payload): Json<RefreshTokenRequest>,
 ) -> Result<Json<TokenResponse>> {
-    let refresh_token = &payload.refresh_token;
+    let refresh_token = refresh_token_from_request(&payload);
 
     // Verify refresh token JWT signature and expiry
     let claims = state.auth_service.verify_token(refresh_token)?;
@@ -202,7 +244,7 @@ pub async fn refresh_token(
         .db
         .validate_session(&token_hash)
         .await?
-        .ok_or_else(|| AppError::Auth("Refresh token has been revoked or expired".to_string()))?;
+        .ok_or_else(revoked_refresh_token_error)?;
 
     validate_token_user_match(&user_id, &claims.sub)?;
 
@@ -223,7 +265,7 @@ pub async fn refresh_token(
             &session_id,
             &claims.sub,
             &new_token_hash,
-            chrono::Utc::now().timestamp() + tokens.expires_in,
+            session_expires_at(tokens.expires_in),
         )
         .await?;
 
@@ -344,4 +386,168 @@ mod tests {
         assert!(json.contains("\"refresh_token\":\"refresh\""));
         assert!(json.contains("\"expires_in\":3600"));
     }
+    #[test]
+    fn validate_login_input_rejects_empty_email() {
+        let err = validate_login_input("", "password").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(err.to_string().contains(LOGIN_VALIDATION_MSG));
+    }
+
+    #[test]
+    fn validate_login_input_rejects_empty_password() {
+        let err = validate_login_input("user@example.com", "").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn validate_login_input_accepts_non_empty_credentials() {
+        assert!(validate_login_input("user@example.com", "secret").is_ok());
+    }
+
+    #[test]
+    fn password_meets_minimum_length_boundary() {
+        assert!(!password_meets_minimum_length("1234567"));
+        assert!(password_meets_minimum_length("12345678"));
+    }
+
+    #[test]
+    fn session_expires_at_adds_offset_to_now() {
+        let before = chrono::Utc::now().timestamp();
+        let expires = session_expires_at(3600);
+        assert!(expires >= before + 3600);
+        assert!(expires <= before + 3601);
+    }
+
+    #[test]
+    fn user_already_exists_error_is_invalid_input() {
+        let err = user_already_exists_error();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(err.to_string().contains("User already exists"));
+    }
+
+    #[test]
+    fn invalid_credentials_error_message() {
+        let err = invalid_credentials_error();
+        assert!(matches!(err, AppError::Auth(_)));
+        assert!(err.to_string().contains("Invalid credentials"));
+    }
+
+    #[test]
+    fn revoked_refresh_token_error_message() {
+        let err = revoked_refresh_token_error();
+        assert!(err.to_string().contains("revoked or expired"));
+    }
+
+    #[test]
+    fn build_logout_response_uses_success_message() {
+        let resp = build_logout_response();
+        assert_eq!(resp.message, LOGOUT_SUCCESS_MESSAGE);
+    }
+
+    #[test]
+    fn validate_register_input_rejects_empty_password() {
+        let err = validate_register_input("user@example.com", "").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(err.to_string().contains(REGISTER_VALIDATION_MSG));
+    }
+
+    #[test]
+    fn validate_token_user_match_rejects_whitespace_mismatch() {
+        assert!(validate_token_user_match("user", "user ").is_err());
+    }
+
+    #[test]
+    fn validate_token_user_match_accepts_both_empty() {
+        assert!(validate_token_user_match("", "").is_ok());
+    }
+
+    #[test]
+    fn validate_token_user_match_rejects_nonempty_vs_empty() {
+        assert!(validate_token_user_match("user-1", "").is_err());
+    }
+
+    #[test]
+    fn login_request_rejects_missing_email() {
+        let err = serde_json::from_str::<LoginRequest>(r#"{"password":"pw"}"#).unwrap_err();
+        assert!(err.to_string().contains("email"));
+    }
+
+    #[test]
+    fn login_request_rejects_missing_password() {
+        let err = serde_json::from_str::<LoginRequest>(r#"{"email":"a@b.co"}"#).unwrap_err();
+        assert!(err.to_string().contains("password"));
+    }
+
+    #[test]
+    fn register_request_rejects_missing_name() {
+        let err =
+            serde_json::from_str::<RegisterRequest>(r#"{"email":"a@b.co","password":"secret123"}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("name"));
+    }
+
+    #[test]
+    fn register_request_rejects_missing_email() {
+        let err = serde_json::from_str::<RegisterRequest>(
+            r#"{"password":"secret123","name":"Alice"}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("email"));
+    }
+
+    #[test]
+    fn register_request_rejects_missing_password() {
+        let err = serde_json::from_str::<RegisterRequest>(r#"{"email":"a@b.co","name":"Alice"}"#)
+            .unwrap_err();
+        assert!(err.to_string().contains("password"));
+    }
+
+    #[test]
+    fn token_response_deserializes_roundtrip() {
+        let json = r#"{"access_token":"a","refresh_token":"r","expires_in":7200}"#;
+        let resp: TokenResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.access_token, "a");
+        assert_eq!(resp.refresh_token, "r");
+        assert_eq!(resp.expires_in, 7200);
+        let back = serde_json::to_string(&resp).unwrap();
+        assert!(back.contains("\"expires_in\":7200"));
+    }
+
+    #[test]
+    fn logout_request_rejects_missing_refresh_token() {
+        let err = serde_json::from_str::<LogoutRequest>(r#"{}"#).unwrap_err();
+        assert!(err.to_string().contains("refresh_token"));
+    }
+
+    #[test]
+    fn logout_response_serializes_message_field() {
+        let json = serde_json::to_string(&build_logout_response()).unwrap();
+        assert!(json.contains("\"message\""));
+        assert!(json.contains(LOGOUT_SUCCESS_MESSAGE));
+    }
+
+    #[test]
+    fn refresh_token_request_accepts_empty_string_value() {
+        let req: RefreshTokenRequest = serde_json::from_str(r#"{"refresh_token":""}"#).unwrap();
+        assert!(req.refresh_token.is_empty());
+    }
+
+    #[test]
+    fn refresh_token_from_request_returns_payload_field() {
+        let req = RefreshTokenRequest {
+            refresh_token: "rt-xyz".to_string(),
+        };
+        assert_eq!(refresh_token_from_request(&req), "rt-xyz");
+    }
+
+    #[test]
+    fn login_validation_message_constant_matches_error() {
+        assert_eq!(LOGIN_VALIDATION_MSG, "Email and password are required");
+    }
+
+    #[test]
+    fn register_validation_message_constant_matches_error() {
+        assert!(REGISTER_VALIDATION_MSG.contains("8 characters"));
+    }
+
 }

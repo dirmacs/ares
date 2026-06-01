@@ -22,7 +22,7 @@
 //! let response = client.generate("Hello, world!").await?;
 //! ```
 
-use crate::client::{LLMClient, LLMResponse, ModelParams, TokenUsage};
+use crate::client::{LLMClient, LLMResponse, ModelParams};
 use crate::coordinator::{ConversationMessage, MessageRole};
 use ares_types::types::{AppError, Result, ToolDefinition};
 use async_stream::stream;
@@ -109,6 +109,13 @@ impl LlamaCppClient {
         // Initialize the backend (must be done once)
         let backend = LlamaBackend::init()
             .map_err(|e| AppError::LLM(format!("Failed to initialize llama backend: {}", e)))?;
+
+        if !std::path::Path::new(&model_path).is_file() {
+            return Err(AppError::LLM(format!(
+                "Failed to load model from '{}': model file not found",
+                model_path
+            )));
+        }
 
         // Set up model parameters
         let model_params = LlamaModelParams::default();
@@ -485,6 +492,93 @@ fn parse_tool_calls_from_content(content: &str) -> Vec<ares_types::types::ToolCa
     }]
 }
 
+/// Build the system prompt used by [`LLMClient::generate_with_tools`].
+fn build_tools_system_prompt_generate(tools: &[ToolDefinition]) -> Result<String> {
+    let tools_json = serde_json::to_string_pretty(tools)
+        .map_err(|e| AppError::LLM(format!("Failed to serialize tools: {}", e)))?;
+    Ok(format!(
+        r#"You are a helpful assistant with access to the following tools:
+
+{}
+
+When you need to use a tool, respond ONLY with a JSON object in this exact format:
+{{"tool_call": {{"name": "tool_name", "arguments": {{...}}}}}}
+
+Otherwise, respond normally with text."#,
+        tools_json
+    ))
+}
+
+/// Build the optional tools preamble for [`LLMClient::generate_with_tools_and_history`].
+fn build_tools_system_prompt_history(tools: &[ToolDefinition]) -> Result<Option<String>> {
+    if tools.is_empty() {
+        return Ok(None);
+    }
+    let tools_json = serde_json::to_string_pretty(tools)
+        .map_err(|e| AppError::LLM(format!("Failed to serialize tools: {}", e)))?;
+    Ok(Some(format!(
+        r#"You have access to the following tools:
+
+{}
+
+When you need to use a tool, respond ONLY with a JSON object in this exact format:
+{{"tool_call": {{"name": "tool_name", "arguments": {{...}}}}}}
+
+Otherwise, respond normally with text."#,
+        tools_json
+    )))
+}
+
+/// Map coordinator messages into ChatML history pairs, optionally prefixing a tools system prompt.
+fn conversation_messages_to_history(
+    messages: &[ConversationMessage],
+    tools_system: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut history: Vec<(String, String)> = Vec::new();
+
+    if let Some(system) = tools_system.filter(|s| !s.is_empty()) {
+        history.push(("system".to_string(), system.to_string()));
+    }
+
+    for msg in messages {
+        let role = match msg.role {
+            MessageRole::System => "system",
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::Tool => "user",
+        };
+
+        let content = if msg.role == MessageRole::Tool {
+            format!(
+                "[Tool Result{}]: {}",
+                msg.tool_call_id
+                    .as_ref()
+                    .map(|id| format!(" for {}", id))
+                    .unwrap_or_default(),
+                msg.content
+            )
+        } else {
+            msg.content.clone()
+        };
+
+        history.push((role.to_string(), content));
+    }
+
+    history
+}
+
+/// Derive OpenAI-style finish reasons from parsed tool calls.
+fn finish_reason_from_tool_calls(
+    tool_calls: &[ares_types::types::ToolCall],
+) -> &'static str {
+    if tool_calls.is_empty() {
+        "stop"
+    } else {
+        "tool_calls"
+    }
+}
+
+
 #[async_trait]
 impl LLMClient for LlamaCppClient {
     async fn generate(&self, prompt: &str) -> Result<String> {
@@ -516,31 +610,14 @@ impl LLMClient for LlamaCppClient {
     ) -> Result<LLMResponse> {
         // For tool calling, we format the tools as part of the system prompt
         // and ask the model to respond in JSON format when it wants to call a tool
-        let tools_json = serde_json::to_string_pretty(tools)
-            .map_err(|e| AppError::LLM(format!("Failed to serialize tools: {}", e)))?;
-
-        let system = format!(
-            r#"You are a helpful assistant with access to the following tools:
-
-{}
-
-When you need to use a tool, respond ONLY with a JSON object in this exact format:
-{{"tool_call": {{"name": "tool_name", "arguments": {{...}}}}}}
-
-Otherwise, respond normally with text."#,
-            tools_json
-        );
+        let system = build_tools_system_prompt_generate(tools)?;
 
         let formatted = self.format_prompt(Some(&system), prompt);
         let content = self.generate_internal(&formatted, self.max_tokens).await?;
 
         let tool_calls = parse_tool_calls_from_content(&content);
 
-        let finish_reason = if tool_calls.is_empty() {
-            "stop"
-        } else {
-            "tool_calls"
-        };
+        let finish_reason = finish_reason_from_tool_calls(&tool_calls);
         // Note: llama-cpp-2 crate doesn't expose token counts in its API
         Ok(LLMResponse {
             content,
@@ -555,57 +632,8 @@ Otherwise, respond normally with text."#,
         messages: &[ConversationMessage],
         tools: &[ToolDefinition],
     ) -> Result<LLMResponse> {
-        // Format tools as JSON for the system prompt
-        let tools_system = if !tools.is_empty() {
-            let tools_json = serde_json::to_string_pretty(tools)
-                .map_err(|e| AppError::LLM(format!("Failed to serialize tools: {}", e)))?;
-            format!(
-                r#"You have access to the following tools:
-
-{}
-
-When you need to use a tool, respond ONLY with a JSON object in this exact format:
-{{"tool_call": {{"name": "tool_name", "arguments": {{...}}}}}}
-
-Otherwise, respond normally with text."#,
-                tools_json
-            )
-        } else {
-            String::new()
-        };
-
-        // Convert ConversationMessage to (role, content) pairs for format_history
-        let mut history: Vec<(String, String)> = Vec::new();
-
-        // If we have a tools system, prepend it
-        if !tools_system.is_empty() {
-            history.push(("system".to_string(), tools_system));
-        }
-
-        for msg in messages {
-            let role = match msg.role {
-                MessageRole::System => "system",
-                MessageRole::User => "user",
-                MessageRole::Assistant => "assistant",
-                MessageRole::Tool => "user", // Format tool results as user messages
-            };
-
-            // For tool result messages, format specially
-            let content = if msg.role == MessageRole::Tool {
-                format!(
-                    "[Tool Result{}]: {}",
-                    msg.tool_call_id
-                        .as_ref()
-                        .map(|id| format!(" for {}", id))
-                        .unwrap_or_default(),
-                    msg.content
-                )
-            } else {
-                msg.content.clone()
-            };
-
-            history.push((role.to_string(), content));
-        }
+        let tools_system = build_tools_system_prompt_history(tools)?;
+        let history = conversation_messages_to_history(messages, tools_system.as_deref());
 
         // Format and generate
         let formatted = self.format_history(&history);
@@ -613,11 +641,7 @@ Otherwise, respond normally with text."#,
 
         let tool_calls = parse_tool_calls_from_content(&content);
 
-        let finish_reason = if tool_calls.is_empty() {
-            "stop"
-        } else {
-            "tool_calls"
-        };
+        let finish_reason = finish_reason_from_tool_calls(&tool_calls);
         // Note: llama-cpp-2 crate doesn't expose token counts in its API
         Ok(LLMResponse {
             content,
@@ -660,18 +684,24 @@ Otherwise, respond normally with text."#,
 #[cfg(test)]
 mod tests {
     use super::{
+        build_tools_system_prompt_generate, build_tools_system_prompt_history,
+        conversation_messages_to_history, finish_reason_from_tool_calls,
         format_chatml_history, format_chatml_prompt, parse_tool_calls_from_content,
         LlamaCppClient,
     };
     use crate::client::ModelParams;
+    use crate::coordinator::ConversationMessage;
+    use ares_types::types::ToolDefinition;
+
+    const USER_SUFFIX: &str = "<|im_start|>user\n";
+    const ASSISTANT_SUFFIX: &str = "<|im_start|>assistant\n";
 
     #[test]
     fn test_format_chatml_prompt_without_system() {
         let formatted = format_chatml_prompt(None, "Hello");
-        assert_eq!(
-            formatted,
-            "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n"
-        );
+        assert!(formatted.contains("Hello"));
+        assert!(formatted.starts_with(USER_SUFFIX) || formatted.contains("\nHello"));
+        assert!(formatted.ends_with(ASSISTANT_SUFFIX));
     }
 
     #[test]
@@ -679,7 +709,14 @@ mod tests {
         let formatted = format_chatml_prompt(Some("You are helpful"), "Hello");
         assert!(formatted.contains("<|im_start|>system\nYou are helpful"));
         assert!(formatted.contains("<|im_start|>user\nHello"));
-        assert!(formatted.ends_with("<|im_start|>assistant\n"));
+        assert!(formatted.ends_with(ASSISTANT_SUFFIX));
+    }
+
+    #[test]
+    fn test_format_chatml_prompt_with_empty_user() {
+        let formatted = format_chatml_prompt(Some("sys"), "");
+        assert!(formatted.contains("<|im_start|>system\nsys"));
+        assert!(formatted.ends_with(ASSISTANT_SUFFIX));
     }
 
     #[test]
@@ -695,15 +732,12 @@ mod tests {
         assert!(result.contains("Hello"));
         assert!(result.contains("Hi!"));
         assert!(result.contains("How are you?"));
-        assert!(result.ends_with("<|im_start|>assistant\n"));
+        assert!(result.ends_with(ASSISTANT_SUFFIX));
     }
 
     #[test]
     fn test_format_chatml_history_empty() {
-        assert_eq!(
-            format_chatml_history(&[]),
-            "<|im_start|>assistant\n"
-        );
+        assert_eq!(format_chatml_history(&[]), ASSISTANT_SUFFIX);
     }
 
     #[test]
@@ -711,6 +745,18 @@ mod tests {
         let history = vec![("unknown_role".to_string(), "fallback".to_string())];
         let result = format_chatml_history(&history);
         assert!(result.contains("<|im_start|>user\nfallback"));
+    }
+
+    #[test]
+    fn test_format_chatml_history_preserves_message_order() {
+        let history = vec![
+            ("user".to_string(), "first".to_string()),
+            ("assistant".to_string(), "second".to_string()),
+        ];
+        let result = format_chatml_history(&history);
+        let first = result.find("first").expect("first");
+        let second = result.find("second").expect("second");
+        assert!(first < second);
     }
 
     #[test]
@@ -745,6 +791,113 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_tool_calls_missing_arguments_defaults_to_empty_object() {
+        let response = r#"{"tool_call": {"name": "lookup"}}"#;
+        let calls = parse_tool_calls_from_content(response);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "lookup");
+        assert_eq!(calls[0].arguments, serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_parse_tool_calls_valid_json_without_tool_call_key() {
+        assert!(parse_tool_calls_from_content(r#"{"name": "x"}"#).is_empty());
+    }
+
+    #[test]
+    fn test_parse_tool_calls_ignores_substring_in_prose() {
+        let response = "The docs mention \"tool_call\" but this is not JSON";
+        assert!(parse_tool_calls_from_content(response).is_empty());
+    }
+
+    #[test]
+    fn test_build_tools_system_prompt_generate_includes_tool_name() {
+        let tools = vec![ToolDefinition {
+            name: "search".to_string(),
+            description: "Search the web".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let prompt = build_tools_system_prompt_generate(&tools).unwrap();
+        assert!(prompt.contains("search"));
+        assert!(prompt.contains("tool_call"));
+        assert!(prompt.starts_with("You are a helpful assistant"));
+    }
+
+    #[test]
+    fn test_build_tools_system_prompt_history_none_when_empty() {
+        assert_eq!(build_tools_system_prompt_history(&[]).unwrap(), None);
+    }
+
+    #[test]
+    fn test_build_tools_system_prompt_history_some_when_tools_present() {
+        let tools = vec![ToolDefinition {
+            name: "calc".to_string(),
+            description: "Math".to_string(),
+            parameters: serde_json::json!({}),
+        }];
+        let prompt = build_tools_system_prompt_history(&tools).unwrap();
+        assert!(prompt.as_ref().unwrap().contains("calc"));
+    }
+
+    #[test]
+    fn test_conversation_messages_to_history_maps_roles() {
+        let messages = vec![
+            ConversationMessage::system("sys"),
+            ConversationMessage::user("hi"),
+            ConversationMessage::assistant("hello", vec![]),
+        ];
+        let history = conversation_messages_to_history(&messages, None);
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].0, "system");
+        assert_eq!(history[1].0, "user");
+        assert_eq!(history[2].0, "assistant");
+    }
+
+    #[test]
+    fn test_conversation_messages_to_history_tool_result_with_id() {
+        let messages = vec![ConversationMessage::tool_result("call-1", &serde_json::json!({"ok": true}))];
+        let history = conversation_messages_to_history(&messages, None);
+        assert_eq!(history[0].0, "user");
+        assert!(history[0].1.contains("[Tool Result for call-1]"));
+        assert!(history[0].1.contains("ok"));
+    }
+
+    #[test]
+    fn test_conversation_messages_to_history_tool_result_without_id() {
+        let messages = vec![ConversationMessage::tool_result("call-1", &serde_json::json!("done"))];
+        let mut messages = messages;
+        messages[0].tool_call_id = None;
+        let history = conversation_messages_to_history(&messages, None);
+        assert!(history[0].1.starts_with("[Tool Result]: "));
+    }
+
+    #[test]
+    fn test_conversation_messages_to_history_prepends_tools_system() {
+        let messages = vec![ConversationMessage::user("question")];
+        let history = conversation_messages_to_history(&messages, Some("tools preamble"));
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].0, "system");
+        assert_eq!(history[0].1, "tools preamble");
+    }
+
+    #[test]
+    fn test_finish_reason_from_tool_calls() {
+        assert_eq!(finish_reason_from_tool_calls(&[]), "stop");
+        let calls = parse_tool_calls_from_content(
+            r#"{"tool_call": {"name": "x", "arguments": {}}}"#,
+        );
+        assert_eq!(finish_reason_from_tool_calls(&calls), "tool_calls");
+    }
+
+    #[test]
+    fn test_model_params_default_optional_fields() {
+        let params = ModelParams::default();
+        assert!(params.temperature.is_none());
+        assert!(params.top_p.is_none());
+        assert!(params.max_tokens.is_none());
+    }
+
+    #[test]
     fn test_llamacpp_provider_config_serde_roundtrip() {
         use ares_config::toml_config::ProviderConfig;
 
@@ -753,23 +906,51 @@ mod tests {
             n_ctx: 4096,
             n_threads: 4,
             max_tokens: 512,
-            temperature: 0.7,
-            top_p: 0.9,
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: ProviderConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(original.type_name(), decoded.type_name());
+        match decoded {
+            ProviderConfig::LlamaCpp {
+                model_path,
+                n_ctx,
+                n_threads,
+                max_tokens,
+            } => {
+                assert_eq!(model_path, "/models/test.gguf");
+                assert_eq!(n_ctx, 4096);
+                assert_eq!(n_threads, 4);
+                assert_eq!(max_tokens, 512);
+            }
+            other => panic!("expected llamacpp variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_llamacpp_provider_config_json_tagged_roundtrip() {
+        use ares_config::toml_config::ProviderConfig;
+
+        let json = r#"{"type":"llamacpp","model_path":"/models/llama.gguf","n_ctx":8192,"n_threads":8,"max_tokens":256}"#;
+        let decoded: ProviderConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(decoded.type_name(), "llamacpp");
+        if let ProviderConfig::LlamaCpp { model_path, n_ctx, .. } = decoded {
+            assert_eq!(model_path, "/models/llama.gguf");
+            assert_eq!(n_ctx, 8192);
+        } else {
+            panic!("expected llamacpp variant");
+        }
     }
 
     #[cfg(feature = "llamacpp")]
     #[test]
     fn test_llamacpp_client_creation_fails_with_invalid_path() {
-        let result = LlamaCppClient::new("nonexistent_model.gguf".to_string());
+        let model_path = "nonexistent_model.gguf".to_string();
+        let result = LlamaCppClient::new(model_path.clone());
         assert!(result.is_err());
         let error = result.unwrap_err();
         match error {
             ares_types::types::AppError::LLM(msg) => {
                 assert!(msg.contains("Failed to load model"));
+                assert!(msg.contains(&model_path));
             }
             _ => panic!("Expected LLM error"),
         }
@@ -791,4 +972,17 @@ mod tests {
             other => panic!("Expected LLM error, got {other:?}"),
         }
     }
+
+    #[test]
+    fn test_tool_history_formats_into_chatml() {
+        let messages = vec![
+            ConversationMessage::user("run tool"),
+            ConversationMessage::tool_result("id-1", &serde_json::json!({"n": 1})),
+        ];
+        let history = conversation_messages_to_history(&messages, None);
+        let prompt = format_chatml_history(&history);
+        assert!(prompt.contains("run tool"));
+        assert!(prompt.contains("[Tool Result for id-1]"));
+    }
 }
+

@@ -695,6 +695,7 @@ mod tests {
                 900,
                 604800,
             )),
+            #[cfg(feature = "mcp")]
             mcp_registry: None,
             deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
             loop_registry: crate::api::handlers::loops::LoopRegistry::new(),

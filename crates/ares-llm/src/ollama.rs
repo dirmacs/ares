@@ -570,6 +570,26 @@ mod tests {
         .to_string()
     }
 
+    fn chat_stream_chunk_json(content: &str, done: bool) -> String {
+        serde_json::json!({
+            "model": "test-model",
+            "created_at": "2024-01-01T00:00:00Z",
+            "message": { "role": "assistant", "content": content },
+            "done": done
+        })
+        .to_string()
+    }
+
+    fn ndjson_stream_body(lines: &[String]) -> String {
+        let mut body = String::new();
+        for line in lines {
+            body.push_str(line);
+            body.push('\n');
+        }
+        body
+    }
+
+
     #[tokio::test]
     async fn test_with_params_standard_url() {
         let client = OllamaClient::with_params(
@@ -1067,5 +1087,110 @@ mod tests {
         assert_eq!(stream.next().await.unwrap().unwrap(), "Hi");
         assert_eq!(stream.next().await.unwrap().unwrap(), "!");
     }
+    #[tokio::test]
+    async fn test_stream_maps_http_error_on_connect() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let err = match client.stream("hello").await {
+            Err(e) => e,
+            Ok(_) => panic!("expected stream setup to fail"),
+        };
+        match err {
+            AppError::LLM(msg) => assert!(msg.contains("Ollama stream error")),
+            other => panic!("expected LLM error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_skips_empty_content_chunks() {
+        let body = ndjson_stream_body(&[
+            chat_stream_chunk_json("", false),
+            chat_stream_chunk_json("", true),
+        ]);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let mut stream = client.stream("hello").await.unwrap();
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_skips_malformed_json_line() {
+        let valid = chat_stream_chunk_json("recovered", true);
+        let body = format!("not-valid-json\n{valid}\n");
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let mut stream = client.stream("hello").await.unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "recovered");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_system_yields_chunks() {
+        let body = ndjson_stream_body(&[
+            chat_stream_chunk_json("sys-", false),
+            chat_stream_chunk_json("reply", true),
+        ]);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let mut stream = client
+            .stream_with_system("You are helpful", "hi")
+            .await
+            .unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "sys-");
+        assert_eq!(stream.next().await.unwrap().unwrap(), "reply");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_history_yields_chunks() {
+        let body = ndjson_stream_body(&[
+            chat_stream_chunk_json("hist", false),
+            chat_stream_chunk_json("ory", true),
+        ]);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let mut stream = client
+            .stream_with_history(&[("user".into(), "hello".into())])
+            .await
+            .unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "hist");
+        assert_eq!(stream.next().await.unwrap().unwrap(), "ory");
+        assert!(stream.next().await.is_none());
+    }
+
 
 }

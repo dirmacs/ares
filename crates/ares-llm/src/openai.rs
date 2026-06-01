@@ -729,6 +729,41 @@ mod tests {
         .to_string()
     }
 
+    fn chat_stream_chunk_json(content: Option<&str>) -> String {
+        let delta = match content {
+            Some(c) => serde_json::json!({ "content": c }),
+            None => serde_json::json!({}),
+        };
+        serde_json::json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "delta": delta,
+                "finish_reason": null
+            }]
+        })
+        .to_string()
+    }
+
+    fn openai_sse_body(chunks: &[String]) -> String {
+        let mut body = String::new();
+        for chunk in chunks {
+            body.push_str("data: ");
+            body.push_str(chunk);
+            body.push_str("\n\n");
+        }
+        body.push_str("data: [DONE]\n\n");
+        body
+    }
+
+    fn sse_stream_response(body: &str) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_raw(body.as_bytes(), "text/event-stream")
+    }
+
+
     #[test]
     fn test_client_creation() {
         let client = OpenAIClient::new(
@@ -1079,4 +1114,134 @@ mod tests {
             .with_api_base("http://localhost:8080/v1");
         assert_eq!(config.api_base(), "http://localhost:8080/v1");
     }
+
+    #[tokio::test]
+    async fn test_stream_yields_sse_chunks() {
+        let body = openai_sse_body(&[
+            chat_stream_chunk_json(Some("Hel")),
+            chat_stream_chunk_json(Some("lo")),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse_stream_response(&body))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let mut stream = client.stream("ping").await.unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "Hel");
+        assert_eq!(stream.next().await.unwrap().unwrap(), "lo");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_maps_http_error_on_connect() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let mut stream = client.stream("ping").await.unwrap();
+        let item = stream.next().await.expect("stream should yield an error");
+        match item {
+            Err(AppError::LLM(msg)) => {
+                assert!(
+                    msg.contains("OpenAI API error") || msg.contains("Stream error"),
+                    "unexpected message: {msg}"
+                );
+            }
+            Err(other) => panic!("expected LLM error, got {other:?}"),
+            Ok(_) => panic!("expected stream error item"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_empty_sse_yields_nothing() {
+        let body = openai_sse_body(&[chat_stream_chunk_json(None)]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse_stream_response(&body))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let mut stream = client.stream("ping").await.unwrap();
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_surfaces_malformed_sse_event_as_error() {
+        let body = format!(
+            "data: not-json\n\ndata: {}\n\ndata: [DONE]\n\n",
+            chat_stream_chunk_json(Some("ok"))
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse_stream_response(&body))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let mut stream = client.stream("ping").await.unwrap();
+        let item = stream.next().await.expect("expected stream item");
+        match item {
+            Err(AppError::LLM(msg)) => assert!(msg.contains("Stream error")),
+            Err(other) => panic!("expected LLM error, got {other:?}"),
+            Ok(_) => panic!("expected malformed SSE to surface as stream error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_system_yields_sse_chunks() {
+        let body = openai_sse_body(&[
+            chat_stream_chunk_json(Some("sys")),
+            chat_stream_chunk_json(Some("-out")),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse_stream_response(&body))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let mut stream = client
+            .stream_with_system("system", "user")
+            .await
+            .unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "sys");
+        assert_eq!(stream.next().await.unwrap().unwrap(), "-out");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_history_yields_sse_chunks() {
+        let body = openai_sse_body(&[
+            chat_stream_chunk_json(Some("his")),
+            chat_stream_chunk_json(Some("tory")),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse_stream_response(&body))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let mut stream = client
+            .stream_with_history(&[("user".into(), "hi".into())])
+            .await
+            .unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "his");
+        assert_eq!(stream.next().await.unwrap().unwrap(), "tory");
+        assert!(stream.next().await.is_none());
+    }
+
+
 }

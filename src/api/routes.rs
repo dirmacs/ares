@@ -281,7 +281,7 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         )
         .layer(middleware::from_fn(crate::middleware::usage::track_usage));
 
-    let mut v1_routes = Router::new()
+    let v1_routes = Router::new()
         .merge(v1_metered_routes)
         .route("/agents", get(crate::api::handlers::v1::list_agents))
         .route("/agents/{name}", get(crate::api::handlers::v1::get_agent))

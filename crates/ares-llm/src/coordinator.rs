@@ -496,6 +496,16 @@ mod tests {
     use crate::client::{LLMClient, LLMResponse, TokenUsage};
     use ares_types::types::{Result, ToolCall, ToolDefinition};
 
+    fn serde_roundtrip<T>(value: &T) -> T
+    where
+        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        let json = serde_json::to_string(value).unwrap();
+        let decoded: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(*value, decoded);
+        decoded
+    }
+
     #[test]
     fn test_tool_calling_config_default() {
         let config = ToolCallingConfig::default();
@@ -504,6 +514,131 @@ mod tests {
         assert_eq!(config.tool_timeout, Duration::from_secs(30));
         assert!(config.include_tool_results);
         assert!(!config.stop_on_error);
+    }
+
+    #[test]
+    fn test_tool_calling_config_clone() {
+        let original = ToolCallingConfig::default();
+        let mut cloned = original.clone();
+        cloned.max_iterations = 2;
+        cloned.parallel_execution = false;
+        cloned.tool_timeout = Duration::from_secs(5);
+        cloned.include_tool_results = false;
+        cloned.stop_on_error = true;
+
+        assert_eq!(original.max_iterations, 10);
+        assert!(original.parallel_execution);
+        assert_eq!(original.tool_timeout, Duration::from_secs(30));
+        assert!(original.include_tool_results);
+        assert!(!original.stop_on_error);
+
+        assert_eq!(cloned.max_iterations, 2);
+        assert!(!cloned.parallel_execution);
+        assert_eq!(cloned.tool_timeout, Duration::from_secs(5));
+        assert!(!cloned.include_tool_results);
+        assert!(cloned.stop_on_error);
+    }
+
+    #[test]
+    fn test_finish_reason_serialization() {
+        for reason in [
+            FinishReason::Stop,
+            FinishReason::MaxIterations,
+            FinishReason::Error("timeout".to_string()),
+            FinishReason::UnknownTool("missing".to_string()),
+        ] {
+            serde_roundtrip(&reason);
+        }
+    }
+
+    #[test]
+    fn test_message_role_serialization() {
+        for role in [
+            MessageRole::System,
+            MessageRole::User,
+            MessageRole::Assistant,
+            MessageRole::Tool,
+        ] {
+            let json = serde_json::to_string(&role).unwrap();
+            assert!(json.chars().all(|c| !c.is_uppercase()));
+            serde_roundtrip(&role);
+        }
+    }
+
+    /// `CoordinatorResult` is the concrete session output type used by `execute`.
+    type SessionResult = CoordinatorResult;
+
+    #[test]
+    fn test_coordinator_result_type_alias() {
+        let result: SessionResult = CoordinatorResult {
+            content: "All done".to_string(),
+            tool_calls: vec![ToolCallRecord {
+                id: "call_1".to_string(),
+                name: "calculator".to_string(),
+                arguments: serde_json::json!({"a": 1, "b": 1}),
+                result: serde_json::json!({"sum": 2}),
+                success: true,
+                duration_ms: 12,
+                error: None,
+            }],
+            iterations: 2,
+            finish_reason: FinishReason::Stop,
+            total_usage: TokenUsage::new(30, 15),
+            message_history: vec![
+                ConversationMessage::system("sys"),
+                ConversationMessage::user("go"),
+            ],
+        };
+
+        assert_eq!(result.content, "All done");
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.iterations, 2);
+        assert_eq!(result.finish_reason, FinishReason::Stop);
+        assert_eq!(result.total_usage.prompt_tokens, 30);
+    }
+
+    #[test]
+    fn test_coordinator_result_serde_roundtrip() {
+        let result = CoordinatorResult {
+            content: "done".to_string(),
+            tool_calls: Vec::new(),
+            iterations: 1,
+            finish_reason: FinishReason::MaxIterations,
+            total_usage: TokenUsage::default(),
+            message_history: vec![ConversationMessage::user("ping")],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let decoded: CoordinatorResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.content, result.content);
+        assert_eq!(decoded.tool_calls.len(), result.tool_calls.len());
+        assert_eq!(decoded.iterations, result.iterations);
+        assert_eq!(decoded.finish_reason, result.finish_reason);
+        assert_eq!(decoded.total_usage, result.total_usage);
+        assert_eq!(decoded.message_history.len(), result.message_history.len());
+        assert_eq!(decoded.message_history[0].role, result.message_history[0].role);
+    }
+
+    #[test]
+    fn test_conversation_message_serde_roundtrip() {
+        let tool_calls = vec![ToolCall {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({"q": "ares"}),
+        }];
+
+        for msg in [
+            ConversationMessage::system("system prompt"),
+            ConversationMessage::user("hello"),
+            ConversationMessage::assistant("thinking", tool_calls),
+            ConversationMessage::tool_result("call_1", &serde_json::json!({"hits": 1})),
+        ] {
+            let json = serde_json::to_string(&msg).unwrap();
+            let decoded: ConversationMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded.role, msg.role);
+            assert_eq!(decoded.content, msg.content);
+            assert_eq!(decoded.tool_calls.len(), msg.tool_calls.len());
+            assert_eq!(decoded.tool_call_id, msg.tool_call_id);
+        }
     }
 
     #[test]

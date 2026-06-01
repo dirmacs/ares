@@ -166,6 +166,17 @@ mod tests {
     }
 
     #[test]
+    fn count_bind_placeholders_skips_non_numeric_dollar_signs() {
+        assert_eq!(count_bind_placeholders("SELECT $x FROM alerts WHERE id = $1"), 1);
+        assert_eq!(count_bind_placeholders("no $ placeholders here"), 0);
+    }
+
+    #[test]
+    fn count_bind_placeholders_tracks_max_index_not_count() {
+        assert_eq!(count_bind_placeholders("WHERE parent = $1 AND id = $3"), 3);
+    }
+
+    #[test]
     fn create_alert_sql_inserts_with_six_bind_params() {
         assert!(CREATE_ALERT_SQL.starts_with("INSERT INTO alerts"));
         assert!(CREATE_ALERT_SQL.contains("resolved, created_at"));

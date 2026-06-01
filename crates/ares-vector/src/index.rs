@@ -10,9 +10,247 @@ use crate::types::{SearchResult, VectorId, VectorMetadata};
 use anndists::dist::distances::{DistCosine, DistDot, DistL1, DistL2};
 use hnsw_rs::hnsw::Hnsw;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{debug, trace};
+
+type IndexResult<T> = std::result::Result<T, IndexConfigError>;
+
+// =============================================================================
+// Pure PostgreSQL index helpers (R46)
+// =============================================================================
+
+/// Minimum HNSW `m` (max edges per node) for [`IndexConfig`].
+pub const MIN_HNSW_M: u16 = 4;
+/// Maximum HNSW `m` for [`IndexConfig`].
+pub const MAX_HNSW_M: u16 = 100;
+/// Minimum HNSW `ef_construction` for [`IndexConfig`].
+pub const MIN_HNSW_EF_CONSTRUCTION: u32 = 10;
+/// Maximum HNSW `ef_construction` for [`IndexConfig`].
+pub const MAX_HNSW_EF_CONSTRUCTION: u32 = 1000;
+/// Default HNSW `m` used in [`IndexConfig`].
+pub const DEFAULT_INDEX_M: u16 = 16;
+/// Default HNSW `ef_construction` used in [`IndexConfig`].
+pub const DEFAULT_INDEX_EF_CONSTRUCTION: u32 = 64;
+/// Default vector dimensions in [`IndexConfig`].
+pub const DEFAULT_INDEX_DIMENSIONS: usize = 384;
+
+/// PostgreSQL / pgvector index access method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexType {
+    /// HNSW approximate nearest-neighbor index.
+    #[default]
+    Hnsw,
+    /// IVFFlat inverted-file index.
+    Ivfflat,
+    /// Flat / sequential scan (pgvector extension, no ANN index).
+    Flat,
+}
+
+/// Validation failures for [`IndexConfig`] and SQL builders.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum IndexConfigError {
+    /// HNSW `m` is outside [`MIN_HNSW_M`]..=[`MAX_HNSW_M`].
+    #[error("invalid M: {0} (must be {MIN_HNSW_M}-{MAX_HNSW_M})")]
+    InvalidM(u16),
+    /// HNSW `ef_construction` is outside allowed bounds.
+    #[error("invalid ef_construction: {0} (must be {MIN_HNSW_EF_CONSTRUCTION}-{MAX_HNSW_EF_CONSTRUCTION})")]
+    InvalidEfConstruction(u32),
+    /// Index type cannot be used for the requested operation.
+    #[error("unsupported index type: {0:?}")]
+    UnsupportedIndexType(IndexType),
+    /// Vector dimensionality must be greater than zero.
+    #[error("dimensions must be greater than zero")]
+    InvalidDimensions,
+    /// Distance metric has no pgvector operator mapping.
+    #[error("unsupported distance metric for pgvector: {0}")]
+    UnsupportedDistance(DistanceMetric),
+    /// Table or column name is not a valid SQL identifier.
+    #[error("invalid SQL identifier: {0}")]
+    InvalidIdentifier(String),
+}
+
+/// Serializable pgvector index configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IndexConfig {
+    /// Embedding dimensionality.
+    #[serde(default = "default_index_dimensions")]
+    pub dimensions: usize,
+    /// Index access method.
+    #[serde(default)]
+    pub index_type: IndexType,
+    /// Distance metric / opclass selection.
+    #[serde(default)]
+    pub distance: DistanceMetric,
+    /// HNSW `m` parameter.
+    #[serde(default = "default_index_m")]
+    pub m: u16,
+    /// HNSW `ef_construction` parameter.
+    #[serde(default = "default_index_ef_construction")]
+    pub ef_construction: u32,
+}
+
+impl Default for IndexConfig {
+    fn default() -> Self {
+        Self {
+            dimensions: default_index_dimensions(),
+            index_type: IndexType::default(),
+            distance: DistanceMetric::default(),
+            m: default_index_m(),
+            ef_construction: default_index_ef_construction(),
+        }
+    }
+}
+
+impl fmt::Display for IndexConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} index ({}-dim, {}, m={}, ef={})",
+            index_type_string(self.index_type),
+            self.dimensions,
+            self.distance,
+            self.m,
+            self.ef_construction
+        )
+    }
+}
+
+/// Default index dimensions for serde.
+pub fn default_index_dimensions() -> usize {
+    DEFAULT_INDEX_DIMENSIONS
+}
+
+/// Default HNSW `m` for serde.
+pub fn default_index_m() -> u16 {
+    DEFAULT_INDEX_M
+}
+
+/// Default HNSW `ef_construction` for serde.
+pub fn default_index_ef_construction() -> u32 {
+    DEFAULT_INDEX_EF_CONSTRUCTION
+}
+
+/// PostgreSQL index or extension keyword for an [`IndexType`].
+pub fn index_type_string(index_type: IndexType) -> &'static str {
+    match index_type {
+        IndexType::Hnsw => "hnsw",
+        IndexType::Ivfflat => "ivfflat",
+        IndexType::Flat => "vector",
+    }
+}
+
+/// pgvector distance operator for ORDER BY / WHERE clauses.
+pub fn distance_operator(metric: DistanceMetric) -> IndexResult<&'static str> {
+    crate::distance::distance_operator(metric)
+        .ok_or(IndexConfigError::UnsupportedDistance(metric))
+}
+
+/// pgvector opclass suffix used when creating indexes.
+pub fn distance_ops_class(metric: DistanceMetric) -> IndexResult<&'static str> {
+    match metric {
+        DistanceMetric::Cosine => Ok("vector_cosine_ops"),
+        DistanceMetric::Euclidean => Ok("vector_l2_ops"),
+        DistanceMetric::DotProduct => Ok("vector_ip_ops"),
+        DistanceMetric::Manhattan => Err(IndexConfigError::UnsupportedDistance(metric)),
+    }
+}
+
+/// Format HNSW `WITH` clause parameters for PostgreSQL DDL.
+pub fn hnsw_param_string(m: u16, ef_construction: u32) -> String {
+    format!("m = {m}, ef_construction = {ef_construction}")
+}
+
+/// Return the PostgreSQL access method or error for types that do not use one.
+pub fn index_access_method(index_type: IndexType) -> IndexResult<&'static str> {
+    match index_type {
+        IndexType::Hnsw => Ok("hnsw"),
+        IndexType::Ivfflat => Ok("ivfflat"),
+        IndexType::Flat => Err(IndexConfigError::UnsupportedIndexType(IndexType::Flat)),
+    }
+}
+
+fn quote_sql_identifier(raw: &str) -> IndexResult<String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(IndexConfigError::InvalidIdentifier(
+            "empty identifier".into(),
+        ));
+    }
+    if name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return Err(IndexConfigError::InvalidIdentifier(name.into()));
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(IndexConfigError::InvalidIdentifier(name.into()));
+    }
+    Ok(format!("\"{}\"", name.replace('"', "\"\"")))
+}
+
+fn index_name_suffix(index_type: IndexType) -> &'static str {
+    match index_type {
+        IndexType::Hnsw => "hnsw",
+        IndexType::Ivfflat => "ivfflat",
+        IndexType::Flat => "flat",
+    }
+}
+
+/// Validate dimensions, distance mapping, and HNSW tuning parameters.
+pub fn validate_index_config(config: &IndexConfig) -> IndexResult<()> {
+    if config.dimensions == 0 {
+        return Err(IndexConfigError::InvalidDimensions);
+    }
+    distance_ops_class(config.distance)?;
+    if config.index_type == IndexType::Hnsw {
+        if config.m < MIN_HNSW_M || config.m > MAX_HNSW_M {
+            return Err(IndexConfigError::InvalidM(config.m));
+        }
+        if config.ef_construction < MIN_HNSW_EF_CONSTRUCTION
+            || config.ef_construction > MAX_HNSW_EF_CONSTRUCTION
+        {
+            return Err(IndexConfigError::InvalidEfConstruction(config.ef_construction));
+        }
+    }
+    Ok(())
+}
+
+/// Build `CREATE INDEX` SQL for a pgvector embedding column.
+pub fn build_create_index_sql(
+    table: &str,
+    column: &str,
+    config: &IndexConfig,
+) -> IndexResult<String> {
+    validate_index_config(config)?;
+    if config.index_type == IndexType::Flat {
+        return Ok(String::new());
+    }
+
+    let table_id = quote_sql_identifier(table)?;
+    let column_id = quote_sql_identifier(column)?;
+    let ops = distance_ops_class(config.distance)?;
+    let suffix = index_name_suffix(config.index_type);
+    let index_name = format!("{}_{}_{}_idx", table.trim(), column.trim(), suffix);
+    let index_name_id = quote_sql_identifier(&index_name)?;
+    let method = index_type_string(config.index_type);
+
+    let stmt = match config.index_type {
+        IndexType::Hnsw => {
+            let with_clause = hnsw_param_string(config.m, config.ef_construction);
+            format!(
+                "CREATE INDEX IF NOT EXISTS {index_name_id} ON {table_id} \
+                 USING {method} ({column_id} {ops}) WITH ({with_clause})"
+            )
+        }
+        IndexType::Ivfflat => format!(
+            "CREATE INDEX IF NOT EXISTS {index_name_id} ON {table_id} \
+             USING {method} ({column_id} {ops}) WITH (lists = 100)"
+        ),
+        IndexType::Flat => String::new(),
+    };
+    Ok(stmt)
+}
 
 /// Thread-safe HNSW index with ID mapping.
 pub struct HnswIndex {
@@ -756,4 +994,288 @@ mod tests {
         index.insert("v", &[1.0; 8], None).unwrap();
         assert!(index.memory_usage() > 0);
     }
+    // =====================================================================
+    // Pure PostgreSQL index helpers (R46)
+    // =====================================================================
+
+    fn sample_index_config(index_type: IndexType, distance: DistanceMetric) -> IndexConfig {
+        IndexConfig {
+            dimensions: 384,
+            index_type,
+            distance,
+            m: DEFAULT_INDEX_M,
+            ef_construction: DEFAULT_INDEX_EF_CONSTRUCTION,
+        }
+    }
+
+    #[test]
+    fn index_type_hnsw_serde_roundtrip() {
+        let json = serde_json::to_string(&IndexType::Hnsw).expect("serialize");
+        assert_eq!(json, "\"hnsw\"");
+        let back: IndexType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, IndexType::Hnsw);
+    }
+
+    #[test]
+    fn index_type_ivfflat_serde_roundtrip() {
+        let json = serde_json::to_string(&IndexType::Ivfflat).expect("serialize");
+        assert_eq!(json, "\"ivfflat\"");
+        let back: IndexType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, IndexType::Ivfflat);
+    }
+
+    #[test]
+    fn index_type_flat_serde_roundtrip() {
+        let json = serde_json::to_string(&IndexType::Flat).expect("serialize");
+        assert_eq!(json, "\"flat\"");
+        let back: IndexType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, IndexType::Flat);
+    }
+
+    #[test]
+    fn index_config_serde_roundtrip_all_index_types_and_distances() {
+        for index_type in [IndexType::Hnsw, IndexType::Ivfflat, IndexType::Flat] {
+            for distance in [
+                DistanceMetric::Cosine,
+                DistanceMetric::Euclidean,
+                DistanceMetric::DotProduct,
+            ] {
+                let config = sample_index_config(index_type, distance);
+                let json = serde_json::to_string(&config).expect("serialize");
+                let restored: IndexConfig = serde_json::from_str(&json).expect("deserialize");
+                assert_eq!(restored, config);
+            }
+        }
+    }
+
+    #[test]
+    fn index_config_deserializes_with_defaults() {
+        let json = r#"{"dimensions":1536}"#;
+        let config: IndexConfig = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(config.dimensions, 1536);
+        assert_eq!(config.index_type, IndexType::Hnsw);
+        assert_eq!(config.distance, DistanceMetric::Cosine);
+        assert_eq!(config.m, DEFAULT_INDEX_M);
+        assert_eq!(config.ef_construction, DEFAULT_INDEX_EF_CONSTRUCTION);
+    }
+
+    #[test]
+    fn hnsw_param_string_formats_m_and_ef_construction() {
+        assert_eq!(hnsw_param_string(24, 200), "m = 24, ef_construction = 200");
+    }
+
+    #[test]
+    fn hnsw_param_string_uses_default_constants() {
+        let defaults = IndexConfig::default();
+        assert_eq!(
+            hnsw_param_string(defaults.m, defaults.ef_construction),
+            "m = 16, ef_construction = 64"
+        );
+    }
+
+    #[test]
+    fn validate_index_config_accepts_defaults() {
+        assert!(validate_index_config(&IndexConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn validate_index_config_rejects_zero_dimensions() {
+        let config = IndexConfig {
+            dimensions: 0,
+            ..IndexConfig::default()
+        };
+        assert!(matches!(
+            validate_index_config(&config),
+            Err(IndexConfigError::InvalidDimensions)
+        ));
+    }
+
+    #[test]
+    fn validate_index_config_rejects_m_below_min() {
+        let config = IndexConfig {
+            m: MIN_HNSW_M - 1,
+            ..IndexConfig::default()
+        };
+        assert!(matches!(
+            validate_index_config(&config),
+            Err(IndexConfigError::InvalidM(3))
+        ));
+    }
+
+    #[test]
+    fn validate_index_config_rejects_m_above_max() {
+        let config = IndexConfig {
+            m: MAX_HNSW_M + 1,
+            ..IndexConfig::default()
+        };
+        assert!(matches!(
+            validate_index_config(&config),
+            Err(IndexConfigError::InvalidM(101))
+        ));
+    }
+
+    #[test]
+    fn validate_index_config_rejects_ef_below_min() {
+        let config = IndexConfig {
+            ef_construction: MIN_HNSW_EF_CONSTRUCTION - 1,
+            ..IndexConfig::default()
+        };
+        assert!(matches!(
+            validate_index_config(&config),
+            Err(IndexConfigError::InvalidEfConstruction(9))
+        ));
+    }
+
+    #[test]
+    fn validate_index_config_rejects_ef_above_max() {
+        let config = IndexConfig {
+            ef_construction: MAX_HNSW_EF_CONSTRUCTION + 1,
+            ..IndexConfig::default()
+        };
+        assert!(matches!(
+            validate_index_config(&config),
+            Err(IndexConfigError::InvalidEfConstruction(1001))
+        ));
+    }
+
+    #[test]
+    fn validate_index_config_accepts_boundary_m_and_ef() {
+        let config = IndexConfig {
+            m: MIN_HNSW_M,
+            ef_construction: MAX_HNSW_EF_CONSTRUCTION,
+            ..IndexConfig::default()
+        };
+        assert!(validate_index_config(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_index_config_skips_hnsw_bounds_for_ivfflat() {
+        let config = IndexConfig {
+            index_type: IndexType::Ivfflat,
+            m: 1,
+            ef_construction: 1,
+            ..IndexConfig::default()
+        };
+        assert!(validate_index_config(&config).is_ok());
+    }
+
+    #[test]
+    fn build_create_index_sql_quotes_table_and_column() {
+        let config = sample_index_config(IndexType::Hnsw, DistanceMetric::Cosine);
+        let sql = build_create_index_sql("documents", "embedding", &config).expect("sql");
+        assert!(sql.contains("ON \"documents\""));
+        assert!(sql.contains("(\"embedding\" vector_cosine_ops)"));
+    }
+
+    #[test]
+    fn build_create_index_sql_includes_hnsw_suffix_and_defaults() {
+        let config = IndexConfig::default();
+        let sql = build_create_index_sql("docs", "vec", &config).expect("sql");
+        assert!(sql.contains("docs_vec_hnsw_idx"));
+        assert!(sql.contains("USING hnsw"));
+        assert!(sql.contains("m = 16, ef_construction = 64"));
+    }
+
+    #[test]
+    fn build_create_index_sql_ivfflat_suffix_and_lists() {
+        let config = sample_index_config(IndexType::Ivfflat, DistanceMetric::Euclidean);
+        let sql = build_create_index_sql("docs", "vec", &config).expect("sql");
+        assert!(sql.contains("docs_vec_ivfflat_idx"));
+        assert!(sql.contains("USING ivfflat"));
+        assert!(sql.contains("lists = 100"));
+        assert!(sql.contains("vector_l2_ops"));
+    }
+
+    #[test]
+    fn build_create_index_sql_flat_returns_empty() {
+        let config = sample_index_config(IndexType::Flat, DistanceMetric::DotProduct);
+        let sql = build_create_index_sql("docs", "vec", &config).expect("sql");
+        assert!(sql.is_empty());
+    }
+
+    #[test]
+    fn build_create_index_sql_rejects_invalid_table_name() {
+        let config = IndexConfig::default();
+        assert!(build_create_index_sql("bad-name", "embedding", &config).is_err());
+    }
+
+    #[test]
+    fn index_type_string_maps_postgres_names() {
+        assert_eq!(index_type_string(IndexType::Hnsw), "hnsw");
+        assert_eq!(index_type_string(IndexType::Ivfflat), "ivfflat");
+        assert_eq!(index_type_string(IndexType::Flat), "vector");
+    }
+
+    #[test]
+    fn distance_operator_maps_pgvector_operators() {
+        assert_eq!(distance_operator(DistanceMetric::Euclidean).expect("l2"), "<->");
+        assert_eq!(distance_operator(DistanceMetric::DotProduct).expect("dot"), "<#>");
+        assert_eq!(distance_operator(DistanceMetric::Cosine).expect("cosine"), "<=>");
+    }
+
+    #[test]
+    fn distance_operator_rejects_manhattan() {
+        assert!(matches!(
+            distance_operator(DistanceMetric::Manhattan),
+            Err(IndexConfigError::UnsupportedDistance(DistanceMetric::Manhattan))
+        ));
+    }
+
+    #[test]
+    fn index_access_method_errors_for_flat() {
+        assert!(matches!(
+            index_access_method(IndexType::Flat),
+            Err(IndexConfigError::UnsupportedIndexType(IndexType::Flat))
+        ));
+    }
+
+    #[test]
+    fn index_config_error_invalid_m_display() {
+        let msg = IndexConfigError::InvalidM(2).to_string();
+        assert!(msg.contains("invalid M"));
+        assert!(msg.contains('2'));
+    }
+
+    #[test]
+    fn index_config_error_invalid_ef_display() {
+        let msg = IndexConfigError::InvalidEfConstruction(5).to_string();
+        assert!(msg.contains("ef_construction"));
+        assert!(msg.contains('5'));
+    }
+
+    #[test]
+    fn index_config_error_unsupported_index_type_display() {
+        let msg = IndexConfigError::UnsupportedIndexType(IndexType::Flat).to_string();
+        assert!(msg.contains("unsupported index type"));
+    }
+
+    #[test]
+    fn index_config_debug_clone_and_display_preview() {
+        let config = IndexConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config, cloned);
+        let dbg = format!("{config:?}");
+        assert!(dbg.contains("dimensions"));
+        let preview = config.to_string();
+        assert!(preview.contains("hnsw index"));
+        assert!(preview.contains("384-dim"));
+    }
+
+    #[test]
+    fn index_type_debug_and_clone() {
+        let ty = IndexType::Ivfflat;
+        let cloned = ty.clone();
+        assert_eq!(ty, cloned);
+        assert!(format!("{ty:?}").contains("Ivfflat"));
+    }
+
+    #[test]
+    fn index_config_error_debug_and_clone() {
+        let err = IndexConfigError::InvalidM(7);
+        let cloned = err.clone();
+        assert_eq!(err, cloned);
+        assert!(format!("{err:?}").contains("InvalidM"));
+    }
+
 }
+

@@ -60,6 +60,9 @@ pub struct AresMcpServer {
     ares_api_url: String,
     /// HTTP client for calling ARES's own HTTP API
     http: reqwest::Client,
+    /// When true, `enforce_quota` is a no-op (unit tests only).
+    #[cfg(test)]
+    skip_quota_check: bool,
 }
 
 impl AresMcpServer {
@@ -87,6 +90,8 @@ impl AresMcpServer {
             extensions,
             ares_api_url: ares_api_url.trim_end_matches('/').to_string(),
             http,
+            #[cfg(test)]
+            skip_quota_check: false,
         }
     }
 
@@ -127,6 +132,12 @@ impl AresMcpServer {
 
     /// Checks quota before executing a tool call.
     async fn enforce_quota(&self, session: &McpSession) -> Result<(), String> {
+        #[cfg(test)]
+        if self.skip_quota_check {
+            let _ = session;
+            return Ok(());
+        }
+
         let within_quota = check_quota(&self.pool, session.tenant_id(), session.tier())
             .await
             .map_err(|e| format!("Quota check failed: {}", e))?;

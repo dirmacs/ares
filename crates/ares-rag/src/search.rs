@@ -92,7 +92,14 @@ pub struct SearchResult {
     /// Which strategies contributed to this result
     pub sources: Vec<SearchStrategy>,
     /// Original document metadata
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+}
+
+impl std::fmt::Display for SearchResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (score={:.4})", self.id, self.score)
+    }
 }
 
 /// A correction made to a query word during typo correction
@@ -154,6 +161,333 @@ impl Default for HybridWeights {
         }
     }
 }
+
+// ============================================================================
+// Semantic Vector Search
+// ============================================================================
+
+/// Default table prefix for per-collection vector tables.
+pub const DEFAULT_VECTOR_TABLE_PREFIX: &str = "ares_vec";
+
+/// Vector similarity metric for semantic search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorMetric {
+    /// Cosine distance (best for normalized embeddings).
+    #[default]
+    Cosine,
+    /// Euclidean / L2 distance.
+    L2,
+    /// Inner product (dot product).
+    InnerProduct,
+}
+
+impl std::fmt::Display for VectorMetric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VectorMetric::Cosine => write!(f, "cosine"),
+            VectorMetric::L2 => write!(f, "l2"),
+            VectorMetric::InnerProduct => write!(f, "inner_product"),
+        }
+    }
+}
+
+/// Metadata filter for SQL WHERE clauses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataFilter {
+    /// JSONB metadata key.
+    pub key: String,
+    /// Expected metadata value.
+    pub value: String,
+}
+
+fn default_table_prefix() -> String {
+    DEFAULT_VECTOR_TABLE_PREFIX.to_string()
+}
+
+/// Query parameters for vector similarity search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchQuery {
+    /// Collection name (used to derive the table name).
+    pub collection: String,
+    /// Query embedding vector.
+    pub embedding: Vec<f32>,
+    /// Maximum number of results to return.
+    #[serde(default = "default_top_k")]
+    pub limit: usize,
+    /// Minimum similarity threshold (0.0 to 1.0).
+    #[serde(default)]
+    pub threshold: f32,
+    /// Distance metric to use.
+    #[serde(default)]
+    pub metric: VectorMetric,
+    /// Table prefix for SQL generation.
+    #[serde(default = "default_table_prefix")]
+    pub table_prefix: String,
+    /// Optional metadata filters.
+    #[serde(default)]
+    pub filters: Vec<MetadataFilter>,
+}
+
+/// A retrieved chunk with its similarity score.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChunkWithScore {
+    /// Document / chunk identifier.
+    pub id: String,
+    /// Chunk text content.
+    pub content: String,
+    /// Similarity score (higher is better).
+    pub score: f32,
+    /// Optional metadata payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Errors that can occur during semantic vector search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchError {
+    /// No rows matched the query.
+    NoResults,
+    /// The embedding vector is invalid.
+    InvalidVector(String),
+    /// A database or parsing error occurred.
+    DbError(String),
+}
+
+impl std::fmt::Display for SearchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SearchError::NoResults => write!(f, "no results found"),
+            SearchError::InvalidVector(msg) => write!(f, "invalid vector: {msg}"),
+            SearchError::DbError(msg) => write!(f, "database error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for SearchError {}
+
+/// Validate an embedding vector before search.
+pub fn validate_embedding(
+    embedding: &[f32],
+    expected_dims: Option<usize>,
+) -> std::result::Result<(), SearchError> {
+    if embedding.is_empty() {
+        return Err(SearchError::InvalidVector(
+            "embedding must not be empty".into(),
+        ));
+    }
+    if embedding.iter().any(|v| !v.is_finite()) {
+        return Err(SearchError::InvalidVector(
+            "embedding contains non-finite values".into(),
+        ));
+    }
+    if let Some(dims) = expected_dims {
+        if embedding.len() != dims {
+            return Err(SearchError::InvalidVector(format!(
+                "expected {dims} dimensions, got {}",
+                embedding.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Convert a raw distance value to a similarity score (higher is better).
+pub fn distance_to_similarity(metric: VectorMetric, distance: f32) -> f32 {
+    match metric {
+        VectorMetric::Cosine => 1.0 - distance,
+        VectorMetric::L2 => 1.0 / (1.0 + distance.max(0.0)),
+        VectorMetric::InnerProduct => -distance,
+    }
+}
+
+/// Min-max normalize scores into the `[0, 1]` range.
+pub fn score_normalization(scores: &[f32]) -> Vec<f32> {
+    if scores.is_empty() {
+        return Vec::new();
+    }
+    let min = scores.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if (max - min).abs() < f32::EPSILON {
+        return vec![1.0; scores.len()];
+    }
+    scores
+        .iter()
+        .map(|score| (score - min) / (max - min))
+        .collect()
+}
+
+fn validate_collection_name(name: &str) -> std::result::Result<(), SearchError> {
+    if name.is_empty() {
+        return Err(SearchError::InvalidVector(
+            "collection name must not be empty".into(),
+        ));
+    }
+    let Some(first) = name.chars().next() else {
+        return Err(SearchError::InvalidVector(
+            "collection name must not be empty".into(),
+        ));
+    };
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return Err(SearchError::InvalidVector(
+            "collection name must start with a letter or underscore".into(),
+        ));
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(SearchError::InvalidVector(
+            "collection name contains invalid characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn collection_table_name(prefix: &str, collection: &str) -> std::result::Result<String, SearchError> {
+    validate_collection_name(collection)?;
+    if prefix.is_empty() {
+        return Err(SearchError::InvalidVector(
+            "table prefix must not be empty".into(),
+        ));
+    }
+    Ok(format!("{prefix}_{collection}"))
+}
+
+fn build_metadata_filter_sql(key: &str, value: &str) -> String {
+    let key = key.replace('\'', "''");
+    let value = value.replace('\'', "''");
+    format!("metadata->>'{key}' = '{value}'")
+}
+
+fn metric_sql_exprs(metric: VectorMetric) -> (&'static str, String) {
+    match metric {
+        VectorMetric::Cosine => (
+            "embedding <=> $1::vector",
+            "1 - (embedding <=> $1::vector)".to_string(),
+        ),
+        VectorMetric::L2 => (
+            "embedding <-> $1::vector",
+            "1.0 / (1.0 + (embedding <-> $1::vector))".to_string(),
+        ),
+        VectorMetric::InnerProduct => (
+            "embedding <#> $1::vector",
+            "-(embedding <#> $1::vector)".to_string(),
+        ),
+    }
+}
+
+/// Build a parameterized-style SQL query for vector similarity search.
+pub fn build_search_query(query: &SearchQuery) -> std::result::Result<String, SearchError> {
+    validate_collection_name(&query.collection)?;
+    if query.limit == 0 {
+        return Err(SearchError::InvalidVector(
+            "limit must be greater than zero".into(),
+        ));
+    }
+    validate_embedding(&query.embedding, None)?;
+
+    let table = collection_table_name(&query.table_prefix, &query.collection)?;
+    let (order_expr, score_expr) = metric_sql_exprs(query.metric);
+
+    let mut where_clauses = vec![format!("{score_expr} >= {}", query.threshold)];
+    for filter in &query.filters {
+        where_clauses.push(build_metadata_filter_sql(&filter.key, &filter.value));
+    }
+    let where_sql = where_clauses.join(" AND ");
+
+    Ok(format!(
+        "SELECT id, content, metadata, {score_expr} AS score          FROM {table}          WHERE {where_sql}          ORDER BY {order_expr}          LIMIT {}",
+        query.limit
+    ))
+}
+
+/// Rank, deduplicate, threshold-filter, and truncate search results.
+pub fn rank_results(
+    chunks: Vec<ChunkWithScore>,
+    threshold: f32,
+    top_k: usize,
+) -> Vec<ChunkWithScore> {
+    let mut best: HashMap<String, ChunkWithScore> = HashMap::new();
+
+    for chunk in chunks {
+        if chunk.score < threshold {
+            continue;
+        }
+        best.entry(chunk.id.clone())
+            .and_modify(|existing| {
+                if chunk.score > existing.score {
+                    *existing = chunk.clone();
+                }
+            })
+            .or_insert(chunk);
+    }
+
+    let mut ranked: Vec<ChunkWithScore> = best.into_values().collect();
+    ranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    ranked.truncate(top_k);
+    ranked
+}
+
+/// Parse database JSON rows into scored chunks.
+pub fn parse_search_response(
+    rows: &[serde_json::Value],
+    metric: VectorMetric,
+) -> std::result::Result<Vec<ChunkWithScore>, SearchError> {
+    if rows.is_empty() {
+        return Err(SearchError::NoResults);
+    }
+
+    let mut chunks = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = row
+            .get("id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| SearchError::DbError("missing id field".into()))?
+            .to_string();
+        let content = row
+            .get("content")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string();
+        let metadata = row.get("metadata").cloned();
+
+        let score = if let Some(score) = row.get("score").and_then(|value| value.as_f64()) {
+            score as f32
+        } else if let Some(distance) = row.get("distance").and_then(|value| value.as_f64()) {
+            distance_to_similarity(metric, distance as f32)
+        } else {
+            return Err(SearchError::DbError(
+                "missing score or distance field".into(),
+            ));
+        };
+
+        chunks.push(ChunkWithScore {
+            id,
+            content,
+            score,
+            metadata,
+        });
+    }
+
+    Ok(chunks)
+}
+
+/// Convert ranked chunks into unified search results tagged as semantic.
+pub fn chunks_to_search_results(chunks: &[ChunkWithScore]) -> Vec<SearchResult> {
+    chunks
+        .iter()
+        .map(|chunk| SearchResult {
+            id: chunk.id.clone(),
+            content: chunk.content.clone(),
+            score: chunk.score,
+            sources: vec![SearchStrategy::Semantic],
+            metadata: chunk.metadata.clone(),
+        })
+        .collect()
+}
+
 
 // ============================================================================
 // BM25 Implementation
@@ -1664,6 +1998,604 @@ mod tests {
         assert!(!results.is_empty());
         assert!(corrected.contains("vector"));
         assert!(!corrections.is_empty());
+    }
+
+    // ====================================================================
+    // Semantic vector search: serde roundtrips
+    // ====================================================================
+
+    fn sample_query() -> SearchQuery {
+        SearchQuery {
+            collection: "documents".into(),
+            embedding: vec![0.1, 0.2, 0.3],
+            limit: 5,
+            threshold: 0.25,
+            metric: VectorMetric::Cosine,
+            table_prefix: DEFAULT_VECTOR_TABLE_PREFIX.to_string(),
+            filters: vec![MetadataFilter {
+                key: "source".into(),
+                value: "docs".into(),
+            }],
+        }
+    }
+
+    fn sample_chunk(id: &str, score: f32) -> ChunkWithScore {
+        ChunkWithScore {
+            id: id.into(),
+            content: format!("content for {id}"),
+            score,
+            metadata: Some(serde_json::json!({"source": "docs"})),
+        }
+    }
+
+    #[test]
+    fn test_search_query_serde_roundtrip() {
+        let query = sample_query();
+        let json = serde_json::to_string(&query).unwrap();
+        let parsed: SearchQuery = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.collection, query.collection);
+        assert_eq!(parsed.embedding, query.embedding);
+        assert_eq!(parsed.limit, query.limit);
+        assert!((parsed.threshold - query.threshold).abs() < f32::EPSILON);
+        assert_eq!(parsed.metric, query.metric);
+        assert_eq!(parsed.filters.len(), 1);
+    }
+
+    #[test]
+    fn test_search_query_serde_defaults() {
+        let json = r#"{"collection":"docs","embedding":[1.0,0.0]}"#;
+        let query: SearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.limit, 10);
+        assert!((query.threshold).abs() < f32::EPSILON);
+        assert_eq!(query.metric, VectorMetric::Cosine);
+        assert_eq!(query.table_prefix, DEFAULT_VECTOR_TABLE_PREFIX);
+        assert!(query.filters.is_empty());
+    }
+
+    #[test]
+    fn test_search_query_serde_l2_metric() {
+        let json = r#"{"collection":"docs","embedding":[1.0],"metric":"l2"}"#;
+        let query: SearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.metric, VectorMetric::L2);
+    }
+
+    #[test]
+    fn test_search_query_serde_inner_product_metric() {
+        let json = r#"{"collection":"docs","embedding":[1.0],"metric":"inner_product"}"#;
+        let query: SearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.metric, VectorMetric::InnerProduct);
+    }
+
+    #[test]
+    fn test_search_result_serde_roundtrip() {
+        let result = SearchResult {
+            id: "doc1".into(),
+            content: "hello world".into(),
+            score: 0.88,
+            sources: vec![SearchStrategy::Semantic, SearchStrategy::Bm25],
+            metadata: Some(serde_json::json!({"tag": "rust"})),
+        };
+        let parsed: SearchResult =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        assert_eq!(parsed.id, result.id);
+        assert_eq!(parsed.content, result.content);
+        assert!((parsed.score - result.score).abs() < f32::EPSILON);
+        assert_eq!(parsed.sources, result.sources);
+        assert_eq!(parsed.metadata, result.metadata);
+    }
+
+    #[test]
+    fn test_search_result_serde_without_metadata() {
+        let result = SearchResult {
+            id: "doc2".into(),
+            content: "plain".into(),
+            score: 0.5,
+            sources: vec![SearchStrategy::Fuzzy],
+            metadata: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(!json.contains("metadata"));
+        let parsed: SearchResult = serde_json::from_str(&json).unwrap();
+        assert!(parsed.metadata.is_none());
+    }
+
+    #[test]
+    fn test_chunk_with_score_serde_roundtrip() {
+        let chunk = sample_chunk("c1", 0.77);
+        let parsed: ChunkWithScore =
+            serde_json::from_str(&serde_json::to_string(&chunk).unwrap()).unwrap();
+        assert_eq!(parsed, chunk);
+    }
+
+    #[test]
+    fn test_chunk_with_score_serde_without_metadata() {
+        let chunk = ChunkWithScore {
+            id: "c2".into(),
+            content: "text".into(),
+            score: 0.4,
+            metadata: None,
+        };
+        let json = serde_json::to_string(&chunk).unwrap();
+        assert!(!json.contains("metadata"));
+        let parsed: ChunkWithScore = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "c2");
+    }
+
+    #[test]
+    fn test_metadata_filter_serde_roundtrip() {
+        let filter = MetadataFilter {
+            key: "tags".into(),
+            value: "rust".into(),
+        };
+        let parsed: MetadataFilter =
+            serde_json::from_str(&serde_json::to_string(&filter).unwrap()).unwrap();
+        assert_eq!(parsed, filter);
+    }
+
+    // ====================================================================
+    // distance_to_similarity
+    // ====================================================================
+
+    #[test]
+    fn test_distance_to_similarity_cosine_identical() {
+        assert!((distance_to_similarity(VectorMetric::Cosine, 0.0) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_distance_to_similarity_cosine_orthogonal() {
+        assert!((distance_to_similarity(VectorMetric::Cosine, 1.0) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_distance_to_similarity_cosine_partial() {
+        assert!((distance_to_similarity(VectorMetric::Cosine, 0.2) - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_distance_to_similarity_l2_zero() {
+        assert!((distance_to_similarity(VectorMetric::L2, 0.0) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_distance_to_similarity_l2_large_distance() {
+        let sim = distance_to_similarity(VectorMetric::L2, 9.0);
+        assert!((sim - 0.1).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_distance_to_similarity_l2_negative_clamped() {
+        let sim = distance_to_similarity(VectorMetric::L2, -5.0);
+        assert!((sim - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_distance_to_similarity_inner_product() {
+        assert!(
+            (distance_to_similarity(VectorMetric::InnerProduct, -0.95) - 0.95).abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn test_distance_to_similarity_inner_product_positive_distance() {
+        assert!(
+            (distance_to_similarity(VectorMetric::InnerProduct, 0.5) + 0.5).abs() < f32::EPSILON
+        );
+    }
+
+    // ====================================================================
+    // score_normalization
+    // ====================================================================
+
+    #[test]
+    fn test_score_normalization_empty() {
+        assert!(score_normalization(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_score_normalization_single_value() {
+        assert_eq!(score_normalization(&[0.42]), vec![1.0]);
+    }
+
+    #[test]
+    fn test_score_normalization_uniform_values() {
+        assert_eq!(score_normalization(&[0.5, 0.5, 0.5]), vec![1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_score_normalization_min_max() {
+        let normalized = score_normalization(&[0.0, 0.5, 1.0]);
+        assert!((normalized[0] - 0.0).abs() < f32::EPSILON);
+        assert!((normalized[1] - 0.5).abs() < f32::EPSILON);
+        assert!((normalized[2] - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_score_normalization_preserves_order() {
+        let normalized = score_normalization(&[0.2, 0.4, 0.9]);
+        assert!(normalized[0] < normalized[1]);
+        assert!(normalized[1] < normalized[2]);
+    }
+
+    // ====================================================================
+    // rank_results: threshold, top-k, dedup
+    // ====================================================================
+
+    #[test]
+    fn test_rank_results_threshold_filters_low_scores() {
+        let chunks = vec![sample_chunk("a", 0.9), sample_chunk("b", 0.1)];
+        let ranked = rank_results(chunks, 0.5, 10);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].id, "a");
+    }
+
+    #[test]
+    fn test_rank_results_top_k_truncates() {
+        let chunks = vec![
+            sample_chunk("a", 0.9),
+            sample_chunk("b", 0.8),
+            sample_chunk("c", 0.7),
+        ];
+        let ranked = rank_results(chunks, 0.0, 2);
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].id, "a");
+        assert_eq!(ranked[1].id, "b");
+    }
+
+    #[test]
+    fn test_rank_results_dedup_keeps_highest_score() {
+        let chunks = vec![
+            ChunkWithScore {
+                id: "dup".into(),
+                content: "low".into(),
+                score: 0.4,
+                metadata: None,
+            },
+            ChunkWithScore {
+                id: "dup".into(),
+                content: "high".into(),
+                score: 0.95,
+                metadata: None,
+            },
+        ];
+        let ranked = rank_results(chunks, 0.0, 10);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].content, "high");
+    }
+
+    #[test]
+    fn test_rank_results_sorts_descending() {
+        let chunks = vec![
+            sample_chunk("c", 0.3),
+            sample_chunk("a", 0.9),
+            sample_chunk("b", 0.6),
+        ];
+        let ranked = rank_results(chunks, 0.0, 10);
+        assert_eq!(ranked[0].id, "a");
+        assert_eq!(ranked[1].id, "b");
+        assert_eq!(ranked[2].id, "c");
+    }
+
+    #[test]
+    fn test_rank_results_empty_input() {
+        assert!(rank_results(vec![], 0.0, 5).is_empty());
+    }
+
+    #[test]
+    fn test_rank_results_all_below_threshold() {
+        let chunks = vec![sample_chunk("a", 0.1), sample_chunk("b", 0.2)];
+        assert!(rank_results(chunks, 0.9, 10).is_empty());
+    }
+
+    #[test]
+    fn test_rank_results_top_k_zero_returns_empty() {
+        let chunks = vec![sample_chunk("a", 0.9)];
+        assert!(rank_results(chunks, 0.0, 0).is_empty());
+    }
+
+    // ====================================================================
+    // build_search_query SQL
+    // ====================================================================
+
+    #[test]
+    fn test_build_search_query_cosine_includes_where_order_limit() {
+        let sql = build_search_query(&sample_query()).expect("sql");
+        assert!(sql.contains("FROM ares_vec_documents"));
+        assert!(sql.contains("WHERE"));
+        assert!(sql.contains(">= 0.25"));
+        assert!(sql.contains("ORDER BY embedding <=> $1::vector"));
+        assert!(sql.contains("LIMIT 5"));
+        assert!(sql.contains("1 - (embedding <=> $1::vector)"));
+    }
+
+    #[test]
+    fn test_build_search_query_l2_metric() {
+        let mut query = sample_query();
+        query.metric = VectorMetric::L2;
+        let sql = build_search_query(&query).expect("sql");
+        assert!(sql.contains("embedding <-> $1::vector"));
+        assert!(sql.contains("1.0 / (1.0 + (embedding <-> $1::vector))"));
+    }
+
+    #[test]
+    fn test_build_search_query_inner_product_metric() {
+        let mut query = sample_query();
+        query.metric = VectorMetric::InnerProduct;
+        let sql = build_search_query(&query).expect("sql");
+        assert!(sql.contains("embedding <#> $1::vector"));
+        assert!(sql.contains("-(embedding <#> $1::vector)"));
+    }
+
+    #[test]
+    fn test_build_search_query_includes_metadata_filter() {
+        let sql = build_search_query(&sample_query()).expect("sql");
+        assert!(sql.contains("metadata->>'source' = 'docs'"));
+    }
+
+    #[test]
+    fn test_build_search_query_metadata_filter_escapes_quotes() {
+        let mut query = sample_query();
+        query.filters = vec![MetadataFilter {
+            key: "source".into(),
+            value: "it's fine".into(),
+        }];
+        let sql = build_search_query(&query).expect("sql");
+        assert!(sql.contains("it''s fine"));
+    }
+
+    #[test]
+    fn test_build_search_query_rejects_zero_limit() {
+        let mut query = sample_query();
+        query.limit = 0;
+        assert!(matches!(
+            build_search_query(&query),
+            Err(SearchError::InvalidVector(_))
+        ));
+    }
+
+    #[test]
+    fn test_build_search_query_rejects_empty_embedding() {
+        let mut query = sample_query();
+        query.embedding.clear();
+        assert!(matches!(
+            build_search_query(&query),
+            Err(SearchError::InvalidVector(_))
+        ));
+    }
+
+    #[test]
+    fn test_build_search_query_rejects_invalid_collection() {
+        let mut query = sample_query();
+        query.collection = "bad-name".into();
+        assert!(matches!(
+            build_search_query(&query),
+            Err(SearchError::InvalidVector(_))
+        ));
+    }
+
+    #[test]
+    fn test_build_search_query_rejects_empty_table_prefix() {
+        let mut query = sample_query();
+        query.table_prefix.clear();
+        assert!(matches!(
+            build_search_query(&query),
+            Err(SearchError::InvalidVector(_))
+        ));
+    }
+
+    // ====================================================================
+    // parse_search_response
+    // ====================================================================
+
+    #[test]
+    fn test_parse_search_response_with_score_field() {
+        let rows = vec![serde_json::json!({
+            "id": "doc1",
+            "content": "hello",
+            "score": 0.91
+        })];
+        let chunks = parse_search_response(&rows, VectorMetric::Cosine).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].id, "doc1");
+        assert!((chunks[0].score - 0.91).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_search_response_with_distance_field_cosine() {
+        let rows = vec![serde_json::json!({
+            "id": "doc1",
+            "content": "hello",
+            "distance": 0.2
+        })];
+        let chunks = parse_search_response(&rows, VectorMetric::Cosine).unwrap();
+        assert!((chunks[0].score - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_search_response_with_distance_field_l2() {
+        let rows = vec![serde_json::json!({
+            "id": "doc1",
+            "content": "hello",
+            "distance": 1.0
+        })];
+        let chunks = parse_search_response(&rows, VectorMetric::L2).unwrap();
+        assert!((chunks[0].score - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_search_response_empty_rows_is_no_results() {
+        assert_eq!(
+            parse_search_response(&[], VectorMetric::Cosine),
+            Err(SearchError::NoResults)
+        );
+    }
+
+    #[test]
+    fn test_parse_search_response_missing_id_is_db_error() {
+        let rows = vec![serde_json::json!({"content": "x", "score": 0.5})];
+        assert!(matches!(
+            parse_search_response(&rows, VectorMetric::Cosine),
+            Err(SearchError::DbError(_))
+        ));
+    }
+
+    #[test]
+    fn test_parse_search_response_missing_score_and_distance_is_db_error() {
+        let rows = vec![serde_json::json!({"id": "doc1", "content": "x"})];
+        assert!(matches!(
+            parse_search_response(&rows, VectorMetric::Cosine),
+            Err(SearchError::DbError(_))
+        ));
+    }
+
+    #[test]
+    fn test_parse_search_response_preserves_metadata() {
+        let rows = vec![serde_json::json!({
+            "id": "doc1",
+            "content": "hello",
+            "score": 0.5,
+            "metadata": {"source": "docs"}
+        })];
+        let chunks = parse_search_response(&rows, VectorMetric::Cosine).unwrap();
+        assert_eq!(
+            chunks[0].metadata,
+            Some(serde_json::json!({"source": "docs"}))
+        );
+    }
+
+    // ====================================================================
+    // validate_embedding + SearchError + Display/Debug/Clone
+    // ====================================================================
+
+    #[test]
+    fn test_validate_embedding_rejects_empty() {
+        assert!(matches!(
+            validate_embedding(&[], None),
+            Err(SearchError::InvalidVector(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_embedding_rejects_nan() {
+        assert!(matches!(
+            validate_embedding(&[f32::NAN], None),
+            Err(SearchError::InvalidVector(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_embedding_rejects_wrong_dimensions() {
+        assert!(matches!(
+            validate_embedding(&[1.0, 2.0], Some(3)),
+            Err(SearchError::InvalidVector(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_embedding_accepts_valid_vector() {
+        assert!(validate_embedding(&[1.0, 2.0, 3.0], Some(3)).is_ok());
+    }
+
+    #[test]
+    fn test_search_error_display_no_results() {
+        assert_eq!(SearchError::NoResults.to_string(), "no results found");
+    }
+
+    #[test]
+    fn test_search_error_display_invalid_vector() {
+        let err = SearchError::InvalidVector("bad dims".into());
+        assert_eq!(err.to_string(), "invalid vector: bad dims");
+    }
+
+    #[test]
+    fn test_search_error_display_db_error() {
+        let err = SearchError::DbError("connection lost".into());
+        assert_eq!(err.to_string(), "database error: connection lost");
+    }
+
+    #[test]
+    fn test_search_error_debug_clone() {
+        let err = SearchError::DbError("x".into());
+        let cloned = err.clone();
+        assert_eq!(format!("{err:?}"), format!("{cloned:?}"));
+    }
+
+    #[test]
+    fn test_search_result_display() {
+        let result = SearchResult {
+            id: "doc42".into(),
+            content: "text".into(),
+            score: 0.8765,
+            sources: vec![SearchStrategy::Semantic],
+            metadata: None,
+        };
+        assert_eq!(result.to_string(), "doc42 (score=0.8765)");
+    }
+
+    #[test]
+    fn test_search_result_debug_clone() {
+        let result = SearchResult {
+            id: "doc1".into(),
+            content: "body".into(),
+            score: 0.5,
+            sources: vec![SearchStrategy::Hybrid],
+            metadata: None,
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.id, result.id);
+        assert!(format!("{result:?}").contains("doc1"));
+    }
+
+    #[test]
+    fn test_chunk_with_score_debug_clone() {
+        let chunk = sample_chunk("x", 0.5);
+        let cloned = chunk.clone();
+        assert_eq!(cloned.id, chunk.id);
+        assert!(format!("{chunk:?}").contains("x"));
+    }
+
+    #[test]
+    fn test_search_query_debug_clone() {
+        let query = sample_query();
+        let cloned = query.clone();
+        assert_eq!(cloned.collection, query.collection);
+        assert!(format!("{query:?}").contains("documents"));
+    }
+
+    #[test]
+    fn test_vector_metric_default_is_cosine() {
+        assert_eq!(VectorMetric::default(), VectorMetric::Cosine);
+    }
+
+    #[test]
+    fn test_vector_metric_display() {
+        assert_eq!(VectorMetric::Cosine.to_string(), "cosine");
+        assert_eq!(VectorMetric::L2.to_string(), "l2");
+        assert_eq!(VectorMetric::InnerProduct.to_string(), "inner_product");
+    }
+
+    #[test]
+    fn test_chunks_to_search_results_tags_semantic_source() {
+        let chunks = vec![sample_chunk("doc1", 0.8)];
+        let results = chunks_to_search_results(&chunks);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].sources, vec![SearchStrategy::Semantic]);
+        assert_eq!(results[0].id, "doc1");
+    }
+
+    #[test]
+    fn test_semantic_pipeline_parse_rank_convert() {
+        let rows = vec![
+            serde_json::json!({"id": "a", "content": "alpha", "score": 0.95}),
+            serde_json::json!({"id": "b", "content": "beta", "score": 0.40}),
+            serde_json::json!({"id": "a", "content": "alpha-dup", "score": 0.50}),
+        ];
+        let parsed = parse_search_response(&rows, VectorMetric::Cosine).unwrap();
+        let ranked = rank_results(parsed, 0.5, 2);
+        let results = chunks_to_search_results(&ranked);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "a");
+        assert!((results[0].score - 0.95).abs() < f32::EPSILON);
     }
 
 }

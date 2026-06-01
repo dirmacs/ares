@@ -186,13 +186,19 @@ impl From<UsageSummary> for UsageResponse {
     }
 }
 
+
+const INVALID_TIER_MSG: &str = "Invalid tier. Must be: free, dev, pro, or enterprise";
+
+/// Validates a tier string from admin request payloads.
+fn parse_tenant_tier(tier: &str) -> Result<TenantTier> {
+    TenantTier::from_str(tier).ok_or_else(|| AppError::InvalidInput(INVALID_TIER_MSG.to_string()))
+}
+
 pub async fn create_tenant(
     State(state): State<AppState>,
     Json(payload): Json<CreateTenantRequest>,
 ) -> Result<Json<TenantResponse>> {
-    let tier = TenantTier::from_str(&payload.tier).ok_or_else(|| {
-        AppError::InvalidInput("Invalid tier. Must be: free, dev, pro, or enterprise".to_string())
-    })?;
+    let tier = parse_tenant_tier(&payload.tier)?;
 
     let tenant = state.tenant_db.create_tenant(payload.name, tier).await?;
 
@@ -280,9 +286,7 @@ pub async fn update_tenant_quota(
     Path(tenant_id): Path<String>,
     Json(payload): Json<UpdateQuotaRequest>,
 ) -> Result<Json<TenantResponse>> {
-    let tier = TenantTier::from_str(&payload.tier).ok_or_else(|| {
-        AppError::InvalidInput("Invalid tier. Must be: free, dev, pro, or enterprise".to_string())
-    })?;
+    let tier = parse_tenant_tier(&payload.tier)?;
 
     state
         .tenant_db
@@ -341,9 +345,7 @@ pub async fn provision_client(
     State(state): State<AppState>,
     Json(req): Json<ProvisionClientRequest>,
 ) -> Result<Json<ProvisionClientResponse>> {
-    let tier = TenantTier::from_str(&req.tier).ok_or_else(|| {
-        AppError::InvalidInput("Invalid tier. Must be: free, dev, pro, or enterprise".to_string())
-    })?;
+    let tier = parse_tenant_tier(&req.tier)?;
 
     // product_type is used only to select which agent templates to clone into tenant_agents.
     // It does NOT create product-specific DB tables — client domain data lives in the client's own backend.
@@ -1156,6 +1158,87 @@ mod tests {
         let req: EmergencyStopRequest = serde_json::from_str(r#"{"active":true}"#).unwrap();
         assert!(req.active);
     }
+
+    #[test]
+    fn create_api_key_request_roundtrip() {
+        let req = CreateApiKeyRequest {
+            name: "Primary".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: CreateApiKeyRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "Primary");
+    }
+
+    #[test]
+    fn update_quota_request_roundtrip() {
+        let req = UpdateQuotaRequest {
+            tier: "enterprise".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: UpdateQuotaRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tier, "enterprise");
+    }
+
+    #[test]
+    fn admin_claims_deserializes_roles_map() {
+        let json = r#"{
+            "sub":"user-1",
+            "email":"admin@example.com",
+            "exp":9999999999,
+            "iat":1700000000,
+            "roles":{
+                "ares":[{"role":"admin","resource_id":null}]
+            }
+        }"#;
+        let claims: AdminClaims = serde_json::from_str(json).unwrap();
+        assert_eq!(claims.sub, "user-1");
+        assert_eq!(claims.email, "admin@example.com");
+        assert!(has_admin_role(&claims));
+    }
+
+    #[test]
+    fn admin_claims_default_empty_roles_when_omitted() {
+        let json = r#"{
+            "sub":"user-2",
+            "email":"viewer@example.com",
+            "exp":9999999999,
+            "iat":1700000000
+        }"#;
+        let claims: AdminClaims = serde_json::from_str(json).unwrap();
+        assert!(claims.roles.is_empty());
+        assert!(!has_admin_role(&claims));
+    }
+
+    #[test]
+    fn has_admin_role_accepts_admin_in_admin_product() {
+        let mut roles = HashMap::new();
+        roles.insert("admin".into(), vec![role_entry("admin")]);
+        assert!(has_admin_role(&admin_claims(roles)));
+    }
+
+    #[test]
+    fn parse_tenant_tier_accepts_case_insensitive_values() {
+        assert!(matches!(parse_tenant_tier("PRO").unwrap(), TenantTier::Pro));
+        assert!(matches!(
+            parse_tenant_tier("Enterprise").unwrap(),
+            TenantTier::Enterprise
+        ));
+    }
+
+    #[test]
+    fn parse_tenant_tier_rejects_unknown_tier_with_invalid_input() {
+        let err = parse_tenant_tier("platinum").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(err.to_string().contains(INVALID_TIER_MSG));
+    }
+
+    #[test]
+    fn app_error_not_found_serializes_for_admin_handlers() {
+        let err = AppError::NotFound("Tenant not found".to_string());
+        assert!(matches!(err, AppError::NotFound(_)));
+        assert!(err.to_string().contains("Tenant not found"));
+    }
+
 }
 
 pub async fn get_agent_stats_handler(

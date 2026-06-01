@@ -243,4 +243,59 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), McpAuthError::NoApiKey));
     }
+
+    #[cfg(feature = "postgres")]
+    mod validate_mcp_api_key_tests {
+        use super::*;
+        use ares_db::PostgresClient;
+        use std::sync::Arc;
+
+        fn test_tenant_db() -> ares_db::TenantDb {
+            ares_db::TenantDb::new(Arc::new(PostgresClient::new_test()))
+        }
+
+        #[tokio::test]
+        async fn rejects_invalid_format_before_database_lookup() {
+            let err = validate_mcp_api_key(&test_tenant_db(), "not-a-key")
+                .await
+                .unwrap_err();
+            match err {
+                McpAuthError::InvalidKey(msg) => {
+                    assert_eq!(msg, "API key must start with 'ares_' prefix");
+                }
+                other => panic!("expected InvalidKey, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn rejects_key_with_short_suffix_without_database() {
+            let err = validate_mcp_api_key(&test_tenant_db(), "ares_short")
+                .await
+                .unwrap_err();
+            match err {
+                McpAuthError::InvalidKey(msg) => {
+                    assert_eq!(msg, "API key not found or inactive");
+                }
+                other => panic!("expected InvalidKey, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn maps_database_lookup_errors_to_invalid_key() {
+            let err = validate_mcp_api_key(&test_tenant_db(), "ares_abcdefgh12345678")
+                .await
+                .unwrap_err();
+            match err {
+                McpAuthError::InvalidKey(msg) => {
+                    assert!(
+                        msg.contains("Failed to lookup API key"),
+                        "unexpected message: {msg}"
+                    );
+                }
+                other => panic!("expected InvalidKey, got {other:?}"),
+            }
+        }
+    }
+
 }
+

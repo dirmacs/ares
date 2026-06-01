@@ -55,8 +55,282 @@ pub struct UpdateTenantAgentRequest {
     pub enabled: Option<bool>,
 }
 
-fn row_to_tenant_agent(row: &sqlx::postgres::PgRow) -> TenantAgent {
+// =============================================================================
+// Pure helpers (resolution, validation, row mapping)
+// =============================================================================
+
+const DEFAULT_MAX_TOOL_ITERATIONS: usize = 5;
+
+/// Parsed tenant-agent JSONB config used for resolution and CRUD validation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TenantAgentConfig {
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default = "default_max_tool_iterations_json")]
+    pub max_tool_iterations: usize,
+    #[serde(default)]
+    pub parallel_tools: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+fn default_max_tool_iterations_json() -> usize {
+    DEFAULT_MAX_TOOL_ITERATIONS
+}
+
+/// Subset of `tenant_agents` row fields used by resolution helpers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantAgentRowSnapshot {
+    pub enabled: bool,
+    pub config: serde_json::Value,
+    pub updated_at: i64,
+}
+
+/// Outcome of pure tenant-agent config resolution (registry fallback vs tenant DB).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TenantAgentResolveOutcome {
+    UseTenantDb {
+        config: TenantAgentConfig,
+        config_version: String,
+    },
+    UseRegistryFallback,
+}
+
+/// Decomposed row values for `agent_from_row` (testable without a live `PgRow`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantAgentRowData {
+    pub id: String,
+    pub tenant_id: String,
+    pub agent_name: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub config: serde_json::Value,
+    pub enabled: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+pub fn tenant_agent_disabled_error(agent_name: &str, tenant_id: &str) -> AppError {
+    AppError::NotFound(format!(
+        "Agent '{}' is disabled for tenant '{}'",
+        agent_name, tenant_id
+    ))
+}
+
+pub fn tenant_agent_not_found_error(agent_name: &str, tenant_id: &str) -> AppError {
+    AppError::NotFound(format!(
+        "Agent '{}' not found for tenant '{}'",
+        agent_name, tenant_id
+    ))
+}
+
+pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentConfig> {
+    let obj = value.as_object().ok_or_else(|| {
+        AppError::InvalidInput("Tenant agent config must be a JSON object".into())
+    })?;
+
+    let model = obj
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "Tenant agent config is missing a valid non-empty 'model'".into(),
+            )
+        })?
+        .to_string();
+
+    let system_prompt = match obj.get("system_prompt") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::String(value)) => Some(value.clone()),
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'system_prompt' must be a string".into(),
+            ));
+        }
+    };
+
+    let tools = match obj.get("tools") {
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                    AppError::InvalidInput(
+                        "Tenant agent config field 'tools' must be an array of strings".into(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Some(serde_json::Value::Null) | None => Vec::new(),
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'tools' must be an array".into(),
+            ));
+        }
+    };
+
+    let max_tool_iterations = match obj.get("max_tool_iterations") {
+        Some(serde_json::Value::Number(value)) => value.as_u64().ok_or_else(|| {
+            AppError::InvalidInput(
+                "Tenant agent config field 'max_tool_iterations' must be a non-negative integer"
+                    .into(),
+            )
+        })? as usize,
+        Some(serde_json::Value::Null) | None => DEFAULT_MAX_TOOL_ITERATIONS,
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'max_tool_iterations' must be a number".into(),
+            ));
+        }
+    };
+
+    let parallel_tools = match obj.get("parallel_tools") {
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(serde_json::Value::Null) | None => false,
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'parallel_tools' must be a boolean".into(),
+            ));
+        }
+    };
+
+    let version = match obj.get("version") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::String(value)) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'version' must be a string".into(),
+            ));
+        }
+    };
+
+    Ok(TenantAgentConfig {
+        model,
+        system_prompt,
+        tools,
+        max_tool_iterations,
+        parallel_tools,
+        version,
+    })
+}
+
+pub fn tenant_config_version(config: &serde_json::Value, updated_at: i64) -> String {
+    config
+        .get("version")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| format!("tenant-db:{}", updated_at))
+}
+
+pub fn resolve_agent_config(
+    agent_name: &str,
+    tenant_id: &str,
+    snapshot: Option<TenantAgentRowSnapshot>,
+) -> Result<TenantAgentResolveOutcome> {
+    let Some(snapshot) = snapshot else {
+        return Ok(TenantAgentResolveOutcome::UseRegistryFallback);
+    };
+    if !snapshot.enabled {
+        return Err(tenant_agent_disabled_error(agent_name, tenant_id));
+    }
+    let config = validate_tenant_config(&snapshot.config)?;
+    Ok(TenantAgentResolveOutcome::UseTenantDb {
+        config_version: tenant_config_version(&snapshot.config, snapshot.updated_at),
+        config,
+    })
+}
+
+pub fn resolve_required_agent_config(
+    agent_name: &str,
+    tenant_id: &str,
+    snapshot: Option<TenantAgentRowSnapshot>,
+) -> Result<TenantAgentResolveOutcome> {
+    let Some(snapshot) = snapshot else {
+        return Err(tenant_agent_not_found_error(agent_name, tenant_id));
+    };
+    resolve_agent_config(agent_name, tenant_id, Some(snapshot))
+}
+
+pub fn build_tenant_agent(
+    id: String,
+    tenant_id: &str,
+    req: &CreateTenantAgentRequest,
+    now: i64,
+) -> TenantAgent {
+    build_tenant_agent_with_enabled(id, tenant_id, req, now, true)
+}
+
+pub fn build_tenant_agent_with_enabled(
+    id: String,
+    tenant_id: &str,
+    req: &CreateTenantAgentRequest,
+    now: i64,
+    enabled: bool,
+) -> TenantAgent {
     TenantAgent {
+        id,
+        tenant_id: tenant_id.to_string(),
+        agent_name: req.agent_name.clone(),
+        display_name: req.display_name.clone(),
+        description: req.description.clone(),
+        config: req.config.clone(),
+        enabled,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+pub fn prepare_create_tenant_agent(req: &CreateTenantAgentRequest) -> Result<Vec<String>> {
+    Ok(validate_tenant_config(&req.config)?.tools)
+}
+
+pub fn merge_tenant_agent_update(
+    current: &TenantAgent,
+    req: &UpdateTenantAgentRequest,
+    now: i64,
+) -> TenantAgent {
+    TenantAgent {
+        display_name: req
+            .display_name
+            .clone()
+            .unwrap_or_else(|| current.display_name.clone()),
+        description: req.description.clone().or_else(|| current.description.clone()),
+        config: req.config.clone().unwrap_or_else(|| current.config.clone()),
+        enabled: req.enabled.unwrap_or(current.enabled),
+        updated_at: now,
+        ..current.clone()
+    }
+}
+
+pub fn agent_from_row_data(data: TenantAgentRowData) -> TenantAgent {
+    TenantAgent {
+        id: data.id,
+        tenant_id: data.tenant_id,
+        agent_name: data.agent_name,
+        display_name: data.display_name,
+        description: data.description,
+        config: data.config,
+        enabled: data.enabled,
+        created_at: data.created_at,
+        updated_at: data.updated_at,
+    }
+}
+
+pub(crate) fn agent_from_row(row: &sqlx::postgres::PgRow) -> TenantAgent {
+    agent_from_row_data(TenantAgentRowData {
         id: row.get("id"),
         tenant_id: row.get("tenant_id"),
         agent_name: row.get("agent_name"),
@@ -66,8 +340,9 @@ fn row_to_tenant_agent(row: &sqlx::postgres::PgRow) -> TenantAgent {
         enabled: row.get("enabled"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
-    }
+    })
 }
+
 
 pub fn tenant_agent_version_key(tenant_id: &str, agent_name: &str) -> String {
     format!("tenant:{}:{}", tenant_id, agent_name)
@@ -234,7 +509,7 @@ pub async fn rollback_tenant_agent_version(
         ))
     })?;
 
-    let restored = row_to_tenant_agent(&row);
+    let restored = agent_from_row(&row);
     let restored_version = tenant_agent_snapshot_version(&restored);
     let restored_snapshot = tenant_agent_snapshot(&restored);
     let change_source = format!("rollback:{}", version);
@@ -279,7 +554,7 @@ pub async fn list_tenant_agents(pool: &PgPool, tenant_id: &str) -> Result<Vec<Te
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    Ok(rows.iter().map(row_to_tenant_agent).collect())
+    Ok(rows.iter().map(agent_from_row).collect())
 }
 
 pub async fn get_tenant_agent(
@@ -298,7 +573,7 @@ pub async fn get_tenant_agent(
     .map_err(|e| AppError::Database(e.to_string()))?
     .ok_or_else(|| AppError::NotFound(format!("Agent '{}' not found for tenant '{}'", agent_name, tenant_id)))?;
 
-    Ok(row_to_tenant_agent(&row))
+    Ok(agent_from_row(&row))
 }
 
 pub async fn create_tenant_agent(
@@ -306,6 +581,7 @@ pub async fn create_tenant_agent(
     tenant_id: &str,
     req: CreateTenantAgentRequest,
 ) -> Result<TenantAgent> {
+    prepare_create_tenant_agent(&req)?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_ts();
 
@@ -337,19 +613,19 @@ pub async fn update_tenant_agent(
     // Fetch current state
     let current = get_tenant_agent(pool, tenant_id, agent_name).await?;
 
-    let display_name = req.display_name.unwrap_or(current.display_name);
-    let description = req.description.or(current.description);
-    let config = req.config.unwrap_or(current.config);
-    let enabled = req.enabled.unwrap_or(current.enabled);
+    let merged = merge_tenant_agent_update(&current, &req, now);
+    if let Some(config) = req.config.as_ref() {
+        validate_tenant_config(config)?;
+    }
 
     sqlx::query(
         "UPDATE tenant_agents SET display_name = $1, description = $2, config = $3, enabled = $4, updated_at = $5
          WHERE tenant_id = $6 AND agent_name = $7"
     )
-    .bind(&display_name)
-    .bind(&description)
-    .bind(&config)
-    .bind(enabled)
+    .bind(&merged.display_name)
+    .bind(&merged.description)
+    .bind(&merged.config)
+    .bind(merged.enabled)
     .bind(now)
     .bind(tenant_id)
     .bind(agent_name)
@@ -723,6 +999,380 @@ mod tests {
         assert!(req.config.is_none());
         assert_eq!(req.enabled, Some(true));
     }
+
+    // =====================================================================
+    // TenantAgentConfig + pure resolution / create helpers (R39)
+    // =====================================================================
+
+    fn valid_config_json() -> serde_json::Value {
+        serde_json::json!({
+            "model": "fast",
+            "system_prompt": "hello",
+            "tools": ["search", "read"],
+            "max_tool_iterations": 7,
+            "parallel_tools": true,
+            "version": "v1"
+        })
+    }
+
+    fn row_snapshot(enabled: bool, config: serde_json::Value, updated_at: i64) -> TenantAgentRowSnapshot {
+        TenantAgentRowSnapshot { enabled, config, updated_at }
+    }
+
+    #[test]
+    fn tenant_agent_config_serde_roundtrip() {
+        let cfg = validate_tenant_config(&valid_config_json()).expect("valid");
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let back: TenantAgentConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn tenant_agent_config_defaults_tools_and_iterations() {
+        let cfg = validate_tenant_config(&serde_json::json!({"model": "m"})).expect("valid");
+        assert!(cfg.tools.is_empty());
+        assert_eq!(cfg.max_tool_iterations, 5);
+        assert!(!cfg.parallel_tools);
+    }
+
+    #[test]
+    fn validate_tenant_config_rejects_non_object() {
+        assert!(validate_tenant_config(&serde_json::json!([])).is_err());
+    }
+
+    #[test]
+    fn validate_tenant_config_rejects_missing_model() {
+        assert!(validate_tenant_config(&serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn validate_tenant_config_rejects_empty_model() {
+        assert!(validate_tenant_config(&serde_json::json!({"model": "  "})).is_err());
+    }
+
+    #[test]
+    fn validate_tenant_config_rejects_non_string_tools_entries() {
+        assert!(validate_tenant_config(&serde_json::json!({"model": "m", "tools": [1]})).is_err());
+    }
+
+    #[test]
+    fn validate_tenant_config_rejects_non_array_tools() {
+        assert!(validate_tenant_config(&serde_json::json!({"model": "m", "tools": "search"})).is_err());
+    }
+
+    #[test]
+    fn validate_tenant_config_rejects_negative_max_tool_iterations() {
+        assert!(validate_tenant_config(&serde_json::json!({"model": "m", "max_tool_iterations": -1})).is_err());
+    }
+
+    #[test]
+    fn validate_tenant_config_rejects_non_boolean_parallel_tools() {
+        assert!(validate_tenant_config(&serde_json::json!({"model": "m", "parallel_tools": "yes"})).is_err());
+    }
+
+    #[test]
+    fn validate_tenant_config_accepts_null_system_prompt() {
+        let cfg = validate_tenant_config(&serde_json::json!({"model": "m", "system_prompt": null})).expect("valid");
+        assert!(cfg.system_prompt.is_none());
+    }
+
+    #[test]
+    fn validate_tenant_config_strips_empty_version() {
+        let cfg = validate_tenant_config(&serde_json::json!({"model": "m", "version": "  "})).expect("valid");
+        assert!(cfg.version.is_none());
+    }
+
+    #[test]
+    fn tenant_config_version_prefers_config_version_field() {
+        assert_eq!(tenant_config_version(&serde_json::json!({"version": "v9"}), 42), "v9");
+    }
+
+    #[test]
+    fn tenant_config_version_falls_back_to_updated_at() {
+        assert_eq!(tenant_config_version(&serde_json::json!({"model": "m"}), 99), "tenant-db:99");
+    }
+
+    #[test]
+    fn resolve_agent_config_uses_registry_when_row_missing() {
+        let outcome = resolve_agent_config("a", "t", None).expect("ok");
+        assert_eq!(outcome, TenantAgentResolveOutcome::UseRegistryFallback);
+    }
+
+    #[test]
+    fn resolve_agent_config_returns_tenant_db_when_enabled() {
+        let outcome = resolve_agent_config("listener", "tenant-1", Some(row_snapshot(true, valid_config_json(), 55))).expect("ok");
+        match outcome {
+            TenantAgentResolveOutcome::UseTenantDb { config: parsed, config_version } => {
+                assert_eq!(parsed.tools, vec!["search".to_string(), "read".to_string()]);
+                assert_eq!(config_version, "v1");
+            }
+            TenantAgentResolveOutcome::UseRegistryFallback => panic!("expected tenant db"),
+        }
+    }
+
+    #[test]
+    fn resolve_agent_config_errors_when_disabled() {
+        let err = resolve_agent_config("listener", "tenant-1", Some(row_snapshot(false, valid_config_json(), 1))).unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    #[test]
+    fn resolve_agent_config_errors_on_invalid_config() {
+        let err = resolve_agent_config("listener", "tenant-1", Some(row_snapshot(true, serde_json::json!({"tools": []}), 1))).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn resolve_required_agent_config_errors_when_row_missing() {
+        assert!(matches!(resolve_required_agent_config("a", "t", None).unwrap_err(), AppError::NotFound(_)));
+    }
+
+    #[test]
+    fn resolve_required_agent_config_succeeds_when_present() {
+        let outcome = resolve_required_agent_config("a", "t", Some(row_snapshot(true, serde_json::json!({"model": "m"}), 3))).expect("ok");
+        assert!(matches!(outcome, TenantAgentResolveOutcome::UseTenantDb { .. }));
+    }
+
+    #[test]
+    fn build_tenant_agent_maps_request_fields() {
+        let req = CreateTenantAgentRequest {
+            agent_name: "bot".into(),
+            display_name: "Bot".into(),
+            description: Some("d".into()),
+            config: serde_json::json!({"model": "fast"}),
+        };
+        let agent = build_tenant_agent("id-1".into(), "tenant-9", &req, 123);
+        assert_eq!(agent.id, "id-1");
+        assert_eq!(agent.tenant_id, "tenant-9");
+        assert!(agent.enabled);
+    }
+
+    #[test]
+    fn build_tenant_agent_with_enabled_respects_flag() {
+        let req = CreateTenantAgentRequest {
+            agent_name: "bot".into(),
+            display_name: "Bot".into(),
+            description: None,
+            config: serde_json::json!({"model": "fast"}),
+        };
+        let agent = build_tenant_agent_with_enabled("id".into(), "t", &req, 1, false);
+        assert!(!agent.enabled);
+    }
+
+    #[test]
+    fn prepare_create_tenant_agent_returns_selected_tools() {
+        let req = CreateTenantAgentRequest {
+            agent_name: "bot".into(),
+            display_name: "Bot".into(),
+            description: None,
+            config: valid_config_json(),
+        };
+        assert_eq!(prepare_create_tenant_agent(&req).expect("tools"), vec!["search".to_string(), "read".to_string()]);
+    }
+
+    #[test]
+    fn prepare_create_tenant_agent_errors_on_invalid_config() {
+        let req = CreateTenantAgentRequest {
+            agent_name: "bot".into(),
+            display_name: "Bot".into(),
+            description: None,
+            config: serde_json::json!({}),
+        };
+        assert!(prepare_create_tenant_agent(&req).is_err());
+    }
+
+    #[test]
+    fn merge_tenant_agent_update_preserves_unset_fields() {
+        let current = sample_agent();
+        let req = UpdateTenantAgentRequest { display_name: Some("New".into()), description: None, config: None, enabled: None };
+        let merged = merge_tenant_agent_update(&current, &req, 999);
+        assert_eq!(merged.display_name, "New");
+        assert_eq!(merged.description, current.description);
+    }
+
+    #[test]
+    fn merge_tenant_agent_update_applies_config_and_enabled() {
+        let current = sample_agent();
+        let req = UpdateTenantAgentRequest {
+            display_name: None,
+            description: Some("x".into()),
+            config: Some(serde_json::json!({"model": "slow"})),
+            enabled: Some(false),
+        };
+        let merged = merge_tenant_agent_update(&current, &req, 5);
+        assert!(!merged.enabled);
+        assert_eq!(merged.config["model"], "slow");
+    }
+
+    #[test]
+    fn agent_from_row_data_maps_all_columns() {
+        let data = TenantAgentRowData {
+            id: "id".into(), tenant_id: "tenant".into(), agent_name: "agent".into(),
+            display_name: "Display".into(), description: None,
+            config: serde_json::json!({"model": "m"}), enabled: false, created_at: 1, updated_at: 2,
+        };
+        let agent = agent_from_row_data(data.clone());
+        assert_eq!(agent.id, data.id);
+        assert!(!agent.enabled);
+    }
+
+    #[test]
+    fn agent_from_row_data_preserves_optional_description() {
+        let agent = agent_from_row_data(TenantAgentRowData {
+            id: "id".into(), tenant_id: "t".into(), agent_name: "a".into(), display_name: "d".into(),
+            description: Some("desc".into()), config: serde_json::json!({}), enabled: true, created_at: 0, updated_at: 0,
+        });
+        assert_eq!(agent.description.as_deref(), Some("desc"));
+    }
+
+    #[test]
+    fn tenant_agent_disabled_error_message_contains_ids() {
+        let msg = tenant_agent_disabled_error("bot", "tenant-x").to_string();
+        assert!(msg.contains("bot") && msg.contains("tenant-x"));
+    }
+
+    #[test]
+    fn tenant_agent_not_found_error_message_contains_ids() {
+        let msg = tenant_agent_not_found_error("bot", "tenant-x").to_string();
+        assert!(msg.contains("bot") && msg.contains("tenant-x"));
+    }
+
+    #[test]
+    fn tenant_agent_config_debug_includes_model() {
+        let cfg = validate_tenant_config(&serde_json::json!({"model": "fast"})).unwrap();
+        assert!(format!("{:?}", cfg).contains("fast"));
+    }
+
+    #[test]
+    fn tenant_agent_row_snapshot_equality() {
+        let a = row_snapshot(true, serde_json::json!({"model": "m"}), 1);
+        assert_eq!(a, row_snapshot(true, serde_json::json!({"model": "m"}), 1));
+    }
+
+    #[test]
+    fn insert_tenant_agent_sql_constant_matches_create_bindings() {
+        assert!(INSERT_TENANT_AGENT_SQL.contains("$7, $7"));
+    }
+
+    #[test]
+    fn delete_tenant_agent_sql_targets_composite_key() {
+        assert!(DELETE_TENANT_AGENT_SQL.contains("tenant_id = $1"));
+        assert!(DELETE_TENANT_AGENT_SQL.contains("agent_name = $2"));
+    }
+
+    #[test]
+    fn resolve_agent_config_tool_selection_exposed_in_outcome() {
+        let outcome = resolve_agent_config("x", "t", Some(row_snapshot(true, serde_json::json!({"model": "m", "tools": ["a", "b", "c"]}), 1))).expect("ok");
+        if let TenantAgentResolveOutcome::UseTenantDb { config, .. } = outcome {
+            assert_eq!(config.tools.len(), 3);
+        } else { panic!("expected tenant db"); }
+    }
+
+    #[cfg(feature = "postgres")]
+    mod postgres_integration {
+        use super::*;
+        use crate::postgres::PostgresClient;
+        use sqlx::PgPool;
+
+        fn test_db_url() -> String {
+            if let Ok(url) = std::env::var("TEST_DATABASE_URL") { return url; }
+            if let Ok(url) = std::env::var("DATABASE_URL") {
+                if url.contains("/ares") && !url.contains("ares_test") { return url.replace("/ares", "/ares_test"); }
+                return url;
+            }
+            "postgres://dirmacs@localhost:5432/ares_test".to_string()
+        }
+
+        async fn try_test_pool() -> Option<PgPool> {
+            let db = PostgresClient::new_remote(test_db_url(), String::new()).await.ok()?;
+            sqlx::migrate!("../../migrations").run(&db.pool).await.ok()?;
+            Some(db.pool)
+        }
+
+        fn unique_tenant() -> String { format!("tenant-test-{}", uuid::Uuid::new_v4()) }
+
+        #[tokio::test]
+        async fn integration_create_get_delete_tenant_agent() {
+            let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+            let tenant_id = unique_tenant();
+            sqlx::query("INSERT INTO tenants (id, name, tier, status, created_at, updated_at) VALUES ($1, $2, 'free', 'active', 1, 1) ON CONFLICT (id) DO NOTHING")
+                .bind(&tenant_id).bind("Test Tenant").execute(&pool).await.expect("tenant");
+            let created = create_tenant_agent(&pool, &tenant_id, CreateTenantAgentRequest {
+                agent_name: "product".into(), display_name: "Product".into(), description: Some("i".into()),
+                config: serde_json::json!({"model": "fast", "tools": ["search"]}),
+            }).await.expect("create");
+            assert_eq!(created.agent_name, "product");
+            let fetched = get_tenant_agent(&pool, &tenant_id, "product").await.expect("get");
+            assert_eq!(fetched.id, created.id);
+            delete_tenant_agent(&pool, &tenant_id, "product").await.expect("delete");
+            assert!(get_tenant_agent(&pool, &tenant_id, "product").await.is_err());
+        }
+
+        #[tokio::test]
+        async fn integration_create_rejects_invalid_config() {
+            let Some(pool) = try_test_pool().await else { return; };
+            let err = create_tenant_agent(&pool, &unique_tenant(), CreateTenantAgentRequest {
+                agent_name: "broken".into(), display_name: "Broken".into(), description: None,
+                config: serde_json::json!({"tools": []}),
+            }).await.unwrap_err();
+            assert!(matches!(err, AppError::InvalidInput(_)));
+        }
+
+        #[tokio::test]
+        async fn integration_list_tenant_agents_orders_by_name() {
+            let Some(pool) = try_test_pool().await else { return; };
+            let tenant_id = unique_tenant();
+            sqlx::query("INSERT INTO tenants (id, name, tier, status, created_at, updated_at) VALUES ($1, $2, 'free', 'active', 1, 1) ON CONFLICT (id) DO NOTHING")
+                .bind(&tenant_id).bind("List Tenant").execute(&pool).await.expect("tenant");
+            for name in ["zebra", "alpha"] {
+                create_tenant_agent(&pool, &tenant_id, CreateTenantAgentRequest {
+                    agent_name: name.into(), display_name: name.into(), description: None,
+                    config: serde_json::json!({"model": "fast"}),
+                }).await.expect("create");
+            }
+            let names: Vec<_> = list_tenant_agents(&pool, &tenant_id).await.expect("list").into_iter().map(|a| a.agent_name).collect();
+            assert_eq!(names, vec!["alpha".to_string(), "zebra".to_string()]);
+        }
+    }
+    #[test]
+    fn validate_tenant_config_accepts_parallel_tools_true() {
+        let cfg = validate_tenant_config(&serde_json::json!({"model": "m", "parallel_tools": true})).unwrap();
+        assert!(cfg.parallel_tools);
+    }
+
+    #[test]
+    fn build_tenant_agent_copies_config_object() {
+        let req = CreateTenantAgentRequest {
+            agent_name: "a".into(),
+            display_name: "A".into(),
+            description: None,
+            config: serde_json::json!({"model": "x", "tools": ["t1"]}),
+        };
+        let agent = build_tenant_agent("id".into(), "t", &req, 0);
+        assert_eq!(agent.config["model"], "x");
+        assert_eq!(agent.config["tools"][0], "t1");
+    }
+
+    #[test]
+    fn resolve_agent_config_uses_updated_at_version_when_missing() {
+        let outcome = resolve_agent_config(
+            "a",
+            "t",
+            Some(TenantAgentRowSnapshot {
+                enabled: true,
+                config: serde_json::json!({"model": "m"}),
+                updated_at: 4242,
+            }),
+        )
+        .unwrap();
+        if let TenantAgentResolveOutcome::UseTenantDb { config_version, .. } = outcome {
+            assert_eq!(config_version, "tenant-db:4242");
+        } else {
+            panic!("expected tenant db");
+        }
+    }
+
+
 }
 
 // =============================================================================

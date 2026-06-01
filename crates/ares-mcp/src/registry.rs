@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use ares_types::types::ToolDefinition;

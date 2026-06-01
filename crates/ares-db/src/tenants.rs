@@ -1,5 +1,6 @@
 use crate::PostgresClient;
 use ares_types::{ApiKey, Tenant, TenantContext, TenantTier};
+use ares_types::TenantQuota;
 use ares_types::types::{AppError, Result};
 use chrono::{Datelike, TimeZone, Utc};
 use sha2::{Digest, Sha256};

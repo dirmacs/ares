@@ -427,6 +427,7 @@ fn not_implemented_error() -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::postgres::is_postgres_url;
     use ares_types::types::AppError;
 
     // ── Connection URL resolution ────────────────────────────────────────

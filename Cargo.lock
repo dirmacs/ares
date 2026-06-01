@@ -351,10 +351,12 @@ name = "ares-rag"
 version = "0.7.3"
 dependencies = [
  "ares-types",
+ "base64 0.22.1",
  "fastembed",
  "lancor",
  "lru 0.16.3",
  "parking_lot",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",
@@ -362,6 +364,7 @@ dependencies = [
  "text-splitter",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]

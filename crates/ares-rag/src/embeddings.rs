@@ -1218,6 +1218,198 @@ pub enum AccelerationBackend {
     Vulkan,
 }
 
+
+// ============================================================================
+// Remote HTTP Embedding API (OpenAI-compatible)
+// ============================================================================
+
+/// OpenAI-compatible embedding request body.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmbeddingRequest {
+    pub model: String,
+    pub input: EmbeddingInput,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding_format: Option<EmbeddingEncodingFormat>,
+}
+
+/// Input payload for embedding requests (single string or batch).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum EmbeddingInput {
+    Single(String),
+    Batch(Vec<String>),
+}
+
+/// Response encoding for embedding vectors.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EmbeddingEncodingFormat {
+    #[default]
+    Float,
+    Base64,
+}
+
+/// OpenAI-compatible embedding response body.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmbeddingResponse {
+    pub object: String,
+    pub data: Vec<EmbeddingDataItem>,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<EmbeddingUsage>,
+}
+
+/// One embedding vector in a response.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmbeddingDataItem {
+    pub object: String,
+    pub index: u32,
+    pub embedding: EmbeddingVector,
+}
+
+/// Embedding values as floats or base64-encoded little-endian `f32` bytes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum EmbeddingVector {
+    Float(Vec<f32>),
+    Base64(String),
+}
+
+/// Token usage metadata from the embedding endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmbeddingUsage {
+    pub prompt_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u32>,
+}
+
+/// Return the dense vector dimension for a local [`EmbeddingModelType`].
+#[inline]
+pub fn model_dimensions(model: EmbeddingModelType) -> usize {
+    model.dimensions()
+}
+
+/// Split `items` into consecutive batches of at most `batch_size`, preserving order.
+pub fn batch_chunks<T: Clone>(items: &[T], batch_size: usize) -> Vec<Vec<T>> {
+    let size = batch_size.max(1);
+    if items.is_empty() {
+        return vec![];
+    }
+    items.chunks(size).map(|c| c.to_vec()).collect()
+}
+
+/// Build an OpenAI-compatible [`EmbeddingRequest`] from model name and text inputs.
+pub fn build_embedding_request(
+    model: impl Into<String>,
+    inputs: &[impl AsRef<str>],
+    encoding_format: Option<EmbeddingEncodingFormat>,
+    dimensions: Option<u32>,
+) -> EmbeddingRequest {
+    let input = if inputs.len() == 1 {
+        EmbeddingInput::Single(inputs[0].as_ref().to_string())
+    } else {
+        EmbeddingInput::Batch(inputs.iter().map(|s| s.as_ref().to_string()).collect())
+    };
+    EmbeddingRequest { model: model.into(), input, dimensions, encoding_format }
+}
+
+/// Parse an embedding HTTP response body into ordered dense vectors.
+pub fn parse_embedding_response(body: &str, expected_dims: Option<usize>) -> Result<Vec<Vec<f32>>> {
+    let response: EmbeddingResponse = serde_json::from_str(body)
+        .map_err(|e| AppError::InvalidInput(format!("Invalid embedding response JSON: {e}")))?;
+    if response.data.is_empty() {
+        return Err(AppError::InvalidInput("Embedding response contained no data".into()));
+    }
+    let mut indexed = Vec::with_capacity(response.data.len());
+    for item in response.data {
+        let vector = decode_embedding_vector(&item.embedding)?;
+        if let Some(expected) = expected_dims {
+            validate_embedding_dims(&vector, expected)?;
+        }
+        indexed.push((item.index, vector));
+    }
+    indexed.sort_by_key(|(i, _)| *i);
+    Ok(indexed.into_iter().map(|(_, v)| v).collect())
+}
+
+pub fn decode_embedding_vector(vector: &EmbeddingVector) -> Result<Vec<f32>> {
+    match vector {
+        EmbeddingVector::Float(v) => Ok(v.clone()),
+        EmbeddingVector::Base64(s) => decode_base64_embedding(s),
+    }
+}
+
+pub fn decode_base64_embedding(encoded: &str) -> Result<Vec<f32>> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded.trim())
+        .map_err(|e| AppError::InvalidInput(format!("Invalid base64 embedding: {e}")))?;
+    if !bytes.len().is_multiple_of(4) {
+        return Err(AppError::InvalidInput(format!("Base64 embedding byte length {} is not a multiple of 4", bytes.len())));
+    }
+    Ok(bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect())
+}
+
+pub fn map_embedding_http_error(status: u16, body: &str) -> AppError {
+    let detail = if body.trim().is_empty() { format!("HTTP {status}") } else { format!("HTTP {status}: {body}") };
+    match status {
+        401 | 403 => AppError::Auth(detail),
+        404 => AppError::NotFound(detail),
+        429 => AppError::RateLimited(detail),
+        400..=499 => AppError::InvalidInput(detail),
+        _ => AppError::External(detail),
+    }
+}
+
+pub fn map_embedding_transport_error(err: &reqwest::Error) -> AppError {
+    if err.is_timeout() {
+        AppError::Unavailable(format!("Embedding request timed out: {err}"))
+    } else if err.is_connect() {
+        AppError::Unavailable(format!("Embedding service unreachable: {err}"))
+    } else {
+        AppError::External(format!("Embedding HTTP request failed: {err}"))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpEmbeddingClient {
+    http: reqwest::Client,
+    base_url: String,
+    api_key: Option<String>,
+}
+
+impl HttpEmbeddingClient {
+    pub fn new(base_url: impl Into<String>) -> Result<Self> {
+        let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build()
+            .map_err(|e| AppError::Configuration(format!("Failed to build HTTP client: {e}")))?;
+        Ok(Self { http, base_url: base_url.into().trim_end_matches('/').to_string(), api_key: None })
+    }
+    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self { self.api_key = Some(api_key.into()); self }
+    pub async fn embed(&self, request: &EmbeddingRequest) -> Result<Vec<Vec<f32>>> {
+        let url = format!("{}/v1/embeddings", self.base_url);
+        let expected_dims = request.dimensions.map(|d| d as usize);
+        let mut req = self.http.post(&url).json(request);
+        if let Some(key) = &self.api_key { req = req.bearer_auth(key); }
+        let response = req.send().await.map_err(|e| map_embedding_transport_error(&e))?;
+        let status = response.status().as_u16();
+        let body = response.text().await.map_err(|e| map_embedding_transport_error(&e))?;
+        if !(200..300).contains(&status) { return Err(map_embedding_http_error(status, &body)); }
+        parse_embedding_response(&body, expected_dims)
+    }
+    pub async fn embed_texts_batched(&self, model: &str, texts: &[impl AsRef<str>], batch_size: usize,
+        encoding_format: Option<EmbeddingEncodingFormat>, dimensions: Option<u32>) -> Result<Vec<Vec<f32>>> {
+        let owned: Vec<String> = texts.iter().map(|t| t.as_ref().to_string()).collect();
+        let mut all = Vec::with_capacity(owned.len());
+        for batch in batch_chunks(&owned, batch_size) {
+            let request = build_embedding_request(model, &batch, encoding_format, dimensions);
+            let mut vectors = self.embed(&request).await?;
+            all.append(&mut vectors);
+        }
+        Ok(all)
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -2281,6 +2473,151 @@ mod tests {
             .join("lancor-prefetch")
             .join("onnx");
         assert!(nested.exists(), "nested onnx parent dir should be created");
+    }
+
+    // HTTP embedding helpers (R40)
+    fn sample_float_response_json(vectors: &[Vec<f32>]) -> String {
+        let data: Vec<serde_json::Value> = vectors.iter().enumerate().map(|(index, embedding)| {
+            serde_json::json!({"object": "embedding", "index": index, "embedding": embedding})
+        }).collect();
+        serde_json::json!({"object": "list", "data": data, "model": "test-model", "usage": {"prompt_tokens": 3, "total_tokens": 3}}).to_string()
+    }
+    fn encode_f32_le_base64(values: &[f32]) -> String {
+        use base64::Engine;
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+    #[test] fn http_embedding_request_single_input_serde_roundtrip() {
+        let req = build_embedding_request("m", &["hello"], None, None);
+        let parsed: EmbeddingRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        assert_eq!(parsed.model, "m");
+        assert_eq!(parsed.input, EmbeddingInput::Single("hello".into()));
+    }
+    #[test] fn http_embedding_request_batch_input_serde_roundtrip() {
+        let req = build_embedding_request("m", &["a", "b"], Some(EmbeddingEncodingFormat::Float), Some(384));
+        let parsed: EmbeddingRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        assert_eq!(parsed.input, EmbeddingInput::Batch(vec!["a".into(), "b".into()]));
+        assert_eq!(parsed.dimensions, Some(384));
+    }
+    #[test] fn http_embedding_request_base64_encoding_format_roundtrip() {
+        let req = build_embedding_request("m", &["x"], Some(EmbeddingEncodingFormat::Base64), None);
+        let parsed: EmbeddingRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        assert_eq!(parsed.encoding_format, Some(EmbeddingEncodingFormat::Base64));
+    }
+    #[test] fn http_embedding_response_float_serde_roundtrip() {
+        let parsed: EmbeddingResponse = serde_json::from_str(&sample_float_response_json(&[vec![0.1, 0.2, 0.3]])).unwrap();
+        assert_eq!(parsed.data[0].embedding, EmbeddingVector::Float(vec![0.1, 0.2, 0.3]));
+    }
+    #[test] fn http_embedding_response_base64_roundtrip_and_decode() {
+        let values = vec![1.0f32, -2.5, 3.25];
+        let item = EmbeddingDataItem { object: "embedding".into(), index: 0, embedding: EmbeddingVector::Base64(encode_f32_le_base64(&values)) };
+        assert_eq!(decode_embedding_vector(&item.embedding).unwrap(), values);
+    }
+    #[test] fn model_dimensions_matches_embedding_model_type_for_all_models() {
+        for model in EmbeddingModelType::all() { assert_eq!(model_dimensions(model), model.dimensions()); }
+    }
+    #[test] fn model_dimensions_quantized_matches_base_precision() {
+        let pairs = [(EmbeddingModelType::BgeSmallEnV15, EmbeddingModelType::BgeSmallEnV15Q), (EmbeddingModelType::AllMiniLmL6V2, EmbeddingModelType::AllMiniLmL6V2Q), (EmbeddingModelType::BgeBaseEnV15, EmbeddingModelType::BgeBaseEnV15Q), (EmbeddingModelType::BgeLargeEnV15, EmbeddingModelType::BgeLargeEnV15Q)];
+        for (full, q) in pairs { assert_eq!(model_dimensions(full), model_dimensions(q)); assert!(!full.is_quantized()); assert!(q.is_quantized()); }
+    }
+    #[test] fn batch_chunks_empty_input() { assert!(batch_chunks(&[] as &[i32], 4).is_empty()); }
+    #[test] fn batch_chunks_single_batch_when_under_limit() { assert_eq!(batch_chunks(&["a","b","c"], 10), vec![vec!["a","b","c"]]); }
+    #[test] fn batch_chunks_splits_preserving_order() {
+        let items: Vec<i32> = (0..7).collect();
+        assert_eq!(batch_chunks(&items, 3), vec![vec![0,1,2], vec![3,4,5], vec![6]]);
+        let flat: Vec<i32> = batch_chunks(&items, 3).into_iter().flatten().collect();
+        assert_eq!(flat, items);
+    }
+    #[test] fn batch_chunks_zero_batch_size_treated_as_one() { assert_eq!(batch_chunks(&[1,2,3], 0), vec![vec![1], vec![2], vec![3]]); }
+    #[test] fn build_embedding_request_single_vs_batch_shape() {
+        assert!(matches!(build_embedding_request("m", &["only"], None, None).input, EmbeddingInput::Single(_)));
+        assert!(matches!(build_embedding_request("m", &["a","b"], None, None).input, EmbeddingInput::Batch(_)));
+    }
+    #[test] fn parse_embedding_response_sorts_by_index() {
+        let body = serde_json::json!({"object":"list","model":"m","data":[{"object":"embedding","index":2,"embedding":[3.0]},{"object":"embedding","index":0,"embedding":[1.0]},{"object":"embedding","index":1,"embedding":[2.0]}]}).to_string();
+        assert_eq!(parse_embedding_response(&body, None).unwrap(), vec![vec![1.0], vec![2.0], vec![3.0]]);
+    }
+    #[test] fn parse_embedding_response_validates_expected_dimensions() {
+        assert!(matches!(parse_embedding_response(&sample_float_response_json(&[vec![1.0,2.0]]), Some(3)), Err(AppError::InvalidInput(_))));
+    }
+    #[test] fn parse_embedding_response_rejects_invalid_json() {
+        assert!(matches!(parse_embedding_response("not-json", None), Err(AppError::InvalidInput(_))));
+    }
+    #[test] fn parse_embedding_response_rejects_empty_data() {
+        assert!(matches!(parse_embedding_response(r#"{"object":"list","data":[],"model":"m"}"#, None), Err(AppError::InvalidInput(_))));
+    }
+    #[test] fn parse_embedding_response_decodes_base64_vectors() {
+        let values = vec![0.5f32, -1.25, 2.0];
+        let body = serde_json::json!({"object":"list","model":"m","data":[{"object":"embedding","index":0,"embedding":encode_f32_le_base64(&values)}]}).to_string();
+        assert_eq!(parse_embedding_response(&body, None).unwrap(), vec![values]);
+    }
+    #[test] fn map_embedding_http_error_auth_for_401() { assert!(matches!(map_embedding_http_error(401, "bad"), AppError::Auth(_))); }
+    #[test] fn map_embedding_http_error_rate_limited_for_429() { assert!(matches!(map_embedding_http_error(429, "slow"), AppError::RateLimited(_))); }
+    #[test] fn map_embedding_http_error_external_for_500() { assert!(matches!(map_embedding_http_error(500, "boom"), AppError::External(_))); }
+    #[test] fn map_embedding_http_error_invalid_input_for_400() { assert!(matches!(map_embedding_http_error(400, "bad"), AppError::InvalidInput(_))); }
+    #[test] fn decode_base64_embedding_rejects_bad_length() {
+        use base64::Engine;
+        let bad = base64::engine::general_purpose::STANDARD.encode([1u8,2,3]);
+        assert!(matches!(decode_base64_embedding(&bad), Err(AppError::InvalidInput(_))));
+    }
+    #[tokio::test] async fn wiremock_http_embedding_success() {
+        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let body = sample_float_response_json(&[vec![0.1,0.2,0.3], vec![0.4,0.5,0.6]]);
+        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json")).mount(&server).await;
+        let client = HttpEmbeddingClient::new(server.uri()).unwrap();
+        let vectors = client.embed(&build_embedding_request("test-model", &["a","b"], None, None)).await.unwrap();
+        assert_eq!(vectors.len(), 2); assert_eq!(vectors[0].len(), 3);
+    }
+    #[tokio::test] async fn wiremock_http_embedding_maps_401_to_auth() {
+        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(401).set_body_string("unauthorized")).mount(&server).await;
+        let err = HttpEmbeddingClient::new(server.uri()).unwrap().embed(&build_embedding_request("m", &["x"], None, None)).await.unwrap_err();
+        assert!(matches!(err, AppError::Auth(_)));
+    }
+    #[tokio::test] async fn wiremock_http_embedding_maps_500_to_external() {
+        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(500).set_body_string("err")).mount(&server).await;
+        let err = HttpEmbeddingClient::new(server.uri()).unwrap().embed(&build_embedding_request("m", &["x"], None, None)).await.unwrap_err();
+        assert!(matches!(err, AppError::External(_)));
+    }
+    #[tokio::test] async fn wiremock_http_embedding_invalid_json_maps_to_invalid_input() {
+        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(200).set_body_string("{bad")).mount(&server).await;
+        let err = HttpEmbeddingClient::new(server.uri()).unwrap().embed(&build_embedding_request("m", &["x"], None, None)).await.unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+    #[tokio::test] async fn wiremock_http_embedding_batched_preserves_order() {
+        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(|req: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            let inputs: Vec<String> = match &body["input"] { serde_json::Value::String(s) => vec![s.clone()], serde_json::Value::Array(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(), _ => panic!() };
+            let vectors: Vec<Vec<f32>> = inputs.iter().map(|l| vec![l.trim_start_matches('t').parse::<f32>().unwrap() + 1.0]).collect();
+            ResponseTemplate::new(200).set_body_json(serde_json::from_str::<serde_json::Value>(&sample_float_response_json(&vectors)).unwrap())
+        }).mount(&server).await;
+        let vectors = HttpEmbeddingClient::new(server.uri()).unwrap().embed_texts_batched("m", &["t0","t1","t2","t3","t4"], 2, None, None).await.unwrap();
+        assert_eq!(vectors.len(), 5); assert_eq!(vectors[0], vec![1.0]); assert_eq!(vectors[4], vec![5.0]);
+    }
+    #[tokio::test] async fn wiremock_http_embedding_base64_response_path() {
+        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+        let values = vec![1.0f32, 2.0, 3.0];
+        let body = serde_json::json!({"object":"list","model":"m","data":[{"object":"embedding","index":0,"embedding":encode_f32_le_base64(&values)}]}).to_string();
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json")).mount(&server).await;
+        let vectors = HttpEmbeddingClient::new(server.uri()).unwrap().embed(&build_embedding_request("m", &["x"], Some(EmbeddingEncodingFormat::Base64), None)).await.unwrap();
+        assert_eq!(vectors[0], values);
+    }
+    #[tokio::test] async fn wiremock_http_embedding_timeout_maps_to_unavailable() {
+        use std::time::Duration; use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)).set_body_string("{}")).mount(&server).await;
+        let client = HttpEmbeddingClient { http: reqwest::Client::builder().timeout(Duration::from_millis(200)).build().unwrap(), base_url: server.uri(), api_key: None };
+        let err = client.embed(&build_embedding_request("m", &["x"], None, None)).await.unwrap_err();
+        assert!(matches!(err, AppError::Unavailable(_)));
     }
 
 }

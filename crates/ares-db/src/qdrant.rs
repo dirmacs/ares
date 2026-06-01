@@ -83,6 +83,35 @@ pub fn validate_qdrant_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+
+/// Builds a Qdrant connection URL from scheme, host, and port.
+pub fn build_qdrant_url(scheme: &str, host: &str, port: u16) -> std::result::Result<String, String> {
+    let scheme = scheme.trim().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!(
+            "unsupported qdrant url scheme (expected http or https): {scheme}"
+        ));
+    }
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("qdrant host must not be empty".to_string());
+    }
+    if port == 0 {
+        return Err("qdrant port must be greater than zero".to_string());
+    }
+    Ok(format!("{scheme}://{host}:{port}"))
+}
+
+/// Builds a localhost Qdrant URL (`http://127.0.0.1:{port}`).
+pub fn build_qdrant_localhost_url(port: u16) -> std::result::Result<String, String> {
+    build_qdrant_url("http", "127.0.0.1", port)
+}
+
+/// Builds a cloud/remote Qdrant URL (`https://{host}:{port}`).
+pub fn build_qdrant_cloud_url(host: &str, port: u16) -> std::result::Result<String, String> {
+    build_qdrant_url("https", host, port)
+}
+
 /// Validates a collection name for Qdrant.
 pub fn validate_collection_name(name: &str) -> std::result::Result<(), String> {
     let name = name.trim();
@@ -674,7 +703,9 @@ impl VectorStore for QdrantVectorStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_types::types::{AppError, DocumentMetadata};
+    use ares_types::types::DocumentMetadata;
+    #[cfg(feature = "qdrant")]
+    use ares_types::types::AppError;
     use chrono::Utc;
 
     fn sample_document(id: &str) -> Document {
@@ -692,6 +723,57 @@ mod tests {
     }
 
     // ── Connection logic ─────────────────────────────────────────────────
+
+
+    #[test]
+    fn build_qdrant_url_localhost_http_default_port() {
+        let url = build_qdrant_localhost_url(6334).expect("url");
+        assert_eq!(url, "http://127.0.0.1:6334");
+        assert!(validate_qdrant_url(&url).is_ok());
+    }
+
+    #[test]
+    fn build_qdrant_url_localhost_http_rest_port() {
+        assert_eq!(
+            build_qdrant_localhost_url(6333).expect("url"),
+            "http://127.0.0.1:6333"
+        );
+    }
+
+    #[test]
+    fn build_qdrant_url_cloud_https_with_custom_port() {
+        let url = build_qdrant_cloud_url("abc123.us-east-1.aws.cloud.qdrant.io", 6334)
+            .expect("url");
+        assert_eq!(url, "https://abc123.us-east-1.aws.cloud.qdrant.io:6334");
+        assert!(validate_qdrant_url(&url).is_ok());
+    }
+
+    #[test]
+    fn build_qdrant_url_supports_explicit_schemes_and_hosts() {
+        assert_eq!(
+            build_qdrant_url("https", "localhost", 6334).expect("url"),
+            "https://localhost:6334"
+        );
+        assert_eq!(
+            build_qdrant_url("http", "qdrant.internal", 6333).expect("url"),
+            "http://qdrant.internal:6333"
+        );
+    }
+
+    #[test]
+    fn build_qdrant_url_trims_scheme_and_host() {
+        assert_eq!(
+            build_qdrant_url(" HTTPS ", " qdrant.example ", 6334).expect("url"),
+            "https://qdrant.example:6334"
+        );
+    }
+
+    #[test]
+    fn build_qdrant_url_rejects_invalid_inputs() {
+        assert!(build_qdrant_url("grpc", "localhost", 6334).is_err());
+        assert!(build_qdrant_url("http", "", 6334).is_err());
+        assert!(build_qdrant_url("https", "cloud.example", 0).is_err());
+    }
 
     #[test]
     fn default_qdrant_url_matches_constant() {

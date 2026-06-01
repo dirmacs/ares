@@ -666,4 +666,72 @@ mod tests {
         let retrieved = cache.get(key).unwrap();
         assert_eq!(retrieved, vec![3.0, 4.0, 5.0, 6.0]);
     }
+    #[test]
+    fn test_cache_hit_rate_zero_requests() {
+        let stats = CacheStats::default();
+        assert_eq!(stats.hit_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_cache_cleanup_expired() {
+        let cache = LruEmbeddingCache::with_max_entries(10);
+        cache
+            .set("expired", vec![1.0], Some(Duration::from_nanos(1)))
+            .unwrap();
+        cache.set("fresh", vec![2.0], None).unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        cache.cleanup_expired();
+        assert!(cache.get("expired").is_none());
+        assert!(cache.get("fresh").is_some());
+    }
+
+    #[test]
+    fn test_cache_with_max_size_constructor() {
+        let cache = LruEmbeddingCache::with_max_size(10_000);
+        assert!(cache.is_empty());
+        cache.set("k", vec![1.0; 8], None).unwrap();
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_cache_is_empty() {
+        let cache = LruEmbeddingCache::with_defaults();
+        assert!(cache.is_empty());
+        cache.set("k", vec![1.0], None).unwrap();
+        assert!(!cache.is_empty());
+    }
+
+    #[test]
+    fn test_cache_config_serde_roundtrip() {
+        let config = CacheConfig {
+            max_size_bytes: 1024,
+            default_ttl: Some(Duration::from_secs(60)),
+            enabled: true,
+        };
+        let parsed: CacheConfig = serde_json::from_str(&serde_json::to_string(&config).unwrap())
+            .unwrap();
+        assert_eq!(parsed.max_size_bytes, 1024);
+        assert!(parsed.enabled);
+        assert_eq!(parsed.default_ttl, Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn test_cache_get_drops_expired_entry() {
+        let cache = LruEmbeddingCache::with_defaults();
+        cache
+            .set("k", vec![1.0, 2.0], Some(Duration::from_nanos(1)))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(cache.get("k").is_none());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_noop_cache_invalidate_and_clear() {
+        let cache = NoOpCache::new();
+        cache.invalidate("missing").unwrap();
+        cache.clear().unwrap();
+    }
+
 }
+

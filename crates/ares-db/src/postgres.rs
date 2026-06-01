@@ -183,7 +183,8 @@ impl PostgresClient {
     }
 
     pub async fn new_memory() -> Result<Self> {
-        Self::new_local("").await
+        // Use the test lazy pool that doesn't require a live connection
+        Ok(Self::new_test())
     }
 
     /// Create a test-only client with a lazy pool that doesn't actually connect.

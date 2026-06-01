@@ -1041,11 +1041,100 @@ mod tests {
         assert!(vision_reqs.requires_vision);
     }
 
+
+    #[test]
+    fn test_builder_method_chaining() {
+        let reqs = CapabilityRequirements::builder()
+            .requires_tools()
+            .requires_vision()
+            .requires_audio()
+            .requires_json_mode()
+            .requires_streaming()
+            .requires_reasoning()
+            .requires_code_execution()
+            .requires_local()
+            .requires_production_ready()
+            .min_context_window(8000)
+            .min_output_tokens(4000)
+            .max_cost_tier("medium")
+            .min_speed_tier("fast")
+            .min_quality_tier("high")
+            .require_tag("enterprise")
+            .exclude_family("experimental")
+            .build();
+
+        // Verify all flags are set
+        assert!(reqs.requires_tools);
+        assert!(reqs.requires_vision);
+        assert!(reqs.requires_audio);
+        assert!(reqs.requires_json_mode);
+        assert!(reqs.requires_streaming);
+        assert!(reqs.requires_reasoning);
+        assert!(reqs.requires_code_execution);
+        assert!(reqs.requires_local);
+        assert!(reqs.requires_production_ready);
+        assert_eq!(reqs.min_context_window, Some(8000));
+        assert_eq!(reqs.min_output_tokens, Some(4000));
+        assert_eq!(reqs.max_cost_tier, Some("medium".to_string()));
+        assert_eq!(reqs.min_speed_tier, Some("fast".to_string()));
+        assert_eq!(reqs.min_quality_tier, Some("high".to_string()));
+        assert!(reqs.required_tags.contains("enterprise"));
+        assert!(reqs.excluded_families.contains("experimental"));
+    }
+
+    #[test]
+    fn test_builder_empty_and_partial() {
+        let empty = CapabilityRequirements::builder().build();
+        assert!(!empty.requires_tools);
+        assert!(empty.required_tags.is_empty());
+        assert!(empty.excluded_families.is_empty());
+
+        let tools_only = CapabilityRequirements::builder()
+            .requires_tools()
+            .build();
+        assert!(tools_only.requires_tools);
+        assert!(!tools_only.requires_vision);
+    }
+
+    #[test]
+    fn test_builder_multiple_tags_and_families() {
+        let reqs = CapabilityRequirements::builder()
+            .require_tag("tag1")
+            .require_tag("tag2")
+            .require_tag("tag3")
+            .exclude_family("fam1")
+            .exclude_family("fam2")
+            .build();
+
+        assert_eq!(reqs.required_tags.len(), 3);
+        assert_eq!(reqs.excluded_families.len(), 2);
+        assert!(reqs.required_tags.contains("tag1"));
+        assert!(reqs.required_tags.contains("tag2"));
+        assert!(reqs.excluded_families.contains("fam1"));
+        assert!(reqs.excluded_families.contains("fam2"));
+    }
+
+    #[test]
+    fn test_tier_satisfies_same_tier() {
+        assert!(tier_satisfies("low", "low"));
+        assert!(tier_satisfies("medium", "medium"));
+        assert!(tier_satisfies("high", "high"));
+        assert!(tier_satisfies("standard", "standard"));
+        assert!(tier_satisfies("premium", "premium"));
+    }
+
+    #[test]
+    fn test_tier_satisfies_unknown_values() {
+        // Unknown tiers satisfy themselves but are incomparable with known tiers
+        assert!(tier_satisfies("unknown", "unknown"));
+        assert!(tier_satisfies("low", "xyz")); // unknown treated as >= all
+    }
+
     #[test]
     fn test_tier_comparison() {
-        assert!(tier_satisfies("low", "medium")); // medium >= low
-        assert!(tier_satisfies("medium", "high")); // high >= medium
-        assert!(!tier_satisfies("high", "low")); // low < high
-        assert!(tier_satisfies("standard", "premium")); // premium >= standard
+        assert!(tier_satisfies("low", "medium"));
+        assert!(tier_satisfies("medium", "high"));
+        assert!(!tier_satisfies("high", "low"));
+        assert!(tier_satisfies("standard", "premium"));
     }
 }

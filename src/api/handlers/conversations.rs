@@ -373,4 +373,118 @@ mod tests {
         let err = ensure_conversation_owner("owner", "intruder", "delete").unwrap_err();
         assert!(err.to_string().contains("delete"));
     }
+
+    #[test]
+    fn conversation_summary_from_postgres_row_none_title() {
+        let summary = ConversationSummary::from(Conversation {
+            id: "conv-2".to_string(),
+            user_id: "user-1".to_string(),
+            title: None,
+            message_count: 0,
+            created_at: "2024-03-01T00:00:00Z".to_string(),
+            updated_at: "2024-03-02T00:00:00Z".to_string(),
+        });
+        assert_eq!(summary.id, "conv-2");
+        assert!(summary.title.is_none());
+        assert_eq!(summary.created_at, "2024-03-01T00:00:00Z");
+        assert_eq!(summary.updated_at, "2024-03-02T00:00:00Z");
+    }
+
+    #[test]
+    fn summary_from_list_row_maps_id_and_timestamps() {
+        let summary = summary_from_list_row(DbConversationSummary {
+            id: "list-row-1".to_string(),
+            title: "Daily standup".to_string(),
+            created_at: "2024-04-01T08:00:00Z".to_string(),
+            updated_at: "2024-04-01T09:30:00Z".to_string(),
+            message_count: 5,
+        });
+        assert_eq!(summary.id, "list-row-1");
+        assert_eq!(summary.created_at, "2024-04-01T08:00:00Z");
+        assert_eq!(summary.updated_at, "2024-04-01T09:30:00Z");
+        assert_eq!(summary.message_count, 5);
+    }
+
+    #[test]
+    fn conversation_summary_serializes_null_title() {
+        let summary = ConversationSummary {
+            id: "c3".to_string(),
+            title: None,
+            message_count: 1,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-02T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"title\":null"));
+        assert!(json.contains("\"id\":\"c3\""));
+    }
+
+    #[test]
+    fn conversation_message_serializes_role_content_and_timestamp() {
+        let msg = ConversationMessage {
+            id: "c1-2".to_string(),
+            role: "assistant".to_string(),
+            content: "reply".to_string(),
+            created_at: "2024-05-01T12:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"role\":\"assistant\""));
+        assert!(json.contains("\"content\":\"reply\""));
+        assert!(json.contains("\"created_at\":\"2024-05-01T12:00:00Z\""));
+    }
+
+    #[test]
+    fn message_to_api_index_zero_and_assistant_role() {
+        let msg = Message {
+            role: MessageRole::Assistant,
+            content: "done".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2024, 7, 4, 9, 30, 0).unwrap(),
+        };
+        let api = message_to_api("thread-1", 0, msg);
+        assert_eq!(api.id, "thread-1-0");
+        assert_eq!(api.role, "assistant");
+        assert_eq!(api.content, "done");
+        assert!(api.created_at.contains("2024-07-04"));
+    }
+
+    #[test]
+    fn message_to_api_system_role() {
+        let msg = Message {
+            role: MessageRole::System,
+            content: "be helpful".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2024, 8, 15, 0, 0, 0).unwrap(),
+        };
+        let api = message_to_api("sys-conv", 3, msg);
+        assert_eq!(api.id, "sys-conv-3");
+        assert_eq!(api.role, "system");
+    }
+
+    #[test]
+    fn ensure_conversation_owner_modify_denied_mentions_modify() {
+        let err = ensure_conversation_owner("alice", "bob", "modify").unwrap_err();
+        assert!(err.to_string().contains("modify"));
+        assert!(err.to_string().contains("Not authorized"));
+    }
+
+    #[test]
+    fn update_conversation_request_empty_object_leaves_title_none() {
+        let parsed: UpdateConversationRequest = serde_json::from_str("{}").unwrap();
+        assert!(parsed.title.is_none());
+    }
+
+    #[test]
+    fn conversation_details_serializes_empty_messages() {
+        let details = ConversationDetails {
+            id: "empty".to_string(),
+            title: Some("Untitled".to_string()),
+            messages: vec![],
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(json.contains("\"messages\":[]"));
+        assert!(json.contains("\"title\":\"Untitled\""));
+        assert!(json.contains("\"created_at\""));
+        assert!(json.contains("\"updated_at\""));
+    }
 }

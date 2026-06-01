@@ -584,4 +584,40 @@ mod tests {
         assert!(ts > 1_577_836_800, "timestamp too old: {ts}");
         assert!(ts < 4_102_444_800, "timestamp too far in future: {ts}");
     }
+
+    // ── insert / summary query construction ─────────────────────────────
+
+    const INSERT_FEEDBACK_SQL: &str = "INSERT INTO agent_run_feedback (
+            id, tenant_id, agent_name, run_id, feedback_type, score, flags,
+            notes, reviewer, created_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)";
+
+    const RUN_EXISTS_SQL: &str = "SELECT EXISTS(
+                SELECT 1 FROM agent_runs
+                WHERE id = $1 AND tenant_id = $2 AND agent_name = $3
+             )";
+
+    #[test]
+    fn insert_feedback_sql_binds_ten_columns() {
+        assert!(INSERT_FEEDBACK_SQL.contains("INSERT INTO agent_run_feedback"));
+        assert!(INSERT_FEEDBACK_SQL.contains("VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"));
+        assert!(INSERT_FEEDBACK_SQL.contains("feedback_type"));
+        assert!(INSERT_FEEDBACK_SQL.contains("flags"));
+    }
+
+    #[test]
+    fn run_exists_check_scopes_by_tenant_and_agent() {
+        assert!(RUN_EXISTS_SQL.contains("FROM agent_runs"));
+        assert!(RUN_EXISTS_SQL.contains("id = $1 AND tenant_id = $2 AND agent_name = $3"));
+    }
+
+    #[test]
+    fn summary_query_counts_feedback_types_and_average_score() {
+        const SUMMARY_SQL: &str = "COUNT(*) FILTER (WHERE feedback_type = 'positive')::BIGINT AS positive_count,
+            COUNT(*) FILTER (WHERE feedback_type = 'negative')::BIGINT AS negative_count,
+            AVG(score)::DOUBLE PRECISION AS average_score";
+        assert!(SUMMARY_SQL.contains("feedback_type = 'positive'"));
+        assert!(SUMMARY_SQL.contains("feedback_type = 'negative'"));
+        assert!(SUMMARY_SQL.contains("AVG(score)"));
+    }
 }

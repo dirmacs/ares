@@ -1589,4 +1589,139 @@ model: fast
         assert!(paths.hot_reload);
     }
 
+
+    #[test]
+    fn test_dynamic_config_load_from_directories() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        let agents_dir = root.join("agents");
+        let models_dir = root.join("models");
+        let tools_dir = root.join("tools");
+        let workflows_dir = root.join("workflows");
+        let mcps_dir = root.join("mcps");
+        for dir in [&agents_dir, &models_dir, &tools_dir, &workflows_dir, &mcps_dir] {
+            fs::create_dir_all(dir).expect("Failed to create config dir");
+        }
+
+        fs::write(
+            agents_dir.join("router.toon"),
+            "name: router\nmodel: fast\ntools[1]: calc\n",
+        )
+        .expect("Failed to write agent");
+        fs::write(
+            models_dir.join("fast.toon"),
+            "name: fast\nprovider: ollama\nmodel: llama3\n",
+        )
+        .expect("Failed to write model");
+        fs::write(tools_dir.join("calc.toon"), "name: calc\n").expect("Failed to write tool");
+        fs::write(
+            workflows_dir.join("default.toon"),
+            "name: default\nentry_agent: router\n",
+        )
+        .expect("Failed to write workflow");
+        fs::write(mcps_dir.join("fs.toon"), "name: fs\ncommand: npx\n")
+            .expect("Failed to write mcp");
+
+        let config = DynamicConfig::load(
+            &agents_dir,
+            &models_dir,
+            &tools_dir,
+            &workflows_dir,
+            &mcps_dir,
+        )
+        .expect("Failed to load dynamic config");
+
+        assert_eq!(config.agents.len(), 1);
+        assert_eq!(config.models.len(), 1);
+        assert_eq!(config.tools.len(), 1);
+        assert_eq!(config.workflows.len(), 1);
+        assert_eq!(config.mcps.len(), 1);
+        assert!(config.validate().expect("validation failed").is_empty());
+    }
+
+    #[test]
+    fn test_dynamic_config_accessors_and_name_lists() {
+        let mut config = DynamicConfig::default();
+        config
+            .agents
+            .insert("router".to_string(), ToonAgentConfig::new("router", "fast"));
+        config.models.insert(
+            "fast".to_string(),
+            ToonModelConfig::new("fast", "ollama", "llama3"),
+        );
+        config
+            .tools
+            .insert("calc".to_string(), ToonToolConfig::new("calc"));
+        config.workflows.insert(
+            "default".to_string(),
+            ToonWorkflowConfig::new("default", "router"),
+        );
+        config
+            .mcps
+            .insert("fs".to_string(), ToonMcpConfig::new("fs", "npx"));
+
+        assert_eq!(config.get_agent("router").unwrap().name, "router");
+        assert_eq!(config.get_model("fast").unwrap().provider, "ollama");
+        assert_eq!(config.get_tool("calc").unwrap().name, "calc");
+        assert_eq!(config.get_workflow("default").unwrap().entry_agent, "router");
+        assert_eq!(config.get_mcp("fs").unwrap().name, "fs");
+        assert!(config.get_agent("missing").is_none());
+
+        assert_eq!(config.agent_names(), vec!["router"]);
+        assert_eq!(config.model_names(), vec!["fast"]);
+        assert_eq!(config.tool_names(), vec!["calc"]);
+        assert_eq!(config.workflow_names(), vec!["default"]);
+        assert_eq!(config.mcp_names(), vec!["fs"]);
+    }
+
+    #[test]
+    fn test_dynamic_config_manager_without_hot_reload() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        let agents_dir = root.join("agents");
+        let models_dir = root.join("models");
+        let tools_dir = root.join("tools");
+        let workflows_dir = root.join("workflows");
+        let mcps_dir = root.join("mcps");
+        fs::create_dir_all(&agents_dir).expect("Failed to create agents dir");
+        fs::create_dir_all(&models_dir).expect("Failed to create models dir");
+        fs::create_dir_all(&tools_dir).expect("Failed to create tools dir");
+        fs::create_dir_all(&workflows_dir).expect("Failed to create workflows dir");
+        fs::create_dir_all(&mcps_dir).expect("Failed to create mcps dir");
+
+        fs::write(
+            agents_dir.join("router.toon"),
+            "name: router\nmodel: fast\n",
+        )
+        .expect("Failed to write agent");
+        fs::write(
+            models_dir.join("fast.toon"),
+            "name: fast\nprovider: ollama\nmodel: llama3\n",
+        )
+        .expect("Failed to write model");
+
+        let manager = DynamicConfigManager::new(
+            agents_dir,
+            models_dir,
+            tools_dir,
+            workflows_dir,
+            mcps_dir,
+            false,
+        )
+        .expect("Failed to create manager");
+
+        let agent = manager.agent("router").expect("router agent missing");
+        assert_eq!(agent.model, "fast");
+        assert_eq!(manager.agent_names(), vec!["router"]);
+        assert_eq!(manager.model_names(), vec!["fast"]);
+        assert!(manager.tool_names().is_empty());
+        assert!(manager.workflow_names().is_empty());
+        assert!(manager.mcps().is_empty());
+
+        let warnings = manager.reload().expect("reload failed");
+        assert!(warnings.is_empty());
+    }
+
 }

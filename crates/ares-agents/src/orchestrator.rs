@@ -289,6 +289,53 @@ mod tests {
         Arc::new(registry)
     }
 
+
+    fn create_test_provider_registry_with_base_url(base_url: &str) -> Arc<ProviderRegistry> {
+        let mut registry = ProviderRegistry::new();
+        registry.register_provider(
+            "ollama-local",
+            ProviderConfig::Ollama {
+                base_url: base_url.to_string(),
+                default_model: "ministral-3:3b".to_string(),
+            },
+        );
+        registry.register_model(
+            "default",
+            ModelConfig {
+                provider: "ollama-local".to_string(),
+                model: "ministral-3:3b".to_string(),
+                temperature: 0.7,
+                max_tokens: 512,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
+            },
+        );
+        Arc::new(registry)
+    }
+
+    fn build_registry_with_provider(agent_names: &[&str], base_url: &str) -> Arc<AgentRegistry> {
+        let provider_registry = create_test_provider_registry_with_base_url(base_url);
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let mut registry = AgentRegistry::new(provider_registry, tool_registry);
+        for name in agent_names {
+            registry.register(name, sample_agent_config());
+        }
+        registry.register("orchestrator", sample_agent_config());
+        registry.register("router", sample_agent_config());
+        Arc::new(registry)
+    }
+
+    fn chat_done_json(content: &str) -> String {
+        serde_json::json!({
+            "model": "test-model",
+            "created_at": "2024-01-01T00:00:00Z",
+            "message": { "role": "assistant", "content": content },
+            "done": true
+        })
+        .to_string()
+    }
+
     fn build_registry(agent_names: &[&str]) -> Arc<AgentRegistry> {
         let provider_registry = create_test_provider_registry();
         let tool_registry = Arc::new(ToolRegistry::new());
@@ -397,4 +444,37 @@ mod tests {
         let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_ares_config(HashMap::new()));
         assert_eq!(orch.agent_type(), AgentType::Orchestrator);
     }
+
+    #[tokio::test]
+    async fn test_execute_with_subtasks_delegates_and_synthesizes() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_done_json("sales-agent-output")),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = ScriptedLlm::new(vec![
+            r#"[{"agent":"sales","task":"Get Q1 revenue"}]"#,
+            "synthesized final answer",
+        ]);
+        let registry = build_registry_with_provider(&["sales"], &server.uri());
+        let orch = OrchestratorAgent::new(
+            Box::new(llm),
+            Arc::new(AresConfigManager::from_config(create_test_ares_config(HashMap::new()))),
+            registry,
+        );
+
+        let resp = orch
+            .execute("quarterly business review", &test_context())
+            .await
+            .expect("execute with subtasks");
+        assert_eq!(resp.content, "synthesized final answer");
+    }
+
 }

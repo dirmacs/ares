@@ -38,7 +38,6 @@ pub mod loop_mode;
 /// Checkpoint/crash recovery — serialize agent state, restore on restart.
 pub mod checkpoint;
 /// Multi-agent orchestration for complex tasks.
-#[cfg(feature = "postgres")]
 pub mod orchestrator;
 pub mod registry;
 /// Request routing to specialized agents.
@@ -47,7 +46,6 @@ pub mod router;
 #[cfg(feature = "postgres")]
 pub mod tenant_agent;
 pub mod memory;
-#[cfg(feature = "postgres")]
 pub mod research;
 #[cfg(feature = "postgres")]
 pub mod resolver;

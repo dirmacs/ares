@@ -36,7 +36,7 @@ use llama_cpp_2::{
     sampling::LlamaSampler,
 };
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 
 /// LlamaCpp client for local GGUF model inference
@@ -55,6 +55,18 @@ pub struct LlamaCppClient {
     temperature: f32,
     /// Top-p (nucleus sampling) parameter
     top_p: f32,
+}
+
+fn shared_llama_backend() -> Result<Arc<LlamaBackend>> {
+    static BACKEND: OnceLock<Arc<LlamaBackend>> = OnceLock::new();
+    Ok(BACKEND
+        .get_or_init(|| {
+            Arc::new(
+                LlamaBackend::init()
+                    .expect("llama backend should initialize once in-process"),
+            )
+        })
+        .clone())
 }
 
 impl LlamaCppClient {
@@ -106,9 +118,7 @@ impl LlamaCppClient {
         temperature: f32,
         top_p: f32,
     ) -> Result<Self> {
-        // Initialize the backend (must be done once)
-        let backend = LlamaBackend::init()
-            .map_err(|e| AppError::LLM(format!("Failed to initialize llama backend: {}", e)))?;
+        let backend = shared_llama_backend()?;
 
         if !std::path::Path::new(&model_path).is_file() {
             return Err(AppError::LLM(format!(
@@ -129,7 +139,7 @@ impl LlamaCppClient {
         Ok(Self {
             model_path,
             model: Arc::new(model),
-            backend: Arc::new(backend),
+            backend,
             n_ctx,
             n_threads,
             max_tokens,

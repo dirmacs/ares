@@ -393,5 +393,112 @@ mod tests {
             "manhattan".parse::<DistanceMetric>().unwrap(),
             DistanceMetric::Manhattan
         );
+        assert_eq!(
+            "COS".parse::<DistanceMetric>().unwrap(),
+            DistanceMetric::Cosine
+        );
+        assert_eq!(
+            "euclid".parse::<DistanceMetric>().unwrap(),
+            DistanceMetric::Euclidean
+        );
+        assert_eq!(
+            "inner".parse::<DistanceMetric>().unwrap(),
+            DistanceMetric::DotProduct
+        );
+        assert_eq!(
+            "taxicab".parse::<DistanceMetric>().unwrap(),
+            DistanceMetric::Manhattan
+        );
+        assert!("unknown".parse::<DistanceMetric>().is_err());
+    }
+
+    #[test]
+    fn test_default_metric_is_cosine() {
+        assert_eq!(DistanceMetric::default(), DistanceMetric::Cosine);
+    }
+
+    #[test]
+    fn test_metric_display_and_name() {
+        assert_eq!(DistanceMetric::Cosine.to_string(), "cosine");
+        assert_eq!(DistanceMetric::Euclidean.name(), "euclidean");
+        assert_eq!(format!("{}", DistanceMetric::DotProduct), "dot_product");
+    }
+
+    #[test]
+    fn test_metric_kind_flags() {
+        assert!(DistanceMetric::Cosine.is_similarity_based());
+        assert!(DistanceMetric::DotProduct.is_similarity_based());
+        assert!(!DistanceMetric::Euclidean.is_similarity_based());
+
+        assert!(DistanceMetric::Manhattan.is_distance_based());
+        assert!(DistanceMetric::Euclidean.is_distance_based());
+        assert!(!DistanceMetric::Cosine.is_distance_based());
+    }
+
+    #[test]
+    fn test_cosine_zero_vectors() {
+        let a = vec![0.0, 0.0, 0.0];
+        let b = vec![0.0, 0.0, 0.0];
+        assert!(DistanceMetric::Cosine.similarity(&a, &b).abs() < 0.0001);
+        assert!((DistanceMetric::Cosine.distance(&a, &b) - 1.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_single_dimension_vectors() {
+        let a = vec![3.0];
+        let b = vec![4.0];
+        assert!((DistanceMetric::Euclidean.distance(&a, &b) - 1.0).abs() < 0.0001);
+        assert!((DistanceMetric::Manhattan.distance(&a, &b) - 1.0).abs() < 0.0001);
+        assert!((DistanceMetric::DotProduct.similarity(&a, &b) - 12.0).abs() < 0.0001);
+        assert!((DistanceMetric::DotProduct.distance(&a, &b) + 12.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_large_vectors_unrolled_paths() {
+        let n = 128;
+        let a: Vec<f32> = (0..n).map(|i| i as f32 * 0.01).collect();
+        let b = a.clone();
+        assert!(DistanceMetric::Euclidean.distance(&a, &b).abs() < 0.0001);
+        assert!((DistanceMetric::Cosine.similarity(&a, &b) - 1.0).abs() < 0.0001);
+        let dot = DistanceMetric::DotProduct.similarity(&a, &b);
+        assert!(dot > 0.0);
+        assert!(DistanceMetric::Manhattan.distance(&a, &b).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_euclidean_and_manhattan_similarity_transform() {
+        let a = vec![0.0, 0.0];
+        let b = vec![3.0, 4.0];
+        let euclid_sim = DistanceMetric::Euclidean.similarity(&a, &b);
+        assert!((euclid_sim - (1.0 / 6.0)).abs() < 0.0001);
+
+        let manhattan_sim = DistanceMetric::Manhattan.similarity(&a, &b);
+        assert!((manhattan_sim - (1.0 / 8.0)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_hnsw_distance_adapters() {
+        use anndists::dist::Distance;
+
+        let a = vec![1.0f32, 0.0, 0.0];
+        let b = vec![0.0f32, 1.0, 0.0];
+        let same = vec![1.0f32, 0.0, 0.0];
+
+        let cosine = CosineDistance::create();
+        assert!((cosine.eval(&a, &b) - 1.0).abs() < 0.0001);
+        assert!(cosine.eval(&same, &a).abs() < 0.0001);
+
+        let l2 = EuclideanDistance::create();
+        assert!((l2.eval(&a, &b) - std::f32::consts::SQRT_2).abs() < 0.0001);
+        assert!(l2.eval(&same, &a).abs() < 0.0001);
+
+        // anndists DistDot returns 1 - dot_product as distance
+        let dot = DotProductDistance::create();
+        assert!((dot.eval(&a, &b) - 1.0).abs() < 0.0001);
+        assert!(dot.eval(&same, &a).abs() < 0.0001);
+
+        let l1 = ManhattanDistance::create();
+        assert!((l1.eval(&a, &b) - 2.0).abs() < 0.0001);
+        assert!(l1.eval(&same, &a).abs() < 0.0001);
     }
 }

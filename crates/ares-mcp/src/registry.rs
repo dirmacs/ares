@@ -198,4 +198,69 @@ timeout_secs: 15
 
         assert_eq!(registry.client_names(), vec!["pom".to_string()]);
     }
+
+    #[test]
+    fn from_dir_missing_directory_returns_empty_registry() {
+        let path = std::env::temp_dir().join(format!(
+            "ares-mcp-missing-{}",
+            uuid::Uuid::new_v4()
+        ));
+        assert!(!path.exists());
+
+        let registry = McpRegistry::from_dir(path.to_str().unwrap()).unwrap();
+
+        assert!(registry.client_names().is_empty());
+        assert!(registry.eruka().is_none());
+    }
+
+    #[test]
+    fn from_dir_skips_disabled_configs_and_non_toon_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("disabled.toon"),
+            r#"name = "disabled"
+enabled = false
+endpoint = "http://localhost/mcp"
+transport = "http"
+timeout_secs = 10
+"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("readme.txt"), "not an mcp config").unwrap();
+
+        let registry = McpRegistry::from_dir(dir.path().to_str().unwrap()).unwrap();
+
+        assert!(registry.client_names().is_empty());
+    }
+
+    #[test]
+    fn register_replaces_existing_client() {
+        let mut registry = McpRegistry::new();
+
+        registry.register(McpServerConfig {
+            name: "svc".into(),
+            enabled: true,
+            command: None,
+            args: None,
+            timeout_secs: Some(10),
+            endpoint: Some("http://localhost:3001/mcp".into()),
+            transport: Some("http".into()),
+            api_key: None,
+        });
+        registry.register(McpServerConfig {
+            name: "svc".into(),
+            enabled: true,
+            command: None,
+            args: None,
+            timeout_secs: Some(20),
+            endpoint: Some("http://localhost:3002/mcp".into()),
+            transport: Some("http".into()),
+            api_key: None,
+        });
+
+        assert_eq!(registry.client_names(), vec!["svc".to_string()]);
+        assert!(registry.get_client("svc").is_some());
+    }
+
 }
+

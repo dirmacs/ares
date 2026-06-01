@@ -643,4 +643,117 @@ mod tests {
         index.insert("vec1", &[1.0, 0.0, 0.0], None).unwrap();
         assert!(index.contains("vec1"));
     }
+
+    #[test]
+    fn test_new_zero_dimensions() {
+        let result = HnswIndex::new(0, DistanceMetric::Cosine, default_config());
+        assert!(matches!(result, Err(Error::InvalidVector(_))));
+    }
+
+    #[test]
+    fn test_new_defaults() {
+        let index = HnswIndex::new(4, DistanceMetric::Euclidean, HnswConfig::default()).unwrap();
+        assert_eq!(index.dimensions(), 4);
+        assert_eq!(index.metric(), DistanceMetric::Euclidean);
+        assert!(index.is_empty());
+        assert_eq!(index.len(), 0);
+    }
+
+    #[test]
+    fn test_invalid_vector_nan() {
+        let index = HnswIndex::new(2, DistanceMetric::Cosine, default_config()).unwrap();
+        let result = index.insert("bad", &[f32::NAN, 0.0], None);
+        assert!(matches!(result, Err(Error::InvalidVector(_))));
+    }
+
+    #[test]
+    fn test_all_distance_metrics_search() {
+        for metric in [
+            DistanceMetric::Cosine,
+            DistanceMetric::Euclidean,
+            DistanceMetric::DotProduct,
+            DistanceMetric::Manhattan,
+        ] {
+            let index = HnswIndex::new(3, metric, default_config()).unwrap();
+            index.insert("a", &[1.0, 0.0, 0.0], None).unwrap();
+            index.insert("b", &[0.0, 1.0, 0.0], None).unwrap();
+            let results = index.search(&[1.0, 0.0, 0.0], 5).unwrap();
+            assert!(!results.is_empty());
+            assert_eq!(results[0].id, "a");
+        }
+    }
+
+    #[test]
+    fn test_insert_batch_and_export() {
+        let index = HnswIndex::new(2, DistanceMetric::Cosine, default_config()).unwrap();
+        let v1 = [1.0f32, 0.0];
+        let v2 = [0.0f32, 1.0];
+        let count = index
+            .insert_batch([("v1", &v1[..], None), ("v2", &v2[..], None)])
+            .unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(index.len(), 2);
+
+        let exported = index.export_all();
+        assert_eq!(exported.len(), 2);
+        let ids: Vec<_> = exported.into_iter().map(|(id, _, _)| id).collect();
+        assert!(ids.contains(&"v1".to_string()));
+        assert!(ids.contains(&"v2".to_string()));
+    }
+
+    #[test]
+    fn test_update_and_vector_not_found() {
+        let index = HnswIndex::new(2, DistanceMetric::Cosine, default_config()).unwrap();
+        index.insert("v1", &[1.0, 0.0], None).unwrap();
+
+        index.update("v1", &[0.5, 0.5], None).unwrap();
+        let (vector, _) = index.get("v1").unwrap();
+        assert_eq!(vector, vec![0.5, 0.5]);
+
+        let err = index.update("missing", &[1.0, 0.0], None).unwrap_err();
+        assert!(matches!(err, Error::VectorNotFound(_)));
+    }
+
+    #[test]
+    fn test_get_missing_returns_none() {
+        let index = HnswIndex::new(2, DistanceMetric::Cosine, default_config()).unwrap();
+        assert!(index.get("nope").is_none());
+    }
+
+    #[test]
+    fn test_search_dimension_mismatch() {
+        let index = HnswIndex::new(3, DistanceMetric::Cosine, default_config()).unwrap();
+        let err = index.search(&[1.0, 0.0], 5).unwrap_err();
+        assert!(matches!(err, Error::DimensionMismatch { .. }));
+    }
+
+    #[test]
+    fn test_search_with_threshold() {
+        let index = HnswIndex::new(3, DistanceMetric::Cosine, default_config()).unwrap();
+        index.insert("near", &[1.0, 0.0, 0.0], None).unwrap();
+        index.insert("far", &[0.0, 1.0, 0.0], None).unwrap();
+
+        let results = index.search_with_threshold(&[1.0, 0.0, 0.0], 10, 0.99).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "near");
+    }
+
+    #[test]
+    fn test_delete_batch_and_compact() {
+        let index = HnswIndex::new(3, DistanceMetric::Cosine, default_config()).unwrap();
+        index.insert("a", &[1.0, 0.0, 0.0], None).unwrap();
+        index.insert("b", &[0.0, 1.0, 0.0], None).unwrap();
+        assert_eq!(index.delete_batch(&["a", "missing"]).unwrap(), 1);
+        index.compact().unwrap();
+        assert_eq!(index.len(), 1);
+        assert!(!index.contains("a"));
+        assert!(index.contains("b"));
+    }
+
+    #[test]
+    fn test_memory_usage_positive() {
+        let index = HnswIndex::new(8, DistanceMetric::Cosine, default_config()).unwrap();
+        index.insert("v", &[1.0; 8], None).unwrap();
+        assert!(index.memory_usage() > 0);
+    }
 }

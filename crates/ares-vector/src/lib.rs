@@ -610,4 +610,53 @@ mod tests {
             .await;
         assert!(matches!(result, Err(Error::CollectionExists(_))));
     }
+
+    #[tokio::test]
+    async fn test_list_collections_and_stats() {
+        let db = VectorDb::open(Config::memory()).await.unwrap();
+        assert!(db.list_collections().is_empty());
+
+        db.create_collection("docs", 3, DistanceMetric::Cosine)
+            .await
+            .unwrap();
+        db.insert("docs", "a", &[1.0, 0.0, 0.0], None)
+            .await
+            .unwrap();
+
+        let mut names = db.list_collections();
+        names.sort();
+        assert_eq!(names, vec!["docs".to_string()]);
+
+        let stats = db.collection_stats("docs").unwrap();
+        assert_eq!(stats.name, "docs");
+        assert_eq!(stats.dimensions, 3);
+        assert_eq!(stats.vector_count, 1);
+        assert_eq!(stats.metric, DistanceMetric::Cosine);
+        assert!(stats.memory_bytes > 0);
+        assert_eq!(stats.hnsw_params.m, Config::default().hnsw_config.m);
+    }
+
+    #[tokio::test]
+    async fn test_collection_not_found_errors() {
+        let db = VectorDb::open(Config::memory()).await.unwrap();
+
+        let search = db.search("missing", &[1.0], 1).await;
+        assert!(matches!(search, Err(Error::CollectionNotFound(_))));
+
+        let stats = db.collection_stats("missing");
+        assert!(matches!(stats, Err(Error::CollectionNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_hnsw_params_in_stats() {
+        let db = VectorDb::open(Config::memory()).await.unwrap();
+        db.create_collection("x", 2, DistanceMetric::Manhattan)
+            .await
+            .unwrap();
+
+        let stats = db.collection_stats("x").unwrap();
+        let cfg = Config::default().hnsw_config;
+        assert_eq!(stats.hnsw_params.ef_construction, cfg.ef_construction);
+        assert_eq!(stats.hnsw_params.ef_search, cfg.ef_search);
+    }
 }

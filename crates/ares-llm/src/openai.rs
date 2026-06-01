@@ -664,6 +664,71 @@ impl LLMClient for OpenAIClient {
 mod tests {
     use super::*;
 
+    use crate::client::LLMClient;
+    use async_openai::config::Config;
+    use futures::StreamExt;
+    use wiremock::{matchers::*, Mock, MockServer, ResponseTemplate};
+
+    fn openai_client(server: &MockServer, model: &str) -> OpenAIClient {
+        OpenAIClient::with_params(
+            "test-key".to_string(),
+            format!("http://127.0.0.1:{}/v1", server.address().port()),
+            model.to_string(),
+            ModelParams::default(),
+        )
+    }
+
+    fn chat_completion_json(content: &str) -> String {
+        serde_json::json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": content },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 4,
+                "completion_tokens": 2,
+                "total_tokens": 6
+            }
+        })
+        .to_string()
+    }
+
+    fn chat_completion_with_tools_json() -> String {
+        serde_json::json!({
+            "id": "chatcmpl-tools",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "calculator",
+                            "arguments": "{\"a\":1}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 3,
+                "total_tokens": 8
+            }
+        })
+        .to_string()
+    }
+
     #[test]
     fn test_client_creation() {
         let client = OpenAIClient::new(
@@ -883,5 +948,135 @@ mod tests {
             }
             other => panic!("expected Configuration error, got {other:?}"),
         }
+    }
+    #[tokio::test]
+    async fn test_generate_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_completion_json("hello")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let out = client.generate("ping").await.unwrap();
+        assert_eq!(out, "hello");
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_system_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_completion_json("sys reply")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let out = client
+            .generate_with_system("system", "user")
+            .await
+            .unwrap();
+        assert_eq!(out, "sys reply");
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_history_returns_usage() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_completion_json("hist")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let response = client
+            .generate_with_history(&[("user".into(), "hi".into())])
+            .await
+            .unwrap();
+        assert_eq!(response.content, "hist");
+        let usage = response.usage.expect("usage");
+        assert_eq!(usage.prompt_tokens, 4);
+        assert_eq!(usage.completion_tokens, 2);
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_tools_extracts_tool_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_completion_with_tools_json()),
+            )
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let tools = vec![ToolDefinition {
+            name: "calculator".to_string(),
+            description: "calc".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let response = client.generate_with_tools("do math", &tools).await.unwrap();
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "calculator");
+        assert_eq!(response.tool_calls[0].arguments["a"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_tools_and_history() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_completion_json("done")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let messages = vec![ConversationMessage::user("hello")];
+        let response = client
+            .generate_with_tools_and_history(&messages, &[])
+            .await
+            .unwrap();
+        assert_eq!(response.content, "done");
+    }
+
+
+    #[tokio::test]
+    async fn test_gpt5_sets_reasoning_effort_in_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-5");
+        let _ = client.generate("hi").await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["reasoning_effort"], "low");
+    }
+
+
+    #[test]
+    fn test_openai_config_api_base_roundtrip() {
+        let config = OpenAIConfig::new()
+            .with_api_key("key")
+            .with_api_base("http://localhost:8080/v1");
+        assert_eq!(config.api_base(), "http://localhost:8080/v1");
     }
 }

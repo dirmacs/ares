@@ -1851,5 +1851,112 @@ mod tests {
         assert!(stream.next().await.is_none());
     }
 
+    #[tokio::test]
+    async fn test_stream_ignores_sse_heartbeat_comments() {
+        let body = format!(
+            ": ping\n\n: keep-alive\n\ndata: {}\n\n: between-chunks\n\ndata: {}\n\ndata: [DONE]\n\n",
+            chat_stream_chunk_json(Some("hel")),
+            chat_stream_chunk_json(Some("lo")),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse_stream_response(&body))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let mut stream = client.stream("ping").await.unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "hel");
+        assert_eq!(stream.next().await.unwrap().unwrap(), "lo");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_data_only_sse_lines_yield_content() {
+        // OpenAI streams use only `data:` fields (no `event:` / `id:` / `retry:` lines).
+        let body = format!(
+            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            chat_stream_chunk_json(Some("data-")),
+            chat_stream_chunk_json(Some("only")),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse_stream_response(&body))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let mut stream = client.stream("ping").await.unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "data-");
+        assert_eq!(stream.next().await.unwrap().unwrap(), "only");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_blank_data_only_sse_line_surfaces_error() {
+        let body = "data:\n\ndata: [DONE]\n\n".to_string();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse_stream_response(&body))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let mut stream = client.stream("ping").await.unwrap();
+        match stream.next().await.expect("expected stream item") {
+            Err(AppError::LLM(msg)) => assert!(msg.contains("Stream error")),
+            Err(other) => panic!("expected LLM error, got {other:?}"),
+            Ok(_) => panic!("expected blank data-only SSE line to surface as stream error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_malformed_sse_event_stops_before_later_chunks() {
+        let body = format!(
+            "data: {}\n\ndata: not-json\n\ndata: {}\n\ndata: [DONE]\n\n",
+            chat_stream_chunk_json(Some("first")),
+            chat_stream_chunk_json(Some("never")),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse_stream_response(&body))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let mut stream = client.stream("ping").await.unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "first");
+        match stream.next().await.expect("expected stream item") {
+            Err(AppError::LLM(msg)) => assert!(msg.contains("Stream error")),
+            Err(other) => panic!("expected LLM error, got {other:?}"),
+            Ok(_) => panic!("expected malformed SSE to surface as stream error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_empty_sse_chunks_between_content() {
+        let body = format!(
+            ": heartbeat\n\ndata: {}\n\n: heartbeat\n\ndata: {}\n\n: heartbeat\n\ndata: {}\n\ndata: [DONE]\n\n",
+            chat_stream_chunk_json(None),
+            chat_stream_chunk_json(Some("mid")),
+            chat_stream_chunk_json(None),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse_stream_response(&body))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        let mut stream = client.stream("ping").await.unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "mid");
+        assert!(stream.next().await.is_none());
+    }
+
 
 }

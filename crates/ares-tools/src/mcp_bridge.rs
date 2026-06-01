@@ -213,18 +213,6 @@ fn tool_description(name: &str) -> &'static str {
 }
 
 
-fn mcp_tool_description(name: &str) -> &'static str {
-    match name {
-        "mcp_get_context" => "Get context from an MCP server by path",
-        "mcp_write_context" => "Write context to an MCP server at a specific path",
-        "mcp_search_context" => "Search context in an MCP server with optional scope and max results",
-        "mcp_get_completeness" => "Get completeness metrics from an MCP server for a scope",
-        "mcp_get_gaps" => "Get gaps from an MCP server filtered by status and category",
-        "mcp_detect_gaps" => "Detect gaps in an MCP server optionally filtered by category",
-        _ => "MCP bridge tool",
-    }
-}
-
 fn catalog_tool(name: &str) -> Option<MCPTool> {
     mcp_bridge_tool_catalog()
         .into_iter()

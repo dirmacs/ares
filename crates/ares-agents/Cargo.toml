@@ -17,7 +17,7 @@ eruka-context = []
 ares-types = { workspace = true }
 ares-memory = { workspace = true }
 ares-config = { workspace = true }
-ares-llm = { workspace = true }
+ares-llm = { workspace = true, features = ["ollama"] }
 ares-tools = { workspace = true }
 ares-db = { workspace = true, optional = true }
 async-trait = { workspace = true }
@@ -32,6 +32,7 @@ dirs = { workspace = true }
 futures = "0.3.31"
 
 [dev-dependencies]
+wiremock = "0.6.5"
 tempfile = "3.14"
 dotenvy = "0.15.7"
 uuid = { workspace = true }

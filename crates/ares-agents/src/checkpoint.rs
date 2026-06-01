@@ -406,4 +406,14 @@ mod tests {
 
         assert!(!mgr.has_checkpoint("sess-has"));
     }
+
+    #[test]
+    fn default_dir_initializes_manager() {
+        let mgr = CheckpointManager::default_dir().expect("default_dir should succeed");
+        let dir = mgr.checkpoint_dir.to_string_lossy();
+        assert!(
+            dir.ends_with("checkpoints"),
+            "expected checkpoints subdirectory, got {dir}"
+        );
+    }
 }

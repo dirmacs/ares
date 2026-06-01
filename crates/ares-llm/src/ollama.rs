@@ -882,7 +882,7 @@ mod tests {
         };
         match err {
             AppError::Configuration(msg) => assert!(msg.contains("OLLAMA_URL")),
-            other => panic!("expected Configuration error, got {other:?}"),
+            other => panic!("expected Configuration error"),
         }
     }
 
@@ -1190,6 +1190,584 @@ mod tests {
         assert_eq!(stream.next().await.unwrap().unwrap(), "hist");
         assert_eq!(stream.next().await.unwrap().unwrap(), "ory");
         assert!(stream.next().await.is_none());
+    }
+
+
+
+
+    fn sample_tool_definition(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: format!("{name} tool"),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "x": { "type": "number" } }
+            }),
+        }
+    }
+
+    fn chat_done_with_tools_json(content: &str, tool_names: &[&str]) -> String {
+        let tool_calls: Vec<_> = tool_names
+            .iter()
+            .map(|name| {
+                serde_json::json!({
+                    "function": {
+                        "name": name,
+                        "arguments": { "x": 1 }
+                    }
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "model": "test-model",
+            "created_at": "2024-01-01T00:00:00Z",
+            "message": {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": tool_calls
+            },
+            "done": true
+        })
+        .to_string()
+    }
+
+    async fn expect_llm_error<T, F>(fut: F, needle: &str)
+    where
+        F: std::future::Future<Output = Result<T>>,
+    {
+        match fut.await {
+            Err(AppError::LLM(msg)) => assert!(
+                msg.contains(needle),
+                "expected LLM error containing {needle:?}, got {msg:?}"
+            ),
+            Err(other) => panic!("expected LLM error, got {other:?}"),
+            Ok(_) => panic!("expected LLM error, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_tools_stop_finish_reason_without_tool_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_done_json("plain answer")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let tools = vec![sample_tool_definition("noop")];
+        let response = client.generate_with_tools("hi", &tools).await.unwrap();
+        assert_eq!(response.finish_reason, "stop");
+        assert!(response.tool_calls.is_empty());
+        assert_eq!(response.content, "plain answer");
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_tools_multiple_tool_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                chat_done_with_tools_json("", &["alpha", "beta"]),
+            ))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let response = client
+            .generate_with_tools("run", &[sample_tool_definition("alpha")])
+            .await
+            .unwrap();
+        assert_eq!(response.finish_reason, "tool_calls");
+        assert_eq!(response.tool_calls.len(), 2);
+        assert_eq!(response.tool_calls[0].name, "alpha");
+        assert_eq!(response.tool_calls[1].name, "beta");
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_tools_request_body_includes_tool_schema() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_string_contains("weather_lookup"))
+            .and(body_string_contains("\"type\":\"object\""))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_done_json("ok")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let _ = client
+            .generate_with_tools("forecast", &[sample_tool_definition("weather_lookup")])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_tools_and_history_attaches_tools() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_string_contains("search_docs"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_done_json("done")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let messages = vec![
+            ConversationMessage::system("be concise"),
+            ConversationMessage::user("find docs"),
+        ];
+        let tools = vec![sample_tool_definition("search_docs")];
+        let response = client
+            .generate_with_tools_and_history(&messages, &tools)
+            .await
+            .unwrap();
+        assert_eq!(response.content, "done");
+        assert_eq!(response.finish_reason, "stop");
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_tools_and_history_tool_calls_finish_reason() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                chat_done_with_tools_json("", &["search_docs"]),
+            ))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let messages = vec![ConversationMessage::user("search")];
+        let tools = vec![sample_tool_definition("search_docs")];
+        let response = client
+            .generate_with_tools_and_history(&messages, &tools)
+            .await
+            .unwrap();
+        assert_eq!(response.finish_reason, "tool_calls");
+        assert_eq!(response.tool_calls[0].name, "search_docs");
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_history_system_and_assistant_roles() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_string_contains("\"role\":\"system\""))
+            .and(body_string_contains("\"role\":\"assistant\""))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_done_json("roles ok")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let response = client
+            .generate_with_history(&[
+                ("system".into(), "rules".into()),
+                ("assistant".into(), "prior".into()),
+                ("user".into(), "next".into()),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(response.content, "roles ok");
+        assert_eq!(response.finish_reason, "stop");
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_history_unknown_role_defaults_to_user() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_string_contains("\"role\":\"user\""))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_done_json("mapped")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let response = client
+            .generate_with_history(&[("tool".into(), "payload".into())])
+            .await
+            .unwrap();
+        assert_eq!(response.content, "mapped");
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_history_no_usage_without_eval_counts() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(chat_done_json("no usage")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let response = client
+            .generate_with_history(&[("user".into(), "hi".into())])
+            .await
+            .unwrap();
+        assert!(response.usage.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_system_maps_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(502).set_body_string("bad gateway"))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        expect_llm_error(
+            client.generate_with_system("sys", "user"),
+            "Ollama",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_history_maps_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("fail"))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        expect_llm_error(
+            client.generate_with_history(&[("user".into(), "x".into())]),
+            "Ollama",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_tools_maps_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("fail"))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        expect_llm_error(
+            client.generate_with_tools("x", &[sample_tool_definition("t")]),
+            "Ollama",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_tools_and_history_maps_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("fail"))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        expect_llm_error(
+            client.generate_with_tools_and_history(
+                &[ConversationMessage::user("x")],
+                &[sample_tool_definition("t")],
+            ),
+            "Ollama",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_health_check_false_when_tags_unavailable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("down"))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        assert!(!client.health_check().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_list_models_maps_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("fail"))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        expect_llm_error(client.list_models(), "Failed to list models").await;
+    }
+
+    #[tokio::test]
+    async fn test_model_info_maps_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("missing"))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        expect_llm_error(client.model_info("nope"), "Failed to get model info").await;
+    }
+
+    #[tokio::test]
+    async fn test_pull_model_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/pull"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "success"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        client.pull_model("llama3").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_pull_model_maps_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/pull"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("pull failed"))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        expect_llm_error(client.pull_model("llama3"), "Failed to pull model").await;
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_history_system_and_assistant_roles() {
+        let body = ndjson_stream_body(&[
+            chat_stream_chunk_json("a", false),
+            chat_stream_chunk_json("b", true),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_string_contains("\"role\":\"system\""))
+            .and(body_string_contains("\"role\":\"assistant\""))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let mut stream = client
+            .stream_with_history(&[
+                ("system".into(), "rules".into()),
+                ("assistant".into(), "hi".into()),
+                ("user".into(), "go".into()),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "a");
+        assert_eq!(stream.next().await.unwrap().unwrap(), "b");
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_history_unknown_role_defaults_to_user() {
+        let body = ndjson_stream_body(&[chat_stream_chunk_json("only", true)]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_string_contains("\"role\":\"user\""))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let mut stream = client
+            .stream_with_history(&[("custom".into(), "payload".into())])
+            .await
+            .unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "only");
+    }
+
+    #[tokio::test]
+    async fn test_build_model_options_max_tokens_only() {
+        let client = OllamaClient::with_params(
+            "http://localhost:11434".to_string(),
+            "test-model".to_string(),
+            ModelParams {
+                max_tokens: Some(512),
+                ..ModelParams::default()
+            },
+        )
+        .await
+        .unwrap();
+        let options: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&client.build_model_options()).unwrap())
+                .unwrap();
+        assert_eq!(options["num_predict"], 512);
+        assert!(options.get("temperature").is_none() || options["temperature"].is_null());
+    }
+
+    #[tokio::test]
+    async fn test_build_model_options_top_p_only() {
+        let client = OllamaClient::with_params(
+            "http://localhost:11434".to_string(),
+            "test-model".to_string(),
+            ModelParams {
+                top_p: Some(0.85),
+                ..ModelParams::default()
+            },
+        )
+        .await
+        .unwrap();
+        let options: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&client.build_model_options()).unwrap())
+                .unwrap();
+        assert_eq!(options["top_p"], 0.85);
+    }
+
+    #[tokio::test]
+    async fn test_build_model_options_presence_penalty_maps_repeat_penalty() {
+        let client = OllamaClient::with_params(
+            "http://localhost:11434".to_string(),
+            "test-model".to_string(),
+            ModelParams {
+                presence_penalty: Some(1.1),
+                ..ModelParams::default()
+            },
+        )
+        .await
+        .unwrap();
+        let options: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&client.build_model_options()).unwrap())
+                .unwrap();
+        assert_eq!(options["repeat_penalty"], 1.1);
+    }
+
+    #[tokio::test]
+    async fn test_build_model_options_frequency_penalty_not_mapped() {
+        let client = OllamaClient::with_params(
+            "http://localhost:11434".to_string(),
+            "test-model".to_string(),
+            ModelParams {
+                frequency_penalty: Some(0.3),
+                ..ModelParams::default()
+            },
+        )
+        .await
+        .unwrap();
+        let options: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&client.build_model_options()).unwrap())
+                .unwrap();
+        assert!(options.get("repeat_penalty").is_none() || options["repeat_penalty"].is_null());
+    }
+
+    #[tokio::test]
+    async fn test_with_params_query_fragment_stripped() {
+        let client = OllamaClient::with_params(
+            "http://localhost:11434?debug=1".to_string(),
+            "test-model".to_string(),
+            ModelParams::default(),
+        )
+        .await;
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_tool_call_conversion_assigns_unique_ids() {
+        let mk = |name: &str| OllamaToolCall {
+            function: ollama_rs::generation::tools::ToolCallFunction {
+                name: name.to_string(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        let a = OllamaClient::convert_tool_call(&mk("a"));
+        let b = OllamaClient::convert_tool_call(&mk("b"));
+        assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn test_tool_definition_serializes_function_type() {
+        let tool = OllamaClient::convert_tool_definition(&sample_tool_definition("metrics"));
+        let value = serde_json::to_value(&tool).unwrap();
+        assert_eq!(value["type"], "Function");
+        assert_eq!(value["function"]["name"], "metrics");
+        assert!(value["function"]["parameters"].is_object());
+    }
+
+    #[test]
+    fn test_ollama_provider_config_json_tagged_deserialize() {
+        use ares_config::toml_config::ProviderConfig;
+
+        let json = r#"{"type":"ollama","base_url":"http://10.0.0.5:11434","default_model":"qwen"}"#;
+        let decoded: ProviderConfig = serde_json::from_str(json).unwrap();
+        match decoded {
+            ProviderConfig::Ollama {
+                base_url,
+                default_model,
+            } => {
+                assert_eq!(base_url, "http://10.0.0.5:11434");
+                assert_eq!(default_model, "qwen");
+            }
+            _ => panic!("expected Ollama variant"),
+        }
+    }
+
+    #[test]
+    fn test_from_config_without_override_uses_default_model() {
+        use ares_config::toml_config::ProviderConfig;
+        use crate::client::Provider;
+
+        let config = ProviderConfig::Ollama {
+            base_url: "http://localhost:11434".to_string(),
+            default_model: "mistral".to_string(),
+        };
+        let provider = Provider::from_config(&config, None).unwrap();
+        match provider {
+            Provider::Ollama { model, base_url, .. } => {
+                assert_eq!(model, "mistral");
+                assert_eq!(base_url, "http://localhost:11434");
+            }
+            _ => panic!("expected Ollama provider"),
+        }
+    }
+
+    #[test]
+    fn test_provider_config_from_str_ollama_in_ollama_module() {
+        use ares_config::toml_config::ProviderConfig;
+
+        let config: ProviderConfig = "ollama".parse().unwrap();
+        assert_eq!(config.type_name(), "ollama");
+    }
+
+    #[tokio::test]
+    async fn test_bad_port_configuration_error_mentions_port() {
+        let result = OllamaClient::with_params(
+            "http://localhost:notaport".to_string(),
+            "test-model".to_string(),
+            ModelParams::default(),
+        )
+        .await;
+        match result {
+            Err(AppError::Configuration(msg)) => assert!(msg.contains("port")),
+            Ok(_) => panic!("expected invalid port error"),
+            other => panic!("expected Configuration error"),
+        }
     }
 
 

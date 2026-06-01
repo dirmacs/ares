@@ -16,4 +16,5 @@ jsonwebtoken = { version = "10.3.0", features = ["use_pem", "rust_crypto"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10.9"
+thiserror = { workspace = true }
 uuid = { workspace = true }

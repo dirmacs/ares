@@ -495,9 +495,23 @@ mod tests {
 
     #[tokio::test]
     async fn create_client_memory_returns_working_client() {
+        // Ensure env vars don't interfere with memory backend selection
+        let saved_url = std::env::var("DATABASE_URL").ok();
+        let saved_path = std::env::var("DATABASE_PATH").ok();
+        std::env::remove_var("DATABASE_URL");
+        std::env::remove_var("DATABASE_PATH");
+
         let provider = DatabaseProvider::Memory;
         let client = provider.create_client().await.expect("memory client");
         assert!(client.list_user_agents("user-1").await.unwrap().is_empty());
+
+        // Restore env vars
+        if let Some(url) = saved_url {
+            std::env::set_var("DATABASE_URL", &url);
+        }
+        if let Some(path) = saved_path {
+            std::env::set_var("DATABASE_PATH", &path);
+        }
     }
 
     #[test]

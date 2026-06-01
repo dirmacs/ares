@@ -733,5 +733,200 @@ mod tests {
         cache.clear().unwrap();
     }
 
+    #[test]
+    fn test_cache_stats_serde_roundtrip() {
+        let stats = CacheStats {
+            hits: 10,
+            misses: 5,
+            size_bytes: 4096,
+            entry_count: 3,
+            evictions: 2,
+        };
+        let parsed: CacheStats =
+            serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
+        assert_eq!(parsed.hits, 10);
+        assert_eq!(parsed.misses, 5);
+        assert_eq!(parsed.size_bytes, 4096);
+        assert_eq!(parsed.entry_count, 3);
+        assert_eq!(parsed.evictions, 2);
+        assert!((parsed.hit_rate() - stats.hit_rate()).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cache_config_serde_defaults() {
+        let parsed: CacheConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(parsed.max_size_bytes, 256 * 1024 * 1024);
+        assert!(parsed.enabled);
+        assert_eq!(parsed.default_ttl, None);
+
+        let partial: CacheConfig =
+            serde_json::from_str(r#"{"enabled":false,"max_size_bytes":512}"#).unwrap();
+        assert!(!partial.enabled);
+        assert_eq!(partial.max_size_bytes, 512);
+        assert_eq!(partial.default_ttl, None);
+    }
+
+    #[test]
+    fn test_cache_key_sha256_properties() {
+        let cache = LruEmbeddingCache::with_defaults();
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"hello");
+        hasher.update(b"|");
+        hasher.update(b"model");
+        let expected = format!("{:x}", hasher.finalize());
+
+        let key = cache.compute_key("hello", "model");
+        assert_eq!(key, expected);
+        assert_eq!(key.len(), 64);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+
+        assert_eq!(cache.compute_key("", ""), cache.compute_key("", ""));
+        assert_ne!(cache.compute_key("", ""), cache.compute_key("", "x"));
+        // Pipe separator is ambiguous when text or model contain '|'.
+        assert_eq!(
+            cache.compute_key("a|b", "c"),
+            cache.compute_key("a", "b|c")
+        );
+        assert_ne!(
+            cache.compute_key("hello", "model-a"),
+            cache.compute_key("hello", "model-b")
+        );
+        assert_ne!(cache.compute_key("α", "m"), cache.compute_key("a", "m"));
+    }
+
+    #[test]
+    fn test_cache_uses_config_default_ttl() {
+        let cache = LruEmbeddingCache::new(CacheConfig {
+            default_ttl: Some(Duration::from_nanos(1)),
+            ..Default::default()
+        });
+
+        cache.set("k", vec![1.0, 2.0], None).unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+
+        assert!(cache.get("k").is_none());
+        assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
+    fn test_cache_lru_get_promotes_entry() {
+        let cache = LruEmbeddingCache::with_max_entries(2);
+
+        cache.set("key1", vec![1.0], None).unwrap();
+        cache.set("key2", vec![2.0], None).unwrap();
+
+        // Promote key1 so key2 becomes LRU before inserting key3.
+        assert!(cache.get("key1").is_some());
+
+        cache.set("key3", vec![3.0], None).unwrap();
+
+        assert!(cache.get("key1").is_some());
+        assert!(cache.get("key3").is_some());
+        assert!(cache.get("key2").is_none());
+        assert!(cache.stats().evictions >= 1);
+    }
+
+    #[test]
+    fn test_cache_invalidate_missing_key_is_noop() {
+        let cache = LruEmbeddingCache::with_defaults();
+        cache.set("present", vec![1.0, 2.0], None).unwrap();
+
+        let bytes_before = cache.size_bytes();
+        let len_before = cache.len();
+
+        cache.invalidate("absent").unwrap();
+
+        assert_eq!(cache.size_bytes(), bytes_before);
+        assert_eq!(cache.len(), len_before);
+        assert!(cache.get("present").is_some());
+    }
+
+    #[test]
+    fn test_cache_cleanup_expired_noop_when_fresh() {
+        let cache = LruEmbeddingCache::with_max_entries(4);
+        cache.set("fresh", vec![1.0, 2.0], None).unwrap();
+
+        cache.cleanup_expired();
+
+        assert_eq!(cache.len(), 1);
+        assert!(cache.get("fresh").is_some());
+    }
+
+    /// Mock in-memory backend for trait-level integration tests.
+    struct MockEmbeddingCache {
+        store: Mutex<std::collections::HashMap<String, Vec<f32>>>,
+    }
+
+    impl MockEmbeddingCache {
+        fn new() -> Self {
+            Self {
+                store: Mutex::new(std::collections::HashMap::new()),
+            }
+        }
+    }
+
+    impl EmbeddingCache for MockEmbeddingCache {
+        fn get(&self, key: &str) -> Option<Vec<f32>> {
+            self.store.lock().get(key).cloned()
+        }
+
+        fn set(&self, key: &str, embedding: Vec<f32>, _ttl: Option<Duration>) -> Result<()> {
+            self.store.lock().insert(key.to_string(), embedding);
+            Ok(())
+        }
+
+        fn invalidate(&self, key: &str) -> Result<()> {
+            self.store.lock().remove(key);
+            Ok(())
+        }
+
+        fn clear(&self) -> Result<()> {
+            self.store.lock().clear();
+            Ok(())
+        }
+
+        fn stats(&self) -> CacheStats {
+            CacheStats {
+                entry_count: self.store.lock().len(),
+                ..Default::default()
+            }
+        }
+
+        fn is_enabled(&self) -> bool {
+            true
+        }
+    }
+
+    fn exercise_embedding_cache(cache: &dyn EmbeddingCache) {
+        let key = cache.compute_key("integration text", "test-model");
+        assert!(cache.get(&key).is_none());
+
+        let embedding = vec![0.1, 0.2, 0.3];
+        cache.set(&key, embedding.clone(), None).unwrap();
+        assert_eq!(cache.get(&key), Some(embedding));
+
+        cache.invalidate(&key).unwrap();
+        assert!(cache.get(&key).is_none());
+
+        cache.set(&key, vec![9.0], None).unwrap();
+        cache.clear().unwrap();
+        assert!(cache.get(&key).is_none());
+        assert_eq!(cache.stats().entry_count, 0);
+    }
+
+    #[test]
+    fn test_mock_storage_backend_integration() {
+        exercise_embedding_cache(&MockEmbeddingCache::new());
+    }
+
+    #[test]
+    fn test_lru_cache_trait_object_integration() {
+        let cache: Box<dyn EmbeddingCache> = Box::new(LruEmbeddingCache::with_max_entries(8));
+        exercise_embedding_cache(cache.as_ref());
+        assert!(cache.is_enabled());
+    }
+
+
 }
 

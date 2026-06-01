@@ -507,6 +507,7 @@ mod tests {
                 "deploy.sh",
                 "#!/bin/sh\necho deployed\nexit 0\n",
             );
+            let previous_deploy_script = std::env::var("DEPLOY_SCRIPT").ok();
             std::env::set_var("DEPLOY_SCRIPT", &script);
 
             let registry = new_deploy_registry();
@@ -528,6 +529,11 @@ mod tests {
             assert_eq!(deploy.status, DeployState::Success);
             assert!(deploy.output.contains("deployed"));
             assert!(deploy.finished_at.is_some());
+
+            match previous_deploy_script {
+                Some(prev) => std::env::set_var("DEPLOY_SCRIPT", prev),
+                None => std::env::remove_var("DEPLOY_SCRIPT"),
+            }
         }
 
         #[tokio::test]
@@ -592,9 +598,14 @@ mod tests {
                 "health.sh",
                 "#!/bin/sh\necho '{\"ares\":{\"status\":\"active\",\"pid\":\"123\",\"port\":3000}}'\n",
             );
+            let previous_health_script = std::env::var("HEALTH_SCRIPT").ok();
             std::env::set_var("HEALTH_SCRIPT", &script);
-
-            let result = get_services_health().await.expect("health");
+            let result = get_services_health().await;
+            match previous_health_script {
+                Some(prev) => std::env::set_var("HEALTH_SCRIPT", prev),
+                None => std::env::remove_var("HEALTH_SCRIPT"),
+            }
+            let result = result.expect("health");
             let ares = result.0.get("ares").expect("ares service");
             assert_eq!(ares.status, "active");
             assert_eq!(ares.pid.as_deref(), Some("123"));

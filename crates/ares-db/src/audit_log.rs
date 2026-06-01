@@ -1,6 +1,6 @@
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use sqlx::{PgPool, Row};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const INSERT_ADMIN_AUDIT_LOG_SQL: &str = "\

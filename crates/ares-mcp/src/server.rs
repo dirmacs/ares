@@ -1537,4 +1537,376 @@ mod tests {
         let impl_json = serde_json::to_value(&info.server_info).unwrap();
         assert!(impl_json.is_object());
     }
+    // =========================================================================
+    // Auth lifecycle (authenticate)
+    // =========================================================================
+
+    use ares_types::TenantTier;
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate `ARES_API_KEY`.
+    static AUTH_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    async fn inject_session(server: &AresMcpServer, tier: TenantTier) {
+        let tenant = ares_types::TenantContext::new("test-tenant".into(), tier);
+        let session = crate::auth::McpSession::new(tenant, "ares_testkey12345678".into());
+        *server.session.write().await = Some(session);
+    }
+
+    async fn test_server_with_session_tier(tier: TenantTier) -> AresMcpServer {
+        let server = test_server().await;
+        inject_session(&server, tier).await;
+        server
+    }
+
+    async fn test_server_with_session_on_url(url: &str) -> AresMcpServer {
+        let mut server = test_server_with_url(url).await;
+        inject_session(&server, TenantTier::Pro).await;
+        server.skip_quota_check = true;
+        server
+    }
+
+    fn tool_result_text(result: &CallToolResult) -> &str {
+        result.content.first().unwrap().as_text().unwrap().text.as_str()
+    }
+
+    #[tokio::test]
+    async fn authenticate_missing_api_key_returns_error() {
+        let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
+        std::env::remove_var("ARES_API_KEY");
+        let server = test_server().await;
+        let err = server.authenticate().await.unwrap_err();
+        assert!(err.contains("MCP auth failed"));
+        assert!(err.contains("No API key"));
+        assert!(server.session.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn authenticate_invalid_key_format_returns_error() {
+        let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
+        std::env::set_var("ARES_API_KEY", "not-a-valid-key");
+        let server = test_server().await;
+        let err = server.authenticate().await.unwrap_err();
+        assert!(err.contains("MCP auth failed"));
+        assert!(server.session.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn authenticate_valid_format_db_failure_returns_error() {
+        let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
+        std::env::set_var("ARES_API_KEY", "ares_abcdefgh12345678");
+        let server = test_server().await;
+        let err = server.authenticate().await.unwrap_err();
+        assert!(err.contains("MCP auth failed"));
+        assert!(server.session.read().await.is_none());
+    }
+
+    // =========================================================================
+    // Tool handlers with session (DB-less paths)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn list_agents_with_session_returns_empty_json() {
+        let server = test_server_with_session_tier(TenantTier::Pro).await;
+        let result = server.list_agents().await.expect("list_agents");
+        assert_ne!(result.is_error, Some(true));
+        let text = tool_result_text(&result);
+        let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["total"], 0);
+        assert!(parsed["agents"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn execute_tool_list_agents_with_session_succeeds() {
+        let server = test_server_with_session_tier(TenantTier::Pro).await;
+        let result = server.execute_tool("ares_list_agents", None).await;
+        assert_ne!(result.is_error, Some(true));
+        let parsed: serde_json::Value = serde_json::from_str(tool_result_text(&result)).unwrap();
+        assert_eq!(parsed["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn get_status_with_session_maps_db_error() {
+        let server = test_server_with_session_tier(TenantTier::Pro).await;
+        let input = GetStatusInput {
+            context_id: "ctx-missing".into(),
+        };
+        let err = server.get_status(input).await.unwrap_err();
+        assert!(err.starts_with("DB error:"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn get_usage_with_session_uses_default_period_and_tier_limits() {
+        let server = test_server_with_session_tier(TenantTier::Pro).await;
+        let result = server.get_usage(GetUsageInput::default()).await.expect("get_usage");
+        let parsed: serde_json::Value = serde_json::from_str(tool_result_text(&result)).unwrap();
+        assert_eq!(parsed["tenant_id"], "test-tenant");
+        assert_eq!(parsed["tier"], "pro");
+        assert_eq!(parsed["current_usage"]["total_requests"], 0);
+        // Tier strings are lowercase from McpSession::tier(); match arms use PascalCase.
+        assert_eq!(parsed["quota"]["max_requests_per_month"], 1_000);
+        assert_eq!(parsed["quota"]["max_agents"], 3);
+        assert_eq!(parsed["quota"]["max_tokens_per_month"], 10_000);
+    }
+
+    #[tokio::test]
+    async fn get_usage_with_custom_dates_preserves_period() {
+        let server = test_server_with_session_tier(TenantTier::Dev).await;
+        let input = GetUsageInput {
+            from_date: Some("2026-02-01".into()),
+            to_date: Some("2026-02-28".into()),
+        };
+        let result = server.get_usage(input).await.expect("get_usage");
+        let parsed: serde_json::Value = serde_json::from_str(tool_result_text(&result)).unwrap();
+        assert_eq!(parsed["period"]["from"], "2026-02-01");
+        assert_eq!(parsed["period"]["to"], "2026-02-28");
+        assert_eq!(parsed["tier"], "dev");
+    }
+
+    #[tokio::test]
+    async fn enforce_quota_reports_database_error_when_unavailable() {
+        let server = test_server_with_session_tier(TenantTier::Free).await;
+        let session = server.get_session().await.expect("session");
+        let err = server.enforce_quota(&session).await.unwrap_err();
+        assert!(err.starts_with("Quota check failed:"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn run_agent_without_skip_quota_reports_quota_check_failure() {
+        let server = test_server_with_session_tier(TenantTier::Pro).await;
+        let input = RunAgentInput {
+            agent_name: "bot".into(),
+            message: "hi".into(),
+            context_id: None,
+        };
+        let err = server.run_agent(input).await.unwrap_err();
+        assert!(err.starts_with("Quota check failed:"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn deploy_agent_without_skip_quota_reports_quota_check_failure() {
+        let server = test_server_with_session_tier(TenantTier::Pro).await;
+        let input = DeployAgentInput {
+            toon_config: "[agent]".into(),
+            name_override: None,
+        };
+        let err = server.deploy_agent(input).await.unwrap_err();
+        assert!(err.starts_with("Quota check failed:"), "unexpected: {err}");
+    }
+
+    // =========================================================================
+    // HTTP tool handlers (wiremock)
+    // =========================================================================
+
+    use wiremock::matchers::{body_json, header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn run_agent_success_returns_parsed_output() {
+        let mock = MockServer::start().await;
+        let body = serde_json::json!({
+            "response": "Hello from agent",
+            "agent": "support-bot",
+            "context_id": "ctx-abc",
+            "sources": [{
+                "title": "Manual",
+                "url": "https://example.com/manual",
+                "snippet": "excerpt"
+            }]
+        });
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(header("authorization", "Bearer ares_testkey12345678"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&mock)
+            .await;
+
+        let base = format!("http://127.0.0.1:{}", mock.address().port());
+        let server = test_server_with_session_on_url(&base).await;
+        let result = server
+            .run_agent(RunAgentInput {
+                agent_name: "support-bot".into(),
+                message: "hello".into(),
+                context_id: Some("ctx-prev".into()),
+            })
+            .await
+            .expect("run_agent");
+
+        assert_ne!(result.is_error, Some(true));
+        let parsed: serde_json::Value = serde_json::from_str(tool_result_text(&result)).unwrap();
+        assert_eq!(parsed["response"], "Hello from agent");
+        assert_eq!(parsed["agent"], "support-bot");
+        assert_eq!(parsed["context_id"], "ctx-abc");
+        let sources = parsed["sources"].as_array().unwrap();
+        assert_eq!(sources[0]["title"], "Manual");
+    }
+
+    #[tokio::test]
+    async fn run_agent_http_error_maps_status_and_body() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(503).set_body_string("service unavailable"),
+            )
+            .mount(&mock)
+            .await;
+
+        let base = format!("http://127.0.0.1:{}", mock.address().port());
+        let server = test_server_with_session_on_url(&base).await;
+        let err = server
+            .run_agent(RunAgentInput {
+                agent_name: "bot".into(),
+                message: "ping".into(),
+                context_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.contains("Agent run failed (HTTP 503)"));
+        assert!(err.contains("service unavailable"));
+    }
+
+    #[tokio::test]
+    async fn run_agent_invalid_json_response_maps_parse_error() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&mock)
+            .await;
+
+        let base = format!("http://127.0.0.1:{}", mock.address().port());
+        let server = test_server_with_session_on_url(&base).await;
+        let err = server
+            .run_agent(RunAgentInput {
+                agent_name: "bot".into(),
+                message: "ping".into(),
+                context_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("Parse error:"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn run_agent_unreachable_api_maps_transport_error() {
+        let server = test_server_with_session_on_url("http://127.0.0.1:1").await;
+        let err = server
+            .run_agent(RunAgentInput {
+                agent_name: "bot".into(),
+                message: "ping".into(),
+                context_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("Failed to reach ARES API:"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn deploy_agent_success_with_name_override() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/user/agents/import"))
+            .and(header("authorization", "Bearer ares_testkey12345678"))
+            .and(body_json(serde_json::json!({
+                "config": "[agent]\nname = \"from-config\"",
+                "format": "toon",
+                "name": "override-name"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "override-name",
+                "action": "updated",
+                "active": false,
+                "deployed_at": "2026-06-01T00:00:00Z"
+            })))
+            .mount(&mock)
+            .await;
+
+        let base = format!("http://127.0.0.1:{}", mock.address().port());
+        let server = test_server_with_session_on_url(&base).await;
+        let result = server
+            .deploy_agent(DeployAgentInput {
+                toon_config: "[agent]\nname = \"from-config\"".into(),
+                name_override: Some("override-name".into()),
+            })
+            .await
+            .expect("deploy_agent");
+
+        assert_ne!(result.is_error, Some(true));
+        let parsed: serde_json::Value = serde_json::from_str(tool_result_text(&result)).unwrap();
+        assert_eq!(parsed["agent_name"], "override-name");
+        assert_eq!(parsed["action"], "updated");
+        assert_eq!(parsed["active"], false);
+    }
+
+    #[tokio::test]
+    async fn deploy_agent_http_error_maps_status() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/user/agents/import"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("bad config"))
+            .mount(&mock)
+            .await;
+
+        let base = format!("http://127.0.0.1:{}", mock.address().port());
+        let server = test_server_with_session_on_url(&base).await;
+        let err = server
+            .deploy_agent(DeployAgentInput {
+                toon_config: "invalid".into(),
+                name_override: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.contains("Deploy failed (HTTP 400)"));
+        assert!(err.contains("bad config"));
+    }
+
+    #[tokio::test]
+    async fn execute_tool_run_agent_with_session_hits_mock_api() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "response": "ok",
+                "agent": "bot",
+                "context_id": "ctx-1"
+            })))
+            .mount(&mock)
+            .await;
+
+        let base = format!("http://127.0.0.1:{}", mock.address().port());
+        let server = test_server_with_session_on_url(&base).await;
+        let mut args = serde_json::Map::new();
+        args.insert("agent_name".into(), serde_json::json!("bot"));
+        args.insert("message".into(), serde_json::json!("hello"));
+        let result = server.execute_tool("ares_run_agent", Some(args)).await;
+        assert_ne!(result.is_error, Some(true));
+        let parsed: serde_json::Value =
+            serde_json::from_str(tool_result_text(&result)).unwrap();
+        assert_eq!(parsed["response"], "ok");
+    }
+
+    // =========================================================================
+    // ListAgentsInput and config edge cases
+    // =========================================================================
+
+    #[test]
+    fn list_agents_input_default_roundtrip() {
+        let input = ListAgentsInput::default();
+        let json = serde_json::to_string(&input).unwrap();
+        let back: ListAgentsInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn new_clone_preserves_api_url_and_session_handle() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let a = test_server_with_url("https://api.example.com/").await;
+            let b = a.clone();
+            assert_eq!(a.ares_api_url, b.ares_api_url);
+            assert!(Arc::ptr_eq(&a.session, &b.session));
+        });
+    }
+
 }

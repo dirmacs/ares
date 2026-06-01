@@ -33,6 +33,10 @@ pub enum Error {
     #[error("Invalid vector: {0}")]
     InvalidVector(String),
 
+    /// Numerical instability (overflow, non-finite intermediate values).
+    #[error("Numerical instability: {0}")]
+    NumericalInstability(String),
+
     /// Index error during HNSW operations.
     #[error("Index error: {0}")]
     Index(String),
@@ -93,6 +97,15 @@ mod tests {
     fn invalid_vector_display() {
         let err = Error::InvalidVector("contains NaN".into());
         assert_eq!(err.to_string(), "Invalid vector: contains NaN");
+    }
+
+    #[test]
+    fn numerical_instability_display() {
+        let err = Error::NumericalInstability("norm overflow".into());
+        assert_eq!(
+            err.to_string(),
+            "Numerical instability: norm overflow"
+        );
     }
 
     #[test]

@@ -601,6 +601,26 @@ mod tests {
     }
 
     #[test]
+    fn default_max_connections_matches_constant() {
+        assert_eq!(default_max_connections(), DEFAULT_MAX_CONNECTIONS);
+    }
+
+    #[test]
+    fn resolve_database_url_uses_database_url_env() {
+        std::env::set_var("DATABASE_URL", "postgres://env-host/ares");
+        assert_eq!(resolve_database_url(None), "postgres://env-host/ares");
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[test]
+    fn postgres_url_parts_debug_and_clone() {
+        let parts = parse_postgres_url(DEFAULT_POSTGRES_URL).unwrap();
+        let cloned = parts.clone();
+        assert_eq!(parts, cloned);
+        assert!(format!("{:?}", parts).contains("PostgresUrlParts"));
+    }
+
+    #[test]
     fn test_postgres_url_matches_new_test_pool() {
         let parts = parse_postgres_url(TEST_POSTGRES_URL).expect("parse test url");
         assert_eq!(parts.database, "test");

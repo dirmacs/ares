@@ -643,6 +643,18 @@ mod tests {
     use ares_types::types::DocumentMetadata;
     use chrono::Utc;
 
+    fn clear_vector_env() {
+        std::env::remove_var("ARES_VECTOR_PATH");
+        std::env::remove_var("LANCEDB_PATH");
+        std::env::remove_var("QDRANT_URL");
+        std::env::remove_var("QDRANT_API_KEY");
+        std::env::remove_var("PGVECTOR_URL");
+        std::env::remove_var("CHROMADB_URL");
+        std::env::remove_var("PINECONE_API_KEY");
+        std::env::remove_var("PINECONE_ENVIRONMENT");
+        std::env::remove_var("PINECONE_INDEX");
+    }
+
     fn create_test_document(id: &str, content: &str, embedding: Vec<f32>) -> Document {
         Document {
             id: id.to_string(),
@@ -888,16 +900,206 @@ mod tests {
         assert_eq!(deserialized.dimensions, 512);
     }
 
+    // --- VectorStoreProvider::create_store ---
+
+    #[tokio::test]
+    async fn test_inmemory_provider_create_store() {
+        let provider = VectorStoreProvider::InMemory;
+        let store = provider.create_store().await.unwrap();
+        assert_eq!(store.provider_name(), "in-memory");
+    }
+
+    #[tokio::test]
+    async fn test_collection_exists_false_when_missing() {
+        let store = InMemoryVectorStore::new();
+        assert!(!store.collection_exists("missing").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_search_with_filters_default_matches_search() {
+        let store = InMemoryVectorStore::new();
+        store.create_collection("test", 3).await.unwrap();
+        let doc = create_test_document("d1", "x", vec![1.0, 0.0, 0.0]);
+        store.upsert("test", &[doc]).await.unwrap();
+
+        let plain = store.search("test", &[1.0, 0.0, 0.0], 5, 0.0).await.unwrap();
+        let filtered = store
+            .search_with_filters(
+                "test",
+                &[1.0, 0.0, 0.0],
+                5,
+                0.0,
+                &[("tag".to_string(), "test".to_string())],
+            )
+            .await
+            .unwrap();
+        assert_eq!(plain.len(), filtered.len());
+        assert_eq!(plain[0].document.id, filtered[0].document.id);
+    }
+
+    #[cfg(feature = "pgvector")]
+    #[test]
+    fn test_pgvector_provider_serde_roundtrip() {
+        let provider = VectorStoreProvider::PgVector {
+            connection_string: "postgres://localhost/ares".into(),
+        };
+        let json = serde_json::to_string(&provider).unwrap();
+        assert!(json.contains("pgvector"));
+        let restored: VectorStoreProvider = serde_json::from_str(&json).unwrap();
+        match (provider, restored) {
+            (
+                VectorStoreProvider::PgVector { connection_string: a },
+                VectorStoreProvider::PgVector { connection_string: b },
+            ) => assert_eq!(a, b),
+            _ => panic!("pgvector roundtrip mismatch"),
+        }
+    }
+
+    #[cfg(feature = "lancedb")]
+    #[test]
+    fn test_lancedb_provider_serde_roundtrip() {
+        let provider = VectorStoreProvider::LanceDB {
+            path: "/data/lancedb".into(),
+        };
+        let json = serde_json::to_string(&provider).unwrap();
+        let restored: VectorStoreProvider = serde_json::from_str(&json).unwrap();
+        match (provider, restored) {
+            (
+                VectorStoreProvider::LanceDB { path: a },
+                VectorStoreProvider::LanceDB { path: b },
+            ) => assert_eq!(a, b),
+            _ => panic!("lancedb roundtrip mismatch"),
+        }
+    }
+
+    #[cfg(feature = "qdrant")]
+    #[test]
+    fn test_qdrant_provider_serde_roundtrip() {
+        let provider = VectorStoreProvider::Qdrant {
+            url: "http://localhost:6334".into(),
+            api_key: Some("secret".into()),
+        };
+        let json = serde_json::to_string(&provider).unwrap();
+        let restored: VectorStoreProvider = serde_json::from_str(&json).unwrap();
+        match (provider, restored) {
+            (
+                VectorStoreProvider::Qdrant { url: a, api_key: ka },
+                VectorStoreProvider::Qdrant { url: b, api_key: kb },
+            ) => {
+                assert_eq!(a, b);
+                assert_eq!(ka, kb);
+            }
+            _ => panic!("qdrant roundtrip mismatch"),
+        }
+    }
+
+    #[cfg(feature = "pinecone")]
+    #[test]
+    fn test_pinecone_provider_serde_roundtrip() {
+        let provider = VectorStoreProvider::Pinecone {
+            api_key: "key".into(),
+            environment: "us-east-1".into(),
+            index_name: "idx".into(),
+        };
+        let json = serde_json::to_string(&provider).unwrap();
+        let restored: VectorStoreProvider = serde_json::from_str(&json).unwrap();
+        match (provider, restored) {
+            (
+                VectorStoreProvider::Pinecone {
+                    api_key: a,
+                    environment: e,
+                    index_name: i,
+                },
+                VectorStoreProvider::Pinecone {
+                    api_key: b,
+                    environment: f,
+                    index_name: j,
+                },
+            ) => {
+                assert_eq!(a, b);
+                assert_eq!(e, f);
+                assert_eq!(i, j);
+            }
+            _ => panic!("pinecone roundtrip mismatch"),
+        }
+    }
+
+    #[cfg(feature = "pgvector")]
+    #[test]
+    fn test_from_env_pgvector_url() {
+        clear_vector_env();
+        std::env::set_var("PGVECTOR_URL", "postgres://localhost/vec");
+        let provider = VectorStoreProvider::from_env();
+        match provider {
+            VectorStoreProvider::PgVector { connection_string } => {
+                assert_eq!(connection_string, "postgres://localhost/vec");
+            }
+            other => panic!("expected PgVector, got {:?}", other),
+        }
+        std::env::remove_var("PGVECTOR_URL");
+    }
+
+    #[cfg(feature = "lancedb")]
+    #[test]
+    fn test_from_env_lancedb_path() {
+        clear_vector_env();
+        std::env::set_var("LANCEDB_PATH", "/tmp/lance");
+        let provider = VectorStoreProvider::from_env();
+        match provider {
+            VectorStoreProvider::LanceDB { path } => assert_eq!(path, "/tmp/lance"),
+            other => panic!("expected LanceDB, got {:?}", other),
+        }
+        std::env::remove_var("LANCEDB_PATH");
+    }
+
+    #[cfg(feature = "qdrant")]
+    #[test]
+    fn test_from_env_qdrant_url() {
+        clear_vector_env();
+        std::env::set_var("QDRANT_URL", "http://qdrant:6334");
+        std::env::set_var("QDRANT_API_KEY", "token");
+        let provider = VectorStoreProvider::from_env();
+        match provider {
+            VectorStoreProvider::Qdrant { url, api_key } => {
+                assert_eq!(url, "http://qdrant:6334");
+                assert_eq!(api_key.as_deref(), Some("token"));
+            }
+            other => panic!("expected Qdrant, got {:?}", other),
+        }
+        std::env::remove_var("QDRANT_URL");
+        std::env::remove_var("QDRANT_API_KEY");
+    }
+
+    #[cfg(feature = "pinecone")]
+    #[test]
+    fn test_from_env_pinecone_api_key() {
+        clear_vector_env();
+        std::env::set_var("PINECONE_API_KEY", "pk-test");
+        std::env::set_var("PINECONE_ENVIRONMENT", "eu-west-1");
+        std::env::set_var("PINECONE_INDEX", "my-index");
+        let provider = VectorStoreProvider::from_env();
+        match provider {
+            VectorStoreProvider::Pinecone {
+                api_key,
+                environment,
+                index_name,
+            } => {
+                assert_eq!(api_key, "pk-test");
+                assert_eq!(environment, "eu-west-1");
+                assert_eq!(index_name, "my-index");
+            }
+            other => panic!("expected Pinecone, got {:?}", other),
+        }
+        std::env::remove_var("PINECONE_API_KEY");
+        std::env::remove_var("PINECONE_ENVIRONMENT");
+        std::env::remove_var("PINECONE_INDEX");
+    }
+
     // --- from_env ---
 
     #[test]
     fn test_from_env_defaults_to_inmemory() {
-        std::env::remove_var("ARES_VECTOR_PATH");
-        std::env::remove_var("LANCEDB_PATH");
-        std::env::remove_var("QDRANT_URL");
-        std::env::remove_var("PGVECTOR_URL");
-        std::env::remove_var("CHROMADB_URL");
-        std::env::remove_var("PINECONE_API_KEY");
+        clear_vector_env();
 
         let provider = VectorStoreProvider::from_env();
         match provider {

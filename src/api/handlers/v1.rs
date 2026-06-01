@@ -1374,4 +1374,39 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn v1_agent_serializes_snake_case_fields() {
+        let agent = V1Agent {
+            id: "agent-1".into(),
+            name: "support".into(),
+            agent_type: "custom".into(),
+            status: V1AgentStatus::Active,
+            config: serde_json::json!({"temperature": 0.2}),
+            created_at: Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap(),
+            last_run: None,
+            total_runs: 7,
+            success_rate: 0.85,
+        };
+
+        let json = serde_json::to_value(&agent).expect("serialize agent");
+        assert_eq!(json["agent_type"], "custom");
+        assert_eq!(json["total_runs"], 7);
+        assert_eq!(json["success_rate"], 0.85);
+        assert!(json["last_run"].is_null());
+    }
+
+    #[test]
+    fn daily_usage_serializes_snake_case_fields() {
+        let daily = DailyUsage {
+            date: "2024-05-01".into(),
+            runs: 3,
+            tokens: 1200,
+            api_calls: 9,
+        };
+        let json = serde_json::to_value(&daily).expect("serialize daily usage");
+        assert_eq!(json["api_calls"], 9);
+        assert_eq!(json["tokens"], 1200);
+    }
+
 }

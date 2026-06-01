@@ -360,4 +360,50 @@ mod tests {
         );
     }
 
+
+    #[tokio::test]
+    async fn test_middleware_rejects_bearer_with_leading_space_in_token() {
+        let auth_service = create_test_auth_service();
+        let tokens = auth_service
+            .generate_tokens("user-123", "test@example.com")
+            .expect("should generate tokens");
+
+        let app = create_test_app(auth_service);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header(
+                        "Authorization",
+                        format!("Bearer  {}", tokens.access_token),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_user_rejects_stale_claims_type_in_extensions() {
+        let mut parts = Request::builder()
+            .uri("/api/chat")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts()
+            .0;
+        parts.extensions.insert("not-claims".to_string());
+
+        match AuthUser::from_request_parts(&mut parts, &()).await {
+            Err((status, body)) => {
+                assert_eq!(status, StatusCode::UNAUTHORIZED);
+                assert_eq!(body.0["error"], "Unauthorized");
+            }
+            Ok(_) => panic!("expected non-Claims extension to be rejected"),
+        }
+    }
+
 }

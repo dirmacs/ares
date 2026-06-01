@@ -180,6 +180,13 @@ pub enum Provider {
         /// Model inference parameters
         params: ModelParams,
     },
+
+    /// In-memory stub for unit tests (no network I/O).
+    #[cfg(test)]
+    TestStub {
+        /// Model label returned by [`LLMClient::model_name`].
+        model: String,
+    },
 }
 
 impl Provider {
@@ -236,6 +243,12 @@ impl Provider {
                 model.clone(),
                 params.clone(),
             ))),
+
+            #[cfg(test)]
+            Provider::TestStub { model } => {
+                Ok(Box::new(test_support::MockLLMClient::new(model.clone())))
+            }
+
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -354,6 +367,9 @@ impl Provider {
 
             #[cfg(feature = "anthropic")]
             Provider::Anthropic { .. } => "anthropic",
+
+            #[cfg(test)]
+            Provider::TestStub { .. } => "test-stub",
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -373,6 +389,9 @@ impl Provider {
 
             #[cfg(feature = "anthropic")]
             Provider::Anthropic { .. } => true,
+
+            #[cfg(test)]
+            Provider::TestStub { .. } => false,
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -396,6 +415,9 @@ impl Provider {
 
             #[cfg(feature = "anthropic")]
             Provider::Anthropic { .. } => false,
+
+            #[cfg(test)]
+            Provider::TestStub { .. } => true,
             _ => unreachable!("Provider variant not enabled"),
         }
     }
@@ -586,6 +608,107 @@ impl LLMClientFactoryTrait for LLMClientFactory {
 
     async fn create_with_provider(&self, provider: Provider) -> Result<Box<dyn LLMClient>> {
         provider.create_client().await
+    }
+}
+
+
+/// Test doubles shared across crate unit tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use ares_types::types::ToolDefinition;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Minimal LLM client for pool tests — never performs network I/O.
+    pub struct MockLLMClient {
+        model: String,
+        id: u64,
+    }
+
+    impl MockLLMClient {
+        pub fn new(model: impl Into<String>) -> Self {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+            Self {
+                model: model.into(),
+                id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LLMClient for MockLLMClient {
+        async fn generate(&self, _prompt: &str) -> Result<String> {
+            Ok(format!("mock-{}", self.id))
+        }
+
+        async fn generate_with_system(&self, _system: &str, _prompt: &str) -> Result<String> {
+            Ok(format!("mock-{}", self.id))
+        }
+
+        async fn generate_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: format!("mock-{}", self.id),
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+            })
+        }
+
+        async fn generate_with_tools(
+            &self,
+            _prompt: &str,
+            _tools: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: format!("mock-{}", self.id),
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+            })
+        }
+
+        async fn generate_with_tools_and_history(
+            &self,
+            _messages: &[crate::coordinator::ConversationMessage],
+            _tools: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: format!("mock-{}", self.id),
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+            })
+        }
+
+        async fn stream(
+            &self,
+            _prompt: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(AppError::Internal("mock stream not implemented".into()))
+        }
+
+        async fn stream_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(AppError::Internal("mock stream not implemented".into()))
+        }
+
+        async fn stream_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(AppError::Internal("mock stream not implemented".into()))
+        }
+
+        fn model_name(&self) -> &str {
+            &self.model
+        }
     }
 }
 
@@ -1272,6 +1395,135 @@ mod tests {
                     assert_eq!(params, ModelParams::default());
                 }
                 _ => panic!("Expected LlamaCpp variant"),
+            }
+        }
+    }
+
+    fn test_stub_provider(model: &str) -> Provider {
+        Provider::TestStub {
+            model: model.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_stub_provider_properties() {
+        let provider = test_stub_provider("unit-test");
+        assert_eq!(provider.name(), "test-stub");
+        assert!(!provider.requires_api_key());
+        assert!(provider.is_local());
+    }
+
+    #[tokio::test]
+    async fn test_provider_create_client_test_stub() {
+        let client = test_stub_provider("provider-model")
+            .create_client()
+            .await
+            .expect("TestStub client");
+        assert_eq!(client.model_name(), "provider-model");
+    }
+
+    #[tokio::test]
+    async fn test_factory_create_default_via_test_stub() {
+        let factory = LLMClientFactory::new(test_stub_provider("factory-model"));
+        let client = factory.create_default().await.expect("factory client");
+        assert_eq!(client.model_name(), "factory-model");
+    }
+
+    #[tokio::test]
+    async fn test_factory_trait_create_with_provider() {
+        let factory = LLMClientFactory::new(test_stub_provider("default"));
+        let trait_ref: &dyn LLMClientFactoryTrait = &factory;
+        let client = trait_ref
+            .create_with_provider(test_stub_provider("switched"))
+            .await
+            .expect("switched client");
+        assert_eq!(client.model_name(), "switched");
+    }
+
+    mod llm_client_trait_tests {
+        use super::*;
+        use crate::client::test_support::MockLLMClient;
+        use crate::coordinator::{ConversationMessage, MessageRole};
+        use ares_types::types::ToolDefinition;
+
+        #[tokio::test]
+        async fn test_generate_and_model_name() {
+            let client = MockLLMClient::new("trait-model");
+            assert_eq!(client.model_name(), "trait-model");
+            let out = client.generate("hello").await.expect("generate");
+            assert!(out.starts_with("mock-"));
+        }
+
+        #[tokio::test]
+        async fn test_generate_with_system() {
+            let client = MockLLMClient::new("sys");
+            let out = client
+                .generate_with_system("system", "prompt")
+                .await
+                .expect("generate_with_system");
+            assert!(out.starts_with("mock-"));
+        }
+
+        #[tokio::test]
+        async fn test_generate_with_history() {
+            let client = MockLLMClient::new("hist");
+            let messages = vec![("user".to_string(), "hi".to_string())];
+            let response = client
+                .generate_with_history(&messages)
+                .await
+                .expect("generate_with_history");
+            assert!(response.content.starts_with("mock-"));
+            assert_eq!(response.finish_reason, "stop");
+            assert!(response.tool_calls.is_empty());
+        }
+
+        #[tokio::test]
+        async fn test_generate_with_tools() {
+            let client = MockLLMClient::new("tools");
+            let tools = vec![ToolDefinition {
+                name: "search".to_string(),
+                description: "Search".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }];
+            let response = client
+                .generate_with_tools("find docs", &tools)
+                .await
+                .expect("generate_with_tools");
+            assert!(response.content.starts_with("mock-"));
+        }
+
+        #[tokio::test]
+        async fn test_generate_with_tools_and_history() {
+            let client = MockLLMClient::new("both");
+            let messages = vec![ConversationMessage {
+                role: MessageRole::User,
+                content: "run tool".to_string(),
+                tool_calls: vec![],
+                tool_call_id: None,
+            }];
+            let tools = vec![ToolDefinition {
+                name: "calc".to_string(),
+                description: "Calculate".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }];
+            let response = client
+                .generate_with_tools_and_history(&messages, &tools)
+                .await
+                .expect("generate_with_tools_and_history");
+            assert!(response.content.starts_with("mock-"));
+        }
+
+        #[tokio::test]
+        async fn test_stream_methods_return_internal_error() {
+            let client = MockLLMClient::new("stream");
+            for result in [
+                client.stream("hi").await,
+                client.stream_with_system("sys", "hi").await,
+                client
+                    .stream_with_history(&[("user".into(), "hi".into())])
+                    .await,
+            ] {
+                assert!(matches!(result, Err(AppError::Internal(_))));
             }
         }
     }

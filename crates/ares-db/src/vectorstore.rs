@@ -831,10 +831,7 @@ mod tests {
         let provider = VectorStoreProvider::InMemory;
         let json = serde_json::to_string(&provider).unwrap();
         let deserialized: VectorStoreProvider = serde_json::from_str(&json).unwrap();
-        match deserialized {
-            VectorStoreProvider::InMemory => {}
-            other => panic!("Expected InMemory, got {:?}", other),
-        }
+        assert!(matches!(deserialized, VectorStoreProvider::InMemory));
     }
 
     #[test]
@@ -848,10 +845,7 @@ mod tests {
     fn test_vector_store_provider_deserialize_from_json() {
         let json = r#"{"provider":"inmemory"}"#;
         let provider: VectorStoreProvider = serde_json::from_str(json).unwrap();
-        match provider {
-            VectorStoreProvider::InMemory => {}
-            other => panic!("Expected InMemory, got {:?}", other),
-        }
+        assert!(matches!(provider, VectorStoreProvider::InMemory));
     }
 
     #[test]
@@ -1102,10 +1096,10 @@ mod tests {
         clear_vector_env();
 
         let provider = VectorStoreProvider::from_env();
+        #[cfg(not(feature = "ares-vector"))]
+        assert!(matches!(provider, VectorStoreProvider::InMemory));
+        #[cfg(feature = "ares-vector")]
         match provider {
-            #[cfg(not(feature = "ares-vector"))]
-            VectorStoreProvider::InMemory => {}
-            #[cfg(feature = "ares-vector")]
             VectorStoreProvider::AresVector { path } => {
                 assert_eq!(path, None, "AresVector default should have no path");
             }
@@ -1336,5 +1330,82 @@ mod tests {
             assert!(results[i - 1].score >= results[i].score);
         }
         assert_eq!(results[0].document.id, "d3");
+    }
+
+    #[tokio::test]
+    async fn test_search_nonexistent_collection_errors() {
+        let store = InMemoryVectorStore::new();
+        let result = store.search("nope", &[1.0, 0.0], 5, 0.0).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::NotFound(msg) => assert!(msg.contains("nope")),
+            other => panic!("Expected NotFound, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_delete_on_nonexistent_collection_errors() {
+        let store = InMemoryVectorStore::new();
+        let result = store.delete("nope", &["id".to_string()]).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::NotFound(msg) => assert!(msg.contains("nope")),
+            other => panic!("Expected NotFound, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_count_matches_collection_stats() {
+        let store = InMemoryVectorStore::new();
+        store.create_collection("test", 2).await.unwrap();
+
+        let doc = create_test_document("d1", "x", vec![1.0, 0.0]);
+        store.upsert("test", &[doc]).await.unwrap();
+
+        assert_eq!(store.count("test").await.unwrap(), 1);
+        let stats = store.collection_stats("test").await.unwrap();
+        assert_eq!(stats.document_count, 1);
+        assert_eq!(stats.name, "test");
+    }
+
+    #[test]
+    fn test_public_types_clone_and_debug() {
+        let stats = CollectionStats {
+            name: "c".to_string(),
+            document_count: 1,
+            dimensions: 3,
+            index_size_bytes: None,
+            distance_metric: "cosine".to_string(),
+        };
+        let stats_dbg = format!("{:?}", stats.clone());
+        assert!(stats_dbg.contains("c"));
+
+        let info = CollectionInfo {
+            name: "docs".to_string(),
+            document_count: 2,
+            dimensions: 128,
+        };
+        let info_dbg = format!("{:?}", info.clone());
+        assert!(info_dbg.contains("docs"));
+
+        let provider = VectorStoreProvider::InMemory;
+        let provider_dbg = format!("{:?}", provider.clone());
+        assert!(provider_dbg.contains("InMemory"));
+    }
+
+    #[tokio::test]
+    async fn test_search_sort_handles_nan_scores() {
+        let store = InMemoryVectorStore::new();
+        store.create_collection("test", 2).await.unwrap();
+
+        let nan_doc = create_test_document("nan", "bad", vec![f32::NAN, 0.0]);
+        let ok_doc = create_test_document("ok", "good", vec![1.0, 0.0]);
+        store.upsert("test", &[nan_doc, ok_doc]).await.unwrap();
+
+        let results = store
+            .search("test", &[1.0, 0.0], 10, 0.0)
+            .await
+            .unwrap();
+        assert!(!results.is_empty());
     }
 }

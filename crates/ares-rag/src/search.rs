@@ -1600,4 +1600,71 @@ mod tests {
         let engine = SearchEngine::load_or_new(&temp_dir);
         assert!(engine.is_empty());
     }
+    #[test]
+    fn test_search_strategy_display() {
+        assert_eq!(SearchStrategy::Semantic.to_string(), "semantic");
+        assert_eq!(SearchStrategy::Bm25.to_string(), "bm25");
+        assert_eq!(SearchStrategy::Fuzzy.to_string(), "fuzzy");
+        assert_eq!(SearchStrategy::Hybrid.to_string(), "hybrid");
+    }
+
+    #[test]
+    fn test_bm25_with_params_and_clear() {
+        let mut index = Bm25Index::with_params(1.5, 0.8);
+        index.add_document("doc1", "custom parameters indexing");
+        assert!(!index.search("indexing", 5).is_empty());
+        index.clear();
+        assert!(index.search("indexing", 5).is_empty());
+    }
+
+    #[test]
+    fn test_fuzzy_load_or_new_corrupt_file() {
+        let path = std::env::temp_dir().join("ares_test_fuzzy_corrupt.json");
+        std::fs::write(&path, "not valid json").unwrap();
+        let index = FuzzyIndex::load_or_new(&path);
+        assert!(index.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_search_engine_remove_document_and_clear() {
+        let mut engine = SearchEngine::new();
+        engine.index_documents(&[Document {
+            id: "doc1".into(),
+            content: "remove me from search".into(),
+            metadata: Default::default(),
+            embedding: None,
+        }]);
+        assert_eq!(engine.len(), 1);
+        engine.remove_document("doc1");
+        assert!(engine.search_bm25("remove", 5).is_empty());
+        engine.index_documents(&[Document {
+            id: "doc2".into(),
+            content: "clear all indices".into(),
+            metadata: Default::default(),
+            embedding: None,
+        }]);
+        engine.clear();
+        assert!(engine.is_empty());
+    }
+
+    #[test]
+    fn test_search_hybrid_with_correction() {
+        let mut engine = SearchEngine::new();
+        engine.index_documents(&[Document {
+            id: "doc1".into(),
+            content: "vector database semantic search".into(),
+            metadata: Default::default(),
+            embedding: None,
+        }]);
+        let semantic = vec![("doc1".to_string(), 0.9)];
+        let weights = HybridWeights::default();
+        let (results, corrected, corrections) =
+            engine.search_hybrid_with_correction("vectr search", &semantic, &weights, 5);
+        assert!(!results.is_empty());
+        assert!(corrected.contains("vector"));
+        assert!(!corrections.is_empty());
+    }
+
 }
+

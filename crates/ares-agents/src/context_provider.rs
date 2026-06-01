@@ -124,12 +124,25 @@ mod tests {
     }
 
     #[test]
+    fn runtime_context_default_has_empty_strings_and_none_optionals() {
+        let runtime = AgentRuntimeContext::default();
+        assert_eq!(runtime.tenant_id, "");
+        assert_eq!(runtime.agent_name, "");
+        assert_eq!(runtime.request_source, "");
+        assert_eq!(runtime.workspace_id, None);
+        assert_eq!(runtime.user_id, None);
+        assert_eq!(runtime.session_id, None);
+    }
+
+    #[test]
     fn runtime_context_new_sets_required_fields() {
         let runtime = AgentRuntimeContext::new("tenant-1", "agent-1", "api_v1_chat");
         assert_eq!(runtime.tenant_id, "tenant-1");
         assert_eq!(runtime.agent_name, "agent-1");
         assert_eq!(runtime.request_source, "api_v1_chat");
         assert_eq!(runtime.workspace_id, None);
+        assert_eq!(runtime.user_id, None);
+        assert_eq!(runtime.session_id, None);
     }
 
     #[tokio::test]

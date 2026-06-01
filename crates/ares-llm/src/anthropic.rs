@@ -754,4 +754,474 @@ mod tests {
             other => panic!("expected Configuration error, got {other:?}"),
         }
     }
+    #[test]
+    fn test_extract_text_content_empty() {
+        assert_eq!(AnthropicClient::extract_text_content(&[]), "");
+    }
+
+    #[test]
+    fn test_extract_tool_calls_mixed_blocks_and_multiple() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "ignore me".to_string(),
+                cache_control: None,
+                citations: None,
+            },
+            ContentBlock::ToolUse {
+                id: "toolu_a".to_string(),
+                name: "search".to_string(),
+                input: serde_json::json!({"q": "a"}),
+                cache_control: None,
+            },
+            ContentBlock::ToolUse {
+                id: "toolu_b".to_string(),
+                name: "calc".to_string(),
+                input: serde_json::json!({"x": 2}),
+                cache_control: None,
+            },
+        ];
+        let calls = AnthropicClient::extract_tool_calls(&blocks);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "search");
+        assert_eq!(calls[1].name, "calc");
+    }
+
+    #[test]
+    fn test_build_request_minimal_defaults() {
+        let client = sample_client();
+        let request = client.build_request(vec![Message::user("Hello")], None, None);
+        assert_eq!(request.model, "claude-3-5-sonnet-20241022");
+        assert_eq!(request.max_tokens, 1024);
+        assert!(request.temperature.is_none());
+        assert!(request.system.is_none());
+        assert!(request.tools.is_none());
+        assert_eq!(request.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_build_request_with_empty_tools_vec() {
+        let client = sample_client();
+        let request = client.build_request(vec![Message::user("Hi")], Some(vec![]), None);
+        assert!(request.tools.is_some());
+        assert!(request.tools.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_convert_conversation_message_user_role() {
+        use crate::coordinator::{ConversationMessage, MessageRole};
+
+        let client = sample_client();
+        let mut system_prompt = None;
+        let user = ConversationMessage {
+            role: MessageRole::User,
+            content: "What is 2+2?".to_string(),
+            tool_calls: vec![],
+            tool_call_id: None,
+        };
+        let msg = client
+            .convert_conversation_message(&user, &mut system_prompt)
+            .expect("user message");
+        assert_eq!(msg.role, claude_sdk::Role::User);
+        assert!(matches!(msg.content.first(), Some(ContentBlock::Text { .. })));
+    }
+
+    #[test]
+    fn test_convert_conversation_message_assistant_text_only() {
+        use crate::coordinator::{ConversationMessage, MessageRole};
+
+        let client = sample_client();
+        let mut system_prompt = None;
+        let assistant = ConversationMessage {
+            role: MessageRole::Assistant,
+            content: "Four.".to_string(),
+            tool_calls: vec![],
+            tool_call_id: None,
+        };
+        let msg = client
+            .convert_conversation_message(&assistant, &mut system_prompt)
+            .expect("assistant message");
+        assert_eq!(msg.role, claude_sdk::Role::Assistant);
+        assert_eq!(msg.content.len(), 1);
+    }
+
+    #[test]
+    fn test_convert_conversation_message_assistant_tool_calls_without_text() {
+        use crate::coordinator::{ConversationMessage, MessageRole};
+
+        let client = sample_client();
+        let mut system_prompt = None;
+        let assistant = ConversationMessage {
+            role: MessageRole::Assistant,
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "toolu_only".to_string(),
+                name: "lookup".to_string(),
+                arguments: serde_json::json!({"id": 1}),
+            }],
+            tool_call_id: None,
+        };
+        let msg = client
+            .convert_conversation_message(&assistant, &mut system_prompt)
+            .expect("assistant tool-only message");
+        assert_eq!(msg.content.len(), 1);
+        assert!(matches!(msg.content[0], ContentBlock::ToolUse { .. }));
+    }
+
+    #[test]
+    fn test_convert_conversation_message_tool_result_default_id() {
+        use crate::coordinator::{ConversationMessage, MessageRole};
+
+        let client = sample_client();
+        let mut system_prompt = None;
+        let tool = ConversationMessage {
+            role: MessageRole::Tool,
+            content: "done".to_string(),
+            tool_calls: vec![],
+            tool_call_id: None,
+        };
+        let msg = client
+            .convert_conversation_message(&tool, &mut system_prompt)
+            .expect("tool message");
+        match &msg.content[0] {
+            ContentBlock::ToolResult { tool_use_id, content, .. } => {
+                assert!(tool_use_id.is_empty());
+                assert_eq!(content.as_deref(), Some("done"));
+            }
+            other => panic!("unexpected block: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_convert_tool_copies_parameters_schema() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "query": { "type": "string" } }
+        });
+        let tool = ToolDefinition {
+            name: "web_search".to_string(),
+            description: "Search the web".to_string(),
+            parameters: schema.clone(),
+        };
+        let converted = AnthropicClient::convert_tool(&tool);
+        assert_eq!(converted.input_schema, schema);
+        assert!(converted.disable_user_input.is_none());
+    }
+
+    #[test]
+    fn test_new_uses_default_model_params() {
+        let from_new = AnthropicClient::new("key".to_string(), "model-a".to_string());
+        let from_params = AnthropicClient::with_params(
+            "key".to_string(),
+            "model-a".to_string(),
+            ModelParams::default(),
+        );
+        assert_eq!(from_new.model_name(), from_params.model_name());
+        assert_eq!(from_new.max_tokens(), from_params.max_tokens());
+    }
+
+    #[test]
+    fn test_extract_stream_text_non_text_delta() {
+        use claude_sdk::ContentDelta;
+
+        let event = StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::InputJsonDelta {
+                partial_json: r#"{"a":"#.to_string(),
+            },
+        };
+        assert!(AnthropicClient::extract_stream_text(&event).is_none());
+    }
+
+    #[test]
+    fn test_extract_stream_text_other_events_return_none() {
+        use claude_sdk::{MessageDelta, Usage};
+
+        let usage = Usage {
+            input_tokens: 1,
+            output_tokens: 0,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        };
+        let message_start: StreamEvent = serde_json::from_str(
+            r#"{
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "claude-3-5-sonnet-20241022",
+                    "stop_reason": null,
+                    "stop_sequence": null,
+                    "usage": { "input_tokens": 1, "output_tokens": 0 }
+                }
+            }"#,
+        )
+        .unwrap();
+        let stream_error: StreamEvent = serde_json::from_str(
+            r#"{
+                "type": "error",
+                "error": {
+                    "type": "overloaded_error",
+                    "message": "rate limited"
+                }
+            }"#,
+        )
+        .unwrap();
+        let events = vec![
+            message_start,
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlock::Text {
+                    text: "Hi".to_string(),
+                    cache_control: None,
+                    citations: None,
+                },
+            },
+            StreamEvent::ContentBlockStop { index: 0 },
+            StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: Some(StopReason::EndTurn),
+                    stop_sequence: None,
+                },
+                usage,
+            },
+            StreamEvent::MessageStop,
+            stream_error,
+        ];
+        for event in events {
+            assert!(AnthropicClient::extract_stream_text(&event).is_none());
+        }
+    }
+
+    #[test]
+    fn test_stream_event_serde_message_start_roundtrip() {
+        let json = r#"{
+            "type": "message_start",
+            "message": {
+                "id": "msg_123",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": "claude-3-5-sonnet-20241022",
+                "stop_reason": null,
+                "stop_sequence": null,
+                "usage": { "input_tokens": 10, "output_tokens": 0 }
+            }
+        }"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, StreamEvent::MessageStart { .. }));
+        let encoded = serde_json::to_string(&event).unwrap();
+        let decoded: StreamEvent = serde_json::from_str(&encoded).unwrap();
+        assert!(matches!(decoded, StreamEvent::MessageStart { .. }));
+    }
+
+    #[test]
+    fn test_stream_event_malformed_json_returns_error() {
+        let err = serde_json::from_str::<StreamEvent>("{not valid json");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_content_block_tool_use_serde_roundtrip() {
+        let block = ContentBlock::ToolUse {
+            id: "toolu_99".to_string(),
+            name: "grep".to_string(),
+            input: serde_json::json!({"pattern": "foo"}),
+            cache_control: None,
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        let decoded: ContentBlock = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ContentBlock::ToolUse { id, name, input, .. } => {
+                assert_eq!(id, "toolu_99");
+                assert_eq!(name, "grep");
+                assert_eq!(input["pattern"], "foo");
+            }
+            other => panic!("unexpected block: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_message_user_and_assistant_helpers() {
+        let user = Message::user("hello");
+        assert_eq!(user.role, claude_sdk::Role::User);
+        let assistant = Message::assistant("world");
+        assert_eq!(assistant.role, claude_sdk::Role::Assistant);
+        let tool_result = Message::tool_result("toolu_1", "result payload");
+        assert!(matches!(
+            tool_result.content.first(),
+            Some(ContentBlock::ToolResult { .. })
+        ));
+    }
+
+    #[test]
+    fn test_stop_reason_serde_all_variants() {
+        for reason in [
+            StopReason::EndTurn,
+            StopReason::MaxTokens,
+            StopReason::StopSequence,
+            StopReason::ToolUse,
+            StopReason::PauseTurn,
+        ] {
+            let json = serde_json::to_string(&reason).unwrap();
+            let decoded: StopReason = serde_json::from_str(&json).unwrap();
+            assert_eq!(reason, decoded);
+        }
+    }
+
+    #[test]
+    fn test_usage_serde_roundtrip() {
+        use claude_sdk::Usage;
+
+        let usage = Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: Some(10),
+            cache_read_input_tokens: Some(5),
+        };
+        let json = serde_json::to_string(&usage).unwrap();
+        let decoded: Usage = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.input_tokens, 100);
+        assert_eq!(decoded.output_tokens, 50);
+        assert_eq!(decoded.cache_creation_input_tokens, Some(10));
+        assert_eq!(decoded.cache_read_input_tokens, Some(5));
+    }
+
+    #[test]
+    fn test_messages_response_serde_roundtrip() {
+        use claude_sdk::{MessagesResponse, Role, Usage};
+
+        let response = MessagesResponse {
+            id: "msg_resp_1".to_string(),
+            response_type: "message".to_string(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "Done".to_string(),
+                cache_control: None,
+                citations: None,
+            }],
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            stop_reason: Some(StopReason::EndTurn),
+            stop_sequence: None,
+            usage: Usage {
+                input_tokens: 12,
+                output_tokens: 4,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            },
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let decoded: MessagesResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.id, "msg_resp_1");
+        assert_eq!(decoded.usage.output_tokens, 4);
+    }
+
+    #[test]
+    fn test_tool_serde_roundtrip() {
+        let tool = Tool {
+            name: "fetch".to_string(),
+            description: "Fetch a URL".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            disable_user_input: None,
+            input_examples: None,
+            cache_control: None,
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        let decoded: Tool = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.name, "fetch");
+        assert_eq!(decoded.description, "Fetch a URL");
+    }
+
+    #[test]
+    fn test_anthropic_from_config_success_with_env() {
+        use ares_config::toml_config::ProviderConfig;
+        use crate::client::Provider;
+
+        const ENV: &str = "TEST_ANTHROPIC_KEY_R34_SUCCESS";
+        std::env::set_var(ENV, "sk-ant-test-key");
+        let config = ProviderConfig::Anthropic {
+            api_key_env: ENV.to_string(),
+            default_model: "claude-3-5-sonnet-20241022".to_string(),
+        };
+        let provider = Provider::from_config(&config, None).unwrap();
+        match provider {
+            Provider::Anthropic { api_key, model, .. } => {
+                assert_eq!(api_key, "sk-ant-test-key");
+                assert_eq!(model, "claude-3-5-sonnet-20241022");
+            }
+            other => panic!("expected Anthropic provider, got {other:?}"),
+        }
+        std::env::remove_var(ENV);
+    }
+
+    #[test]
+    fn test_anthropic_from_config_model_override() {
+        use ares_config::toml_config::ProviderConfig;
+        use crate::client::Provider;
+
+        const ENV: &str = "TEST_ANTHROPIC_KEY_R34_OVERRIDE";
+        std::env::set_var(ENV, "sk-ant-override");
+        let config = ProviderConfig::Anthropic {
+            api_key_env: ENV.to_string(),
+            default_model: "claude-3-5-sonnet-20241022".to_string(),
+        };
+        let provider = Provider::from_config(&config, Some("claude-3-haiku-20240307")).unwrap();
+        match provider {
+            Provider::Anthropic { model, .. } => {
+                assert_eq!(model, "claude-3-haiku-20240307");
+            }
+            other => panic!("expected Anthropic provider, got {other:?}"),
+        }
+        std::env::remove_var(ENV);
+    }
+
+    #[test]
+    fn test_anthropic_from_config_with_params() {
+        use ares_config::toml_config::ProviderConfig;
+        use crate::client::Provider;
+
+        const ENV: &str = "TEST_ANTHROPIC_KEY_R34_PARAMS";
+        std::env::set_var(ENV, "sk-ant-params");
+        let config = ProviderConfig::Anthropic {
+            api_key_env: ENV.to_string(),
+            default_model: "claude-3-5-sonnet-20241022".to_string(),
+        };
+        let params = ModelParams {
+            temperature: Some(0.15),
+            max_tokens: Some(777),
+            ..Default::default()
+        };
+        let provider =
+            Provider::from_config_with_params(&config, None, params.clone()).unwrap();
+        match provider {
+            Provider::Anthropic {
+                api_key,
+                model,
+                params: loaded,
+            } => {
+                assert_eq!(api_key, "sk-ant-params");
+                assert_eq!(model, "claude-3-5-sonnet-20241022");
+                assert_eq!(loaded.temperature, Some(0.15));
+                assert_eq!(loaded.max_tokens, Some(777));
+            }
+            other => panic!("expected Anthropic provider, got {other:?}"),
+        }
+        std::env::remove_var(ENV);
+    }
+
+    #[test]
+    fn test_provider_anthropic_name_and_requires_api_key() {
+        use crate::client::Provider;
+
+        let provider = Provider::Anthropic {
+            api_key: "key".to_string(),
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            params: ModelParams::default(),
+        };
+        assert_eq!(provider.name(), "anthropic");
+        assert!(provider.requires_api_key());
+        assert!(!provider.is_local());
+    }
+
 }

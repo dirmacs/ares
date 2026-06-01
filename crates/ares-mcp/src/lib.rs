@@ -41,4 +41,7 @@ pub use server::start_mcp_server;
 pub use extension::{McpToolExtension, NoOpMcpExtension};
 
 #[cfg(feature = "mcp")]
-pub use registry::McpRegistry;
+pub use registry::{
+    builtin_ares_tools, extension_dispatch, get_tool, list_tools, register_tool, McpRegistry,
+    RegistryError, ToolRegistered, ToolRegistry, ToolUnregistered,
+};

@@ -32,9 +32,185 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::stdio;
 use rmcp::ServerHandler;
 use rmcp::ServiceExt;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+// =============================================================================
+// JSON-RPC 2.0 wire types and pure helpers
+// =============================================================================
+
+/// JSON-RPC 2.0 request envelope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MCPRequest {
+    pub jsonrpc: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Value>,
+    pub method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+}
+
+/// JSON-RPC 2.0 response envelope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MCPResponse {
+    pub jsonrpc: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<MCPErrorObject>,
+}
+
+/// JSON-RPC 2.0 error object.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MCPErrorObject {
+    pub code: i64,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
+/// MCP `initialize` request parameters.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInit {
+    pub protocol_version: String,
+    #[serde(default)]
+    pub capabilities: Value,
+    pub client_info: SessionClientInfo,
+}
+
+/// Client metadata sent during MCP session initialization.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionClientInfo {
+    pub name: String,
+    pub version: String,
+}
+
+fn default_session_call_arguments() -> Value {
+    json!({})
+}
+
+/// MCP `tools/call` request parameters.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionCall {
+    pub name: String,
+    #[serde(default = "default_session_call_arguments")]
+    pub arguments: Value,
+}
+
+/// Built-in ARES MCP tool names.
+pub const BUILTIN_TOOL_NAMES: &[&str] = &[
+    "ares_list_agents",
+    "ares_run_agent",
+    "ares_get_status",
+    "ares_deploy_agent",
+    "ares_get_usage",
+];
+
+/// Result of pure tool-name routing (async handlers run in `AresMcpServer`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolDispatch {
+    ListAgents,
+    RunAgent(Value),
+    GetStatus(Value),
+    DeployAgent(Value),
+    GetUsage(Value),
+    Extension { name: String, args: Value },
+}
+
+/// Lightweight auth/quota snapshot for pure integration tests.
+#[derive(Debug, Clone)]
+pub struct AppState {
+    pub session: Option<McpSession>,
+    pub quota_within_limit: bool,
+}
+
+impl AppState {
+    pub fn unauthenticated() -> Self {
+        Self { session: None, quota_within_limit: true }
+    }
+    pub fn authenticated(session: McpSession, quota_within_limit: bool) -> Self {
+        Self { session: Some(session), quota_within_limit }
+    }
+    pub fn require_session(&self) -> Result<&McpSession, String> {
+        self.session.as_ref().ok_or_else(|| "Not authenticated. Set ARES_API_KEY.".to_string())
+    }
+    pub fn enforce_quota(&self, tier: &str) -> Result<(), String> {
+        if !self.quota_within_limit {
+            return Err(format!("Usage quota exceeded for tier '{}'. Contact your administrator to upgrade.", tier));
+        }
+        Ok(())
+    }
+}
+
+pub fn parse_mcp_request(raw: &str) -> Result<MCPRequest, MCPErrorObject> {
+    let request: MCPRequest = serde_json::from_str(raw).map_err(|e| json_rpc_error(-32700, format!("Parse error: {e}")))?;
+    if request.jsonrpc != "2.0" {
+        return Err(json_rpc_error(-32600, format!("Unsupported JSON-RPC version: {}", request.jsonrpc)));
+    }
+    if request.method.trim().is_empty() {
+        return Err(json_rpc_error(-32600, "Invalid Request: missing method"));
+    }
+    Ok(request)
+}
+
+pub fn build_mcp_response(id: Option<Value>, outcome: Result<Value, MCPErrorObject>) -> MCPResponse {
+    match outcome {
+        Ok(result) => MCPResponse { jsonrpc: "2.0".into(), id, result: Some(result), error: None },
+        Err(error) => MCPResponse { jsonrpc: "2.0".into(), id, result: None, error: Some(error) },
+    }
+}
+
+pub fn json_rpc_error(code: i64, message: impl Into<String>) -> MCPErrorObject {
+    MCPErrorObject { code, message: message.into(), data: None }
+}
+
+pub fn session_handler(method: &str, params: Option<&Value>, session_id: &str) -> Result<Value, MCPErrorObject> {
+    match method {
+        "initialize" => {
+            let init: SessionInit = params.ok_or_else(|| json_rpc_error(-32602, "Missing initialize params")).and_then(|p| {
+                serde_json::from_value(p.clone()).map_err(|e| json_rpc_error(-32602, format!("Invalid initialize params: {e}")))
+            })?;
+            Ok(json!({"protocolVersion": init.protocol_version, "capabilities": {"tools": {}}, "serverInfo": {"name": "ares-mcp", "version": env!("CARGO_PKG_VERSION")}, "sessionId": session_id}))
+        }
+        "notifications/initialized" => Ok(Value::Null),
+        other => Err(json_rpc_error(-32601, format!("Method not found: {other}"))),
+    }
+}
+
+pub fn validate_tool_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() { return Err("tool name must not be empty".into()); }
+    if name.chars().any(char::is_whitespace) { return Err("tool name must not contain whitespace".into()); }
+    Ok(())
+}
+
+pub fn generate_session_id() -> String { format!("mcp-{}", uuid::Uuid::new_v4()) }
+
+pub fn tool_call_dispatch(name: &str, args: Value) -> Result<ToolDispatch, String> {
+    validate_tool_name(name)?;
+    match name {
+        "ares_list_agents" => Ok(ToolDispatch::ListAgents),
+        "ares_run_agent" => Ok(ToolDispatch::RunAgent(args)),
+        "ares_get_status" => Ok(ToolDispatch::GetStatus(args)),
+        "ares_deploy_agent" => Ok(ToolDispatch::DeployAgent(args)),
+        "ares_get_usage" => Ok(ToolDispatch::GetUsage(args)),
+        other => Ok(ToolDispatch::Extension { name: other.to_string(), args }),
+    }
+}
+
+pub fn tier_limits(tier: &str) -> (u64, u32, u64) {
+    match tier {
+        "free" => (1_000, 3, 10_000),
+        "dev" => (50_000, 20, 500_000),
+        "pro" => (500_000, 100, 5_000_000),
+        "enterprise" => (u64::MAX, u32::MAX, u64::MAX),
+        _ => (1_000, 3, 10_000),
+    }
+}
 
 /// The ARES MCP Server.
 ///
@@ -504,13 +680,7 @@ impl AresMcpServer {
         self.track_usage(&tenant_id, McpOperation::GetUsage, 0, true, duration)
             .await;
 
-        let (max_requests, max_agents, max_tokens) = match tier.as_str() {
-            "Free" => (1_000u64, 3u32, 10_000u64),
-            "Dev" => (50_000, 20, 500_000),
-            "Pro" => (500_000, 100, 5_000_000),
-            "Enterprise" => (u64::MAX, u32::MAX, u64::MAX),
-            _ => (1_000, 3, 10_000),
-        };
+        let (max_requests, max_agents, max_tokens) = tier_limits(&tier);
 
         let tokens_used = row.2 as u64;
         let utilization = if max_tokens == u64::MAX {
@@ -683,47 +853,47 @@ impl AresMcpServer {
         name: &str,
         arguments: Option<serde_json::Map<String, serde_json::Value>>,
     ) -> CallToolResult {
-        let args = arguments.unwrap_or_default();
-        let args_value = serde_json::Value::Object(args);
+        let args_value = Value::Object(arguments.unwrap_or_default());
 
-        let result = match name {
-            "ares_list_agents" => self.list_agents().await,
-            "ares_run_agent" => match serde_json::from_value::<RunAgentInput>(args_value) {
+        let dispatch = match tool_call_dispatch(name, args_value.clone()) {
+            Ok(d) => d,
+            Err(e) => return CallToolResult::error(vec![Content::text(e)]),
+        };
+
+        let result = match dispatch {
+            ToolDispatch::ListAgents => self.list_agents().await,
+            ToolDispatch::RunAgent(args) => match serde_json::from_value::<RunAgentInput>(args) {
                 Ok(input) => self.run_agent(input).await,
                 Err(e) => Err(format!("Invalid arguments: {}", e)),
             },
-            "ares_get_status" => match serde_json::from_value::<GetStatusInput>(args_value) {
+            ToolDispatch::GetStatus(args) => match serde_json::from_value::<GetStatusInput>(args) {
                 Ok(input) => self.get_status(input).await,
                 Err(e) => Err(format!("Invalid arguments: {}", e)),
             },
-            "ares_deploy_agent" => match serde_json::from_value::<DeployAgentInput>(args_value) {
-                Ok(input) => self.deploy_agent(input).await,
-                Err(e) => Err(format!("Invalid arguments: {}", e)),
-            },
-            "ares_get_usage" => match serde_json::from_value::<GetUsageInput>(args_value) {
+            ToolDispatch::DeployAgent(args) => {
+                match serde_json::from_value::<DeployAgentInput>(args) {
+                    Ok(input) => self.deploy_agent(input).await,
+                    Err(e) => Err(format!("Invalid arguments: {}", e)),
+                }
+            }
+            ToolDispatch::GetUsage(args) => match serde_json::from_value::<GetUsageInput>(args) {
                 Ok(input) => self.get_usage(input).await,
                 Err(e) => Err(format!("Invalid arguments: {}", e)),
             },
-            // Try extension tools (eruka, custom tools from managed platform)
-            other => {
+            ToolDispatch::Extension { name, args } => {
                 let tenant_id = match self.get_session().await {
                     Ok(s) => s.tenant_id().to_string(),
                     Err(e) => return CallToolResult::error(vec![Content::text(e)]),
                 };
-                if let Some(result) = dispatch_extensions(
-                    &self.extensions,
-                    other,
-                    args_value.clone(),
-                    &tenant_id,
-                )
-                .await
+                if let Some(result) =
+                    dispatch_extensions(&self.extensions, &name, args, &tenant_id).await
                 {
                     return match result {
                         Ok(r) => r,
                         Err(e) => CallToolResult::error(vec![Content::text(e)]),
                     };
                 }
-                Err(format!("Unknown tool: {}", other))
+                Err(format!("Unknown tool: {}", name))
             }
         };
 
@@ -1643,10 +1813,10 @@ mod tests {
         assert_eq!(parsed["tenant_id"], "test-tenant");
         assert_eq!(parsed["tier"], "pro");
         assert_eq!(parsed["current_usage"]["total_requests"], 0);
-        // Tier strings are lowercase from McpSession::tier(); match arms use PascalCase.
-        assert_eq!(parsed["quota"]["max_requests_per_month"], 1_000);
-        assert_eq!(parsed["quota"]["max_agents"], 3);
-        assert_eq!(parsed["quota"]["max_tokens_per_month"], 10_000);
+        // Tier strings are lowercase from McpSession::tier().
+        assert_eq!(parsed["quota"]["max_requests_per_month"], 500_000);
+        assert_eq!(parsed["quota"]["max_agents"], 100);
+        assert_eq!(parsed["quota"]["max_tokens_per_month"], 5_000_000);
     }
 
     #[tokio::test]
@@ -1896,6 +2066,159 @@ mod tests {
         let json = serde_json::to_string(&input).unwrap();
         let back: ListAgentsInput = serde_json::from_str(&json).unwrap();
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // =========================================================================
+    // JSON-RPC helpers, session wire types, and AppState (R38)
+    // =========================================================================
+
+    #[test]
+    fn mcp_request_roundtrip_with_string_id() {
+        let req = MCPRequest { jsonrpc: "2.0".into(), id: Some(json!("req-1")), method: "tools/call".into(), params: Some(json!({"name": "ares_list_agents"})) };
+        let back: MCPRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        assert_eq!(back, req);
+    }
+    #[test]
+    fn mcp_request_roundtrip_with_numeric_id() {
+        let req = MCPRequest { jsonrpc: "2.0".into(), id: Some(json!(42)), method: "initialize".into(), params: None };
+        let back: MCPRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        assert_eq!(back.id, Some(json!(42)));
+    }
+    #[test]
+    fn mcp_request_notification_omits_id() {
+        let req: MCPRequest = serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).unwrap();
+        assert!(req.id.is_none());
+    }
+    #[test]
+    fn mcp_response_success_roundtrip() {
+        let resp = build_mcp_response(Some(json!(1)), Ok(json!({"ok": true})));
+        let back: MCPResponse = serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+        assert_eq!(back.jsonrpc, "2.0");
+        assert_eq!(back.result, Some(json!({"ok": true})));
+        assert!(back.error.is_none());
+    }
+    #[test]
+    fn mcp_response_error_roundtrip() {
+        let err = json_rpc_error(-32601, "Method not found");
+        let back: MCPResponse = serde_json::from_str(&serde_json::to_string(&build_mcp_response(Some(json!(7)), Err(err.clone()))).unwrap()).unwrap();
+        assert_eq!(back.error, Some(err));
+        assert!(back.result.is_none());
+    }
+    #[test]
+    fn session_init_roundtrip() {
+        let init = SessionInit { protocol_version: "2024-11-05".into(), capabilities: json!({}), client_info: SessionClientInfo { name: "test-client".into(), version: "1.0.0".into() } };
+        let back: SessionInit = serde_json::from_str(&serde_json::to_string(&init).unwrap()).unwrap();
+        assert_eq!(back, init);
+    }
+    #[test]
+    fn session_call_roundtrip() {
+        let call = SessionCall { name: "ares_run_agent".into(), arguments: json!({"agent_name": "bot", "message": "hi"}) };
+        let back: SessionCall = serde_json::from_str(&serde_json::to_string(&call).unwrap()).unwrap();
+        assert_eq!(back, call);
+    }
+    #[test]
+    fn session_call_default_arguments_object() {
+        let call: SessionCall = serde_json::from_str(r#"{"name":"ares_list_agents"}"#).unwrap();
+        assert_eq!(call.arguments, json!({}));
+    }
+    #[test]
+    fn parse_mcp_request_valid() {
+        let req = parse_mcp_request(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#).unwrap();
+        assert_eq!(req.method, "initialize");
+    }
+    #[test]
+    fn parse_mcp_request_invalid_json_is_parse_error() { assert_eq!(parse_mcp_request("not-json").unwrap_err().code, -32700); }
+    #[test]
+    fn parse_mcp_request_wrong_jsonrpc_version() { assert_eq!(parse_mcp_request(r#"{"jsonrpc":"1.0","id":1,"method":"initialize"}"#).unwrap_err().code, -32600); }
+    #[test]
+    fn parse_mcp_request_missing_method() { assert_eq!(parse_mcp_request(r#"{"jsonrpc":"2.0","id":1,"method":"   "}"#).unwrap_err().code, -32600); }
+    #[test]
+    fn build_mcp_response_jsonrpc_version() { assert_eq!(build_mcp_response(None, Ok(json!(null))).jsonrpc, "2.0"); }
+    #[test]
+    fn build_mcp_response_result_xor_error() {
+        let ok = build_mcp_response(Some(json!(1)), Ok(json!({})));
+        assert!(ok.result.is_some() && ok.error.is_none());
+        let err = build_mcp_response(Some(json!(1)), Err(json_rpc_error(-32000, "boom")));
+        assert!(err.result.is_none() && err.error.is_some());
+    }
+    #[test]
+    fn session_handler_initialize_success() {
+        let params = json!({"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "cli", "version": "0.1"}});
+        let result = session_handler("initialize", Some(&params), "mcp-test").unwrap();
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert_eq!(result["sessionId"], "mcp-test");
+    }
+    #[test]
+    fn session_handler_initialize_invalid_params() { assert_eq!(session_handler("initialize", Some(&json!({})), "mcp-test").unwrap_err().code, -32602); }
+    #[test]
+    fn session_handler_unknown_method() { assert_eq!(session_handler("tools/list", None, "mcp-test").unwrap_err().code, -32601); }
+    #[test]
+    fn session_handler_initialized_notification() { assert!(session_handler("notifications/initialized", None, "mcp-test").unwrap().is_null()); }
+    #[test]
+    fn validate_tool_name_rejects_empty() { assert!(validate_tool_name("").is_err()); assert!(validate_tool_name("   ").is_err()); }
+    #[test]
+    fn validate_tool_name_rejects_whitespace() { assert!(validate_tool_name("ares run").is_err()); }
+    #[test]
+    fn validate_tool_name_accepts_builtin_and_extension() { assert!(validate_tool_name("ares_list_agents").is_ok()); assert!(validate_tool_name("custom_tool").is_ok()); }
+    #[test]
+    fn generate_session_id_unique_and_prefixed() { let (a,b)=(generate_session_id(),generate_session_id()); assert_ne!(a,b); assert!(a.starts_with("mcp-") && b.starts_with("mcp-")); }
+    #[test]
+    fn tool_call_dispatch_builtin_tools() {
+        for name in BUILTIN_TOOL_NAMES {
+            let dispatch = tool_call_dispatch(name, json!({})).unwrap();
+            match name {
+                &"ares_list_agents" => assert_eq!(dispatch, ToolDispatch::ListAgents),
+                &"ares_run_agent" => assert!(matches!(dispatch, ToolDispatch::RunAgent(_))),
+                &"ares_get_status" => assert!(matches!(dispatch, ToolDispatch::GetStatus(_))),
+                &"ares_deploy_agent" => assert!(matches!(dispatch, ToolDispatch::DeployAgent(_))),
+                &"ares_get_usage" => assert!(matches!(dispatch, ToolDispatch::GetUsage(_))),
+                _ => unreachable!(),
+            }
+        }
+    }
+    #[test]
+    fn tool_call_dispatch_extension_tool() {
+        assert_eq!(tool_call_dispatch("eruka_search", json!({"q": "x"})).unwrap(), ToolDispatch::Extension { name: "eruka_search".into(), args: json!({"q": "x"}) });
+    }
+    #[test]
+    fn tool_call_dispatch_invalid_name() { assert!(tool_call_dispatch("", json!({})).is_err()); }
+    #[test]
+    fn tier_limits_known_tiers() {
+        assert_eq!(tier_limits("free"), (1_000, 3, 10_000));
+        assert_eq!(tier_limits("dev"), (50_000, 20, 500_000));
+        assert_eq!(tier_limits("pro"), (500_000, 100, 5_000_000));
+        assert_eq!(tier_limits("enterprise"), (u64::MAX, u32::MAX, u64::MAX));
+    }
+    #[test]
+    fn tier_limits_unknown_defaults_to_free() { assert_eq!(tier_limits("trial"), (1_000, 3, 10_000)); }
+    #[test]
+    fn app_state_require_session_unauthenticated() { assert!(AppState::unauthenticated().require_session().unwrap_err().contains("Not authenticated")); }
+    #[test]
+    fn app_state_enforce_quota_blocks_when_exceeded() {
+        let session = McpSession::new(ares_types::TenantContext::new("t".into(), ares_types::TenantTier::Pro), "ares_testkey12345678".into());
+        let err = AppState::authenticated(session, false).enforce_quota("pro").unwrap_err();
+        assert!(err.contains("Usage quota exceeded") && err.contains("pro"));
+    }
+    #[test]
+    fn app_state_auth_and_quota_ok() {
+        let session = McpSession::new(ares_types::TenantContext::new("t".into(), ares_types::TenantTier::Dev), "ares_testkey12345678".into());
+        let state = AppState::authenticated(session, true);
+        let session = state.require_session().unwrap();
+        assert_eq!(session.tier(), "dev");
+        assert!(state.enforce_quota(session.tier()).is_ok());
+    }
+    #[test]
+    fn json_rpc_error_codes_are_standard() {
+        assert_eq!(json_rpc_error(-32700, "parse").code, -32700);
+        assert_eq!(json_rpc_error(-32600, "invalid").code, -32600);
+        assert_eq!(json_rpc_error(-32601, "missing").code, -32601);
+        assert_eq!(json_rpc_error(-32602, "params").code, -32602);
+    }
+    #[test]
+    fn serialized_mcp_response_has_jsonrpc_field() {
+        let value: Value = serde_json::to_value(build_mcp_response(Some(json!(99)), Ok(json!({"tools": []})))).unwrap();
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["id"], 99);
     }
 
     #[test]

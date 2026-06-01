@@ -15,7 +15,7 @@ use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "postgres")]
-use crate::postgres::parse_postgres_url;
+use crate::postgres::{is_postgres_url, parse_postgres_url};
 
 /// Default PostgreSQL URL for pgvector-backed storage.
 pub const DEFAULT_PGVECTOR_URL: &str = "postgres://postgres:postgres@localhost:5432/ares";

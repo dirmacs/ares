@@ -3620,6 +3620,36 @@ api_key_env = "API"
         }
     }
 
+    #[test]
+    fn test_tool_config_default_struct() {
+        let tool = ToolConfig::default();
+        assert!(tool.enabled);
+        assert!(tool.description.is_none());
+        assert_eq!(tool.timeout_secs, 30);
+        assert!(tool.extra.is_empty());
+    }
+
+    #[test]
+    fn test_qdrant_config_default_struct() {
+        let qdrant = QdrantConfig::default();
+        assert_eq!(qdrant.url, "http://localhost:6334");
+        assert!(qdrant.api_key_env.is_none());
+    }
+
+    #[test]
+    fn test_ares_config_load_success() {
+        set_test_env();
+        let dir = std::env::temp_dir().join("ares_load_success_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ares.toml");
+        std::fs::write(&path, create_test_config()).unwrap();
+
+        let config = AresConfig::load(&path).expect("load should succeed");
+        assert_eq!(config.server.port, 3000);
+        assert!(config.providers.contains_key("ollama-local"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
 }
 

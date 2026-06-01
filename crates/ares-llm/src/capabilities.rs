@@ -781,6 +781,146 @@ pub struct ModelWithCapabilities {
 mod tests {
     use super::*;
 
+    fn serde_roundtrip<T>(value: &T) -> T
+    where
+        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        let json = serde_json::to_string(value).unwrap();
+        let decoded: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(*value, decoded);
+        decoded
+    }
+
+    #[test]
+    fn test_model_capabilities_default_impl() {
+        let caps = ModelCapabilities::default();
+        assert!(!caps.supports_tools);
+        assert!(!caps.supports_vision);
+        assert!(!caps.supports_audio);
+        assert!(!caps.supports_json_mode);
+        assert!(caps.supports_streaming);
+        assert!(caps.supports_system_prompt);
+        assert_eq!(caps.context_window, 4_096);
+        assert_eq!(caps.max_output_tokens, 4_096);
+        assert!(!caps.supports_reasoning);
+        assert!(!caps.supports_code_execution);
+        assert_eq!(caps.cost_tier, "medium");
+        assert_eq!(caps.speed_tier, "medium");
+        assert_eq!(caps.quality_tier, "standard");
+        assert!(caps.languages.is_empty());
+        assert!(caps.family.is_none());
+        assert!(caps.production_ready);
+        assert!(!caps.is_local);
+        assert!(caps.tags.is_empty());
+    }
+
+    #[test]
+    fn test_for_model_provider_variants() {
+        let sonnet = ModelCapabilities::for_model("claude-3-5-sonnet-20241022");
+        assert!(sonnet.supports_tools);
+        assert!(sonnet.supports_vision);
+        assert_eq!(sonnet.context_window, 200_000);
+        assert_eq!(sonnet.max_output_tokens, 8_192);
+        assert_eq!(sonnet.family.as_deref(), Some("claude-3"));
+
+        let opus = ModelCapabilities::for_model("claude-3-opus-20240229");
+        assert!(opus.supports_reasoning);
+        assert_eq!(opus.cost_tier, "premium");
+        assert_eq!(opus.speed_tier, "slow");
+
+        let haiku = ModelCapabilities::for_model("claude-3-haiku-20240307");
+        assert!(haiku.supports_tools);
+        assert_eq!(haiku.speed_tier, "realtime");
+        assert!(!haiku.supports_reasoning);
+
+        let gpt4o = ModelCapabilities::for_model("gpt-4o-2024-08-06");
+        assert!(gpt4o.supports_audio);
+        assert_eq!(gpt4o.context_window, 128_000);
+        assert_eq!(gpt4o.max_output_tokens, 16_384);
+
+        let gpt4_turbo = ModelCapabilities::for_model("gpt-4-turbo-2024-04-09");
+        assert_eq!(gpt4_turbo.context_window, 128_000);
+
+        let gpt4 = ModelCapabilities::for_model("gpt-4-0613");
+        assert!(!gpt4.supports_vision);
+        assert_eq!(gpt4.context_window, 8_192);
+
+        let gpt35 = ModelCapabilities::for_model("gpt-3.5-turbo");
+        assert!(gpt35.supports_tools);
+        assert_eq!(gpt35.family.as_deref(), Some("gpt-3.5"));
+
+        let llama = ModelCapabilities::for_model("llama-3.3-70b-instruct");
+        assert!(llama.is_local);
+        assert_eq!(llama.cost_tier, "free");
+
+        let llama_small = ModelCapabilities::for_model("llama-3.1-8b-instruct");
+        assert_eq!(llama_small.context_window, 131_072);
+
+        let mistral = ModelCapabilities::for_model("mistral-nemo-12b");
+        assert!(mistral.supports_tools);
+        assert!(mistral.is_local);
+        assert_eq!(mistral.family.as_deref(), Some("mistral"));
+
+        let qwen_vl = ModelCapabilities::for_model("qwen2.5-vl-72b");
+        assert!(qwen_vl.supports_vision);
+
+        let deepseek = ModelCapabilities::for_model("deepseek-r1");
+        assert!(deepseek.supports_reasoning);
+
+        for unknown in ["gemini-1.5-pro", "o3-mini", "o1-preview", "claude"] {
+            let caps = ModelCapabilities::for_model(unknown);
+            assert_eq!(
+                caps,
+                ModelCapabilities::default(),
+                "{unknown} should use default capabilities"
+            );
+        }
+    }
+
+    #[test]
+    fn test_model_capabilities_field_accessors() {
+        let caps = ModelCapabilities::for_model("gpt-4o");
+        assert!(caps.supports_tools);
+        assert!(caps.supports_vision);
+        assert!(caps.supports_audio);
+        assert!(caps.supports_json_mode);
+        assert!(caps.supports_streaming);
+        assert!(caps.supports_system_prompt);
+        assert_eq!(caps.context_window, 128_000);
+        assert_eq!(caps.max_output_tokens, 16_384);
+        assert!(caps.supports_reasoning);
+        assert!(!caps.supports_code_execution);
+        assert_eq!(caps.cost_tier, "high");
+        assert_eq!(caps.speed_tier, "fast");
+        assert_eq!(caps.quality_tier, "premium");
+        assert_eq!(caps.family.as_deref(), Some("gpt-4"));
+        assert!(caps.production_ready);
+        assert!(!caps.is_local);
+    }
+
+    #[test]
+    fn test_model_capabilities_serde_roundtrip() {
+        let mut caps = ModelCapabilities::for_model("claude-3-5-sonnet-20241022");
+        caps.languages.insert("en".to_string());
+        caps.tags.insert("agent".to_string());
+        serde_roundtrip(&caps);
+    }
+
+    #[test]
+    fn test_model_capabilities_serde_empty_object_uses_defaults() {
+        let caps: ModelCapabilities = serde_json::from_str("{}").unwrap();
+        assert_eq!(caps, ModelCapabilities::default());
+    }
+
+    #[test]
+    fn test_model_capabilities_equality() {
+        let a = ModelCapabilities::for_model("gpt-4o-2024-08-06");
+        let b = ModelCapabilities::for_model("gpt-4o-mini");
+        assert_eq!(a, b);
+        assert_ne!(a, ModelCapabilities::default());
+        assert_eq!(a, a.clone());
+    }
+
     #[test]
     fn test_claude_capabilities() {
         let caps = ModelCapabilities::for_model("claude-3-5-sonnet-20241022");

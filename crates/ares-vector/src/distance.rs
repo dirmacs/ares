@@ -14,7 +14,7 @@ use std::fmt;
 /// - **DotProduct**: Best for vectors that are already normalized.
 /// - **Manhattan**: Robust to outliers, good for sparse vectors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum DistanceMetric {
     /// Cosine similarity (1 - cosine_distance).
     ///
@@ -427,6 +427,16 @@ impl HnswDistance for ManhattanDistance {
     type Dist = DistL1;
     fn create() -> Self::Dist {
         DistL1 {}
+    }
+}
+
+/// pgvector distance operator for supported metrics.
+pub fn distance_operator(metric: DistanceMetric) -> Option<&'static str> {
+    match metric {
+        DistanceMetric::Cosine => Some("<=>"),
+        DistanceMetric::Euclidean => Some("<->"),
+        DistanceMetric::DotProduct => Some("<#>"),
+        DistanceMetric::Manhattan => None,
     }
 }
 
@@ -898,4 +908,26 @@ mod tests {
         assert!(approx_eq(l1.eval(&a, &b), 2.0));
         assert!(l1.eval(&same, &a).abs() < EPS);
     }
+    #[test]
+    fn distance_operator_maps_pgvector_tokens() {
+        assert_eq!(distance_operator(DistanceMetric::Euclidean), Some("<->"));
+        assert_eq!(distance_operator(DistanceMetric::DotProduct), Some("<#>"));
+        assert_eq!(distance_operator(DistanceMetric::Cosine), Some("<=>"));
+        assert_eq!(distance_operator(DistanceMetric::Manhattan), None);
+    }
+
+    #[test]
+    fn distance_metric_serde_roundtrip() {
+        for metric in [
+            DistanceMetric::Cosine,
+            DistanceMetric::Euclidean,
+            DistanceMetric::DotProduct,
+            DistanceMetric::Manhattan,
+        ] {
+            let json = serde_json::to_string(&metric).expect("serialize");
+            let restored: DistanceMetric = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(restored, metric);
+        }
+    }
+
 }

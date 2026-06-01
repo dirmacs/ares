@@ -1,5 +1,5 @@
 use crate::PostgresClient;
-use ares_types::{ApiKey, Tenant, TenantContext, TenantTier};
+use ares_types::{ApiKey, Tenant, TenantContext, TenantQuota, TenantTier};
 use ares_types::types::{AppError, Result};
 use chrono::{Datelike, TimeZone, Utc};
 use sha2::{Digest, Sha256};
@@ -448,6 +448,7 @@ pub struct UsageSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
 
     // ── generate_api_key ──────────────────────────────────────────────
 
@@ -670,4 +671,379 @@ mod tests {
         assert_eq!(hash.len(), 64);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
+
+    // ── api_key_prefix / hash edge cases ──────────────────────────────
+
+    #[test]
+    fn test_api_key_prefix_9_chars_after_ares_is_valid() {
+        let key = "ares_123456789";
+        let prefix = api_key_prefix(key).expect("9 hex chars should be valid");
+        assert_eq!(prefix, "ares_12345678");
+    }
+
+    #[test]
+    fn test_api_key_prefix_wrong_prefix_case_sensitive() {
+        assert!(api_key_prefix("ARES_abcdef12").is_none());
+        assert!(api_key_prefix("ares-abcdef12").is_none());
+    }
+
+    #[test]
+    fn test_hash_api_key_known_hello_vector() {
+        assert_eq!(
+            hash_api_key("hello"),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    #[test]
+    fn test_generate_api_key_multiple_calls_all_unique() {
+        let keys: Vec<_> = (0..8).map(|_| generate_api_key()).collect();
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                assert_ne!(keys[i], keys[j]);
+            }
+        }
+    }
+
+    // ── TenantDb (lazy pool, no live Postgres) ────────────────────────
+
+    use crate::postgres::PostgresClient;
+    use ares_types::types::AppError;
+    use std::sync::Arc;
+
+    fn test_tenant_db() -> TenantDb {
+        TenantDb::new(Arc::new(PostgresClient::new_test()))
+    }
+
+    #[tokio::test]
+    async fn test_tenant_db_new_and_pool_accessor() {
+        let db = test_tenant_db();
+        let pool = db.pool();
+        assert!(std::ptr::eq(pool, db.pool()));
+    }
+
+    #[tokio::test]
+    async fn test_verify_api_key_invalid_prefix_returns_none() {
+        let db = test_tenant_db();
+        assert!(db.verify_api_key("").await.unwrap().is_none());
+        assert!(db
+            .verify_api_key("not_ares_abcdef1234567890")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db.verify_api_key("ares_short").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_verify_api_key_valid_format_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let key = "ares_abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+        let err = db.verify_api_key(key).await.unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_create_tenant_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let err = db
+            .create_tenant("Acme".into(), TenantTier::Pro)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_list_tenants_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let err = db.list_tenants().await.unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_get_tenant_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let err = db
+            .get_tenant("00000000-0000-0000-0000-000000000000")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_create_api_key_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let err = db
+            .create_api_key("tenant-1", "primary".into())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_list_api_keys_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let err = db.list_api_keys("tenant-1").await.unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_get_monthly_requests_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let err = db.get_monthly_requests("tenant-1").await.unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_get_daily_requests_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let err = db.get_daily_requests("tenant-1").await.unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_record_usage_event_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let err = db
+            .record_usage_event("tenant-1", 3, 120)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_get_usage_summary_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let err = db.get_usage_summary("tenant-1").await.unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_revoke_api_key_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let err = db
+            .revoke_api_key("tenant-1", "key-1")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_update_tenant_quota_without_db_returns_database_error() {
+        let db = test_tenant_db();
+        let err = db
+            .update_tenant_quota("tenant-1", TenantTier::Enterprise)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Database(_)));
+    }
+
+    // ── chrono boundaries (mirrors get_monthly/get_daily/month usage) ─
+
+    #[test]
+    fn test_month_start_timestamp_is_first_day_midnight_utc() {
+        let now = Utc::now();
+        let month_start = now
+            .date_naive()
+            .with_day(1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        let parsed = Utc.timestamp_opt(month_start, 0).single().unwrap();
+        assert_eq!(parsed.day(), 1);
+        assert_eq!(parsed.hour(), 0);
+        assert_eq!(parsed.minute(), 0);
+    }
+
+    #[test]
+    fn test_day_start_timestamp_is_midnight_utc() {
+        let today = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        let parsed = Utc.timestamp_opt(today, 0).single().unwrap();
+        assert_eq!(parsed.hour(), 0);
+        assert_eq!(parsed.minute(), 0);
+        assert_eq!(parsed.second(), 0);
+    }
+
+    // ── TenantTier (used when mapping DB rows) ────────────────────────
+
+    #[test]
+    fn test_tenant_tier_from_str_all_variants() {
+        assert_eq!(TenantTier::from_str("free"), Some(TenantTier::Free));
+        assert_eq!(TenantTier::from_str("DEV"), Some(TenantTier::Dev));
+        assert_eq!(TenantTier::from_str("Pro"), Some(TenantTier::Pro));
+        assert_eq!(
+            TenantTier::from_str("enterprise"),
+            Some(TenantTier::Enterprise)
+        );
+        assert_eq!(TenantTier::from_str("unknown"), None);
+    }
+
+    #[test]
+    fn test_tenant_tier_as_str_matches_serde_names() {
+        for tier in [
+            TenantTier::Free,
+            TenantTier::Dev,
+            TenantTier::Pro,
+            TenantTier::Enterprise,
+        ] {
+            let json = serde_json::to_string(&tier).unwrap();
+            assert_eq!(json, format!("\"{}\"", tier.as_str()));
+        }
+    }
+
+    #[test]
+    fn test_tenant_tier_serde_roundtrip() {
+        let original = TenantTier::Pro;
+        let restored: TenantTier = serde_json::from_str(&serde_json::to_string(&original).unwrap())
+            .unwrap();
+        assert_eq!(restored, original);
+    }
+
+    // ── Tenant ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tenant_new_sets_matching_timestamps() {
+        let tenant = Tenant::new("id-1".into(), "Name".into(), TenantTier::Dev);
+        assert_eq!(tenant.id, "id-1");
+        assert_eq!(tenant.name, "Name");
+        assert_eq!(tenant.tier, TenantTier::Dev);
+        assert_eq!(tenant.created_at, tenant.updated_at);
+        assert!(tenant.created_at > 0);
+    }
+
+    #[test]
+    fn test_tenant_serde_roundtrip() {
+        let tenant = Tenant {
+            id: "t1".into(),
+            name: "Tenant".into(),
+            tier: TenantTier::Free,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_100,
+        };
+        let restored: Tenant = serde_json::from_str(&serde_json::to_string(&tenant).unwrap()).unwrap();
+        assert_eq!(restored.id, tenant.id);
+        assert_eq!(restored.name, tenant.name);
+        assert_eq!(restored.tier, tenant.tier);
+        assert_eq!(restored.created_at, tenant.created_at);
+        assert_eq!(restored.updated_at, tenant.updated_at);
+    }
+
+    #[test]
+    fn test_tenant_debug_and_clone() {
+        let tenant = Tenant::new("id".into(), "n".into(), TenantTier::Free);
+        let cloned = tenant.clone();
+        assert_eq!(cloned.id, tenant.id);
+        let dbg = format!("{:?}", tenant);
+        assert!(dbg.contains("Tenant"));
+        assert!(dbg.contains("id"));
+    }
+
+    // ── ApiKey ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_api_key_new_active_without_expiry() {
+        let key = ApiKey::new(
+            "kid".into(),
+            "tid".into(),
+            hash_api_key("raw"),
+            "ares_abcdef12".into(),
+            "default".into(),
+        );
+        assert!(key.is_active);
+        assert!(key.expires_at.is_none());
+        assert_eq!(key.tenant_id, "tid");
+        assert!(key.created_at > 0);
+    }
+
+    #[test]
+    fn test_api_key_serde_roundtrip_with_optional_expiry() {
+        let key = ApiKey {
+            id: "k".into(),
+            tenant_id: "t".into(),
+            key_hash: hash_api_key("secret"),
+            key_prefix: "ares_11111111".into(),
+            name: "ci".into(),
+            is_active: false,
+            created_at: 42,
+            expires_at: Some(99),
+        };
+        let restored: ApiKey = serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
+        assert_eq!(restored.id, key.id);
+        assert_eq!(restored.expires_at, Some(99));
+        assert!(!restored.is_active);
+    }
+
+    // ── TenantContext / TenantQuota ───────────────────────────────────
+
+    #[test]
+    fn test_tenant_context_new_builds_quota_from_tier() {
+        let ctx = TenantContext::new("tenant-x".into(), TenantTier::Dev);
+        assert_eq!(ctx.tenant_id, "tenant-x");
+        assert_eq!(ctx.tier, TenantTier::Dev);
+        assert_eq!(ctx.quota.tier, TenantTier::Dev);
+        assert_eq!(ctx.quota.requests_per_day, 2_000);
+    }
+
+    #[test]
+    fn test_tenant_context_can_make_request_respects_limits() {
+        let ctx = TenantContext::new("t".into(), TenantTier::Free);
+        assert!(ctx.can_make_request(0, 0));
+        assert!(ctx.can_make_request(999, 49));
+        assert!(!ctx.can_make_request(1_000, 0));
+        assert!(!ctx.can_make_request(0, 50));
+    }
+
+    #[test]
+    fn test_tenant_context_can_use_tokens_checked_add() {
+        let ctx = TenantContext::new("t".into(), TenantTier::Free);
+        assert!(ctx.can_use_tokens(0, 100_000));
+        assert!(!ctx.can_use_tokens(100_000, 1));
+        assert!(!ctx.can_use_tokens(u64::MAX, 1));
+    }
+
+    #[test]
+    fn test_tenant_quota_default_and_from_tier() {
+        let default_quota = TenantQuota::default();
+        assert_eq!(default_quota.tier, TenantTier::Free);
+        assert_eq!(TenantQuota::from_tier(&TenantTier::Pro).max_agents, u32::MAX);
+        assert_eq!(
+            TenantQuota::from_tier(&TenantTier::Enterprise).requests_per_month,
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn test_tier_fallback_unknown_db_value_defaults_to_free() {
+        let tier = TenantTier::from_str("legacy-tier").unwrap_or(TenantTier::Free);
+        assert_eq!(tier, TenantTier::Free);
+    }
+
+    // ── UsageSummary extras ───────────────────────────────────────────
+
+    #[test]
+    fn test_usage_summary_deserialize_rejects_missing_field() {
+        let err = serde_json::from_str::<UsageSummary>(r#"{"monthly_requests":1}"#).unwrap_err();
+        assert!(err.to_string().contains("monthly_tokens"));
+    }
+
+    #[test]
+    fn test_usage_summary_zero_values_roundtrip() {
+        let summary = UsageSummary {
+            monthly_requests: 0,
+            monthly_tokens: 0,
+            daily_requests: 0,
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        let restored: UsageSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.monthly_requests, 0);
+        assert_eq!(restored.monthly_tokens, 0);
+        assert_eq!(restored.daily_requests, 0);
+    }
+
 }

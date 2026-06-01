@@ -29,6 +29,7 @@
 //! println!("Tool calls made: {}", result.tool_calls.len());
 //! ```
 
+use crate::capabilities::{CapabilityRequirements, ModelCapabilities};
 use crate::client::{LLMClient, TokenUsage};
 use ares_tools::ToolRegistry;
 use ares_types::types::{Result, ToolCall};
@@ -37,6 +38,347 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
+
+use serde_json::Value;
+use std::collections::HashSet;
+use std::fmt;
+
+// Provider dispatch coordination (R42)
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadBalanceStrategy {
+    #[default]
+    RoundRobin,
+    LeastLoaded,
+    Affinity,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderEndpoint {
+    pub id: String,
+    pub model: String,
+    pub capabilities: ModelCapabilities,
+    #[serde(default)]
+    pub in_flight_requests: u32,
+    #[serde(default)]
+    pub affinity_group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoordinatorConfig {
+    pub providers: Vec<ProviderEndpoint>,
+    #[serde(default)]
+    pub fallback_chain: Vec<String>,
+    #[serde(default)]
+    pub load_balance: LoadBalanceStrategy,
+    #[serde(default)]
+    pub requirements: CapabilityRequirements,
+    #[serde(default)]
+    pub affinity_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteDecision {
+    pub provider_id: String,
+    pub model: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchPlan {
+    pub primary: RouteDecision,
+    pub fallbacks: Vec<RouteDecision>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DispatchState {
+    pub round_robin_cursor: usize,
+    pub session_affinity: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoordinatorDispatchError {
+    NoAvailableProvider(String),
+    AllFailed(Vec<String>),
+    InvalidConfig(String),
+}
+
+impl fmt::Display for CoordinatorDispatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoAvailableProvider(msg) => write!(f, "no available provider: {msg}"),
+            Self::AllFailed(errors) => write!(
+                f,
+                "all providers failed ({} attempts): {}",
+                errors.len(),
+                errors.join("; ")
+            ),
+            Self::InvalidConfig(msg) => write!(f, "invalid coordinator config: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for CoordinatorDispatchError {}
+
+impl fmt::Display for RouteDecision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "route {} ({}) — {}", self.provider_id, self.model, self.reason)
+    }
+}
+
+impl fmt::Display for DispatchPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "dispatch primary={}", self.primary)?;
+        if !self.fallbacks.is_empty() {
+            let ids: Vec<_> = self.fallbacks.iter().map(|r| r.provider_id.as_str()).collect();
+            write!(f, ", fallbacks=[{}]", ids.join(", "))?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for LoadBalanceStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RoundRobin => write!(f, "round_robin"),
+            Self::LeastLoaded => write!(f, "least_loaded"),
+            Self::Affinity => write!(f, "affinity"),
+        }
+    }
+}
+
+pub fn validate_coordinator_config(
+    config: &CoordinatorConfig,
+) -> std::result::Result<(), CoordinatorDispatchError> {
+    if config.providers.is_empty() {
+        return Err(CoordinatorDispatchError::InvalidConfig(
+            "providers list must not be empty".to_string(),
+        ));
+    }
+    let mut seen = HashSet::new();
+    for provider in &config.providers {
+        if !seen.insert(provider.id.clone()) {
+            return Err(CoordinatorDispatchError::InvalidConfig(format!(
+                "duplicate provider id '{}'",
+                provider.id
+            )));
+        }
+        if provider.id.trim().is_empty() {
+            return Err(CoordinatorDispatchError::InvalidConfig(
+                "provider id must not be empty".to_string(),
+            ));
+        }
+    }
+    for fallback_id in &config.fallback_chain {
+        if !config.providers.iter().any(|p| &p.id == fallback_id) {
+            return Err(CoordinatorDispatchError::InvalidConfig(format!(
+                "fallback_chain references unknown provider '{fallback_id}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn eligible_providers<'a>(
+    config: &'a CoordinatorConfig,
+    exclude: &HashSet<&str>,
+) -> Vec<&'a ProviderEndpoint> {
+    let mut eligible: Vec<_> = config
+        .providers
+        .iter()
+        .filter(|p| !exclude.contains(p.id.as_str()))
+        .filter(|p| p.capabilities.satisfies(&config.requirements))
+        .collect();
+    eligible.sort_by(|a, b| {
+        let score_a = a.capabilities.score(&config.requirements);
+        let score_b = b.capabilities.score(&config.requirements);
+        score_b.cmp(&score_a).then_with(|| a.id.cmp(&b.id))
+    });
+    eligible
+}
+
+fn pick_by_strategy<'a>(
+    config: &CoordinatorConfig,
+    state: &mut DispatchState,
+    eligible: &'a [&'a ProviderEndpoint],
+) -> &'a ProviderEndpoint {
+    match config.load_balance {
+        LoadBalanceStrategy::RoundRobin => {
+            let idx = state.round_robin_cursor % eligible.len();
+            state.round_robin_cursor = state.round_robin_cursor.saturating_add(1);
+            eligible[idx]
+        }
+        LoadBalanceStrategy::LeastLoaded => eligible
+            .iter()
+            .copied()
+            .min_by_key(|p| (p.in_flight_requests, p.id.as_str()))
+            .expect("eligible is non-empty"),
+        LoadBalanceStrategy::Affinity => {
+            let key = state
+                .session_affinity
+                .as_deref()
+                .or(config.affinity_key.as_deref());
+            if let Some(affinity) = key {
+                if let Some(match_provider) = eligible
+                    .iter()
+                    .copied()
+                    .find(|p| p.affinity_group.as_deref() == Some(affinity))
+                {
+                    return match_provider;
+                }
+            }
+            eligible[0]
+        }
+    }
+}
+
+fn endpoint_to_decision(endpoint: &ProviderEndpoint, reason: impl Into<String>) -> RouteDecision {
+    RouteDecision {
+        provider_id: endpoint.id.clone(),
+        model: endpoint.model.clone(),
+        reason: reason.into(),
+    }
+}
+
+pub fn route_request(
+    config: &CoordinatorConfig,
+    state: &mut DispatchState,
+    exclude: &[&str],
+) -> std::result::Result<RouteDecision, CoordinatorDispatchError> {
+    validate_coordinator_config(config)?;
+    let exclude_set: HashSet<&str> = exclude.iter().copied().collect();
+    let eligible = eligible_providers(config, &exclude_set);
+    if eligible.is_empty() {
+        return Err(CoordinatorDispatchError::NoAvailableProvider(
+            "no provider satisfies requirements".to_string(),
+        ));
+    }
+    let selected = pick_by_strategy(config, state, &eligible);
+    let reason = format!(
+        "selected via {} (score {})",
+        config.load_balance,
+        selected.capabilities.score(&config.requirements)
+    );
+    Ok(endpoint_to_decision(selected, reason))
+}
+
+pub fn select_fallback(
+    config: &CoordinatorConfig,
+    plan: &DispatchPlan,
+    failed_provider_id: &str,
+    attempt_errors: &[String],
+) -> std::result::Result<Option<RouteDecision>, CoordinatorDispatchError> {
+    validate_coordinator_config(config)?;
+    let mut tried: HashSet<&str> = HashSet::new();
+    tried.insert(plan.primary.provider_id.as_str());
+    for fb in &plan.fallbacks {
+        tried.insert(fb.provider_id.as_str());
+    }
+    tried.insert(failed_provider_id);
+    for fallback_id in &config.fallback_chain {
+        if tried.contains(fallback_id.as_str()) {
+            continue;
+        }
+        let Some(endpoint) = config.providers.iter().find(|p| &p.id == fallback_id) else {
+            continue;
+        };
+        if !endpoint.capabilities.satisfies(&config.requirements) {
+            continue;
+        }
+        return Ok(Some(endpoint_to_decision(
+            endpoint,
+            format!("fallback after failure of '{failed_provider_id}'"),
+        )));
+    }
+    let remaining: Vec<_> = config
+        .providers
+        .iter()
+        .filter(|p| !tried.contains(p.id.as_str()))
+        .filter(|p| p.capabilities.satisfies(&config.requirements))
+        .collect();
+    if let Some(endpoint) = remaining.first() {
+        return Ok(Some(endpoint_to_decision(
+            endpoint,
+            format!("secondary fallback after '{failed_provider_id}'"),
+        )));
+    }
+    if attempt_errors.is_empty() {
+        Ok(None)
+    } else {
+        Err(CoordinatorDispatchError::AllFailed(
+            attempt_errors.to_vec(),
+        ))
+    }
+}
+
+pub fn parse_coordinator_response(
+    payload: &str,
+) -> std::result::Result<DispatchPlan, CoordinatorDispatchError> {
+    let value: Value = serde_json::from_str(payload).map_err(|e| {
+        CoordinatorDispatchError::InvalidConfig(format!("invalid JSON: {e}"))
+    })?;
+    let primary_value = value.get("primary").ok_or_else(|| {
+        CoordinatorDispatchError::InvalidConfig("missing 'primary' field".to_string())
+    })?;
+    let primary: RouteDecision = serde_json::from_value(primary_value.clone()).map_err(|e| {
+        CoordinatorDispatchError::InvalidConfig(format!("invalid primary route: {e}"))
+    })?;
+    let fallbacks = match value.get("fallbacks") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                serde_json::from_value(item.clone()).map_err(|e| {
+                    CoordinatorDispatchError::InvalidConfig(format!("invalid fallback route: {e}"))
+                })
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?,
+        Some(_) => {
+            return Err(CoordinatorDispatchError::InvalidConfig(
+                "'fallbacks' must be an array".to_string(),
+            ));
+        }
+        None => Vec::new(),
+    };
+    if primary.provider_id.trim().is_empty() {
+        return Err(CoordinatorDispatchError::InvalidConfig(
+            "primary provider_id must not be empty".to_string(),
+        ));
+    }
+    Ok(DispatchPlan { primary, fallbacks })
+}
+
+pub fn build_dispatch_plan(
+    config: &CoordinatorConfig,
+    state: &mut DispatchState,
+) -> std::result::Result<DispatchPlan, CoordinatorDispatchError> {
+    validate_coordinator_config(config)?;
+    let primary = route_request(config, state, &[])?;
+    let mut fallbacks = Vec::new();
+    let mut failed_id = primary.provider_id.clone();
+    loop {
+        let plan_snapshot = DispatchPlan {
+            primary: primary.clone(),
+            fallbacks: fallbacks.clone(),
+        };
+        match select_fallback(config, &plan_snapshot, &failed_id, &[]) {
+            Ok(Some(next)) => {
+                if fallbacks.iter().any(|f| f.provider_id == next.provider_id) {
+                    break;
+                }
+                failed_id = next.provider_id.clone();
+                fallbacks.push(next);
+            }
+            Ok(None) => break,
+            Err(e) => return Err(e),
+        }
+        if !config.fallback_chain.is_empty() && fallbacks.len() >= config.fallback_chain.len() {
+            break;
+        }
+    }
+    Ok(DispatchPlan { primary, fallbacks })
+}
+
 
 /// Configuration for tool calling coordination behavior.
 ///
@@ -494,6 +836,7 @@ impl ToolCoordinator {
 mod tests {
     use super::*;
     use crate::client::{LLMClient, LLMResponse, TokenUsage};
+    use crate::capabilities::ModelCapabilities;
     use ares_types::types::{Result, ToolCall, ToolDefinition};
 
     fn serde_roundtrip<T>(value: &T) -> T
@@ -925,6 +1268,535 @@ mod tests {
         assert!(matches!(result.finish_reason, FinishReason::UnknownTool(_)));
     }
 
+    fn dispatch_endpoint(id: &str, model: &str, caps: ModelCapabilities) -> ProviderEndpoint {
+        ProviderEndpoint {
+            id: id.to_string(),
+            model: model.to_string(),
+            capabilities: caps,
+            in_flight_requests: 0,
+            affinity_group: None,
+        }
+    }
+
+    fn dispatch_test_config(providers: Vec<ProviderEndpoint>) -> CoordinatorConfig {
+        CoordinatorConfig {
+            providers,
+            fallback_chain: vec![],
+            load_balance: LoadBalanceStrategy::RoundRobin,
+            requirements: CapabilityRequirements::default(),
+            affinity_key: None,
+        }
+    }
+
+    #[test]
+    fn dispatch_coordinator_config_serde_roundtrip() {
+        let config = dispatch_test_config(vec![
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+        ]);
+        let json = serde_json::to_string(&config).unwrap();
+        let decoded: CoordinatorConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.providers.len(), config.providers.len());
+        assert_eq!(decoded.fallback_chain, config.fallback_chain);
+        assert_eq!(decoded.load_balance, config.load_balance);
+    }
+
+    #[test]
+    fn dispatch_plan_serde_roundtrip() {
+        let plan = DispatchPlan {
+            primary: RouteDecision {
+                provider_id: "openai".into(),
+                model: "gpt-4o".into(),
+                reason: "primary".into(),
+            },
+            fallbacks: vec![RouteDecision {
+                provider_id: "ollama".into(),
+                model: "llama3".into(),
+                reason: "fallback".into(),
+            }],
+        };
+        serde_roundtrip(&plan);
+    }
+
+    #[test]
+    fn dispatch_route_decision_serde_roundtrip() {
+        let decision = RouteDecision {
+            provider_id: "openai".into(),
+            model: "gpt-4o".into(),
+            reason: "best score".into(),
+        };
+        serde_roundtrip(&decision);
+    }
+
+    #[test]
+    fn dispatch_load_balance_strategy_serde_roundtrip() {
+        serde_roundtrip(&LoadBalanceStrategy::LeastLoaded);
+        serde_roundtrip(&LoadBalanceStrategy::Affinity);
+    }
+
+    #[test]
+    fn dispatch_route_request_picks_highest_scoring_provider() {
+        let mut config = dispatch_test_config(vec![
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+            dispatch_endpoint("ollama", "llama3", ModelCapabilities::for_model("llama3")),
+        ]);
+        config.requirements = CapabilityRequirements::for_agent();
+        let mut state = DispatchState::default();
+        let route = route_request(&config, &mut state, &[]).unwrap();
+        assert_eq!(route.provider_id, "openai");
+    }
+
+    #[test]
+    fn dispatch_route_request_filters_by_capability_requirements() {
+        let mut config = dispatch_test_config(vec![
+            dispatch_endpoint(
+                "basic",
+                "basic",
+                ModelCapabilities {
+                    supports_tools: false,
+                    production_ready: true,
+                    ..Default::default()
+                },
+            ),
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+        ]);
+        config.requirements = CapabilityRequirements::for_agent();
+        let mut state = DispatchState::default();
+        let route = route_request(&config, &mut state, &[]).unwrap();
+        assert_eq!(route.provider_id, "openai");
+    }
+
+    #[test]
+    fn dispatch_route_request_no_available_provider() {
+        let mut config = dispatch_test_config(vec![dispatch_endpoint(
+            "basic",
+            "basic",
+            ModelCapabilities {
+                supports_tools: false,
+                ..Default::default()
+            },
+        )]);
+        config.requirements = CapabilityRequirements::for_agent();
+        let mut state = DispatchState::default();
+        let err = route_request(&config, &mut state, &[]).unwrap_err();
+        assert!(matches!(
+            err,
+            CoordinatorDispatchError::NoAvailableProvider(_)
+        ));
+    }
+
+    #[test]
+    fn dispatch_route_request_excludes_providers() {
+        let config = dispatch_test_config(vec![
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+            dispatch_endpoint("ollama", "llama3", ModelCapabilities::for_model("llama3")),
+        ]);
+        let mut state = DispatchState::default();
+        let route = route_request(&config, &mut state, &["openai"]).unwrap();
+        assert_eq!(route.provider_id, "ollama");
+    }
+
+    #[test]
+    fn dispatch_round_robin_rotates_providers() {
+        let mut config = dispatch_test_config(vec![
+            dispatch_endpoint("a", "m1", ModelCapabilities::default()),
+            dispatch_endpoint("b", "m2", ModelCapabilities::default()),
+        ]);
+        config.load_balance = LoadBalanceStrategy::RoundRobin;
+        let mut state = DispatchState::default();
+        let first = route_request(&config, &mut state, &[]).unwrap().provider_id;
+        let second = route_request(&config, &mut state, &[]).unwrap().provider_id;
+        let third = route_request(&config, &mut state, &[]).unwrap().provider_id;
+        assert_ne!(first, second);
+        assert_eq!(first, third);
+    }
+
+    #[test]
+    fn dispatch_least_loaded_prefers_lower_in_flight() {
+        let mut config = dispatch_test_config(vec![
+            {
+                let mut p = dispatch_endpoint("busy", "m1", ModelCapabilities::default());
+                p.in_flight_requests = 50;
+                p
+            },
+            {
+                let mut p = dispatch_endpoint("idle", "m2", ModelCapabilities::default());
+                p.in_flight_requests = 1;
+                p
+            },
+        ]);
+        config.load_balance = LoadBalanceStrategy::LeastLoaded;
+        let mut state = DispatchState::default();
+        let route = route_request(&config, &mut state, &[]).unwrap();
+        assert_eq!(route.provider_id, "idle");
+    }
+
+    #[test]
+    fn dispatch_affinity_prefers_matching_group() {
+        let mut config = dispatch_test_config(vec![
+            {
+                let mut p = dispatch_endpoint("a", "m1", ModelCapabilities::default());
+                p.affinity_group = Some("tenant-1".into());
+                p
+            },
+            {
+                let mut p = dispatch_endpoint("b", "m2", ModelCapabilities::default());
+                p.affinity_group = Some("tenant-2".into());
+                p
+            },
+        ]);
+        config.load_balance = LoadBalanceStrategy::Affinity;
+        config.affinity_key = Some("tenant-2".into());
+        let mut state = DispatchState::default();
+        let route = route_request(&config, &mut state, &[]).unwrap();
+        assert_eq!(route.provider_id, "b");
+    }
+
+    #[test]
+    fn dispatch_affinity_session_overrides_config_key() {
+        let mut config = dispatch_test_config(vec![
+            {
+                let mut p = dispatch_endpoint("a", "m1", ModelCapabilities::default());
+                p.affinity_group = Some("tenant-1".into());
+                p
+            },
+            {
+                let mut p = dispatch_endpoint("b", "m2", ModelCapabilities::default());
+                p.affinity_group = Some("tenant-2".into());
+                p
+            },
+        ]);
+        config.load_balance = LoadBalanceStrategy::Affinity;
+        config.affinity_key = Some("tenant-2".into());
+        let mut state = DispatchState {
+            session_affinity: Some("tenant-1".into()),
+            ..Default::default()
+        };
+        let route = route_request(&config, &mut state, &[]).unwrap();
+        assert_eq!(route.provider_id, "a");
+    }
+
+    #[test]
+    fn dispatch_select_fallback_follows_chain_order() {
+        let mut config = dispatch_test_config(vec![
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+            dispatch_endpoint("ollama", "llama3", ModelCapabilities::for_model("llama3")),
+        ]);
+        config.fallback_chain = vec!["ollama".into(), "openai".into()];
+        let plan = DispatchPlan {
+            primary: RouteDecision {
+                provider_id: "openai".into(),
+                model: "gpt-4o".into(),
+                reason: "primary".into(),
+            },
+            fallbacks: vec![],
+        };
+        let next = select_fallback(&config, &plan, "openai", &[]).unwrap().unwrap();
+        assert_eq!(next.provider_id, "ollama");
+    }
+
+    #[test]
+    fn dispatch_select_fallback_skips_already_tried() {
+        let config = dispatch_test_config(vec![
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+            dispatch_endpoint("ollama", "llama3", ModelCapabilities::for_model("llama3")),
+        ]);
+        let plan = DispatchPlan {
+            primary: RouteDecision {
+                provider_id: "openai".into(),
+                model: "gpt-4o".into(),
+                reason: "primary".into(),
+            },
+            fallbacks: vec![RouteDecision {
+                provider_id: "ollama".into(),
+                model: "llama3".into(),
+                reason: "first fallback".into(),
+            }],
+        };
+        assert!(select_fallback(&config, &plan, "ollama", &[]).unwrap().is_none());
+    }
+
+    #[test]
+    fn dispatch_select_fallback_all_failed_surfaces_errors() {
+        let config = dispatch_test_config(vec![dispatch_endpoint(
+            "only",
+            "m",
+            ModelCapabilities::default(),
+        )]);
+        let plan = DispatchPlan {
+            primary: RouteDecision {
+                provider_id: "only".into(),
+                model: "m".into(),
+                reason: "primary".into(),
+            },
+            fallbacks: vec![],
+        };
+        let err = select_fallback(
+            &config,
+            &plan,
+            "only",
+            &["timeout".into(), "rate limited".into()],
+        )
+        .unwrap_err();
+        assert!(matches!(err, CoordinatorDispatchError::AllFailed(_)));
+        if let CoordinatorDispatchError::AllFailed(errors) = err {
+            assert_eq!(errors.len(), 2);
+        }
+    }
+
+    #[test]
+    fn dispatch_build_dispatch_plan_includes_fallbacks() {
+        let mut config = dispatch_test_config(vec![
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+            dispatch_endpoint("ollama", "llama3", ModelCapabilities::for_model("llama3")),
+        ]);
+        config.fallback_chain = vec!["ollama".into()];
+        let mut state = DispatchState::default();
+        let plan = build_dispatch_plan(&config, &mut state).unwrap();
+        assert!(!plan.fallbacks.is_empty());
+        assert_eq!(plan.fallbacks[0].provider_id, "ollama");
+    }
+
+    #[test]
+    fn dispatch_parse_coordinator_response_valid() {
+        let json = r#"{
+            "primary": {"provider_id":"openai","model":"gpt-4o","reason":"best"},
+            "fallbacks": [{"provider_id":"ollama","model":"llama3","reason":"backup"}]
+        }"#;
+        let plan = parse_coordinator_response(json).unwrap();
+        assert_eq!(plan.primary.provider_id, "openai");
+        assert_eq!(plan.fallbacks.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_parse_coordinator_response_missing_primary() {
+        let err = parse_coordinator_response(r#"{"fallbacks":[]}"#).unwrap_err();
+        assert!(matches!(err, CoordinatorDispatchError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn dispatch_parse_coordinator_response_invalid_json() {
+        let err = parse_coordinator_response("not-json").unwrap_err();
+        assert!(matches!(err, CoordinatorDispatchError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn dispatch_parse_coordinator_response_invalid_fallbacks_type() {
+        let err = parse_coordinator_response(
+            r#"{"primary":{"provider_id":"a","model":"m","reason":"r"},"fallbacks":"nope"}"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CoordinatorDispatchError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn dispatch_validate_config_empty_providers() {
+        let config = CoordinatorConfig {
+            providers: vec![],
+            fallback_chain: vec![],
+            load_balance: LoadBalanceStrategy::RoundRobin,
+            requirements: CapabilityRequirements::default(),
+            affinity_key: None,
+        };
+        let err = validate_coordinator_config(&config).unwrap_err();
+        assert!(matches!(err, CoordinatorDispatchError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn dispatch_validate_config_unknown_fallback() {
+        let config = CoordinatorConfig {
+            providers: vec![dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::default())],
+            fallback_chain: vec!["missing".into()],
+            load_balance: LoadBalanceStrategy::RoundRobin,
+            requirements: CapabilityRequirements::default(),
+            affinity_key: None,
+        };
+        let err = validate_coordinator_config(&config).unwrap_err();
+        assert!(matches!(err, CoordinatorDispatchError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn dispatch_validate_config_duplicate_ids() {
+        let config = CoordinatorConfig {
+            providers: vec![
+                dispatch_endpoint("dup", "m1", ModelCapabilities::default()),
+                dispatch_endpoint("dup", "m2", ModelCapabilities::default()),
+            ],
+            fallback_chain: vec![],
+            load_balance: LoadBalanceStrategy::RoundRobin,
+            requirements: CapabilityRequirements::default(),
+            affinity_key: None,
+        };
+        let err = validate_coordinator_config(&config).unwrap_err();
+        assert!(matches!(err, CoordinatorDispatchError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn dispatch_coordinator_dispatch_error_display_no_available() {
+        let err = CoordinatorDispatchError::NoAvailableProvider("none left".into());
+        assert!(err.to_string().contains("no available provider"));
+        assert!(err.to_string().contains("none left"));
+    }
+
+    #[test]
+    fn dispatch_coordinator_dispatch_error_display_all_failed() {
+        let err = CoordinatorDispatchError::AllFailed(vec!["e1".into(), "e2".into()]);
+        let s = err.to_string();
+        assert!(s.contains("all providers failed"));
+        assert!(s.contains("e1"));
+    }
+
+    #[test]
+    fn dispatch_coordinator_dispatch_error_display_invalid_config() {
+        let err = CoordinatorDispatchError::InvalidConfig("bad chain".into());
+        assert!(err.to_string().contains("invalid coordinator config"));
+    }
+
+    #[test]
+    fn dispatch_route_decision_display() {
+        let decision = RouteDecision {
+            provider_id: "openai".into(),
+            model: "gpt-4o".into(),
+            reason: "best".into(),
+        };
+        let s = decision.to_string();
+        assert!(s.contains("openai"));
+        assert!(s.contains("gpt-4o"));
+    }
+
+    #[test]
+    fn dispatch_plan_display() {
+        let plan = DispatchPlan {
+            primary: RouteDecision {
+                provider_id: "openai".into(),
+                model: "gpt-4o".into(),
+                reason: "primary".into(),
+            },
+            fallbacks: vec![RouteDecision {
+                provider_id: "ollama".into(),
+                model: "llama3".into(),
+                reason: "fb".into(),
+            }],
+        };
+        let s = plan.to_string();
+        assert!(s.contains("openai"));
+        assert!(s.contains("ollama"));
+    }
+
+    #[test]
+    fn dispatch_load_balance_strategy_display() {
+        assert_eq!(LoadBalanceStrategy::RoundRobin.to_string(), "round_robin");
+        assert_eq!(LoadBalanceStrategy::LeastLoaded.to_string(), "least_loaded");
+        assert_eq!(LoadBalanceStrategy::Affinity.to_string(), "affinity");
+    }
+
+    #[test]
+    fn dispatch_coordinator_config_clone() {
+        let config = dispatch_test_config(vec![dispatch_endpoint(
+            "openai",
+            "gpt-4o",
+            ModelCapabilities::default(),
+        )]);
+        let cloned = config.clone();
+        assert_eq!(config.providers.len(), cloned.providers.len());
+        assert_eq!(config.fallback_chain, cloned.fallback_chain);
+    }
+
+    #[test]
+    fn dispatch_dispatch_state_clone_default() {
+        let state = DispatchState::default();
+        let cloned = state.clone();
+        assert_eq!(state, cloned);
+        assert_eq!(state.round_robin_cursor, 0);
+    }
+
+    #[test]
+    fn dispatch_provider_endpoint_clone_debug() {
+        let endpoint = dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::default());
+        let cloned = endpoint.clone();
+        assert_eq!(endpoint, cloned);
+        assert!(format!("{endpoint:?}").contains("openai"));
+    }
+
+    #[test]
+    fn dispatch_route_decision_clone_eq() {
+        let a = RouteDecision {
+            provider_id: "a".into(),
+            model: "m".into(),
+            reason: "r".into(),
+        };
+        assert_eq!(a, a.clone());
+    }
+
+    #[test]
+    fn dispatch_plan_clone_eq() {
+        let plan = DispatchPlan {
+            primary: RouteDecision {
+                provider_id: "a".into(),
+                model: "m".into(),
+                reason: "r".into(),
+            },
+            fallbacks: vec![],
+        };
+        assert_eq!(plan, plan.clone());
+    }
+
+    #[test]
+    fn dispatch_coordinator_dispatch_error_clone_eq() {
+        let err = CoordinatorDispatchError::InvalidConfig("x".into());
+        assert_eq!(err, err.clone());
+    }
+
+    #[test]
+    fn dispatch_build_dispatch_plan_invalid_config_propagates() {
+        let config = CoordinatorConfig {
+            providers: vec![],
+            fallback_chain: vec![],
+            load_balance: LoadBalanceStrategy::RoundRobin,
+            requirements: CapabilityRequirements::default(),
+            affinity_key: None,
+        };
+        let err = build_dispatch_plan(&config, &mut DispatchState::default()).unwrap_err();
+        assert!(matches!(err, CoordinatorDispatchError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn dispatch_route_request_invalid_config_before_routing() {
+        let config = CoordinatorConfig {
+            providers: vec![],
+            fallback_chain: vec![],
+            load_balance: LoadBalanceStrategy::RoundRobin,
+            requirements: CapabilityRequirements::default(),
+            affinity_key: None,
+        };
+        let err = route_request(&config, &mut DispatchState::default(), &[]).unwrap_err();
+        assert!(matches!(err, CoordinatorDispatchError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn dispatch_select_fallback_respects_capability_on_chain() {
+        let mut config = dispatch_test_config(vec![
+            dispatch_endpoint(
+                "no-tools",
+                "basic",
+                ModelCapabilities {
+                    supports_tools: false,
+                    ..Default::default()
+                },
+            ),
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+        ]);
+        config.fallback_chain = vec!["no-tools".into(), "openai".into()];
+        config.requirements = CapabilityRequirements::for_agent();
+        let plan = DispatchPlan {
+            primary: RouteDecision {
+                provider_id: "openai".into(),
+                model: "gpt-4o".into(),
+                reason: "primary".into(),
+            },
+            fallbacks: vec![],
+        };
+        assert!(select_fallback(&config, &plan, "openai", &[]).unwrap().is_none());
+    }
     #[test]
     fn test_message_to_role_content() {
         let msg = ConversationMessage::user("Hello");

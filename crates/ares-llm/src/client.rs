@@ -1399,6 +1399,19 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn test_token_usage_not_equal() {
+        assert_ne!(TokenUsage::new(1, 2), TokenUsage::new(3, 4));
+    }
+
+    #[test]
+    fn test_model_params_debug_format() {
+        let params = ModelParams::default();
+        let debug_str = format!("{:?}", params);
+        assert!(debug_str.contains("ModelParams"));
+    }
+
     fn test_stub_provider(model: &str) -> Provider {
         Provider::TestStub {
             model: model.to_string(),

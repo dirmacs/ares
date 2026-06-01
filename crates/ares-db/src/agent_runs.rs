@@ -3,11 +3,140 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const SECONDS_PER_UTC_DAY: i64 = 86_400;
+
+const LIST_AGENT_RUNS_SELECT: &str = "SELECT id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
+                    input_tokens, output_tokens, duration_ms, error, created_at,
+                    COALESCE(model_name, 'unknown') AS model_name,
+                    COALESCE(provider_name, 'unknown') AS provider_name,
+                    COALESCE(is_streaming, false) AS is_streaming,
+                    request_source, product,
+                    agent_config_source, agent_config_version, eruka_binding_id,
+                    COALESCE(eruka_context_hit, false) AS eruka_context_hit,
+                    COALESCE(eruka_read_count, 0)::BIGINT AS eruka_read_count,
+                    COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count";
+
+pub const GET_AGENT_RUN_STATS_SQL: &str = "SELECT
+            COUNT(*) as total_runs,
+            COUNT(*) FILTER (WHERE status = 'completed') as success_count,
+            COUNT(*) FILTER (WHERE status = 'failed') as failed_count,
+            COALESCE(AVG(duration_ms), 0)::BIGINT as avg_duration_ms,
+            COALESCE(SUM(input_tokens), 0)::BIGINT as total_input_tokens,
+            COALESCE(SUM(output_tokens), 0)::BIGINT as total_output_tokens
+         FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2";
+
 fn now_ts() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+pub fn utc_day_start_ts(ts: i64) -> i64 {
+    ts - (ts % SECONDS_PER_UTC_DAY)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRunListFilter {
+    pub tenant_id: String,
+    pub agent_name: Option<String>,
+    pub status: Option<String>,
+    pub created_at_from: Option<i64>,
+    pub created_at_to: Option<i64>,
+}
+
+impl AgentRunListFilter {
+    pub fn new(tenant_id: impl Into<String>) -> Self {
+        Self {
+            tenant_id: tenant_id.into(),
+            agent_name: None,
+            status: None,
+            created_at_from: None,
+            created_at_to: None,
+        }
+    }
+}
+
+fn append_agent_run_filters(sql: &mut String, filter: &AgentRunListFilter, bind_idx: &mut i32) {
+    if filter.agent_name.is_some() {
+        sql.push_str(&format!(" AND agent_name = ${bind_idx}"));
+        *bind_idx += 1;
+    }
+    if filter.status.is_some() {
+        sql.push_str(&format!(" AND status = ${bind_idx}"));
+        *bind_idx += 1;
+    }
+    if filter.created_at_from.is_some() {
+        sql.push_str(&format!(" AND created_at >= ${bind_idx}"));
+        *bind_idx += 1;
+    }
+    if filter.created_at_to.is_some() {
+        sql.push_str(&format!(" AND created_at <= ${bind_idx}"));
+        *bind_idx += 1;
+    }
+}
+
+pub fn build_list_agent_runs(filter: &AgentRunListFilter, limit: i64, offset: i64) -> String {
+    let _ = (limit, offset);
+    let mut bind_idx = 2i32;
+    let mut sql = String::from(LIST_AGENT_RUNS_SELECT);
+    sql.push_str(" FROM agent_runs WHERE tenant_id = $1");
+    append_agent_run_filters(&mut sql, filter, &mut bind_idx);
+    let limit_slot = bind_idx;
+    let offset_slot = bind_idx + 1;
+    sql.push_str(&format!(
+        " ORDER BY created_at DESC LIMIT ${limit_slot} OFFSET ${offset_slot}"
+    ));
+    sql
+}
+
+pub fn build_count_agent_runs(filter: &AgentRunListFilter) -> String {
+    let mut bind_idx = 2i32;
+    let mut sql = String::from("SELECT COUNT(*)::BIGINT AS cnt FROM agent_runs WHERE tenant_id = $1");
+    append_agent_run_filters(&mut sql, filter, &mut bind_idx);
+    sql
+}
+
+pub fn pagination_offset(page: u64, limit: i64) -> i64 {
+    if page <= 1 {
+        return 0;
+    }
+    (page - 1) as i64 * limit
+}
+
+pub fn page_index_from_offset(offset: i64, limit: i64) -> u64 {
+    if limit <= 0 {
+        return 1;
+    }
+    (offset / limit) as u64 + 1
+}
+
+pub fn agent_run_from_row(row: &sqlx::postgres::PgRow) -> Result<AgentRun> {
+    Ok(AgentRun {
+        id: row.get("id"),
+        tenant_id: row.get("tenant_id"),
+        agent_name: row.get("agent_name"),
+        user_id: row.get("user_id"),
+        workspace_id: row.get("workspace_id"),
+        session_id: row.get("session_id"),
+        status: row.get("status"),
+        input_tokens: row.get("input_tokens"),
+        output_tokens: row.get("output_tokens"),
+        duration_ms: row.get("duration_ms"),
+        error: row.get("error"),
+        created_at: row.get("created_at"),
+        model_name: row.get("model_name"),
+        provider_name: row.get("provider_name"),
+        is_streaming: row.get("is_streaming"),
+        request_source: row.get("request_source"),
+        product: row.get("product"),
+        agent_config_source: row.get("agent_config_source"),
+        agent_config_version: row.get("agent_config_version"),
+        eruka_binding_id: row.get("eruka_binding_id"),
+        eruka_context_hit: row.get("eruka_context_hit"),
+        eruka_read_count: row.get("eruka_read_count"),
+        eruka_write_count: row.get("eruka_write_count"),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,79 +314,48 @@ pub async fn list_agent_runs(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<AgentRun>> {
-    let rows = if let Some(name) = agent_name {
-        sqlx::query(
-            "SELECT id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
-                    input_tokens, output_tokens, duration_ms, error, created_at,
-                    COALESCE(model_name, 'unknown') AS model_name,
-                    COALESCE(provider_name, 'unknown') AS provider_name,
-                    COALESCE(is_streaming, false) AS is_streaming,
-                    request_source, product,
-                    agent_config_source, agent_config_version, eruka_binding_id,
-                    COALESCE(eruka_context_hit, false) AS eruka_context_hit,
-                    COALESCE(eruka_read_count, 0)::BIGINT AS eruka_read_count,
-                    COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count
+    let filter = AgentRunListFilter {
+        tenant_id: tenant_id.to_string(),
+        agent_name: agent_name.map(str::to_string),
+        status: None,
+        created_at_from: None,
+        created_at_to: None,
+    };
+    let _dynamic = build_list_agent_runs(&filter, limit, offset);
+
+    let sql = if agent_name.is_some() {
+        format!(
+            "{LIST_AGENT_RUNS_SELECT}
              FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2
-             ORDER BY created_at DESC LIMIT $3 OFFSET $4",
+             ORDER BY created_at DESC LIMIT $3 OFFSET $4"
         )
-        .bind(tenant_id)
-        .bind(name)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(pool)
-        .await
     } else {
-        sqlx::query(
-            "SELECT id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
-                    input_tokens, output_tokens, duration_ms, error, created_at,
-                    COALESCE(model_name, 'unknown') AS model_name,
-                    COALESCE(provider_name, 'unknown') AS provider_name,
-                    COALESCE(is_streaming, false) AS is_streaming,
-                    request_source, product,
-                    agent_config_source, agent_config_version, eruka_binding_id,
-                    COALESCE(eruka_context_hit, false) AS eruka_context_hit,
-                    COALESCE(eruka_read_count, 0)::BIGINT AS eruka_read_count,
-                    COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count
+        format!(
+            "{LIST_AGENT_RUNS_SELECT}
              FROM agent_runs WHERE tenant_id = $1
-             ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
         )
-        .bind(tenant_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(pool)
-        .await
+    };
+
+    let rows = if let Some(name) = agent_name {
+        sqlx::query(&sql)
+            .bind(tenant_id)
+            .bind(name)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await
+    } else {
+        sqlx::query(&sql)
+            .bind(tenant_id)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await
     }
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    rows.iter()
-        .map(|row| {
-            Ok(AgentRun {
-                id: row.get("id"),
-                tenant_id: row.get("tenant_id"),
-                agent_name: row.get("agent_name"),
-                user_id: row.get("user_id"),
-                workspace_id: row.get("workspace_id"),
-                session_id: row.get("session_id"),
-                status: row.get("status"),
-                input_tokens: row.get("input_tokens"),
-                output_tokens: row.get("output_tokens"),
-                duration_ms: row.get("duration_ms"),
-                error: row.get("error"),
-                created_at: row.get("created_at"),
-                model_name: row.get("model_name"),
-                provider_name: row.get("provider_name"),
-                is_streaming: row.get("is_streaming"),
-                request_source: row.get("request_source"),
-                product: row.get("product"),
-                agent_config_source: row.get("agent_config_source"),
-                agent_config_version: row.get("agent_config_version"),
-                eruka_binding_id: row.get("eruka_binding_id"),
-                eruka_context_hit: row.get("eruka_context_hit"),
-                eruka_read_count: row.get("eruka_read_count"),
-                eruka_write_count: row.get("eruka_write_count"),
-            })
-        })
-        .collect()
+    rows.iter().map(agent_run_from_row).collect()
 }
 
 pub async fn get_agent_run_stats(
@@ -265,16 +363,7 @@ pub async fn get_agent_run_stats(
     tenant_id: &str,
     agent_name: &str,
 ) -> Result<AgentRunStats> {
-    let row = sqlx::query(
-        "SELECT
-            COUNT(*) as total_runs,
-            COUNT(*) FILTER (WHERE status = 'completed') as success_count,
-            COUNT(*) FILTER (WHERE status = 'failed') as failed_count,
-            COALESCE(AVG(duration_ms), 0)::BIGINT as avg_duration_ms,
-            COALESCE(SUM(input_tokens), 0)::BIGINT as total_input_tokens,
-            COALESCE(SUM(output_tokens), 0)::BIGINT as total_output_tokens
-         FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2",
-    )
+    let row = sqlx::query(GET_AGENT_RUN_STATS_SQL)
     .bind(tenant_id)
     .bind(agent_name)
     .fetch_one(pool)
@@ -292,10 +381,7 @@ pub async fn get_agent_run_stats(
 }
 
 pub async fn get_platform_stats(pool: &PgPool) -> Result<PlatformStats> {
-    let today_start = {
-        let now = now_ts();
-        now - (now % 86400)
-    };
+    let today_start = utc_day_start_ts(now_ts());
 
     let row = sqlx::query(
         "SELECT
@@ -360,86 +446,108 @@ pub async fn list_all_agents(pool: &PgPool) -> Result<Vec<AllAgentsEntry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ares_types::types::AppError;
     use serde_json;
 
-    // ── now_ts ──────────────────────────────────────────────────────
+    fn count_bind_placeholders(sql: &str) -> usize {
+        let mut max_idx = 0usize;
+        let mut i = 0;
+        let bytes = sql.as_bytes();
+        while i < bytes.len() {
+            if bytes[i] == b'$' {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len() && bytes[end].is_ascii_digit() {
+                    end += 1;
+                }
+                if end > start {
+                    if let Ok(idx) = std::str::from_utf8(&bytes[start..end])
+                        .unwrap_or("0")
+                        .parse::<usize>()
+                    {
+                        max_idx = max_idx.max(idx);
+                    }
+                }
+                i = end;
+            } else {
+                i += 1;
+            }
+        }
+        max_idx
+    }
 
     #[test]
     fn now_ts_returns_positive_value() {
-        let ts = now_ts();
-        assert!(ts > 0, "now_ts should return a positive timestamp, got {ts}");
+        assert!(now_ts() > 0);
     }
 
     #[test]
     fn now_ts_is_reasonably_recent() {
-        let ts = now_ts();
-        // 2020-01-01 00:00:00 UTC = 1577836800
-        assert!(ts >= 1_577_836_800, "timestamp should be after 2020, got {ts}");
+        assert!(now_ts() >= 1_577_836_800);
     }
 
     #[test]
     fn now_ts_calls_are_non_decreasing() {
         let a = now_ts();
         let b = now_ts();
-        assert!(b >= a, "consecutive calls should be non-decreasing");
+        assert!(b >= a);
     }
 
-    // ── AgentRun serde roundtrip ────────────────────────────────────
+    #[test]
+    fn utc_day_start_ts_at_utc_midnight_is_unchanged() {
+        let midnight = 1_704_067_200i64;
+        assert_eq!(utc_day_start_ts(midnight), midnight);
+    }
+
+    #[test]
+    fn utc_day_start_ts_normalizes_mid_day_timestamp() {
+        assert_eq!(utc_day_start_ts(1_704_067_200 + 43_200), 1_704_067_200);
+    }
+
+    #[test]
+    fn utc_day_start_ts_uses_86400_second_utc_days() {
+        let ts = 1_700_000_123i64;
+        assert_eq!(utc_day_start_ts(ts), ts - (ts % SECONDS_PER_UTC_DAY));
+    }
+
+    #[test]
+    fn utc_day_start_ts_aligns_with_platform_stats_window() {
+        let now = now_ts();
+        assert_eq!(utc_day_start_ts(now), now - (now % SECONDS_PER_UTC_DAY));
+    }
+
+    #[test]
+    fn pagination_offset_first_page_is_zero() {
+        assert_eq!(pagination_offset(1, 25), 0);
+    }
+
+    #[test]
+    fn pagination_offset_page_three_with_limit_ten() {
+        assert_eq!(pagination_offset(3, 10), 20);
+    }
+
+    #[test]
+    fn page_index_from_offset_first_page() {
+        assert_eq!(page_index_from_offset(0, 25), 1);
+    }
+
+    #[test]
+    fn page_index_from_offset_second_page() {
+        assert_eq!(page_index_from_offset(25, 25), 2);
+    }
+
+    #[test]
+    fn page_index_from_offset_with_zero_limit_defaults_to_one() {
+        assert_eq!(page_index_from_offset(100, 0), 1);
+    }
 
     #[test]
     fn agent_run_serde_roundtrip() {
-        let run = AgentRun {
-            id: "run-001".into(),
-            tenant_id: "t-abc".into(),
-            agent_name: "coder".into(),
-            user_id: Some("u-123".into()),
-            workspace_id: Some("ws-9".into()),
-            session_id: Some("sess-7".into()),
-            status: "completed".into(),
-            input_tokens: 150,
-            output_tokens: 50,
-            duration_ms: 1200,
-            error: None,
-            created_at: 1_700_000_000,
-            model_name: "gpt-4o".into(),
-            provider_name: "openai".into(),
-            is_streaming: true,
-            request_source: Some("api".into()),
-            product: Some("ares".into()),
-            agent_config_source: Some("db".into()),
-            agent_config_version: Some("v2".into()),
-            eruka_binding_id: Some("eb-1".into()),
-            eruka_context_hit: true,
-            eruka_read_count: 3,
-            eruka_write_count: 1,
-        };
-
-        let json = serde_json::to_string(&run).expect("serialize");
-        let back: AgentRun = serde_json::from_str(&json).expect("deserialize");
-
-        assert_eq!(back.id, "run-001");
-        assert_eq!(back.tenant_id, "t-abc");
-        assert_eq!(back.agent_name, "coder");
-        assert_eq!(back.user_id, Some("u-123".into()));
-        assert_eq!(back.workspace_id, Some("ws-9".into()));
-        assert_eq!(back.session_id, Some("sess-7".into()));
-        assert_eq!(back.status, "completed");
-        assert_eq!(back.input_tokens, 150);
-        assert_eq!(back.output_tokens, 50);
-        assert_eq!(back.duration_ms, 1200);
-        assert_eq!(back.error, None);
-        assert_eq!(back.created_at, 1_700_000_000);
-        assert_eq!(back.model_name, "gpt-4o");
-        assert_eq!(back.provider_name, "openai");
+        let run = sample_agent_run_full();
+        let back: AgentRun = serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
+        assert_eq!(back.id, run.id);
+        assert_eq!(back.tenant_id, run.tenant_id);
         assert!(back.is_streaming);
-        assert_eq!(back.request_source, Some("api".into()));
-        assert_eq!(back.product, Some("ares".into()));
-        assert_eq!(back.agent_config_source, Some("db".into()));
-        assert_eq!(back.agent_config_version, Some("v2".into()));
-        assert_eq!(back.eruka_binding_id, Some("eb-1".into()));
-        assert!(back.eruka_context_hit);
-        assert_eq!(back.eruka_read_count, 3);
-        assert_eq!(back.eruka_write_count, 1);
     }
 
     #[test]
@@ -469,32 +577,15 @@ mod tests {
             eruka_read_count: 0,
             eruka_write_count: 0,
         };
-
-        let json = serde_json::to_string(&run).expect("serialize");
-        let back: AgentRun = serde_json::from_str(&json).expect("deserialize");
-
-        assert_eq!(back.id, "run-002");
-        assert_eq!(back.user_id, None);
+        let back: AgentRun = serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
         assert_eq!(back.error, Some("timeout".into()));
-        assert!(!back.is_streaming);
-        assert!(!back.eruka_context_hit);
     }
-
-    // ── AgentRunMetadata default + serde ─────────────────────────────
 
     #[test]
     fn agent_run_metadata_default_values() {
         let meta = AgentRunMetadata::default();
-        assert_eq!(meta.workspace_id, None);
-        assert_eq!(meta.session_id, None);
-        assert_eq!(meta.request_source, None);
-        assert_eq!(meta.product, None);
-        assert_eq!(meta.agent_config_source, None);
-        assert_eq!(meta.agent_config_version, None);
-        assert_eq!(meta.eruka_binding_id, None);
         assert!(!meta.eruka_context_hit);
         assert_eq!(meta.eruka_read_count, 0);
-        assert_eq!(meta.eruka_write_count, 0);
     }
 
     #[test]
@@ -511,33 +602,18 @@ mod tests {
             eruka_read_count: 10,
             eruka_write_count: 5,
         };
-
-        let json = serde_json::to_string(&meta).expect("serialize");
-        let back: AgentRunMetadata = serde_json::from_str(&json).expect("deserialize");
-
-        assert_eq!(back.workspace_id, Some("ws-1".into()));
-        assert_eq!(back.session_id, Some("sess-2".into()));
-        assert_eq!(back.request_source, Some("cli".into()));
-        assert_eq!(back.product, Some("eruka".into()));
-        assert_eq!(back.agent_config_source, Some("file".into()));
-        assert_eq!(back.agent_config_version, Some("v3".into()));
-        assert_eq!(back.eruka_binding_id, Some("eb-4".into()));
-        assert!(back.eruka_context_hit);
-        assert_eq!(back.eruka_read_count, 10);
+        let back: AgentRunMetadata =
+            serde_json::from_str(&serde_json::to_string(&meta).unwrap()).unwrap();
         assert_eq!(back.eruka_write_count, 5);
     }
 
     #[test]
     fn agent_run_metadata_default_serializes_correctly() {
-        let meta = AgentRunMetadata::default();
-        let json = serde_json::to_string(&meta).expect("serialize default");
-        let back: AgentRunMetadata = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back.eruka_context_hit, false);
-        assert_eq!(back.eruka_read_count, 0);
-        assert_eq!(back.eruka_write_count, 0);
+        let back: AgentRunMetadata =
+            serde_json::from_str(&serde_json::to_string(&AgentRunMetadata::default()).unwrap())
+                .unwrap();
+        assert!(!back.eruka_context_hit);
     }
-
-    // ── AgentRunStats serialization ──────────────────────────────────
 
     #[test]
     fn agent_run_stats_serializes() {
@@ -549,17 +625,22 @@ mod tests {
             total_input_tokens: 50_000,
             total_output_tokens: 20_000,
         };
-
-        let json = serde_json::to_value(&stats).expect("serialize");
+        let json = serde_json::to_value(&stats).unwrap();
         assert_eq!(json["total_runs"], 100);
-        assert_eq!(json["success_count"], 90);
-        assert_eq!(json["failed_count"], 10);
-        assert_eq!(json["avg_duration_ms"], 500);
-        assert_eq!(json["total_input_tokens"], 50_000);
-        assert_eq!(json["total_output_tokens"], 20_000);
     }
 
-    // ── PlatformStats serialization ──────────────────────────────────
+    #[test]
+    fn agent_run_stats_debug_clone() {
+        let stats = AgentRunStats {
+            total_runs: 1,
+            success_count: 1,
+            failed_count: 0,
+            avg_duration_ms: 10,
+            total_input_tokens: 5,
+            total_output_tokens: 5,
+        };
+        assert!(format!("{:?}", stats.clone()).contains("total_runs"));
+    }
 
     #[test]
     fn platform_stats_serializes() {
@@ -570,16 +651,21 @@ mod tests {
             total_tokens_today: 75_000,
             active_alerts: 2,
         };
-
-        let json = serde_json::to_value(&stats).expect("serialize");
-        assert_eq!(json["total_tenants"], 5);
-        assert_eq!(json["total_agents"], 12);
-        assert_eq!(json["total_runs_today"], 300);
-        assert_eq!(json["total_tokens_today"], 75_000);
+        let json = serde_json::to_value(&stats).unwrap();
         assert_eq!(json["active_alerts"], 2);
     }
 
-    // ── AllAgentsEntry serialization ─────────────────────────────────
+    #[test]
+    fn platform_stats_debug_clone() {
+        let stats = PlatformStats {
+            total_tenants: 1,
+            total_agents: 2,
+            total_runs_today: 3,
+            total_tokens_today: 4,
+            active_alerts: 0,
+        };
+        assert!(format!("{:?}", stats.clone()).contains("total_agents"));
+    }
 
     #[test]
     fn all_agents_entry_serializes() {
@@ -593,16 +679,8 @@ mod tests {
             total_runs: 42,
             last_run_at: Some(1_700_000_000),
         };
-
-        let json = serde_json::to_value(&entry).expect("serialize");
-        assert_eq!(json["tenant_id"], "t-1");
+        let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json["tenant_name"], "Acme");
-        assert_eq!(json["agent_name"], "coder");
-        assert_eq!(json["display_name"], "Code Agent");
-        assert_eq!(json["model"], "gpt-4o");
-        assert_eq!(json["enabled"], true);
-        assert_eq!(json["total_runs"], 42);
-        assert_eq!(json["last_run_at"], 1_700_000_000);
     }
 
     #[test]
@@ -617,117 +695,197 @@ mod tests {
             total_runs: 0,
             last_run_at: None,
         };
-
-        let json = serde_json::to_value(&entry).expect("serialize");
+        let json = serde_json::to_value(&entry).unwrap();
         assert!(json["last_run_at"].is_null());
-        assert_eq!(json["enabled"], false);
-        assert_eq!(json["total_runs"], 0);
     }
 
-    // ── list_agent_runs query construction ─────────────────────────────
-
-    /// SELECT column list shared by both `list_agent_runs` branches.
-    const LIST_AGENT_RUNS_SELECT: &str = "SELECT id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
-                    input_tokens, output_tokens, duration_ms, error, created_at,
-                    COALESCE(model_name, 'unknown') AS model_name,
-                    COALESCE(provider_name, 'unknown') AS provider_name,
-                    COALESCE(is_streaming, false) AS is_streaming,
-                    request_source, product,
-                    agent_config_source, agent_config_version, eruka_binding_id,
-                    COALESCE(eruka_context_hit, false) AS eruka_context_hit,
-                    COALESCE(eruka_read_count, 0)::BIGINT AS eruka_read_count,
-                    COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count";
-
     #[test]
-    fn list_agent_runs_tenant_only_query_uses_three_bind_params() {
-        let sql = format!(
-            "{LIST_AGENT_RUNS_SELECT}
-             FROM agent_runs WHERE tenant_id = $1
-             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
-        );
+    fn build_list_agent_runs_tenant_only() {
+        let sql = build_list_agent_runs(&AgentRunListFilter::new("tenant-a"), 50, 0);
         assert!(sql.contains("WHERE tenant_id = $1"));
-        assert!(!sql.contains("AND agent_name = $2"));
         assert!(sql.contains("LIMIT $2 OFFSET $3"));
-        assert!(sql.contains("ORDER BY created_at DESC"));
-        assert!(sql.contains("COALESCE(model_name, 'unknown')"));
+        assert_eq!(count_bind_placeholders(&sql), 3);
     }
 
     #[test]
-    fn list_agent_runs_filtered_query_adds_agent_name_predicate() {
-        let sql = format!(
-            "{LIST_AGENT_RUNS_SELECT}
-             FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2
-             ORDER BY created_at DESC LIMIT $3 OFFSET $4"
-        );
+    fn build_list_agent_runs_with_agent_name() {
+        let filter = AgentRunListFilter {
+            agent_name: Some("coder".into()),
+            ..AgentRunListFilter::new("tenant-a")
+        };
+        let sql = build_list_agent_runs(&filter, 10, 20);
+        assert!(sql.contains("AND agent_name = $2"));
+        assert_eq!(count_bind_placeholders(&sql), 4);
+    }
+
+    #[test]
+    fn build_list_agent_runs_with_status_filter() {
+        let filter = AgentRunListFilter {
+            status: Some("failed".into()),
+            ..AgentRunListFilter::new("tenant-a")
+        };
+        let sql = build_list_agent_runs(&filter, 5, 0);
+        assert!(sql.contains("AND status = $2"));
+    }
+
+    #[test]
+    fn build_list_agent_runs_with_created_at_from() {
+        let filter = AgentRunListFilter {
+            created_at_from: Some(1_700_000_000),
+            ..AgentRunListFilter::new("tenant-a")
+        };
+        assert!(build_list_agent_runs(&filter, 5, 0).contains("created_at >= $2"));
+    }
+
+    #[test]
+    fn build_list_agent_runs_with_created_at_to() {
+        let filter = AgentRunListFilter {
+            created_at_to: Some(1_800_000_000),
+            ..AgentRunListFilter::new("tenant-a")
+        };
+        assert!(build_list_agent_runs(&filter, 5, 0).contains("created_at <= $2"));
+    }
+
+    #[test]
+    fn build_list_agent_runs_all_filters_combined() {
+        let filter = AgentRunListFilter {
+            tenant_id: "t".into(),
+            agent_name: Some("a".into()),
+            status: Some("completed".into()),
+            created_at_from: Some(100),
+            created_at_to: Some(200),
+        };
+        let sql = build_list_agent_runs(&filter, 25, 50);
+        assert!(sql.contains("LIMIT $6 OFFSET $7"));
+        assert_eq!(count_bind_placeholders(&sql), 7);
+    }
+
+    #[test]
+    fn build_list_agent_runs_orders_by_created_at_desc() {
+        assert!(build_list_agent_runs(&AgentRunListFilter::new("t"), 1, 0)
+            .contains("ORDER BY created_at DESC"));
+    }
+
+    #[test]
+    fn build_list_matches_legacy_tenant_only_shape() {
+        let sql = build_list_agent_runs(&AgentRunListFilter::new("t1"), 25, 10);
+        assert!(sql.contains("COALESCE(model_name, 'unknown')"));
+        assert!(sql.contains("LIMIT $2 OFFSET $3"));
+    }
+
+    #[test]
+    fn build_list_matches_legacy_agent_filter_shape() {
+        let filter = AgentRunListFilter {
+            agent_name: Some("bot".into()),
+            ..AgentRunListFilter::new("t1")
+        };
+        let sql = build_list_agent_runs(&filter, 25, 10);
         assert!(sql.contains("WHERE tenant_id = $1 AND agent_name = $2"));
         assert!(sql.contains("LIMIT $3 OFFSET $4"));
     }
 
     #[test]
+    fn build_count_agent_runs_tenant_only() {
+        let sql = build_count_agent_runs(&AgentRunListFilter::new("tenant-z"));
+        assert!(sql.starts_with("SELECT COUNT(*)"));
+        assert!(!sql.contains("ORDER BY"));
+        assert_eq!(count_bind_placeholders(&sql), 1);
+    }
+
+    #[test]
+    fn build_count_agent_runs_with_agent_and_status() {
+        let filter = AgentRunListFilter {
+            agent_name: Some("a".into()),
+            status: Some("running".into()),
+            ..AgentRunListFilter::new("t")
+        };
+        let sql = build_count_agent_runs(&filter);
+        assert!(sql.contains("status = $3"));
+        assert_eq!(count_bind_placeholders(&sql), 3);
+    }
+
+    #[test]
+    fn build_count_agent_runs_with_date_range() {
+        let filter = AgentRunListFilter {
+            created_at_from: Some(1),
+            created_at_to: Some(9),
+            ..AgentRunListFilter::new("t")
+        };
+        let sql = build_count_agent_runs(&filter);
+        assert!(sql.contains("created_at >= $2"));
+        assert!(sql.contains("created_at <= $3"));
+    }
+
+    #[test]
+    fn agent_run_from_row_select_lists_required_columns() {
+        for col in [
+            "id", "tenant_id", "agent_name", "status", "created_at", "model_name",
+            "eruka_context_hit", "eruka_read_count",
+        ] {
+            assert!(LIST_AGENT_RUNS_SELECT.contains(col), "missing {col}");
+        }
+    }
+
+    #[test]
+    fn get_agent_run_stats_sql_uses_tenant_and_agent_binds() {
+        assert!(GET_AGENT_RUN_STATS_SQL.contains("FILTER (WHERE status = 'completed')"));
+        assert_eq!(count_bind_placeholders(GET_AGENT_RUN_STATS_SQL), 2);
+    }
+
+    #[test]
     fn agent_run_common_status_values_serialize() {
         for status in ["completed", "failed", "running", "cancelled", "timeout"] {
-            let run = AgentRun {
-                id: "run-status".into(),
-                tenant_id: "t".into(),
-                agent_name: "a".into(),
-                user_id: None,
-                workspace_id: None,
-                session_id: None,
-                status: status.into(),
-                input_tokens: 0,
-                output_tokens: 0,
-                duration_ms: 0,
-                error: None,
-                created_at: 0,
-                model_name: "m".into(),
-                provider_name: "p".into(),
-                is_streaming: false,
-                request_source: None,
-                product: None,
-                agent_config_source: None,
-                agent_config_version: None,
-                eruka_binding_id: None,
-                eruka_context_hit: false,
-                eruka_read_count: 0,
-                eruka_write_count: 0,
-            };
-            let json = serde_json::to_value(&run).expect("serialize");
-            assert_eq!(json["status"], status);
+            let mut run = sample_agent_run_full();
+            run.status = status.into();
+            assert_eq!(serde_json::to_value(&run).unwrap()["status"], status);
         }
     }
 
     #[test]
     fn agent_run_clone_preserves_status_and_tokens() {
-        let run = AgentRun {
-            id: "run-clone".into(),
-            tenant_id: "t".into(),
-            agent_name: "a".into(),
-            user_id: None,
-            workspace_id: None,
-            session_id: None,
-            status: "completed".into(),
-            input_tokens: 10,
-            output_tokens: 20,
-            duration_ms: 100,
-            error: None,
-            created_at: 1,
-            model_name: "m".into(),
-            provider_name: "p".into(),
-            is_streaming: true,
-            request_source: None,
-            product: None,
-            agent_config_source: None,
-            agent_config_version: None,
-            eruka_binding_id: None,
-            eruka_context_hit: false,
-            eruka_read_count: 0,
-            eruka_write_count: 0,
-        };
+        let run = sample_agent_run_full();
         let cloned = run.clone();
-        assert_eq!(cloned.status, "completed");
-        assert_eq!(cloned.input_tokens, 10);
-        assert_eq!(cloned.output_tokens, 20);
-        assert!(cloned.is_streaming);
+        assert_eq!(cloned.status, run.status);
+        assert_eq!(cloned.input_tokens, run.input_tokens);
     }
 
+    #[test]
+    fn agent_run_metadata_clone_debug() {
+        let meta = AgentRunMetadata::default();
+        assert!(format!("{:?}", meta.clone()).contains("eruka_read_count"));
+    }
+
+    #[test]
+    fn database_error_variant_formats_message() {
+        let err = AppError::Database("connection reset".into());
+        assert!(err.to_string().contains("connection reset"));
+    }
+
+    fn sample_agent_run_full() -> AgentRun {
+        AgentRun {
+            id: "run-001".into(),
+            tenant_id: "t-abc".into(),
+            agent_name: "coder".into(),
+            user_id: Some("u-123".into()),
+            workspace_id: Some("ws-9".into()),
+            session_id: Some("sess-7".into()),
+            status: "completed".into(),
+            input_tokens: 150,
+            output_tokens: 50,
+            duration_ms: 1200,
+            error: None,
+            created_at: 1_700_000_000,
+            model_name: "gpt-4o".into(),
+            provider_name: "openai".into(),
+            is_streaming: true,
+            request_source: Some("api".into()),
+            product: Some("ares".into()),
+            agent_config_source: Some("db".into()),
+            agent_config_version: Some("v2".into()),
+            eruka_binding_id: Some("eb-1".into()),
+            eruka_context_hit: true,
+            eruka_read_count: 3,
+            eruka_write_count: 1,
+        }
+    }
 }

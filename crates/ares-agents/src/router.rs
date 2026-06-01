@@ -225,6 +225,18 @@ mod tests {
         assert_eq!(RouterAgent::parse_routing_decision(""), None);
     }
 
+    #[test]
+    fn test_parse_routing_decision_substring_containment() {
+        assert_eq!(
+            RouterAgent::parse_routing_decision("our-products-catalog"),
+            Some("product".to_string())
+        );
+        assert_eq!(
+            RouterAgent::parse_routing_decision("enterprise-salesforce-data"),
+            Some("sales".to_string())
+        );
+    }
+
     #[tokio::test]
     async fn test_route_maps_specialized_agents() {
         let ctx = test_context();

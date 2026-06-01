@@ -424,5 +424,16 @@ mod tests {
         assert_eq!(usage.input_tokens, 0);
         assert_eq!(usage.output_tokens, 0);
     }
+
+    #[tokio::test]
+    async fn test_generate_followup_questions_empty_findings() {
+        let coordinator = ResearchCoordinator::new(Box::new(ResearchMockLlm::new()), 2, 2);
+        let (questions, usage) = coordinator
+            .generate_followup_questions("original query", &[])
+            .await
+            .expect("empty findings should succeed");
+        assert!(questions.is_empty());
+        assert!(usage.is_none());
+    }
 }
 

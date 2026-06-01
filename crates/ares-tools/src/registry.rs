@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
 
 /// Trait for implementing tools that agents can invoke.
 ///
@@ -144,13 +146,20 @@ impl ToolRegistry {
             )));
         }
 
-        if let Some(tool) = self.tools.get(name) {
-            tool.execute(args).await
-        } else {
-            Err(ares_types::AppError::NotFound(format!(
+        let Some(tool) = self.tools.get(name) else {
+            return Err(ares_types::AppError::NotFound(format!(
                 "Tool not found: {}",
                 name
-            )))
+            )));
+        };
+
+        let timeout_secs = self.get_timeout(name);
+        match timeout(Duration::from_secs(timeout_secs), tool.execute(args)).await {
+            Ok(result) => result,
+            Err(_) => Err(ares_types::AppError::Unavailable(format!(
+                "Tool '{}' execution timed out after {}s",
+                name, timeout_secs
+            ))),
         }
     }
 }
@@ -197,6 +206,31 @@ mod tests {
 
         async fn execute(&self, args: Value) -> Result<Value> {
             Ok(json!({ "tool": self.tool_name, "args": args }))
+        }
+    }
+
+
+    struct SlowTool {
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl Tool for SlowTool {
+        fn name(&self) -> &str {
+            "slow"
+        }
+
+        fn description(&self) -> &str {
+            "Sleeps before returning"
+        }
+
+        fn parameters_schema(&self) -> Value {
+            json!({ "type": "object" })
+        }
+
+        async fn execute(&self, _args: Value) -> Result<Value> {
+            tokio::time::sleep(self.delay).await;
+            Ok(json!({ "done": true }))
         }
     }
 
@@ -474,4 +508,89 @@ mod tests {
             AppError::InvalidInput(msg) if msg.contains("execution failed")
         ));
     }
+    #[test]
+    fn test_tool_config_serde_roundtrip() {
+        let tool = ToolConfig {
+            enabled: false,
+            description: Some("from toml".into()),
+            timeout_secs: 42,
+            extra: HashMap::new(),
+        };
+        let decoded: ToolConfig = toml::from_str(&toml::to_string(&tool).unwrap()).unwrap();
+        assert!(!decoded.enabled);
+        assert_eq!(decoded.description.as_deref(), Some("from toml"));
+        assert_eq!(decoded.timeout_secs, 42);
+    }
+
+    #[test]
+    fn test_with_config_loads_tools_from_toml() {
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT"
+api_key_env = "TEST_API"
+[database]
+[tools.calculator]
+enabled = false
+timeout_secs = 12
+description = "Calc tool"
+"#;
+        let config: AresConfig = toml::from_str(content).unwrap();
+        let registry = ToolRegistry::with_config(&config);
+
+        assert!(!registry.is_enabled("calculator"));
+        assert_eq!(registry.get_timeout("calculator"), 12);
+        assert_eq!(
+            registry
+                .get_config("calculator")
+                .unwrap()
+                .description
+                .as_deref(),
+            Some("Calc tool")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_completes_within_timeout() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(SlowTool {
+            delay: Duration::from_millis(50),
+        }));
+        registry.set_config(
+            "slow",
+            ToolConfig {
+                enabled: true,
+                description: None,
+                timeout_secs: 2,
+                extra: HashMap::new(),
+            },
+        );
+
+        let result = registry.execute("slow", json!({})).await.unwrap();
+        assert_eq!(result["done"], true);
+    }
+
+    #[tokio::test]
+    async fn test_execute_timeout_path() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(SlowTool {
+            delay: Duration::from_secs(2),
+        }));
+        registry.set_config(
+            "slow",
+            ToolConfig {
+                enabled: true,
+                description: None,
+                timeout_secs: 1,
+                extra: HashMap::new(),
+            },
+        );
+
+        let err = registry.execute("slow", json!({})).await.unwrap_err();
+        assert!(matches!(
+            err,
+            AppError::Unavailable(msg) if msg.contains("timed out") && msg.contains("slow")
+        ));
+    }
+
 }

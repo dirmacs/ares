@@ -185,6 +185,166 @@ fn set_header(headers: &mut axum::http::HeaderMap, name: &'static str, value: im
     }
 }
 
+
+pub(crate) fn normalize_page(page: Option<u32>) -> u32 {
+    page.unwrap_or(1).max(1)
+}
+
+pub(crate) fn normalize_per_page(per_page: Option<u32>, default: u32) -> u32 {
+    per_page.unwrap_or(default).min(100)
+}
+
+pub(crate) fn logs_pagination(page: Option<u32>, per_page: Option<u32>) -> (u32, u32) {
+    (page.unwrap_or(1), per_page.unwrap_or(50))
+}
+
+pub(crate) fn compute_total_pages(total: u64, per_page: u32) -> u32 {
+    if per_page == 0 {
+        return 0;
+    }
+    ((total as f64) / (per_page as f64)).ceil() as u32
+}
+
+pub(crate) fn paginate_vec<T>(items: Vec<T>, page: u32, per_page: u32) -> Paginated<T> {
+    let total = items.len() as u64;
+    let total_pages = compute_total_pages(total, per_page);
+    let start = ((page.saturating_sub(1)) * per_page) as usize;
+    let page_items = items
+        .into_iter()
+        .skip(start)
+        .take(per_page as usize)
+        .collect();
+    Paginated {
+        items: page_items,
+        total,
+        page,
+        per_page,
+        total_pages,
+    }
+}
+
+pub(crate) fn list_runs_offset(page: u32, per_page: u32) -> i64 {
+    ((page - 1) * per_page) as i64
+}
+
+pub(crate) fn quota_display_limit(limit: u64) -> Option<u64> {
+    if limit == u64::MAX {
+        None
+    } else {
+        Some(limit)
+    }
+}
+
+pub(crate) fn check_tenant_request_quota(
+    tc: &TenantContext,
+    monthly_requests: u64,
+    daily_requests: u64,
+) -> Result<()> {
+    if tc.tier == TenantTier::Enterprise {
+        return Ok(());
+    }
+    if tc.can_make_request(monthly_requests, daily_requests) {
+        Ok(())
+    } else {
+        Err(AppError::RateLimited(format!(
+            "Quota exceeded for {:?} tier. Monthly: {}/{}, Daily: {}/{}",
+            tc.tier,
+            monthly_requests,
+            tc.quota.requests_per_month,
+            daily_requests,
+            tc.quota.requests_per_day
+        )))
+    }
+}
+
+pub(crate) fn research_depth_and_iterations(
+    payload_depth: Option<u8>,
+    payload_max_iterations: Option<u8>,
+    workflow_depth: Option<u8>,
+    workflow_max_iterations: Option<u8>,
+) -> (u8, u8) {
+    (
+        payload_depth.unwrap_or_else(|| workflow_depth.unwrap_or(2)),
+        payload_max_iterations.unwrap_or_else(|| workflow_max_iterations.unwrap_or(5)),
+    )
+}
+
+pub(crate) fn extract_agent_run_message(input: &serde_json::Value) -> String {
+    input
+        .get("message")
+        .or_else(|| input.get("input"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| serde_json::to_string(input).unwrap_or_default())
+}
+
+pub(crate) fn extract_workspace_id(input: &serde_json::Value) -> Option<String> {
+    input
+        .get("workspace_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+pub(crate) fn format_message_with_context(context: &str, message: &str) -> String {
+    format!("{}\n\n---\nUser message: {}", context, message)
+}
+
+pub(crate) fn llm_token_counts_u64(
+    usage: Option<&ares_llm::client::TokenUsage>,
+    input_fallback: &str,
+    output_fallback: &str,
+) -> (u64, u64) {
+    if let Some(u) = usage {
+        (u.prompt_tokens as u64, u.completion_tokens as u64)
+    } else {
+        (
+            estimate_tokens(input_fallback) as u64,
+            estimate_tokens(output_fallback) as u64,
+        )
+    }
+}
+
+pub(crate) fn llm_token_counts_u32(
+    usage: Option<&ares_llm::client::TokenUsage>,
+    input_fallback: &str,
+    output_fallback: &str,
+) -> (u32, u32) {
+    let (input, output) = llm_token_counts_u64(usage, input_fallback, output_fallback);
+    (input as u32, output as u32)
+}
+
+pub(crate) fn execution_metadata_names(
+    metadata: Option<&crate::agents::ExecutionMetadata>,
+) -> (String, String) {
+    metadata
+        .map(|m| (m.model_name.clone(), m.provider_name.clone()))
+        .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()))
+}
+
+pub(crate) fn agent_run_row_to_v1(r: agent_runs::AgentRun) -> V1AgentRun {
+    V1AgentRun {
+        id: r.id,
+        agent_id: r.agent_name,
+        status: r.status,
+        input: serde_json::json!({"tokens": r.input_tokens}),
+        output: Some(serde_json::json!({"tokens": r.output_tokens})),
+        error: r.error,
+        started_at: ts_to_dt(r.created_at),
+        finished_at: Some(ts_to_dt(r.created_at + (r.duration_ms / 1000))),
+        duration_ms: Some(r.duration_ms as u64),
+        tokens_used: Some((r.input_tokens + r.output_tokens) as u64),
+    }
+}
+
+pub(crate) fn usage_period_start(now: DateTime<Utc>) -> DateTime<Utc> {
+    now.date_naive()
+        .with_day(1)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+}
+
 fn usage_response<T: Serialize>(
     payload: T,
     input_tokens: u64,
@@ -204,25 +364,20 @@ fn usage_response<T: Serialize>(
 }
 
 async fn enforce_quota(state: &AppState, tc: &TenantContext) -> Result<()> {
-    if tc.tier != TenantTier::Enterprise {
-        let monthly = state
-            .tenant_db
-            .get_monthly_requests(&tc.tenant_id)
-            .await
-            .unwrap_or(0);
-        let daily = state
-            .tenant_db
-            .get_daily_requests(&tc.tenant_id)
-            .await
-            .unwrap_or(0);
-        if !tc.can_make_request(monthly, daily) {
-            return Err(AppError::RateLimited(format!(
-                "Quota exceeded for {:?} tier. Monthly: {}/{}, Daily: {}/{}",
-                tc.tier, monthly, tc.quota.requests_per_month, daily, tc.quota.requests_per_day
-            )));
-        }
+    if tc.tier == TenantTier::Enterprise {
+        return Ok(());
     }
-    Ok(())
+    let monthly = state
+        .tenant_db
+        .get_monthly_requests(&tc.tenant_id)
+        .await
+        .unwrap_or(0);
+    let daily = state
+        .tenant_db
+        .get_daily_requests(&tc.tenant_id)
+        .await
+        .unwrap_or(0);
+    check_tenant_request_quota(tc, monthly, daily)
 }
 
 // =============================================================================
@@ -283,14 +438,14 @@ pub async fn v1_chat(
         .await;
     let eruka_context_hit = eruka_context.is_some();
 
-    let effective_message = if let Some(ctx) = eruka_context {
+    let effective_message = if let Some(ctx) = eruka_context.as_deref() {
         tracing::info!(
             agent = %agent_name,
             tenant = %tc.tenant_id,
             ctx_len = ctx.len(),
             "External context injected into agent call"
         );
-        format!("{}\n\n---\nUser message: {}", ctx, payload.message)
+        format_message_with_context(ctx, &payload.message)
     } else {
         payload.message.clone()
     };
@@ -310,26 +465,14 @@ pub async fn v1_chat(
     let duration_ms = start.elapsed().as_millis() as i64;
 
     let response_text = response.content;
-    let model_name = response
-        .metadata
-        .as_ref()
-        .map(|m| m.model_name.clone())
-        .unwrap_or_else(|| "unknown".to_string());
-    let provider_name = response
-        .metadata
-        .as_ref()
-        .map(|m| m.provider_name.clone())
-        .unwrap_or_else(|| "unknown".to_string());
+    let (model_name, provider_name) = execution_metadata_names(response.metadata.as_ref());
 
     // Use actual LLM token counts; fall back to heuristic estimates if unavailable
-    let (input_tokens, output_tokens) = if let Some(u) = response.usage {
-        (u.prompt_tokens, u.completion_tokens)
-    } else {
-        (
-            estimate_tokens(&effective_message) as u32,
-            estimate_tokens(&response_text) as u32,
-        )
-    };
+    let (input_tokens, output_tokens) = llm_token_counts_u32(
+        response.usage.as_ref(),
+        &effective_message,
+        &response_text,
+    );
 
     // Record agent run with real model/provider
     {
@@ -433,17 +576,13 @@ pub async fn v1_research(
 
     let start = std::time::Instant::now();
     let config = state.config_manager.config();
-    let (depth, max_iterations) = if let Some(workflow) = config.get_workflow("research") {
-        (
-            payload.depth.unwrap_or(workflow.max_depth),
-            payload.max_iterations.unwrap_or(workflow.max_iterations),
-        )
-    } else {
-        (
-            payload.depth.unwrap_or(2),
-            payload.max_iterations.unwrap_or(5),
-        )
-    };
+    let workflow = config.get_workflow("research");
+    let (depth, max_iterations) = research_depth_and_iterations(
+        payload.depth,
+        payload.max_iterations,
+        workflow.map(|w| w.max_depth),
+        workflow.map(|w| w.max_iterations),
+    );
 
     let model_key = config
         .get_agent("orchestrator")
@@ -490,28 +629,13 @@ pub async fn list_agents(
     Query(q): Query<PaginationQuery>,
 ) -> Result<Json<Paginated<V1Agent>>> {
     let tc = extract_tenant(ctx)?;
-    let page = q.page.unwrap_or(1).max(1);
-    let per_page = q.per_page.unwrap_or(20).min(100);
+    let page = normalize_page(q.page);
+    let per_page = normalize_per_page(q.per_page, 20);
 
     let agents = tenant_agents::list_tenant_agents(state.tenant_db.pool(), &tc.tenant_id).await?;
-    let total = agents.len() as u64;
-    let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+    let items: Vec<V1Agent> = agents.into_iter().map(V1Agent::from).collect();
 
-    let start = ((page - 1) * per_page) as usize;
-    let items: Vec<V1Agent> = agents
-        .into_iter()
-        .skip(start)
-        .take(per_page as usize)
-        .map(V1Agent::from)
-        .collect();
-
-    Ok(Json(Paginated {
-        items,
-        total,
-        page,
-        per_page,
-        total_pages,
-    }))
+    Ok(Json(paginate_vec(items, page, per_page)))
 }
 
 /// GET /v1/agents/{name} — get a specific agent
@@ -546,16 +670,8 @@ pub async fn run_agent(
     }
 
     // Extract message from input JSON
-    let message = input
-        .get("message")
-        .or_else(|| input.get("input"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| serde_json::to_string(&input).unwrap_or_default());
-    let runtime_workspace_id = input
-        .get("workspace_id")
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string());
+    let message = extract_agent_run_message(&input);
+    let runtime_workspace_id = extract_workspace_id(&input);
 
     // Build agent context
     let agent_context = AgentContext {
@@ -585,14 +701,14 @@ pub async fn run_agent(
         .get_context_for_run(&runtime_context)
         .await;
     let eruka_context_hit = eruka_context.is_some();
-    let effective_message = if let Some(ctx) = eruka_context {
+    let effective_message = if let Some(ctx) = eruka_context.as_deref() {
         tracing::info!(
             agent = %name,
             tenant = %tc.tenant_id,
             ctx_len = ctx.len(),
             "External context injected into agent run"
         );
-        format!("{}\n\n---\nUser message: {}", ctx, message)
+        format_message_with_context(ctx, &message)
     } else {
         message.clone()
     };
@@ -605,14 +721,11 @@ pub async fn run_agent(
 
     match result {
         Ok(response) => {
-            let (input_tokens, output_tokens) = if let Some(ref u) = response.usage {
-                (u.prompt_tokens as u64, u.completion_tokens as u64)
-            } else {
-                (
-                    estimate_tokens(&effective_message) as u64,
-                    estimate_tokens(&response.content) as u64,
-                )
-            };
+            let (input_tokens, output_tokens) = llm_token_counts_u64(
+                response.usage.as_ref(),
+                &effective_message,
+                &response.content,
+            );
 
             let model_name = response
                 .metadata
@@ -793,9 +906,9 @@ pub async fn list_agent_runs(
     Query(q): Query<PaginationQuery>,
 ) -> Result<Json<Paginated<V1AgentRun>>> {
     let tc = extract_tenant(ctx)?;
-    let page = q.page.unwrap_or(1).max(1);
-    let per_page = q.per_page.unwrap_or(25).min(100);
-    let offset = ((page - 1) * per_page) as i64;
+    let page = normalize_page(q.page);
+    let per_page = normalize_per_page(q.per_page, 25);
+    let offset = list_runs_offset(page, per_page);
 
     let runs = agent_runs::list_agent_runs(
         state.tenant_db.pool(),
@@ -806,21 +919,7 @@ pub async fn list_agent_runs(
     )
     .await?;
 
-    let items: Vec<V1AgentRun> = runs
-        .into_iter()
-        .map(|r| V1AgentRun {
-            id: r.id,
-            agent_id: r.agent_name,
-            status: r.status,
-            input: serde_json::json!({"tokens": r.input_tokens}),
-            output: Some(serde_json::json!({"tokens": r.output_tokens})),
-            error: r.error,
-            started_at: ts_to_dt(r.created_at),
-            finished_at: Some(ts_to_dt(r.created_at + (r.duration_ms / 1000))),
-            duration_ms: Some(r.duration_ms as u64),
-            tokens_used: Some((r.input_tokens + r.output_tokens) as u64),
-        })
-        .collect();
+    let items: Vec<V1AgentRun> = runs.into_iter().map(agent_run_row_to_v1).collect();
 
     let total = items.len() as u64;
     Ok(Json(Paginated {
@@ -828,7 +927,7 @@ pub async fn list_agent_runs(
         total,
         page,
         per_page,
-        total_pages: ((total as f64) / (per_page as f64)).ceil() as u32,
+        total_pages: compute_total_pages(total, per_page),
     }))
 }
 
@@ -839,8 +938,7 @@ pub async fn list_agent_logs(
     Query(q): Query<PaginationQuery>,
 ) -> Result<Json<Paginated<V1AgentLog>>> {
     let _tc = extract_tenant(ctx)?;
-    let page = q.page.unwrap_or(1);
-    let per_page = q.per_page.unwrap_or(50);
+    let (page, per_page) = logs_pagination(q.page, q.per_page);
     let _ = name;
     Ok(Json(Paginated::empty(page, per_page)))
 }
@@ -854,25 +952,11 @@ pub async fn get_usage(
     let summary = state.tenant_db.get_usage_summary(&tc.tenant_id).await?;
 
     let now = Utc::now();
-    let period_start = now
-        .date_naive()
-        .with_day(1)
-        .unwrap()
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc();
+    let period_start = usage_period_start(now);
 
     // Quota limits (cap u64::MAX to None for display)
-    let quota_runs = if tc.quota.requests_per_month == u64::MAX {
-        None
-    } else {
-        Some(tc.quota.requests_per_month)
-    };
-    let quota_tokens = if tc.quota.tokens_per_month == u64::MAX {
-        None
-    } else {
-        Some(tc.quota.tokens_per_month)
-    };
+    let quota_runs = quota_display_limit(tc.quota.requests_per_month);
+    let quota_tokens = quota_display_limit(tc.quota.tokens_per_month);
 
     Ok(Json(V1Usage {
         period_start,
@@ -1407,6 +1491,288 @@ mod tests {
         let json = serde_json::to_value(&daily).expect("serialize daily usage");
         assert_eq!(json["api_calls"], 9);
         assert_eq!(json["tokens"], 1200);
+    }
+
+    #[test]
+    fn normalize_page_defaults_and_clamps_zero() {
+        assert_eq!(normalize_page(None), 1);
+        assert_eq!(normalize_page(Some(0)), 1);
+        assert_eq!(normalize_page(Some(3)), 3);
+    }
+
+    #[test]
+    fn normalize_per_page_defaults_and_caps() {
+        assert_eq!(normalize_per_page(None, 20), 20);
+        assert_eq!(normalize_per_page(Some(500), 20), 100);
+        assert_eq!(normalize_per_page(Some(10), 25), 10);
+    }
+
+    #[test]
+    fn logs_pagination_uses_defaults() {
+        assert_eq!(logs_pagination(None, None), (1, 50));
+        assert_eq!(logs_pagination(Some(2), Some(10)), (2, 10));
+    }
+
+    #[test]
+    fn compute_total_pages_rounds_up() {
+        assert_eq!(compute_total_pages(0, 20), 0);
+        assert_eq!(compute_total_pages(1, 20), 1);
+        assert_eq!(compute_total_pages(21, 20), 2);
+        assert_eq!(compute_total_pages(40, 20), 2);
+        assert_eq!(compute_total_pages(41, 20), 3);
+    }
+
+    #[test]
+    fn paginate_vec_slices_items() {
+        let items: Vec<u32> = (1..=5).collect();
+        let page = paginate_vec(items, 2, 2);
+        assert_eq!(page.items, vec![3, 4]);
+        assert_eq!(page.total, 5);
+        assert_eq!(page.page, 2);
+        assert_eq!(page.per_page, 2);
+        assert_eq!(page.total_pages, 3);
+    }
+
+    #[test]
+    fn paginate_vec_serializes_full_page() {
+        let page = paginate_vec(vec!["a", "b"], 1, 10);
+        let json = serde_json::to_value(&page).expect("serialize");
+        assert_eq!(json["items"], serde_json::json!(["a", "b"]));
+        assert_eq!(json["total"], 2);
+        assert_eq!(json["total_pages"], 1);
+    }
+
+    #[test]
+    fn list_runs_offset_for_page_two() {
+        assert_eq!(list_runs_offset(1, 25), 0);
+        assert_eq!(list_runs_offset(2, 25), 25);
+        assert_eq!(list_runs_offset(3, 10), 20);
+    }
+
+    #[test]
+    fn quota_display_limit_hides_unlimited() {
+        assert_eq!(quota_display_limit(u64::MAX), None);
+        assert_eq!(quota_display_limit(1_000), Some(1_000));
+    }
+
+    #[test]
+    fn check_tenant_request_quota_allows_enterprise() {
+        let tc = TenantContext::new("ent".into(), TenantTier::Enterprise);
+        check_tenant_request_quota(&tc, u64::MAX, u64::MAX).expect("enterprise bypass");
+    }
+
+    #[test]
+    fn check_tenant_request_quota_rejects_over_limit() {
+        let tc = TenantContext::new("free".into(), TenantTier::Free);
+        let err = check_tenant_request_quota(&tc, 1_000, 0).unwrap_err();
+        match err {
+            AppError::RateLimited(msg) => {
+                assert!(msg.contains("Quota exceeded"));
+                assert!(msg.contains("Monthly: 1000"));
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_tenant_request_quota_allows_under_limit() {
+        let tc = TenantContext::new("free".into(), TenantTier::Free);
+        check_tenant_request_quota(&tc, 0, 0).expect("under quota");
+    }
+
+    #[test]
+    fn research_depth_and_iterations_prefers_payload() {
+        assert_eq!(
+            research_depth_and_iterations(Some(4), Some(8), Some(2), Some(5)),
+            (4, 8)
+        );
+    }
+
+    #[test]
+    fn research_depth_and_iterations_uses_workflow_then_defaults() {
+        assert_eq!(
+            research_depth_and_iterations(None, None, Some(3), Some(7)),
+            (3, 7)
+        );
+        assert_eq!(research_depth_and_iterations(None, None, None, None), (2, 5));
+    }
+
+    #[test]
+    fn extract_agent_run_message_prefers_message_field() {
+        let input = serde_json::json!({"message": "hello"});
+        assert_eq!(extract_agent_run_message(&input), "hello");
+    }
+
+    #[test]
+    fn extract_agent_run_message_falls_back_to_input_field() {
+        let input = serde_json::json!({"input": "from-input"});
+        assert_eq!(extract_agent_run_message(&input), "from-input");
+    }
+
+    #[test]
+    fn extract_agent_run_message_serializes_object_without_text_fields() {
+        let input = serde_json::json!({"count": 3});
+        assert_eq!(extract_agent_run_message(&input), r#"{"count":3}"#);
+    }
+
+    #[test]
+    fn extract_workspace_id_reads_string_field() {
+        let input = serde_json::json!({"workspace_id": "ws-9"});
+        assert_eq!(extract_workspace_id(&input), Some("ws-9".into()));
+        assert_eq!(extract_workspace_id(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn format_message_with_context_joins_blocks() {
+        let out = format_message_with_context("ctx", "hi");
+        assert!(out.contains("ctx"));
+        assert!(out.contains("User message: hi"));
+        assert!(out.contains("---"));
+    }
+
+    #[test]
+    fn llm_token_counts_use_usage_when_present() {
+        use ares_llm::client::TokenUsage;
+        let usage = TokenUsage {
+            prompt_tokens: 11,
+            completion_tokens: 22,
+            total_tokens: 33,
+        };
+        let (input, output) = llm_token_counts_u64(Some(&usage), "ignored", "ignored");
+        assert_eq!((input, output), (11, 22));
+    }
+
+    #[test]
+    fn llm_token_counts_estimate_when_usage_missing() {
+        let (input, output) = llm_token_counts_u32(None, "hello world", "bye");
+        assert!(input > 0);
+        assert!(output > 0);
+    }
+
+    #[test]
+    fn execution_metadata_names_default_unknown() {
+        let (model, provider) = execution_metadata_names(None);
+        assert_eq!(model, "unknown");
+        assert_eq!(provider, "unknown");
+    }
+
+    #[test]
+    fn execution_metadata_names_reads_metadata() {
+        use crate::agents::ExecutionMetadata;
+        let meta = ExecutionMetadata {
+            model_name: "gpt-test".into(),
+            provider_name: "openai".into(),
+        };
+        let (model, provider) = execution_metadata_names(Some(&meta));
+        assert_eq!(model, "gpt-test");
+        assert_eq!(provider, "openai");
+    }
+
+    #[test]
+    fn agent_run_row_to_v1_maps_db_row() {
+        let row = agent_runs::AgentRun {
+            id: "run-1".into(),
+            tenant_id: "t1".into(),
+            agent_name: "bot".into(),
+            user_id: None,
+            workspace_id: None,
+            session_id: None,
+            status: "completed".into(),
+            input_tokens: 10,
+            output_tokens: 20,
+            duration_ms: 1500,
+            error: None,
+            created_at: 1_700_000_000,
+            model_name: "m".into(),
+            provider_name: "p".into(),
+            is_streaming: false,
+            request_source: None,
+            product: None,
+            agent_config_source: None,
+            agent_config_version: None,
+            eruka_binding_id: None,
+            eruka_context_hit: false,
+            eruka_read_count: 0,
+            eruka_write_count: 0,
+        };
+        let v1 = agent_run_row_to_v1(row);
+        assert_eq!(v1.id, "run-1");
+        assert_eq!(v1.agent_id, "bot");
+        assert_eq!(v1.tokens_used, Some(30));
+        assert_eq!(v1.duration_ms, Some(1500));
+    }
+
+    #[test]
+    fn usage_period_start_is_first_day_of_month() {
+        let now = Utc.with_ymd_and_hms(2024, 6, 15, 12, 30, 0).unwrap();
+        let start = usage_period_start(now);
+        assert_eq!(start, Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn create_api_key_request_deserializes_without_expiry() {
+        let req: CreateApiKeyRequest =
+            serde_json::from_str(r#"{"name":"no-expiry"}"#).expect("deserialize");
+        assert_eq!(req.name, "no-expiry");
+        assert!(req.expires_in_days.is_none());
+    }
+
+    #[test]
+    fn v1_usage_serializes_without_quota_caps() {
+        let usage = V1Usage {
+            period_start: Utc.with_ymd_and_hms(2024, 2, 1, 0, 0, 0).unwrap(),
+            period_end: Utc.with_ymd_and_hms(2024, 2, 29, 0, 0, 0).unwrap(),
+            total_runs: 1,
+            total_tokens: 2,
+            total_api_calls: 3,
+            quota_runs: None,
+            quota_tokens: None,
+            daily_usage: vec![],
+        };
+        let json = serde_json::to_value(&usage).expect("serialize");
+        assert!(json["quota_runs"].is_null());
+        assert!(json["quota_tokens"].is_null());
+    }
+
+    #[test]
+    fn v1_agent_run_serializes_error_field() {
+        let run = V1AgentRun {
+            id: "run-err".into(),
+            agent_id: "agent".into(),
+            status: "failed".into(),
+            input: serde_json::json!({}),
+            output: None,
+            error: Some("boom".into()),
+            started_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            finished_at: None,
+            duration_ms: None,
+            tokens_used: None,
+        };
+        let json = serde_json::to_value(&run).expect("serialize");
+        assert_eq!(json["error"], "boom");
+        assert!(json["output"].is_null());
+    }
+
+    #[test]
+    fn v1_agent_log_serializes_without_optionals() {
+        let log = V1AgentLog {
+            id: "log-2".into(),
+            agent_id: "agent".into(),
+            run_id: None,
+            level: "warn".into(),
+            message: "slow".into(),
+            metadata: None,
+            timestamp: Utc.with_ymd_and_hms(2024, 1, 2, 0, 0, 0).unwrap(),
+        };
+        let json = serde_json::to_value(&log).expect("serialize");
+        assert!(json["run_id"].is_null());
+        assert!(json["metadata"].is_null());
+    }
+
+    #[test]
+    fn ts_to_dt_unix_epoch() {
+        let dt = ts_to_dt(0);
+        assert_eq!(dt, Utc.timestamp_opt(0, 0).single().unwrap());
     }
 
 }

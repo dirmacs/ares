@@ -449,7 +449,7 @@ timeout_secs = 10
         #[async_trait]
         impl McpToolExtension for Ext {
             fn tools(&self) -> Vec<Tool> { vec![sample_tool("ext_search")] }
-            async fn execute(&self, _: &str, _: serde_json::Value, _: &str) -> Option<Result<CallToolResult, String>> { None }
+            async fn execute(&self, _tool_name: &str, _arguments: serde_json::Value, _tenant_id: &str) -> Option<Result<CallToolResult, String>> { None }
         }
         let mut r = ToolRegistry::with_builtin_tools();
         r.register_extension(Arc::new(Ext));

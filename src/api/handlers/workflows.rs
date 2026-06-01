@@ -118,3 +118,49 @@ pub struct WorkflowInfo {
     /// Whether subagents run in parallel
     pub parallel_subagents: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::WorkflowRequest;
+
+    #[test]
+    fn workflow_info_serializes_expected_fields() {
+        let info = WorkflowInfo {
+            name: "research".into(),
+            entry_agent: "orchestrator".into(),
+            fallback_agent: Some("router".into()),
+            max_depth: 3,
+            max_iterations: 10,
+            parallel_subagents: true,
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["name"], "research");
+        assert_eq!(json["entry_agent"], "orchestrator");
+        assert_eq!(json["fallback_agent"], "router");
+        assert_eq!(json["max_depth"], 3);
+        assert_eq!(json["parallel_subagents"], true);
+    }
+
+    #[test]
+    fn workflow_request_deserializes_with_default_context() {
+        let req: WorkflowRequest = serde_json::from_str(r#"{"query":"summarize"}"#).unwrap();
+        assert_eq!(req.query, "summarize");
+        assert!(req.context.is_empty());
+    }
+
+    #[test]
+    fn workflow_request_roundtrip_preserves_context() {
+        let mut context = std::collections::HashMap::new();
+        context.insert("locale".into(), serde_json::json!("en-GB"));
+        let req = WorkflowRequest {
+            query: "run".into(),
+            context,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: WorkflowRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.query, "run");
+        assert_eq!(back.context["locale"], "en-GB");
+    }
+}
+

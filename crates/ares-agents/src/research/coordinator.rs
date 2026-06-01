@@ -150,14 +150,31 @@ where
 }
 
 pub fn aggregate_findings(findings: &[ResearchFinding]) -> Vec<ResearchFinding> {
-    let mut seen = HashSet::new();
-    let mut unique = Vec::new();
+    use std::collections::HashMap;
+
+    let mut by_content: HashMap<String, ResearchFinding> = HashMap::new();
     for finding in findings {
         let key = normalize_content(&finding.content);
-        if key.is_empty() || !seen.insert(key) { continue; }
-        unique.push(finding.clone());
+        if key.is_empty() {
+            continue;
+        }
+        by_content
+            .entry(key)
+            .and_modify(|existing| {
+                if finding.relevance_score > existing.relevance_score {
+                    *existing = finding.clone();
+                }
+            })
+            .or_insert_with(|| finding.clone());
     }
-    unique.sort_by(|left, right| right.relevance_score.partial_cmp(&left.relevance_score).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut unique: Vec<_> = by_content.into_values().collect();
+    unique.sort_by(|left, right| {
+        right
+            .relevance_score
+            .partial_cmp(&left.relevance_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     unique
 }
 

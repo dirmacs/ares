@@ -12,6 +12,6 @@ description = "Conversation context and user memory utilities for A.R.E.S"
 ares-types = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }

@@ -12,7 +12,60 @@ use crate::{
     AppState,
 };
 use axum::{extract::State, response::Response, Extension, Json};
+use crate::db::postgres::UserAgent;
 use uuid::Uuid;
+
+/// Validates chat request payload before routing.
+fn validate_chat_request(payload: &ChatRequest) -> Result<()> {
+    if payload.message.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "message must not be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Returns the provided context id or generates a new UUID string.
+fn resolve_context_id(context_id: Option<&String>) -> String {
+    context_id
+        .cloned()
+        .unwrap_or_else(|| Uuid::new_v4().to_string())
+}
+
+/// Rejects direct invocation of the router agent type.
+fn ensure_not_direct_router(agent_type: &AgentType) -> Result<()> {
+    if *agent_type == AgentType::Router {
+        return Err(AppError::InvalidInput(
+            "Router agent cannot be called directly".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Builds the LLM prompt used for streaming chat.
+fn build_stream_prompt(system_prompt: &str, message: &str) -> String {
+    format!(
+        "{system_prompt}\n\nUser: {message}\nAssistant:",
+        system_prompt = system_prompt,
+        message = message,
+    )
+}
+
+fn default_stream_system_prompt() -> &'static str {
+    "You are a helpful assistant."
+}
+
+/// Converts a resolved user agent record into runtime agent configuration.
+fn agent_config_from_user_agent(user_agent: &UserAgent) -> AgentConfig {
+    AgentConfig {
+        model: user_agent.model.clone(),
+        system_prompt: user_agent.system_prompt.clone(),
+        tools: user_agent.tools_vec(),
+        max_tool_iterations: user_agent.max_tool_iterations as usize,
+        parallel_tools: user_agent.parallel_tools,
+        extra: std::collections::HashMap::new(),
+    }
+}
 
 /// Chat with the AI assistant
 #[utoipa::path(
@@ -33,10 +86,10 @@ pub async fn chat(
     tenant_ctx: Option<Extension<crate::models::TenantContext>>,
     Json(payload): Json<ChatRequest>,
 ) -> Result<Response> {
+    validate_chat_request(&payload)?;
+
     // Get or create conversation
-    let context_id = payload
-        .context_id
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let context_id = resolve_context_id(payload.context_id.as_ref());
 
     // Check if conversation exists, create if not
     if !state.db.conversation_exists(&context_id).await? {
@@ -192,25 +245,13 @@ async fn execute_agent(
     // Get agent name from type
     let agent_name = AgentRegistry::type_to_name(&agent_type);
 
-    if agent_type == AgentType::Router {
-        return Err(AppError::InvalidInput(
-            "Router agent cannot be called directly".to_string(),
-        ));
-    }
+    ensure_not_direct_router(&agent_type)?;
 
     // Resolve agent using the 3-tier hierarchy (User -> Community -> System)
     let (user_agent, source) =
         resolve_agent(state, &context.user_id, agent_name.to_string()).await?;
 
-    // Convert UserAgent to AgentConfig for the registry
-    let config = AgentConfig {
-        model: user_agent.model.clone(),
-        system_prompt: user_agent.system_prompt.clone(),
-        tools: user_agent.tools_vec(),
-        max_tool_iterations: user_agent.max_tool_iterations as usize,
-        parallel_tools: user_agent.parallel_tools,
-        extra: std::collections::HashMap::new(),
-    };
+    let config = agent_config_from_user_agent(&user_agent);
 
     // Create agent from registry using the resolved config
     let agent = state
@@ -300,11 +341,10 @@ pub async fn chat_stream(
 > {
     use axum::response::sse::{Event, Sse};
 
+    let validation_error = validate_chat_request(&payload).err();
+
     // Get or create conversation
-    let context_id = payload
-        .context_id
-        .clone()
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let context_id = resolve_context_id(payload.context_id.as_ref());
 
     // Clone values we need for the async stream
     let state_clone = state.clone();
@@ -315,6 +355,18 @@ pub async fn chat_stream(
     let context_id_clone = context_id.clone();
 
     let stream = async_stream::stream! {
+        if let Some(e) = &validation_error {
+            let event = StreamEvent {
+                event: "error".to_string(),
+                content: None,
+                agent: None,
+                context_id: None,
+                error: Some(e.to_string()),
+            };
+            yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
+            return;
+        }
+
         // Setup conversation
         if !state_clone.db.conversation_exists(&context_id_clone).await.unwrap_or(false) {
             if let Err(e) = state_clone
@@ -461,12 +513,11 @@ pub async fn chat_stream(
         };
 
         // Build the prompt with system message and history
-        let system_prompt = user_agent.system_prompt.unwrap_or_else(|| "You are a helpful assistant.".to_string());
-        let full_prompt = format!(
-            "{}\n\nUser: {}\nAssistant:",
-            system_prompt,
-            message
-        );
+        let system_prompt = user_agent
+            .system_prompt
+            .clone()
+            .unwrap_or_else(|| default_stream_system_prompt().to_string());
+        let full_prompt = build_stream_prompt(&system_prompt, &message);
 
         // Stream tokens
         use futures::StreamExt;
@@ -575,3 +626,172 @@ pub async fn chat_stream(
     )
 }
 use axum::response::IntoResponse;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Source;
+
+    fn sample_user_agent(tools_json: &str) -> UserAgent {
+        UserAgent {
+            id: "ua-1".into(),
+            user_id: "user-1".into(),
+            name: "finance".into(),
+            display_name: None,
+            description: None,
+            model: "fast".into(),
+            system_prompt: Some("You are finance.".into()),
+            tools: tools_json.into(),
+            max_tool_iterations: 5,
+            parallel_tools: true,
+            extra: "{}".into(),
+            is_public: false,
+            usage_count: 0,
+            rating_sum: 0,
+            rating_count: 0,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_100,
+        }
+    }
+
+    #[test]
+    fn validate_chat_request_rejects_empty_message() {
+        let payload = ChatRequest {
+            message: "   ".into(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: None,
+        };
+        let err = validate_chat_request(&payload).unwrap_err();
+        match err {
+            AppError::InvalidInput(msg) => assert!(msg.contains("empty")),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_chat_request_accepts_non_empty_message() {
+        let payload = ChatRequest {
+            message: "hello".into(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: None,
+        };
+        assert!(validate_chat_request(&payload).is_ok());
+    }
+
+    #[test]
+    fn resolve_context_id_uses_existing_value() {
+        let existing = "ctx-42".to_string();
+        assert_eq!(resolve_context_id(Some(&existing)), "ctx-42");
+    }
+
+    #[test]
+    fn resolve_context_id_generates_uuid_when_missing() {
+        let id = resolve_context_id(None);
+        assert!(Uuid::parse_str(&id).is_ok());
+    }
+
+    #[test]
+    fn ensure_not_direct_router_rejects_router_type() {
+        let err = ensure_not_direct_router(&AgentType::Router).unwrap_err();
+        match err {
+            AppError::InvalidInput(msg) => assert!(msg.contains("Router")),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ensure_not_direct_router_allows_builtin_agents() {
+        assert!(ensure_not_direct_router(&AgentType::Finance).is_ok());
+    }
+
+    #[test]
+    fn build_stream_prompt_formats_system_and_user_turns() {
+        let prompt = build_stream_prompt("You are helpful.", "What is VAT?");
+        assert!(prompt.contains("You are helpful."));
+        assert!(prompt.contains("User: What is VAT?"));
+        assert!(prompt.ends_with("Assistant:"));
+    }
+
+    #[test]
+    fn agent_config_from_user_agent_extracts_tools() {
+        let config = agent_config_from_user_agent(&sample_user_agent(
+            r#"["search","calculator"]"#,
+        ));
+        assert_eq!(config.tools, vec!["search", "calculator"]);
+        assert_eq!(config.model, "fast");
+        assert_eq!(config.max_tool_iterations, 5);
+        assert!(config.parallel_tools);
+    }
+
+    #[test]
+    fn agent_config_from_user_agent_tolerates_invalid_tools_json() {
+        let config = agent_config_from_user_agent(&sample_user_agent("not-json"));
+        assert!(config.tools.is_empty());
+    }
+
+    #[test]
+    fn chat_request_roundtrip_json() {
+        let req = ChatRequest {
+            message: "hi".into(),
+            agent_type: Some(AgentType::Sales),
+            context_id: Some("ctx-1".into()),
+            workspace_id: Some("ws-9".into()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: ChatRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.message, "hi");
+        assert_eq!(back.agent_type, Some(AgentType::Sales));
+        assert_eq!(back.context_id.as_deref(), Some("ctx-1"));
+        assert_eq!(back.workspace_id.as_deref(), Some("ws-9"));
+    }
+
+    #[test]
+    fn chat_response_serializes_sources_when_present() {
+        let resp = ChatResponse {
+            response: "answer".into(),
+            agent: "finance (user)".into(),
+            context_id: "ctx-1".into(),
+            sources: Some(vec![Source {
+                title: "Doc".into(),
+                url: Some("https://example.com".into()),
+                relevance_score: 0.9,
+            }]),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["response"], "answer");
+        assert!(json["sources"].is_array());
+    }
+
+    #[test]
+    fn stream_event_omits_none_fields_in_json() {
+        let event = StreamEvent {
+            event: "token".into(),
+            content: Some("hi".into()),
+            agent: None,
+            context_id: None,
+            error: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event\":\"token\""));
+        assert!(json.contains("\"content\":\"hi\""));
+        assert!(!json.contains("agent"));
+        assert!(!json.contains("context_id"));
+        assert!(!json.contains("error"));
+    }
+
+    #[test]
+    fn stream_event_error_serializes_message() {
+        let event = StreamEvent {
+            event: "error".into(),
+            content: None,
+            agent: None,
+            context_id: Some("ctx-1".into()),
+            error: Some("boom".into()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"error\":\"boom\""));
+        assert!(json.contains("\"context_id\":\"ctx-1\""));
+    }
+}

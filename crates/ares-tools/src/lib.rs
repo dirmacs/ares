@@ -9,14 +9,14 @@ pub mod search;
 #[cfg(any(feature = "search-tools", test))]
 pub mod web_scrape;
 
-#[cfg(feature = "mcp")]
+#[cfg(any(feature = "mcp", test))]
 pub mod mcp_bridge;
 
 pub use registry::{Tool, ToolRegistry};
 
 #[cfg(test)]
 mod tests {
-    use super::{calculator::Calculator, registry::ToolRegistry, Tool};
+    use super::{calculator::Calculator, registry::ToolRegistry};
     use std::sync::Arc;
 
     #[test]

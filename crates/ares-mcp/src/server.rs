@@ -1110,7 +1110,7 @@ mod tests {
     #[tokio::test]
     async fn get_info_via_server_handler_returns_valid_info() {
         let server = test_server().await;
-        let info = server.get_info();
+        let info = rmcp::ServerHandler::get_info(&server);
         assert_eq!(info.protocol_version, ProtocolVersion::V_2024_11_05);
         assert!(info.instructions.is_some());
         let instructions = info.instructions.as_deref().unwrap();
@@ -1695,7 +1695,7 @@ mod tests {
     #[tokio::test]
     async fn get_info_has_capabilities_with_tools() {
         let server = test_server().await;
-        let info = server.get_info();
+        let info = rmcp::ServerHandler::get_info(&server);
         let caps_json = serde_json::to_value(&info.capabilities).unwrap();
         assert!(caps_json.is_object());
     }
@@ -1703,7 +1703,7 @@ mod tests {
     #[tokio::test]
     async fn get_info_has_server_info_implementation() {
         let server = test_server().await;
-        let info = server.get_info();
+        let info = rmcp::ServerHandler::get_info(&server);
         let impl_json = serde_json::to_value(&info.server_info).unwrap();
         assert!(impl_json.is_object());
     }
@@ -2232,4 +2232,325 @@ mod tests {
         });
     }
 
+    // =========================================================================
+    // Integration tests: ServerHandler trait methods and start_mcp_server
+    // =========================================================================
+
+    use rmcp::model::{
+        CallToolRequestParam, ClientRequest, InitializeRequest, InitializeRequestParam,
+        NumberOrString, ProtocolVersion,
+    };
+    use rmcp::service::{serve_directly, RequestContext, RoleServer};
+    use tokio_util::sync::CancellationToken;
+
+    fn dummy_request_context(
+        peer: rmcp::service::Peer<RoleServer>,
+    ) -> RequestContext<RoleServer> {
+        RequestContext {
+            ct: CancellationToken::new(),
+            id: NumberOrString::Number(1),
+            meta: Default::default(),
+            extensions: Default::default(),
+            peer,
+        }
+    }
+
+    // 1. AresMcpServer::new() construction with valid config
+    #[tokio::test]
+    async fn new_constructs_all_fields() {
+        let server = test_server().await;
+        assert!(!server.ares_api_url.is_empty());
+        assert!(server.extensions.is_empty());
+        assert!(server.session.read().await.is_none());
+    }
+
+    // 2. list_tools via ServerHandler
+    #[tokio::test]
+    async fn list_tools_via_server_handler_returns_five_tools() {
+        let server = test_server_with_session().await;
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let ctx = dummy_request_context(running.peer().clone());
+        let result = server.list_tools(None, ctx).await.unwrap();
+        assert_eq!(result.tools.len(), 5);
+        let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_ref()).collect();
+        assert!(names.contains(&"ares_list_agents"));
+        assert!(names.contains(&"ares_run_agent"));
+        assert!(names.contains(&"ares_get_status"));
+        assert!(names.contains(&"ares_deploy_agent"));
+        assert!(names.contains(&"ares_get_usage"));
+    }
+
+    // 3. start_mcp_server returns error (does not panic) when auth fails
+    #[tokio::test]
+    async fn start_mcp_server_does_not_panic_on_auth_failure() {
+        let client = PostgresClient::new_test();
+        let pool = client.pool.clone();
+        let tenant_db = Arc::new(TenantDb::new(Arc::new(client)));
+        let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
+        std::env::remove_var("ARES_API_KEY");
+        let result = start_mcp_server(tenant_db, pool, "https://api.test.com").await;
+        assert!(result.is_err());
+    }
+
+    // 4. call_tool via ServerHandler: ares_list_agents
+    #[tokio::test]
+    async fn call_tool_list_agents_via_server_handler() {
+        let server = test_server_with_session().await;
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let ctx = dummy_request_context(running.peer().clone());
+        let request = CallToolRequestParam {
+            name: "ares_list_agents".into(),
+            arguments: None,
+        };
+        let result = server.call_tool(request, ctx).await.unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let text = tool_result_text(&result);
+        let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["total"], 0);
+    }
+
+    // 5. call_tool via ServerHandler: ares_run_agent
+    #[tokio::test]
+    async fn call_tool_run_agent_via_server_handler() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "response": "Hello",
+                "agent": "bot",
+                "context_id": "ctx-1"
+            })))
+            .mount(&mock)
+            .await;
+
+        let base = format!("http://127.0.0.1:{}", mock.address().port());
+        let server = test_server_with_session_on_url(&base).await;
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let ctx = dummy_request_context(running.peer().clone());
+        let request = CallToolRequestParam {
+            name: "ares_run_agent".into(),
+            arguments: serde_json::json!({
+                "agent_name": "bot",
+                "message": "hello"
+            })
+            .as_object()
+            .cloned(),
+        };
+        let result = server.call_tool(request, ctx).await.unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let text = tool_result_text(&result);
+        let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["response"], "Hello");
+    }
+
+    // 6. call_tool via ServerHandler: ares_get_status
+    #[tokio::test]
+    async fn call_tool_get_status_via_server_handler() {
+        let server = test_server_with_session().await;
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let ctx = dummy_request_context(running.peer().clone());
+        let request = CallToolRequestParam {
+            name: "ares_get_status".into(),
+            arguments: serde_json::json!({"context_id": "ctx-test"})
+                .as_object()
+                .cloned(),
+        };
+        let result = server.call_tool(request, ctx).await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    // 7. call_tool via ServerHandler: ares_deploy_agent
+    #[tokio::test]
+    async fn call_tool_deploy_agent_via_server_handler() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/user/agents/import"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "deployed-bot",
+                "action": "created",
+                "active": true,
+                "deployed_at": "2026-06-01T00:00:00Z"
+            })))
+            .mount(&mock)
+            .await;
+
+        let base = format!("http://127.0.0.1:{}", mock.address().port());
+        let server = test_server_with_session_on_url(&base).await;
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let ctx = dummy_request_context(running.peer().clone());
+        let request = CallToolRequestParam {
+            name: "ares_deploy_agent".into(),
+            arguments: serde_json::json!({"toon_config": "[agent]"})
+                .as_object()
+                .cloned(),
+        };
+        let result = server.call_tool(request, ctx).await.unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let text = tool_result_text(&result);
+        let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["agent_name"], "deployed-bot");
+    }
+
+    // 8. call_tool via ServerHandler: ares_get_usage
+    #[tokio::test]
+    async fn call_tool_get_usage_via_server_handler() {
+        let server = test_server_with_session().await;
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let ctx = dummy_request_context(running.peer().clone());
+        let request = CallToolRequestParam {
+            name: "ares_get_usage".into(),
+            arguments: None,
+        };
+        let result = server.call_tool(request, ctx).await.unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let text = tool_result_text(&result);
+        let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["tenant_id"], "test-tenant");
+    }
+
+    // 9. Quota enforcement via ServerHandler
+    #[tokio::test]
+    async fn call_tool_quota_exceeded_via_server_handler() {
+        let server = test_server_with_session_tier(TenantTier::Free).await;
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let ctx = dummy_request_context(running.peer().clone());
+        let request = CallToolRequestParam {
+            name: "ares_run_agent".into(),
+            arguments: serde_json::json!({
+                "agent_name": "bot",
+                "message": "hello"
+            })
+            .as_object()
+            .cloned(),
+        };
+        let result = server.call_tool(request, ctx).await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let text = tool_result_text(&result);
+        assert!(text.contains("Quota check failed"));
+    }
+
+    // 10. Session initialization flow via Service::handle_request
+    #[tokio::test]
+    async fn initialize_via_server_handler_returns_valid_result() {
+        let server = test_server().await;
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let ctx = dummy_request_context(running.peer().clone());
+        let request = ClientRequest::InitializeRequest(InitializeRequest {
+            method: Default::default(),
+            params: InitializeRequestParam {
+                protocol_version: ProtocolVersion::V_2024_11_05,
+                capabilities: rmcp::model::ClientCapabilities::default(),
+                client_info: rmcp::model::Implementation {
+                    name: "test".into(),
+                    title: None,
+                    version: "1.0".into(),
+                    icons: None,
+                    website_url: None,
+                },
+            },
+            extensions: Default::default(),
+        });
+        let result = rmcp::service::Service::<RoleServer>::handle_request(&server, request, ctx)
+            .await
+            .unwrap();
+        if let rmcp::model::ServerResult::InitializeResult(init) = result {
+            assert_eq!(init.protocol_version, ProtocolVersion::V_2024_11_05);
+            assert!(init.instructions.is_some());
+        } else {
+            panic!("Expected InitializeResult");
+        }
+    }
+
+    // 11. Extension tool registration and dispatch via ServerHandler
+    #[tokio::test]
+    async fn call_tool_extension_via_server_handler() {
+        let mut server = test_server_with_session().await;
+        server.register_extension(Arc::new(TestExtensionSuccess));
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let ctx = dummy_request_context(running.peer().clone());
+        let request = CallToolRequestParam {
+            name: "custom_tool".into(),
+            arguments: None,
+        };
+        let result = server.call_tool(request, ctx).await.unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let text = tool_result_text(&result);
+        assert_eq!(text, "custom result");
+    }
+
+    // 12. Error handling: invalid tool name via ServerHandler
+    #[tokio::test]
+    async fn call_tool_invalid_name_via_server_handler() {
+        let server = test_server_with_session().await;
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let ctx = dummy_request_context(running.peer().clone());
+        let request = CallToolRequestParam {
+            name: "invalid_tool".into(),
+            arguments: None,
+        };
+        let result = server.call_tool(request, ctx).await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let text = tool_result_text(&result);
+        assert!(text.contains("Unknown tool"));
+    }
+
+    // 12b. Error handling: malformed args via ServerHandler
+    #[tokio::test]
+    async fn call_tool_malformed_args_via_server_handler() {
+        let server = test_server_with_session().await;
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let ctx = dummy_request_context(running.peer().clone());
+        let request = CallToolRequestParam {
+            name: "ares_run_agent".into(),
+            arguments: serde_json::json!({
+                "agent_name": 12345,
+                "message": "hello"
+            })
+            .as_object()
+            .cloned(),
+        };
+        let result = server.call_tool(request, ctx).await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let text = tool_result_text(&result);
+        assert!(text.contains("Invalid arguments"));
+    }
+
+    // 13. Concurrent tool calls
+    #[tokio::test]
+    async fn concurrent_call_tools_via_server_handler() {
+        let server = test_server_with_session().await;
+        let (a, _b) = tokio::io::duplex(4096);
+        let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
+        let peer = running.peer().clone();
+
+        let mut handles = Vec::new();
+        for i in 0..5 {
+            let srv = server.clone();
+            let ctx = dummy_request_context(peer.clone());
+            let handle = tokio::spawn(async move {
+                let request = CallToolRequestParam {
+                    name: "ares_list_agents".into(),
+                    arguments: None,
+                };
+                let result = srv.call_tool(request, ctx).await.unwrap();
+                assert_ne!(result.is_error, Some(true), "call {} failed", i);
+            });
+            handles.push(handle);
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+    }
 }
+

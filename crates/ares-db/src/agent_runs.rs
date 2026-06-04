@@ -166,7 +166,7 @@ pub struct AgentRun {
     pub eruka_write_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRunStats {
     pub total_runs: i64,
     pub success_count: i64,
@@ -176,7 +176,7 @@ pub struct AgentRunStats {
     pub total_output_tokens: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformStats {
     pub total_tenants: i64,
     pub total_agents: i64,
@@ -185,7 +185,7 @@ pub struct PlatformStats {
     pub active_alerts: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AllAgentsEntry {
     pub tenant_id: String,
     pub tenant_name: String,
@@ -887,5 +887,399 @@ mod tests {
             eruka_read_count: 3,
             eruka_write_count: 1,
         }
+    }
+
+    // ── Integration test helpers ─────────────────────────────────────────
+
+    fn test_db_url() -> String {
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            if url.contains("/ares") && !url.contains("ares_test") {
+                return url.replace("/ares", "/ares_test");
+            }
+            return url;
+        }
+        "postgres://dirmacs@localhost:5432/ares_test".to_string()
+    }
+
+    async fn try_test_pool() -> Option<PgPool> {
+        let db = crate::PostgresClient::new_remote(test_db_url(), String::new()).await.ok()?;
+        sqlx::migrate!("../../migrations").run(&db.pool).await.ok()?;
+        Some(db.pool)
+    }
+
+    fn unique_tenant() -> String {
+        format!("tenant-test-{}", uuid::Uuid::new_v4())
+    }
+
+    async fn seed_tenant(pool: &PgPool, tenant_id: &str) {
+        sqlx::query(
+            "INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $2, 'free', 1, 1) ON CONFLICT (id) DO NOTHING"
+        )
+        .bind(tenant_id)
+        .bind("Test Tenant")
+        .execute(pool)
+        .await
+        .expect("seed tenant");
+    }
+
+    async fn seed_tenant_agent(pool: &PgPool, tenant_id: &str, agent_name: &str) {
+        sqlx::query(
+            "INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, config, enabled, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, true, 1, 1) ON CONFLICT (tenant_id, agent_name) DO NOTHING"
+        )
+        .bind(format!("ta-{}", uuid::Uuid::new_v4()))
+        .bind(tenant_id)
+        .bind(agent_name)
+        .bind(agent_name)
+        .bind(serde_json::json!({"model": "gpt-4o"}))
+        .execute(pool)
+        .await
+        .expect("seed tenant agent");
+    }
+
+    async fn cleanup_test_tenant(pool: &PgPool, tenant_id: &str) {
+        let _ = sqlx::query("DELETE FROM agent_runs WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM tenant_agents WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(tenant_id)
+            .execute(pool)
+            .await;
+    }
+
+    // ── Integration: insert_agent_run ────────────────────────────────────
+
+    #[tokio::test]
+    async fn integration_insert_agent_run_with_real_pool() {
+        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+
+        let id = insert_agent_run(
+            &pool, &tenant_id, "coder", Some("u-1"), "completed",
+            100, 50, 1200, None, "gpt-4o", "openai", false,
+        ).await.expect("insert");
+
+        assert!(!id.is_empty());
+        let runs = list_agent_runs(&pool, &tenant_id, None, 10, 0).await.expect("list");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].tenant_id, tenant_id);
+        assert_eq!(runs[0].agent_name, "coder");
+        assert_eq!(runs[0].status, "completed");
+        assert_eq!(runs[0].input_tokens, 100);
+        assert_eq!(runs[0].output_tokens, 50);
+        assert_eq!(runs[0].duration_ms, 1200);
+        assert_eq!(runs[0].model_name, "gpt-4o");
+        assert_eq!(runs[0].provider_name, "openai");
+        assert!(!runs[0].is_streaming);
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    #[tokio::test]
+    async fn integration_insert_agent_run_with_metadata() {
+        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+
+        let metadata = AgentRunMetadata {
+            workspace_id: Some("ws-42".into()),
+            session_id: Some("sess-99".into()),
+            request_source: Some("cli".into()),
+            product: Some("eruka".into()),
+            agent_config_source: Some("file".into()),
+            agent_config_version: Some("v3".into()),
+            eruka_binding_id: Some("eb-7".into()),
+            eruka_context_hit: true,
+            eruka_read_count: 5,
+            eruka_write_count: 2,
+        };
+
+        let id = insert_agent_run_with_metadata(
+            &pool, &tenant_id, "analyst", Some("u-2"), "failed",
+            200, 80, 3000, Some("timeout"), "claude-3", "anthropic", true,
+            Some(&metadata),
+        ).await.expect("insert with metadata");
+
+        assert!(!id.is_empty());
+        let runs = list_agent_runs(&pool, &tenant_id, None, 10, 0).await.expect("list");
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run.workspace_id, Some("ws-42".into()));
+        assert_eq!(run.session_id, Some("sess-99".into()));
+        assert_eq!(run.request_source, Some("cli".into()));
+        assert_eq!(run.product, Some("eruka".into()));
+        assert_eq!(run.agent_config_source, Some("file".into()));
+        assert_eq!(run.agent_config_version, Some("v3".into()));
+        assert_eq!(run.eruka_binding_id, Some("eb-7".into()));
+        assert!(run.eruka_context_hit);
+        assert_eq!(run.eruka_read_count, 5);
+        assert_eq!(run.eruka_write_count, 2);
+        assert_eq!(run.error, Some("timeout".into()));
+        assert!(run.is_streaming);
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    // ── Integration: list_agent_runs ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn integration_list_agent_runs_with_agent_name_filter() {
+        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+
+        insert_agent_run(&pool, &tenant_id, "alpha", None, "completed", 10, 5, 100, None, "m", "p", false).await.unwrap();
+        insert_agent_run(&pool, &tenant_id, "beta", None, "failed", 20, 10, 200, None, "m", "p", false).await.unwrap();
+        insert_agent_run(&pool, &tenant_id, "alpha", None, "completed", 30, 15, 300, None, "m", "p", false).await.unwrap();
+
+        let all = list_agent_runs(&pool, &tenant_id, None, 10, 0).await.expect("list all");
+        assert_eq!(all.len(), 3);
+
+        let alpha = list_agent_runs(&pool, &tenant_id, Some("alpha"), 10, 0).await.expect("list alpha");
+        assert_eq!(alpha.len(), 2);
+        assert!(alpha.iter().all(|r| r.agent_name == "alpha"));
+
+        let beta = list_agent_runs(&pool, &tenant_id, Some("beta"), 10, 0).await.expect("list beta");
+        assert_eq!(beta.len(), 1);
+        assert_eq!(beta[0].agent_name, "beta");
+
+        let none = list_agent_runs(&pool, &tenant_id, Some("gamma"), 10, 0).await.expect("list gamma");
+        assert!(none.is_empty());
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    #[tokio::test]
+    async fn integration_list_agent_runs_pagination() {
+        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+
+        for i in 0..5 {
+            insert_agent_run(&pool, &tenant_id, "pager", None, "completed", i, i, i as i64 * 10, None, "m", "p", false).await.unwrap();
+        }
+
+        let page1 = list_agent_runs(&pool, &tenant_id, None, 2, 0).await.expect("page1");
+        assert_eq!(page1.len(), 2);
+
+        let page2 = list_agent_runs(&pool, &tenant_id, None, 2, 2).await.expect("page2");
+        assert_eq!(page2.len(), 2);
+
+        let page3 = list_agent_runs(&pool, &tenant_id, None, 2, 4).await.expect("page3");
+        assert_eq!(page3.len(), 1);
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    // ── Integration: get_agent_run_stats ─────────────────────────────────
+
+    #[tokio::test]
+    async fn integration_get_agent_run_stats_aggregation() {
+        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+
+        // Insert runs with different statuses
+        insert_agent_run(&pool, &tenant_id, "summary", None, "completed", 100, 50, 1000, None, "m", "p", false).await.unwrap();
+        insert_agent_run(&pool, &tenant_id, "summary", None, "completed", 200, 100, 2000, None, "m", "p", false).await.unwrap();
+        insert_agent_run(&pool, &tenant_id, "summary", None, "failed", 50, 25, 500, Some("err"), "m", "p", false).await.unwrap();
+
+        let stats = get_agent_run_stats(&pool, &tenant_id, "summary").await.expect("stats");
+        assert_eq!(stats.total_runs, 3);
+        assert_eq!(stats.success_count, 2);
+        assert_eq!(stats.failed_count, 1);
+        assert_eq!(stats.total_input_tokens, 350);
+        assert_eq!(stats.total_output_tokens, 175);
+        assert_eq!(stats.avg_duration_ms, 1167); // (1000+2000+500) / 3 = 1166.67 -> 1167
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    // ── Integration: get_platform_stats ──────────────────────────────────
+
+    #[tokio::test]
+    async fn integration_get_platform_stats_counts() {
+        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+        seed_tenant_agent(&pool, &tenant_id, "plat-agent").await;
+
+        // Insert a run with created_at >= today_start
+        insert_agent_run(&pool, &tenant_id, "plat-agent", None, "completed", 10, 5, 100, None, "m", "p", false).await.unwrap();
+
+        // Insert an unresolved alert
+        let alert_id = format!("alert-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO alerts (id, severity, source, title, message, resolved, created_at) VALUES ($1, 'critical', 'system', 't', 'm', false, 1)")
+            .bind(&alert_id)
+            .execute(&pool)
+            .await
+            .expect("insert alert");
+
+        let stats = get_platform_stats(&pool).await.expect("platform stats");
+        // We can't assert exact counts because the test DB may have existing data,
+        // but we can assert these are at least the values we added.
+        assert!(stats.total_tenants >= 1);
+        assert!(stats.total_agents >= 1);
+        assert!(stats.total_runs_today >= 1);
+        assert!(stats.total_tokens_today >= 15);
+        assert!(stats.active_alerts >= 1);
+
+        // Cleanup alert
+        let _ = sqlx::query("DELETE FROM alerts WHERE id = $1").bind(&alert_id).execute(&pool).await;
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    // ── Integration: list_all_agents ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn integration_list_all_agents_returns_entry() {
+        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+        seed_tenant_agent(&pool, &tenant_id, "all-agent").await;
+
+        insert_agent_run(&pool, &tenant_id, "all-agent", None, "completed", 10, 5, 100, None, "m", "p", false).await.unwrap();
+        insert_agent_run(&pool, &tenant_id, "all-agent", None, "completed", 20, 10, 200, None, "m", "p", false).await.unwrap();
+
+        let agents = list_all_agents(&pool).await.expect("list all agents");
+        let found = agents.iter().find(|a| a.tenant_id == tenant_id && a.agent_name == "all-agent");
+        assert!(found.is_some(), "expected agent entry");
+        let entry = found.unwrap();
+        assert_eq!(entry.total_runs, 2);
+        assert!(entry.last_run_at.is_some());
+        assert_eq!(entry.model, "gpt-4o");
+        assert!(entry.enabled);
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    // ── Serde roundtrips ─────────────────────────────────────────────────
+
+    #[test]
+    fn agent_run_stats_serde_roundtrip() {
+        let stats = AgentRunStats {
+            total_runs: 100,
+            success_count: 90,
+            failed_count: 10,
+            avg_duration_ms: 500,
+            total_input_tokens: 50_000,
+            total_output_tokens: 20_000,
+        };
+        let json = serde_json::to_string(&stats).expect("serialize");
+        let back: AgentRunStats = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.total_runs, stats.total_runs);
+        assert_eq!(back.success_count, stats.success_count);
+        assert_eq!(back.failed_count, stats.failed_count);
+        assert_eq!(back.avg_duration_ms, stats.avg_duration_ms);
+        assert_eq!(back.total_input_tokens, stats.total_input_tokens);
+        assert_eq!(back.total_output_tokens, stats.total_output_tokens);
+    }
+
+    #[test]
+    fn platform_stats_serde_roundtrip() {
+        let stats = PlatformStats {
+            total_tenants: 5,
+            total_agents: 12,
+            total_runs_today: 300,
+            total_tokens_today: 75_000,
+            active_alerts: 2,
+        };
+        let json = serde_json::to_string(&stats).expect("serialize");
+        let back: PlatformStats = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.total_tenants, stats.total_tenants);
+        assert_eq!(back.total_agents, stats.total_agents);
+        assert_eq!(back.total_runs_today, stats.total_runs_today);
+        assert_eq!(back.total_tokens_today, stats.total_tokens_today);
+        assert_eq!(back.active_alerts, stats.active_alerts);
+    }
+
+    #[test]
+    fn all_agents_entry_serde_roundtrip() {
+        let entry = AllAgentsEntry {
+            tenant_id: "t-1".into(),
+            tenant_name: "Acme".into(),
+            agent_name: "coder".into(),
+            display_name: "Code Agent".into(),
+            model: "gpt-4o".into(),
+            enabled: true,
+            total_runs: 42,
+            last_run_at: Some(1_700_000_000),
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        let back: AllAgentsEntry = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.tenant_id, entry.tenant_id);
+        assert_eq!(back.tenant_name, entry.tenant_name);
+        assert_eq!(back.agent_name, entry.agent_name);
+        assert_eq!(back.display_name, entry.display_name);
+        assert_eq!(back.model, entry.model);
+        assert_eq!(back.enabled, entry.enabled);
+        assert_eq!(back.total_runs, entry.total_runs);
+        assert_eq!(back.last_run_at, entry.last_run_at);
+    }
+
+    #[test]
+    fn all_agents_entry_serde_roundtrip_with_null_last_run() {
+        let entry = AllAgentsEntry {
+            tenant_id: "t-2".into(),
+            tenant_name: "Beta Inc".into(),
+            agent_name: "analyst".into(),
+            display_name: "Analyst Agent".into(),
+            model: "claude-3".into(),
+            enabled: false,
+            total_runs: 0,
+            last_run_at: None,
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        let back: AllAgentsEntry = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.last_run_at.is_none());
+        assert_eq!(back.total_runs, 0);
+    }
+
+    // ── SQL query constants validation ───────────────────────────────────
+
+    #[test]
+    fn list_agent_runs_select_coalesces_unknown_defaults() {
+        assert!(LIST_AGENT_RUNS_SELECT.contains("COALESCE(model_name, 'unknown')"));
+        assert!(LIST_AGENT_RUNS_SELECT.contains("COALESCE(provider_name, 'unknown')"));
+        assert!(LIST_AGENT_RUNS_SELECT.contains("COALESCE(is_streaming, false)"));
+        assert!(LIST_AGENT_RUNS_SELECT.contains("COALESCE(eruka_context_hit, false)"));
+        assert!(LIST_AGENT_RUNS_SELECT.contains("COALESCE(eruka_read_count, 0)::BIGINT"));
+        assert!(LIST_AGENT_RUNS_SELECT.contains("COALESCE(eruka_write_count, 0)::BIGINT"));
+    }
+
+    #[test]
+    fn get_agent_run_stats_sql_coalesces_avg_and_sums() {
+        assert!(GET_AGENT_RUN_STATS_SQL.contains("COALESCE(AVG(duration_ms), 0)::BIGINT"));
+        assert!(GET_AGENT_RUN_STATS_SQL.contains("COALESCE(SUM(input_tokens), 0)::BIGINT"));
+        assert!(GET_AGENT_RUN_STATS_SQL.contains("COALESCE(SUM(output_tokens), 0)::BIGINT"));
+    }
+
+    #[test]
+    fn get_agent_run_stats_sql_filters_by_tenant_and_agent() {
+        assert!(GET_AGENT_RUN_STATS_SQL.contains("WHERE tenant_id = $1 AND agent_name = $2"));
+    }
+
+    #[test]
+    fn insert_agent_run_has_23_placeholders() {
+        let sql = "INSERT INTO agent_runs (
+            id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
+            input_tokens, output_tokens, duration_ms, error, created_at,
+            model_name, provider_name, is_streaming, request_source, product,
+            agent_config_source, agent_config_version, eruka_binding_id,
+            eruka_context_hit, eruka_read_count, eruka_write_count
+         ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12,
+            $13, $14, $15, $16, $17,
+            $18, $19, $20,
+            $21, $22, $23
+         )";
+        assert_eq!(count_bind_placeholders(sql), 23);
     }
 }

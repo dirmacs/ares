@@ -391,6 +391,7 @@ timeout_secs = 10
     }
 
     use crate::extension::NoOpMcpExtension;
+    use async_trait::async_trait;
     use rmcp::model::Content;
 
     fn sample_tool(name: &str) -> Tool {

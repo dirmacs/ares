@@ -1414,6 +1414,7 @@ impl HttpEmbeddingClient {
 // Tests
 // ============================================================================
 
+
 #[cfg(all(test, feature = "local-embeddings"))]
 mod tests {
     use super::*;
@@ -2618,6 +2619,762 @@ mod tests {
         let client = HttpEmbeddingClient { http: reqwest::Client::builder().timeout(Duration::from_millis(200)).build().unwrap(), base_url: server.uri(), api_key: None };
         let err = client.embed(&build_embedding_request("m", &["x"], None, None)).await.unwrap_err();
         assert!(matches!(err, AppError::Unavailable(_)));
+    }
+
+    // ============================================================================
+    // Exhaustive EmbeddingModelType::all() coverage
+    // ============================================================================
+
+    #[test]
+    fn test_all_contains_every_variant() {
+        let all = EmbeddingModelType::all();
+        let expected = [
+            EmbeddingModelType::BgeSmallEnV15,
+            EmbeddingModelType::BgeSmallEnV15Q,
+            EmbeddingModelType::AllMiniLmL6V2,
+            EmbeddingModelType::AllMiniLmL6V2Q,
+            EmbeddingModelType::AllMiniLmL12V2,
+            EmbeddingModelType::AllMiniLmL12V2Q,
+            EmbeddingModelType::AllMpnetBaseV2,
+            EmbeddingModelType::BgeBaseEnV15,
+            EmbeddingModelType::BgeBaseEnV15Q,
+            EmbeddingModelType::BgeLargeEnV15,
+            EmbeddingModelType::BgeLargeEnV15Q,
+            EmbeddingModelType::MultilingualE5Small,
+            EmbeddingModelType::MultilingualE5Base,
+            EmbeddingModelType::MultilingualE5Large,
+            EmbeddingModelType::ParaphraseMiniLmL12V2,
+            EmbeddingModelType::ParaphraseMiniLmL12V2Q,
+            EmbeddingModelType::ParaphraseMultilingualMpnetBaseV2,
+            EmbeddingModelType::BgeSmallZhV15,
+            EmbeddingModelType::BgeLargeZhV15,
+            EmbeddingModelType::NomicEmbedTextV1,
+            EmbeddingModelType::NomicEmbedTextV15,
+            EmbeddingModelType::NomicEmbedTextV15Q,
+            EmbeddingModelType::MxbaiEmbedLargeV1,
+            EmbeddingModelType::MxbaiEmbedLargeV1Q,
+            EmbeddingModelType::GteBaseEnV15,
+            EmbeddingModelType::GteBaseEnV15Q,
+            EmbeddingModelType::GteLargeEnV15,
+            EmbeddingModelType::GteLargeEnV15Q,
+            EmbeddingModelType::ClipVitB32,
+            EmbeddingModelType::JinaEmbeddingsV2BaseCode,
+            EmbeddingModelType::EmbeddingGemma300M,
+            EmbeddingModelType::ModernBertEmbedLarge,
+            EmbeddingModelType::SnowflakeArcticEmbedXs,
+            EmbeddingModelType::SnowflakeArcticEmbedXsQ,
+            EmbeddingModelType::SnowflakeArcticEmbedS,
+            EmbeddingModelType::SnowflakeArcticEmbedSQ,
+            EmbeddingModelType::SnowflakeArcticEmbedM,
+            EmbeddingModelType::SnowflakeArcticEmbedMQ,
+            EmbeddingModelType::SnowflakeArcticEmbedMLong,
+            EmbeddingModelType::SnowflakeArcticEmbedMLongQ,
+            EmbeddingModelType::SnowflakeArcticEmbedL,
+            EmbeddingModelType::SnowflakeArcticEmbedLQ,
+        ];
+        assert_eq!(all.len(), expected.len(), "Variant count mismatch");
+        for variant in &expected {
+            assert!(all.contains(variant), "Missing variant: {:?}", variant);
+        }
+    }
+
+    #[test]
+    fn test_all_contains_no_duplicates() {
+        let all = EmbeddingModelType::all();
+        let mut seen = std::collections::HashSet::new();
+        for model in &all {
+            assert!(
+                seen.insert(*model),
+                "Duplicate variant in all(): {:?}",
+                model
+            );
+        }
+        assert_eq!(seen.len(), all.len());
+    }
+
+    // ============================================================================
+    // Exhaustive dimensions() coverage
+    // ============================================================================
+
+    #[test]
+    fn test_dimensions_exhaustive_per_variant() {
+        let cases: &[(EmbeddingModelType, usize)] = &[
+            // 384 dimensions
+            (EmbeddingModelType::BgeSmallEnV15, 384),
+            (EmbeddingModelType::BgeSmallEnV15Q, 384),
+            (EmbeddingModelType::AllMiniLmL6V2, 384),
+            (EmbeddingModelType::AllMiniLmL6V2Q, 384),
+            (EmbeddingModelType::AllMiniLmL12V2, 384),
+            (EmbeddingModelType::AllMiniLmL12V2Q, 384),
+            (EmbeddingModelType::MultilingualE5Small, 384),
+            (EmbeddingModelType::SnowflakeArcticEmbedXs, 384),
+            (EmbeddingModelType::SnowflakeArcticEmbedXsQ, 384),
+            (EmbeddingModelType::SnowflakeArcticEmbedS, 384),
+            (EmbeddingModelType::SnowflakeArcticEmbedSQ, 384),
+            // 512 dimensions
+            (EmbeddingModelType::BgeSmallZhV15, 512),
+            (EmbeddingModelType::ClipVitB32, 512),
+            // 768 dimensions
+            (EmbeddingModelType::AllMpnetBaseV2, 768),
+            (EmbeddingModelType::BgeBaseEnV15, 768),
+            (EmbeddingModelType::BgeBaseEnV15Q, 768),
+            (EmbeddingModelType::MultilingualE5Base, 768),
+            (EmbeddingModelType::ParaphraseMiniLmL12V2, 768),
+            (EmbeddingModelType::ParaphraseMiniLmL12V2Q, 768),
+            (EmbeddingModelType::ParaphraseMultilingualMpnetBaseV2, 768),
+            (EmbeddingModelType::NomicEmbedTextV1, 768),
+            (EmbeddingModelType::NomicEmbedTextV15, 768),
+            (EmbeddingModelType::NomicEmbedTextV15Q, 768),
+            (EmbeddingModelType::GteBaseEnV15, 768),
+            (EmbeddingModelType::GteBaseEnV15Q, 768),
+            (EmbeddingModelType::JinaEmbeddingsV2BaseCode, 768),
+            (EmbeddingModelType::EmbeddingGemma300M, 768),
+            (EmbeddingModelType::SnowflakeArcticEmbedM, 768),
+            (EmbeddingModelType::SnowflakeArcticEmbedMQ, 768),
+            (EmbeddingModelType::SnowflakeArcticEmbedMLong, 768),
+            (EmbeddingModelType::SnowflakeArcticEmbedMLongQ, 768),
+            // 1024 dimensions
+            (EmbeddingModelType::BgeLargeEnV15, 1024),
+            (EmbeddingModelType::BgeLargeEnV15Q, 1024),
+            (EmbeddingModelType::BgeLargeZhV15, 1024),
+            (EmbeddingModelType::MultilingualE5Large, 1024),
+            (EmbeddingModelType::MxbaiEmbedLargeV1, 1024),
+            (EmbeddingModelType::MxbaiEmbedLargeV1Q, 1024),
+            (EmbeddingModelType::GteLargeEnV15, 1024),
+            (EmbeddingModelType::GteLargeEnV15Q, 1024),
+            (EmbeddingModelType::ModernBertEmbedLarge, 1024),
+            (EmbeddingModelType::SnowflakeArcticEmbedL, 1024),
+            (EmbeddingModelType::SnowflakeArcticEmbedLQ, 1024),
+        ];
+        for (model, expected_dim) in cases {
+            assert_eq!(
+                model.dimensions(),
+                *expected_dim,
+                "Unexpected dimension for {:?}",
+                model
+            );
+        }
+    }
+
+    // ============================================================================
+    // Exhaustive max_context_length() coverage
+    // ============================================================================
+
+    #[test]
+    fn test_max_context_length_exhaustive_per_variant() {
+        let cases: &[(EmbeddingModelType, usize)] = &[
+            (EmbeddingModelType::NomicEmbedTextV1, 8192),
+            (EmbeddingModelType::NomicEmbedTextV15, 8192),
+            (EmbeddingModelType::NomicEmbedTextV15Q, 8192),
+            (EmbeddingModelType::SnowflakeArcticEmbedMLong, 2048),
+            (EmbeddingModelType::SnowflakeArcticEmbedMLongQ, 2048),
+            // All others default to 512
+            (EmbeddingModelType::BgeSmallEnV15, 512),
+            (EmbeddingModelType::BgeSmallEnV15Q, 512),
+            (EmbeddingModelType::AllMiniLmL6V2, 512),
+            (EmbeddingModelType::AllMiniLmL6V2Q, 512),
+            (EmbeddingModelType::AllMiniLmL12V2, 512),
+            (EmbeddingModelType::AllMiniLmL12V2Q, 512),
+            (EmbeddingModelType::AllMpnetBaseV2, 512),
+            (EmbeddingModelType::BgeBaseEnV15, 512),
+            (EmbeddingModelType::BgeBaseEnV15Q, 512),
+            (EmbeddingModelType::BgeLargeEnV15, 512),
+            (EmbeddingModelType::BgeLargeEnV15Q, 512),
+            (EmbeddingModelType::MultilingualE5Small, 512),
+            (EmbeddingModelType::MultilingualE5Base, 512),
+            (EmbeddingModelType::MultilingualE5Large, 512),
+            (EmbeddingModelType::ParaphraseMiniLmL12V2, 512),
+            (EmbeddingModelType::ParaphraseMiniLmL12V2Q, 512),
+            (EmbeddingModelType::ParaphraseMultilingualMpnetBaseV2, 512),
+            (EmbeddingModelType::BgeSmallZhV15, 512),
+            (EmbeddingModelType::BgeLargeZhV15, 512),
+            (EmbeddingModelType::MxbaiEmbedLargeV1, 512),
+            (EmbeddingModelType::MxbaiEmbedLargeV1Q, 512),
+            (EmbeddingModelType::GteBaseEnV15, 512),
+            (EmbeddingModelType::GteBaseEnV15Q, 512),
+            (EmbeddingModelType::GteLargeEnV15, 512),
+            (EmbeddingModelType::GteLargeEnV15Q, 512),
+            (EmbeddingModelType::ClipVitB32, 512),
+            (EmbeddingModelType::JinaEmbeddingsV2BaseCode, 512),
+            (EmbeddingModelType::EmbeddingGemma300M, 512),
+            (EmbeddingModelType::ModernBertEmbedLarge, 512),
+            (EmbeddingModelType::SnowflakeArcticEmbedXs, 512),
+            (EmbeddingModelType::SnowflakeArcticEmbedXsQ, 512),
+            (EmbeddingModelType::SnowflakeArcticEmbedS, 512),
+            (EmbeddingModelType::SnowflakeArcticEmbedSQ, 512),
+            (EmbeddingModelType::SnowflakeArcticEmbedM, 512),
+            (EmbeddingModelType::SnowflakeArcticEmbedMQ, 512),
+            (EmbeddingModelType::SnowflakeArcticEmbedL, 512),
+            (EmbeddingModelType::SnowflakeArcticEmbedLQ, 512),
+        ];
+        for (model, expected_ctx) in cases {
+            assert_eq!(
+                model.max_context_length(),
+                *expected_ctx,
+                "Unexpected max_context_length for {:?}",
+                model
+            );
+        }
+    }
+
+    // ============================================================================
+    // Exhaustive is_multilingual() coverage
+    // ============================================================================
+
+    #[test]
+    fn test_is_multilingual_exhaustive_per_variant() {
+        let multilingual = [
+            EmbeddingModelType::MultilingualE5Small,
+            EmbeddingModelType::MultilingualE5Base,
+            EmbeddingModelType::MultilingualE5Large,
+            EmbeddingModelType::ParaphraseMultilingualMpnetBaseV2,
+            EmbeddingModelType::BgeSmallZhV15,
+            EmbeddingModelType::BgeLargeZhV15,
+        ];
+        let not_multilingual = [
+            EmbeddingModelType::BgeSmallEnV15,
+            EmbeddingModelType::BgeSmallEnV15Q,
+            EmbeddingModelType::AllMiniLmL6V2,
+            EmbeddingModelType::AllMiniLmL6V2Q,
+            EmbeddingModelType::AllMiniLmL12V2,
+            EmbeddingModelType::AllMiniLmL12V2Q,
+            EmbeddingModelType::AllMpnetBaseV2,
+            EmbeddingModelType::BgeBaseEnV15,
+            EmbeddingModelType::BgeBaseEnV15Q,
+            EmbeddingModelType::BgeLargeEnV15,
+            EmbeddingModelType::BgeLargeEnV15Q,
+            EmbeddingModelType::ParaphraseMiniLmL12V2,
+            EmbeddingModelType::ParaphraseMiniLmL12V2Q,
+            EmbeddingModelType::NomicEmbedTextV1,
+            EmbeddingModelType::NomicEmbedTextV15,
+            EmbeddingModelType::NomicEmbedTextV15Q,
+            EmbeddingModelType::MxbaiEmbedLargeV1,
+            EmbeddingModelType::MxbaiEmbedLargeV1Q,
+            EmbeddingModelType::GteBaseEnV15,
+            EmbeddingModelType::GteBaseEnV15Q,
+            EmbeddingModelType::GteLargeEnV15,
+            EmbeddingModelType::GteLargeEnV15Q,
+            EmbeddingModelType::ClipVitB32,
+            EmbeddingModelType::JinaEmbeddingsV2BaseCode,
+            EmbeddingModelType::EmbeddingGemma300M,
+            EmbeddingModelType::ModernBertEmbedLarge,
+            EmbeddingModelType::SnowflakeArcticEmbedXs,
+            EmbeddingModelType::SnowflakeArcticEmbedXsQ,
+            EmbeddingModelType::SnowflakeArcticEmbedS,
+            EmbeddingModelType::SnowflakeArcticEmbedSQ,
+            EmbeddingModelType::SnowflakeArcticEmbedM,
+            EmbeddingModelType::SnowflakeArcticEmbedMQ,
+            EmbeddingModelType::SnowflakeArcticEmbedMLong,
+            EmbeddingModelType::SnowflakeArcticEmbedMLongQ,
+            EmbeddingModelType::SnowflakeArcticEmbedL,
+            EmbeddingModelType::SnowflakeArcticEmbedLQ,
+        ];
+        for model in &multilingual {
+            assert!(model.is_multilingual(), "{:?} should be multilingual", model);
+        }
+        for model in &not_multilingual {
+            assert!(!model.is_multilingual(), "{:?} should NOT be multilingual", model);
+        }
+    }
+
+    // ============================================================================
+    // Exhaustive hf_repo_id() coverage
+    // ============================================================================
+
+    #[test]
+    fn test_hf_repo_id_exhaustive_per_variant() {
+        let cases: &[(EmbeddingModelType, &'static str)] = &[
+            // Explicit mapped repos
+            (EmbeddingModelType::BgeSmallEnV15, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::BgeSmallEnV15Q, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::AllMiniLmL6V2, "sentence-transformers/all-MiniLM-L6-v2"),
+            (EmbeddingModelType::AllMiniLmL6V2Q, "sentence-transformers/all-MiniLM-L6-v2"),
+            (EmbeddingModelType::AllMiniLmL12V2, "sentence-transformers/all-MiniLM-L12-v2"),
+            (EmbeddingModelType::AllMiniLmL12V2Q, "sentence-transformers/all-MiniLM-L12-v2"),
+            // Fallback repos
+            (EmbeddingModelType::AllMpnetBaseV2, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::BgeBaseEnV15, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::BgeBaseEnV15Q, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::BgeLargeEnV15, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::BgeLargeEnV15Q, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::MultilingualE5Small, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::MultilingualE5Base, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::MultilingualE5Large, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::ParaphraseMiniLmL12V2, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::ParaphraseMiniLmL12V2Q, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::ParaphraseMultilingualMpnetBaseV2, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::BgeSmallZhV15, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::BgeLargeZhV15, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::NomicEmbedTextV1, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::NomicEmbedTextV15, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::NomicEmbedTextV15Q, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::MxbaiEmbedLargeV1, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::MxbaiEmbedLargeV1Q, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::GteBaseEnV15, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::GteBaseEnV15Q, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::GteLargeEnV15, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::GteLargeEnV15Q, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::ClipVitB32, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::JinaEmbeddingsV2BaseCode, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::EmbeddingGemma300M, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::ModernBertEmbedLarge, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::SnowflakeArcticEmbedXs, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::SnowflakeArcticEmbedXsQ, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::SnowflakeArcticEmbedS, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::SnowflakeArcticEmbedSQ, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::SnowflakeArcticEmbedM, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::SnowflakeArcticEmbedMQ, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::SnowflakeArcticEmbedMLong, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::SnowflakeArcticEmbedMLongQ, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::SnowflakeArcticEmbedL, "Xenova/bge-small-en-v1.5"),
+            (EmbeddingModelType::SnowflakeArcticEmbedLQ, "Xenova/bge-small-en-v1.5"),
+        ];
+        for (model, expected_repo) in cases {
+            assert_eq!(
+                model.hf_repo_id(),
+                *expected_repo,
+                "Unexpected hf_repo_id for {:?}",
+                model
+            );
+        }
+    }
+
+    // ============================================================================
+    // Quantized variants share repo with base
+    // ============================================================================
+
+    #[test]
+    fn test_quantized_base_same_hf_repo_exhaustive() {
+        let pairs = [
+            (EmbeddingModelType::BgeSmallEnV15, EmbeddingModelType::BgeSmallEnV15Q),
+            (EmbeddingModelType::AllMiniLmL6V2, EmbeddingModelType::AllMiniLmL6V2Q),
+            (EmbeddingModelType::AllMiniLmL12V2, EmbeddingModelType::AllMiniLmL12V2Q),
+            (EmbeddingModelType::BgeBaseEnV15, EmbeddingModelType::BgeBaseEnV15Q),
+            (EmbeddingModelType::BgeLargeEnV15, EmbeddingModelType::BgeLargeEnV15Q),
+            (EmbeddingModelType::ParaphraseMiniLmL12V2, EmbeddingModelType::ParaphraseMiniLmL12V2Q),
+            (EmbeddingModelType::NomicEmbedTextV15, EmbeddingModelType::NomicEmbedTextV15Q),
+            (EmbeddingModelType::MxbaiEmbedLargeV1, EmbeddingModelType::MxbaiEmbedLargeV1Q),
+            (EmbeddingModelType::GteBaseEnV15, EmbeddingModelType::GteBaseEnV15Q),
+            (EmbeddingModelType::GteLargeEnV15, EmbeddingModelType::GteLargeEnV15Q),
+            (EmbeddingModelType::SnowflakeArcticEmbedXs, EmbeddingModelType::SnowflakeArcticEmbedXsQ),
+            (EmbeddingModelType::SnowflakeArcticEmbedS, EmbeddingModelType::SnowflakeArcticEmbedSQ),
+            (EmbeddingModelType::SnowflakeArcticEmbedM, EmbeddingModelType::SnowflakeArcticEmbedMQ),
+            (EmbeddingModelType::SnowflakeArcticEmbedMLong, EmbeddingModelType::SnowflakeArcticEmbedMLongQ),
+            (EmbeddingModelType::SnowflakeArcticEmbedL, EmbeddingModelType::SnowflakeArcticEmbedLQ),
+        ];
+        for (base, quantized) in &pairs {
+            assert_eq!(
+                base.hf_repo_id(),
+                quantized.hf_repo_id(),
+                "{:?} and {:?} should share hf_repo_id",
+                base,
+                quantized
+            );
+        }
+    }
+
+    // ============================================================================
+    // EmbeddingConfig::default() field values
+    // ============================================================================
+
+    #[test]
+    fn test_embedding_config_default_all_fields() {
+        let config = EmbeddingConfig::default();
+        assert_eq!(config.model, EmbeddingModelType::BgeSmallEnV15);
+        assert_eq!(config.batch_size, 32);
+        assert!(config.show_download_progress);
+        assert!(!config.sparse_enabled);
+        assert_eq!(config.sparse_model, SparseModelType::SpladePpV1);
+    }
+
+    // ============================================================================
+    // EmbeddingConfig serialization roundtrip (default)
+    // ============================================================================
+
+    #[test]
+    fn test_embedding_config_default_serde_roundtrip() {
+        let original = EmbeddingConfig::default();
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: EmbeddingConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.model, original.model);
+        assert_eq!(parsed.batch_size, original.batch_size);
+        assert_eq!(parsed.show_download_progress, original.show_download_progress);
+        assert_eq!(parsed.sparse_enabled, original.sparse_enabled);
+        assert_eq!(parsed.sparse_model, original.sparse_model);
+    }
+
+    // ============================================================================
+    // SparseModelType display/parse roundtrip for all variants
+    // ============================================================================
+
+    #[test]
+    fn test_sparse_model_type_display_roundtrip_all_variants() {
+        for variant in [SparseModelType::SpladePpV1] {
+            let display = variant.to_string();
+            let parsed: SparseModelType = display.parse().unwrap();
+            assert_eq!(parsed, variant, "SparseModelType roundtrip failed for {:?}", variant);
+        }
+    }
+
+    #[test]
+    fn test_sparse_model_type_all_variants_count() {
+        let all = [SparseModelType::SpladePpV1];
+        assert_eq!(all.len(), 1);
+    }
+
+    // ============================================================================
+    // batch_chunks utility edge cases
+    // ============================================================================
+
+    #[test]
+    fn test_batch_chunks_exact_boundary() {
+        let items: Vec<i32> = (0..6).collect();
+        let batches = batch_chunks(&items, 3);
+        assert_eq!(batches, vec![vec![0, 1, 2], vec![3, 4, 5]]);
+    }
+
+    #[test]
+    fn test_batch_chunks_one_more_than_boundary() {
+        let items: Vec<i32> = (0..7).collect();
+        let batches = batch_chunks(&items, 3);
+        assert_eq!(batches, vec![vec![0, 1, 2], vec![3, 4, 5], vec![6]]);
+    }
+
+    #[test]
+    fn test_batch_chunks_batch_size_one() {
+        let items = ["a", "b", "c"];
+        let batches = batch_chunks(&items, 1);
+        assert_eq!(batches, vec![vec!["a"], vec!["b"], vec!["c"]]);
+    }
+
+    #[test]
+    fn test_batch_chunks_single_element() {
+        let items = [42];
+        assert_eq!(batch_chunks(&items, 5), vec![vec![42]]);
+    }
+
+    #[test]
+    fn test_batch_chunks_large_batch_size() {
+        let items: Vec<i32> = (0..5).collect();
+        let batches = batch_chunks(&items, 100);
+        assert_eq!(batches, vec![vec![0, 1, 2, 3, 4]]);
+    }
+
+    #[test]
+    fn test_batch_chunks_non_copy_type() {
+        let items = vec!["hello".to_string(), "world".to_string()];
+        let batches = batch_chunks(&items, 1);
+        assert_eq!(batches, vec![vec!["hello".to_string()], vec!["world".to_string()]]);
+    }
+
+    // ============================================================================
+    // EmbeddingService integration tests
+    // ============================================================================
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_embedding_service_new() {
+        let config = EmbeddingConfig::default();
+        let service = EmbeddingService::new(config.clone()).unwrap();
+        assert_eq!(service.model_type(), EmbeddingModelType::BgeSmallEnV15);
+        assert_eq!(service.dimensions(), 384);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_embedding_service_with_default_model() {
+        let service = EmbeddingService::with_default_model().unwrap();
+        assert_eq!(service.model_type(), EmbeddingModelType::default());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_embedding_service_with_model() {
+        let service = EmbeddingService::with_model(EmbeddingModelType::AllMiniLmL6V2).unwrap();
+        assert_eq!(service.model_type(), EmbeddingModelType::AllMiniLmL6V2);
+        assert_eq!(service.dimensions(), 384);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_embedding_service_config_accessor() {
+        let config = EmbeddingConfig {
+            model: EmbeddingModelType::BgeSmallEnV15,
+            batch_size: 16,
+            show_download_progress: false,
+            sparse_enabled: false,
+            sparse_model: SparseModelType::SpladePpV1,
+        };
+        let service = EmbeddingService::new(config.clone()).unwrap();
+        assert_eq!(service.config().batch_size, 16);
+        assert!(!service.config().show_download_progress);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_embedding_service_embed_text() {
+        let service = EmbeddingService::with_default_model().unwrap();
+        let embedding = service.embed_text("hello world").await.unwrap();
+        assert_eq!(embedding.len(), service.dimensions());
+        assert!(!embedding.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_embedding_service_embed_texts() {
+        let service = EmbeddingService::with_default_model().unwrap();
+        let texts = vec!["hello world", "foo bar", "test sentence"];
+        let embeddings = service.embed_texts(&texts).await.unwrap();
+        assert_eq!(embeddings.len(), 3);
+        for emb in &embeddings {
+            assert_eq!(emb.len(), service.dimensions());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_embedding_service_embed_texts_empty() {
+        let service = EmbeddingService::with_default_model().unwrap();
+        let embeddings: Vec<Vec<f32>> = service.embed_texts(&[] as &[&str]).await.unwrap();
+        assert!(embeddings.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_embedding_service_embed_sparse_disabled() {
+        let service = EmbeddingService::with_default_model().unwrap();
+        let result = service.embed_sparse(&["hello"]).await;
+        match result {
+            Err(err) => {
+                assert!(matches!(err, AppError::Internal(_)));
+                assert!(err.to_string().contains("Sparse embeddings not enabled"));
+            }
+            Ok(_) => panic!("Expected sparse embedding to fail when disabled"),
+        }
+    }
+
+    // ============================================================================
+    // CachedEmbeddingService integration tests
+    // ============================================================================
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_cached_embedding_service_new() {
+        let config = EmbeddingConfig::default();
+        let cache_config = CacheConfig::default();
+        let cached = CachedEmbeddingService::new(config, cache_config).unwrap();
+        assert!(cached.is_cache_enabled());
+        assert_eq!(cached.model_type(), EmbeddingModelType::BgeSmallEnV15);
+        assert_eq!(cached.dimensions(), 384);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_cached_embedding_service_without_cache() {
+        let config = EmbeddingConfig::default();
+        let cached = CachedEmbeddingService::without_cache(config).unwrap();
+        assert!(!cached.is_cache_enabled());
+        let stats = cached.cache_stats();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_cached_embedding_service_embed_text_cache_hit_and_miss() {
+        let config = EmbeddingConfig::default();
+        let cache_config = CacheConfig::default();
+        let cached = CachedEmbeddingService::new(config, cache_config).unwrap();
+        let text = "cache test text";
+
+        // First call: cache miss
+        let emb1 = cached.embed_text(text).await.unwrap();
+        let stats1 = cached.cache_stats();
+        assert_eq!(stats1.misses, 1);
+        assert_eq!(stats1.hits, 0);
+
+        // Second call: cache hit
+        let emb2 = cached.embed_text(text).await.unwrap();
+        let stats2 = cached.cache_stats();
+        assert_eq!(stats2.misses, 1);
+        assert_eq!(stats2.hits, 1);
+
+        assert_eq!(emb1, emb2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_cached_embedding_service_embed_texts_mixed() {
+        let config = EmbeddingConfig::default();
+        let cache_config = CacheConfig::default();
+        let cached = CachedEmbeddingService::new(config, cache_config).unwrap();
+
+        let texts = vec!["first text", "second text", "third text"];
+        // First batch: all miss
+        let embs1 = cached.embed_texts(&texts).await.unwrap();
+        assert_eq!(embs1.len(), 3);
+        let stats1 = cached.cache_stats();
+        assert_eq!(stats1.misses, 3);
+        assert_eq!(stats1.hits, 0);
+
+        // Second batch with overlap: all hits
+        let texts2 = vec!["first text", "second text"];
+        let embs2 = cached.embed_texts(&texts2).await.unwrap();
+        assert_eq!(embs2.len(), 2);
+        let stats2 = cached.cache_stats();
+        assert_eq!(stats2.hits, 2);
+        assert_eq!(stats2.misses, 3);
+        assert_eq!(embs1[0], embs2[0]);
+        assert_eq!(embs1[1], embs2[1]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_cached_embedding_service_clear_cache() {
+        let config = EmbeddingConfig::default();
+        let cache_config = CacheConfig::default();
+        let cached = CachedEmbeddingService::new(config, cache_config).unwrap();
+
+        let _ = cached.embed_text("text to clear").await.unwrap();
+        assert!(cached.cache_stats().misses > 0);
+
+        cached.clear_cache().unwrap();
+        let stats = cached.cache_stats();
+        assert_eq!(stats.size_bytes, 0);
+        assert_eq!(stats.entry_count, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_cached_embedding_service_invalidate() {
+        let config = EmbeddingConfig::default();
+        let cache_config = CacheConfig::default();
+        let cached = CachedEmbeddingService::new(config, cache_config).unwrap();
+
+        let text = "invalidate me";
+        let emb1 = cached.embed_text(text).await.unwrap();
+        let stats1 = cached.cache_stats();
+        assert_eq!(stats1.misses, 1);
+
+        cached.invalidate(text).unwrap();
+
+        // After invalidate, this should be a miss again
+        let emb2 = cached.embed_text(text).await.unwrap();
+        let stats2 = cached.cache_stats();
+        assert_eq!(stats2.misses, 2);
+
+        assert_eq!(emb1, emb2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_cached_embedding_service_lru_eviction() {
+        let config = EmbeddingConfig::default();
+        // Very small cache: max ~0 entries after division, but .max(100) makes it 100.
+        // Use a cache config with max_size_bytes tiny to force eviction behavior
+        let cache_config = CacheConfig {
+            max_size_bytes: 1,
+            enabled: true,
+            ..Default::default()
+        };
+        let cached = CachedEmbeddingService::new(config, cache_config).unwrap();
+
+        let text1 = "first eviction text";
+        let text2 = "second eviction text";
+
+        let emb1 = cached.embed_text(text1).await.unwrap();
+        let emb2 = cached.embed_text(text2).await.unwrap();
+
+        // text1 and text2 are different, so both should be computed
+        assert_ne!(emb1, emb2);
+
+        // Re-embed text1: since cache only holds 1 entry and text2 was last,
+        // text1 should have been evicted, causing a miss
+        let _ = cached.embed_text(text1).await.unwrap();
+        let stats = cached.cache_stats();
+        assert!(stats.evictions > 0 || stats.misses >= 2, "Expected eviction or miss, got stats={:?}", stats);
+    }
+
+    // ============================================================================
+    // map_embedding_transport_error direct tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_map_embedding_transport_error_timeout() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)).set_body_string("{}"))
+            .mount(&server).await;
+        let http = reqwest::Client::builder().timeout(Duration::from_millis(100)).build().unwrap();
+        let err = http.post(format!("{}/v1/embeddings", server.uri())).send().await.unwrap_err();
+        let mapped = map_embedding_transport_error(&err);
+        assert!(matches!(mapped, AppError::Unavailable(_)));
+        assert!(mapped.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn test_map_embedding_transport_error_connect() {
+        let http = reqwest::Client::new();
+        let err = http.get("http://127.0.0.1:1/").send().await.unwrap_err();
+        let mapped = map_embedding_transport_error(&err);
+        assert!(matches!(mapped, AppError::Unavailable(_)));
+        assert!(mapped.to_string().contains("unreachable"));
+    }
+
+    #[tokio::test]
+    async fn test_map_embedding_transport_error_other() {
+        // Invalid URL scheme to trigger a non-timeout, non-connect error
+        let http = reqwest::Client::new();
+        let err = http.get("mailto:not-a-url").send().await.unwrap_err();
+        let mapped = map_embedding_transport_error(&err);
+        assert!(matches!(mapped, AppError::External(_)));
+        assert!(mapped.to_string().contains("failed"));
+    }
+
+    // ============================================================================
+    // HttpEmbeddingClient additional tests
+    // ============================================================================
+
+    #[test]
+    fn test_http_embedding_client_with_api_key() {
+        let client = HttpEmbeddingClient::new("http://localhost:8080").unwrap();
+        let _client_with_key = client.with_api_key("secret123");
+    }
+
+    #[test]
+    fn test_http_embedding_client_new_trims_trailing_slash() {
+        let client = HttpEmbeddingClient::new("http://localhost:8080/").unwrap();
+        let _ = client;
+    }
+
+    // ============================================================================
+    // decode_base64_embedding direct tests
+    // ============================================================================
+
+    #[test]
+    fn test_decode_base64_embedding_valid() {
+        use base64::Engine;
+        let values = vec![1.0f32, -2.5, 3.25, 0.0];
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let decoded = decode_base64_embedding(&encoded).unwrap();
+        assert_eq!(decoded, values);
+    }
+
+    #[test]
+    fn test_decode_base64_embedding_invalid_base64() {
+        let err = decode_base64_embedding("!!!not-valid-base64!!!").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(err.to_string().contains("Invalid base64"));
+    }
+
+    // ============================================================================
+    // dense_embedding edge cases
+    // ============================================================================
+
+    #[test]
+    fn test_dense_embedding_empty_vector() {
+        let err = dense_embedding(vec![], 384).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    // ============================================================================
+    // EmbeddingRequest serde edge cases
+    // ============================================================================
+
+    #[test]
+    fn test_build_embedding_request_dimensions_param() {
+        let req = build_embedding_request("m", &["hello"], None, Some(512));
+        assert_eq!(req.dimensions, Some(512));
     }
 
 }

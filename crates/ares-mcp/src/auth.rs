@@ -151,11 +151,58 @@ mod tests {
 
     #[test]
     fn extract_api_key_from_env_errors_when_var_already_unset() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         if std::env::var("ARES_API_KEY").is_ok() {
             return;
         }
         let result = extract_api_key_from_env();
         assert!(matches!(result, Err(McpAuthError::NoApiKey)));
+    }
+
+    #[test]
+    fn extract_api_key_from_env_empty_value_returns_empty_string() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let old = std::env::var("ARES_API_KEY").ok();
+        std::env::set_var("ARES_API_KEY", "");
+        let result = extract_api_key_from_env().expect("should return Ok for empty value");
+        assert_eq!(result, "");
+        match old {
+            Some(v) => std::env::set_var("ARES_API_KEY", v),
+            None => std::env::remove_var("ARES_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn extract_api_key_from_env_missing_under_guard_returns_error() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let old = std::env::var("ARES_API_KEY").ok();
+        std::env::remove_var("ARES_API_KEY");
+        let result = extract_api_key_from_env();
+        assert!(matches!(result, Err(McpAuthError::NoApiKey)));
+        match old {
+            Some(v) => std::env::set_var("ARES_API_KEY", v),
+            None => std::env::remove_var("ARES_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn validate_api_key_format_malformed_suffix_with_valid_prefix() {
+        // The validator only checks prefix; these "malformed" suffixes are accepted.
+        assert!(validate_api_key_format("ares_\0null").is_ok());
+        assert!(validate_api_key_format("ares_   spaces").is_ok());
+        assert!(validate_api_key_format("ares_\t\t").is_ok());
+        assert!(validate_api_key_format("ares_\n").is_ok());
+        assert!(validate_api_key_format("ares_🔑").is_ok());
+    }
+
+    #[test]
+    fn validate_api_key_format_rejects_malformed_prefix_variants() {
+        assert_invalid_prefix("are_s_");
+        assert_invalid_prefix("aRes_key");
+        assert_invalid_prefix("Ares_key");
+        assert_invalid_prefix(" ares_key");
+        assert_invalid_prefix("ares-");
+        assert_invalid_prefix("ares");
     }
 
     #[test]
@@ -232,6 +279,131 @@ mod tests {
         let session = McpSession::new(ctx, "ares_ent_key".into());
         assert_eq!(session.tier(), "enterprise");
         assert_eq!(session.eruka_workspace_id, "tenant-enterprise");
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn mcp_session_creation_and_quota_tracking_all_tiers() {
+        let free = McpSession::new(
+            TenantContext::new("t-free".into(), TenantTier::Free),
+            "ares_free".into(),
+        );
+        assert_eq!(free.tier(), "free");
+        assert_eq!(free.tenant.quota.requests_per_month, 1_000);
+        assert_eq!(free.tenant.quota.tokens_per_month, 100_000);
+        assert_eq!(free.tenant.quota.max_agents, 1);
+
+        let dev = McpSession::new(
+            TenantContext::new("t-dev".into(), TenantTier::Dev),
+            "ares_dev".into(),
+        );
+        assert_eq!(dev.tier(), "dev");
+        assert_eq!(dev.tenant.quota.requests_per_month, 50_000);
+        assert_eq!(dev.tenant.quota.tokens_per_month, 5_000_000);
+
+        let pro = McpSession::new(
+            TenantContext::new("t-pro".into(), TenantTier::Pro),
+            "ares_pro".into(),
+        );
+        assert_eq!(pro.tier(), "pro");
+        assert_eq!(pro.tenant.quota.requests_per_month, 500_000);
+        assert_eq!(pro.tenant.quota.tokens_per_month, 50_000_000);
+
+        let ent = McpSession::new(
+            TenantContext::new("t-ent".into(), TenantTier::Enterprise),
+            "ares_ent".into(),
+        );
+        assert_eq!(ent.tier(), "enterprise");
+        assert_eq!(ent.tenant.quota.requests_per_month, u64::MAX);
+        assert_eq!(ent.tenant.quota.tokens_per_month, u64::MAX);
+        assert_eq!(ent.tenant.quota.max_agents, u32::MAX);
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn mcp_session_tier_limits_enforce_request_quotas() {
+        let free = McpSession::new(
+            TenantContext::new("t".into(), TenantTier::Free),
+            "ares_test".into(),
+        );
+        assert!(free.tenant.can_make_request(0, 0));
+        assert!(free.tenant.can_make_request(999, 49));
+        assert!(!free.tenant.can_make_request(1_000, 0));
+        assert!(!free.tenant.can_make_request(0, 50));
+
+        let pro = McpSession::new(
+            TenantContext::new("t".into(), TenantTier::Pro),
+            "ares_test".into(),
+        );
+        assert!(pro.tenant.can_make_request(499_999, 19_999));
+        assert!(!pro.tenant.can_make_request(500_000, 0));
+        assert!(!pro.tenant.can_make_request(0, 20_000));
+
+        let ent = McpSession::new(
+            TenantContext::new("t".into(), TenantTier::Enterprise),
+            "ares_test".into(),
+        );
+        assert!(ent.tenant.can_make_request(u64::MAX - 1, u64::MAX - 1));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn mcp_session_tier_limits_enforce_token_quotas() {
+        let free = McpSession::new(
+            TenantContext::new("t".into(), TenantTier::Free),
+            "ares_test".into(),
+        );
+        assert!(free.tenant.can_use_tokens(0, 100_000));
+        assert!(!free.tenant.can_use_tokens(100_000, 1));
+        assert!(!free.tenant.can_use_tokens(u64::MAX, 1));
+
+        let pro = McpSession::new(
+            TenantContext::new("t".into(), TenantTier::Pro),
+            "ares_test".into(),
+        );
+        assert!(pro.tenant.can_use_tokens(0, 50_000_000));
+        assert!(!pro.tenant.can_use_tokens(50_000_000, 1));
+
+        let ent = McpSession::new(
+            TenantContext::new("t".into(), TenantTier::Enterprise),
+            "ares_test".into(),
+        );
+        assert!(ent.tenant.can_use_tokens(u64::MAX - 1, 1));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn mcp_session_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<McpSession>();
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn mcp_session_concurrent_clone_access() {
+        let ctx = TenantContext::new("concurrent".into(), TenantTier::Pro);
+        let session = McpSession::new(ctx, "ares_concurrent".into());
+        std::thread::scope(|s| {
+            for _ in 0..10 {
+                let cloned = session.clone();
+                s.spawn(move || {
+                    assert_eq!(cloned.tier(), "pro");
+                    assert_eq!(cloned.tenant_id(), "concurrent");
+                    assert_eq!(cloned.api_key, "ares_concurrent");
+                });
+            }
+        });
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn mcp_session_lifecycle_create_clone_drop() {
+        let ctx = TenantContext::new("lifecycle".into(), TenantTier::Dev);
+        let session = McpSession::new(ctx, "ares_lifecycle".into());
+        let cloned = session.clone();
+        drop(cloned);
+        assert_eq!(session.tier(), "dev");
+        assert_eq!(session.tenant_id(), "lifecycle");
     }
 
     #[ignore] // flaky: env-var race condition in parallel execution across crates

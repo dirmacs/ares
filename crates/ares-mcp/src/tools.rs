@@ -180,6 +180,7 @@ pub struct UsageQuota {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::builtin_ares_tools;
 
     #[test]
     fn list_agents_input_round_trips() {
@@ -714,5 +715,518 @@ mod tests {
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["total"], 50);
         assert_eq!(json["agents"].as_array().unwrap().len(), 1);
+    }
+
+    // ========================================================================
+    // 1. Tool schema validation for all 5 built-in tools
+    // ========================================================================
+
+    #[test]
+    fn all_builtin_tools_present_in_registry() {
+        let tools = builtin_ares_tools();
+        assert_eq!(tools.len(), 5);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+        assert!(names.contains(&"ares_list_agents"));
+        assert!(names.contains(&"ares_run_agent"));
+        assert!(names.contains(&"ares_get_status"));
+        assert!(names.contains(&"ares_deploy_agent"));
+        assert!(names.contains(&"ares_get_usage"));
+    }
+
+    #[test]
+    fn list_agents_schema_has_object_type_and_no_required() {
+        let tools = builtin_ares_tools();
+        let tool = tools.iter().find(|t| t.name == "ares_list_agents").unwrap();
+        assert_eq!(tool.input_schema["type"], "object");
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.is_empty(), "list_agents should have no required fields");
+    }
+
+    #[test]
+    fn run_agent_schema_requires_agent_name_and_message() {
+        let tools = builtin_ares_tools();
+        let tool = tools.iter().find(|t| t.name == "ares_run_agent").unwrap();
+        assert_eq!(tool.input_schema["type"], "object");
+        let required: Vec<&str> = tool.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(required.contains(&"agent_name"));
+        assert!(required.contains(&"message"));
+        assert!(!required.contains(&"context_id"), "context_id should be optional");
+        // Verify properties exist in schema
+        assert!(tool.input_schema["properties"]["agent_name"].is_object());
+        assert!(tool.input_schema["properties"]["message"].is_object());
+        assert!(tool.input_schema["properties"]["context_id"].is_object());
+    }
+
+    #[test]
+    fn get_status_schema_requires_context_id() {
+        let tools = builtin_ares_tools();
+        let tool = tools.iter().find(|t| t.name == "ares_get_status").unwrap();
+        assert_eq!(tool.input_schema["type"], "object");
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0].as_str(), Some("context_id"));
+        assert!(tool.input_schema["properties"]["context_id"].is_object());
+    }
+
+    #[test]
+    fn deploy_agent_schema_requires_toon_config() {
+        let tools = builtin_ares_tools();
+        let tool = tools.iter().find(|t| t.name == "ares_deploy_agent").unwrap();
+        assert_eq!(tool.input_schema["type"], "object");
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0].as_str(), Some("toon_config"));
+        assert!(tool.input_schema["properties"]["toon_config"].is_object());
+        assert!(tool.input_schema["properties"]["name_override"].is_object());
+    }
+
+    #[test]
+    fn get_usage_schema_has_object_type_and_no_required() {
+        let tools = builtin_ares_tools();
+        let tool = tools.iter().find(|t| t.name == "ares_get_usage").unwrap();
+        assert_eq!(tool.input_schema["type"], "object");
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.is_empty(), "get_usage should have no required fields");
+        assert!(tool.input_schema["properties"]["from_date"].is_object());
+        assert!(tool.input_schema["properties"]["to_date"].is_object());
+    }
+
+    #[test]
+    fn all_builtin_tools_have_non_empty_description() {
+        for tool in builtin_ares_tools() {
+            assert!(
+                tool.description.as_ref().map(|d| !d.is_empty()).unwrap_or(false),
+                "{} should have a non-empty description",
+                tool.name
+            );
+        }
+    }
+
+    // ========================================================================
+    // 2. Tool argument parsing (valid/invalid)
+    // ========================================================================
+
+    #[test]
+    fn list_agents_input_ignores_extra_fields() {
+        let input: ListAgentsInput = serde_json::from_str(r#"{"foo":"bar"}"#).unwrap();
+        assert_eq!(format!("{:?}", input), format!("{:?}", ListAgentsInput::default()));
+    }
+
+    #[test]
+    fn run_agent_input_accepts_null_context_id() {
+        let input: RunAgentInput =
+            serde_json::from_str(r#"{"agent_name":"bot","message":"hi","context_id":null}"#)
+                .unwrap();
+        assert!(input.context_id.is_none());
+    }
+
+    #[test]
+    fn run_agent_input_rejects_extra_nested_wrong_type() {
+        // message must be a string, not an object
+        let result = serde_json::from_str::<RunAgentInput>(
+            r#"{"agent_name":"bot","message":{"nested":"bad"}}"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn run_agent_input_rejects_array_for_agent_name() {
+        let result = serde_json::from_str::<RunAgentInput>(
+            r#"{"agent_name":["bot"],"message":"hi"}"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_status_input_rejects_array_context_id() {
+        let result = serde_json::from_str::<GetStatusInput>(r#"{"context_id":["x"]}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_status_input_rejects_object_context_id() {
+        let result = serde_json::from_str::<GetStatusInput>(r#"{"context_id":{"id":"x"}}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deploy_agent_input_accepts_empty_toon_config() {
+        // Empty string is valid for the serde schema (business logic may reject later)
+        let input: DeployAgentInput = serde_json::from_str(r#"{"toon_config":""}"#).unwrap();
+        assert_eq!(input.toon_config, "");
+        assert!(input.name_override.is_none());
+    }
+
+    #[test]
+    fn deploy_agent_input_rejects_object_toon_config() {
+        let result = serde_json::from_str::<DeployAgentInput>(r#"{"toon_config":{}}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deploy_agent_input_rejects_null_name_override_with_missing_toon_config() {
+        let result = serde_json::from_str::<DeployAgentInput>(
+            r#"{"name_override":null}"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_usage_input_ignores_unknown_fields() {
+        let input: GetUsageInput = serde_json::from_str(r#"{"unknown":123}"#).unwrap();
+        assert!(input.from_date.is_none());
+        assert!(input.to_date.is_none());
+    }
+
+    #[test]
+    fn get_usage_input_rejects_array_for_date() {
+        let result = serde_json::from_str::<GetUsageInput>(r#"{"from_date":["2026-01-01"]}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_usage_input_rejects_object_for_date() {
+        let result = serde_json::from_str::<GetUsageInput>(r#"{"to_date":{"year":2026}}"#);
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // 3. Tool execution with mock dependencies (output types)
+    // ========================================================================
+
+    #[test]
+    fn list_agents_output_matches_real_execution() {
+        let output = ListAgentsOutput {
+            agents: vec![
+                AgentSummary {
+                    name: "support".into(),
+                    description: "Customer support agent".into(),
+                    agent_type: "chat".into(),
+                    active: true,
+                    deployed_at: "2026-05-01T12:00:00Z".into(),
+                },
+                AgentSummary {
+                    name: "research".into(),
+                    description: "Deep research agent".into(),
+                    agent_type: "autonomous".into(),
+                    active: false,
+                    deployed_at: "2026-04-01T00:00:00Z".into(),
+                },
+            ],
+            total: 2,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["total"], 2);
+        let agents = json["agents"].as_array().unwrap();
+        assert_eq!(agents[0]["name"], "support");
+        assert_eq!(agents[0]["active"], true);
+        assert_eq!(agents[1]["agent_type"], "autonomous");
+        assert_eq!(agents[1]["active"], false);
+    }
+
+    #[test]
+    fn run_agent_output_with_multiple_sources() {
+        let output = RunAgentOutput {
+            response: "Here are the results.".into(),
+            agent: "search-bot".into(),
+            context_id: "ctx-multi".into(),
+            sources: Some(vec![
+                SourceRef {
+                    title: "Doc A".into(),
+                    url: Some("https://a.com".into()),
+                    snippet: Some("snippet A".into()),
+                },
+                SourceRef {
+                    title: "Doc B".into(),
+                    url: None,
+                    snippet: Some("snippet B".into()),
+                },
+            ]),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        let sources = json["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0]["url"], "https://a.com");
+        assert!(sources[1]["url"].is_null());
+    }
+
+    #[test]
+    fn run_agent_output_without_sources_omits_key() {
+        let output = RunAgentOutput {
+            response: "No sources needed.".into(),
+            agent: "simple".into(),
+            context_id: "ctx-none".into(),
+            sources: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("sources"));
+    }
+
+    #[test]
+    fn get_status_output_running_with_partial() {
+        let output = GetStatusOutput {
+            context_id: "ctx-run".into(),
+            status: "running".into(),
+            partial_response: Some("Processing step 2 of 5...".into()),
+            error: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["status"], "running");
+        assert_eq!(json["partial_response"], "Processing step 2 of 5...");
+        assert!(!json.as_object().unwrap().contains_key("error"));
+    }
+
+    #[test]
+    fn get_status_output_completed_without_partials() {
+        let output = GetStatusOutput {
+            context_id: "ctx-done".into(),
+            status: "completed".into(),
+            partial_response: None,
+            error: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["status"], "completed");
+        assert!(!json.as_object().unwrap().contains_key("partial_response"));
+        assert!(!json.as_object().unwrap().contains_key("error"));
+    }
+
+    #[test]
+    fn deploy_agent_output_updated_action() {
+        let output = DeployAgentOutput {
+            agent_name: "existing-agent".into(),
+            action: "updated".into(),
+            active: true,
+            deployed_at: "2026-06-04T10:30:00Z".into(),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["action"], "updated");
+        assert_eq!(json["active"], true);
+    }
+
+    // ========================================================================
+    // 4. Quota checking integration
+    // ========================================================================
+
+    #[test]
+    fn get_usage_output_free_tier_serialization() {
+        let output = GetUsageOutput {
+            tenant_id: "tenant-free".into(),
+            tier: "free".into(),
+            period: UsagePeriod {
+                from: "2026-06-01".into(),
+                to: "2026-06-30".into(),
+            },
+            current_usage: UsageStats {
+                total_requests: 500,
+                chat_requests: 400,
+                mcp_requests: 100,
+                tokens_used: 5_000,
+                agents_deployed: 2,
+            },
+            quota: UsageQuota {
+                max_requests_per_month: 1_000,
+                max_agents: 3,
+                max_tokens_per_month: 10_000,
+                utilization: 0.5,
+            },
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["tenant_id"], "tenant-free");
+        assert_eq!(json["tier"], "free");
+        assert_eq!(json["current_usage"]["total_requests"], 500);
+        assert_eq!(json["quota"]["utilization"], 0.5);
+    }
+
+    #[test]
+    fn usage_quota_boundary_values() {
+        let quota = UsageQuota {
+            max_requests_per_month: u64::MAX,
+            max_agents: u32::MAX,
+            max_tokens_per_month: u64::MAX,
+            utilization: 1.0,
+        };
+        let json = serde_json::to_value(&quota).unwrap();
+        assert_eq!(json["max_requests_per_month"], u64::MAX);
+        assert_eq!(json["max_agents"], u32::MAX);
+        assert_eq!(json["max_tokens_per_month"], u64::MAX);
+        assert_eq!(json["utilization"], 1.0);
+    }
+
+    #[test]
+    fn usage_stats_boundary_values() {
+        let stats = UsageStats {
+            total_requests: u64::MAX,
+            chat_requests: u64::MAX,
+            mcp_requests: u64::MAX,
+            tokens_used: u64::MAX,
+            agents_deployed: u32::MAX,
+        };
+        let json = serde_json::to_value(&stats).unwrap();
+        assert_eq!(json["total_requests"], u64::MAX);
+        assert_eq!(json["agents_deployed"], u32::MAX);
+    }
+
+    #[test]
+    fn get_usage_output_enterprise_tier() {
+        let output = GetUsageOutput {
+            tenant_id: "tenant-ent".into(),
+            tier: "enterprise".into(),
+            period: UsagePeriod {
+                from: "2026-01-01".into(),
+                to: "2026-12-31".into(),
+            },
+            current_usage: UsageStats {
+                total_requests: 1_000_000,
+                chat_requests: 800_000,
+                mcp_requests: 200_000,
+                tokens_used: 500_000_000,
+                agents_deployed: 50,
+            },
+            quota: UsageQuota {
+                max_requests_per_month: 10_000_000,
+                max_agents: 100,
+                max_tokens_per_month: 1_000_000_000,
+                utilization: 0.1,
+            },
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["tier"], "enterprise");
+        assert_eq!(json["current_usage"]["chat_requests"], 800_000);
+        assert_eq!(json["quota"]["max_agents"], 100);
+    }
+
+    #[test]
+    fn get_usage_output_dev_tier() {
+        let output = GetUsageOutput {
+            tenant_id: "tenant-dev".into(),
+            tier: "dev".into(),
+            period: UsagePeriod {
+                from: "2026-03-01".into(),
+                to: "2026-03-31".into(),
+            },
+            current_usage: UsageStats {
+                total_requests: 10,
+                chat_requests: 5,
+                mcp_requests: 5,
+                tokens_used: 100,
+                agents_deployed: 1,
+            },
+            quota: UsageQuota {
+                max_requests_per_month: 100,
+                max_agents: 1,
+                max_tokens_per_month: 1_000,
+                utilization: 0.1,
+            },
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["tier"], "dev");
+        assert_eq!(json["current_usage"]["agents_deployed"], 1);
+    }
+
+    // ========================================================================
+    // 5. Error responses format
+    // ========================================================================
+
+    #[test]
+    fn error_response_failed_with_message() {
+        let output = GetStatusOutput {
+            context_id: "ctx-fail".into(),
+            status: "failed".into(),
+            partial_response: None,
+            error: Some("Database connection lost".into()),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["error"], "Database connection lost");
+        assert!(!json.as_object().unwrap().contains_key("partial_response"));
+    }
+
+    #[test]
+    fn error_response_not_found_omits_optional_fields() {
+        let output = GetStatusOutput {
+            context_id: "ctx-missing".into(),
+            status: "not_found".into(),
+            partial_response: None,
+            error: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["status"], "not_found");
+        assert!(!json.as_object().unwrap().contains_key("partial_response"));
+        assert!(!json.as_object().unwrap().contains_key("error"));
+    }
+
+    #[test]
+    fn error_response_with_partial_and_error() {
+        // Edge case: failed but partial response available
+        let output = GetStatusOutput {
+            context_id: "ctx-partial-fail".into(),
+            status: "failed".into(),
+            partial_response: Some("Partial result before crash".into()),
+            error: Some("Out of memory".into()),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["partial_response"], "Partial result before crash");
+        assert_eq!(json["error"], "Out of memory");
+    }
+
+    #[test]
+    fn run_agent_output_error_text_serialization() {
+        // Simulates a tool execution that returned an error text response
+        let output = RunAgentOutput {
+            response: "ERROR: Rate limit exceeded".into(),
+            agent: "rate-limited-bot".into(),
+            context_id: "ctx-rate".into(),
+            sources: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["response"], "ERROR: Rate limit exceeded");
+        assert!(!json.as_object().unwrap().contains_key("sources"));
+    }
+
+    #[test]
+    fn deploy_agent_output_error_action_simulation() {
+        let output = DeployAgentOutput {
+            agent_name: "bad-config".into(),
+            action: "error".into(),
+            active: false,
+            deployed_at: "".into(),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["action"], "error");
+        assert_eq!(json["active"], false);
+    }
+
+    #[test]
+    fn get_usage_output_error_simulation_via_high_utilization() {
+        let output = GetUsageOutput {
+            tenant_id: "tenant-over".into(),
+            tier: "free".into(),
+            period: UsagePeriod {
+                from: "2026-06-01".into(),
+                to: "2026-06-30".into(),
+            },
+            current_usage: UsageStats {
+                total_requests: 1_100,
+                chat_requests: 900,
+                mcp_requests: 200,
+                tokens_used: 11_000,
+                agents_deployed: 4,
+            },
+            quota: UsageQuota {
+                max_requests_per_month: 1_000,
+                max_agents: 3,
+                max_tokens_per_month: 10_000,
+                utilization: 1.1,
+            },
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["quota"]["utilization"], 1.1);
+        assert_eq!(json["current_usage"]["agents_deployed"], 4);
     }
 }

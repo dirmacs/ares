@@ -161,48 +161,10 @@ fn write_file(path: &Path, content: &str, force: bool) -> std::io::Result<()> {
 }
 
 fn generate_ares_toml(config: &InitConfig) -> String {
-    let provider_section = if config.provider == "openai" {
-        r#"# OpenAI API (set OPENAI_API_KEY in .env)
-[providers.openai]
-type = "openai"
-api_key_env = "OPENAI_API_KEY"
-api_base = "https://api.openai.com/v1"
-default_model = "gpt-4o-mini"
-"#
-    } else if config.provider == "both" {
-        r#"# Ollama - Local inference (default)
-[providers.ollama-local]
-type = "ollama"
-base_url = "http://localhost:11434"
-default_model = "ministral-3:3b"
-
-# OpenAI API (set OPENAI_API_KEY in .env)
-[providers.openai]
-type = "openai"
-api_key_env = "OPENAI_API_KEY"
-api_base = "https://api.openai.com/v1"
-default_model = "gpt-4o-mini"
-"#
-    } else {
-        // Default to ollama
-        r#"# Ollama - Local inference (no API key required)
-[providers.ollama-local]
-type = "ollama"
-base_url = "http://localhost:11434"
-default_model = "ministral-3:3b"
-"#
-    };
-
-    let model_provider = if config.provider == "openai" {
-        "openai"
-    } else {
-        "ollama-local"
-    };
-
-    let model_name = if config.provider == "openai" {
+    let default_model = if config.provider == "openai" {
         "gpt-4o-mini"
     } else {
-        "ministral-3:3b"
+        "meta/llama-3.3-70b-instruct"
     };
 
     format!(
@@ -213,6 +175,7 @@ default_model = "ministral-3:3b"
 # REQUIRED: Set these environment variables before starting:
 #   - JWT_SECRET: A secret key for JWT signing (min 32 characters)
 #   - API_KEY: API key for service-to-service authentication
+#   - NVIDIA_API_KEY: NVIDIA NIM API key
 #
 # Hot Reloading: Changes to this file are automatically detected and applied
 # without restarting the server.
@@ -241,29 +204,14 @@ api_key_env = "API_KEY"
 url = "./data/ares.db"
 
 # =============================================================================
-# LLM Providers
+# NVIDIA NIM Provider (single provider)
 # =============================================================================
-{provider_section}
-# =============================================================================
-# Model Configurations
-# =============================================================================
-[models.fast]
-provider = "{model_provider}"
-model = "{model_name}"
-temperature = 0.7
-max_tokens = 256
-
-[models.balanced]
-provider = "{model_provider}"
-model = "{model_name}"
-temperature = 0.7
-max_tokens = 512
-
-[models.powerful]
-provider = "{model_provider}"
-model = "{model_name}"
-temperature = 0.5
-max_tokens = 1024
+[nvidia]
+api_key_env = "NVIDIA_API_KEY"
+api_base = "https://integrate.api.nvidia.com/v1"
+models_url = "https://integrate.api.nvidia.com/v1/models"
+catalog_refresh_seconds = 3600
+default_model = "{default_model}"
 
 # =============================================================================
 # Tools Configuration
@@ -282,7 +230,7 @@ timeout_secs = 30
 # Agent Configurations
 # =============================================================================
 [agents.router]
-model = "fast"
+model = "{default_model}"
 tools = []
 max_tool_iterations = 1
 parallel_tools = false
@@ -296,7 +244,7 @@ Respond with ONLY the agent name (one word, lowercase).
 """
 
 [agents.orchestrator]
-model = "powerful"
+model = "{default_model}"
 tools = ["calculator", "web_search"]
 max_tool_iterations = 10
 parallel_tools = false
@@ -343,9 +291,7 @@ watch_interval_ms = 1000
 "#,
         host = config.host,
         port = config.port,
-        provider_section = provider_section,
-        model_provider = model_provider,
-        model_name = model_name,
+        default_model = default_model,
     )
 }
 

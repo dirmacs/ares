@@ -20,6 +20,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+use crate::nvidia_catalog::NvidiaConfig;
+
 /// Root configuration structure loaded from ares.toml
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AresConfig {
@@ -31,6 +33,13 @@ pub struct AresConfig {
 
     /// Database configuration (Turso/SQLite, Qdrant).
     pub database: DatabaseConfig,
+
+    /// NVIDIA provider + catalog configuration. When present, the runtime
+    /// fetches the model catalog from `models_url` (default: NVIDIA NIM) and
+    /// exposes it through the provider registry. If absent, the registry
+    /// uses built-in defaults.
+    #[serde(default)]
+    pub nvidia: Option<NvidiaConfig>,
 
     /// Named LLM provider configurations
     #[serde(default)]
@@ -233,19 +242,13 @@ impl Default for QdrantConfig {
 
 // ============= Provider Configuration =============
 
-/// LLM provider configuration. Tagged enum based on provider type.
+/// LLM provider configuration. Currently only the OpenAI-compatible variant
+/// is supported, used for both the OpenAI API and the NVIDIA NIM endpoint
+/// (`https://integrate.api.nvidia.com/v1`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ProviderConfig {
-    /// Ollama local LLM server.
-    Ollama {
-        /// Ollama server URL (default: "http://localhost:11434").
-        #[serde(default = "default_ollama_url")]
-        base_url: String,
-        /// Default model to use with this provider.
-        default_model: String,
-    },
-    /// OpenAI API (or compatible endpoints).
+    /// OpenAI API (or compatible endpoints, including NVIDIA NIM).
     OpenAI {
         /// Environment variable containing API key.
         api_key_env: String,
@@ -255,37 +258,14 @@ pub enum ProviderConfig {
         /// Default model to use with this provider.
         default_model: String,
     },
-    /// LlamaCpp for direct GGUF model loading.
-    LlamaCpp {
-        /// Path to the GGUF model file.
-        model_path: String,
-        /// Context window size (default: 4096).
-        #[serde(default = "default_n_ctx")]
-        n_ctx: u32,
-        /// Number of threads for inference (default: 4).
-        #[serde(default = "default_n_threads")]
-        n_threads: u32,
-        /// Maximum tokens to generate (default: 512).
-        #[serde(default = "default_max_tokens")]
-        max_tokens: u32,
-    },
-    /// Anthropic Claude API.
-    Anthropic {
-        /// Environment variable containing API key.
-        api_key_env: String,
-        /// Default model to use with this provider.
-        default_model: String,
-    },
 }
 
 impl ProviderConfig {
-    /// Returns the provider type discriminator (`ollama`, `openai`, etc.).
+    /// Returns the provider type discriminator. Always `"openai"` since the
+    /// enum only carries the OpenAI-compatible variant.
     pub fn type_name(&self) -> &'static str {
         match self {
-            ProviderConfig::Ollama { .. } => "ollama",
             ProviderConfig::OpenAI { .. } => "openai",
-            ProviderConfig::LlamaCpp { .. } => "llamacpp",
-            ProviderConfig::Anthropic { .. } => "anthropic",
         }
     }
 }
@@ -294,52 +274,35 @@ impl std::str::FromStr for ProviderConfig {
     type Err = ConfigError;
 
     /// Parse a provider type name into a default `ProviderConfig` variant.
+    /// Only `openai` (and the special `nvidia` alias) are accepted.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
-            "ollama" => Ok(ProviderConfig::Ollama {
-                base_url: default_ollama_url(),
-                default_model: "default".to_string(),
-            }),
-            "openai" => Ok(ProviderConfig::OpenAI {
-                api_key_env: "OPENAI_API_KEY".to_string(),
-                api_base: default_openai_base(),
-                default_model: "gpt-4o".to_string(),
-            }),
-            "anthropic" => Ok(ProviderConfig::Anthropic {
-                api_key_env: "ANTHROPIC_API_KEY".to_string(),
-                default_model: "claude-3-5-sonnet-20241022".to_string(),
-            }),
-            "llamacpp" | "llama-cpp" | "llama_cpp" => Ok(ProviderConfig::LlamaCpp {
-                model_path: "./models/default.gguf".to_string(),
-                n_ctx: default_n_ctx(),
-                n_threads: default_n_threads(),
-                max_tokens: default_max_tokens(),
+            "openai" | "nvidia" => Ok(ProviderConfig::OpenAI {
+                api_key_env: default_nvidia_api_key_env(),
+                api_base: default_nvidia_api_base(),
+                default_model: default_nvidia_default_model(),
             }),
             other => Err(ConfigError::ValidationError(format!(
-                "Unknown provider type: {other}. Use: ollama, openai, anthropic, llamacpp"
+                "Unknown provider type: {other}. Use: openai (or nvidia, which is OpenAI-compatible)"
             ))),
         }
     }
-}
-
-fn default_ollama_url() -> String {
-    "http://localhost:11434".to_string()
 }
 
 fn default_openai_base() -> String {
     "https://api.openai.com/v1".to_string()
 }
 
-fn default_n_ctx() -> u32 {
-    4096
+fn default_nvidia_api_key_env() -> String {
+    "NVIDIA_API_KEY".to_string()
 }
 
-fn default_n_threads() -> u32 {
-    4
+fn default_nvidia_api_base() -> String {
+    "https://integrate.api.nvidia.com/v1".to_string()
 }
 
-fn default_max_tokens() -> u32 {
-    512
+fn default_nvidia_default_model() -> String {
+    "meta/llama-3.3-70b-instruct".to_string()
 }
 
 // ============= Model Configuration =============
@@ -360,15 +323,6 @@ pub struct ModelConfig {
     /// Maximum tokens to generate (default: 512).
     #[serde(default = "default_model_max_tokens")]
     pub max_tokens: u32,
-
-    /// Optional nucleus sampling parameter.
-    pub top_p: Option<f32>,
-
-    /// Optional frequency penalty (-2.0 to 2.0).
-    pub frequency_penalty: Option<f32>,
-
-    /// Optional presence penalty (-2.0 to 2.0).
-    pub presence_penalty: Option<f32>,
 }
 
 fn default_temperature() -> f32 {
@@ -988,25 +942,10 @@ impl AresConfig {
         }
 
         // Validate provider env vars
-        for (name, provider) in &self.providers {
+        for (_name, provider) in &self.providers {
             match provider {
                 ProviderConfig::OpenAI { api_key_env, .. } => {
                     self.validate_env_var(api_key_env)?;
-                }
-                ProviderConfig::Anthropic { api_key_env, .. } => {
-                    self.validate_env_var(api_key_env)?;
-                }
-                ProviderConfig::LlamaCpp { model_path, .. } => {
-                    // Validate model path exists
-                    if !Path::new(model_path).exists() {
-                        return Err(ConfigError::ValidationError(format!(
-                            "LlamaCpp model path does not exist: {} (provider: {})",
-                            model_path, name
-                        )));
-                    }
-                }
-                ProviderConfig::Ollama { .. } => {
-                    // Ollama doesn't require validation - it's the default fallback
                 }
             }
         }
@@ -1520,8 +1459,9 @@ api_key_env = "TEST_API_KEY"
 url = "./data/test.db"
 
 [providers.ollama-local]
-type = "ollama"
-base_url = "http://localhost:11434"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "ministral-3:3b"
 
 [models.default]
@@ -1620,7 +1560,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "ministral-3:3b"
 [agents.test]
 model = "nonexistent"
@@ -1647,7 +1589,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "ministral-3:3b"
 [models.default]
 provider = "test"
@@ -1806,7 +1750,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "ministral-3:3b"
 [models.default]
 provider = "test"
@@ -1839,10 +1785,14 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.used]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "ministral-3:3b"
 [providers.unused]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "ministral-3:3b"
 [models.default]
 provider = "used"
@@ -1874,7 +1824,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "ministral-3:3b"
 [models.used]
 provider = "test"
@@ -1909,7 +1861,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "ministral-3:3b"
 [models.default]
 provider = "test"
@@ -1946,7 +1900,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "ministral-3:3b"
 [models.default]
 provider = "test"
@@ -1982,7 +1938,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.test]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "ministral-3:3b"
 [models.default]
 provider = "test"
@@ -2021,16 +1979,6 @@ entry_agent = "router"
 
     // ---- ProviderConfig::from_str ----
 
-    #[test]
-    fn test_provider_config_from_str_ollama() {
-        let p: ProviderConfig = "ollama".parse().unwrap();
-        assert_eq!(p.type_name(), "ollama");
-        if let ProviderConfig::Ollama { base_url, .. } = p {
-            assert_eq!(base_url, "http://localhost:11434");
-        } else {
-            panic!("expected ollama variant");
-        }
-    }
 
     #[test]
     fn test_provider_config_from_str_openai() {
@@ -2038,24 +1986,12 @@ entry_agent = "router"
         assert_eq!(p.type_name(), "openai");
     }
 
-    #[test]
-    fn test_provider_config_from_str_anthropic() {
-        let p: ProviderConfig = "anthropic".parse().unwrap();
-        assert_eq!(p.type_name(), "anthropic");
-    }
 
-    #[test]
-    fn test_provider_config_from_str_llamacpp_aliases() {
-        for alias in ["llamacpp", "llama-cpp", "llama_cpp"] {
-            let p: ProviderConfig = alias.parse().unwrap();
-            assert_eq!(p.type_name(), "llamacpp");
-        }
-    }
 
     #[test]
     fn test_provider_config_from_str_case_insensitive() {
-        let p: ProviderConfig = "OLLAMA".parse().unwrap();
-        assert_eq!(p.type_name(), "ollama");
+        let p: ProviderConfig = "OPENAI".parse().unwrap();
+        assert_eq!(p.type_name(), "openai");
     }
 
     #[test]
@@ -2064,16 +2000,6 @@ entry_agent = "router"
         assert!(matches!(err, ConfigError::ValidationError(_)));
     }
 
-    #[test]
-    fn test_provider_config_serde_roundtrip_ollama() {
-        let original = ProviderConfig::Ollama {
-            base_url: "http://localhost:11434".to_string(),
-            default_model: "llama3".to_string(),
-        };
-        let toml_str = toml::to_string(&original).unwrap();
-        let decoded: ProviderConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(decoded.type_name(), "ollama");
-    }
 
     #[test]
     fn test_provider_config_serde_roundtrip_openai() {
@@ -2087,27 +2013,7 @@ entry_agent = "router"
         assert_eq!(decoded.type_name(), "openai");
     }
 
-    #[test]
-    fn test_provider_config_serde_roundtrip_anthropic() {
-        let original = ProviderConfig::Anthropic {
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            default_model: "claude-3-5-sonnet-20241022".to_string(),
-        };
-        let decoded: ProviderConfig = toml::from_str(&toml::to_string(&original).unwrap()).unwrap();
-        assert_eq!(decoded.type_name(), "anthropic");
-    }
 
-    #[test]
-    fn test_provider_config_serde_roundtrip_llamacpp() {
-        let original = ProviderConfig::LlamaCpp {
-            model_path: "/tmp/model.gguf".to_string(),
-            n_ctx: 8192,
-            n_threads: 8,
-            max_tokens: 1024,
-        };
-        let decoded: ProviderConfig = toml::from_str(&toml::to_string(&original).unwrap()).unwrap();
-        assert_eq!(decoded.type_name(), "llamacpp");
-    }
 
     // ---- ServerConfig defaults ----
 
@@ -2187,7 +2093,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.p]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "m"
 [models.m]
 provider = "p"
@@ -2212,7 +2120,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.p]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "m"
 [models.m]
 provider = "p"
@@ -2371,23 +2281,6 @@ default_model = "gpt-4o"
         assert!(matches!(err, ConfigError::MissingEnvVar(_)));
     }
 
-    #[test]
-    fn test_validation_llamacpp_missing_model_path() {
-        set_test_env();
-        let content = r#"
-[server]
-[auth]
-jwt_secret_env = "TEST_JWT_SECRET"
-api_key_env = "TEST_API_KEY"
-[database]
-[providers.local]
-type = "llamacpp"
-model_path = "/nonexistent/path/model.gguf"
-"#;
-        let config: AresConfig = toml::from_str(content).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(matches!(err, ConfigError::ValidationError(_)));
-    }
 
     #[test]
     fn test_validation_qdrant_api_key_env() {
@@ -2419,7 +2312,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.p]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "m"
 [models.m]
 provider = "p"
@@ -2444,7 +2339,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.p]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "m"
 [models.m]
 provider = "p"
@@ -2494,13 +2391,10 @@ entry_agent = "a"
     #[test]
     fn test_model_config_serde_roundtrip() {
         let model = ModelConfig {
-            provider: "ollama".to_string(),
+            provider: "openai".to_string(),
             model: "llama3".to_string(),
             temperature: 0.5,
             max_tokens: 256,
-            top_p: Some(0.9),
-            frequency_penalty: None,
-            presence_penalty: None,
         };
         let decoded: ModelConfig = toml::from_str(&toml::to_string(&model).unwrap()).unwrap();
         assert_eq!(decoded.model, "llama3");
@@ -2522,12 +2416,13 @@ api_key_env = "TEST_API_KEY"
     #[test]
     fn test_provider_config_type_name_all_variants() {
         assert_eq!(
-            ProviderConfig::Ollama {
-                base_url: "http://localhost:11434".into(),
+            ProviderConfig::OpenAI {
+                api_key_env: "K".into(),
+                api_base: "https://test.example.com/v1".into(),
                 default_model: "m".into(),
             }
             .type_name(),
-            "ollama"
+            "openai"
         );
         assert_eq!(
             ProviderConfig::OpenAI {
@@ -2569,24 +2464,6 @@ api_key_env = "TEST_API_KEY"
         assert!((r.rerank_weight - 0.6).abs() < f32::EPSILON);
     }
 
-    #[test]
-    fn test_validation_missing_anthropic_env() {
-        set_test_env();
-        unsafe { std::env::remove_var("MISSING_ANTHROPIC"); }
-        let content = r#"
-[server]
-[auth]
-jwt_secret_env = "TEST_JWT_SECRET"
-api_key_env = "TEST_API_KEY"
-[database]
-[providers.anthropic]
-type = "anthropic"
-api_key_env = "MISSING_ANTHROPIC"
-default_model = "claude-3-5-sonnet-20241022"
-"#;
-        let config: AresConfig = toml::from_str(content).unwrap();
-        assert!(matches!(config.validate(), Err(ConfigError::MissingEnvVar(_))));
-    }
 
     #[test]
     fn test_mcp_tool_prefix_allowed_in_validation() {
@@ -2598,7 +2475,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.p]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "m"
 [models.m]
 provider = "p"
@@ -2658,7 +2537,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.p]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "m"
 [models.m]
 provider = "p"
@@ -2907,7 +2788,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.p]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "m"
 [models.m]
 provider = "p"
@@ -3191,8 +3074,8 @@ input_usd_per_million_tokens = 2.5
 output_usd_per_million_tokens = 10.0
 currency = "USD"
 [billing.model_pricing.free_tier]
-provider = "ollama"
-model = "llama3"
+provider = "openai"
+model = "test-model"
 input_usd_per_million_tokens = 0.0
 output_usd_per_million_tokens = 0.0
 "#;
@@ -3201,7 +3084,7 @@ output_usd_per_million_tokens = 0.0
         let gpt = config.billing.pricing_for("openai", "gpt-4o").unwrap();
         assert!((gpt.input_usd_per_million_tokens.unwrap() - 2.5).abs() < f64::EPSILON);
         assert!((gpt.output_usd_per_million_tokens.unwrap() - 10.0).abs() < f64::EPSILON);
-        let free = config.billing.pricing_for("ollama", "llama3").unwrap();
+        let free = config.billing.pricing_for("openai", "test-model").unwrap();
         assert_eq!(free.currency, "USD");
     }
 
@@ -3284,25 +3167,7 @@ output_usd_per_million_tokens = 0.0
 
     // ---- ProviderConfig type_name completeness ----
 
-    #[test]
-    fn test_provider_config_type_name_anthropic() {
-        let p = ProviderConfig::Anthropic {
-            api_key_env: "KEY".into(),
-            default_model: "claude-3".into(),
-        };
-        assert_eq!(p.type_name(), "anthropic");
-    }
 
-    #[test]
-    fn test_provider_config_type_name_llamacpp() {
-        let p = ProviderConfig::LlamaCpp {
-            model_path: "/m.gguf".into(),
-            n_ctx: 2048,
-            n_threads: 2,
-            max_tokens: 256,
-        };
-        assert_eq!(p.type_name(), "llamacpp");
-    }
 
     // ---- FromStr edge cases ----
 
@@ -3349,7 +3214,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.p]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "m1"
 [models.m1]
 provider = "p"
@@ -3412,7 +3279,9 @@ jwt_secret_env = "JWT"
 api_key_env = "API"
 [database]
 [providers.p]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "m"
 [models.m]
 provider = "p"
@@ -3513,7 +3382,9 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
 [providers.p]
-type = "ollama"
+type = "openai"
+api_key_env = "TEST_KEY"
+api_base = "https://test.example.com/v1"
 default_model = "m"
 [models.m]
 provider = "p"
@@ -3573,18 +3444,6 @@ api_key_env = "API"
 
     // ---- LlamaCpp defaults from FromStr ----
 
-    #[test]
-    fn test_provider_config_from_str_llamacpp_defaults() {
-        let p: ProviderConfig = "llamacpp".parse().unwrap();
-        if let ProviderConfig::LlamaCpp { model_path, n_ctx, n_threads, max_tokens } = p {
-            assert_eq!(model_path, "./models/default.gguf");
-            assert_eq!(n_ctx, 4096);
-            assert_eq!(n_threads, 4);
-            assert_eq!(max_tokens, 512);
-        } else {
-            panic!("expected llamacpp variant");
-        }
-    }
 
     #[test]
     fn test_provider_config_from_str_openai_defaults() {
@@ -3598,27 +3457,7 @@ api_key_env = "API"
         }
     }
 
-    #[test]
-    fn test_provider_config_from_str_anthropic_defaults() {
-        let p: ProviderConfig = "anthropic".parse().unwrap();
-        if let ProviderConfig::Anthropic { api_key_env, default_model } = p {
-            assert_eq!(api_key_env, "ANTHROPIC_API_KEY");
-            assert_eq!(default_model, "claude-3-5-sonnet-20241022");
-        } else {
-            panic!("expected anthropic variant");
-        }
-    }
 
-    #[test]
-    fn test_provider_config_from_str_ollama_defaults() {
-        let p: ProviderConfig = "ollama".parse().unwrap();
-        if let ProviderConfig::Ollama { base_url, default_model } = p {
-            assert_eq!(base_url, "http://localhost:11434");
-            assert_eq!(default_model, "default");
-        } else {
-            panic!("expected ollama variant");
-        }
-    }
 
     #[test]
     fn test_tool_config_default_struct() {

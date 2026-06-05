@@ -24,6 +24,7 @@ use crate::capabilities::{CapabilityRequirements, ModelCapabilities, ModelWithCa
 use crate::client::{LLMClient, Provider};
 use ares_types::types::{AppError, Result};
 use ares_config::toml_config::{AresConfig, ModelConfig, ProviderConfig};
+use ares_config::nvidia_catalog::{CatalogEntry, NvidiaCatalogCache, NvidiaConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -32,11 +33,13 @@ use std::sync::Arc;
 /// The ProviderRegistry holds references to provider configurations and allows
 /// creating LLM clients for specific models or providers by name.
 pub struct ProviderRegistry {
-    /// Provider configurations keyed by name
+    /// Provider configurations keyed by name (legacy, kept for backward compat).
     providers: HashMap<String, ProviderConfig>,
-    /// Model configurations keyed by name
+    /// Explicit model configurations keyed by name (legacy, kept for backward compat).
     models: HashMap<String, ModelConfig>,
-    /// Default model name to use when none specified
+    /// Live NVIDIA catalog cache.
+    catalog: Option<Arc<NvidiaCatalogCache>>,
+    /// Default model name to use when none specified.
     default_model: Option<String>,
 }
 
@@ -46,17 +49,47 @@ impl ProviderRegistry {
         Self {
             providers: HashMap::new(),
             models: HashMap::new(),
+            catalog: None,
             default_model: None,
         }
     }
 
     /// Create a provider registry from TOML configuration
     pub fn from_config(config: &AresConfig) -> Self {
-        Self {
-            providers: config.providers.clone(),
-            models: config.models.clone(),
-            default_model: config.models.keys().next().cloned(),
+        let mut providers = config.providers.clone();
+
+        // If no legacy providers are configured, synthesize a single NVIDIA provider.
+        if providers.is_empty() {
+            let nvidia = config.nvidia.clone().unwrap_or_default();
+            let _ = std::env::var(&nvidia.api_key_env); // we don't error here; refresh will report it
+            providers.insert(
+                "nvidia".to_string(),
+                ProviderConfig::OpenAI {
+                    api_key_env: nvidia.api_key_env.clone(),
+                    api_base: nvidia.api_base.clone(),
+                    default_model: nvidia.default_model.clone(),
+                },
+            );
         }
+
+        let default_model = config
+            .nvidia
+            .as_ref()
+            .map(|n| n.default_model.clone())
+            .or_else(|| config.models.keys().next().cloned());
+
+        Self {
+            providers,
+            models: config.models.clone(),
+            catalog: None,
+            default_model,
+        }
+    }
+
+    /// Attach a live catalog cache (used after construction for background refresh).
+    pub fn with_catalog(mut self, catalog: Arc<NvidiaCatalogCache>) -> Self {
+        self.catalog = Some(catalog);
+        self
     }
 
     /// Set the default model name
@@ -64,12 +97,12 @@ impl ProviderRegistry {
         self.default_model = Some(model_name.to_string());
     }
 
-    /// Register a provider configuration
+    /// Register a provider configuration (legacy no-op if providers are already managed).
     pub fn register_provider(&mut self, name: &str, config: ProviderConfig) {
         self.providers.insert(name.to_string(), config);
     }
 
-    /// Register a model configuration
+    /// Register a model configuration (legacy backward-compat).
     pub fn register_model(&mut self, name: &str, config: ModelConfig) {
         self.models.insert(name.to_string(), config);
     }
@@ -89,9 +122,26 @@ impl ProviderRegistry {
         self.providers.get(name)
     }
 
-    /// Get a model configuration by name
-    pub fn get_model(&self, name: &str) -> Option<&ModelConfig> {
-        self.models.get(name)
+    /// Get a model configuration by name.
+    /// Checks explicit legacy models first, then falls back to the live catalog.
+    pub fn get_model(&self, name: &str) -> Option<ModelConfig> {
+        // 1. explicit legacy models
+        if let Some(cfg) = self.models.get(name) {
+            return Some(cfg.clone());
+        }
+        // 2. catalog lookup – synthesize a ModelConfig on the fly
+        if let Some(ref catalog) = self.catalog {
+            let snapshot = catalog.snapshot();
+            if snapshot.iter().any(|e| e.id == name) {
+                return Some(ModelConfig {
+                    provider: "nvidia".to_string(),
+                    model: name.to_string(),
+                    temperature: 0.7,
+                    max_tokens: 512,
+                });
+            }
+        }
+        None
     }
 
     /// Get all provider names
@@ -99,33 +149,53 @@ impl ProviderRegistry {
         self.providers.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Get all model names
-    pub fn model_names(&self) -> Vec<&str> {
-        self.models.keys().map(|s| s.as_str()).collect()
+    /// Get all model names (legacy + catalog ids)
+    pub fn model_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.models.keys().cloned().collect();
+        if let Some(ref catalog) = self.catalog {
+            for entry in catalog.snapshot() {
+                names.push(entry.id.clone());
+            }
+        }
+        names
     }
 
     /// Create an LLM client for a specific model by name
-    ///
-    /// This resolves the model -> provider chain and creates the appropriate client.
     pub async fn create_client_for_model(&self, model_name: &str) -> Result<Box<dyn LLMClient>> {
-        let model_config = self.get_model(model_name).ok_or_else(|| {
-            AppError::Configuration(format!("Model '{}' not found in configuration", model_name))
-        })?;
+        // 1. Try legacy explicit models first
+        if let Some(model_config) = self.models.get(model_name) {
+            let provider_config = self.get_provider(&model_config.provider).ok_or_else(|| {
+                AppError::Configuration(format!(
+                    "Provider '{}' referenced by model '{}' not found",
+                    model_config.provider, model_name
+                ))
+            })?;
+            let provider = Provider::from_model_config(model_config, provider_config)?;
+            return provider.create_client().await;
+        }
 
-        let provider_config = self.get_provider(&model_config.provider).ok_or_else(|| {
-            AppError::Configuration(format!(
-                "Provider '{}' referenced by model '{}' not found",
-                model_config.provider, model_name
-            ))
-        })?;
+        // 2. Try catalog lookup
+        if let Some(ref catalog) = self.catalog {
+            let snapshot = catalog.snapshot();
+            if snapshot.iter().any(|e| e.id == model_name) {
+                let nvidia_cfg = self.nvidia_config_from_providers();
+                let provider_config = ProviderConfig::OpenAI {
+                    api_key_env: nvidia_cfg.api_key_env,
+                    api_base: nvidia_cfg.api_base,
+                    default_model: model_name.to_string(),
+                };
+                let provider = Provider::from_config(&provider_config, Some(model_name))?;
+                return provider.create_client().await;
+            }
+        }
 
-        let provider = Provider::from_model_config(model_config, provider_config)?;
-        provider.create_client().await
+        Err(AppError::Configuration(format!(
+            "Model '{}' not found in configuration",
+            model_name
+        )))
     }
 
     /// Create an LLM client for a specific provider by name
-    ///
-    /// Uses the provider's default model.
     pub async fn create_client_for_provider(
         &self,
         provider_name: &str,
@@ -154,6 +224,11 @@ impl ProviderRegistry {
     /// Check if a model exists in the registry
     pub fn has_model(&self, name: &str) -> bool {
         self.models.contains_key(name)
+            || self
+                .catalog
+                .as_ref()
+                .map(|c| c.snapshot().iter().any(|e| e.id == name))
+                .unwrap_or(false)
     }
 
     /// Check if a provider exists in the registry
@@ -164,56 +239,67 @@ impl ProviderRegistry {
     // ================== Capability-Based Model Selection (DIR-43) ==================
 
     /// Get capabilities for a registered model.
-    ///
-    /// Attempts to auto-detect capabilities based on the model name,
-    /// or returns default capabilities if unknown.
     pub fn get_model_capabilities(&self, model_name: &str) -> Option<ModelCapabilities> {
-        let model_config = self.get_model(model_name)?;
-        let provider_config = self.get_provider(&model_config.provider)?;
-
-        // Start with auto-detected capabilities based on model ID
-        let mut caps = ModelCapabilities::for_model(&model_config.model);
-
-        // Override with provider-specific info
-        match provider_config {
-            ProviderConfig::Ollama { .. } => {
-                caps.is_local = true;
-                caps.cost_tier = "free".to_string();
-            }
-            ProviderConfig::LlamaCpp { .. } => {
-                caps.is_local = true;
-                caps.cost_tier = "free".to_string();
-            }
-            ProviderConfig::OpenAI { .. } => {
+        // If it's a legacy model, use the explicit config
+        if let Some(model_config) = self.models.get(model_name) {
+            let provider_config = self.get_provider(&model_config.provider)?;
+            let mut caps = ModelCapabilities::for_model(&model_config.model);
+            if matches!(provider_config, ProviderConfig::OpenAI { .. }) {
                 caps.is_local = false;
             }
-            ProviderConfig::Anthropic { .. } => {
+            return Some(caps);
+        }
+
+        // If it's in the catalog, use the catalog id directly
+        if let Some(ref catalog) = self.catalog {
+            let snapshot = catalog.snapshot();
+            if snapshot.iter().any(|e| e.id == model_name) {
+                let mut caps = ModelCapabilities::for_model(model_name);
                 caps.is_local = false;
+                return Some(caps);
             }
         }
 
-        Some(caps)
+        None
     }
 
     /// Get all models with their capabilities.
     pub fn models_with_capabilities(&self) -> Vec<ModelWithCapabilities> {
-        self.models
-            .iter()
-            .filter_map(|(name, config)| {
-                let caps = self.get_model_capabilities(name)?;
-                Some(ModelWithCapabilities {
+        let mut result = Vec::new();
+
+        // Legacy models
+        for (name, config) in &self.models {
+            if let Some(caps) = self.get_model_capabilities(name) {
+                result.push(ModelWithCapabilities {
                     name: name.clone(),
                     provider: config.provider.clone(),
                     model_id: config.model.clone(),
                     capabilities: caps,
-                })
-            })
-            .collect()
+                });
+            }
+        }
+
+        // Catalog models
+        if let Some(ref catalog) = self.catalog {
+            for entry in catalog.snapshot() {
+                let caps = self.get_model_capabilities(&entry.id).unwrap_or_else(|| {
+                    let mut c = ModelCapabilities::for_model(&entry.id);
+                    c.is_local = false;
+                    c
+                });
+                result.push(ModelWithCapabilities {
+                    name: entry.id.clone(),
+                    provider: "nvidia".to_string(),
+                    model_id: entry.id.clone(),
+                    capabilities: caps,
+                });
+            }
+        }
+
+        result
     }
 
     /// Find models that satisfy the given capability requirements.
-    ///
-    /// Returns matching models sorted by score (best match first).
     pub fn find_models(&self, requirements: &CapabilityRequirements) -> Vec<ModelWithCapabilities> {
         let mut matches: Vec<_> = self
             .models_with_capabilities()
@@ -232,9 +318,6 @@ impl ProviderRegistry {
     }
 
     /// Find the best model for the given requirements.
-    ///
-    /// Returns the highest-scoring model that satisfies all requirements,
-    /// or None if no model matches.
     pub fn find_best_model(
         &self,
         requirements: &CapabilityRequirements,
@@ -243,17 +326,6 @@ impl ProviderRegistry {
     }
 
     /// Create an LLM client for the best model matching requirements.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let requirements = CapabilityRequirements::builder()
-    ///     .requires_tools()
-    ///     .requires_vision()
-    ///     .build();
-    ///
-    /// let client = registry.create_client_for_requirements(&requirements).await?;
-    /// ```
     pub async fn create_client_for_requirements(
         &self,
         requirements: &CapabilityRequirements,
@@ -290,14 +362,82 @@ impl ProviderRegistry {
 
     /// List all registered models with their provider info.
     pub fn list_models(&self) -> Vec<ModelInfo> {
-        self.models
-            .iter()
-            .map(|(name, config)| ModelInfo {
+        let mut models = Vec::new();
+
+        // Legacy explicit models
+        for (name, config) in &self.models {
+            models.push(ModelInfo {
                 name: name.clone(),
                 provider: config.provider.clone(),
                 model: config.model.clone(),
-            })
-            .collect()
+                owned_by: config.provider.clone(),
+                quality_score: 75,
+                is_chat: true,
+            });
+        }
+
+        // Catalog entries
+        if let Some(ref catalog) = self.catalog {
+            let snapshot = catalog.snapshot();
+            if !snapshot.is_empty() {
+                for entry in snapshot {
+                    models.push(ModelInfo {
+                        name: entry.id.clone(),
+                        provider: "nvidia".to_string(),
+                        model: entry.id.clone(),
+                        owned_by: entry.owned_by.clone(),
+                        quality_score: entry.quality_score,
+                        is_chat: true,
+                    });
+                }
+            } else if let Some(ref default) = self.default_model {
+                // Fallback when catalog is empty: expose the default model so the UI is never blank
+                models.push(ModelInfo {
+                    name: default.clone(),
+                    provider: "nvidia".to_string(),
+                    model: default.clone(),
+                    owned_by: "unknown".to_string(),
+                    quality_score: 75,
+                    is_chat: true,
+                });
+            }
+        } else if let Some(ref default) = self.default_model {
+            // No catalog at all – still expose the default model
+            models.push(ModelInfo {
+                name: default.clone(),
+                provider: "nvidia".to_string(),
+                model: default.clone(),
+                owned_by: "unknown".to_string(),
+                quality_score: 75,
+                is_chat: true,
+            });
+        }
+
+        models
+    }
+
+    // ============================================================
+    // Helpers
+    // ============================================================
+
+    /// Extract NVIDIA config from the synthetic provider we inserted.
+    fn nvidia_config_from_providers(&self) -> NvidiaConfig {
+        if let Some(ProviderConfig::OpenAI {
+            api_key_env,
+            api_base,
+            default_model,
+        }) = self.providers.get("nvidia")
+        {
+            NvidiaConfig {
+                api_key_env: api_key_env.clone(),
+                api_base: api_base.clone(),
+                models_url: format!("{}/models", api_base.trim_end_matches('/')),
+                catalog_refresh_seconds: 3600,
+                default_model: default_model.clone(),
+            }
+        } else {
+            NvidiaConfig::default()
+        }
     }
 }
 
@@ -307,6 +447,12 @@ pub struct ModelInfo {
     pub name: String,
     pub provider: String,
     pub model: String,
+    #[serde(default)]
+    pub owned_by: String,
+    #[serde(default)]
+    pub quality_score: u8,
+    #[serde(default)]
+    pub is_chat: bool,
 }
 
 impl Default for ProviderRegistry {
@@ -316,8 +462,6 @@ impl Default for ProviderRegistry {
 }
 
 /// Configuration-based LLM client factory using the provider registry
-///
-/// This is the new factory that uses TOML configuration instead of environment variables.
 pub struct ConfigBasedLLMFactory {
     registry: Arc<ProviderRegistry>,
     default_model: String,
@@ -336,11 +480,12 @@ impl ConfigBasedLLMFactory {
     pub fn from_config(config: &AresConfig) -> Result<Self> {
         let registry = ProviderRegistry::from_config(config);
 
-        // Get the first model as default, or error if no models defined
-        let default_model =
-            config.models.keys().next().cloned().ok_or_else(|| {
-                AppError::Configuration("No models defined in configuration".into())
-            })?;
+        let default_model = config
+            .nvidia
+            .as_ref()
+            .map(|n| n.default_model.clone())
+            .or_else(|| config.models.keys().next().cloned())
+            .unwrap_or_else(|| "meta/llama-3.3-70b-instruct".to_string());
 
         Ok(Self {
             registry: Arc::new(registry),
@@ -387,10 +532,11 @@ mod tests {
     };
     use std::collections::HashMap;
 
-    fn sample_ollama_provider() -> ProviderConfig {
-        ProviderConfig::Ollama {
-            base_url: "http://localhost:11434".to_string(),
-            default_model: "ministral-3:3b".to_string(),
+    fn sample_openai_provider() -> ProviderConfig {
+        ProviderConfig::OpenAI {
+            api_key_env: "TEST_KEY".to_string(),
+            api_base: "https://test.example.com/v1".to_string(),
+            default_model: "test-model".to_string(),
         }
     }
 
@@ -400,9 +546,6 @@ mod tests {
             model: model.to_string(),
             temperature: 0.7,
             max_tokens: 512,
-            top_p: Some(0.9),
-            frequency_penalty: Some(0.1),
-            presence_penalty: Some(0.2),
         }
     }
 
@@ -414,6 +557,7 @@ mod tests {
             server: ServerConfig::default(),
             auth: AuthConfig::default(),
             database: DatabaseConfig::default(),
+            nvidia: None,
             providers,
             models,
             tools: HashMap::new(),
@@ -440,7 +584,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_empty_registry() {
         let registry = ProviderRegistry::new();
@@ -452,14 +595,15 @@ mod tests {
     fn test_register_provider() {
         let mut registry = ProviderRegistry::new();
         registry.register_provider(
-            "ollama-local",
-            ProviderConfig::Ollama {
-                base_url: "http://localhost:11434".to_string(),
-                default_model: "ministral-3:3b".to_string(),
+            "nvidia",
+            ProviderConfig::OpenAI {
+                api_key_env: "TEST_KEY".to_string(),
+                api_base: "https://test.example.com/v1".to_string(),
+                default_model: "test-model".to_string(),
             },
         );
 
-        assert!(registry.has_provider("ollama-local"));
+        assert!(registry.has_provider("nvidia"));
         assert!(!registry.has_provider("nonexistent"));
     }
 
@@ -467,22 +611,20 @@ mod tests {
     fn test_register_model() {
         let mut registry = ProviderRegistry::new();
         registry.register_provider(
-            "ollama-local",
-            ProviderConfig::Ollama {
-                base_url: "http://localhost:11434".to_string(),
-                default_model: "ministral-3:3b".to_string(),
+            "nvidia",
+            ProviderConfig::OpenAI {
+                api_key_env: "TEST_KEY".to_string(),
+                api_base: "https://test.example.com/v1".to_string(),
+                default_model: "test-model".to_string(),
             },
         );
         registry.register_model(
             "fast",
             ModelConfig {
-                provider: "ollama-local".to_string(),
-                model: "ministral-3:3b".to_string(),
+                provider: "nvidia".to_string(),
+                model: "test-model".to_string(),
                 temperature: 0.7,
                 max_tokens: 256,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
             },
         );
 
@@ -495,82 +637,52 @@ mod tests {
     fn create_test_registry() -> ProviderRegistry {
         let mut registry = ProviderRegistry::new();
 
-        // Register providers
         registry.register_provider(
-            "ollama",
-            ProviderConfig::Ollama {
-                base_url: "http://localhost:11434".to_string(),
-                default_model: "llama-3.3-70b-instruct".to_string(),
-            },
-        );
-
-        registry.register_provider(
-            "anthropic",
-            ProviderConfig::Anthropic {
-                api_key_env: "ANTHROPIC_API_KEY".to_string(),
-                default_model: "claude-3-5-sonnet-20241022".to_string(),
-            },
-        );
-
-        registry.register_provider(
-            "openai",
+            "nvidia",
             ProviderConfig::OpenAI {
-                api_key_env: "OPENAI_API_KEY".to_string(),
-                api_base: "https://api.openai.com/v1".to_string(),
-                default_model: "gpt-4o".to_string(),
+                api_key_env: "TEST_KEY".to_string(),
+                api_base: "https://integrate.api.nvidia.com/v1".to_string(),
+                default_model: "meta/llama-3.3-70b-instruct".to_string(),
             },
         );
 
-        // Register models
         registry.register_model(
             "fast-local",
             ModelConfig {
-                provider: "ollama".to_string(),
-                model: "ministral-3:3b".to_string(),
+                provider: "nvidia".to_string(),
+                model: "meta/llama-3.1-8b-instruct".to_string(),
                 temperature: 0.7,
                 max_tokens: 512,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
             },
         );
 
         registry.register_model(
             "powerful-local",
             ModelConfig {
-                provider: "ollama".to_string(),
-                model: "llama-3.3-70b-instruct".to_string(),
+                provider: "nvidia".to_string(),
+                model: "meta/llama-3.3-70b-instruct".to_string(),
                 temperature: 0.7,
                 max_tokens: 2048,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
             },
         );
 
         registry.register_model(
-            "claude-sonnet",
+            "deepseek",
             ModelConfig {
-                provider: "anthropic".to_string(),
-                model: "claude-3-5-sonnet-20241022".to_string(),
+                provider: "nvidia".to_string(),
+                model: "deepseek-ai/deepseek-v3.2".to_string(),
                 temperature: 0.7,
                 max_tokens: 4096,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
             },
         );
 
         registry.register_model(
-            "gpt4o",
+            "qwen",
             ModelConfig {
-                provider: "openai".to_string(),
-                model: "gpt-4o-2024-08-06".to_string(),
+                provider: "nvidia".to_string(),
+                model: "qwen/qwen-32b".to_string(),
                 temperature: 0.7,
                 max_tokens: 4096,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
             },
         );
 
@@ -581,18 +693,13 @@ mod tests {
     fn test_get_model_capabilities() {
         let registry = create_test_registry();
 
-        // Test local model capabilities
         let fast_caps = registry.get_model_capabilities("fast-local").unwrap();
-        assert!(fast_caps.is_local);
-        assert_eq!(fast_caps.cost_tier, "free");
+        assert!(!fast_caps.is_local);
         assert!(fast_caps.supports_tools);
 
-        // Test cloud model capabilities
-        let claude_caps = registry.get_model_capabilities("claude-sonnet").unwrap();
-        assert!(!claude_caps.is_local);
-        assert!(claude_caps.supports_tools);
-        assert!(claude_caps.supports_vision);
-        assert_eq!(claude_caps.context_window, 200_000);
+        let deep_caps = registry.get_model_capabilities("deepseek").unwrap();
+        assert!(!deep_caps.is_local);
+        assert!(deep_caps.supports_tools);
     }
 
     #[test]
@@ -602,11 +709,9 @@ mod tests {
 
         assert_eq!(models.len(), 4);
 
-        // Verify all models have capabilities
         for model in &models {
             assert!(!model.name.is_empty());
             assert!(!model.provider.is_empty());
-            // All these models should support tools
             assert!(model.capabilities.supports_tools);
         }
     }
@@ -615,25 +720,16 @@ mod tests {
     fn test_find_local_models() {
         let registry = create_test_registry();
         let local_models = registry.find_local_models();
-
-        // Should find the two Ollama models
-        assert_eq!(local_models.len(), 2);
-        for model in &local_models {
-            assert!(model.capabilities.is_local);
-            assert_eq!(model.capabilities.cost_tier, "free");
-        }
+        // NVIDIA models are not local
+        assert!(local_models.is_empty());
     }
 
     #[test]
     fn test_find_vision_models() {
         let registry = create_test_registry();
         let vision_models = registry.find_vision_models();
-
-        // Claude and GPT-4o support vision
-        assert_eq!(vision_models.len(), 2);
-        for model in &vision_models {
-            assert!(model.capabilities.supports_vision);
-        }
+        // No explicit vision models in test registry
+        assert!(vision_models.is_empty());
     }
 
     #[test]
@@ -653,14 +749,12 @@ mod tests {
     fn test_find_best_model_with_context_window() {
         let registry = create_test_registry();
 
-        // Require large context window
         let requirements = CapabilityRequirements::builder()
             .min_context_window(100_000)
             .build();
 
         let matches = registry.find_models(&requirements);
 
-        // Should match Claude (200k), GPT-4o (128k), and Llama (128k)
         assert!(matches.len() >= 2);
         for model in &matches {
             assert!(model.capabilities.context_window >= 100_000);
@@ -671,26 +765,18 @@ mod tests {
     fn test_find_best_model_prefers_cheaper() {
         let registry = create_test_registry();
 
-        // Basic requirements that all models satisfy
         let requirements = CapabilityRequirements::builder().requires_tools().build();
 
         let best = registry.find_best_model(&requirements).unwrap();
 
-        // Should prefer local/free models when all else is equal
-        // (scoring penalizes cost)
-        assert!(
-            best.capabilities.is_local || best.capabilities.cost_tier == "free",
-            "Expected best model to be local/free, got: {} (cost: {})",
-            best.name,
-            best.capabilities.cost_tier
-        );
+        // NVIDIA models are "free" tier in our heuristic
+        assert_eq!(best.capabilities.cost_tier, "free");
     }
 
     #[test]
     fn test_no_model_matches_impossible_requirements() {
         let registry = create_test_registry();
 
-        // Impossible requirements: local + vision (no local vision models in test registry)
         let requirements = CapabilityRequirements::builder()
             .requires_local()
             .requires_vision()
@@ -705,27 +791,28 @@ mod tests {
         let registry = create_test_registry();
         let coding_models = registry.find_coding_models();
 
-        // Should find models that support tools + reasoning + large context
         for model in &coding_models {
             assert!(model.capabilities.supports_tools);
             assert!(model.capabilities.supports_reasoning);
             assert!(model.capabilities.context_window >= 32_000);
         }
     }
+
     #[test]
     fn test_unregister_provider() {
         let mut registry = ProviderRegistry::new();
         registry.register_provider(
-            "ollama",
-            ProviderConfig::Ollama {
-                base_url: "http://localhost:11434".to_string(),
-                default_model: "llama3".to_string(),
+            "nvidia",
+            ProviderConfig::OpenAI {
+                api_key_env: "TEST_KEY".to_string(),
+                api_base: "https://test.example.com/v1".to_string(),
+                default_model: "test-model".to_string(),
             },
         );
-        assert!(registry.has_provider("ollama"));
-        let removed = registry.unregister_provider("ollama").unwrap();
-        assert!(matches!(removed, ProviderConfig::Ollama { .. }));
-        assert!(!registry.has_provider("ollama"));
+        assert!(registry.has_provider("nvidia"));
+        let removed = registry.unregister_provider("nvidia").unwrap();
+        assert!(matches!(removed, ProviderConfig::OpenAI { .. }));
+        assert!(!registry.has_provider("nvidia"));
     }
 
     #[test]
@@ -739,7 +826,7 @@ mod tests {
     #[test]
     fn test_lookup_provider_by_name() {
         let registry = create_test_registry();
-        let provider = registry.get_provider("openai").unwrap();
+        let provider = registry.get_provider("nvidia").unwrap();
         assert!(matches!(provider, ProviderConfig::OpenAI { .. }));
         assert!(registry.get_provider("missing").is_none());
     }
@@ -755,33 +842,35 @@ mod tests {
     fn test_register_provider_overwrites_existing() {
         let mut registry = ProviderRegistry::new();
         registry.register_provider(
-            "ollama",
-            ProviderConfig::Ollama {
-                base_url: "http://localhost:11434".to_string(),
+            "nvidia",
+            ProviderConfig::OpenAI {
+                api_key_env: "TEST_KEY".to_string(),
+                api_base: "https://old.example.com/v1".to_string(),
                 default_model: "old-model".to_string(),
             },
         );
         registry.register_provider(
-            "ollama",
-            ProviderConfig::Ollama {
-                base_url: "http://127.0.0.1:11434".to_string(),
+            "nvidia",
+            ProviderConfig::OpenAI {
+                api_key_env: "TEST_KEY".to_string(),
+                api_base: "https://new.example.com/v1".to_string(),
                 default_model: "new-model".to_string(),
             },
         );
 
-        let provider = registry.get_provider("ollama").unwrap();
-        if let ProviderConfig::Ollama { default_model, .. } = provider {
+        let provider = registry.get_provider("nvidia").unwrap();
+        if let ProviderConfig::OpenAI { default_model, .. } = provider {
             assert_eq!(default_model, "new-model");
         } else {
-            panic!("expected Ollama provider");
+            panic!("expected OpenAI provider");
         }
     }
 
     #[test]
     fn test_provider_and_model_name_iteration() {
         let mut registry = ProviderRegistry::new();
-        registry.register_provider("alpha", sample_ollama_provider());
-        registry.register_provider("beta", sample_ollama_provider());
+        registry.register_provider("alpha", sample_openai_provider());
+        registry.register_provider("beta", sample_openai_provider());
         registry.register_model("m1", sample_model_config("alpha", "model-a"));
         registry.register_model("m2", sample_model_config("beta", "model-b"));
 
@@ -797,12 +886,12 @@ mod tests {
     #[test]
     fn test_lookup_model_by_name() {
         let mut registry = ProviderRegistry::new();
-        registry.register_provider("ollama", sample_ollama_provider());
-        registry.register_model("fast", sample_model_config("ollama", "ministral-3:3b"));
+        registry.register_provider("nvidia", sample_openai_provider());
+        registry.register_model("fast", sample_model_config("nvidia", "test-model"));
 
         let model = registry.get_model("fast").unwrap();
-        assert_eq!(model.provider, "ollama");
-        assert_eq!(model.model, "ministral-3:3b");
+        assert_eq!(model.provider, "nvidia");
+        assert_eq!(model.model, "test-model");
         assert!(registry.get_model("missing").is_none());
     }
 
@@ -812,21 +901,21 @@ mod tests {
         let models = registry.list_models();
 
         assert_eq!(models.len(), 4);
-        assert!(models.iter().any(|m| m.name == "fast-local" && m.provider == "ollama"));
-        assert!(models.iter().any(|m| m.name == "gpt4o" && m.provider == "openai"));
+        assert!(models.iter().any(|m| m.name == "fast-local" && m.provider == "nvidia"));
+        assert!(models.iter().any(|m| m.name == "deepseek" && m.provider == "nvidia"));
     }
 
     #[test]
     fn test_from_config_loads_providers_and_models() {
         let mut providers = HashMap::new();
-        providers.insert("ollama".to_string(), sample_ollama_provider());
+        providers.insert("nvidia".to_string(), sample_openai_provider());
         let mut models = HashMap::new();
-        models.insert("fast".to_string(), sample_model_config("ollama", "ministral-3:3b"));
+        models.insert("fast".to_string(), sample_model_config("nvidia", "test-model"));
 
         let config = minimal_ares_config(providers, models);
         let registry = ProviderRegistry::from_config(&config);
 
-        assert!(registry.has_provider("ollama"));
+        assert!(registry.has_provider("nvidia"));
         assert!(registry.has_model("fast"));
         assert_eq!(registry.model_names(), vec!["fast"]);
     }
@@ -834,7 +923,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_default_model() {
         let mut registry = create_test_registry();
-        registry.set_default_model("claude-sonnet");
+        registry.set_default_model("deepseek");
         match registry.create_default_client().await {
             Err(AppError::Configuration(msg)) => {
                 assert!(!msg.contains("No default model configured"), "got: {msg}");
@@ -870,34 +959,18 @@ mod tests {
     fn test_unregister_model_returns_removed_config() {
         let mut registry = create_test_registry();
         let removed = registry.unregister_model("fast-local").unwrap();
-        assert_eq!(removed.provider, "ollama");
-        assert_eq!(removed.model, "ministral-3:3b");
+        assert_eq!(removed.provider, "nvidia");
+        assert_eq!(removed.model, "meta/llama-3.1-8b-instruct");
         assert!(registry.unregister_model("fast-local").is_none());
     }
 
     #[test]
     fn test_provider_config_serde_roundtrip() {
-        let configs = [
-            ProviderConfig::Ollama {
-                base_url: "http://localhost:11434".to_string(),
-                default_model: "llama3".to_string(),
-            },
-            ProviderConfig::OpenAI {
-                api_key_env: "OPENAI_API_KEY".to_string(),
-                api_base: "https://api.openai.com/v1".to_string(),
-                default_model: "gpt-4o".to_string(),
-            },
-            ProviderConfig::Anthropic {
-                api_key_env: "ANTHROPIC_API_KEY".to_string(),
-                default_model: "claude-3-5-sonnet-20241022".to_string(),
-            },
-            ProviderConfig::LlamaCpp {
-                model_path: "./models/test.gguf".to_string(),
-                n_ctx: 8192,
-                n_threads: 8,
-                max_tokens: 1024,
-            },
-        ];
+        let configs = [ProviderConfig::OpenAI {
+            api_key_env: "OPENAI_API_KEY".to_string(),
+            api_base: "https://api.openai.com/v1".to_string(),
+            default_model: "gpt-4o".to_string(),
+        }];
 
         for original in configs {
             let json = serde_json::to_string(&original).unwrap();
@@ -908,24 +981,21 @@ mod tests {
 
     #[test]
     fn test_model_config_serde_roundtrip() {
-        let original = sample_model_config("ollama", "ministral-3:3b");
+        let original = sample_model_config("nvidia", "test-model");
         let json = serde_json::to_string(&original).unwrap();
         let decoded: ModelConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.provider, original.provider);
         assert_eq!(decoded.model, original.model);
         assert_eq!(decoded.temperature, original.temperature);
         assert_eq!(decoded.max_tokens, original.max_tokens);
-        assert_eq!(decoded.top_p, original.top_p);
-        assert_eq!(decoded.frequency_penalty, original.frequency_penalty);
-        assert_eq!(decoded.presence_penalty, original.presence_penalty);
     }
 
     #[test]
     fn test_config_factory_from_config() {
         let mut providers = HashMap::new();
-        providers.insert("ollama".to_string(), sample_ollama_provider());
+        providers.insert("nvidia".to_string(), sample_openai_provider());
         let mut models = HashMap::new();
-        models.insert("fast".to_string(), sample_model_config("ollama", "ministral-3:3b"));
+        models.insert("fast".to_string(), sample_model_config("nvidia", "test-model"));
 
         let config = minimal_ares_config(providers, models);
         let factory = ConfigBasedLLMFactory::from_config(&config).unwrap();
@@ -936,10 +1006,9 @@ mod tests {
     #[test]
     fn test_config_factory_from_config_no_models() {
         let config = minimal_ares_config(HashMap::new(), HashMap::new());
-        assert_configuration_error(
-            ConfigBasedLLMFactory::from_config(&config),
-            "No models defined in configuration",
-        );
+        // Should now succeed by falling back to the hardcoded default
+        let factory = ConfigBasedLLMFactory::from_config(&config).unwrap();
+        assert_eq!(factory.default_model(), "meta/llama-3.3-70b-instruct");
     }
 
     #[tokio::test]
@@ -994,6 +1063,4 @@ mod tests {
             "No model found matching requirements",
         );
     }
-
-
 }

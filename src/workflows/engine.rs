@@ -329,8 +329,9 @@ mod tests {
         let mut providers = HashMap::new();
         providers.insert(
             "ollama-local".to_string(),
-            ProviderConfig::Ollama {
-                base_url: "http://localhost:11434".to_string(),
+            ProviderConfig::OpenAI {
+                api_key_env: "TEST_KEY".to_string(),
+                api_base: "https://test.example.com/v1".to_string(),
                 default_model: "ministral-3:3b".to_string(),
             },
         );
@@ -343,9 +344,6 @@ mod tests {
                 model: "ministral-3:3b".to_string(),
                 temperature: 0.7,
                 max_tokens: 512,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
             },
         );
 
@@ -410,6 +408,7 @@ mod tests {
             server: ServerConfig::default(),
             auth: AuthConfig::default(),
             database: DatabaseConfig::default(),
+            nvidia: None,
             config: crate::utils::toml_config::DynamicConfigPaths::default(),
             providers,
             models,
@@ -647,8 +646,8 @@ mod tests {
     fn create_test_config_with_ollama(base_url: &str) -> AresConfig {
         let mut config = create_test_config();
         if let Some(provider) = config.providers.get_mut("ollama-local") {
-            if let ProviderConfig::Ollama { base_url: url, .. } = provider {
-                *url = base_url.to_string();
+            if let ProviderConfig::OpenAI { api_base, .. } = provider {
+                *api_base = base_url.to_string();
             }
         }
         config

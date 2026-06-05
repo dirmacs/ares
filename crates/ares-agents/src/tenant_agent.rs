@@ -706,8 +706,9 @@ mod tests {
             let mut provider_registry = ProviderRegistry::new();
             provider_registry.register_provider(
                 "ollama-local",
-                ProviderConfig::Ollama {
-                    base_url: mock_ollama_url.to_string(),
+                ProviderConfig::OpenAI {
+                    api_key_env: "TEST_KEY".to_string(),
+                    api_base: "https://test.example.com/v1".to_string(),
                     default_model: "mock-model".to_string(),
                 },
             );
@@ -718,9 +719,6 @@ mod tests {
                     model: "mock-model".to_string(),
                     temperature: 0.0,
                     max_tokens: 512,
-                    top_p: None,
-                    frequency_penalty: None,
-                    presence_penalty: None,
                 },
             );
 

@@ -1291,7 +1291,7 @@ mod tests {
     #[test]
     fn dispatch_coordinator_config_serde_roundtrip() {
         let config = dispatch_test_config(vec![
-            dispatch_endpoint("nvidia", "meta/llama-3.3-70b-instruct", ModelCapabilities::for_model("meta/llama-3.3-70b-instruct")),
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
         ]);
         let json = serde_json::to_string(&config).unwrap();
         let decoded: CoordinatorConfig = serde_json::from_str(&json).unwrap();
@@ -1304,13 +1304,13 @@ mod tests {
     fn dispatch_plan_serde_roundtrip() {
         let plan = DispatchPlan {
             primary: RouteDecision {
-                provider_id: "nvidia".into(),
-                model: "meta/llama-3.3-70b-instruct".into(),
+                provider_id: "openai".into(),
+                model: "gpt-4o".into(),
                 reason: "primary".into(),
             },
             fallbacks: vec![RouteDecision {
-                provider_id: "nvidia".into(),
-                model: "meta/llama-3.3-70b-instruct".into(),
+                provider_id: "ollama".into(),
+                model: "llama3".into(),
                 reason: "fallback".into(),
             }],
         };
@@ -1320,8 +1320,8 @@ mod tests {
     #[test]
     fn dispatch_route_decision_serde_roundtrip() {
         let decision = RouteDecision {
-            provider_id: "nvidia".into(),
-            model: "meta/llama-3.3-70b-instruct".into(),
+            provider_id: "openai".into(),
+            model: "gpt-4o".into(),
             reason: "best score".into(),
         };
         serde_roundtrip(&decision);
@@ -1336,13 +1336,13 @@ mod tests {
     #[test]
     fn dispatch_route_request_picks_highest_scoring_provider() {
         let mut config = dispatch_test_config(vec![
-            dispatch_endpoint("nvidia-balanced", "meta/llama-3.3-70b-instruct", ModelCapabilities::for_model("meta/llama-3.3-70b-instruct")),
-            dispatch_endpoint("nvidia-fast", "meta/llama-3.1-8b-instruct", ModelCapabilities::for_model("meta/llama-3.1-8b-instruct")),
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+            dispatch_endpoint("ollama", "llama3", ModelCapabilities::for_model("llama3")),
         ]);
         config.requirements = CapabilityRequirements::for_agent();
         let mut state = DispatchState::default();
         let route = route_request(&config, &mut state, &[]).unwrap();
-        assert_eq!(route.provider_id, "nvidia-balanced");
+        assert_eq!(route.provider_id, "openai");
     }
 
     #[test]
@@ -1357,12 +1357,12 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            dispatch_endpoint("nvidia", "meta/llama-3.3-70b-instruct", ModelCapabilities::for_model("meta/llama-3.3-70b-instruct")),
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
         ]);
         config.requirements = CapabilityRequirements::for_agent();
         let mut state = DispatchState::default();
         let route = route_request(&config, &mut state, &[]).unwrap();
-        assert_eq!(route.provider_id, "nvidia");
+        assert_eq!(route.provider_id, "openai");
     }
 
     #[test]
@@ -1387,12 +1387,12 @@ mod tests {
     #[test]
     fn dispatch_route_request_excludes_providers() {
         let config = dispatch_test_config(vec![
-            dispatch_endpoint("nvidia-balanced", "meta/llama-3.3-70b-instruct", ModelCapabilities::for_model("meta/llama-3.3-70b-instruct")),
-            dispatch_endpoint("nvidia-fast", "meta/llama-3.1-8b-instruct", ModelCapabilities::for_model("meta/llama-3.1-8b-instruct")),
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+            dispatch_endpoint("ollama", "llama3", ModelCapabilities::for_model("llama3")),
         ]);
         let mut state = DispatchState::default();
-        let route = route_request(&config, &mut state, &["nvidia-balanced"]).unwrap();
-        assert_eq!(route.provider_id, "nvidia-fast");
+        let route = route_request(&config, &mut state, &["openai"]).unwrap();
+        assert_eq!(route.provider_id, "ollama");
     }
 
     #[test]
@@ -1478,41 +1478,41 @@ mod tests {
     #[test]
     fn dispatch_select_fallback_follows_chain_order() {
         let mut config = dispatch_test_config(vec![
-            dispatch_endpoint("nvidia-fast", "meta/llama-3.1-8b-instruct", ModelCapabilities::for_model("meta/llama-3.1-8b-instruct")),
-            dispatch_endpoint("nvidia-balanced", "meta/llama-3.3-70b-instruct", ModelCapabilities::for_model("meta/llama-3.3-70b-instruct")),
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+            dispatch_endpoint("ollama", "llama3", ModelCapabilities::for_model("llama3")),
         ]);
-        config.fallback_chain = vec!["nvidia-fast".into(), "nvidia-balanced".into()];
+        config.fallback_chain = vec!["ollama".into(), "openai".into()];
         let plan = DispatchPlan {
             primary: RouteDecision {
-                provider_id: "nvidia-fast".into(),
-                model: "meta/llama-3.1-8b-instruct".into(),
+                provider_id: "openai".into(),
+                model: "gpt-4o".into(),
                 reason: "primary".into(),
             },
             fallbacks: vec![],
         };
-        let next = select_fallback(&config, &plan, "nvidia-fast", &[]).unwrap().unwrap();
-        assert_eq!(next.provider_id, "nvidia-balanced");
+        let next = select_fallback(&config, &plan, "openai", &[]).unwrap().unwrap();
+        assert_eq!(next.provider_id, "ollama");
     }
 
     #[test]
     fn dispatch_select_fallback_skips_already_tried() {
         let config = dispatch_test_config(vec![
-            dispatch_endpoint("nvidia-fast", "meta/llama-3.1-8b-instruct", ModelCapabilities::for_model("meta/llama-3.1-8b-instruct")),
-            dispatch_endpoint("nvidia-balanced", "meta/llama-3.3-70b-instruct", ModelCapabilities::for_model("meta/llama-3.3-70b-instruct")),
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+            dispatch_endpoint("ollama", "llama3", ModelCapabilities::for_model("llama3")),
         ]);
         let plan = DispatchPlan {
             primary: RouteDecision {
-                provider_id: "nvidia-fast".into(),
-                model: "meta/llama-3.1-8b-instruct".into(),
+                provider_id: "openai".into(),
+                model: "gpt-4o".into(),
                 reason: "primary".into(),
             },
             fallbacks: vec![RouteDecision {
-                provider_id: "nvidia-balanced".into(),
-                model: "meta/llama-3.3-70b-instruct".into(),
+                provider_id: "ollama".into(),
+                model: "llama3".into(),
                 reason: "first fallback".into(),
             }],
         };
-        assert!(select_fallback(&config, &plan, "nvidia-balanced", &[]).unwrap().is_none());
+        assert!(select_fallback(&config, &plan, "ollama", &[]).unwrap().is_none());
     }
 
     #[test]
@@ -1546,24 +1546,24 @@ mod tests {
     #[test]
     fn dispatch_build_dispatch_plan_includes_fallbacks() {
         let mut config = dispatch_test_config(vec![
-            dispatch_endpoint("nvidia-fast", "meta/llama-3.1-8b-instruct", ModelCapabilities::for_model("meta/llama-3.1-8b-instruct")),
-            dispatch_endpoint("nvidia-balanced", "meta/llama-3.3-70b-instruct", ModelCapabilities::for_model("meta/llama-3.3-70b-instruct")),
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
+            dispatch_endpoint("ollama", "llama3", ModelCapabilities::for_model("llama3")),
         ]);
-        config.fallback_chain = vec!["nvidia-fast".into(), "nvidia-balanced".into()];
+        config.fallback_chain = vec!["ollama".into()];
         let mut state = DispatchState::default();
         let plan = build_dispatch_plan(&config, &mut state).unwrap();
         assert!(!plan.fallbacks.is_empty());
-        assert_eq!(plan.fallbacks[0].provider_id, "nvidia-fast");
+        assert_eq!(plan.fallbacks[0].provider_id, "ollama");
     }
 
     #[test]
     fn dispatch_parse_coordinator_response_valid() {
         let json = r#"{
-            "primary": {"provider_id":"nvidia","model":"meta/llama-3.3-70b-instruct","reason":"best"},
-            "fallbacks": [{"provider_id":"nvidia","model":"meta/llama-3.3-70b-instruct","reason":"backup"}]
+            "primary": {"provider_id":"openai","model":"gpt-4o","reason":"best"},
+            "fallbacks": [{"provider_id":"ollama","model":"llama3","reason":"backup"}]
         }"#;
         let plan = parse_coordinator_response(json).unwrap();
-        assert_eq!(plan.primary.provider_id, "nvidia");
+        assert_eq!(plan.primary.provider_id, "openai");
         assert_eq!(plan.fallbacks.len(), 1);
     }
 
@@ -1604,7 +1604,7 @@ mod tests {
     #[test]
     fn dispatch_validate_config_unknown_fallback() {
         let config = CoordinatorConfig {
-            providers: vec![dispatch_endpoint("nvidia", "meta/llama-3.3-70b-instruct", ModelCapabilities::default())],
+            providers: vec![dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::default())],
             fallback_chain: vec!["missing".into()],
             load_balance: LoadBalanceStrategy::RoundRobin,
             requirements: CapabilityRequirements::default(),
@@ -1654,32 +1654,32 @@ mod tests {
     #[test]
     fn dispatch_route_decision_display() {
         let decision = RouteDecision {
-            provider_id: "nvidia".into(),
-            model: "meta/llama-3.3-70b-instruct".into(),
+            provider_id: "openai".into(),
+            model: "gpt-4o".into(),
             reason: "best".into(),
         };
         let s = decision.to_string();
-        assert!(s.contains("nvidia"));
-        assert!(s.contains("meta/llama-3.3-70b-instruct"));
+        assert!(s.contains("openai"));
+        assert!(s.contains("gpt-4o"));
     }
 
     #[test]
     fn dispatch_plan_display() {
         let plan = DispatchPlan {
             primary: RouteDecision {
-                provider_id: "nvidia".into(),
-                model: "meta/llama-3.3-70b-instruct".into(),
+                provider_id: "openai".into(),
+                model: "gpt-4o".into(),
                 reason: "primary".into(),
             },
             fallbacks: vec![RouteDecision {
-                provider_id: "nvidia".into(),
-                model: "meta/llama-3.3-70b-instruct".into(),
+                provider_id: "ollama".into(),
+                model: "llama3".into(),
                 reason: "fb".into(),
             }],
         };
         let s = plan.to_string();
-        assert!(s.contains("nvidia"));
-        assert!(s.contains("nvidia"));
+        assert!(s.contains("openai"));
+        assert!(s.contains("ollama"));
     }
 
     #[test]
@@ -1692,8 +1692,8 @@ mod tests {
     #[test]
     fn dispatch_coordinator_config_clone() {
         let config = dispatch_test_config(vec![dispatch_endpoint(
-            "nvidia",
-            "meta/llama-3.3-70b-instruct",
+            "openai",
+            "gpt-4o",
             ModelCapabilities::default(),
         )]);
         let cloned = config.clone();
@@ -1711,10 +1711,10 @@ mod tests {
 
     #[test]
     fn dispatch_provider_endpoint_clone_debug() {
-        let endpoint = dispatch_endpoint("nvidia", "meta/llama-3.3-70b-instruct", ModelCapabilities::default());
+        let endpoint = dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::default());
         let cloned = endpoint.clone();
         assert_eq!(endpoint, cloned);
-        assert!(format!("{endpoint:?}").contains("nvidia"));
+        assert!(format!("{endpoint:?}").contains("openai"));
     }
 
     #[test]
@@ -1783,19 +1783,19 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            dispatch_endpoint("nvidia", "meta/llama-3.3-70b-instruct", ModelCapabilities::for_model("meta/llama-3.3-70b-instruct")),
+            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
         ]);
-        config.fallback_chain = vec!["no-tools".into(), "nvidia".into()];
+        config.fallback_chain = vec!["no-tools".into(), "openai".into()];
         config.requirements = CapabilityRequirements::for_agent();
         let plan = DispatchPlan {
             primary: RouteDecision {
-                provider_id: "nvidia".into(),
-                model: "meta/llama-3.3-70b-instruct".into(),
+                provider_id: "openai".into(),
+                model: "gpt-4o".into(),
                 reason: "primary".into(),
             },
             fallbacks: vec![],
         };
-        assert!(select_fallback(&config, &plan, "nvidia", &[]).unwrap().is_none());
+        assert!(select_fallback(&config, &plan, "openai", &[]).unwrap().is_none());
     }
     #[test]
     fn test_message_to_role_content() {

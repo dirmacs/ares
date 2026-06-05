@@ -760,7 +760,7 @@ mod tests {
     fn test_model_params_from_model_config_optional_none() {
         let config = ModelConfig {
             provider: "openai".to_string(),
-            model: "mistral".to_string(),
+            model: "meta/llama-3.3-70b-instruct".to_string(),
             temperature: 0.7,
             max_tokens: 512,
         };

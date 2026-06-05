@@ -1078,19 +1078,19 @@ mod tests {
     #[test]
     fn test_provider_registration() {
         let pool = ClientPool::with_defaults();
-        pool.register_provider("ollama", test_stub_provider());
-        assert!(pool.has_provider("ollama"));
+        pool.register_provider("nvidia", test_stub_provider());
+        assert!(pool.has_provider("nvidia"));
         assert!(!pool.has_provider("openai"));
-        assert_eq!(pool.provider_names(), vec!["ollama"]);
+        assert_eq!(pool.provider_names(), vec!["nvidia"]);
     }
 
     #[test]
     fn test_builder_pattern() {
         let pool = ClientPoolBuilder::new()
             .config(PoolConfig::default().with_max_connections(5))
-            .provider("ollama", test_stub_provider())
+            .provider("nvidia", test_stub_provider())
             .build();
-        assert!(pool.has_provider("ollama"));
+        assert!(pool.has_provider("nvidia"));
     }
 
     #[test]
@@ -1247,9 +1247,9 @@ mod tests {
     #[test]
     fn test_register_provider_overwrites_existing_name() {
         let pool = ClientPool::with_defaults();
-        pool.register_provider("ollama", test_stub_provider());
-        pool.register_provider("ollama", test_stub_provider());
-        assert_eq!(pool.provider_names(), vec!["ollama"]);
+        pool.register_provider("nvidia", test_stub_provider());
+        pool.register_provider("nvidia", test_stub_provider());
+        assert_eq!(pool.provider_names(), vec!["nvidia"]);
     }
 
     #[tokio::test]

@@ -289,6 +289,10 @@ impl std::str::FromStr for ProviderConfig {
     }
 }
 
+/// Default base URL for OpenAI-compatible endpoints.
+///
+/// NVIDIA NIM uses the same OpenAI-compatible protocol, so this
+/// default also applies when the provider is configured for NIM.
 fn default_openai_base() -> String {
     "https://api.openai.com/v1".to_string()
 }
@@ -704,7 +708,7 @@ impl BillingConfig {
 /// Pricing for a single runtime provider/model pair.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPricingConfig {
-    /// Runtime provider name, such as `openai` or `ollama-local`.
+    /// Runtime provider name, such as `openai` or `nvidia-test`.
     pub provider: String,
     /// Runtime model identifier.
     pub model: String,
@@ -1467,21 +1471,21 @@ api_key_env = "TEST_API_KEY"
 [database]
 url = "./data/test.db"
 
-[providers.ollama-local]
+[providers.nvidia-test]
 type = "openai"
 api_key_env = "TEST_KEY"
 api_base = "https://test.example.com/v1"
-default_model = "ministral-3:3b"
+default_model = "meta/llama-3.3-70b-instruct"
 
 [models.default]
-provider = "ollama-local"
-model = "ministral-3:3b"
+provider = "nvidia-test"
+model = "meta/llama-3.3-70b-instruct"
 temperature = 0.7
 max_tokens = 512
 
 [billing.model_pricing.test_default]
-provider = "ollama-local"
-model = "ministral-3:3b"
+provider = "nvidia-test"
+model = "meta/llama-3.3-70b-instruct"
 input_usd_per_million_tokens = 0.0
 output_usd_per_million_tokens = 0.0
 
@@ -1520,12 +1524,12 @@ max_iterations = 5
 
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 3000);
-        assert!(config.providers.contains_key("ollama-local"));
+        assert!(config.providers.contains_key("nvidia-test"));
         assert!(config.models.contains_key("default"));
         assert!(config.agents.contains_key("router"));
         assert!(config
             .billing
-            .pricing_for(" OLLAMA-LOCAL ", "ministral-3:3b")
+            .pricing_for(" NVIDIA-TEST ", "meta/llama-3.3-70b-instruct")
             .is_some());
     }
 
@@ -1572,7 +1576,7 @@ api_key_env = "TEST_API_KEY"
 [nvidia]
 api_key_env = "TEST_KEY"
 api_base = "https://test.example.com/v1"
-default_model = "ministral-3:3b"
+default_model = "meta/llama-3.3-70b-instruct"
 [agents.test]
 model = "nonexistent"
 "#;
@@ -1604,10 +1608,10 @@ api_key_env = "TEST_API_KEY"
 type = "openai"
 api_key_env = "TEST_KEY"
 api_base = "https://test.example.com/v1"
-default_model = "ministral-3:3b"
+default_model = "meta/llama-3.3-70b-instruct"
 [models.default]
 provider = "test"
-model = "ministral-3:3b"
+model = "meta/llama-3.3-70b-instruct"
 [agents.test]
 model = "default"
 tools = ["nonexistent_tool"]
@@ -1648,7 +1652,7 @@ entry_agent = "nonexistent_agent"
         let content = create_test_config();
         let config: AresConfig = toml::from_str(&content).unwrap();
 
-        assert!(config.get_provider("ollama-local").is_some());
+        assert!(config.get_provider("nvidia-test").is_some());
         assert!(config.get_provider("nonexistent").is_none());
     }
 
@@ -1765,10 +1769,10 @@ api_key_env = "TEST_API_KEY"
 type = "openai"
 api_key_env = "TEST_KEY"
 api_base = "https://test.example.com/v1"
-default_model = "ministral-3:3b"
+default_model = "meta/llama-3.3-70b-instruct"
 [models.default]
 provider = "test"
-model = "ministral-3:3b"
+model = "meta/llama-3.3-70b-instruct"
 [agents.agent_a]
 model = "default"
 [workflows.circular]
@@ -1800,15 +1804,15 @@ api_key_env = "TEST_API_KEY"
 type = "openai"
 api_key_env = "TEST_KEY"
 api_base = "https://test.example.com/v1"
-default_model = "ministral-3:3b"
+default_model = "meta/llama-3.3-70b-instruct"
 [providers.unused]
 type = "openai"
 api_key_env = "TEST_KEY"
 api_base = "https://test.example.com/v1"
-default_model = "ministral-3:3b"
+default_model = "meta/llama-3.3-70b-instruct"
 [models.default]
 provider = "used"
-model = "ministral-3:3b"
+model = "meta/llama-3.3-70b-instruct"
 [agents.router]
 model = "default"
 "#;
@@ -1839,13 +1843,13 @@ api_key_env = "TEST_API_KEY"
 type = "openai"
 api_key_env = "TEST_KEY"
 api_base = "https://test.example.com/v1"
-default_model = "ministral-3:3b"
+default_model = "meta/llama-3.3-70b-instruct"
 [models.used]
 provider = "test"
-model = "ministral-3:3b"
+model = "meta/llama-3.3-70b-instruct"
 [models.unused]
 provider = "test"
-model = "other"
+model = "meta/llama-3.1-8b-instruct"
 [agents.router]
 model = "used"
 "#;
@@ -1876,10 +1880,10 @@ api_key_env = "TEST_API_KEY"
 type = "openai"
 api_key_env = "TEST_KEY"
 api_base = "https://test.example.com/v1"
-default_model = "ministral-3:3b"
+default_model = "meta/llama-3.3-70b-instruct"
 [models.default]
 provider = "test"
-model = "ministral-3:3b"
+model = "meta/llama-3.3-70b-instruct"
 [tools.used_tool]
 enabled = true
 [tools.unused_tool]
@@ -1915,10 +1919,10 @@ api_key_env = "TEST_API_KEY"
 type = "openai"
 api_key_env = "TEST_KEY"
 api_base = "https://test.example.com/v1"
-default_model = "ministral-3:3b"
+default_model = "meta/llama-3.3-70b-instruct"
 [models.default]
 provider = "test"
-model = "ministral-3:3b"
+model = "meta/llama-3.3-70b-instruct"
 [agents.router]
 model = "default"
 [agents.orphaned]
@@ -1953,10 +1957,10 @@ api_key_env = "TEST_API_KEY"
 type = "openai"
 api_key_env = "TEST_KEY"
 api_base = "https://test.example.com/v1"
-default_model = "ministral-3:3b"
+default_model = "meta/llama-3.3-70b-instruct"
 [models.default]
 provider = "test"
-model = "ministral-3:3b"
+model = "meta/llama-3.3-70b-instruct"
 [tools.calc]
 enabled = true
 [agents.router]
@@ -2232,14 +2236,14 @@ watch_interval_ms = 5000
         billing.model_pricing.insert(
             "entry".to_string(),
             ModelPricingConfig {
-                provider: "Ollama-Local".to_string(),
-                model: "Ministral-3:3b".to_string(),
+                provider: "nvidia-test".to_string(),
+                model: "meta/llama-3.3-70b-instruct".to_string(),
                 input_usd_per_million_tokens: Some(0.0),
                 output_usd_per_million_tokens: Some(0.0),
                 currency: "USD".to_string(),
             },
         );
-        let pricing = billing.pricing_for("ollama-local", "ministral-3:3b").unwrap();
+        let pricing = billing.pricing_for("nvidia-test", "meta/llama-3.3-70b-instruct").unwrap();
         assert_eq!(pricing.currency, "USD");
     }
 
@@ -2405,12 +2409,12 @@ entry_agent = "a"
     fn test_model_config_serde_roundtrip() {
         let model = ModelConfig {
             provider: "openai".to_string(),
-            model: "llama3".to_string(),
+            model: "meta/llama-3.1-8b-instruct".to_string(),
             temperature: 0.5,
             max_tokens: 256,
         };
         let decoded: ModelConfig = toml::from_str(&toml::to_string(&model).unwrap()).unwrap();
-        assert_eq!(decoded.model, "llama3");
+        assert_eq!(decoded.model, "meta/llama-3.1-8b-instruct");
         assert!((decoded.temperature - 0.5).abs() < f32::EPSILON);
     }
 
@@ -3503,7 +3507,7 @@ api_key_env = "API"
 
         let config = AresConfig::load(&path).expect("load should succeed");
         assert_eq!(config.server.port, 3000);
-        assert!(config.providers.contains_key("ollama-local"));
+        assert!(config.providers.contains_key("nvidia-test"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

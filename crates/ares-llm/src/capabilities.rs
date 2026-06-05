@@ -917,7 +917,11 @@ mod tests {
         assert!(!caps.supports_json_mode);
         assert!(caps.supports_streaming);
         assert!(caps.supports_system_prompt);
-        assert_eq!(caps.context_window, 4_096);
+        // Default context window bumped to 8_192 with the NVIDIA-only
+        // catalog: every model is now remote (no Ollama local fallback),
+        // so even the conservative default should give a workable
+        // context for short-context tasks.
+        assert_eq!(caps.context_window, 8_192);
         assert_eq!(caps.max_output_tokens, 4_096);
         assert!(!caps.supports_reasoning);
         assert!(!caps.supports_code_execution);
@@ -967,7 +971,9 @@ mod tests {
         assert_eq!(gpt35.family.as_deref(), Some("gpt-3.5"));
 
         let llama = ModelCapabilities::for_model("llama-3.3-70b-instruct");
-        assert!(llama.is_local);
+        // Llama is now NVIDIA-NIM-hosted, not local. is_local stays false
+        // (the model's price tier remains 'free' under NVIDIA's free NIM tier).
+        assert!(!llama.is_local);
         assert_eq!(llama.cost_tier, "free");
 
         let llama_small = ModelCapabilities::for_model("llama-3.1-8b-instruct");
@@ -975,7 +981,8 @@ mod tests {
 
         let mistral = ModelCapabilities::for_model("mistral-nemo-12b");
         assert!(mistral.supports_tools);
-        assert!(mistral.is_local);
+        // Mistral is now NVIDIA-NIM-hosted, not local.
+        assert!(!mistral.is_local);
         assert_eq!(mistral.family.as_deref(), Some("mistral"));
 
         let qwen_vl = ModelCapabilities::for_model("qwen2.5-vl-72b");
@@ -1061,7 +1068,8 @@ mod tests {
         let caps = ModelCapabilities::for_model("llama-3.3-70b-instruct");
         assert!(caps.supports_tools);
         assert!(!caps.supports_vision);
-        assert!(caps.is_local);
+        // Llama is now NVIDIA-NIM-hosted, not local.
+        assert!(!caps.is_local);
         assert_eq!(caps.cost_tier, "free");
     }
 
@@ -1106,12 +1114,15 @@ mod tests {
 
     #[test]
     fn test_local_model_matching() {
+        // With the NVIDIA-only catalog there is no local model, so
+        // CapabilityRequirements::for_local() is satisfied by nothing.
+        // This test now asserts that the constraint is universal.
         let llama = ModelCapabilities::for_model("llama-3.3-70b-instruct");
         let claude = ModelCapabilities::for_model("claude-3-5-sonnet-20241022");
 
         let local_reqs = CapabilityRequirements::for_local();
 
-        assert!(llama.satisfies(&local_reqs));
+        assert!(!llama.satisfies(&local_reqs));
         assert!(!claude.satisfies(&local_reqs));
     }
 

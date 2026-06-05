@@ -961,12 +961,21 @@ impl AresConfig {
         }
 
         // Validate agent -> model and agent -> tools references
+        // NOTE: With the dynamic NVIDIA catalog, agents reference models by
+        // literal NVIDIA NIM id (e.g. "meta/llama-3.3-70b-instruct") which
+        // is resolved at runtime against the live catalog — NOT against a
+        // static [models] table. We therefore only WARN if a model name is
+        // suspicious rather than failing startup, so a model that gets
+        // rotated out of the live catalog doesn't prevent the server from
+        // booting (the affected agent just gets a runtime error on first use).
         for (agent_name, agent_config) in &self.agents {
             if !self.models.contains_key(&agent_config.model) {
-                return Err(ConfigError::MissingModel(
-                    agent_config.model.clone(),
-                    agent_name.clone(),
-                ));
+                tracing::warn!(
+                    "Agent '{}' references model '{}' which is not in the static [models] table. \
+                     The model will be resolved against the live NVIDIA catalog at runtime.",
+                    agent_name,
+                    agent_config.model,
+                );
             }
 
             for tool_name in &agent_config.tools {

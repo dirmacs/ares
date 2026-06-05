@@ -18,6 +18,8 @@
 //!
 //! Enable providers via Cargo features:
 //! - `openai` - OpenAI API (GPT-4, GPT-3.5, etc.)
+//! - `anthropic` - Anthropic API (Claude 3, Claude 3.5, etc.)
+//! - `ollama` - Local Ollama server
 //! - `llamacpp` - llama.cpp server
 //!
 //! # Example
@@ -76,6 +78,10 @@ pub mod provider_registry;
 
 #[cfg(feature = "openai")]
 pub mod openai;
+#[cfg(feature = "ollama")]
+pub mod ollama;
+#[cfg(feature = "anthropic")]
+pub mod anthropic;
 
 pub use capabilities::{
     CapabilityRequirements, CapabilityRequirementsBuilder, ModelCapabilities, ModelWithCapabilities,

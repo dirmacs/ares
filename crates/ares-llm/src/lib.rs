@@ -18,8 +18,6 @@
 //!
 //! Enable providers via Cargo features:
 //! - `openai` - OpenAI API (GPT-4, GPT-3.5, etc.)
-//! - `anthropic` - Anthropic API (Claude 3, Claude 3.5, etc.)
-//! - `ollama` - Local Ollama server
 //! - `llamacpp` - llama.cpp server
 //!
 //! # Example

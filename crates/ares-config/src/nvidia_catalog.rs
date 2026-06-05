@@ -240,9 +240,7 @@ fn quality_score_for(id: &str) -> u8 {
     let mut score: u8 = 75;
 
     // Vendor-based adjustments
-    if lower.contains("deepseek") {
-        score = score.saturating_add(15);
-    } else if lower.contains("qwen") {
+    if lower.contains("qwen") {
         score = score.saturating_add(12);
     } else if lower.contains("llama-3.3") || lower.contains("llama-3.1") {
         score = score.saturating_add(10);

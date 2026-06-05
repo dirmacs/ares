@@ -667,16 +667,6 @@ mod tests {
         );
 
         registry.register_model(
-            "deepseek",
-            ModelConfig {
-                provider: "nvidia".to_string(),
-                model: "deepseek-ai/deepseek-v3.2".to_string(),
-                temperature: 0.7,
-                max_tokens: 4096,
-            },
-        );
-
-        registry.register_model(
             "qwen",
             ModelConfig {
                 provider: "nvidia".to_string(),
@@ -697,9 +687,6 @@ mod tests {
         assert!(!fast_caps.is_local);
         assert!(fast_caps.supports_tools);
 
-        let deep_caps = registry.get_model_capabilities("deepseek").unwrap();
-        assert!(!deep_caps.is_local);
-        assert!(deep_caps.supports_tools);
     }
 
     #[test]
@@ -707,7 +694,7 @@ mod tests {
         let registry = create_test_registry();
         let models = registry.models_with_capabilities();
 
-        assert_eq!(models.len(), 4);
+        assert_eq!(models.len(), 3);
 
         for model in &models {
             assert!(!model.name.is_empty());
@@ -900,9 +887,8 @@ mod tests {
         let registry = create_test_registry();
         let models = registry.list_models();
 
-        assert_eq!(models.len(), 4);
+        assert_eq!(models.len(), 3);
         assert!(models.iter().any(|m| m.name == "fast-local" && m.provider == "nvidia"));
-        assert!(models.iter().any(|m| m.name == "deepseek" && m.provider == "nvidia"));
     }
 
     #[test]
@@ -923,7 +909,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_default_model() {
         let mut registry = create_test_registry();
-        registry.set_default_model("deepseek");
+        registry.set_default_model("powerful-local");
         match registry.create_default_client().await {
             Err(AppError::Configuration(msg)) => {
                 assert!(!msg.contains("No default model configured"), "got: {msg}");

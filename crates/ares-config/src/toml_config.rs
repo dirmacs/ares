@@ -1560,6 +1560,7 @@ model = "test"
         unsafe {
             std::env::set_var("TEST_JWT_SECRET", "test-secret-at-least-32-characters-long");
             std::env::set_var("TEST_API_KEY", "test-key");
+            std::env::set_var("TEST_KEY", "test-provider-key");
         }
 
         let content = r#"
@@ -1568,8 +1569,7 @@ model = "test"
 jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 [database]
-[providers.test]
-type = "openai"
+[nvidia]
 api_key_env = "TEST_KEY"
 api_base = "https://test.example.com/v1"
 default_model = "ministral-3:3b"
@@ -1578,9 +1578,12 @@ model = "nonexistent"
 "#;
 
         let config: AresConfig = toml::from_str(content).unwrap();
+        // With the dynamic NVIDIA catalog, agent models are resolved at
+        // runtime against the live catalog. Missing references produce a
+        // warning during validation, not a hard error — so the server
+        // stays up even when the live catalog rotates a model out.
         let result = config.validate();
-
-        assert!(matches!(result, Err(ConfigError::MissingModel(_, _))));
+        assert!(result.is_ok(), "missing-model should warn, not fail: {:?}", result);
     }
 
     #[test]
@@ -1980,6 +1983,7 @@ entry_agent = "router"
                 "test-secret-at-least-32-characters-long-at-least-32-characters-long",
             );
             std::env::set_var("TEST_API_KEY", "test-api-key");
+            std::env::set_var("TEST_KEY", "test-key");
             std::env::set_var("OPENAI_API_KEY", "sk-test");
             std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
             std::env::set_var("QDRANT_API_KEY", "qdrant-test");
@@ -3456,11 +3460,16 @@ api_key_env = "API"
 
     #[test]
     fn test_provider_config_from_str_openai_defaults() {
+        // After the NVIDIA-only refactor, the `openai` and `nvidia`
+        // literals both parse to the same default OpenAI-compatible
+        // provider pointing at the NVIDIA NIM catalog. Overriding any of
+        // these from the TOML is still possible via the [nvidia] section
+        // and per-agent model fields.
         let p: ProviderConfig = "openai".parse().unwrap();
         if let ProviderConfig::OpenAI { api_key_env, api_base, default_model } = p {
-            assert_eq!(api_key_env, "OPENAI_API_KEY");
-            assert_eq!(api_base, "https://api.openai.com/v1");
-            assert_eq!(default_model, "gpt-4o");
+            assert_eq!(api_key_env, "NVIDIA_API_KEY");
+            assert_eq!(api_base, "https://integrate.api.nvidia.com/v1");
+            assert_eq!(default_model, "meta/llama-3.3-70b-instruct");
         } else {
             panic!("expected openai variant");
         }

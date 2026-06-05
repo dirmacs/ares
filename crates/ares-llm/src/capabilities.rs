@@ -104,7 +104,7 @@ fn default_true() -> bool {
 }
 
 fn default_context_window() -> u32 {
-    4096
+    8192
 }
 
 fn default_max_output() -> u32 {
@@ -291,8 +291,8 @@ impl ModelCapabilities {
             };
         }
 
-        // Llama models
-        if model_lower.contains("llama-3.3") || model_lower.contains("llama-3.1") {
+        // Llama models (NVIDIA NIM)
+        if model_lower.contains("llama-3.3") || model_lower.contains("llama-3.1") || model_lower.contains("llama-3.2") {
             let context = if model_lower.contains("70b") {
                 128_000
             } else {
@@ -316,13 +316,12 @@ impl ModelCapabilities {
                 },
                 family: Some("llama-3".to_string()),
                 production_ready: true,
-                is_local: true,
                 ..Default::default()
             };
         }
 
-        // Mistral models
-        if model_lower.contains("ministral") || model_lower.contains("mistral") {
+        // Mistral models (NVIDIA NIM)
+        if model_lower.contains("ministral") || model_lower.contains("mistral") || model_lower.contains("codestral") {
             return Self {
                 supports_tools: true,
                 supports_vision: false,
@@ -337,12 +336,11 @@ impl ModelCapabilities {
                 quality_tier: "standard".to_string(),
                 family: Some("mistral".to_string()),
                 production_ready: true,
-                is_local: true,
                 ..Default::default()
             };
         }
 
-        // Qwen models
+        // Qwen models (NVIDIA NIM)
         if model_lower.contains("qwen") {
             let has_vl = model_lower.contains("-vl");
             return Self {
@@ -359,12 +357,11 @@ impl ModelCapabilities {
                 quality_tier: "high".to_string(),
                 family: Some("qwen".to_string()),
                 production_ready: true,
-                is_local: true,
                 ..Default::default()
             };
         }
 
-        // DeepSeek models
+        // DeepSeek models (NVIDIA NIM)
         if model_lower.contains("deepseek") {
             return Self {
                 supports_tools: true,
@@ -384,7 +381,127 @@ impl ModelCapabilities {
             };
         }
 
-        // Default capabilities for unknown models
+        // Kimi / Moonshot models (NVIDIA NIM)
+        if model_lower.contains("kimi") || model_lower.contains("moonshotai") {
+            return Self {
+                supports_tools: true,
+                supports_vision: false,
+                supports_json_mode: true,
+                supports_streaming: true,
+                supports_system_prompt: true,
+                context_window: 128_000,
+                max_output_tokens: 8192,
+                supports_reasoning: true,
+                cost_tier: "low".to_string(),
+                speed_tier: "fast".to_string(),
+                quality_tier: "high".to_string(),
+                family: Some("kimi".to_string()),
+                production_ready: true,
+                ..Default::default()
+            };
+        }
+
+        // NVIDIA Nemotron models
+        if model_lower.contains("nemotron") {
+            return Self {
+                supports_tools: true,
+                supports_vision: false,
+                supports_json_mode: true,
+                supports_streaming: true,
+                supports_system_prompt: true,
+                context_window: 128_000,
+                max_output_tokens: 4096,
+                supports_reasoning: true,
+                cost_tier: "free".to_string(),
+                speed_tier: "medium".to_string(),
+                quality_tier: "high".to_string(),
+                family: Some("nemotron".to_string()),
+                production_ready: true,
+                ..Default::default()
+            };
+        }
+
+        // IBM Granite models
+        if model_lower.contains("granite") || model_lower.contains("ibm") {
+            return Self {
+                supports_tools: true,
+                supports_vision: false,
+                supports_json_mode: true,
+                supports_streaming: true,
+                supports_system_prompt: true,
+                context_window: 128_000,
+                max_output_tokens: 4096,
+                supports_reasoning: false,
+                cost_tier: "free".to_string(),
+                speed_tier: "medium".to_string(),
+                quality_tier: "standard".to_string(),
+                family: Some("granite".to_string()),
+                production_ready: true,
+                ..Default::default()
+            };
+        }
+
+        // Zhipu GLM models
+        if model_lower.contains("glm") || model_lower.contains("z-ai") {
+            return Self {
+                supports_tools: true,
+                supports_vision: false,
+                supports_json_mode: true,
+                supports_streaming: true,
+                supports_system_prompt: true,
+                context_window: 128_000,
+                max_output_tokens: 4096,
+                supports_reasoning: model_lower.contains("5") || model_lower.contains("4"),
+                cost_tier: "free".to_string(),
+                speed_tier: "medium".to_string(),
+                quality_tier: "high".to_string(),
+                family: Some("glm".to_string()),
+                production_ready: true,
+                ..Default::default()
+            };
+        }
+
+        // Step models
+        if model_lower.contains("step") {
+            return Self {
+                supports_tools: true,
+                supports_vision: false,
+                supports_json_mode: true,
+                supports_streaming: true,
+                supports_system_prompt: true,
+                context_window: 32_000,
+                max_output_tokens: 4096,
+                supports_reasoning: true,
+                cost_tier: "free".to_string(),
+                speed_tier: "medium".to_string(),
+                quality_tier: "high".to_string(),
+                family: Some("step".to_string()),
+                production_ready: true,
+                ..Default::default()
+            };
+        }
+
+        // Phi models
+        if model_lower.contains("phi") {
+            return Self {
+                supports_tools: true,
+                supports_vision: false,
+                supports_json_mode: true,
+                supports_streaming: true,
+                supports_system_prompt: true,
+                context_window: 32_000,
+                max_output_tokens: 4096,
+                supports_reasoning: false,
+                cost_tier: "free".to_string(),
+                speed_tier: "fast".to_string(),
+                quality_tier: "standard".to_string(),
+                family: Some("phi".to_string()),
+                production_ready: true,
+                ..Default::default()
+            };
+        }
+
+        // Default capabilities for unknown models (NVIDIA NIM defaults)
         Self::default()
     }
 

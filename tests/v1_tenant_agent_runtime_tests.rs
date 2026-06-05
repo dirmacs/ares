@@ -89,8 +89,9 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
     let mut providers = HashMap::new();
     providers.insert(
         "ollama-local".to_string(),
-        ProviderConfig::Ollama {
-            base_url: mock_ollama_url,
+        ProviderConfig::OpenAI {
+            api_key_env: "TEST_KEY".to_string(),
+            api_base: mock_ollama_url,
             default_model: "mock-model".to_string(),
         },
     );
@@ -103,9 +104,6 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
             model: "mock-model".to_string(),
             temperature: 0.0,
             max_tokens: 512,
-            top_p: None,
-            frequency_penalty: None,
-            presence_penalty: None,
         },
     );
 
@@ -152,6 +150,7 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
             url: "postgres://postgres:postgres@localhost:5432/ares_test".to_string(),
             qdrant: None,
         },
+        nvidia: None,
         config: DynamicConfigPaths::default(),
         providers,
         models,

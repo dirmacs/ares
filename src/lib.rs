@@ -179,7 +179,8 @@ pub use db::tenants::TenantDb;
 pub use db::PostgresClient;
 pub use llm::client::LLMClientFactoryTrait;
 pub use llm::{
-    ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, Provider, ProviderRegistry,
+    ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, NvidiaCatalogCache,
+    Provider, ProviderRegistry,
 };
 pub use models::{ApiKey, Tenant, TenantContext, TenantQuota, TenantTier};
 pub use tools::registry::ToolRegistry;
@@ -280,8 +281,9 @@ mod lib_tests {
         let mut providers = HashMap::new();
         providers.insert(
             "p".into(),
-            ProviderConfig::Ollama {
-                base_url: "http://127.0.0.1:11434".into(),
+            ProviderConfig::OpenAI {
+                api_key_env: "TEST_KEY".into(),
+                api_base: "https://test.example.com/v1".into(),
                 default_model: "m".into(),
             },
         );
@@ -293,9 +295,6 @@ mod lib_tests {
                 model: "m".into(),
                 temperature: 0.7,
                 max_tokens: 512,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
             },
         );
         let mut agents = HashMap::new();
@@ -319,6 +318,7 @@ mod lib_tests {
                 api_key_env: "API_KEY".into(),
             },
             database: DatabaseConfig::default(),
+            nvidia: None,
             config: DynamicConfigPaths::default(),
             providers,
             models,

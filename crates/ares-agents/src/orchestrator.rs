@@ -261,6 +261,7 @@ mod tests {
             server: ServerConfig::default(),
             auth: AuthConfig::default(),
             database: DatabaseConfig::default(),
+            nvidia: None,
             providers: HashMap::new(),
             models: HashMap::new(),
             tools: HashMap::new(),
@@ -276,8 +277,9 @@ mod tests {
         let mut registry = ProviderRegistry::new();
         registry.register_provider(
             "ollama-local",
-            ProviderConfig::Ollama {
-                base_url: "http://localhost:11434".to_string(),
+            ProviderConfig::OpenAI {
+                api_key_env: "TEST_KEY".to_string(),
+                api_base: "https://test.example.com/v1".to_string(),
                 default_model: "ministral-3:3b".to_string(),
             },
         );
@@ -288,9 +290,6 @@ mod tests {
                 model: "ministral-3:3b".to_string(),
                 temperature: 0.7,
                 max_tokens: 512,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
             },
         );
         Arc::new(registry)
@@ -301,8 +300,9 @@ mod tests {
         let mut registry = ProviderRegistry::new();
         registry.register_provider(
             "ollama-local",
-            ProviderConfig::Ollama {
-                base_url: base_url.to_string(),
+            ProviderConfig::OpenAI {
+                api_key_env: "TEST_KEY".to_string(),
+                api_base: "https://test.example.com/v1".to_string(),
                 default_model: "ministral-3:3b".to_string(),
             },
         );
@@ -313,9 +313,6 @@ mod tests {
                 model: "ministral-3:3b".to_string(),
                 temperature: 0.7,
                 max_tokens: 512,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
             },
         );
         Arc::new(registry)

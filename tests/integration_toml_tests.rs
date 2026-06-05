@@ -23,8 +23,9 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
     let mut providers = HashMap::new();
     providers.insert(
         "test-ollama".to_string(),
-        ProviderConfig::Ollama {
-            base_url: "http://localhost:11434".to_string(),
+        ProviderConfig::OpenAI {
+            api_key_env: "TEST_KEY".to_string(),
+            api_base: "https://test.example.com/v1".to_string(),
             default_model: "ministral-3:3b".to_string(),
         },
     );
@@ -37,9 +38,6 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
             model: "ministral-3:3b".to_string(),
             temperature: 0.7,
             max_tokens: 512,
-            top_p: None,
-            frequency_penalty: None,
-            presence_penalty: None,
         },
     );
 
@@ -99,6 +97,7 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
             api_key_env: "TEST_API_KEY".to_string(),
         },
         database: DatabaseConfig::default(),
+        nvidia: None,
         config: DynamicConfigPaths::default(),
         providers,
         models,
@@ -132,8 +131,9 @@ fn test_config_with_warnings() {
     // Add an unused provider
     config.providers.insert(
         "unused-provider".to_string(),
-        ProviderConfig::Ollama {
-            base_url: "http://localhost:11434".to_string(),
+        ProviderConfig::OpenAI {
+            api_key_env: "TEST_KEY".to_string(),
+            api_base: "https://test.example.com/v1".to_string(),
             default_model: "unused".to_string(),
         },
     );

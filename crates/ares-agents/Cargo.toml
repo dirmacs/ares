@@ -10,14 +10,14 @@ description = "AI agent orchestration for A.R.E.S"
 
 [features]
 default = []
-postgres = ["dep:sqlx", "dep:ares-db", "ares-db/postgres", "ares-llm/ollama"]
+postgres = ["dep:sqlx", "dep:ares-db", "ares-db/postgres"]
 eruka-context = []
 
 [dependencies]
 ares-types = { workspace = true }
 ares-memory = { workspace = true }
 ares-config = { workspace = true }
-ares-llm = { workspace = true, features = ["ollama"] }
+ares-llm = { workspace = true }
 ares-tools = { workspace = true }
 ares-db = { workspace = true, optional = true }
 async-trait = { workspace = true }

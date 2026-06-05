@@ -361,26 +361,6 @@ impl ModelCapabilities {
             };
         }
 
-        // DeepSeek models (NVIDIA NIM)
-        if model_lower.contains("deepseek") {
-            return Self {
-                supports_tools: true,
-                supports_vision: false,
-                supports_json_mode: true,
-                supports_streaming: true,
-                supports_system_prompt: true,
-                context_window: 128_000,
-                max_output_tokens: 8192,
-                supports_reasoning: model_lower.contains("v3") || model_lower.contains("r1"),
-                cost_tier: "low".to_string(),
-                speed_tier: "medium".to_string(),
-                quality_tier: "high".to_string(),
-                family: Some("deepseek".to_string()),
-                production_ready: true,
-                ..Default::default()
-            };
-        }
-
         // Kimi / Moonshot models (NVIDIA NIM)
         if model_lower.contains("kimi") || model_lower.contains("moonshotai") {
             return Self {
@@ -988,10 +968,7 @@ mod tests {
         let qwen_vl = ModelCapabilities::for_model("qwen2.5-vl-72b");
         assert!(qwen_vl.supports_vision);
 
-        let deepseek = ModelCapabilities::for_model("deepseek-r1");
-        assert!(deepseek.supports_reasoning);
-
-        for unknown in ["gemini-1.5-pro", "o3-mini", "o1-preview", "claude"] {
+        for unknown in ["gemini-1.5-pro", "o3-mini", "o1-preview", "claude", "deepseek-r1"] {
             let caps = ModelCapabilities::for_model(unknown);
             assert_eq!(
                 caps,

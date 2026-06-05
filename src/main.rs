@@ -26,7 +26,7 @@ use ares::{
     db::PostgresClient,
     utils::toml_config::AresConfig,
     AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
-    ProviderRegistry, ToolRegistry,
+    NvidiaCatalogCache, ProviderRegistry, ToolRegistry,
 };
 #[cfg(feature = "postgres")]
 use axum::{routing::get, Router};
@@ -337,11 +337,24 @@ async fn run_server(
     // =================================================================
     // Initialize Provider Registry
     // =================================================================
-    let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
+    let nvidia_cfg = config.nvidia.clone().unwrap_or_default();
+    let catalog = Arc::new(NvidiaCatalogCache::new(nvidia_cfg.clone()));
+    // Attempt an initial refresh; if it fails we still have the default_model fallback.
+    match catalog.refresh().await {
+        Ok(count) => tracing::info!("NVIDIA catalog refreshed with {} models", count),
+        Err(e) => tracing::warn!("NVIDIA catalog initial refresh failed: {}", e),
+    }
+    // Clone the Arc before consuming one in the background refresh task.
+    let catalog_for_registry = catalog.clone();
+    catalog.start_background_refresh();
+
+    let provider_registry = Arc::new(
+        ProviderRegistry::from_config(&config).with_catalog(catalog_for_registry),
+    );
     tracing::info!(
-        "Provider registry initialized with {} providers, {} models",
-        config.providers.len(),
-        config.models.len()
+        "[nvidia] api_base={} default_model={}",
+        nvidia_cfg.api_base,
+        nvidia_cfg.default_model,
     );
 
     // =================================================================

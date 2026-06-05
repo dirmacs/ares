@@ -51,8 +51,9 @@ async fn create_test_app() -> Router {
     let mut providers = HashMap::new();
     providers.insert(
         "ollama-local".to_string(),
-        ProviderConfig::Ollama {
-            base_url: "http://localhost:11434".to_string(),
+        ProviderConfig::OpenAI {
+            api_key_env: "TEST_KEY".to_string(),
+            api_base: "https://test.example.com/v1".to_string(),
             default_model: "ministral-3:3b".to_string(),
         },
     );
@@ -65,9 +66,6 @@ async fn create_test_app() -> Router {
             model: "ministral-3:3b".to_string(),
             temperature: 0.7,
             max_tokens: 512,
-            top_p: None,
-            frequency_penalty: None,
-            presence_penalty: None,
         },
     );
 
@@ -114,6 +112,7 @@ async fn create_test_app() -> Router {
             url: "postgres://postgres:postgres@localhost:5432/ares_test".to_string(),
             qdrant: None,
         },
+        nvidia: None,
         config: DynamicConfigPaths::default(),
         providers,
         models,

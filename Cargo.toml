@@ -100,26 +100,12 @@ name = "ares-server"
 path = "src/main.rs"
 
 [features]
-# Default features for local-first development
-default = ["postgres", "ollama", "ares-vector", "mcp"]
+# Default features for NVIDIA NIM cloud inference
+default = ["postgres", "openai", "ares-vector", "mcp"]
 
 # ============= LLM Providers =============
-# Ollama - Local LLM inference via Ollama server
-ollama = ["ares-llm/ollama"]
-
-# OpenAI - OpenAI API and compatible endpoints
+# OpenAI - OpenAI API and compatible endpoints (e.g. NVIDIA NIM)
 openai = ["ares-llm/openai"]
-
-# LlamaCpp - Direct GGUF model loading via llama.cpp
-llamacpp = ["ares-llm/llamacpp"]
-
-# Anthropic - Claude API
-anthropic = ["ares-llm/anthropic"]
-
-# LlamaCpp GPU backends (mutually exclusive - pick one)
-llamacpp-cuda = ["llamacpp", "ares-llm/llamacpp-cuda"]
-llamacpp-metal = ["llamacpp", "ares-llm/llamacpp-metal"]
-llamacpp-vulkan = ["llamacpp", "ares-llm/llamacpp-vulkan"]
 
 # ============= Database Backends =============
 # PostgreSQL database via sqlx (default)
@@ -189,7 +175,7 @@ swagger-ui = ["dep:utoipa-swagger-ui"]
 
 # ============= Feature Bundles =============
 # All LLM providers
-all-llm = ["ollama", "openai", "llamacpp", "anthropic"]
+all-llm = ["openai"]
 
 # All database backends
 all-db = ["postgres"]
@@ -202,7 +188,7 @@ local-vectorstores = ["ares-vector"]
 
 # Full feature set for development/testing (Windows-compatible)
 # Note: local-embeddings excluded due to ort-sys linker issues on Windows MSVC
-full = ["ollama", "openai", "llamacpp", "anthropic", "postgres", "qdrant", "ares-vector", "mcp", "swagger-ui"]
+full = ["openai", "postgres", "qdrant", "ares-vector", "mcp", "swagger-ui"]
 
 # Full feature set with local embeddings (Linux/macOS only - NOT Windows MSVC)
 full-local-embeddings = ["full", "local-embeddings"]

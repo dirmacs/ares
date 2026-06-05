@@ -338,8 +338,9 @@ mod tests {
             let mut providers = HashMap::new();
             providers.insert(
                 "p".into(),
-                ProviderConfig::Ollama {
-                    base_url: "http://127.0.0.1:11434".into(),
+                ProviderConfig::OpenAI {
+                    api_key_env: "TEST_KEY".into(),
+                    api_base: "https://test.example.com/v1".into(),
                     default_model: "m".into(),
                 },
             );
@@ -351,9 +352,6 @@ mod tests {
                     model: "m".into(),
                     temperature: 0.7,
                     max_tokens: 512,
-                    top_p: None,
-                    frequency_penalty: None,
-                    presence_penalty: None,
                 },
             );
             let mut agents = HashMap::new();
@@ -377,6 +375,7 @@ mod tests {
                     api_key_env: "API_KEY".into(),
                 },
                 database: DatabaseConfig::default(),
+                nvidia: None,
                 config: DynamicConfigPaths::default(),
                 providers,
                 models,

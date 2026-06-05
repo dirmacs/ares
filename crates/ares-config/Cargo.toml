@@ -24,6 +24,7 @@ toml = "0.9.8"
 toon-format = { version = "0.4.1", default-features = false }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+reqwest = { workspace = true }
 thulp-skill-files = { version = "0.3", optional = true }
 
 [dev-dependencies]

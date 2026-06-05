@@ -76,17 +76,8 @@ pub mod pool;
 /// Registry for managing multiple LLM provider instances.
 pub mod provider_registry;
 
-#[cfg(feature = "llamacpp")]
-pub mod llamacpp;
-
-#[cfg(feature = "ollama")]
-pub mod ollama;
-
 #[cfg(feature = "openai")]
 pub mod openai;
-
-#[cfg(feature = "anthropic")]
-pub mod anthropic;
 
 pub use capabilities::{
     CapabilityRequirements, CapabilityRequirementsBuilder, ModelCapabilities, ModelWithCapabilities,
@@ -98,6 +89,9 @@ pub use coordinator::{
 };
 pub use pool::{ClientPool, ClientPoolBuilder, PoolConfig, PoolStats, PooledClientGuard};
 pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
+
+// Re-export NVIDIA catalog types from ares-config so callers can construct caches.
+pub use ares_config::nvidia_catalog::{CatalogEntry, NvidiaCatalogCache, NvidiaConfig};
 
 #[cfg(test)]
 mod lib_tests {

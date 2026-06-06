@@ -177,12 +177,15 @@ pub use agents::{AgentRegistry, AgentRegistryBuilder};
 pub use db::tenants::TenantDb;
 #[cfg(feature = "postgres")]
 pub use db::PostgresClient;
+#[cfg(feature = "postgres")]
+pub use db::fleet_provider_secrets::FleetProviderSecretsStore;
 pub use llm::client::LLMClientFactoryTrait;
 pub use llm::{
     ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, NvidiaCatalogCache,
     Provider, ProviderRegistry,
 };
 pub use models::{ApiKey, Tenant, TenantContext, TenantQuota, TenantTier};
+pub use ares_config::fleet_secrets::{FleetSecrets, MasterKey};
 pub use tools::registry::ToolRegistry;
 pub use types::{AppError, ErrorCode, Result};
 pub use utils::toml_config::{AresConfig, AresConfigManager};
@@ -231,6 +234,10 @@ pub struct AppState {
     /// External context provider for agent calls.
     /// OSS: NoOpContextProvider. Managed: ErukaContextProvider (from dirmacs-core).
     pub context_provider: Arc<dyn crate::agents::context_provider::ContextProvider>,
+    /// Fleet-wide provider API key & config overrides. Read by the catalog
+    /// refresh path and the LLM factory; written by admin endpoints under
+    /// `X-Admin-Secret`. Hot-swap is `Arc<ArcSwap<...>>` internally.
+    pub fleet_secrets: FleetSecrets,
 }
 
 /// Returns the base ARES router with all generic endpoints.
@@ -384,6 +391,7 @@ mod lib_tests {
             context_provider: Arc::new(NoOpContextProvider),
             #[cfg(feature = "mcp")]
             mcp_registry: None,
+            fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
         }
     }
 

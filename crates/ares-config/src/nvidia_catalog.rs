@@ -84,11 +84,17 @@ pub struct CatalogEntry {
 }
 
 /// In-memory cache of the NVIDIA model catalog.
+///
+/// `cfg` is wrapped in `Arc<ArcSwap<...>>` so the admin can hot-swap the
+/// `api_key_env`, `api_base`, and `models_url` fields at runtime without
+/// restarting the service. The actual API key is NOT cached here — it is
+/// resolved at refresh time from either the env var named in `cfg.api_key_env`
+/// or the fleet provider secrets override.
 pub struct NvidiaCatalogCache {
     inner: ArcSwap<Vec<CatalogEntry>>,
     last_fetch: RwLock<Option<Instant>>,
     last_error: RwLock<Option<String>>,
-    cfg: NvidiaConfig,
+    cfg: Arc<ArcSwap<NvidiaConfig>>,
 }
 
 /// Errors that can occur during catalog refresh.
@@ -127,6 +133,18 @@ impl NvidiaCatalogCache {
             inner: ArcSwap::from_pointee(Vec::new()),
             last_fetch: RwLock::new(None),
             last_error: RwLock::new(None),
+            cfg: Arc::new(ArcSwap::from_pointee(cfg)),
+        }
+    }
+
+    /// Build from a pre-constructed `Arc<ArcSwap<NvidiaConfig>>`. The
+    /// caller's wrapper is shared with the registry/admin endpoint so a
+    /// hot-swap is visible to all readers (including `refresh`).
+    pub fn from_arcswap(cfg: Arc<ArcSwap<NvidiaConfig>>) -> Self {
+        Self {
+            inner: ArcSwap::from_pointee(Vec::new()),
+            last_fetch: RwLock::new(None),
+            last_error: RwLock::new(None),
             cfg,
         }
     }
@@ -135,13 +153,18 @@ impl NvidiaCatalogCache {
     ///
     /// Returns the number of chat models that were stored.
     pub async fn refresh(&self) -> Result<usize, NvidiaCatalogError> {
-        let api_key = std::env::var(&self.cfg.api_key_env).map_err(|_| {
-            NvidiaCatalogError::MissingApiKey(self.cfg.api_key_env.clone())
+        // Snapshot the current config. The reference is short-lived; if an
+        // admin hot-swaps mid-refresh, the next refresh sees the new value.
+        let cfg_snapshot = self.cfg.load_full();
+        let cfg_ref: &NvidiaConfig = cfg_snapshot.as_ref();
+
+        let api_key = std::env::var(&cfg_ref.api_key_env).map_err(|_| {
+            NvidiaCatalogError::MissingApiKey(cfg_ref.api_key_env.clone())
         })?;
 
         let client = reqwest::Client::new();
         let resp = client
-            .get(&self.cfg.models_url)
+            .get(&cfg_ref.models_url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Accept", "application/json")
             .timeout(Duration::from_secs(10))
@@ -187,6 +210,24 @@ impl NvidiaCatalogCache {
         Ok(count)
     }
 
+    /// Atomically replace the cached `NvidiaConfig` (e.g. after an admin
+    /// updates `api_key_env`, `api_base`, or `models_url`). Subsequent
+    /// `refresh()` calls use the new config.
+    pub fn update_config(&self, new_cfg: NvidiaConfig) {
+        self.cfg.store(Arc::new(new_cfg));
+    }
+
+    /// Borrow a read handle to the current `NvidiaConfig` for callers that
+    /// need to introspect the live values.
+    pub fn config_handle(&self) -> Arc<ArcSwap<NvidiaConfig>> {
+        Arc::clone(&self.cfg)
+    }
+
+    /// Snapshot the current refresh interval (seconds). Returns 0 if disabled.
+    pub fn refresh_seconds(&self) -> u64 {
+        self.cfg.load().catalog_refresh_seconds
+    }
+
     /// Return a snapshot of the currently cached entries.
     pub fn snapshot(&self) -> Vec<CatalogEntry> {
         self.inner.load_full().as_ref().clone()
@@ -206,14 +247,20 @@ impl NvidiaCatalogCache {
     ///
     /// Does nothing if `catalog_refresh_seconds` is `0`.
     pub fn start_background_refresh(self: Arc<Self>) {
-        let seconds = self.cfg.catalog_refresh_seconds;
+        let seconds = self.cfg.load().catalog_refresh_seconds;
         if seconds == 0 {
             return;
         }
 
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(seconds)).await;
+                // Re-read the interval on each tick so an admin hot-swap of
+                // `catalog_refresh_seconds` takes effect on the next loop.
+                let secs = self.cfg.load().catalog_refresh_seconds;
+                if secs == 0 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(secs)).await;
                 if let Err(e) = self.refresh().await {
                     warn!("NVIDIA catalog background refresh failed: {}", e);
                     *self.last_error.write() = Some(e.to_string());

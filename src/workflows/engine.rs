@@ -470,6 +470,7 @@ mod tests {
             loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
             emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_provider: Arc::new(crate::agents::NoOpContextProvider),
+            fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -527,6 +528,7 @@ mod tests {
             loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
             emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_provider: Arc::new(crate::agents::NoOpContextProvider),
+            fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -584,6 +586,7 @@ mod tests {
             loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
             emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_provider: Arc::new(crate::agents::NoOpContextProvider),
+            fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -700,6 +703,7 @@ mod tests {
             loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
             emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_provider: Arc::new(crate::agents::NoOpContextProvider),
+            fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
         };
 
         WorkflowEngine::new(state)

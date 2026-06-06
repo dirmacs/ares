@@ -116,6 +116,7 @@ mod tests {
             server: ServerConfig::default(),
             auth: AuthConfig::default(),
             database: DatabaseConfig::default(),
+            nvidia: None,
             config: DynamicConfigPaths::default(),
             providers: HashMap::new(),
             models: HashMap::new(),

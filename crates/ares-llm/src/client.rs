@@ -150,6 +150,28 @@ pub enum Provider {
         params: ModelParams,
     },
 
+    /// Anthropic Claude API
+    #[cfg(feature = "anthropic")]
+    Anthropic {
+        /// API key for authentication
+        api_key: String,
+        /// Model identifier (e.g., "claude-3-5-sonnet-20241022")
+        model: String,
+        /// Model inference parameters
+        params: ModelParams,
+    },
+
+    /// Local Ollama server
+    #[cfg(feature = "ollama")]
+    Ollama {
+        /// Base URL of the Ollama server (e.g., "http://localhost:11434")
+        base_url: String,
+        /// Model identifier (e.g., "ministral-3:3b")
+        model: String,
+        /// Model inference parameters
+        params: ModelParams,
+    },
+
     /// In-memory stub for unit tests (no network I/O).
     #[cfg(test)]
     TestStub {
@@ -182,15 +204,34 @@ impl Provider {
                 params.clone(),
             ))),
 
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic {
+                api_key,
+                model,
+                params,
+            } => Ok(Box::new(super::anthropic::AnthropicClient::with_params(
+                api_key.clone(),
+                model.clone(),
+                params.clone(),
+            ))),
+
+            #[cfg(feature = "ollama")]
+            Provider::Ollama {
+                base_url,
+                model,
+                params,
+            } => super::ollama::OllamaClient::with_params(
+                base_url.clone(),
+                model.clone(),
+                params.clone(),
+            )
+            .await
+            .map(|c| Box::new(c) as Box<dyn LLMClient>),
+
             #[cfg(test)]
             Provider::TestStub { model } => {
                 Ok(Box::new(test_support::MockLLMClient::new(model.clone())))
             }
-
-            #[cfg(not(feature = "openai"))]
-            _ => Err(AppError::Configuration(
-                "OpenAI provider configured but 'openai' feature is not enabled".into(),
-            )),
         }
     }
 
@@ -274,11 +315,14 @@ impl Provider {
             #[cfg(feature = "openai")]
             Provider::OpenAI { .. } => "openai",
 
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => "anthropic",
+
+            #[cfg(feature = "ollama")]
+            Provider::Ollama { .. } => "ollama",
+
             #[cfg(test)]
             Provider::TestStub { .. } => "test-stub",
-
-            #[cfg(not(feature = "openai"))]
-            _ => unreachable!(),
         }
     }
 
@@ -288,11 +332,14 @@ impl Provider {
             #[cfg(feature = "openai")]
             Provider::OpenAI { .. } => true,
 
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => true,
+
+            #[cfg(feature = "ollama")]
+            Provider::Ollama { .. } => false,
+
             #[cfg(test)]
             Provider::TestStub { .. } => false,
-
-            #[cfg(not(feature = "openai"))]
-            _ => unreachable!(),
         }
     }
 
@@ -304,11 +351,16 @@ impl Provider {
                 api_base.contains("localhost") || api_base.contains("127.0.0.1")
             }
 
+            #[cfg(feature = "ollama")]
+            Provider::Ollama { base_url, .. } => {
+                base_url.contains("localhost") || base_url.contains("127.0.0.1")
+            }
+
+            #[cfg(feature = "anthropic")]
+            Provider::Anthropic { .. } => false,
+
             #[cfg(test)]
             Provider::TestStub { .. } => true,
-
-            #[cfg(not(feature = "openai"))]
-            _ => unreachable!(),
         }
     }
 
@@ -360,10 +412,46 @@ impl Provider {
                 })
             }
 
-            #[cfg(not(feature = "openai"))]
-            ProviderConfig::OpenAI { .. } => Err(AppError::Configuration(
-                "OpenAI provider configured but 'openai' feature is not enabled".into(),
-            )),
+            #[cfg(feature = "anthropic")]
+            ProviderConfig::Anthropic {
+                api_key_env,
+                default_model,
+            } => {
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    AppError::Configuration(format!(
+                        "Anthropic API key environment variable '{}' is not set",
+                        api_key_env
+                    ))
+                })?;
+                Ok(Provider::Anthropic {
+                    api_key,
+                    model: model_override
+                        .map(String::from)
+                        .unwrap_or_else(|| default_model.clone()),
+                    params,
+                })
+            }
+
+            #[cfg(feature = "ollama")]
+            ProviderConfig::Ollama {
+                base_url,
+                default_model,
+                ..
+            } => Ok(Provider::Ollama {
+                base_url: base_url.clone(),
+                model: model_override
+                    .map(String::from)
+                    .unwrap_or_else(|| default_model.clone()),
+                params,
+            }),
+
+            // Catch-all for cfg-disabled variants: return a clear error so
+            // the runtime can surface it to the admin or the chat path.
+            #[allow(unreachable_patterns)]
+            _ => Err(AppError::Configuration(format!(
+                "{} provider configured but the corresponding feature is not enabled in this build",
+                provider_config.type_name()
+            ))),
         }
     }
 

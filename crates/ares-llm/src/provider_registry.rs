@@ -485,7 +485,7 @@ impl ConfigBasedLLMFactory {
             .as_ref()
             .map(|n| n.default_model.clone())
             .or_else(|| config.models.keys().next().cloned())
-            .unwrap_or_else(|| "meta/llama-3.3-70b-instruct".to_string());
+            .unwrap_or_else(|| "nvidia/nemotron-3-ultra-550b-a55b".to_string());
 
         Ok(Self {
             registry: Arc::new(registry),
@@ -642,7 +642,7 @@ mod tests {
             ProviderConfig::OpenAI {
                 api_key_env: "TEST_KEY".to_string(),
                 api_base: "https://integrate.api.nvidia.com/v1".to_string(),
-                default_model: "meta/llama-3.3-70b-instruct".to_string(),
+                default_model: "nvidia/nemotron-3-ultra-550b-a55b".to_string(),
             },
         );
 
@@ -650,7 +650,7 @@ mod tests {
             "fast-local",
             ModelConfig {
                 provider: "nvidia".to_string(),
-                model: "meta/llama-3.1-8b-instruct".to_string(),
+                model: "nvidia/nemotron-3-ultra-550b-a55b".to_string(),
                 temperature: 0.7,
                 max_tokens: 512,
             },
@@ -660,7 +660,7 @@ mod tests {
             "powerful-local",
             ModelConfig {
                 provider: "nvidia".to_string(),
-                model: "meta/llama-3.3-70b-instruct".to_string(),
+                model: "nvidia/nemotron-3-ultra-550b-a55b".to_string(),
                 temperature: 0.7,
                 max_tokens: 2048,
             },
@@ -946,7 +946,7 @@ mod tests {
         let mut registry = create_test_registry();
         let removed = registry.unregister_model("fast-local").unwrap();
         assert_eq!(removed.provider, "nvidia");
-        assert_eq!(removed.model, "meta/llama-3.1-8b-instruct");
+        assert_eq!(removed.model, "nvidia/nemotron-3-ultra-550b-a55b");
         assert!(registry.unregister_model("fast-local").is_none());
     }
 
@@ -994,7 +994,7 @@ mod tests {
         let config = minimal_ares_config(HashMap::new(), HashMap::new());
         // Should now succeed by falling back to the hardcoded default
         let factory = ConfigBasedLLMFactory::from_config(&config).unwrap();
-        assert_eq!(factory.default_model(), "meta/llama-3.3-70b-instruct");
+        assert_eq!(factory.default_model(), "nvidia/nemotron-3-ultra-550b-a55b");
     }
 
     #[tokio::test]

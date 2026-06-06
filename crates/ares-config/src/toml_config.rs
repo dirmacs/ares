@@ -302,7 +302,7 @@ fn default_nvidia_api_base() -> String {
 }
 
 fn default_nvidia_default_model() -> String {
-    "meta/llama-3.3-70b-instruct".to_string()
+    "nvidia/nemotron-3-ultra-550b-a55b".to_string()
 }
 
 // ============= Model Configuration =============
@@ -962,7 +962,7 @@ impl AresConfig {
 
         // Validate agent -> model and agent -> tools references
         // NOTE: With the dynamic NVIDIA catalog, agents reference models by
-        // literal NVIDIA NIM id (e.g. "meta/llama-3.3-70b-instruct") which
+        // literal NVIDIA NIM id (e.g. "nvidia/nemotron-3-ultra-550b-a55b") which
         // is resolved at runtime against the live catalog — NOT against a
         // static [models] table. We therefore only WARN if a model name is
         // suspicious rather than failing startup, so a model that gets
@@ -3469,7 +3469,7 @@ api_key_env = "API"
         if let ProviderConfig::OpenAI { api_key_env, api_base, default_model } = p {
             assert_eq!(api_key_env, "NVIDIA_API_KEY");
             assert_eq!(api_base, "https://integrate.api.nvidia.com/v1");
-            assert_eq!(default_model, "meta/llama-3.3-70b-instruct");
+            assert_eq!(default_model, "nvidia/nemotron-3-ultra-550b-a55b");
         } else {
             panic!("expected openai variant");
         }

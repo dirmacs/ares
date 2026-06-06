@@ -15,6 +15,7 @@ use crate::db::tenant_agents::{
 };
 use crate::db::tenants::UsageSummary;
 use crate::llm::provider_registry::ModelInfo;
+use ares_config::toml_config::ProviderConfig;
 use crate::memory::estimate_tokens;
 use crate::models::{Tenant, TenantTier};
 use crate::types::{AgentContext, AppError, Result};
@@ -1666,9 +1667,386 @@ pub async fn emergency_stop_handler(
     Ok(Json(serde_json::json!({
         "emergency_stop": payload.active,
         "message": if payload.active {
-            "All agents are now in emergency stop mode. /api/v1/chat requests will return 503."
+            "All agents are now in emergency stop mode. /api/v1/chat requests will be rejected with 503."
         } else {
             "Emergency stop cleared. Agents are operational."
         }
     })))
+}
+
+// =============================================================================
+// Fleet Provider Secrets (encrypted at rest, hot-swap in memory)
+// =============================================================================
+
+use crate::db::fleet_provider_secrets as fps;
+use ares_config::fleet_secrets::{last_n_visible, MasterKey};
+
+/// List every fleet provider override currently stored in the DB.
+///
+/// Response shape:
+/// ```json
+/// [
+///   {
+///     "name": "nvidia",
+///     "has_api_key": true,
+///     "api_key_last4": "…XYZW",
+///     "api_base": "https://integrate.api.nvidia.com/v1",
+///     "default_model": null,
+///     "updated_at": 1717690000,
+///     "updated_by": "admin@x.com"
+///   }
+/// ]
+/// ```
+pub async fn list_fleet_providers(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>> {
+    let store = fps::FleetProviderSecretsStore::new(state.tenant_db.pool());
+    let master = MasterKey::from_env();
+    // Decrypt all rows so the UI can show the last-4 of the stored key.
+    // Decryption errors on individual rows are logged and skipped inside
+    // `load_all`, so this call never fails because of a single bad row.
+    let map = store.load_all(master.as_ref()).await?;
+
+    let mut out: Vec<serde_json::Value> = map
+        .into_iter()
+        .map(|(name, entry)| {
+            let api_key_last4 = entry
+                .api_key
+                .as_deref()
+                .and_then(|k| last_n_visible(k, 4));
+            serde_json::json!({
+                "name": name,
+                "has_api_key": entry.api_key.is_some(),
+                "api_key_last4": api_key_last4,
+                "api_base": entry.api_base,
+                "default_model": entry.default_model,
+                "updated_at": entry.updated_at,
+                "updated_by": entry.updated_by,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        a.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or(""))
+    });
+    Ok(Json(out))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FleetProviderUpsertRequest {
+    /// Optional. If `None`, the existing key is preserved.
+    pub api_key: Option<String>,
+    /// Optional. If `None`, the existing api_base is preserved.
+    pub api_base: Option<String>,
+    /// Optional. If `None`, the existing default_model is preserved.
+    pub default_model: Option<String>,
+}
+
+/// Upsert a fleet provider override. Encrypts the new key (if any), writes
+/// to the DB, and atomically swaps the in-memory map so all readers (the
+/// catalog refresh path, the LLM factory) see the new value on their next
+/// load.
+pub async fn upsert_fleet_provider(
+    State(state): State<AppState>,
+    Path(provider_name): Path<String>,
+    Json(req): Json<FleetProviderUpsertRequest>,
+) -> Result<Json<serde_json::Value>> {
+    if provider_name.is_empty() {
+        return Err(AppError::InvalidInput("provider_name must not be empty".into()));
+    }
+    if req.api_key.is_none() && req.api_base.is_none() && req.default_model.is_none() {
+        return Err(AppError::InvalidInput(
+            "At least one of api_key, api_base, default_model must be provided".into(),
+        ));
+    }
+
+    let store = fps::FleetProviderSecretsStore::new(state.tenant_db.pool());
+    let master = MasterKey::from_env();
+    if req.api_key.is_some() && master.is_none() {
+        return Err(AppError::Configuration(
+            "FLEET_SECRETS_KEY is not set; cannot store new API keys. \
+             Configure /etc/dirmacs/fleet-secrets.env and reload ares.service."
+                .into(),
+        ));
+    }
+
+    let updated_by = "admin";
+    let stored = store
+        .upsert(
+            &provider_name,
+            req.api_key.as_deref(),
+            req.api_base.as_deref(),
+            req.default_model.as_deref(),
+            master.as_ref(),
+            updated_by,
+        )
+        .await?;
+
+    // Reload + atomically swap the in-memory map. The store gives us the
+    // encrypted form; we need the decrypted form for the in-memory cache.
+    let map = store.load_all(master.as_ref()).await?;
+    state.fleet_secrets.store(map);
+
+    // Audit log — redact the raw key, only emit the boolean + last-4.
+    let details = serde_json::json!({
+        "api_key_set": stored.has_api_key,
+        "api_key_last4": req.api_key.as_deref().and_then(|k| last_n_visible(k, 4)),
+        "api_base_set": stored.api_base.is_some(),
+        "default_model_set": stored.default_model.is_some(),
+    })
+    .to_string();
+    let pool = state.tenant_db.pool().clone();
+    let name = provider_name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "fleet_provider_upsert",
+            "fleet_provider",
+            &name,
+            Some(&details),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(serde_json::json!({
+        "name": provider_name,
+        "has_api_key": stored.has_api_key,
+        "api_base": stored.api_base,
+        "default_model": stored.default_model,
+        "updated_at": stored.updated_at,
+        "updated_by": stored.updated_by,
+    })))
+}
+
+/// Hard-delete a fleet provider override. Gone from the DB and from the
+/// in-memory cache. Re-add via the UI to bring it back.
+pub async fn delete_fleet_provider(
+    State(state): State<AppState>,
+    Path(provider_name): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    let store = fps::FleetProviderSecretsStore::new(state.tenant_db.pool());
+    let affected = store.delete(&provider_name).await?;
+    if affected == 0 {
+        return Err(AppError::NotFound(format!(
+            "Fleet provider '{}' not found",
+            provider_name
+        )));
+    }
+
+    // Reload + atomically swap the in-memory map.
+    let master = MasterKey::from_env();
+    let map = store.load_all(master.as_ref()).await?;
+    state.fleet_secrets.store(map);
+
+    let pool = state.tenant_db.pool().clone();
+    let name = provider_name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "fleet_provider_delete",
+            "fleet_provider",
+            &name,
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(serde_json::json!({
+        "name": provider_name,
+        "deleted": true
+    })))
+}
+
+#[derive(Debug, Serialize)]
+pub struct FleetProviderVerifyResponse {
+    pub name: String,
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub model_count: usize,
+    pub models: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// Verify a stored provider's API key by calling its model listing endpoint.
+/// For OpenAI-compatible providers we call `<api_base>/models` with the
+/// stored key. For Anthropic/Ollama (when those features are enabled) the
+/// call shape is different — the UI surfaces a clear error in that case
+/// and tells the operator to test via the provider's own dashboard.
+pub async fn verify_fleet_provider(
+    State(state): State<AppState>,
+    Path(provider_name): Path<String>,
+) -> Result<Json<FleetProviderVerifyResponse>> {
+    let start = std::time::Instant::now();
+
+    // Look up the in-memory override (decrypted).
+    let entry = state.fleet_secrets.get(&provider_name);
+    let override_ = entry.clone();
+
+    // Fall back to the registry's ProviderConfig for the base URL when the
+    // admin hasn't set an override.
+    let provider_config = state.provider_registry.get_provider(&provider_name).cloned();
+
+    let (api_base, api_key) = match (override_, provider_config.as_ref()) {
+        (Some(o), _) => {
+            let key = o.api_key.clone();
+            let base = o
+                .api_base
+                .clone()
+                .or_else(|| provider_config.as_ref().and_then(|pc| default_api_base(pc)));
+            (base, key)
+        }
+        (None, Some(pc)) => (default_api_base(pc), resolve_env_key(pc)),
+        (None, None) => (None, None),
+    };
+
+    let api_key = match api_key {
+        Some(k) if !k.is_empty() => k,
+        _ => {
+            return Ok(Json(FleetProviderVerifyResponse {
+                name: provider_name,
+                ok: false,
+                latency_ms: start.elapsed().as_millis() as u64,
+                model_count: 0,
+                models: vec![],
+                error: Some(
+                    "No API key configured for this provider. Set one in the Fleet Providers card."
+                        .into(),
+                ),
+            }));
+        }
+    };
+
+    let api_base = match api_base {
+        Some(b) if !b.is_empty() => b,
+        _ => {
+            return Ok(Json(FleetProviderVerifyResponse {
+                name: provider_name,
+                ok: false,
+                latency_ms: start.elapsed().as_millis() as u64,
+                model_count: 0,
+                models: vec![],
+                error: Some("No API base URL configured for this provider.".into()),
+            }));
+        }
+    };
+
+    let models_url = format!("{}/models", api_base.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let resp = match client
+        .get(&models_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(Json(FleetProviderVerifyResponse {
+                name: provider_name,
+                ok: false,
+                latency_ms: start.elapsed().as_millis() as u64,
+                model_count: 0,
+                models: vec![],
+                error: Some(format!("HTTP request failed: {e}")),
+            }));
+        }
+    };
+
+    let status = resp.status();
+    let latency_ms = start.elapsed().as_millis() as u64;
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Ok(Json(FleetProviderVerifyResponse {
+            name: provider_name,
+            ok: false,
+            latency_ms,
+            model_count: 0,
+            models: vec![],
+            error: Some(format!("HTTP {} — {}", status.as_u16(), body)),
+        }));
+    }
+
+    let parsed: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(Json(FleetProviderVerifyResponse {
+                name: provider_name,
+                ok: false,
+                latency_ms,
+                model_count: 0,
+                models: vec![],
+                error: Some(format!("JSON parse failed: {e}")),
+            }));
+        }
+    };
+
+    // OpenAI-compatible providers return `{"data": [{"id": "..."}]}`.
+    // Pull ids out of `data[*].id`. If `data` is missing, return empty list.
+    let models: Vec<String> = parsed
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.get("id").and_then(|v| v.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let model_count = models.len();
+
+    Ok(Json(FleetProviderVerifyResponse {
+        name: provider_name,
+        ok: true,
+        latency_ms,
+        model_count,
+        models,
+        error: None,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct FleetProviderCapabilities {
+    /// Provider type identifiers supported by this build.
+    pub providers: Vec<&'static str>,
+    /// Whether fleet-secrets encryption is enabled (FLEET_SECRETS_KEY set).
+    pub encryption_enabled: bool,
+}
+
+/// Return the list of supported provider types based on compiled-in
+/// features. The admin UI uses this to filter the type dropdown so users
+/// can only select providers that this build can actually instantiate.
+pub async fn fleet_provider_capabilities() -> Json<FleetProviderCapabilities> {
+    let providers: Vec<&'static str> = vec!["openai"];
+    #[cfg(feature = "anthropic")]
+    providers.push("anthropic");
+    #[cfg(feature = "ollama")]
+    providers.push("ollama");
+
+    Json(FleetProviderCapabilities {
+        providers,
+        encryption_enabled: MasterKey::from_env().is_some(),
+    })
+}
+
+fn default_api_base(pc: &ProviderConfig) -> Option<String> {
+    match pc {
+        ProviderConfig::OpenAI { api_base, .. } => Some(api_base.clone()),
+        ProviderConfig::Anthropic { .. } => Some("https://api.anthropic.com".to_string()),
+        ProviderConfig::Ollama { base_url, .. } => Some(base_url.clone()),
+        _ => None,
+    }
+}
+
+fn resolve_env_key(pc: &ProviderConfig) -> Option<String> {
+    let var = match pc {
+        ProviderConfig::OpenAI { api_key_env, .. } => api_key_env,
+        ProviderConfig::Anthropic { api_key_env, .. } => api_key_env,
+        ProviderConfig::Ollama { api_key_env, .. } => api_key_env,
+        _ => return None,
+    };
+    std::env::var(var).ok()
 }

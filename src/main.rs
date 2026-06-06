@@ -523,6 +523,7 @@ async fn run_server(
         loop_registry: ares::api::handlers::loops::LoopRegistry::new(),
         emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         context_provider: Arc::new(ares::agents::NoOpContextProvider),
+        fleet_secrets: ares::FleetSecrets::new(),
     };
 
     // =================================================================

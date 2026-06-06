@@ -187,6 +187,7 @@ async fn create_test_app() -> Router {
         context_provider: Arc::new(ares::agents::context_provider::NoOpContextProvider),
         #[cfg(feature = "mcp")]
         mcp_registry: None,
+        fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
     };
 
     // Build a minimal router for testing

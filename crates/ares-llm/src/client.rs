@@ -144,7 +144,7 @@ pub enum Provider {
         api_key: String,
         /// Base URL for the API (default: <https://api.openai.com/v1>)
         api_base: String,
-        /// Model identifier (e.g., "gpt-4", "meta/llama-3.3-70b-instruct")
+        /// Model identifier (e.g., "gpt-4", "nvidia/nemotron-3-ultra-550b-a55b")
         model: String,
         /// Model inference parameters
         params: ModelParams,
@@ -251,7 +251,7 @@ impl Provider {
                     return Ok(Provider::OpenAI {
                         api_key,
                         api_base: "https://integrate.api.nvidia.com/v1".into(),
-                        model: "meta/llama-3.3-70b-instruct".into(),
+                        model: "nvidia/nemotron-3-ultra-550b-a55b".into(),
                         params: ModelParams::default(),
                     });
                 }

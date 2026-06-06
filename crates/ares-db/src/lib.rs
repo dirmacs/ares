@@ -91,6 +91,9 @@ pub mod turso;
 /// Agent config version history (Sprint 11).
 pub mod agent_versions;
 #[cfg(feature = "postgres")]
+/// Fleet-wide, tenant-agnostic provider API key & config storage.
+pub mod fleet_provider_secrets;
+#[cfg(feature = "postgres")]
 /// Pure SQL builders and row conversions (testable without a live DB).
 pub mod query_builders;
 

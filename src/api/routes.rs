@@ -264,6 +264,24 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/admin/services/{service_name}/logs",
             get(deploy::get_service_logs),
         )
+        // Fleet Provider Secrets — encrypted at rest, hot-swap in memory
+        .route(
+            "/admin/fleet-providers",
+            get(crate::api::handlers::admin::list_fleet_providers),
+        )
+        .route(
+            "/admin/fleet-providers/capabilities",
+            get(crate::api::handlers::admin::fleet_provider_capabilities),
+        )
+        .route(
+            "/admin/fleet-providers/{provider_name}",
+            put(crate::api::handlers::admin::upsert_fleet_provider)
+                .delete(crate::api::handlers::admin::delete_fleet_provider),
+        )
+        .route(
+            "/admin/fleet-providers/{provider_name}/verify",
+            post(crate::api::handlers::admin::verify_fleet_provider),
+        )
         .layer(middleware::from_fn(
             crate::api::handlers::admin::admin_middleware,
         ));
@@ -559,6 +577,7 @@ mod tests {
             context_provider: Arc::new(NoOpContextProvider),
             #[cfg(feature = "mcp")]
             mcp_registry: None,
+            fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
         }
     }
 

@@ -442,6 +442,7 @@ mod tests {
                 context_provider: Arc::new(NoOpContextProvider),
                 #[cfg(feature = "mcp")]
                 mcp_registry: None,
+                fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
             }
         }
 

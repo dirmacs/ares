@@ -186,6 +186,8 @@ pub use llm::{
 };
 pub use models::{ApiKey, Tenant, TenantContext, TenantQuota, TenantTier};
 pub use ares_config::fleet_secrets::{FleetSecrets, MasterKey};
+#[cfg(feature = "postgres")]
+pub use tools::runtime_registry::RuntimeToolRegistry;
 pub use tools::registry::ToolRegistry;
 pub use types::{AppError, ErrorCode, Result};
 pub use utils::toml_config::{AresConfig, AresConfigManager};
@@ -238,6 +240,10 @@ pub struct AppState {
     /// refresh path and the LLM factory; written by admin endpoints under
     /// `X-Admin-Secret`. Hot-swap is `Arc<ArcSwap<...>>` internally.
     pub fleet_secrets: FleetSecrets,
+    /// Runtime tool registry with hot-reload support. Admin CRUD endpoints
+    /// mutate the DB then call [`RuntimeToolRegistry::reload`] so agents
+    /// see new tools without a restart.
+    pub runtime_tool_registry: Arc<RuntimeToolRegistry>,
 }
 
 /// Returns the base ARES router with all generic endpoints.
@@ -372,7 +378,7 @@ mod lib_tests {
             config_manager,
             dynamic_config,
             db: db.clone(),
-            tenant_db: Arc::new(TenantDb::new(db)),
+            tenant_db: Arc::new(TenantDb::new(db.clone())),
             llm_factory: Arc::new(ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
                 "default",
@@ -392,6 +398,7 @@ mod lib_tests {
             #[cfg(feature = "mcp")]
             mcp_registry: None,
             fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
+            runtime_tool_registry: Arc::new(RuntimeToolRegistry::new(db.pool.clone())),
         }
     }
 

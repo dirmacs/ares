@@ -174,7 +174,7 @@ async fn create_test_app() -> Router {
     let state = AppState {
         config_manager,
         db: db.clone(),
-        tenant_db: Arc::new(ares::db::TenantDb::new(db)),
+        tenant_db: Arc::new(ares::db::TenantDb::new(db.clone())),
         llm_factory,
         provider_registry,
         agent_registry,
@@ -188,6 +188,7 @@ async fn create_test_app() -> Router {
         #[cfg(feature = "mcp")]
         mcp_registry: None,
         fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
+        runtime_tool_registry: Arc::new(ares::RuntimeToolRegistry::new(db.pool.clone())),
     };
 
     // Build a minimal router for testing

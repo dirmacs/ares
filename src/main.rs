@@ -507,6 +507,11 @@ async fn run_server(
     let db_arc = Arc::new(db);
     let tenant_db = Arc::new(ares::TenantDb::new(db_arc.clone()));
 
+    let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(db_arc.pool.clone()));
+    if let Err(e) = runtime_tool_registry.reload().await {
+        tracing::warn!("Failed to preload runtime tools on startup: {}", e);
+    }
+
     let state = AppState {
         config_manager: Arc::clone(&config_manager),
         db: db_arc.clone(),
@@ -524,6 +529,7 @@ async fn run_server(
         emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         context_provider: Arc::new(ares::agents::NoOpContextProvider),
         fleet_secrets: ares::FleetSecrets::new(),
+        runtime_tool_registry,
     };
 
     // =================================================================

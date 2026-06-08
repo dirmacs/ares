@@ -217,6 +217,7 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
         #[cfg(feature = "mcp")]
         mcp_registry: None,
         fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
+        runtime_tool_registry: Arc::new(ares::RuntimeToolRegistry::new(tenant_db.pool().clone())),
     };
 
     let app = Router::new()

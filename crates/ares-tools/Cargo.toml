@@ -12,7 +12,7 @@ description = "Built-in agent tools for A.R.E.S"
 default = []
 search-tools = ["dep:daedra", "dep:scraper"]
 mcp = ["dep:ares-mcp", "ares-mcp/mcp", "dep:tracing"]
-postgres = ["dep:sqlx", "dep:ares-db"]
+postgres = ["dep:sqlx", "dep:ares-db", "ares-db/postgres"]
 
 [dependencies]
 ares-types = { workspace = true }
@@ -33,6 +33,7 @@ sqlx = { workspace = true, optional = true }
 
 [dev-dependencies]
 ares-mcp = { workspace = true, features = ["mcp"] }
+chrono = { workspace = true }
 daedra = { version = "0.1.4" }
 scraper = { version = "0.25.0" }
 tokio = { workspace = true }

@@ -12,8 +12,8 @@ CREATE TABLE IF NOT EXISTS runtime_tools (
     enabled BOOLEAN NOT NULL DEFAULT true,
     version INTEGER NOT NULL DEFAULT 1,
     is_public BOOLEAN NOT NULL DEFAULT false,
-    created_by UUID REFERENCES tenants(id),
-    tenant_id UUID REFERENCES tenants(id),
+    created_by TEXT REFERENCES tenants(id),
+    tenant_id TEXT REFERENCES tenants(id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS runtime_tool_versions (
     parameters_schema JSONB NOT NULL,
     execution_config JSONB NOT NULL,
     description TEXT,
-    changed_by UUID REFERENCES tenants(id),
+    changed_by TEXT REFERENCES tenants(id),
     change_summary TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -43,8 +43,8 @@ CREATE UNIQUE INDEX idx_runtime_tool_versions_unique ON runtime_tool_versions(to
 CREATE TABLE IF NOT EXISTS runtime_tool_executions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tool_id UUID NOT NULL REFERENCES runtime_tools(id) ON DELETE CASCADE,
-    tenant_id UUID REFERENCES tenants(id),
-    agent_run_id UUID REFERENCES agent_runs(id) ON DELETE SET NULL,
+    tenant_id TEXT REFERENCES tenants(id),
+    agent_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
     input_args JSONB NOT NULL,
     output_result JSONB,
     status VARCHAR(20) NOT NULL CHECK (status IN ('success', 'error', 'timeout')),
@@ -59,6 +59,14 @@ CREATE INDEX idx_runtime_tool_executions_agent_run ON runtime_tool_executions(ag
 CREATE INDEX idx_runtime_tool_executions_created ON runtime_tool_executions(created_at DESC);
 
 -- Updated_at trigger for runtime_tools
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE TRIGGER update_runtime_tools_updated_at
     BEFORE UPDATE ON runtime_tools
     FOR EACH ROW

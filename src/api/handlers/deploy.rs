@@ -423,7 +423,7 @@ mod tests {
                 config_manager,
                 dynamic_config,
                 db: db.clone(),
-                tenant_db: Arc::new(TenantDb::new(db)),
+                tenant_db: Arc::new(TenantDb::new(db.clone())),
                 llm_factory: Arc::new(ConfigBasedLLMFactory::new(
                     provider_registry.clone(),
                     "default",
@@ -443,6 +443,7 @@ mod tests {
                 #[cfg(feature = "mcp")]
                 mcp_registry: None,
                 fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
+                runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(db.pool.clone())),
             }
         }
 

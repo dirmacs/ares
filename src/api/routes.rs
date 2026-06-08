@@ -282,6 +282,30 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/admin/fleet-providers/{provider_name}/verify",
             post(crate::api::handlers::admin::verify_fleet_provider),
         )
+        // Runtime Tools — CRUD + versions + rollback + test
+        .route(
+            "/admin/runtime-tools",
+            get(crate::api::handlers::admin::list_runtime_tools)
+                .post(crate::api::handlers::admin::create_runtime_tool),
+        )
+        .route(
+            "/admin/runtime-tools/{id}",
+            get(crate::api::handlers::admin::get_runtime_tool)
+                .put(crate::api::handlers::admin::update_runtime_tool)
+                .delete(crate::api::handlers::admin::delete_runtime_tool),
+        )
+        .route(
+            "/admin/runtime-tools/{id}/test",
+            post(crate::api::handlers::admin::test_runtime_tool),
+        )
+        .route(
+            "/admin/runtime-tools/{id}/versions",
+            get(crate::api::handlers::admin::list_runtime_tool_versions),
+        )
+        .route(
+            "/admin/runtime-tools/{id}/rollback/{version}",
+            post(crate::api::handlers::admin::rollback_runtime_tool),
+        )
         .layer(middleware::from_fn(
             crate::api::handlers::admin::admin_middleware,
         ));
@@ -558,7 +582,7 @@ mod tests {
             config_manager,
             dynamic_config,
             db: db.clone(),
-            tenant_db: Arc::new(TenantDb::new(db)),
+            tenant_db: Arc::new(TenantDb::new(db.clone())),
             llm_factory: Arc::new(ConfigBasedLLMFactory::new(
                 provider_registry.clone(),
                 "default",
@@ -578,6 +602,7 @@ mod tests {
             #[cfg(feature = "mcp")]
             mcp_registry: None,
             fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
+            runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(db.pool.clone())),
         }
     }
 

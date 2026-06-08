@@ -13,20 +13,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+#[cfg(any(feature = "mcp", test))]
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::interval;
 
 use ares_db::runtime_tools::{RuntimeTool, RuntimeToolStore};
 use ares_types::types::{AppError, Result, ToolDefinition};
 
-use crate::http_tool::{HttpTool, HttpToolConfig};
+use crate::http_tool::HttpTool;
 use crate::registry::Tool;
-use crate::script_tool::{ScriptTool, ScriptToolConfig};
+use crate::script_tool::ScriptTool;
 
 #[cfg(any(feature = "postgres", test))]
-use crate::sql_tool::{SqlTool, SqlToolConfig};
+use crate::sql_tool::SqlTool;
 
 // =============================================================================
 // RuntimeMcpTool (feature-gated)
@@ -34,7 +34,7 @@ use crate::sql_tool::{SqlTool, SqlToolConfig};
 
 /// Configuration for a runtime MCP bridge tool.
 #[cfg(any(feature = "mcp", test))]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 struct RuntimeMcpToolConfig {
     #[serde(flatten)]
     server: ares_mcp::client::McpServerConfig,
@@ -676,7 +676,7 @@ mod tests {
     async fn materialise_http_tool() {
         let mut row = sample_runtime_tool("test_http", "http", true);
         row.execution_config = json!({
-            "url": "https://example.com/api",
+            "url_template": "https://example.com/api",
             "method": "GET"
         });
 
@@ -826,8 +826,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fleet_wide_has_tool() {
+    #[tokio::test]
+    async fn fleet_wide_has_tool() {
         let reg = make_registry_with_tools();
         assert!(reg.has_tool("public"));
         assert!(reg.has_tool("private_a"));
@@ -835,8 +835,8 @@ mod tests {
         assert_eq!(reg.len(), 3);
     }
 
-    #[test]
-    fn get_for_tenant_filters_correctly() {
+    #[tokio::test]
+    async fn get_for_tenant_filters_correctly() {
         let reg = make_registry_with_tools();
 
         // tenant-a can see public + their own
@@ -855,8 +855,8 @@ mod tests {
         assert!(reg.get_for_tenant("disabled", None).is_none());
     }
 
-    #[test]
-    fn get_tool_definitions_for_tenant_filters() {
+    #[tokio::test]
+    async fn get_tool_definitions_for_tenant_filters() {
         let reg = make_registry_with_tools();
 
         let defs = reg.get_tool_definitions_for_tenant(Some("tenant-a"));
@@ -872,8 +872,8 @@ mod tests {
         assert!(!names.contains(&"disabled"));
     }
 
-    #[test]
-    fn enabled_tool_names_filters_by_tenant() {
+    #[tokio::test]
+    async fn enabled_tool_names_filters_by_tenant() {
         let reg = make_registry_with_tools();
 
         let names = reg.enabled_tool_names(Some("tenant-a"));
@@ -886,8 +886,8 @@ mod tests {
         assert!(!names.contains(&"private_a".to_string()));
     }
 
-    #[test]
-    fn get_tool_definitions_for_filters_names() {
+    #[tokio::test]
+    async fn get_tool_definitions_for_filters_names() {
         let reg = make_registry_with_tools();
         let defs = reg.get_tool_definitions_for(&["public", "disabled"]);
         let names: Vec<_> = defs.iter().map(|d| d.name.as_str()).collect();

@@ -1,7 +1,14 @@
 //! Built-in agent tools for A.R.E.S.
 
 pub mod calculator;
+pub mod http_tool;
 pub mod registry;
+pub mod script_tool;
+
+pub mod runtime_registry;
+
+#[cfg(any(feature = "postgres", test))]
+pub mod sql_tool;
 
 #[cfg(any(feature = "search-tools", test))]
 pub mod search;

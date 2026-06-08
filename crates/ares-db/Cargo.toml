@@ -40,8 +40,10 @@ lancedb = { workspace = true, optional = true }
 lance = { workspace = true, optional = true }
 chromadb = { workspace = true, optional = true }
 pinecone-sdk = { workspace = true, optional = true }
+rust_decimal = { workspace = true }
 [dev-dependencies]
 chrono = { workspace = true }
 matches = "0.1"
+rust_decimal_macros = { version = "1.36" }
 tempfile = "3"
 tokio = { workspace = true }

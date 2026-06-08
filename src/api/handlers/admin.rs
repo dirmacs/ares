@@ -2371,3 +2371,200 @@ pub async fn rollback_runtime_tool(
         "updated_at": updated.updated_at,
     })))
 }
+
+// =============================================================================
+// Run History
+// =============================================================================
+
+use crate::db::run_history::{
+    AcknowledgeBudgetAlertRequest, AgentHealthMetrics, BudgetAlert, ListBudgetAlertsQuery,
+    ListLlmCallsQuery, ListToolCallsQuery, LogLlmCallRequest, LogToolCallRequest, RunCost,
+    RunHistoryStore, RunLlmCall, RunToolCall, SetTenantBudgetRequest, TenantBudget,
+};
+
+#[derive(Debug, Deserialize)]
+pub struct ListRunCostsQuery {
+    pub tenant_id: String,
+    #[serde(default = "default_list_limit")]
+    pub limit: i32,
+    #[serde(default)]
+    pub offset: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListHealthMetricsQuery {
+    pub tenant_id: String,
+    #[serde(default = "default_list_limit")]
+    pub limit: i32,
+    #[serde(default)]
+    pub offset: i32,
+}
+
+fn default_list_limit() -> i32 {
+    50
+}
+
+/// List LLM calls with optional filtering.
+pub async fn list_llm_calls(
+    State(state): State<AppState>,
+    Query(q): Query<ListLlmCallsQuery>,
+) -> Result<Json<Vec<RunLlmCall>>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let calls = store.list_llm_calls(&q).await?;
+    Ok(Json(calls))
+}
+
+/// Get a single LLM call by id.
+pub async fn get_llm_call(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<RunLlmCall>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let call = store
+        .get_llm_call(&id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("llm call {id} not found")))?;
+    Ok(Json(call))
+}
+
+/// Insert a new LLM call record.
+pub async fn insert_llm_call(
+    State(state): State<AppState>,
+    Json(req): Json<LogLlmCallRequest>,
+) -> Result<Json<RunLlmCall>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let call = store.insert_llm_call(&req).await?;
+    Ok(Json(call))
+}
+
+/// List tool calls with optional filtering.
+pub async fn list_tool_calls(
+    State(state): State<AppState>,
+    Query(q): Query<ListToolCallsQuery>,
+) -> Result<Json<Vec<RunToolCall>>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let calls = store.list_tool_calls(&q).await?;
+    Ok(Json(calls))
+}
+
+/// Get a single tool call by id.
+pub async fn get_tool_call(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<RunToolCall>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let call = store
+        .get_tool_call(&id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("tool call {id} not found")))?;
+    Ok(Json(call))
+}
+
+/// Insert a new tool call record.
+pub async fn insert_tool_call(
+    State(state): State<AppState>,
+    Json(req): Json<LogToolCallRequest>,
+) -> Result<Json<RunToolCall>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let call = store.insert_tool_call(&req).await?;
+    Ok(Json(call))
+}
+
+/// Get a run cost by run_id.
+pub async fn get_run_cost(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<RunCost>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let cost = store
+        .get_run_cost(&run_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("run cost {run_id} not found")))?;
+    Ok(Json(cost))
+}
+
+/// List run costs for a tenant.
+pub async fn list_run_costs(
+    State(state): State<AppState>,
+    Query(q): Query<ListRunCostsQuery>,
+) -> Result<Json<Vec<RunCost>>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let costs = store.list_run_costs(&q.tenant_id, q.limit, q.offset).await?;
+    Ok(Json(costs))
+}
+
+/// Get a tenant budget.
+pub async fn get_tenant_budget(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<TenantBudget>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let budget = store
+        .get_tenant_budget(&tenant_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("tenant budget {tenant_id} not found")))?;
+    Ok(Json(budget))
+}
+
+/// Set (upsert) a tenant budget.
+pub async fn set_tenant_budget(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(mut req): Json<SetTenantBudgetRequest>,
+) -> Result<Json<TenantBudget>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    req.tenant_id = tenant_id;
+    let budget = store.set_tenant_budget(&req).await?;
+    Ok(Json(budget))
+}
+
+/// Delete a tenant budget.
+pub async fn delete_tenant_budget(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let rows = store.delete_tenant_budget(&tenant_id).await?;
+    Ok(Json(serde_json::json!({ "deleted": rows > 0, "tenant_id": tenant_id })))
+}
+
+/// List budget alerts with optional filtering.
+pub async fn list_budget_alerts(
+    State(state): State<AppState>,
+    Query(q): Query<ListBudgetAlertsQuery>,
+) -> Result<Json<Vec<BudgetAlert>>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let alerts = store.list_budget_alerts(&q).await?;
+    Ok(Json(alerts))
+}
+
+/// Acknowledge a budget alert.
+pub async fn acknowledge_budget_alert(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<AcknowledgeBudgetAlertRequest>,
+) -> Result<Json<BudgetAlert>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let alert = store.acknowledge_budget_alert(&id, &req).await?;
+    Ok(Json(alert))
+}
+
+/// List health metrics for a tenant.
+pub async fn list_health_metrics(
+    State(state): State<AppState>,
+    Query(q): Query<ListHealthMetricsQuery>,
+) -> Result<Json<Vec<AgentHealthMetrics>>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let metrics = store.list_health_metrics(&q.tenant_id, q.limit, q.offset).await?;
+    Ok(Json(metrics))
+}
+
+/// Insert agent health metrics.
+pub async fn insert_health_metrics(
+    State(state): State<AppState>,
+    Json(req): Json<AgentHealthMetrics>,
+) -> Result<Json<AgentHealthMetrics>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let metrics = store.insert_health_metrics(&req).await?;
+    Ok(Json(metrics))
+}

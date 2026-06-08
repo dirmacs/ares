@@ -306,6 +306,52 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/admin/runtime-tools/{id}/rollback/{version}",
             post(crate::api::handlers::admin::rollback_runtime_tool),
         )
+        // Run History
+        .route(
+            "/admin/run-history/llm-calls",
+            get(crate::api::handlers::admin::list_llm_calls)
+                .post(crate::api::handlers::admin::insert_llm_call),
+        )
+        .route(
+            "/admin/run-history/llm-calls/{id}",
+            get(crate::api::handlers::admin::get_llm_call),
+        )
+        .route(
+            "/admin/run-history/tool-calls",
+            get(crate::api::handlers::admin::list_tool_calls)
+                .post(crate::api::handlers::admin::insert_tool_call),
+        )
+        .route(
+            "/admin/run-history/tool-calls/{id}",
+            get(crate::api::handlers::admin::get_tool_call),
+        )
+        .route(
+            "/admin/run-history/costs/{run_id}",
+            get(crate::api::handlers::admin::get_run_cost),
+        )
+        .route(
+            "/admin/run-history/costs",
+            get(crate::api::handlers::admin::list_run_costs),
+        )
+        .route(
+            "/admin/run-history/budgets/{tenant_id}",
+            get(crate::api::handlers::admin::get_tenant_budget)
+                .put(crate::api::handlers::admin::set_tenant_budget)
+                .delete(crate::api::handlers::admin::delete_tenant_budget),
+        )
+        .route(
+            "/admin/run-history/alerts",
+            get(crate::api::handlers::admin::list_budget_alerts),
+        )
+        .route(
+            "/admin/run-history/alerts/{id}/acknowledge",
+            post(crate::api::handlers::admin::acknowledge_budget_alert),
+        )
+        .route(
+            "/admin/run-history/health-metrics",
+            get(crate::api::handlers::admin::list_health_metrics)
+                .post(crate::api::handlers::admin::insert_health_metrics),
+        )
         .layer(middleware::from_fn(
             crate::api::handlers::admin::admin_middleware,
         ));
@@ -705,6 +751,24 @@ mod tests {
             .post("/admin/deploy")
             .json(&serde_json::json!({"target": "not-valid"}))
             .await;
+        assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
+        response.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_run_history_llm_calls_route() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server.get("/admin/run-history/llm-calls").await;
+        assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
+        response.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_run_history_budget_route() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server.get("/admin/run-history/budgets/tenant-1").await;
         assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
         response.assert_status_unauthorized();
     }

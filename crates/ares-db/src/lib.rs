@@ -97,6 +97,9 @@ pub mod fleet_provider_secrets;
 /// Runtime-defined tools (HTTP, MCP, Script, SQL).
 pub mod runtime_tools;
 #[cfg(feature = "postgres")]
+/// Detailed run history: LLM calls, tool calls, costs, budgets, health metrics.
+pub mod run_history;
+#[cfg(feature = "postgres")]
 /// Pure SQL builders and row conversions (testable without a live DB).
 pub mod query_builders;
 

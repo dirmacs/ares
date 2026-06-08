@@ -481,6 +481,7 @@ dependencies = [
  "ares-types",
  "async-trait",
  "boa_engine",
+ "chrono",
  "daedra",
  "reqwest 0.12.28",
  "scraper 0.25.0",

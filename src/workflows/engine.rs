@@ -471,6 +471,9 @@ mod tests {
             emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_provider: Arc::new(crate::agents::NoOpContextProvider),
             fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
+            runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
+                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+            )),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -529,6 +532,9 @@ mod tests {
             emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_provider: Arc::new(crate::agents::NoOpContextProvider),
             fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
+            runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
+                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+            )),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -587,6 +593,9 @@ mod tests {
             emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_provider: Arc::new(crate::agents::NoOpContextProvider),
             fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
+            runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
+                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+            )),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -704,6 +713,9 @@ mod tests {
             emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_provider: Arc::new(crate::agents::NoOpContextProvider),
             fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
+            runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
+                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+            )),
         };
 
         WorkflowEngine::new(state)

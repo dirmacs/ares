@@ -244,6 +244,9 @@ async fn test_workflow_engine_from_config() {
         #[cfg(feature = "mcp")]
         mcp_registry: None,
         fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
+        runtime_tool_registry: Arc::new(ares::RuntimeToolRegistry::new(
+            sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool"),
+        )),
     };
 
     // Create workflow engine

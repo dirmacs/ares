@@ -5,6 +5,7 @@ pub mod http_tool;
 pub mod registry;
 pub mod script_tool;
 
+#[cfg(any(feature = "postgres", test))]
 pub mod runtime_registry;
 
 #[cfg(any(feature = "postgres", test))]

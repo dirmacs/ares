@@ -109,7 +109,7 @@ openai = ["ares-llm/openai"]
 
 # ============= Database Backends =============
 # PostgreSQL database via sqlx (default)
-postgres = ["dep:sqlx", "ares-db/postgres", "ares-agents/postgres", "ares-mcp/postgres"]
+postgres = ["dep:sqlx", "ares-db/postgres", "ares-agents/postgres", "ares-mcp/postgres", "ares-tools/postgres"]
 
 # Turso/libSQL - Edge-native SQLite-compatible database
 turso = ["dep:libsql", "ares-db/turso"]

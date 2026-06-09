@@ -5,6 +5,7 @@ use crate::db::agent_runs;
 use crate::db::agent_versions;
 use crate::db::alerts as db_alerts;
 use crate::db::audit_log;
+use crate::db::tenant_model_tiers as db_tiers;
 use crate::db::tenant_agents::{
     clone_templates_for_tenant, create_tenant_agent as db_create_tenant_agent,
     delete_tenant_agent as db_delete_tenant_agent, get_tenant_agent as db_get_tenant_agent,
@@ -2585,4 +2586,85 @@ pub async fn insert_health_metrics(
     let store = RunHistoryStore::new(state.tenant_db.pool());
     let metrics = store.insert_health_metrics(&req).await?;
     Ok(Json(metrics))
+}
+
+// =============================================================================
+// Tenant Model Tiers (per-tenant abstract tier -> concrete provider/model)
+// =============================================================================
+
+pub async fn list_tenant_model_tiers(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<Vec<db_tiers::TenantModelTier>>> {
+    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let tiers = store.list_for_tenant(&tenant_id).await?;
+    Ok(Json(tiers))
+}
+
+pub async fn get_tenant_model_tier(
+    State(state): State<AppState>,
+    Path((tenant_id, tier_name)): Path<(String, String)>,
+) -> Result<Json<db_tiers::TenantModelTier>> {
+    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let tier = store
+        .get(&tenant_id, &tier_name)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("tier {tier_name} not found for tenant {tenant_id}")))?;
+    Ok(Json(tier))
+}
+
+pub async fn set_tenant_model_tier(
+    State(state): State<AppState>,
+    Path((tenant_id, tier_name)): Path<(String, String)>,
+    Json(req): Json<db_tiers::SetTenantModelTierRequest>,
+) -> Result<Json<db_tiers::TenantModelTier>> {
+    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let tier = store.set(&tenant_id, &tier_name, &req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = tenant_id.clone();
+    let t_name = tier_name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "tenant_model_tier_set",
+            "tenant_model_tier",
+            &format!("{t_id}/{t_name}"),
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(tier))
+}
+
+pub async fn delete_tenant_model_tier(
+    State(state): State<AppState>,
+    Path((tenant_id, tier_name)): Path<(String, String)>,
+) -> Result<StatusCode> {
+    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let rows = store.delete(&tenant_id, &tier_name).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!(
+            "tier {tier_name} not found for tenant {tenant_id}"
+        )));
+    }
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = tenant_id.clone();
+    let t_name = tier_name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "tenant_model_tier_delete",
+            "tenant_model_tier",
+            &format!("{t_id}/{t_name}"),
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
 }

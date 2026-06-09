@@ -30,7 +30,12 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             post(crate::api::handlers::auth::refresh_token),
         )
         .route("/auth/logout", post(crate::api::handlers::auth::logout))
-        .route("/agents", get(crate::api::handlers::agents::list_agents));
+        .route("/agents", get(crate::api::handlers::agents::list_agents))
+        // Public webhook receiver (outside admin middleware)
+        .route(
+            "/webhooks/{trigger_id}",
+            post(crate::api::handlers::admin::receive_webhook),
+        );
 
     #[allow(unused_mut)]
     let mut protected_routes = Router::new()

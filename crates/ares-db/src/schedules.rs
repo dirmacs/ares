@@ -167,6 +167,39 @@ impl<'a> ScheduleStore<'a> {
             .map_err(sqlx_err)?;
         Ok(res.rows_affected())
     }
+
+    /// Return all enabled schedules whose `next_run_at` is in the past (or never set).
+    pub async fn get_due_schedules(&self) -> Result<Vec<AgentSchedule>> {
+        let now = now_ts();
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
+                    last_run_at, next_run_at, created_at, updated_at \
+             FROM agent_schedules \
+             WHERE enabled = TRUE AND (next_run_at IS NULL OR next_run_at <= $1)"
+        )
+        .bind(now)
+        .fetch_all(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+        rows.iter().map(row_to_schedule).collect()
+    }
+
+    /// Update `last_run_at` and `next_run_at` after a scheduled run.
+    pub async fn update_schedule_run(&self, id: &str, next_run_at: i64) -> Result<u64> {
+        let now = now_ts();
+        let res = sqlx::query(
+            "UPDATE agent_schedules \
+             SET last_run_at = $1, next_run_at = $2, updated_at = $1 \
+             WHERE id = $3"
+        )
+        .bind(now)
+        .bind(next_run_at)
+        .bind(id)
+        .execute(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+        Ok(res.rows_affected())
+    }
 }
 
 // =============================================================================
@@ -237,6 +270,23 @@ impl<'a> EventTriggerStore<'a> {
             .map_err(sqlx_err)?;
         Ok(res.rows_affected())
     }
+
+    /// Look up a single trigger by its id.
+    pub async fn get_trigger(&self, id: &str) -> Result<Option<EventTrigger>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, name, event_type, event_config, target_agent, enabled, \
+                    created_at, updated_at \
+             FROM event_triggers WHERE id = $1"
+        )
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+        match row {
+            Some(r) => Ok(Some(row_to_trigger(&r)?)),
+            None => Ok(None),
+        }
+    }
 }
 
 // =============================================================================
@@ -306,6 +356,27 @@ impl<'a> PipelineStore<'a> {
             .await
             .map_err(sqlx_err)?;
         Ok(res.rows_affected())
+    }
+
+    /// Return all enabled pipelines for a given source agent within a tenant.
+    pub async fn get_pipelines_for_source(
+        &self,
+        tenant_id: &str,
+        source_agent: &str,
+    ) -> Result<Vec<AgentPipeline>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, source_agent, target_agent, condition, enabled, \
+                    created_at, updated_at \
+             FROM agent_pipelines \
+             WHERE tenant_id = $1 AND source_agent = $2 AND enabled = TRUE \
+             ORDER BY target_agent"
+        )
+        .bind(tenant_id)
+        .bind(source_agent)
+        .fetch_all(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+        rows.iter().map(row_to_pipeline).collect()
     }
 }
 

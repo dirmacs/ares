@@ -6,6 +6,7 @@
 
 use crate::{Agent, AgentResponse, ExecutionMetadata};
 use ares_llm::coordinator::ConversationMessage;
+use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use ares_llm::LLMClient;
 use ares_tools::registry::ToolRegistry;
 use ares_types::types::{AgentContext, AgentType, Result, ToolDefinition};
@@ -33,6 +34,8 @@ pub struct ConfigurableAgent {
     max_tool_iterations: usize,
     /// Whether to execute tools in parallel
     parallel_tools: bool,
+    /// Optional observability sink for run history logging
+    observability: Option<Arc<dyn ObservabilitySink>>,
 }
 
 impl ConfigurableAgent {
@@ -77,6 +80,7 @@ impl ConfigurableAgent {
             allowed_tools: config.tools.clone(),
             max_tool_iterations: config.max_tool_iterations,
             parallel_tools: config.parallel_tools,
+            observability: None,
         }
     }
 
@@ -102,6 +106,7 @@ impl ConfigurableAgent {
             allowed_tools,
             max_tool_iterations,
             parallel_tools,
+            observability: None,
         }
     }
 
@@ -174,6 +179,11 @@ Handle employee info, policies, and benefits."#
     /// Get the list of allowed tool names for this agent
     pub fn allowed_tools(&self) -> &[String] {
         &self.allowed_tools
+    }
+
+    /// Attach an observability sink to this agent.
+    pub fn set_observability(&mut self, obs: Arc<dyn ObservabilitySink>) {
+        self.observability = Some(obs);
     }
 
     /// Get tool definitions for only this agent's allowed tools
@@ -253,11 +263,37 @@ Handle employee info, policies, and benefits."#
 
         let mut total_usage = TokenUsage::default();
 
-        for _ in 0..self.max_tool_iterations {
+        for iteration in 0..self.max_tool_iterations {
+            let llm_start = std::time::Instant::now();
             let response = self
                 .llm
                 .generate_with_tools_and_history(&messages, &tools)
                 .await?;
+            let llm_latency = llm_start.elapsed().as_millis() as i64;
+
+            // Log the LLM call
+            if let Some(obs) = &self.observability {
+                let prompt_tok = response
+                    .usage
+                    .as_ref()
+                    .map(|u| u.prompt_tokens as i64)
+                    .unwrap_or(0);
+                let completion_tok = response
+                    .usage
+                    .as_ref()
+                    .map(|u| u.completion_tokens as i64)
+                    .unwrap_or(0);
+                let record = LlmCallRecord {
+                    step_index: iteration as i32,
+                    provider: self.provider_name.clone(),
+                    model: self.llm.model_name().to_string(),
+                    prompt_tokens: prompt_tok,
+                    completion_tokens: completion_tok,
+                    latency_ms: llm_latency,
+                    status: "success".to_string(),
+                };
+                let _ = obs.log_llm_call(record).await;
+            }
 
             if let Some(usage) = &response.usage {
                 total_usage = TokenUsage::new(
@@ -285,11 +321,33 @@ Handle employee info, policies, and benefits."#
 
             // Execute each tool call and add results
             for tc in &response.tool_calls {
+                let tool_start = std::time::Instant::now();
                 let result = registry.execute(&tc.name, tc.arguments.clone()).await;
+                let tool_latency = tool_start.elapsed().as_millis() as i64;
                 let result_value = match result {
                     Ok(v) => v,
                     Err(e) => serde_json::json!({"error": e.to_string()}),
                 };
+
+                // Log the tool call
+                if let Some(obs) = &self.observability {
+                    let status = if result_value.get("error").is_some() {
+                        "error".to_string()
+                    } else {
+                        "success".to_string()
+                    };
+                    let tool_record = ToolCallRecord {
+                        step_index: iteration as i32,
+                        tool_name: tc.name.clone(),
+                        tool_type: "builtin".to_string(),
+                        arguments: tc.arguments.clone(),
+                        result: Some(result_value.clone()),
+                        latency_ms: tool_latency,
+                        status,
+                    };
+                    let _ = obs.log_tool_call(tool_record).await;
+                }
+
                 messages.push(ConversationMessage::tool_result(&tc.id, &result_value));
             }
         }
@@ -302,10 +360,34 @@ Handle employee info, policies, and benefits."#
             "Max tool iterations ({}) reached — making final synthesis call",
             self.max_tool_iterations
         );
+        let synth_start = std::time::Instant::now();
         let final_response = self
             .llm
             .generate_with_tools_and_history(&messages, &[])
             .await;
+        let synth_latency = synth_start.elapsed().as_millis() as i64;
+
+        // Log the final synthesis call
+        if let Some(obs) = &self.observability {
+            let (prompt_tok, completion_tok, status) = match &final_response {
+                Ok(resp) => (
+                    resp.usage.as_ref().map(|u| u.prompt_tokens as i64).unwrap_or(0),
+                    resp.usage.as_ref().map(|u| u.completion_tokens as i64).unwrap_or(0),
+                    "success".to_string(),
+                ),
+                Err(_) => (0, 0, "error".to_string()),
+            };
+            let record = LlmCallRecord {
+                step_index: self.max_tool_iterations as i32,
+                provider: self.provider_name.clone(),
+                model: self.llm.model_name().to_string(),
+                prompt_tokens: prompt_tok,
+                completion_tokens: completion_tok,
+                latency_ms: synth_latency,
+                status,
+            };
+            let _ = obs.log_llm_call(record).await;
+        }
 
         let content = match final_response {
             Ok(resp) if !resp.content.is_empty() => resp.content,
@@ -402,7 +484,34 @@ impl Agent for ConfigurableAgent {
 
         messages.push(("user".to_string(), input.to_string()));
 
+        let llm_start = std::time::Instant::now();
         let llm_response = self.llm.generate_with_history(&messages).await?;
+        let llm_latency = llm_start.elapsed().as_millis() as i64;
+
+        // Log the LLM call
+        if let Some(obs) = &self.observability {
+            let prompt_tok = llm_response
+                .usage
+                .as_ref()
+                .map(|u| u.prompt_tokens as i64)
+                .unwrap_or(0);
+            let completion_tok = llm_response
+                .usage
+                .as_ref()
+                .map(|u| u.completion_tokens as i64)
+                .unwrap_or(0);
+            let record = LlmCallRecord {
+                step_index: 0,
+                provider: self.provider_name.clone(),
+                model: self.llm.model_name().to_string(),
+                prompt_tokens: prompt_tok,
+                completion_tokens: completion_tok,
+                latency_ms: llm_latency,
+                status: "success".to_string(),
+            };
+            let _ = obs.log_llm_call(record).await;
+        }
+
         Ok(AgentResponse {
             content: llm_response.content,
             usage: llm_response.usage,

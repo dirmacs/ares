@@ -4,6 +4,7 @@ use crate::{
     auth::middleware::AuthUser,
     db::agent_runs,
     memory::estimate_tokens,
+    observability::RunObservability,
     types::{
         AgentContext, AgentType, AppError, ChatRequest, ChatResponse, MessageRole, Result,
         UserMemory,
@@ -13,6 +14,7 @@ use crate::{
 };
 use axum::{extract::State, response::Response, Extension, Json};
 use crate::db::postgres::UserAgent;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Validates chat request payload before routing.
@@ -343,13 +345,30 @@ async fn execute_agent(
     let config = agent_config_from_user_agent(&user_agent);
 
     // Create agent from registry using the resolved config
-    let agent = state
+    let mut agent = state
         .agent_registry
         .create_agent_from_config(agent_name, &config)
         .await?;
 
+    // Attach observability
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let obs = Arc::new(RunObservability {
+        run_id: run_id.clone(),
+        tenant_id: context.user_id.clone(),
+        agent_name: agent_name.to_string(),
+        pool: state.tenant_db.pool().clone(),
+    });
+    agent.set_observability(obs.clone());
+
     // Execute the agent
+    let start = std::time::Instant::now();
     let agent_resp = agent.execute(message, context).await?;
+    let duration_ms = start.elapsed().as_millis() as i64;
+
+    // Aggregate run costs (fire-and-forget)
+    tokio::spawn(async move {
+        obs.aggregate_run_cost(duration_ms).await;
+    });
 
     Ok((
         chat_response_from_agent_output(

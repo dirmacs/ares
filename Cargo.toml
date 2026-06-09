@@ -260,6 +260,7 @@ toon-format = { version = "0.4.1", default-features = false }  # cli feature dra
 notify = "8.2.0"
 parking_lot = "0.12.5"
 arc-swap = "1.7.1"
+rust_decimal = { workspace = true }
 
 # Vector database (optional)
 # ares-vector - Pure Rust embedded vector DB (default, recommended)

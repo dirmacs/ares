@@ -360,9 +360,31 @@ async fn execute_agent(
     });
     agent.set_observability(obs.clone());
 
+    state.active_runs.start(crate::active_runs::ActiveRun {
+        run_id: run_id.clone(),
+        tenant_id: context.user_id.clone(),
+        agent_name: agent_name.to_string(),
+        started_at: chrono::Utc::now().timestamp(),
+        status: "running".to_string(),
+        current_step: 0,
+        total_steps: 0,
+        last_update: chrono::Utc::now().timestamp(),
+        tool_name: None,
+        model: None,
+    });
+
     // Execute the agent
     let start = std::time::Instant::now();
-    let agent_resp = agent.execute(message, context).await?;
+    let agent_resp = match agent.execute(message, context).await {
+        Ok(resp) => {
+            state.active_runs.finish(&run_id, "completed");
+            resp
+        }
+        Err(e) => {
+            state.active_runs.finish(&run_id, "error");
+            return Err(e.into());
+        }
+    };
     let duration_ms = start.elapsed().as_millis() as i64;
 
     // Aggregate run costs (fire-and-forget)
@@ -461,6 +483,7 @@ pub async fn chat_stream(
     let agent_type_req = payload.agent_type;
     let runtime_workspace_id = payload.workspace_id.clone();
     let context_id_clone = context_id.clone();
+    let active_runs = Arc::clone(&state.active_runs);
 
     let stream = async_stream::stream! {
         if let Some(e) = &validation_error {
@@ -552,6 +575,19 @@ pub async fn chat_stream(
 
         // Send start event
         let agent_name = AgentRegistry::type_to_name(&agent_type);
+        let stream_run_id = uuid::Uuid::new_v4().to_string();
+        active_runs.start(crate::active_runs::ActiveRun {
+            run_id: stream_run_id.clone(),
+            tenant_id: claims_clone.sub.clone(),
+            agent_name: agent_name.to_string(),
+            started_at: chrono::Utc::now().timestamp(),
+            status: "running".to_string(),
+            current_step: 0,
+            total_steps: 0,
+            last_update: chrono::Utc::now().timestamp(),
+            tool_name: None,
+            model: None,
+        });
         let start_event = stream_start_event(&agent_type, &context_id_clone);
         yield Ok(Event::default().data(serde_json::to_string(&start_event).unwrap_or_default()));
 
@@ -595,6 +631,8 @@ pub async fn chat_stream(
         // Build the prompt with system message and history
         let system_prompt = resolve_stream_system_prompt(&user_agent);
         let full_prompt = build_stream_prompt(&system_prompt, &message);
+        active_runs.update_model(&stream_run_id, Some(&user_agent.model));
+        active_runs.update(&stream_run_id, "llm_call", 1);
 
         // Stream tokens
         use futures::StreamExt;
@@ -609,6 +647,7 @@ pub async fn chat_stream(
                             yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
                         }
                         Err(e) => {
+                            active_runs.finish(&stream_run_id, "error");
                             let event = stream_error_event(
                                 &format!("Stream error: {}", e),
                                 Some(&context_id_clone),
@@ -620,6 +659,7 @@ pub async fn chat_stream(
                 }
             }
             Err(e) => {
+                active_runs.finish(&stream_run_id, "error");
                 let event = stream_error_event(
                     &format!("Failed to start stream: {}", e),
                     Some(&context_id_clone),
@@ -672,6 +712,8 @@ pub async fn chat_stream(
                 .await;
             });
         }
+
+        active_runs.finish(&stream_run_id, "completed");
 
         // Send done event
         let done_event = stream_done_event(&agent_type, &source, &context_id_clone);

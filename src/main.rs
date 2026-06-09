@@ -512,6 +512,14 @@ async fn run_server(
         tracing::warn!("Failed to preload runtime tools on startup: {}", e);
     }
 
+    let skill_engine = Arc::new(ares::skill_engine::SkillEngine::new(
+        db_arc.pool.clone(),
+        Arc::clone(&tool_registry),
+        Arc::clone(&runtime_tool_registry),
+        Arc::clone(&llm_factory),
+        Arc::clone(&config_manager),
+    ));
+
     let state = AppState {
         config_manager: Arc::clone(&config_manager),
         db: db_arc.clone(),
@@ -530,6 +538,8 @@ async fn run_server(
         context_provider: Arc::new(ares::agents::NoOpContextProvider),
         fleet_secrets: ares::FleetSecrets::new(),
         runtime_tool_registry,
+        active_runs: Arc::new(ares::active_runs::ActiveRuns::new()),
+        skill_engine,
     };
 
     // =================================================================

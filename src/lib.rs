@@ -136,6 +136,7 @@ pub mod agents { pub use ares_agents::*; }
 pub mod api;
 /// Run observability and cost tracking.
 #[cfg(feature = "postgres")]
+pub mod active_runs;
 pub mod observability;
 /// Periodic health metrics aggregation job.
 #[cfg(feature = "postgres")]
@@ -259,6 +260,10 @@ pub struct AppState {
     /// mutate the DB then call [`RuntimeToolRegistry::reload`] so agents
     /// see new tools without a restart.
     pub runtime_tool_registry: Arc<RuntimeToolRegistry>,
+    /// Active runs currently in progress. Used for the live dashboard.
+    pub active_runs: Arc<active_runs::ActiveRuns>,
+    /// Skill execution engine with tool registry and LLM factory wired in.
+    pub skill_engine: Arc<skill_engine::SkillEngine>,
 }
 
 /// Returns the base ARES router with all generic endpoints.
@@ -463,6 +468,7 @@ mod lib_tests {
             mcp_registry: None,
             fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
             runtime_tool_registry: Arc::new(RuntimeToolRegistry::new(db.pool.clone())),
+            active_runs: Arc::new(active_runs::ActiveRuns::new()),
         }
     }
 

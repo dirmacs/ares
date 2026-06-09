@@ -699,11 +699,25 @@ pub async fn run_agent(
     if let Some(config) = &resolved_agent.config {
         if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {
             let run_id = uuid::Uuid::new_v4().to_string();
-            let engine = crate::skill_engine::SkillEngine::new(state.tenant_db.pool().clone());
-            let skill_result = engine
+            state.active_runs.start(crate::active_runs::ActiveRun {
+                run_id: run_id.clone(),
+                tenant_id: tc.tenant_id.clone(),
+                agent_name: name.clone(),
+                started_at: chrono::Utc::now().timestamp(),
+                status: "running".to_string(),
+                current_step: 0,
+                total_steps: 0,
+                last_update: chrono::Utc::now().timestamp(),
+                tool_name: Some(format!("skill:{}", skill_id)),
+                model: None,
+            });
+            let skill_result = state
+                .skill_engine
                 .execute_skill(skill_id, &tc.tenant_id, input.clone(), &run_id)
                 .await;
             let duration_ms = start.elapsed().as_millis() as u64;
+            let skill_status = if skill_result.is_ok() { "completed" } else { "error" };
+            state.active_runs.finish(&run_id, skill_status);
 
             // Record agent run
             {
@@ -842,6 +856,18 @@ pub async fn run_agent(
         message.clone()
     };
 
+    state.active_runs.start(crate::active_runs::ActiveRun {
+        run_id: run_id.clone(),
+        tenant_id: tc.tenant_id.clone(),
+        agent_name: name.clone(),
+        started_at: chrono::Utc::now().timestamp(),
+        status: "running".to_string(),
+        current_step: 0,
+        total_steps: 0,
+        last_update: chrono::Utc::now().timestamp(),
+        tool_name: None,
+        model: None,
+    });
     let result = resolved_agent
         .agent
         .execute(&effective_message, &agent_context)
@@ -874,6 +900,8 @@ pub async fn run_agent(
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
+            state.active_runs.update_model(&run_id, Some(&model_name));
+            state.active_runs.finish(&run_id, "completed");
 
             // Record agent run
             {
@@ -962,6 +990,7 @@ pub async fn run_agent(
             Ok(response)
         }
         Err(e) => {
+            state.active_runs.finish(&run_id, "error");
             // Record failed run
             {
                 let pool = state.tenant_db.pool().clone();

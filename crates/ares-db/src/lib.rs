@@ -103,6 +103,12 @@ pub mod runtime_tools;
 /// Detailed run history: LLM calls, tool calls, costs, budgets, health metrics.
 pub mod run_history;
 #[cfg(feature = "postgres")]
+/// Custom skills and connector configurations.
+pub mod skills;
+#[cfg(feature = "postgres")]
+/// Agent schedules, event triggers, and pipeline links.
+pub mod schedules;
+#[cfg(feature = "postgres")]
 /// Pure SQL builders and row conversions (testable without a live DB).
 pub mod query_builders;
 

@@ -264,6 +264,17 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/admin/services/{service_name}/logs",
             get(deploy::get_service_logs),
         )
+        // Tenant Model Tiers — per-tenant abstract tier -> concrete provider/model
+        .route(
+            "/admin/tenants/{tenant_id}/model-tiers",
+            get(crate::api::handlers::admin::list_tenant_model_tiers),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/model-tiers/{tier_name}",
+            get(crate::api::handlers::admin::get_tenant_model_tier)
+                .put(crate::api::handlers::admin::set_tenant_model_tier)
+                .delete(crate::api::handlers::admin::delete_tenant_model_tier),
+        )
         // Fleet Provider Secrets — encrypted at rest, hot-swap in memory
         .route(
             "/admin/fleet-providers",

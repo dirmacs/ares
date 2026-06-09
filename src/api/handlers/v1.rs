@@ -695,6 +695,121 @@ pub async fn run_agent(
     )
     .await?;
 
+    // Skill-based agent execution
+    if let Some(config) = &resolved_agent.config {
+        if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {
+            let run_id = uuid::Uuid::new_v4().to_string();
+            let engine = crate::skill_engine::SkillEngine::new(state.tenant_db.pool().clone());
+            let skill_result = engine
+                .execute_skill(skill_id, &tc.tenant_id, input.clone(), &run_id)
+                .await;
+            let duration_ms = start.elapsed().as_millis() as u64;
+
+            // Record agent run
+            {
+                let pool = state.tenant_db.pool().clone();
+                let tid = tc.tenant_id.clone();
+                let aname = resolved_agent.agent_name.clone();
+                let dur = duration_ms as i64;
+                let metadata = agent_runs::AgentRunMetadata {
+                    workspace_id: runtime_workspace_id.clone(),
+                    session_id: Some(agent_context.session_id.clone()),
+                    request_source: Some("api_v1_agent_run".to_string()),
+                    product: None,
+                    agent_config_source: Some(resolved_agent.source.as_str().to_string()),
+                    agent_config_version: resolved_agent.config_version.clone(),
+                    eruka_binding_id: None,
+                    eruka_context_hit: false,
+                    eruka_read_count: 0,
+                    eruka_write_count: 0,
+                };
+                let status = if skill_result.is_ok() { "completed" } else { "failed" };
+                let err_msg = skill_result.as_ref().err().cloned();
+                tokio::spawn(async move {
+                    let _ = agent_runs::insert_agent_run_with_metadata(
+                        &pool,
+                        &tid,
+                        &aname,
+                        None,
+                        status,
+                        0,
+                        0,
+                        dur,
+                        err_msg.as_deref(),
+                        "skill",
+                        "skill",
+                        false,
+                        Some(&metadata),
+                    )
+                    .await;
+                });
+            }
+
+            let response_agent_id = resolved_agent.agent_name.clone();
+            let (response, input_tokens, output_tokens) = match skill_result {
+                Ok(context) => {
+                    let response = V1AgentRun {
+                        id: run_id,
+                        agent_id: response_agent_id.clone(),
+                        status: "completed".to_string(),
+                        input: input.clone(),
+                        output: Some(context),
+                        error: None,
+                        started_at: Utc::now(),
+                        finished_at: Some(Utc::now()),
+                        duration_ms: Some(duration_ms),
+                        tokens_used: Some(0),
+                    };
+                    (response, 0u64, 0u64)
+                }
+                Err(e) => {
+                    let response = V1AgentRun {
+                        id: run_id,
+                        agent_id: response_agent_id.clone(),
+                        status: "failed".to_string(),
+                        input: input.clone(),
+                        output: None,
+                        error: Some(e),
+                        started_at: Utc::now(),
+                        finished_at: Some(Utc::now()),
+                        duration_ms: Some(duration_ms),
+                        tokens_used: Some(0),
+                    };
+                    (response, 0u64, 0u64)
+                }
+            };
+
+            let mut response = usage_response(
+                response,
+                input_tokens,
+                output_tokens,
+                "skill",
+                "skill",
+                &response_agent_id,
+            );
+            set_header(
+                response.headers_mut(),
+                "x-agent-config-source",
+                resolved_agent.source.as_str(),
+            );
+            if let Some(config_version) = &resolved_agent.config_version {
+                set_header(
+                    response.headers_mut(),
+                    "x-agent-config-version",
+                    config_version,
+                );
+            }
+            if let Some(workspace_id) = &runtime_workspace_id {
+                set_header(
+                    response.headers_mut(),
+                    "x-runtime-workspace-id",
+                    workspace_id,
+                );
+            }
+            return Ok(response);
+        }
+    }
+
     // Run observability
     let run_id = uuid::Uuid::new_v4().to_string();
     let obs = Arc::new(RunObservability {

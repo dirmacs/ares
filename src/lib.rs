@@ -143,6 +143,9 @@ pub mod health_metrics_job;
 /// Background cron scheduler for agent schedules.
 #[cfg(feature = "postgres")]
 pub mod scheduler;
+/// Skill execution engine.
+#[cfg(feature = "postgres")]
+pub mod skill_engine;
 /// JWT authentication and middleware.
 #[cfg(feature = "postgres")]
 pub mod auth;

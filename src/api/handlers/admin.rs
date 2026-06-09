@@ -2956,6 +2956,25 @@ pub async fn delete_skill(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RunSkillRequest {
+    pub skill_id: String,
+    pub input: serde_json::Value,
+}
+
+pub async fn run_skill(
+    State(state): State<AppState>,
+    Json(req): Json<RunSkillRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let engine = crate::skill_engine::SkillEngine::new(state.tenant_db.pool().clone());
+    let result = engine
+        .execute_skill(&req.skill_id, "default", req.input, &run_id)
+        .await
+        .map_err(|e| AppError::InvalidInput(e))?;
+    Ok(Json(result))
+}
+
 // =============================================================================
 // Connectors
 // =============================================================================

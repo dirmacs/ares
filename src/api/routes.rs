@@ -383,6 +383,54 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             get(crate::api::handlers::admin::list_health_metrics)
                 .post(crate::api::handlers::admin::insert_health_metrics),
         )
+        // Skills & Connectors
+        .route(
+            "/admin/skills",
+            get(crate::api::handlers::admin::list_skills)
+                .post(crate::api::handlers::admin::create_skill),
+        )
+        .route(
+            "/admin/skills/{id}",
+            get(crate::api::handlers::admin::get_skill)
+                .delete(crate::api::handlers::admin::delete_skill),
+        )
+        .route(
+            "/admin/connectors",
+            get(crate::api::handlers::admin::list_connectors)
+                .post(crate::api::handlers::admin::create_connector),
+        )
+        .route(
+            "/admin/connectors/{id}",
+            delete(crate::api::handlers::admin::delete_connector),
+        )
+        // Schedules, Triggers & Pipelines
+        .route(
+            "/admin/schedules",
+            get(crate::api::handlers::admin::list_schedules)
+                .post(crate::api::handlers::admin::create_schedule),
+        )
+        .route(
+            "/admin/schedules/{id}",
+            delete(crate::api::handlers::admin::delete_schedule),
+        )
+        .route(
+            "/admin/triggers",
+            get(crate::api::handlers::admin::list_triggers)
+                .post(crate::api::handlers::admin::create_trigger),
+        )
+        .route(
+            "/admin/triggers/{id}",
+            delete(crate::api::handlers::admin::delete_trigger),
+        )
+        .route(
+            "/admin/pipelines",
+            get(crate::api::handlers::admin::list_pipelines)
+                .post(crate::api::handlers::admin::create_pipeline),
+        )
+        .route(
+            "/admin/pipelines/{id}",
+            delete(crate::api::handlers::admin::delete_pipeline),
+        )
         .layer(middleware::from_fn(
             crate::api::handlers::admin::admin_middleware,
         ));

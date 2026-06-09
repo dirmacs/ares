@@ -6,6 +6,8 @@ use crate::db::agent_versions;
 use crate::db::alerts as db_alerts;
 use crate::db::audit_log;
 use crate::db::tenant_model_tiers as db_tiers;
+use crate::db::skills as db_skills;
+use crate::db::schedules as db_schedules;
 use crate::db::tenant_agents::{
     clone_templates_for_tenant, create_tenant_agent as db_create_tenant_agent,
     delete_tenant_agent as db_delete_tenant_agent, get_tenant_agent as db_get_tenant_agent,
@@ -2867,6 +2869,360 @@ pub async fn delete_tenant_model_tier(
             "tenant_model_tier_delete",
             "tenant_model_tier",
             &format!("{t_id}/{t_name}"),
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// =============================================================================
+// Skills
+// =============================================================================
+
+pub async fn list_skills(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<db_skills::Skill>>> {
+    let tenant_id = params.get("tenant_id").map(|s| s.as_str());
+    let store = db_skills::SkillStore::new(state.tenant_db.pool());
+    let skills = store.list_skills(tenant_id).await?;
+    Ok(Json(skills))
+}
+
+pub async fn get_skill(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<db_skills::Skill>> {
+    let store = db_skills::SkillStore::new(state.tenant_db.pool());
+    let skill = store
+        .get_skill(&id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("skill {id} not found")))?;
+    Ok(Json(skill))
+}
+
+pub async fn create_skill(
+    State(state): State<AppState>,
+    Json(req): Json<db_skills::CreateSkillRequest>,
+) -> Result<Json<db_skills::Skill>> {
+    let store = db_skills::SkillStore::new(state.tenant_db.pool());
+    let skill = store.create_skill(&req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = skill.tenant_id.clone();
+    let s_name = skill.name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "skill_create",
+            "skill",
+            &s_name,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(skill))
+}
+
+pub async fn delete_skill(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
+    let store = db_skills::SkillStore::new(state.tenant_db.pool());
+    let rows = store.delete_skill(&id).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("skill {id} not found")));
+    }
+
+    let pool = state.tenant_db.pool().clone();
+    let sid = id.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "skill_delete",
+            "skill",
+            &sid,
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// =============================================================================
+// Connectors
+// =============================================================================
+
+pub async fn list_connectors(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<db_skills::Connector>>> {
+    let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
+    if tenant_id.is_empty() {
+        return Err(AppError::InvalidInput("tenant_id query param is required".into()));
+    }
+    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
+    let connectors = store.list_connectors(tenant_id).await?;
+    Ok(Json(connectors))
+}
+
+pub async fn create_connector(
+    State(state): State<AppState>,
+    Json(req): Json<db_skills::CreateConnectorRequest>,
+) -> Result<Json<db_skills::Connector>> {
+    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
+    let connector = store.create_connector(&req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = connector.tenant_id.clone();
+    let c_name = connector.name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "connector_create",
+            "connector",
+            &c_name,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(connector))
+}
+
+pub async fn delete_connector(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
+    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
+    let rows = store.delete_connector(&id).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("connector {id} not found")));
+    }
+
+    let pool = state.tenant_db.pool().clone();
+    let cid = id.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "connector_delete",
+            "connector",
+            &cid,
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// =============================================================================
+// Agent Schedules
+// =============================================================================
+
+pub async fn list_schedules(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<db_schedules::AgentSchedule>>> {
+    let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
+    if tenant_id.is_empty() {
+        return Err(AppError::InvalidInput("tenant_id query param is required".into()));
+    }
+    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
+    let schedules = store.list_schedules(tenant_id).await?;
+    Ok(Json(schedules))
+}
+
+pub async fn create_schedule(
+    State(state): State<AppState>,
+    Json(req): Json<db_schedules::CreateScheduleRequest>,
+) -> Result<Json<db_schedules::AgentSchedule>> {
+    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
+    let schedule = store.create_schedule(&req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = schedule.tenant_id.clone();
+    let a_name = schedule.agent_name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "schedule_create",
+            "agent_schedule",
+            &a_name,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(schedule))
+}
+
+pub async fn delete_schedule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
+    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
+    let rows = store.delete_schedule(&id).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("schedule {id} not found")));
+    }
+
+    let pool = state.tenant_db.pool().clone();
+    let sid = id.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "schedule_delete",
+            "agent_schedule",
+            &sid,
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// =============================================================================
+// Event Triggers
+// =============================================================================
+
+pub async fn list_triggers(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<db_schedules::EventTrigger>>> {
+    let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
+    if tenant_id.is_empty() {
+        return Err(AppError::InvalidInput("tenant_id query param is required".into()));
+    }
+    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let triggers = store.list_triggers(tenant_id).await?;
+    Ok(Json(triggers))
+}
+
+pub async fn create_trigger(
+    State(state): State<AppState>,
+    Json(req): Json<db_schedules::CreateTriggerRequest>,
+) -> Result<Json<db_schedules::EventTrigger>> {
+    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let trigger = store.create_trigger(&req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = trigger.tenant_id.clone();
+    let tr_name = trigger.name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "trigger_create",
+            "event_trigger",
+            &tr_name,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(trigger))
+}
+
+pub async fn delete_trigger(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
+    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let rows = store.delete_trigger(&id).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("trigger {id} not found")));
+    }
+
+    let pool = state.tenant_db.pool().clone();
+    let tid = id.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "trigger_delete",
+            "event_trigger",
+            &tid,
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// =============================================================================
+// Agent Pipelines
+// =============================================================================
+
+pub async fn list_pipelines(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<db_schedules::AgentPipeline>>> {
+    let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
+    if tenant_id.is_empty() {
+        return Err(AppError::InvalidInput("tenant_id query param is required".into()));
+    }
+    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let pipelines = store.list_pipelines(tenant_id).await?;
+    Ok(Json(pipelines))
+}
+
+pub async fn create_pipeline(
+    State(state): State<AppState>,
+    Json(req): Json<db_schedules::CreatePipelineRequest>,
+) -> Result<Json<db_schedules::AgentPipeline>> {
+    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let pipeline = store.create_pipeline(&req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = pipeline.tenant_id.clone();
+    let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "pipeline_create",
+            "agent_pipeline",
+            &link,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(pipeline))
+}
+
+pub async fn delete_pipeline(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
+    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let rows = store.delete_pipeline(&id).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("pipeline {id} not found")));
+    }
+
+    let pool = state.tenant_db.pool().clone();
+    let pid = id.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "pipeline_delete",
+            "agent_pipeline",
+            &pid,
             None,
             None,
         )

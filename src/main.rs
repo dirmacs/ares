@@ -538,6 +538,18 @@ async fn run_server(
     ares::health_metrics_job::spawn(state.tenant_db.pool().clone());
 
     // =================================================================
+    // Background Scheduler (Agent Schedules)
+    // =================================================================
+    {
+        let pool = state.tenant_db.pool().clone();
+        let scheduler_state = Arc::new(state.clone());
+        tokio::spawn(async move {
+            ares::scheduler::start_scheduler(pool, scheduler_state).await;
+        });
+        tracing::info!("Background scheduler spawned (60s tick)");
+    }
+
+    // =================================================================
     // Agent Config Versioning (Sprint 11)
     // =================================================================
     {

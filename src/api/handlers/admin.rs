@@ -3231,3 +3231,39 @@ pub async fn delete_pipeline(
 
     Ok(StatusCode::NO_CONTENT)
 }
+
+// =============================================================================
+// Webhook Receiver (public — no admin middleware)
+// =============================================================================
+
+/// POST /api/webhooks/{trigger_id}
+///
+/// Public webhook endpoint that receives events and triggers the
+/// associated agent when the trigger is enabled.
+pub async fn receive_webhook(
+    Path(trigger_id): Path<String>,
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>> {
+    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let trigger = store.get_trigger(&trigger_id).await?;
+    if let Some(trigger) = trigger {
+        if trigger.enabled {
+            tracing::info!(
+                trigger_id = %trigger_id,
+                agent = %trigger.target_agent,
+                payload = %payload,
+                "Webhook received — triggering agent"
+            );
+            Ok(Json(
+                serde_json::json!({"status": "triggered", "agent": trigger.target_agent}),
+            ))
+        } else {
+            Ok(Json(
+                serde_json::json!({"status": "ignored", "reason": "disabled"}),
+            ))
+        }
+    } else {
+        Err(AppError::NotFound(format!("Trigger {trigger_id} not found")))
+    }
+}

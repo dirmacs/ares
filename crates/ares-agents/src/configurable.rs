@@ -28,8 +28,9 @@ pub struct ConfigurableAgent {
     system_prompt: String,
     /// Tools available to this agent
     tool_registry: Option<Arc<ToolRegistry>>,
-    /// List of tool names this agent is allowed to use
-    allowed_tools: Vec<String>,
+    /// Optional whitelist of tool names this agent is allowed to use.
+    /// `None` means all tools are permitted.
+    allowed_tools: Option<Vec<String>>,
     /// Maximum tool calling iterations
     max_tool_iterations: usize,
     /// Whether to execute tools in parallel
@@ -70,6 +71,15 @@ impl ConfigurableAgent {
             .clone()
             .unwrap_or_else(|| Self::default_system_prompt(name));
 
+        // Use allowed_tools if present; otherwise fall back to legacy tools field.
+        let allowed_tools = config.allowed_tools.clone().or_else(|| {
+            if config.tools.is_empty() {
+                None
+            } else {
+                Some(config.tools.clone())
+            }
+        });
+
         Self {
             name: name.to_string(),
             agent_type,
@@ -77,7 +87,7 @@ impl ConfigurableAgent {
             provider_name,
             system_prompt,
             tool_registry,
-            allowed_tools: config.tools.clone(),
+            allowed_tools,
             max_tool_iterations: config.max_tool_iterations,
             parallel_tools: config.parallel_tools,
             observability: None,
@@ -92,7 +102,7 @@ impl ConfigurableAgent {
         llm: Box<dyn LLMClient>,
         system_prompt: String,
         tool_registry: Option<Arc<ToolRegistry>>,
-        allowed_tools: Vec<String>,
+        allowed_tools: Option<Vec<String>>,
         max_tool_iterations: usize,
         parallel_tools: bool,
     ) -> Self {
@@ -166,9 +176,9 @@ Handle employee info, policies, and benefits."#
         self.parallel_tools
     }
 
-    /// Check if this agent has tools configured
+    /// Check if this agent has a tool registry (and thus may use tools).
     pub fn has_tools(&self) -> bool {
-        !self.allowed_tools.is_empty() && self.tool_registry.is_some()
+        self.tool_registry.is_some()
     }
 
     /// Get the tool registry (if any)
@@ -176,9 +186,10 @@ Handle employee info, policies, and benefits."#
         self.tool_registry.as_ref()
     }
 
-    /// Get the list of allowed tool names for this agent
-    pub fn allowed_tools(&self) -> &[String] {
-        &self.allowed_tools
+    /// Get the list of allowed tool names for this agent.
+    /// `None` means all tools are permitted.
+    pub fn allowed_tools(&self) -> Option<&[String]> {
+        self.allowed_tools.as_deref()
     }
 
     /// Attach an observability sink to this agent.
@@ -186,24 +197,34 @@ Handle employee info, policies, and benefits."#
         self.observability = Some(obs);
     }
 
-    /// Get tool definitions for only this agent's allowed tools
+    /// Get tool definitions for this agent.
     ///
-    /// This filters the tool registry to only return tools that:
-    /// 1. Are in this agent's allowed tools list
-    /// 2. Are enabled in the tool registry
+    /// If `allowed_tools` is set, returns only those tools (if enabled).
+    /// Otherwise returns all enabled tools from the registry.
     pub fn get_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {
         match &self.tool_registry {
             Some(registry) => {
-                let allowed: Vec<&str> = self.allowed_tools.iter().map(|s| s.as_str()).collect();
-                registry.get_tool_definitions_for(&allowed)
+                match &self.allowed_tools {
+                    Some(allowed) if !allowed.is_empty() => {
+                        let allowed_refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
+                        registry.get_tool_definitions_for(&allowed_refs)
+                    }
+                    _ => registry.get_tool_definitions(),
+                }
             }
             None => Vec::new(),
         }
     }
 
-    /// Check if a specific tool is allowed for this agent
+    /// Check if a specific tool is allowed for this agent.
+    /// When no whitelist is set, any tool in the registry is allowed (subject
+    /// to the registry's own enablement check).
     pub fn can_use_tool(&self, tool_name: &str) -> bool {
-        self.allowed_tools.contains(&tool_name.to_string())
+        let whitelisted = match &self.allowed_tools {
+            Some(allowed) if !allowed.is_empty() => allowed.contains(&tool_name.to_string()),
+            _ => true,
+        };
+        whitelisted
             && self
                 .tool_registry
                 .as_ref()
@@ -677,6 +698,7 @@ mod tests {
             model: "default".to_string(),
             system_prompt: system_prompt.map(String::from),
             tools: tools.into_iter().map(String::from).collect(),
+            allowed_tools: None,
             max_tool_iterations: 5,
             parallel_tools: false,
             extra: HashMap::new(),
@@ -915,9 +937,10 @@ mod tests {
     fn test_allowed_tools_from_config() {
         let config = make_config(vec!["calculator", "web_search"], None);
         let agent = ConfigurableAgent::new("orchestrator", &config, Box::new(MockLLM::new()), None);
-        assert_eq!(agent.allowed_tools().len(), 2);
-        assert!(agent.allowed_tools().contains(&"calculator".to_string()));
-        assert!(agent.allowed_tools().contains(&"web_search".to_string()));
+        let allowed = agent.allowed_tools().expect("should have allowed tools");
+        assert_eq!(allowed.len(), 2);
+        assert!(allowed.contains(&"calculator".to_string()));
+        assert!(allowed.contains(&"web_search".to_string()));
     }
 
     // ==========================================================
@@ -979,7 +1002,7 @@ mod tests {
             Box::new(MockLLM::new()),
             "Custom prompt".to_string(),
             Some(Arc::new(ToolRegistry::new())),
-            vec!["tool_a".to_string()],
+            Some(vec!["tool_a".to_string()]),
             10,
             true,
         );
@@ -987,7 +1010,8 @@ mod tests {
         assert!(matches!(agent.agent_type(), AgentType::Finance));
         assert_eq!(agent.system_prompt(), "Custom prompt");
         assert!(agent.tool_registry().is_some());
-        assert_eq!(agent.allowed_tools().len(), 1);
+        let allowed = agent.allowed_tools().expect("should have allowed tools");
+        assert_eq!(allowed.len(), 1);
         assert_eq!(agent.max_tool_iterations(), 10);
         assert!(agent.parallel_tools());
     }
@@ -1000,7 +1024,7 @@ mod tests {
             Box::new(MockLLM::new()),
             "p".to_string(),
             None,
-            vec![],
+            None,
             1,
             false,
         );

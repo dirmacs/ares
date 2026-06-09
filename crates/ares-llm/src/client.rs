@@ -161,6 +161,21 @@ pub enum Provider {
         params: ModelParams,
     },
 
+    /// Runtime OpenAI-compatible provider with custom headers.
+    #[cfg(feature = "openai")]
+    RuntimeOpenAI {
+        /// API key for authentication
+        api_key: String,
+        /// Base URL for the API
+        api_base: String,
+        /// Model identifier
+        model: String,
+        /// Model inference parameters
+        params: ModelParams,
+        /// Extra headers to send with every request
+        headers: std::collections::HashMap<String, String>,
+    },
+
     /// Local Ollama server
     #[cfg(feature = "ollama")]
     Ollama {
@@ -202,6 +217,21 @@ impl Provider {
                 api_base.clone(),
                 model.clone(),
                 params.clone(),
+            ))),
+
+            #[cfg(feature = "openai")]
+            Provider::RuntimeOpenAI {
+                api_key,
+                api_base,
+                model,
+                params,
+                headers,
+            } => Ok(Box::new(super::openai::OpenAIClient::with_params_and_headers(
+                api_key.clone(),
+                api_base.clone(),
+                model.clone(),
+                params.clone(),
+                headers.clone(),
             ))),
 
             #[cfg(feature = "anthropic")]
@@ -315,6 +345,9 @@ impl Provider {
             #[cfg(feature = "openai")]
             Provider::OpenAI { .. } => "openai",
 
+            #[cfg(feature = "openai")]
+            Provider::RuntimeOpenAI { .. } => "openai",
+
             #[cfg(feature = "anthropic")]
             Provider::Anthropic { .. } => "anthropic",
 
@@ -332,6 +365,9 @@ impl Provider {
             #[cfg(feature = "openai")]
             Provider::OpenAI { .. } => true,
 
+            #[cfg(feature = "openai")]
+            Provider::RuntimeOpenAI { .. } => true,
+
             #[cfg(feature = "anthropic")]
             Provider::Anthropic { .. } => true,
 
@@ -348,6 +384,11 @@ impl Provider {
         match self {
             #[cfg(feature = "openai")]
             Provider::OpenAI { api_base, .. } => {
+                api_base.contains("localhost") || api_base.contains("127.0.0.1")
+            }
+
+            #[cfg(feature = "openai")]
+            Provider::RuntimeOpenAI { api_base, .. } => {
                 api_base.contains("localhost") || api_base.contains("127.0.0.1")
             }
 
@@ -465,6 +506,24 @@ impl Provider {
     ) -> Result<Self> {
         let params = ModelParams::from_model_config(model_config);
         Self::from_config_with_params(provider_config, Some(&model_config.model), params)
+    }
+
+    /// Create a runtime OpenAI-compatible provider from a runtime provider entry.
+    #[cfg(feature = "openai")]
+    pub fn from_runtime_openai(
+        api_key: String,
+        api_base: String,
+        model: String,
+        params: ModelParams,
+        headers: std::collections::HashMap<String, String>,
+    ) -> Self {
+        Provider::RuntimeOpenAI {
+            api_key,
+            api_base,
+            model,
+            params,
+            headers,
+        }
     }
 }
 

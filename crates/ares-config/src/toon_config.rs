@@ -77,6 +77,11 @@ pub struct ToonAgentConfig {
     #[serde(default)]
     pub tools: Vec<String>,
 
+    /// Optional whitelist of tool names this agent is allowed to use.
+    /// If absent, all tools are permitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
+
     /// Maximum tool calling iterations before returning
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: usize,
@@ -107,6 +112,7 @@ impl ToonAgentConfig {
             model: model.into(),
             system_prompt: None,
             tools: Vec::new(),
+            allowed_tools: None,
             max_tool_iterations: default_max_tool_iterations(),
             parallel_tools: false,
             extra: HashMap::new(),

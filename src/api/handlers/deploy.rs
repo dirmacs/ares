@@ -444,6 +444,7 @@ mod tests {
                 mcp_registry: None,
                 fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
                 runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(db.pool.clone())),
+                active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
             }
         }
 

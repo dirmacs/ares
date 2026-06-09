@@ -137,6 +137,7 @@ impl AgentRegistry {
             model: toon.model.clone(),
             system_prompt: toon.system_prompt.clone(),
             tools: toon.tools.clone(),
+            allowed_tools: toon.allowed_tools.clone(),
             max_tool_iterations: toon.max_tool_iterations,
             parallel_tools: toon.parallel_tools,
             // Convert serde_json::Value to toml::Value
@@ -208,12 +209,8 @@ impl AgentRegistry {
             .map(|model| model.provider.clone())
             .unwrap_or_else(|| config.model.clone());
 
-        // Create a filtered tool registry with only the tools this agent can use
-        let agent_tool_registry = if config.tools.is_empty() {
-            None
-        } else {
-            Some(Arc::clone(&self.tool_registry))
-        };
+        // Pass the full tool registry; the agent will filter based on allowed_tools
+        let agent_tool_registry = Some(Arc::clone(&self.tool_registry));
 
         Ok(ConfigurableAgent::new_with_provider(
             name,
@@ -245,15 +242,21 @@ impl AgentRegistry {
         self.get_toon_config(name).map(|c| c.model)
     }
 
-    /// Get the tools for an agent (checks both TOML and TOON)
+    /// Get the tools for an agent (checks both TOML and TOON).
+    /// Returns the explicit allowed_tools list, falling back to the legacy
+    /// tools field.  An empty result means "all tools permitted" when
+    /// allowed_tools is absent.
     pub fn get_agent_tools(&self, name: &str) -> Vec<String> {
         // Check TOML first
         if let Some(config) = self.configs.get(name) {
-            return config.tools.clone();
+            return config
+                .allowed_tools
+                .clone()
+                .unwrap_or_else(|| config.tools.clone());
         }
         // Check TOON
         self.get_toon_config(name)
-            .map(|c| c.tools)
+            .map(|c| c.allowed_tools.unwrap_or(c.tools))
             .unwrap_or_default()
     }
 

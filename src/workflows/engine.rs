@@ -474,6 +474,7 @@ mod tests {
             runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
             )),
+            active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -535,6 +536,7 @@ mod tests {
             runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
             )),
+            active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -596,6 +598,7 @@ mod tests {
             runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
             )),
+            active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -716,6 +719,7 @@ mod tests {
             runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
             )),
+            active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
         };
 
         WorkflowEngine::new(state)

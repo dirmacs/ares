@@ -10,6 +10,7 @@ use crate::db::agent_runs;
 use crate::db::tenant_agents::{self, TenantAgent};
 use crate::memory::estimate_tokens;
 use crate::models::{TenantContext, TenantTier};
+use crate::observability::RunObservability;
 use crate::research::coordinator::ResearchCoordinator;
 use crate::types::{
     AgentContext, AgentType, AppError, ChatRequest, ChatResponse, ResearchRequest,
@@ -22,6 +23,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use std::sync::Arc;
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -684,13 +686,24 @@ pub async fn run_agent(
     // Execute agent with timing
     let start = std::time::Instant::now();
     use crate::agents::Agent;
-    let resolved_agent = tenant_agent::resolve_required_tenant_agent(
+    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent(
         state.tenant_db.pool(),
         &state.agent_registry,
         &tc.tenant_id,
         &name,
     )
     .await?;
+
+    // Run observability
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let obs = Arc::new(RunObservability {
+        run_id: run_id.clone(),
+        tenant_id: tc.tenant_id.clone(),
+        agent_name: name.clone(),
+        pool: state.tenant_db.pool().clone(),
+    });
+    resolved_agent.agent.set_observability(obs.clone());
+
     let mut runtime_context =
         AgentRuntimeContext::new(tc.tenant_id.clone(), name.clone(), "api_v1_agent_run");
     runtime_context.workspace_id = runtime_workspace_id.clone();
@@ -719,6 +732,14 @@ pub async fn run_agent(
         .await;
     let duration_ms = start.elapsed().as_millis() as u64;
 
+    // Aggregate run costs (fire-and-forget)
+    let dur_i64 = duration_ms as i64;
+    let _pool_clone = state.tenant_db.pool().clone();
+    let obs_for_spawn = obs.clone();
+    tokio::spawn(async move {
+        obs_for_spawn.aggregate_run_cost(dur_i64).await;
+    });
+
     match result {
         Ok(response) => {
             let (input_tokens, output_tokens) = llm_token_counts_u64(
@@ -739,8 +760,8 @@ pub async fn run_agent(
                 .unwrap_or_else(|| "unknown".to_string());
 
             // Record agent run
-            let run_id = uuid::Uuid::new_v4().to_string();
             {
+                let _run_id = run_id.clone();
                 let pool = state.tenant_db.pool().clone();
                 let tid = tc.tenant_id.clone();
                 let aname = resolved_agent.agent_name.clone();
@@ -826,7 +847,6 @@ pub async fn run_agent(
         }
         Err(e) => {
             // Record failed run
-            let run_id = uuid::Uuid::new_v4().to_string();
             {
                 let pool = state.tenant_db.pool().clone();
                 let tid = tc.tenant_id.clone();

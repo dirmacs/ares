@@ -590,6 +590,7 @@ pub struct ToolCoordinator {
     client: Box<dyn LLMClient>,
     registry: Arc<ToolRegistry>,
     config: ToolCallingConfig,
+    observability: Option<Arc<dyn crate::observability::ObservabilitySink>>,
 }
 
 impl ToolCoordinator {
@@ -603,12 +604,22 @@ impl ToolCoordinator {
             client,
             registry,
             config,
+            observability: None,
         }
     }
 
     /// Create a new ToolCoordinator with default configuration.
     pub fn with_defaults(client: Box<dyn LLMClient>, registry: Arc<ToolRegistry>) -> Self {
         Self::new(client, registry, ToolCallingConfig::default())
+    }
+
+    /// Attach an observability sink to this coordinator.
+    pub fn with_observability(
+        mut self,
+        obs: Arc<dyn crate::observability::ObservabilitySink>,
+    ) -> Self {
+        self.observability = Some(obs);
+        self
     }
 
     /// Execute a complete tool-calling conversation loop.
@@ -644,10 +655,36 @@ impl ToolCoordinator {
 
         for iteration in 0..self.config.max_iterations {
             // Call LLM with tools
+            let llm_start = Instant::now();
             let response = self
                 .client
                 .generate_with_tools_and_history(&messages, &tools)
                 .await?;
+            let llm_latency = llm_start.elapsed().as_millis() as i64;
+
+            // Log the LLM call
+            if let Some(obs) = &self.observability {
+                let prompt_tok = response
+                    .usage
+                    .as_ref()
+                    .map(|u| u.prompt_tokens as i64)
+                    .unwrap_or(0);
+                let completion_tok = response
+                    .usage
+                    .as_ref()
+                    .map(|u| u.completion_tokens as i64)
+                    .unwrap_or(0);
+                let record = crate::observability::LlmCallRecord {
+                    step_index: iteration as i32,
+                    provider: "unknown".to_string(),
+                    model: "unknown".to_string(),
+                    prompt_tokens: prompt_tok,
+                    completion_tokens: completion_tok,
+                    latency_ms: llm_latency,
+                    status: "success".to_string(),
+                };
+                let _ = obs.log_llm_call(record).await;
+            }
 
             // Accumulate usage
             if let Some(usage) = &response.usage {
@@ -690,10 +727,31 @@ impl ToolCoordinator {
             }
 
             // Execute tool calls
+            let tool_start = Instant::now();
             let tool_results = self.execute_tool_calls(&response.tool_calls).await?;
+            let tool_latency = tool_start.elapsed().as_millis() as i64;
 
             // Record tool calls and add results to message history
-            for record in tool_results {
+            for (_idx, record) in tool_results.into_iter().enumerate() {
+                // Log the tool call
+                if let Some(obs) = &self.observability {
+                    let status = if record.success {
+                        "success".to_string()
+                    } else {
+                        "error".to_string()
+                    };
+                    let tool_record = crate::observability::ToolCallRecord {
+                        step_index: iteration as i32,
+                        tool_name: record.name.clone(),
+                        tool_type: "builtin".to_string(),
+                        arguments: record.arguments.clone(),
+                        result: Some(record.result.clone()),
+                        latency_ms: tool_latency,
+                        status,
+                    };
+                    let _ = obs.log_tool_call(tool_record).await;
+                }
+
                 // Add tool result to messages
                 messages.push(ConversationMessage::tool_result(&record.id, &record.result));
                 all_tool_calls.push(record);

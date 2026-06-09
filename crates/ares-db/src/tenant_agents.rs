@@ -55,6 +55,15 @@ pub struct UpdateTenantAgentRequest {
     pub enabled: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateTemplateRequest {
+    pub product_type: String,
+    pub agent_name: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub config: serde_json::Value,
+}
+
 // =============================================================================
 // Pure helpers (resolution, validation, row mapping)
 // =============================================================================
@@ -75,6 +84,8 @@ pub struct TenantAgentConfig {
     pub parallel_tools: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    #[serde(default)]
+    pub sandbox: bool,
 }
 
 fn default_max_tool_iterations_json() -> usize {
@@ -215,6 +226,16 @@ pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentCo
         }
     };
 
+    let sandbox = match obj.get("sandbox") {
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(serde_json::Value::Null) | None => false,
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'sandbox' must be a boolean".into(),
+            ));
+        }
+    };
+
     Ok(TenantAgentConfig {
         model,
         system_prompt,
@@ -222,6 +243,7 @@ pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentCo
         max_tool_iterations,
         parallel_tools,
         version,
+        sandbox,
     })
 }
 
@@ -553,6 +575,32 @@ pub async fn list_tenant_agents(pool: &PgPool, tenant_id: &str) -> Result<Vec<Te
     .fetch_all(pool)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
+
+    Ok(rows.iter().map(agent_from_row).collect())
+}
+
+pub async fn list_all_tenant_agents(
+    pool: &PgPool,
+    tenant_id: Option<&str>,
+) -> Result<Vec<TenantAgent>> {
+    let rows = if let Some(tid) = tenant_id {
+        sqlx::query(
+            "SELECT id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at
+             FROM tenant_agents WHERE tenant_id = $1 ORDER BY tenant_id, agent_name"
+        )
+        .bind(tid)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?
+    } else {
+        sqlx::query(
+            "SELECT id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at
+             FROM tenant_agents ORDER BY tenant_id, agent_name"
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?
+    };
 
     Ok(rows.iter().map(agent_from_row).collect())
 }
@@ -1376,6 +1424,85 @@ mod tests {
 }
 
 // =============================================================================
+// Template Store
+// =============================================================================
+
+pub struct AgentTemplateStore {
+    pool: PgPool,
+}
+
+impl AgentTemplateStore {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn list_templates(&self) -> Result<Vec<AgentTemplate>> {
+        list_agent_templates(&self.pool, None).await
+    }
+
+    pub async fn get_template(&self, id: &str) -> Result<Option<AgentTemplate>> {
+        let row = sqlx::query(
+            "SELECT id, product_type, agent_name, display_name, description, config, created_at
+             FROM agent_templates WHERE id = $1"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(row.map(|row| AgentTemplate {
+            id: row.get("id"),
+            product_type: row.get("product_type"),
+            agent_name: row.get("agent_name"),
+            display_name: row.get("display_name"),
+            description: row.get("description"),
+            config: row.get::<serde_json::Value, _>("config"),
+            created_at: row.get("created_at"),
+        }))
+    }
+
+    pub async fn create_template(&self, req: &CreateTemplateRequest) -> Result<AgentTemplate> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = now_ts();
+
+        sqlx::query(
+            "INSERT INTO agent_templates (id, product_type, agent_name, display_name, description, config, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        )
+        .bind(&id)
+        .bind(&req.product_type)
+        .bind(&req.agent_name)
+        .bind(&req.display_name)
+        .bind(&req.description)
+        .bind(&req.config)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(AgentTemplate {
+            id,
+            product_type: req.product_type.clone(),
+            agent_name: req.agent_name.clone(),
+            display_name: req.display_name.clone(),
+            description: req.description.clone(),
+            config: req.config.clone(),
+            created_at: now,
+        })
+    }
+
+    pub async fn delete_template(&self, id: &str) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM agent_templates WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(result.rows_affected())
+    }
+}
+
+// =============================================================================
 // Template operations
 // =============================================================================
 
@@ -1477,8 +1604,39 @@ pub async fn seed_default_templates(pool: &PgPool) -> Result<()> {
             model: "fast",
             system_prompt: "You are a helpful AI assistant. Answer questions clearly and concisely. If you don't know something, say so. Be direct and useful.",
         },
-        // Client-specific agent templates are loaded by the managed platform crate
-        // from TOON config files, not hardcoded in the OSS layer.
+        // Pre-built fleet templates
+        TemplateSpec {
+            product_type: "fleet",
+            agent_name: "customer_support",
+            display_name: "Customer Support Agent",
+            description: "Friendly support agent with access to ticket and knowledge-base tools",
+            model: "fast",
+            system_prompt: "You are a customer support specialist. Be empathetic, clear, and concise. Use the available tools to look up tickets, search the knowledge base, and escalate when needed. Always confirm resolution before closing.",
+        },
+        TemplateSpec {
+            product_type: "fleet",
+            agent_name: "document_extraction",
+            display_name: "Document Extraction Agent",
+            description: "Extracts structured data from documents using extraction tools",
+            model: "fast",
+            system_prompt: "You are a document extraction specialist. Analyze uploaded documents and extract structured data into the requested schema. Use extraction tools for tables, forms, and named entities. Return clean JSON when structured output is requested.",
+        },
+        TemplateSpec {
+            product_type: "fleet",
+            agent_name: "research",
+            display_name: "Research Agent",
+            description: "Deep analysis agent with search and web scrape tools",
+            model: "smart",
+            system_prompt: "You are a research analyst. Break down complex questions into sub-queries, use search and web_scrape tools to gather evidence, and synthesize findings with citations. Always state confidence levels and flag uncertain claims.",
+        },
+        TemplateSpec {
+            product_type: "fleet",
+            agent_name: "data_entry",
+            display_name: "Data Entry Agent",
+            description: "Validates and submits form data with validation tools",
+            model: "fast",
+            system_prompt: "You are a data entry assistant. Validate inputs using the available validation tools before submitting. Flag any missing required fields, format errors, or data inconsistencies. Confirm each successful submission.",
+        },
     ];
 
     for tpl in templates {

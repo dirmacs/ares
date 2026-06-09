@@ -134,6 +134,12 @@ pub mod agents { pub use ares_agents::*; }
 /// HTTP API handlers and routes.
 #[cfg(feature = "postgres")]
 pub mod api;
+/// Run observability and cost tracking.
+#[cfg(feature = "postgres")]
+pub mod observability;
+/// Periodic health metrics aggregation job.
+#[cfg(feature = "postgres")]
+pub mod health_metrics_job;
 /// JWT authentication and middleware.
 #[cfg(feature = "postgres")]
 pub mod auth;
@@ -186,6 +192,8 @@ pub use llm::{
 };
 pub use models::{ApiKey, Tenant, TenantContext, TenantQuota, TenantTier};
 pub use ares_config::fleet_secrets::{FleetSecrets, MasterKey};
+#[cfg(feature = "postgres")]
+pub use observability::RunObservability;
 #[cfg(feature = "postgres")]
 pub use tools::runtime_registry::RuntimeToolRegistry;
 pub use tools::registry::ToolRegistry;

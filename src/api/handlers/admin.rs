@@ -30,6 +30,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Extended JWT claims that include Eruka's roles map.
 #[derive(Debug, Deserialize)]
@@ -544,10 +545,20 @@ pub async fn test_tenant_agent_handler(
 
     db_get_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
     let agent_config = tenant_agent::agent_config_from_json(&req.config)?;
-    let draft_agent = state
+    let mut draft_agent = state
         .agent_registry
         .create_agent_from_config(&agent_name, &agent_config)
         .await?;
+
+    // Attach observability
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let obs = Arc::new(crate::observability::RunObservability {
+        run_id: run_id.clone(),
+        tenant_id: tenant_id.clone(),
+        agent_name: agent_name.clone(),
+        pool: state.tenant_db.pool().clone(),
+    });
+    draft_agent.set_observability(obs.clone());
 
     let agent_context = AgentContext {
         user_id: tenant_id.clone(),
@@ -587,6 +598,13 @@ pub async fn test_tenant_agent_handler(
         .execute(&effective_message, &agent_context)
         .await;
     let duration_ms = start.elapsed().as_millis() as u64;
+
+    // Aggregate run costs (fire-and-forget)
+    let dur_i64 = duration_ms as i64;
+    let obs_for_spawn = obs.clone();
+    tokio::spawn(async move {
+        obs_for_spawn.aggregate_run_cost(dur_i64).await;
+    });
 
     let config_version = req
         .config

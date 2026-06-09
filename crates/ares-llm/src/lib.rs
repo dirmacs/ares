@@ -71,6 +71,8 @@ pub mod capabilities;
 pub mod client;
 /// Generic tool coordinator for multi-turn tool calling.
 pub mod coordinator;
+/// Observability callbacks for LLM and tool call logging.
+pub mod observability;
 /// Connection pooling for LLM clients (DIR-44).
 pub mod pool;
 /// Registry for managing multiple LLM provider instances.
@@ -91,6 +93,7 @@ pub use coordinator::{
     ConversationMessage, CoordinatorResult, FinishReason, MessageRole, ToolCallRecord,
     ToolCallingConfig, ToolCoordinator,
 };
+pub use observability::{LlmCallRecord, ObservabilitySink};
 pub use pool::{ClientPool, ClientPoolBuilder, PoolConfig, PoolStats, PooledClientGuard};
 pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
 

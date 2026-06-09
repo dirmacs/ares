@@ -649,6 +649,15 @@ AppError::FeatureDisabled(_) => ErrorCode::InternalError,
                 | AppError::Internal(_)
         )
     }
+
+    /// Check if this error is transient and retrying with a fallback provider
+    /// may succeed (timeout, rate limit, 5xx upstream).
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            AppError::External(_) | AppError::Unavailable(_) | AppError::RateLimited(_)
+        )
+    }
 }
 
 // ============= Error Conversions =============

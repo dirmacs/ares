@@ -390,6 +390,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         )
         // Skills & Connectors
         .route(
+            "/admin/runs/live",
+            get(crate::api::handlers::admin::stream_active_runs),
+        )
+        .route(
             "/admin/skills",
             get(crate::api::handlers::admin::list_skills)
                 .post(crate::api::handlers::admin::create_skill),
@@ -741,6 +745,7 @@ mod tests {
             mcp_registry: None,
             fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
             runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(db.pool.clone())),
+            active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
         }
     }
 

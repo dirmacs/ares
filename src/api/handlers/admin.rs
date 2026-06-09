@@ -200,6 +200,42 @@ fn parse_tenant_tier(tier: &str) -> Result<TenantTier> {
     TenantTier::from_str(tier).ok_or_else(|| AppError::InvalidInput(INVALID_TIER_MSG.to_string()))
 }
 
+/// Validates that every tool name referenced in an agent config exists in the
+/// runtime tool registry.  Checks `allowed_tools` first, then falls back to the
+/// legacy `tools` field.
+fn validate_agent_config_tools(
+    config: &serde_json::Value,
+    runtime_tool_registry: &ares_tools::runtime_registry::RuntimeToolRegistry,
+) -> Result<()> {
+    let tool_names: Vec<String> = if let Some(arr) = config.get("allowed_tools").and_then(|v| v.as_array()) {
+        arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+    } else if let Some(arr) = config.get("tools").and_then(|v| v.as_array()) {
+        arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+    } else {
+        return Ok(());
+    };
+
+    if tool_names.is_empty() {
+        return Ok(());
+    }
+
+    let mut invalid = Vec::new();
+    for name in &tool_names {
+        if !runtime_tool_registry.has_tool(name) {
+            invalid.push(name.clone());
+        }
+    }
+
+    if !invalid.is_empty() {
+        return Err(AppError::InvalidInput(format!(
+            "Invalid tool name(s): {}. Available tools can be listed via GET /api/admin/runtime-tools",
+            invalid.join(", ")
+        )));
+    }
+
+    Ok(())
+}
+
 pub async fn create_tenant(
     State(state): State<AppState>,
     Json(payload): Json<CreateTenantRequest>,
@@ -415,6 +451,8 @@ pub async fn create_tenant_agent_handler(
     Path(tenant_id): Path<String>,
     Json(req): Json<CreateTenantAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
+    validate_agent_config_tools(&req.config, &state.runtime_tool_registry)?;
+
     let agent = db_create_tenant_agent(state.tenant_db.pool(), &tenant_id, req).await?;
 
     let pool = state.tenant_db.pool().clone();
@@ -431,6 +469,10 @@ pub async fn update_tenant_agent_handler(
     Path((tenant_id, agent_name)): Path<(String, String)>,
     Json(req): Json<UpdateTenantAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
+    if let Some(cfg) = &req.config {
+        validate_agent_config_tools(cfg, &state.runtime_tool_registry)?;
+    }
+
     let agent =
         db_update_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name, req).await?;
 
@@ -555,6 +597,8 @@ pub async fn create_agent(
         req.config
     };
 
+    validate_agent_config_tools(&config, &state.runtime_tool_registry)?;
+
     let db_req = CreateTenantAgentRequest {
         agent_name: req.agent_name,
         display_name: req.display_name,
@@ -578,6 +622,10 @@ pub async fn update_agent(
     Path((tenant_id, agent_name)): Path<(String, String)>,
     Json(req): Json<UpdateAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
+    if let Some(cfg) = &req.config {
+        validate_agent_config_tools(cfg, &state.runtime_tool_registry)?;
+    }
+
     let db_req = UpdateTenantAgentRequest {
         display_name: req.display_name,
         description: req.description,
@@ -770,6 +818,19 @@ pub async fn test_tenant_agent_handler(
     });
     draft_agent.set_observability(obs.clone());
 
+    state.active_runs.start(crate::active_runs::ActiveRun {
+        run_id: run_id.clone(),
+        tenant_id: tenant_id.clone(),
+        agent_name: agent_name.clone(),
+        started_at: chrono::Utc::now().timestamp(),
+        status: "running".to_string(),
+        current_step: 0,
+        total_steps: 0,
+        last_update: chrono::Utc::now().timestamp(),
+        tool_name: None,
+        model: None,
+    });
+
     let agent_context = AgentContext {
         user_id: tenant_id.clone(),
         session_id: format!("admin-test-{}", uuid::Uuid::new_v4()),
@@ -827,6 +888,7 @@ pub async fn test_tenant_agent_handler(
 
     match result {
         Ok(response) => {
+            state.active_runs.finish(&run_id, "completed");
             let (input_tokens, output_tokens) = if let Some(ref usage) = response.usage {
                 (usage.prompt_tokens as u64, usage.completion_tokens as u64)
             } else {
@@ -859,7 +921,9 @@ pub async fn test_tenant_agent_handler(
                 eruka_context_injected,
             }))
         }
-        Err(error) => Ok(Json(TestTenantAgentResponse {
+        Err(error) => {
+            state.active_runs.finish(&run_id, "error");
+            Ok(Json(TestTenantAgentResponse {
             status: "failed".to_string(),
             response: None,
             error: Some(error.to_string()),
@@ -1948,6 +2012,7 @@ pub async fn list_fleet_providers(
                 "api_key_last4": api_key_last4,
                 "api_base": entry.api_base,
                 "default_model": entry.default_model,
+                "fallback_providers": entry.fallback_providers,
                 "updated_at": entry.updated_at,
                 "updated_by": entry.updated_by,
             })
@@ -1984,9 +2049,9 @@ pub async fn upsert_fleet_provider(
     if provider_name.is_empty() {
         return Err(AppError::InvalidInput("provider_name must not be empty".into()));
     }
-    if req.api_key.is_none() && req.api_base.is_none() && req.default_model.is_none() {
+    if req.api_key.is_none() && req.api_base.is_none() && req.default_model.is_none() && req.fallback_providers.is_none() {
         return Err(AppError::InvalidInput(
-            "At least one of api_key, api_base, default_model must be provided".into(),
+            "At least one of api_key, api_base, default_model, fallback_providers must be provided".into(),
         ));
     }
 
@@ -2001,12 +2066,14 @@ pub async fn upsert_fleet_provider(
     }
 
     let updated_by = "admin";
+    let fallback_slice = req.fallback_providers.as_deref();
     let stored = store
         .upsert(
             &provider_name,
             req.api_key.as_deref(),
             req.api_base.as_deref(),
             req.default_model.as_deref(),
+            fallback_slice,
             master.as_ref(),
             updated_by,
         )
@@ -2023,6 +2090,7 @@ pub async fn upsert_fleet_provider(
         "api_key_last4": req.api_key.as_deref().and_then(|k| last_n_visible(k, 4)),
         "api_base_set": stored.api_base.is_some(),
         "default_model_set": stored.default_model.is_some(),
+        "fallback_providers": stored.fallback_providers,
     })
     .to_string();
     let pool = state.tenant_db.pool().clone();
@@ -2044,6 +2112,7 @@ pub async fn upsert_fleet_provider(
         "has_api_key": stored.has_api_key,
         "api_base": stored.api_base,
         "default_model": stored.default_model,
+        "fallback_providers": stored.fallback_providers,
         "updated_at": stored.updated_at,
         "updated_by": stored.updated_by,
     })))
@@ -2967,8 +3036,8 @@ pub async fn run_skill(
     Json(req): Json<RunSkillRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let run_id = uuid::Uuid::new_v4().to_string();
-    let engine = crate::skill_engine::SkillEngine::new(state.tenant_db.pool().clone());
-    let result = engine
+    let result = state
+        .skill_engine
         .execute_skill(&req.skill_id, "default", req.input, &run_id)
         .await
         .map_err(|e| AppError::InvalidInput(e))?;
@@ -3285,4 +3354,43 @@ pub async fn receive_webhook(
     } else {
         Err(AppError::NotFound(format!("Trigger {trigger_id} not found")))
     }
+}
+
+// =============================================================================
+// Live Runs SSE
+// =============================================================================
+
+/// GET /api/admin/runs/live — SSE stream of active agent runs
+pub async fn stream_active_runs(
+    State(state): State<AppState>,
+) -> axum::response::Sse<
+    impl futures::Stream<
+        Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
+    >,
+> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use std::time::Duration;
+    use tokio::time::interval;
+
+    let active_runs = Arc::clone(&state.active_runs);
+    let stream = futures::stream::unfold(interval(Duration::from_secs(2)), move |mut interval| {
+        let active_runs = Arc::clone(&active_runs);
+        async move {
+            interval.tick().await;
+            let runs = active_runs.list();
+            let data = serde_json::json!({
+                "timestamp": chrono::Utc::now().timestamp(),
+                "runs": runs,
+                "count": runs.len(),
+            });
+            let event = Ok(Event::default().data(data.to_string()));
+            Some((event, interval))
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(30))
+            .text("keep-alive"),
+    )
 }

@@ -453,6 +453,11 @@ pub struct AgentConfig {
     #[serde(default)]
     pub tools: Vec<String>,
 
+    /// Optional whitelist of tool names this agent is allowed to use.
+    /// If absent, all tools are permitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
+
     /// Maximum tool calling iterations before stopping (default: 10).
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: usize,

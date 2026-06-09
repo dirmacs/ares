@@ -24,6 +24,7 @@ pub struct StoredProviderOverride {
     pub nonce: Option<Vec<u8>>,
     pub api_base: Option<String>,
     pub default_model: Option<String>,
+    pub fallback_providers: Vec<String>,
     pub has_api_key: bool,
     pub updated_at: i64,
     pub updated_by: String,
@@ -51,7 +52,7 @@ impl<'a> FleetProviderSecretsStore<'a> {
     ) -> Result<HashMap<String, ProviderOverride>> {
         let rows = sqlx::query(
             "SELECT provider_name, ciphertext, nonce, api_base, default_model, \
-                    has_api_key, updated_at, updated_by \
+                    fallback_providers, has_api_key, updated_at, updated_by \
              FROM fleet_provider_secrets",
         )
         .fetch_all(self.pool)
@@ -65,6 +66,7 @@ impl<'a> FleetProviderSecretsStore<'a> {
                 api_key: None,
                 api_base: stored.api_base.clone(),
                 default_model: stored.default_model.clone(),
+                fallback_providers: stored.fallback_providers.clone(),
                 updated_at: stored.updated_at,
                 updated_by: stored.updated_by.clone(),
                 ..Default::default()
@@ -113,6 +115,7 @@ impl<'a> FleetProviderSecretsStore<'a> {
         api_key: Option<&str>,
         api_base: Option<&str>,
         default_model: Option<&str>,
+        fallback_providers: Option<&[String]>,
         master: Option<&MasterKey>,
         updated_by: &str,
     ) -> Result<StoredProviderOverride> {
@@ -122,9 +125,9 @@ impl<'a> FleetProviderSecretsStore<'a> {
             ));
         }
         // Validate: at least one field must be set.
-        if api_key.is_none() && api_base.is_none() && default_model.is_none() {
+        if api_key.is_none() && api_base.is_none() && default_model.is_none() && fallback_providers.is_none() {
             return Err(AppError::InvalidInput(
-                "At least one of api_key, api_base, default_model must be provided".into(),
+                "At least one of api_key, api_base, default_model, fallback_providers must be provided".into(),
             ));
         }
         let (ciphertext, nonce, has_api_key) = match api_key {
@@ -171,15 +174,18 @@ impl<'a> FleetProviderSecretsStore<'a> {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
+        let fallback_json = fallback_providers.map(|v| serde_json::to_value(v).ok()).flatten();
+
         sqlx::query(
             "INSERT INTO fleet_provider_secrets \
-                (provider_name, ciphertext, nonce, api_base, default_model, has_api_key, updated_at, updated_by) \
-             VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7), $8) \
+                (provider_name, ciphertext, nonce, api_base, default_model, fallback_providers, has_api_key, updated_at, updated_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8), $9) \
              ON CONFLICT (provider_name) DO UPDATE SET \
                 ciphertext = EXCLUDED.ciphertext, \
                 nonce = EXCLUDED.nonce, \
                 api_base = EXCLUDED.api_base, \
                 default_model = EXCLUDED.default_model, \
+                fallback_providers = EXCLUDED.fallback_providers, \
                 has_api_key = EXCLUDED.has_api_key, \
                 updated_at = EXCLUDED.updated_at, \
                 updated_by = EXCLUDED.updated_by",
@@ -189,6 +195,7 @@ impl<'a> FleetProviderSecretsStore<'a> {
         .bind(&final_nonce)
         .bind(api_base)
         .bind(default_model)
+        .bind(&fallback_json)
         .bind(final_has_api_key)
         .bind(now_secs as f64)
         .bind(updated_by)
@@ -218,7 +225,7 @@ impl<'a> FleetProviderSecretsStore<'a> {
     ) -> Result<Option<StoredProviderOverride>> {
         let row = sqlx::query(
             "SELECT provider_name, ciphertext, nonce, api_base, default_model, \
-                    has_api_key, updated_at, updated_by \
+                    fallback_providers, has_api_key, updated_at, updated_by \
              FROM fleet_provider_secrets WHERE provider_name = $1",
         )
         .bind(provider_name)
@@ -234,9 +241,9 @@ impl<'a> FleetProviderSecretsStore<'a> {
     /// set" badge per provider.
     pub async fn list_metadata(
         &self,
-    ) -> Result<Vec<(String, bool, Option<String>, Option<String>, i64, String)>> {
+    ) -> Result<Vec<(String, bool, Option<String>, Option<String>, Vec<String>, i64, String)>> {
         let rows = sqlx::query(
-            "SELECT provider_name, has_api_key, api_base, default_model, updated_at, updated_by \
+            "SELECT provider_name, has_api_key, api_base, default_model, fallback_providers, updated_at, updated_by \
              FROM fleet_provider_secrets ORDER BY provider_name",
         )
         .fetch_all(self.pool)
@@ -248,6 +255,10 @@ impl<'a> FleetProviderSecretsStore<'a> {
             let has: bool = row.try_get("has_api_key").map_err(sqlx_err)?;
             let api_base: Option<String> = row.try_get("api_base").map_err(sqlx_err)?;
             let default_model: Option<String> = row.try_get("default_model").map_err(sqlx_err)?;
+            let fallback_json: Option<serde_json::Value> = row.try_get("fallback_providers").map_err(sqlx_err)?;
+            let fallback_providers: Vec<String> = fallback_json
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
             let updated_at: chrono::DateTime<chrono::Utc> =
                 row.try_get("updated_at").map_err(sqlx_err)?;
             let updated_by: String = row.try_get("updated_by").map_err(sqlx_err)?;
@@ -256,6 +267,7 @@ impl<'a> FleetProviderSecretsStore<'a> {
                 has,
                 api_base,
                 default_model,
+                fallback_providers,
                 updated_at.timestamp(),
                 updated_by,
             ));
@@ -270,6 +282,10 @@ fn row_to_stored(row: &sqlx::postgres::PgRow) -> Result<StoredProviderOverride> 
     let nonce: Option<Vec<u8>> = row.try_get("nonce").map_err(sqlx_err)?;
     let api_base: Option<String> = row.try_get("api_base").map_err(sqlx_err)?;
     let default_model: Option<String> = row.try_get("default_model").map_err(sqlx_err)?;
+    let fallback_json: Option<serde_json::Value> = row.try_get("fallback_providers").map_err(sqlx_err)?;
+    let fallback_providers: Vec<String> = fallback_json
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
     let has_api_key: bool = row.try_get("has_api_key").map_err(sqlx_err)?;
     let updated_at: chrono::DateTime<chrono::Utc> = row.try_get("updated_at").map_err(sqlx_err)?;
     let updated_by: String = row.try_get("updated_by").map_err(sqlx_err)?;
@@ -279,6 +295,7 @@ fn row_to_stored(row: &sqlx::postgres::PgRow) -> Result<StoredProviderOverride> 
         nonce,
         api_base,
         default_model,
+        fallback_providers,
         has_api_key,
         updated_at: updated_at.timestamp(),
         updated_by,

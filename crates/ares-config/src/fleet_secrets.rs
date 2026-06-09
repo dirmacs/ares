@@ -59,6 +59,9 @@ pub struct ProviderOverride {
     /// Tokens per minute limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit_tpm: Option<i32>,
+    /// Fallback provider names to try if this provider fails.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_providers: Vec<String>,
     /// Unix seconds; set by the loader when the row is hydrated.
     #[serde(default)]
     pub updated_at: i64,

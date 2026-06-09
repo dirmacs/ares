@@ -21,12 +21,34 @@
 //! ```
 
 use crate::capabilities::{CapabilityRequirements, ModelCapabilities, ModelWithCapabilities};
-use crate::client::{LLMClient, Provider};
+use crate::client::{LLMClient, ModelParams, Provider};
 use ares_types::types::{AppError, Result};
 use ares_config::toml_config::{AresConfig, ModelConfig, ProviderConfig};
 use ares_config::nvidia_catalog::{CatalogEntry, NvidiaCatalogCache, NvidiaConfig};
+use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Runtime provider entry, synthesized from the DB `runtime_providers` table.
+#[derive(Debug, Clone)]
+pub struct RuntimeProviderEntry {
+    /// Display name for UI purposes.
+    pub display_name: String,
+    /// Provider compatibility type: "openai-compatible", "anthropic-compatible", "custom".
+    pub provider_type: String,
+    /// Base URL for the API.
+    pub api_base: String,
+    /// Authentication type: "api_key", "oauth2", "aws_sigv4".
+    pub auth_type: String,
+    /// Default model when none is specified.
+    pub default_model: Option<String>,
+    /// Extra HTTP headers.
+    pub headers: HashMap<String, String>,
+    /// Resolved API key (populated by the reload path).
+    pub api_key: Option<String>,
+    /// Whether this runtime provider is enabled.
+    pub enabled: bool,
+}
 
 /// Registry for managing multiple named LLM providers
 ///
@@ -41,6 +63,8 @@ pub struct ProviderRegistry {
     catalog: Option<Arc<NvidiaCatalogCache>>,
     /// Default model name to use when none specified.
     default_model: Option<String>,
+    /// Runtime providers loaded from the DB (hot-swapped).
+    runtime_providers: Arc<ArcSwap<HashMap<String, RuntimeProviderEntry>>>,
 }
 
 impl ProviderRegistry {
@@ -51,6 +75,7 @@ impl ProviderRegistry {
             models: HashMap::new(),
             catalog: None,
             default_model: None,
+            runtime_providers: Arc::new(ArcSwap::from_pointee(HashMap::new())),
         }
     }
 
@@ -83,7 +108,20 @@ impl ProviderRegistry {
             models: config.models.clone(),
             catalog: None,
             default_model,
+            runtime_providers: Arc::new(ArcSwap::from_pointee(HashMap::new())),
         }
+    }
+
+    /// Hot-swap the runtime provider map. Called by admin endpoints after
+    /// mutating the DB so the new providers are visible immediately.
+    pub fn reload_runtime_providers(&self, providers: Vec<RuntimeProviderEntry>, names: Vec<String>) {
+        let mut map = HashMap::new();
+        for (entry, name) in providers.into_iter().zip(names.into_iter()) {
+            if entry.enabled {
+                map.insert(name, entry);
+            }
+        }
+        self.runtime_providers.store(Arc::new(map));
     }
 
     /// Attach a live catalog cache (used after construction for background refresh).
@@ -117,10 +155,35 @@ impl ProviderRegistry {
         self.models.remove(name)
     }
 
-    /// Get a provider configuration by name
-    pub fn get_provider(&self, name: &str) -> Option<&ProviderConfig> {
-        self.providers.get(name)
+    /// Get a provider configuration by name.
+    ///
+    /// Runtime providers are checked first and synthesized into a [`ProviderConfig`]
+    /// on the fly; legacy static configs are checked second. The return value is
+    /// cloned so that the caller owns it — this is required because runtime
+    /// providers are materialised from the arc-swapped map rather than stored as
+    /// [`ProviderConfig`] internally.
+    pub fn get_provider(&self, name: &str) -> Option<ProviderConfig> {
+        let runtime = self.runtime_providers.load();
+        if let Some(entry) = runtime.get(name) {
+            return Some(synthesize_provider_config(entry));
+        }
+        self.providers.get(name).cloned()
     }
+
+/// Synthesize a legacy [`ProviderConfig`] from a runtime provider entry.
+fn synthesize_provider_config(entry: &RuntimeProviderEntry) -> ProviderConfig {
+    match entry.provider_type.as_str() {
+        "anthropic-compatible" => ProviderConfig::Anthropic {
+            api_key_env: entry.api_key.clone().unwrap_or_else(|| "ANTHROPIC_API_KEY".to_string()),
+            default_model: entry.default_model.clone().unwrap_or_default(),
+        },
+        _ => ProviderConfig::OpenAI {
+            api_key_env: entry.api_key.clone().unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
+            api_base: entry.api_base.clone(),
+            default_model: entry.default_model.clone().unwrap_or_default(),
+        },
+    }
+}
 
     /// Get a model configuration by name.
     /// Checks explicit legacy models first, then falls back to the live catalog.
@@ -144,9 +207,16 @@ impl ProviderRegistry {
         None
     }
 
-    /// Get all provider names
-    pub fn provider_names(&self) -> Vec<&str> {
-        self.providers.keys().map(|s| s.as_str()).collect()
+    /// Get all provider names (legacy + runtime).
+    pub fn provider_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.providers.keys().cloned().collect();
+        let runtime = self.runtime_providers.load();
+        for name in runtime.keys() {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+        names
     }
 
     /// Get all model names (legacy + catalog ids)
@@ -170,7 +240,7 @@ impl ProviderRegistry {
                     model_config.provider, model_name
                 ))
             })?;
-            let provider = Provider::from_model_config(model_config, provider_config)?;
+            let provider = Provider::from_model_config(model_config, &provider_config)?;
             return provider.create_client().await;
         }
 
@@ -200,14 +270,20 @@ impl ProviderRegistry {
         &self,
         provider_name: &str,
     ) -> Result<Box<dyn LLMClient>> {
-        let provider_config = self.get_provider(provider_name).ok_or_else(|| {
+        // Check runtime providers first so headers and custom base URLs are preserved.
+        if let Some(entry) = self.runtime_providers.load().get(provider_name) {
+            let provider = runtime_entry_to_provider(entry, None)?;
+            return provider.create_client().await;
+        }
+
+        let provider_config = self.providers.get(provider_name).ok_or_else(|| {
             AppError::Configuration(format!(
                 "Provider '{}' not found in configuration",
                 provider_name
             ))
         })?;
 
-        let provider = Provider::from_config(provider_config, None)?;
+        let provider = Provider::from_config(&provider_config, None)?;
         provider.create_client().await
     }
 
@@ -231,9 +307,9 @@ impl ProviderRegistry {
                 .unwrap_or(false)
     }
 
-    /// Check if a provider exists in the registry
+    /// Check if a provider exists in the registry (legacy or runtime).
     pub fn has_provider(&self, name: &str) -> bool {
-        self.providers.contains_key(name)
+        self.providers.contains_key(name) || self.runtime_providers.load().contains_key(name)
     }
 
     // ================== Capability-Based Model Selection (DIR-43) ==================
@@ -419,6 +495,65 @@ impl ProviderRegistry {
     // ============================================================
     // Helpers
     // ============================================================
+
+    /// Resolve a model tier or model name to a chain of `(provider_name,
+    /// ProviderConfig)` pairs, following the fallback chain stored in
+    /// `fleet_secrets` for the primary provider.
+    ///
+    /// 1. Looks up `tenant_model_tiers` for the tenant + tier.
+    /// 2. Falls back to the registry's configured models.
+    /// 3. Falls back to treating `tier_or_model` as a provider name.
+    /// 4. Loads the primary provider's `fallback_providers` from fleet secrets
+    ///    and appends each resolved configuration.
+    #[cfg(feature = "postgres")]
+    pub async fn resolve_with_fallback(
+        &self,
+        tier_or_model: &str,
+        tenant_id: &str,
+        pool: &sqlx::PgPool,
+        fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
+    ) -> Vec<(String, ProviderConfig)> {
+        use ares_db::tenant_model_tiers::TenantModelTierStore;
+        use std::collections::HashSet;
+
+        // 1. Resolve primary provider name.
+        let primary_provider = {
+            let store = TenantModelTierStore::new(pool);
+            if let Ok(Some(tier)) = store.get(tenant_id, tier_or_model).await {
+                tier.provider_name
+            } else if let Some(model_cfg) = self.get_model(tier_or_model) {
+                model_cfg.provider
+            } else if self.has_provider(tier_or_model) {
+                tier_or_model.to_string()
+            } else {
+                return Vec::new();
+            }
+        };
+
+        let mut result = Vec::new();
+        let mut seen = HashSet::new();
+
+        // 2. Primary provider config.
+        if let Some(cfg) = self.get_provider(&primary_provider).cloned() {
+            seen.insert(primary_provider.clone());
+            result.push((primary_provider.clone(), cfg));
+        }
+
+        // 3. Fallback chain from fleet secrets.
+        if let Some(override_) = fleet_secrets.get(&primary_provider) {
+            for fallback_name in &override_.fallback_providers {
+                if seen.contains(fallback_name) {
+                    continue;
+                }
+                if let Some(cfg) = self.get_provider(fallback_name).cloned() {
+                    seen.insert(fallback_name.clone());
+                    result.push((fallback_name.clone(), cfg));
+                }
+            }
+        }
+
+        result
+    }
 
     /// Extract NVIDIA config from the synthetic provider we inserted.
     fn nvidia_config_from_providers(&self) -> NvidiaConfig {

@@ -9,9 +9,10 @@ use crate::db::tenant_model_tiers as db_tiers;
 use crate::db::tenant_agents::{
     clone_templates_for_tenant, create_tenant_agent as db_create_tenant_agent,
     delete_tenant_agent as db_delete_tenant_agent, get_tenant_agent as db_get_tenant_agent,
-    list_agent_templates, list_tenant_agent_versions, list_tenant_agents as db_list_tenant_agents,
-    record_tenant_agent_version, rollback_tenant_agent_version,
-    update_tenant_agent as db_update_tenant_agent, AgentTemplate, CreateTenantAgentRequest,
+    list_agent_templates, list_all_tenant_agents, list_tenant_agent_versions,
+    list_tenant_agents as db_list_tenant_agents, record_tenant_agent_version,
+    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent,
+    AgentTemplate, AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest,
     TenantAgent, UpdateTenantAgentRequest,
 };
 use crate::db::tenants::UsageSummary;
@@ -496,6 +497,212 @@ pub async fn rollback_tenant_agent_version_handler(
     });
 
     Ok(Json(agent))
+}
+
+// =============================================================================
+// Cross-tenant Agent CRUD (admin-facing)
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct CreateAgentRequest {
+    pub tenant_id: String,
+    pub agent_name: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub config: serde_json::Value,
+    pub template_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateAgentRequest {
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    pub config: Option<serde_json::Value>,
+    pub enabled: Option<bool>,
+}
+
+pub async fn list_agents(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<TenantAgent>>> {
+    let tenant_id = params.get("tenant_id").map(|s| s.as_str());
+    let agents = list_all_tenant_agents(state.tenant_db.pool(), tenant_id).await?;
+    Ok(Json(agents))
+}
+
+pub async fn get_agent(
+    State(state): State<AppState>,
+    Path((tenant_id, agent_name)): Path<(String, String)>,
+) -> Result<Json<TenantAgent>> {
+    let agent = db_get_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
+    Ok(Json(agent))
+}
+
+pub async fn create_agent(
+    State(state): State<AppState>,
+    Json(req): Json<CreateAgentRequest>,
+) -> Result<Json<TenantAgent>> {
+    let config = if let Some(tpl_id) = &req.template_id {
+        let store = AgentTemplateStore::new(state.tenant_db.pool().clone());
+        let tpl = store
+            .get_template(tpl_id)
+            .await?
+            .ok_or_else(|| AppError::InvalidInput(format!("Template '{}' not found", tpl_id)))?;
+        tpl.config
+    } else {
+        req.config
+    };
+
+    let db_req = CreateTenantAgentRequest {
+        agent_name: req.agent_name,
+        display_name: req.display_name,
+        description: req.description,
+        config,
+    };
+
+    let agent = db_create_tenant_agent(state.tenant_db.pool(), &req.tenant_id, db_req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let aid = agent.id.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(&pool, "create_agent", "agent", &aid, None, None).await;
+    });
+
+    Ok(Json(agent))
+}
+
+pub async fn update_agent(
+    State(state): State<AppState>,
+    Path((tenant_id, agent_name)): Path<(String, String)>,
+    Json(req): Json<UpdateAgentRequest>,
+) -> Result<Json<TenantAgent>> {
+    let db_req = UpdateTenantAgentRequest {
+        display_name: req.display_name,
+        description: req.description,
+        config: req.config,
+        enabled: req.enabled,
+    };
+    let agent = db_update_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name, db_req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let aid = agent.id.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(&pool, "update_agent", "agent", &aid, None, None).await;
+    });
+
+    Ok(Json(agent))
+}
+
+pub async fn delete_agent(
+    State(state): State<AppState>,
+    Path((tenant_id, agent_name)): Path<(String, String)>,
+) -> Result<StatusCode> {
+    db_delete_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let resource_id = format!("{}:{}", tenant_id, agent_name);
+    tokio::spawn(async move {
+        let _ =
+            audit_log::log_admin_action(&pool, "delete_agent", "agent", &resource_id, None, None)
+                .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_agent_versions(
+    State(state): State<AppState>,
+    Path((tenant_id, agent_name)): Path<(String, String)>,
+) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
+    let agent = db_get_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
+    let mut records =
+        list_tenant_agent_versions(state.tenant_db.pool(), &tenant_id, &agent_name, 50).await?;
+    if records.is_empty() {
+        record_tenant_agent_version(state.tenant_db.pool(), &agent, "admin_seed").await?;
+        records =
+            list_tenant_agent_versions(state.tenant_db.pool(), &tenant_id, &agent_name, 50).await?;
+    }
+    Ok(Json(records))
+}
+
+pub async fn rollback_agent(
+    State(state): State<AppState>,
+    Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
+) -> Result<Json<TenantAgent>> {
+    let agent =
+        rollback_tenant_agent_version(state.tenant_db.pool(), &tenant_id, &agent_name, &version)
+            .await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let resource_id = format!("{}:{}", tenant_id, agent_name);
+    let details = format!("Rolled back agent to version {}", version);
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "agent_rollback",
+            "agent",
+            &resource_id,
+            Some(&details),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(agent))
+}
+
+// =============================================================================
+// Agent Template CRUD (admin-facing)
+// =============================================================================
+
+pub async fn create_agent_template_handler(
+    State(state): State<AppState>,
+    Json(req): Json<CreateTemplateRequest>,
+) -> Result<Json<AgentTemplate>> {
+    let store = AgentTemplateStore::new(state.tenant_db.pool().clone());
+    let tpl = store.create_template(&req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let tid = tpl.id.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "create_agent_template",
+            "agent_template",
+            &tid,
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(tpl))
+}
+
+pub async fn delete_agent_template_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
+    let store = AgentTemplateStore::new(state.tenant_db.pool().clone());
+    let deleted = store.delete_template(&id).await?;
+    if deleted == 0 {
+        return Err(AppError::NotFound(format!("Template '{}' not found", id)));
+    }
+
+    let pool = state.tenant_db.pool().clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "delete_agent_template",
+            "agent_template",
+            &id,
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Deserialize)]

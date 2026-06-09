@@ -190,7 +190,12 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         // Templates and models
         .route(
             "/admin/agent-templates",
-            get(crate::api::handlers::admin::list_agent_templates_handler),
+            get(crate::api::handlers::admin::list_agent_templates_handler)
+                .post(crate::api::handlers::admin::create_agent_template_handler),
+        )
+        .route(
+            "/admin/agent-templates/{id}",
+            delete(crate::api::handlers::admin::delete_agent_template_handler),
         )
         .route(
             "/admin/models",
@@ -232,10 +237,25 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/admin/tenants/{tenant_id}/agents/{agent_name}/stats",
             get(crate::api::handlers::admin::get_agent_stats_handler),
         )
-        // Cross-tenant agent list
+        // Cross-tenant agent CRUD
         .route(
             "/admin/agents",
-            get(crate::api::handlers::admin::list_all_agents_handler),
+            get(crate::api::handlers::admin::list_agents)
+                .post(crate::api::handlers::admin::create_agent),
+        )
+        .route(
+            "/admin/agents/{tenant_id}/{agent_name}",
+            get(crate::api::handlers::admin::get_agent)
+                .put(crate::api::handlers::admin::update_agent)
+                .delete(crate::api::handlers::admin::delete_agent),
+        )
+        .route(
+            "/admin/agents/{tenant_id}/{agent_name}/versions",
+            get(crate::api::handlers::admin::get_agent_versions),
+        )
+        .route(
+            "/admin/agents/{tenant_id}/{agent_name}/rollback/{version}",
+            post(crate::api::handlers::admin::rollback_agent),
         )
         // Platform stats
         .route(
@@ -384,6 +404,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .merge(v1_metered_routes)
         .route("/agents", get(crate::api::handlers::v1::list_agents))
         .route("/agents/{name}", get(crate::api::handlers::v1::get_agent))
+        .route(
+            "/agents/{name}/sandbox-run",
+            post(crate::api::handlers::v1::sandbox_run_agent),
+        )
         .route(
             "/agents/{name}/runs",
             get(crate::api::handlers::v1::list_agent_runs),

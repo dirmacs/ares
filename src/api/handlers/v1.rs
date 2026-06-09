@@ -6,6 +6,7 @@
 
 use crate::agents::context_provider::AgentRuntimeContext;
 use crate::agents::tenant_agent;
+use ares_agents::Agent;
 use crate::db::agent_runs;
 use crate::db::tenant_agents::{self, TenantAgent};
 use crate::memory::estimate_tokens;
@@ -916,6 +917,57 @@ pub async fn run_agent(
             Ok(response)
         }
     }
+}
+
+/// POST /v1/agents/{name}/sandbox-run — dry-run an agent with sandbox=true
+pub async fn sandbox_run_agent(
+    State(state): State<AppState>,
+    ctx: Option<Extension<TenantContext>>,
+    Path(name): Path<String>,
+    Json(input): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>> {
+    let tc = extract_tenant(ctx)?;
+
+    let resolved_agent = tenant_agent::resolve_required_tenant_agent(
+        state.tenant_db.pool(),
+        &state.agent_registry,
+        &tc.tenant_id,
+        &name,
+    )
+    .await?;
+
+    let tools = resolved_agent.agent.get_filtered_tool_definitions();
+    let message = extract_agent_run_message(&input);
+
+    let trace = vec![
+        format!("Resolved agent '{}' for tenant '{}'", name, tc.tenant_id),
+        format!("Config source: {}", resolved_agent.source.as_str()),
+        format!("System prompt: {}", resolved_agent.agent.system_prompt()),
+        format!("Allowed tools: {:?}", resolved_agent.agent.allowed_tools()),
+        format!("Max tool iterations: {}", resolved_agent.agent.max_tool_iterations()),
+        format!("Parallel tools: {}", resolved_agent.agent.parallel_tools()),
+        format!("Input message: {}", message),
+        "Sandbox mode active — no LLM calls or tool executions performed".to_string(),
+    ];
+
+    Ok(Json(serde_json::json!({
+        "sandbox": true,
+        "agent_name": name,
+        "tenant_id": tc.tenant_id,
+        "config_source": resolved_agent.source.as_str(),
+        "config_version": resolved_agent.config_version,
+        "system_prompt": resolved_agent.agent.system_prompt(),
+        "tools": tools.iter().map(|t| &t.name).collect::<Vec<_>>(),
+        "input": input,
+        "trace": trace,
+        "mock_response": {
+            "content": format!("[SANDBOX] Agent {} would process: '{}' using {} tool(s). No external actions taken.", name, message, tools.len()),
+            "tool_calls": tools.iter().map(|t| serde_json::json!({
+                "tool": t.name,
+                "mock_result": { "status": "skipped", "reason": "sandbox_mode" }
+            })).collect::<Vec<_>>(),
+        }
+    })))
 }
 
 /// GET /v1/agents/{name}/runs — list runs for an agent

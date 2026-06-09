@@ -588,6 +588,9 @@ pub struct CoordinatorResult {
 /// it with `Box<dyn LLMClient>` for maximum flexibility.
 pub struct ToolCoordinator {
     client: Box<dyn LLMClient>,
+    /// Ordered fallback chain: `(provider_name, client)` pairs tried when
+    /// the primary fails with a retryable error.
+    fallback_chain: Vec<(String, Box<dyn LLMClient>)>,
     registry: Arc<ToolRegistry>,
     config: ToolCallingConfig,
     observability: Option<Arc<dyn crate::observability::ObservabilitySink>>,
@@ -602,6 +605,7 @@ impl ToolCoordinator {
     ) -> Self {
         Self {
             client,
+            fallback_chain: Vec::new(),
             registry,
             config,
             observability: None,
@@ -611,6 +615,22 @@ impl ToolCoordinator {
     /// Create a new ToolCoordinator with default configuration.
     pub fn with_defaults(client: Box<dyn LLMClient>, registry: Arc<ToolRegistry>) -> Self {
         Self::new(client, registry, ToolCallingConfig::default())
+    }
+
+    /// Create a new ToolCoordinator with a fallback chain.
+    pub fn with_fallbacks(
+        client: Box<dyn LLMClient>,
+        fallback_chain: Vec<(String, Box<dyn LLMClient>)>,
+        registry: Arc<ToolRegistry>,
+        config: ToolCallingConfig,
+    ) -> Self {
+        Self {
+            client,
+            fallback_chain,
+            registry,
+            config,
+            observability: None,
+        }
     }
 
     /// Attach an observability sink to this coordinator.

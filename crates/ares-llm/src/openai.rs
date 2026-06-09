@@ -71,12 +71,45 @@ impl OpenAIClient {
         model: String,
         params: ModelParams,
     ) -> Self {
+        Self::with_params_and_headers(api_key, api_base, model, params, std::collections::HashMap::new())
+    }
+
+    /// Create a new OpenAI client with model parameters and custom headers.
+    ///
+    /// # Arguments
+    ///
+    /// * `api_key` - OpenAI API key
+    /// * `api_base` - Base URL for the API
+    /// * `model` - Model identifier
+    /// * `params` - Model inference parameters
+    /// * `headers` - Extra HTTP headers to include with every request
+    pub fn with_params_and_headers(
+        api_key: String,
+        api_base: String,
+        model: String,
+        params: ModelParams,
+        headers: std::collections::HashMap<String, String>,
+    ) -> Self {
         let config = OpenAIConfig::new()
             .with_api_key(api_key)
             .with_api_base(api_base);
 
+        let mut header_map = reqwest::header::HeaderMap::new();
+        for (k, v) in headers {
+            if let (Ok(name), Ok(value)) =
+                (reqwest::header::HeaderName::from_bytes(k.as_bytes()), reqwest::header::HeaderValue::from_str(&v))
+            {
+                header_map.insert(name, value);
+            }
+        }
+
+        let http_client = reqwest::ClientBuilder::new()
+            .default_headers(header_map)
+            .build()
+            .expect("failed to build reqwest client");
+
         Self {
-            client: Client::with_config(config),
+            client: Client::with_config(config).with_http_client(http_client),
             model,
             params,
         }

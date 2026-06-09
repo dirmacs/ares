@@ -140,6 +140,9 @@ pub mod observability;
 /// Periodic health metrics aggregation job.
 #[cfg(feature = "postgres")]
 pub mod health_metrics_job;
+/// Background cron scheduler for agent schedules.
+#[cfg(feature = "postgres")]
+pub mod scheduler;
 /// JWT authentication and middleware.
 #[cfg(feature = "postgres")]
 pub mod auth;
@@ -300,6 +303,33 @@ pub async fn resolve_model_tier(
     config.models.get(tier_name).map(|mc| {
         (mc.provider.clone(), mc.model.clone())
     })
+}
+
+/// Check for pipeline links after an agent run completes and trigger any
+/// downstream agents whose source agent matches.
+#[cfg(feature = "postgres")]
+pub async fn trigger_pipelines(
+    pool: &sqlx::PgPool,
+    tenant_id: &str,
+    source_agent: &str,
+    _run_result: &serde_json::Value,
+) -> Result<Vec<String>> {
+    let store = db::schedules::PipelineStore::new(pool);
+    let pipelines = store.get_pipelines_for_source(tenant_id, source_agent).await?;
+    let mut triggered = Vec::new();
+    for pipeline in pipelines {
+        if pipeline.enabled {
+            // TODO: evaluate `pipeline.condition` against `_run_result`
+            triggered.push(pipeline.target_agent.clone());
+            tracing::info!(
+                tenant = %tenant_id,
+                source = %source_agent,
+                target = %pipeline.target_agent,
+                "Pipeline triggered"
+            );
+        }
+    }
+    Ok(triggered)
 }
 
 #[cfg(all(test, feature = "postgres"))]

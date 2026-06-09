@@ -67,6 +67,7 @@ impl<'a> FleetProviderSecretsStore<'a> {
                 default_model: stored.default_model.clone(),
                 updated_at: stored.updated_at,
                 updated_by: stored.updated_by.clone(),
+                ..Default::default()
             };
             if stored.has_api_key {
                 let Some(master) = master else {
@@ -305,6 +306,7 @@ mod tests {
             default_model: Some("meta/llama-3.3-70b-instruct".into()),
             updated_at: 1,
             updated_by: "admin".into(),
+            ..Default::default()
         };
         assert_eq!(entry.api_key.as_deref(), Some("nvapi-X"));
         let truncated = last_n_visible(entry.api_key.as_deref().unwrap(), 4);

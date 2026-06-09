@@ -53,6 +53,12 @@ pub struct ProviderOverride {
     /// Override `default_model` (e.g. switch to a different model id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    /// Requests per minute limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_rpm: Option<i32>,
+    /// Tokens per minute limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_tpm: Option<i32>,
     /// Unix seconds; set by the loader when the row is hydrated.
     #[serde(default)]
     pub updated_at: i64,
@@ -343,6 +349,7 @@ mod tests {
                 default_model: Some("meta/llama-3.3-70b-instruct".into()),
                 updated_at: 1,
                 updated_by: "admin".into(),
+                ..Default::default()
             },
         );
         secrets.store(map);

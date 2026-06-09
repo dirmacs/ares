@@ -94,6 +94,9 @@ pub mod agent_versions;
 /// Fleet-wide, tenant-agnostic provider API key & config storage.
 pub mod fleet_provider_secrets;
 #[cfg(feature = "postgres")]
+/// Per-tenant model tier mapping (abstract tier -> concrete provider/model).
+pub mod tenant_model_tiers;
+#[cfg(feature = "postgres")]
 /// Runtime-defined tools (HTTP, MCP, Script, SQL).
 pub mod runtime_tools;
 #[cfg(feature = "postgres")]

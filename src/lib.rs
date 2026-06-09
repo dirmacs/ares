@@ -203,6 +203,7 @@ pub use utils::toon_config::DynamicConfigManager;
 #[cfg(feature = "postgres")]
 pub use workflows::{WorkflowEngine, WorkflowOutput, WorkflowStep};
 
+use sqlx::PgPool;
 use std::sync::Arc;
 
 /// Application state shared across handlers (requires postgres feature for full server)
@@ -277,6 +278,28 @@ pub fn base_router(state: AppState) -> axum::Router {
             api::routes::create_router(state.auth_service.clone(), state.tenant_db.clone()),
         )
         .with_state(state)
+}
+
+/// Resolve an abstract model tier to a concrete `(provider_name, model_name)` pair.
+///
+/// 1. Looks up `tenant_model_tiers` for the given tenant + tier.
+/// 2. If no tenant-specific mapping exists, falls back to `config.models`
+///    under the tier name.
+/// 3. Returns `None` if neither source has an entry.
+#[cfg(feature = "postgres")]
+pub async fn resolve_model_tier(
+    tenant_id: &str,
+    tier_name: &str,
+    pool: &PgPool,
+    config: &AresConfig,
+) -> Option<(String, String)> {
+    let store = db::tenant_model_tiers::TenantModelTierStore::new(pool);
+    if let Ok(Some(tier)) = store.get(tenant_id, tier_name).await {
+        return Some((tier.provider_name, tier.model_name));
+    }
+    config.models.get(tier_name).map(|mc| {
+        (mc.provider.clone(), mc.model.clone())
+    })
 }
 
 #[cfg(all(test, feature = "postgres"))]

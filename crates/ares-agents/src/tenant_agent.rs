@@ -103,7 +103,7 @@ pub(crate) fn tenant_agent_not_found_error(agent_name: &str, tenant_id: &str) ->
 }
 
 pub(crate) fn legacy_create_should_use_tenant_config(
-    load_result: &Result<Option<(AgentConfig, String)>>,
+    load_result: &Result<Option<(AgentConfig, String, serde_json::Value)>>,
 ) -> bool {
     matches!(load_result, Ok(Some(_)))
 }
@@ -128,6 +128,7 @@ pub struct ResolvedAgent {
     pub source: AgentConfigSource,
     pub agent_name: String,
     pub config_version: Option<String>,
+    pub config: Option<serde_json::Value>,
 }
 
 fn tenant_config_version(config: &serde_json::Value, updated_at: i64) -> String {
@@ -144,7 +145,7 @@ async fn load_tenant_agent_config(
     pool: &PgPool,
     tenant_id: &str,
     agent_name: &str,
-) -> Result<Option<(AgentConfig, String)>> {
+) -> Result<Option<(AgentConfig, String, serde_json::Value)>> {
     let row = sqlx::query(
         "SELECT config, enabled, updated_at FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2",
     )
@@ -168,7 +169,7 @@ async fn load_tenant_agent_config(
     let config_version = tenant_config_version(&config_json, updated_at);
     let agent_config = agent_config_from_json(&config_json)?;
 
-    Ok(Some((agent_config, config_version)))
+    Ok(Some((agent_config, config_version, config_json)))
 }
 
 pub async fn resolve_agent_for_tenant(
@@ -177,7 +178,7 @@ pub async fn resolve_agent_for_tenant(
     tenant_id: &str,
     agent_name: &str,
 ) -> Result<ResolvedAgent> {
-    if let Some((agent_config, config_version)) =
+    if let Some((agent_config, config_version, config_json)) =
         load_tenant_agent_config(pool, tenant_id, agent_name).await?
     {
         let agent = agent_registry
@@ -189,6 +190,7 @@ pub async fn resolve_agent_for_tenant(
             source: AgentConfigSource::TenantDb,
             agent_name: agent_name.to_string(),
             config_version: Some(config_version),
+            config: Some(config_json),
         });
     }
 
@@ -198,6 +200,7 @@ pub async fn resolve_agent_for_tenant(
         source: AgentConfigSource::Registry,
         agent_name: agent_name.to_string(),
         config_version: None,
+        config: None,
     })
 }
 
@@ -207,7 +210,7 @@ pub async fn resolve_required_tenant_agent(
     tenant_id: &str,
     agent_name: &str,
 ) -> Result<ResolvedAgent> {
-    let Some((agent_config, config_version)) =
+    let Some((agent_config, config_version, config_json)) =
         load_tenant_agent_config(pool, tenant_id, agent_name).await?
     else {
         return Err(tenant_agent_not_found_error(agent_name, tenant_id));
@@ -222,6 +225,7 @@ pub async fn resolve_required_tenant_agent(
         source: AgentConfigSource::TenantDb,
         agent_name: agent_name.to_string(),
         config_version: Some(config_version),
+        config: Some(config_json),
     })
 }
 
@@ -237,7 +241,7 @@ pub async fn create_tenant_agent(
     if !legacy_create_should_use_tenant_config(&load_result) {
         return None;
     }
-    let (agent_config, _) = load_result
+    let (agent_config, _, _) = load_result
         .ok()
         .and_then(|loaded| loaded)
         .expect("legacy_create_should_use_tenant_config implies Ok(Some(_))");
@@ -558,7 +562,7 @@ mod tests {
 
     #[test]
     fn legacy_create_should_use_tenant_config_only_for_ok_some() {
-        let ok_some: AresResult<Option<(AgentConfig, String)>> = Ok(Some((
+        let ok_some: AresResult<Option<(AgentConfig, String, serde_json::Value)>> = Ok(Some((
             AgentConfig {
                 model: "default".to_string(),
                 system_prompt: None,
@@ -568,13 +572,14 @@ mod tests {
                 extra: std::collections::HashMap::new(),
             },
             "v1".to_string(),
+            serde_json::Value::Null,
         )));
         assert!(legacy_create_should_use_tenant_config(&ok_some));
 
-        let ok_none: AresResult<Option<(AgentConfig, String)>> = Ok(None);
+        let ok_none: AresResult<Option<(AgentConfig, String, serde_json::Value)>> = Ok(None);
         assert!(!legacy_create_should_use_tenant_config(&ok_none));
 
-        let err_load: AresResult<Option<(AgentConfig, String)>> = Err(AppError::Database("x".into()));
+        let err_load: AresResult<Option<(AgentConfig, String, serde_json::Value)>> = Err(AppError::Database("x".into()));
         assert!(!legacy_create_should_use_tenant_config(&err_load));
     }
 

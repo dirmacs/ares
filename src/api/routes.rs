@@ -395,6 +395,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
                 .post(crate::api::handlers::admin::create_skill),
         )
         .route(
+            "/admin/skills/run",
+            post(crate::api::handlers::admin::run_skill),
+        )
+        .route(
             "/admin/skills/{id}",
             get(crate::api::handlers::admin::get_skill)
                 .delete(crate::api::handlers::admin::delete_skill),

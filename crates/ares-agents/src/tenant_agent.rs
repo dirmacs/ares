@@ -77,12 +77,36 @@ pub fn agent_config_from_json(json: &serde_json::Value) -> Result<AgentConfig> {
         }
     };
 
+    let allowed_tools = match obj.get("allowed_tools") {
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                    AppError::Configuration(
+                        "Tenant agent config field 'allowed_tools' must be an array of strings".into(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Some(serde_json::Value::Null) | None => Vec::new(),
+        Some(_) => {
+            return Err(AppError::Configuration(
+                "Tenant agent config field 'allowed_tools' must be an array".into(),
+            ));
+        }
+    };
+
     Ok(AgentConfig {
         model,
         system_prompt,
         tools,
         max_tool_iterations,
         parallel_tools,
+        allowed_tools: if allowed_tools.is_empty() {
+            None
+        } else {
+            Some(allowed_tools)
+        },
         extra: HashMap::new(),
     })
 }

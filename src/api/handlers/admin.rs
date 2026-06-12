@@ -924,19 +924,20 @@ pub async fn test_tenant_agent_handler(
         Err(error) => {
             state.active_runs.finish(&run_id, "error");
             Ok(Json(TestTenantAgentResponse {
-            status: "failed".to_string(),
-            response: None,
-            error: Some(error.to_string()),
-            input_tokens: estimate_tokens(&effective_message) as u64,
-            output_tokens: 0,
-            duration_ms,
-            model_name: None,
-            provider_name: None,
-            config_source: "draft".to_string(),
-            config_version,
-            workspace_id: runtime_context.workspace_id,
-            eruka_context_injected,
-        })),
+                status: "failed".to_string(),
+                response: None,
+                error: Some(error.to_string()),
+                input_tokens: estimate_tokens(&effective_message) as u64,
+                output_tokens: 0,
+                duration_ms,
+                model_name: None,
+                provider_name: None,
+                config_source: "draft".to_string(),
+                config_version,
+                workspace_id: runtime_context.workspace_id,
+                eruka_context_injected,
+            }))
+        }
     }
 }
 
@@ -2035,6 +2036,9 @@ pub struct FleetProviderUpsertRequest {
     pub api_base: Option<String>,
     /// Optional. If `None`, the existing default_model is preserved.
     pub default_model: Option<String>,
+    /// Optional. If `None`, the existing fallback_providers list is preserved.
+    /// Fallback providers are resolved after the primary fails.
+    pub fallback_providers: Option<Vec<String>>,
 }
 
 /// Upsert a fleet provider override. Encrypts the new key (if any), writes
@@ -2185,7 +2189,7 @@ pub async fn verify_fleet_provider(
 
     // Fall back to the registry's ProviderConfig for the base URL when the
     // admin hasn't set an override.
-    let provider_config = state.provider_registry.get_provider(&provider_name).cloned();
+    let provider_config = state.provider_registry.get_provider(&provider_name);
 
     let (api_base, api_key) = match (override_, provider_config.as_ref()) {
         (Some(o), _) => {

@@ -167,6 +167,7 @@ impl WorkflowEngine {
                 tools: user_agent.tools_vec(),
                 max_tool_iterations: user_agent.max_tool_iterations as usize,
                 parallel_tools: user_agent.parallel_tools,
+                allowed_tools: None,
                 extra: std::collections::HashMap::new(),
             };
 

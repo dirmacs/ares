@@ -107,7 +107,7 @@ impl SkillEngine {
                         return Err(format!("Tool {} not found", tool_name));
                     };
 
-                    let latency_ms = start.elapsed().as_millis() as i32;
+                    let latency_ms = start.elapsed().as_millis() as i64;
 
                     // Store result in context
                     context[&format!("step_{}", step_index)] = result.clone();
@@ -137,25 +137,21 @@ impl SkillEngine {
 
                     // Build messages and call LLM
                     let messages = vec![("user".to_string(), prompt.clone())];
-                    let client = self
-                        .llm_factory
-                        .registry()
-                        .create_client_for_model(&model_name)
-                        .await
-                        .or_else(|_| {
-                            self.llm_factory
-                                .registry()
-                                .create_client_for_provider(&provider_name)
-                                .await
-                        })
-                        .map_err(|e| format!("LLM client creation failed: {}", e))?;
+                    let registry = self.llm_factory.registry();
+                    let client = match registry.create_client_for_model(&model_name).await {
+                        Ok(c) => c,
+                        Err(_) => registry
+                            .create_client_for_provider(&provider_name)
+                            .await
+                            .map_err(|e| format!("LLM client creation failed: {}", e))?,
+                    };
 
                     let response = client
                         .generate_with_history(&messages)
                         .await
                         .map_err(|e| format!("LLM generation failed: {}", e))?;
 
-                    let latency_ms = start.elapsed().as_millis() as i32;
+                    let latency_ms = start.elapsed().as_millis() as i64;
 
                     // Store result
                     let result = serde_json::json!({
@@ -233,7 +229,7 @@ impl SkillEngine {
                     return Err(format!("Tool {} not found", tool_name));
                 };
 
-                let latency_ms = start.elapsed().as_millis() as i32;
+                let latency_ms = start.elapsed().as_millis() as i64;
                 context[&format!("step_{}", step_index)] = result.clone();
 
                 self.log_tool_call_result(
@@ -258,25 +254,21 @@ impl SkillEngine {
                         .unwrap_or_else(|| ("default".to_string(), model_tier.clone()));
 
                 let messages = vec![("user".to_string(), prompt.clone())];
-                let client = self
-                    .llm_factory
-                    .registry()
-                    .create_client_for_model(&model_name)
-                    .await
-                    .or_else(|_| {
-                        self.llm_factory
-                            .registry()
-                            .create_client_for_provider(&provider_name)
-                            .await
-                    })
-                    .map_err(|e| format!("LLM client creation failed: {}", e))?;
+                let registry = self.llm_factory.registry();
+                let client = match registry.create_client_for_model(&model_name).await {
+                    Ok(c) => c,
+                    Err(_) => registry
+                        .create_client_for_provider(&provider_name)
+                        .await
+                        .map_err(|e| format!("LLM client creation failed: {}", e))?,
+                };
 
                 let response = client
                     .generate_with_history(&messages)
                     .await
                     .map_err(|e| format!("LLM generation failed: {}", e))?;
 
-                let latency_ms = start.elapsed().as_millis() as i32;
+                let latency_ms = start.elapsed().as_millis() as i64;
                 let result = serde_json::json!({
                     "content": response.content,
                     "usage": response.usage,
@@ -326,7 +318,7 @@ impl SkillEngine {
         tool_name: &str,
         args: serde_json::Value,
         result: Option<serde_json::Value>,
-        latency_ms: i32,
+        latency_ms: i64,
     ) -> Result<(), String> {
         let store = RunHistoryStore::new(&self.pool);
         let req = LogToolCallRequest {
@@ -359,7 +351,7 @@ impl SkillEngine {
         provider: &str,
         model: &str,
         response: LLMResponse,
-        latency_ms: i32,
+        latency_ms: i64,
     ) -> Result<(), String> {
         let store = RunHistoryStore::new(&self.pool);
         let usage = response.usage.unwrap_or_default();
@@ -371,11 +363,11 @@ impl SkillEngine {
             step_index,
             provider: provider.to_string(),
             model: model.to_string(),
-            prompt_tokens: usage.prompt_tokens as i32,
-            completion_tokens: usage.completion_tokens as i32,
-            total_tokens: usage.total_tokens as i32,
+            prompt_tokens: usage.prompt_tokens as i64,
+            completion_tokens: usage.completion_tokens as i64,
+            total_tokens: usage.total_tokens as i64,
             estimated_cost_usd: rust_decimal::Decimal::ZERO,
-            latency_ms,
+            latency_ms: latency_ms,
             status: "completed".to_string(),
             error_message: None,
             request_payload: None,

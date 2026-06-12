@@ -165,25 +165,25 @@ impl ProviderRegistry {
     pub fn get_provider(&self, name: &str) -> Option<ProviderConfig> {
         let runtime = self.runtime_providers.load();
         if let Some(entry) = runtime.get(name) {
-            return Some(synthesize_provider_config(entry));
+            return Some(Self::synthesize_provider_config(entry));
         }
         self.providers.get(name).cloned()
     }
 
-/// Synthesize a legacy [`ProviderConfig`] from a runtime provider entry.
-fn synthesize_provider_config(entry: &RuntimeProviderEntry) -> ProviderConfig {
-    match entry.provider_type.as_str() {
-        "anthropic-compatible" => ProviderConfig::Anthropic {
-            api_key_env: entry.api_key.clone().unwrap_or_else(|| "ANTHROPIC_API_KEY".to_string()),
-            default_model: entry.default_model.clone().unwrap_or_default(),
-        },
-        _ => ProviderConfig::OpenAI {
-            api_key_env: entry.api_key.clone().unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
-            api_base: entry.api_base.clone(),
-            default_model: entry.default_model.clone().unwrap_or_default(),
-        },
+    /// Synthesize a legacy [`ProviderConfig`] from a runtime provider entry.
+    fn synthesize_provider_config(entry: &RuntimeProviderEntry) -> ProviderConfig {
+        match entry.provider_type.as_str() {
+            "anthropic-compatible" => ProviderConfig::Anthropic {
+                api_key_env: entry.api_key.clone().unwrap_or_else(|| "ANTHROPIC_API_KEY".to_string()),
+                default_model: entry.default_model.clone().unwrap_or_default(),
+            },
+            _ => ProviderConfig::OpenAI {
+                api_key_env: entry.api_key.clone().unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
+                api_base: entry.api_base.clone(),
+                default_model: entry.default_model.clone().unwrap_or_default(),
+            },
+        }
     }
-}
 
     /// Get a model configuration by name.
     /// Checks explicit legacy models first, then falls back to the live catalog.
@@ -272,7 +272,8 @@ fn synthesize_provider_config(entry: &RuntimeProviderEntry) -> ProviderConfig {
     ) -> Result<Box<dyn LLMClient>> {
         // Check runtime providers first so headers and custom base URLs are preserved.
         if let Some(entry) = self.runtime_providers.load().get(provider_name) {
-            let provider = runtime_entry_to_provider(entry, None)?;
+            let provider_config = Self::synthesize_provider_config(entry);
+            let provider = Provider::from_config(&provider_config, None)?;
             return provider.create_client().await;
         }
 

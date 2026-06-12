@@ -11,7 +11,7 @@ description = "LLM provider clients and abstractions for A.R.E.S"
 [features]
 default = []
 ollama = ["dep:ollama-rs"]
-openai = ["dep:async-openai"]
+openai = ["dep:async-openai", "dep:reqwest"]
 llamacpp = ["dep:llama-cpp-2"]
 anthropic = ["dep:claude-sdk"]
 llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]
@@ -40,6 +40,7 @@ ollama-rs = { version = "0.3.3", features = ["stream"], optional = true }
 async-openai = { version = "0.33.1", features = ["chat-completion"], optional = true }
 llama-cpp-2 = { version = "0.1.130", optional = true }
 claude-sdk = { version = "1.0.0", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 
 [dev-dependencies]
 wiremock = "0.6.5"

@@ -126,6 +126,27 @@ pub struct AgentHealthMetrics {
     pub created_at: i64,
 }
 
+/// One persisted row in `model_health_metrics`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelHealthMetrics {
+    pub id: String,
+    pub tenant_id: String,
+    pub model: String,
+    pub period_start: i64,
+    pub period_end: i64,
+    pub total_calls: i64,
+    pub successful_calls: i64,
+    pub failed_calls: i64,
+    pub avg_latency_ms: i64,
+    pub p50_latency_ms: i64,
+    pub p95_latency_ms: i64,
+    pub p99_latency_ms: i64,
+    pub total_tokens: i64,
+    pub total_cost_usd: Decimal,
+    pub error_rate_pct: Decimal,
+    pub created_at: i64,
+}
+
 // =============================================================================
 // Request structs
 // =============================================================================
@@ -823,6 +844,29 @@ impl<'a> RunHistoryStore<'a> {
 
         rows.iter().map(row_to_agent_health).collect()
     }
+
+    /// List model health metrics for a tenant, newest period first.
+    pub async fn list_model_metrics(
+        &self,
+        tenant_id: &str,
+        limit: i32,
+        offset: i32,
+    ) -> Result<Vec<ModelHealthMetrics>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, model, period_start, period_end, total_calls, \
+                    successful_calls, failed_calls, avg_latency_ms, p50_latency_ms, p95_latency_ms, \
+                    p99_latency_ms, total_tokens, total_cost_usd, error_rate_pct, created_at \
+             FROM model_health_metrics WHERE tenant_id = $1 ORDER BY period_start DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(tenant_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+
+        rows.iter().map(row_to_model_health).collect()
+    }
 }
 
 // =============================================================================
@@ -923,6 +967,27 @@ fn row_to_agent_health(row: &sqlx::postgres::PgRow) -> Result<AgentHealthMetrics
         total_runs: row.try_get("total_runs").map_err(sqlx_err)?,
         successful_runs: row.try_get("successful_runs").map_err(sqlx_err)?,
         failed_runs: row.try_get("failed_runs").map_err(sqlx_err)?,
+        avg_latency_ms: row.try_get("avg_latency_ms").map_err(sqlx_err)?,
+        p50_latency_ms: row.try_get("p50_latency_ms").map_err(sqlx_err)?,
+        p95_latency_ms: row.try_get("p95_latency_ms").map_err(sqlx_err)?,
+        p99_latency_ms: row.try_get("p99_latency_ms").map_err(sqlx_err)?,
+        total_tokens: row.try_get("total_tokens").map_err(sqlx_err)?,
+        total_cost_usd: row.try_get("total_cost_usd").map_err(sqlx_err)?,
+        error_rate_pct: row.try_get("error_rate_pct").map_err(sqlx_err)?,
+        created_at: row.try_get("created_at").map_err(sqlx_err)?,
+    })
+}
+
+fn row_to_model_health(row: &sqlx::postgres::PgRow) -> Result<ModelHealthMetrics> {
+    Ok(ModelHealthMetrics {
+        id: row.try_get("id").map_err(sqlx_err)?,
+        tenant_id: row.try_get("tenant_id").map_err(sqlx_err)?,
+        model: row.try_get("model").map_err(sqlx_err)?,
+        period_start: row.try_get("period_start").map_err(sqlx_err)?,
+        period_end: row.try_get("period_end").map_err(sqlx_err)?,
+        total_calls: row.try_get("total_calls").map_err(sqlx_err)?,
+        successful_calls: row.try_get("successful_calls").map_err(sqlx_err)?,
+        failed_calls: row.try_get("failed_calls").map_err(sqlx_err)?,
         avg_latency_ms: row.try_get("avg_latency_ms").map_err(sqlx_err)?,
         p50_latency_ms: row.try_get("p50_latency_ms").map_err(sqlx_err)?,
         p95_latency_ms: row.try_get("p95_latency_ms").map_err(sqlx_err)?,

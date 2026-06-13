@@ -47,6 +47,7 @@ pub struct AgentSchedule {
     pub enabled: bool,
     pub last_run_at: Option<i64>,
     pub next_run_at: Option<i64>,
+    pub grace_period_seconds: i32,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -85,6 +86,8 @@ pub struct CreateScheduleRequest {
     pub timezone: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default = "default_grace_period")]
+    pub grace_period_seconds: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,11 +111,24 @@ pub struct CreatePipelineRequest {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MissedRunAudit {
+    pub id: String,
+    pub schedule_id: String,
+    pub expected_at: i64,
+    pub detected_at: i64,
+    pub action_taken: String,
+    pub created_at: i64,
+}
+
 fn default_timezone() -> String {
     "UTC".to_string()
 }
 fn default_true() -> bool {
     true
+}
+fn default_grace_period() -> i32 {
+    120
 }
 
 // =============================================================================
@@ -131,7 +147,7 @@ impl<'a> ScheduleStore<'a> {
     pub async fn list_schedules(&self, tenant_id: &str) -> Result<Vec<AgentSchedule>> {
         let rows = sqlx::query(
             "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
-                    last_run_at, next_run_at, created_at, updated_at \
+                    last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
              FROM agent_schedules WHERE tenant_id = $1 ORDER BY agent_name",
         )
         .bind(tenant_id)
@@ -160,10 +176,10 @@ impl<'a> ScheduleStore<'a> {
         let row = sqlx::query(
             "INSERT INTO agent_schedules \
                 (id, tenant_id, agent_name, cron_expression, timezone, enabled, \
-                 last_run_at, next_run_at, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $8) \
+                 last_run_at, next_run_at, grace_period_seconds, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9, $9) \
              RETURNING id, tenant_id, agent_name, cron_expression, timezone, enabled, \
-                       last_run_at, next_run_at, created_at, updated_at",
+                       last_run_at, next_run_at, grace_period_seconds, created_at, updated_at",
         )
         .bind(&id)
         .bind(&req.tenant_id)
@@ -172,6 +188,7 @@ impl<'a> ScheduleStore<'a> {
         .bind(&req.timezone)
         .bind(req.enabled)
         .bind(next_run_at)
+        .bind(req.grace_period_seconds)
         .bind(now)
         .fetch_one(self.pool)
         .await
@@ -194,7 +211,7 @@ impl<'a> ScheduleStore<'a> {
         let now = now_ts();
         let rows = sqlx::query(
             "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
-                    last_run_at, next_run_at, created_at, updated_at \
+                    last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
              FROM agent_schedules \
              WHERE enabled = TRUE AND (next_run_at IS NULL OR next_run_at <= $1)"
         )
@@ -220,6 +237,59 @@ impl<'a> ScheduleStore<'a> {
         .await
         .map_err(sqlx_err)?;
         Ok(res.rows_affected())
+    }
+
+    pub async fn insert_missed_run_audit(&self, audit: &MissedRunAudit) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO missed_runs \
+                (id, schedule_id, expected_at, detected_at, action_taken, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(&audit.id)
+        .bind(&audit.schedule_id)
+        .bind(audit.expected_at)
+        .bind(audit.detected_at)
+        .bind(&audit.action_taken)
+        .bind(audit.created_at)
+        .execute(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+        Ok(())
+    }
+
+    pub async fn list_missed_runs(&self, schedule_id: &str, limit: i32) -> Result<Vec<MissedRunAudit>> {
+        let rows = sqlx::query(
+            "SELECT id, schedule_id, expected_at, detected_at, action_taken, created_at \
+             FROM missed_runs \
+             WHERE schedule_id = $1 \
+             ORDER BY detected_at DESC \
+             LIMIT $2",
+        )
+        .bind(schedule_id)
+        .bind(limit)
+        .fetch_all(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+        rows.iter().map(row_to_missed_run_audit).collect()
+    }
+
+    /// Get enabled schedules whose `next_run_at` is older than the grace period.
+    /// Used by the scheduler to detect missed runs.
+    pub async fn get_overdue_for_catchup(&self) -> Result<Vec<AgentSchedule>> {
+        let now = now_ts();
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
+                    last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
+             FROM agent_schedules \
+             WHERE enabled = TRUE AND next_run_at IS NOT NULL AND \
+                   next_run_at + grace_period_seconds < $1 \
+             ORDER BY next_run_at ASC",
+        )
+        .bind(now)
+        .fetch_all(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+        rows.iter().map(row_to_schedule).collect()
     }
 }
 
@@ -434,6 +504,7 @@ fn row_to_schedule(row: &sqlx::postgres::PgRow) -> Result<AgentSchedule> {
         enabled: row.try_get("enabled").map_err(sqlx_err)?,
         last_run_at: row.try_get("last_run_at").map_err(sqlx_err)?,
         next_run_at: row.try_get("next_run_at").map_err(sqlx_err)?,
+        grace_period_seconds: row.try_get("grace_period_seconds").map_err(sqlx_err)?,
         created_at: row.try_get("created_at").map_err(sqlx_err)?,
         updated_at: row.try_get("updated_at").map_err(sqlx_err)?,
     })
@@ -463,6 +534,17 @@ fn row_to_pipeline(row: &sqlx::postgres::PgRow) -> Result<AgentPipeline> {
         enabled: row.try_get("enabled").map_err(sqlx_err)?,
         created_at: row.try_get("created_at").map_err(sqlx_err)?,
         updated_at: row.try_get("updated_at").map_err(sqlx_err)?,
+    })
+}
+
+fn row_to_missed_run_audit(row: &sqlx::postgres::PgRow) -> Result<MissedRunAudit> {
+    Ok(MissedRunAudit {
+        id: row.try_get("id").map_err(sqlx_err)?,
+        schedule_id: row.try_get("schedule_id").map_err(sqlx_err)?,
+        expected_at: row.try_get("expected_at").map_err(sqlx_err)?,
+        detected_at: row.try_get("detected_at").map_err(sqlx_err)?,
+        action_taken: row.try_get("action_taken").map_err(sqlx_err)?,
+        created_at: row.try_get("created_at").map_err(sqlx_err)?,
     })
 }
 

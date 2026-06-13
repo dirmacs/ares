@@ -14,6 +14,7 @@ pub struct ActiveRun {
     pub last_update: i64,
     pub tool_name: Option<String>,
     pub model: Option<String>,
+    pub is_catchup: bool,
 }
 
 /// Thread-safe registry of in-progress agent runs.
@@ -30,6 +31,13 @@ impl ActiveRuns {
 
     pub fn start(&self, run: ActiveRun) {
         let mut runs = self.runs.write().expect("active runs lock poisoned");
+        runs.insert(run.run_id.clone(), run);
+    }
+
+    pub fn start_with_catchup(&self, run: ActiveRun, is_catchup: bool) {
+        let mut runs = self.runs.write().expect("active runs lock poisoned");
+        let mut run = run;
+        run.is_catchup = is_catchup;
         runs.insert(run.run_id.clone(), run);
     }
 

@@ -1564,7 +1564,15 @@ mod tests {
 
         assert!(registry.has_provider("nvidia"));
         assert!(registry.has_model("fast"));
-        assert_eq!(registry.model_names(), vec!["fast"]);
+
+        #[cfg(feature = "bedrock")]
+        let expected = vec![
+            "fast",
+            "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        ];
+        #[cfg(not(feature = "bedrock"))]
+        let expected = vec!["fast"];
+        assert_eq!(registry.model_names(), expected);
     }
 
     #[tokio::test]

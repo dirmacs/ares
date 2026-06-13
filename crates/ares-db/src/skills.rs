@@ -51,6 +51,7 @@ pub struct Connector {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSkillRequest {
+    #[serde(default = "default_tenant_id")]
     pub tenant_id: String,
     pub name: String,
     pub display_name: String,
@@ -75,6 +76,10 @@ pub struct CreateConnectorRequest {
     pub endpoints: serde_json::Value,
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+fn default_tenant_id() -> String {
+    "default".to_string()
 }
 
 fn default_skill_type() -> String {
@@ -138,15 +143,7 @@ impl<'a> SkillStore<'a> {
     }
 
     pub async fn create_skill(&self, req: &CreateSkillRequest) -> Result<Skill> {
-        if req.name.is_empty() {
-            return Err(AppError::InvalidInput("skill name must not be empty".into()));
-        }
-        if req.display_name.is_empty() {
-            return Err(AppError::InvalidInput(
-                "skill display_name must not be empty".into(),
-            ));
-        }
-        validate_skill_type(&req.skill_type)?;
+        validate_skill_request(req)?;
         let now = now_ts();
         let id = uuid::Uuid::new_v4().to_string();
 
@@ -176,6 +173,39 @@ impl<'a> SkillStore<'a> {
         .map_err(sqlx_err)?;
 
         row_to_skill(&row)
+    }
+
+    pub async fn update_skill(&self, id: &str, req: &CreateSkillRequest) -> Result<Option<Skill>> {
+        validate_skill_request(req)?;
+        let now = now_ts();
+
+        let row = sqlx::query(
+            "UPDATE skills SET \
+                tenant_id = $2, name = $3, display_name = $4, description = $5, \
+                skill_type = $6, steps = $7, input_schema = $8, output_schema = $9, \
+                tools = $10, is_public = $11, created_by = COALESCE($12, created_by), updated_at = $13 \
+             WHERE id = $1 \
+             RETURNING id, tenant_id, name, display_name, description, skill_type, steps, \
+                       input_schema, output_schema, tools, is_public, created_by, created_at, updated_at",
+        )
+        .bind(id)
+        .bind(&req.tenant_id)
+        .bind(&req.name)
+        .bind(&req.display_name)
+        .bind(&req.description)
+        .bind(&req.skill_type)
+        .bind(&req.steps)
+        .bind(&req.input_schema)
+        .bind(&req.output_schema)
+        .bind(&req.tools.as_ref().map(|v| v.as_slice()))
+        .bind(req.is_public)
+        .bind(&req.created_by)
+        .bind(now)
+        .fetch_optional(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+
+        row.map(|r| row_to_skill(&r)).transpose()
     }
 
     pub async fn delete_skill(&self, id: &str) -> Result<u64> {
@@ -301,6 +331,20 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
     AppError::Database(e.to_string())
 }
 
+fn validate_skill_request(req: &CreateSkillRequest) -> Result<()> {
+    if req.name.is_empty() {
+        return Err(AppError::InvalidInput(
+            "skill name must not be empty".into(),
+        ));
+    }
+    if req.display_name.is_empty() {
+        return Err(AppError::InvalidInput(
+            "skill display_name must not be empty".into(),
+        ));
+    }
+    validate_skill_type(&req.skill_type)
+}
+
 fn validate_skill_type(t: &str) -> Result<()> {
     match t {
         "workflow" | "connector" | "composite" => Ok(()),
@@ -420,6 +464,18 @@ mod tests {
     #[test]
     fn now_ts_returns_positive_value() {
         assert!(now_ts() > 0);
+    }
+
+    #[test]
+    fn create_skill_request_defaults_missing_tenant() {
+        let req: CreateSkillRequest = serde_json::from_value(serde_json::json!({
+            "name": "demo",
+            "display_name": "Demo",
+            "skill_type": "workflow",
+            "steps": []
+        }))
+        .expect("request should deserialize without tenant_id");
+        assert_eq!(req.tenant_id, "default");
     }
 
     #[test]

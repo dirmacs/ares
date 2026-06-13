@@ -529,7 +529,8 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         )
         .route(
             "/admin/schedules/{id}",
-            delete(crate::api::handlers::admin::delete_schedule),
+            put(crate::api::handlers::admin::update_schedule)
+                .delete(crate::api::handlers::admin::delete_schedule),
         )
         .route(
             "/admin/triggers",
@@ -988,6 +989,25 @@ mod tests {
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server.get("/admin/run-history/budgets/tenant-1").await;
+        assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
+        response.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_schedule_update_route() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server
+            .put("/admin/schedules/schedule-1")
+            .json(&serde_json::json!({
+                "tenant_id": "tenant-1",
+                "agent_name": "agent-a",
+                "cron_expression": "0 0/5 * * * * *",
+                "timezone": "UTC",
+                "enabled": true,
+                "grace_period_seconds": 120
+            }))
+            .await;
         assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
         response.assert_status_unauthorized();
     }

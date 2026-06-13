@@ -193,13 +193,14 @@ mod tests {
 
     fn sample_agent_config() -> AgentConfig {
         AgentConfig {
-            model: "llama3".into(),
-            system_prompt: Some("system prompt".into()),
-            tools: vec!["search".into(), "calc".into()],
-            max_tool_iterations: 7,
-            parallel_tools: true,
-            extra: HashMap::new(),
-        }
+                        model: "llama3".into(),
+                        system_prompt: Some("system prompt".into()),
+                        tools: vec!["search".into(), "calc".into()],
+                        allowed_tools: None,
+                        max_tool_iterations: 7,
+                        parallel_tools: true,
+                        extra: HashMap::new(),
+                    }
     }
 
     fn minimal_ares_config(agent_name: &str, cfg: AgentConfig) -> AresConfig {

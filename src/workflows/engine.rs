@@ -352,35 +352,38 @@ mod tests {
         agents.insert(
             "router".to_string(),
             AgentConfig {
-                model: "default".to_string(),
-                system_prompt: Some("Route queries to the appropriate agent.".to_string()),
-                tools: vec![],
-                max_tool_iterations: 1,
-                parallel_tools: false,
-                extra: HashMap::new(),
-            },
+                            model: "default".to_string(),
+                            system_prompt: Some("Route queries to the appropriate agent.".to_string()),
+                            tools: vec![],
+                            allowed_tools: None,
+                            max_tool_iterations: 1,
+                            parallel_tools: false,
+                            extra: HashMap::new(),
+                        },
         );
         agents.insert(
             "orchestrator".to_string(),
             AgentConfig {
-                model: "default".to_string(),
-                system_prompt: Some("Handle complex queries.".to_string()),
-                tools: vec![],
-                max_tool_iterations: 10,
-                parallel_tools: false,
-                extra: HashMap::new(),
-            },
+                            model: "default".to_string(),
+                            system_prompt: Some("Handle complex queries.".to_string()),
+                            tools: vec![],
+                            allowed_tools: None,
+                            max_tool_iterations: 10,
+                            parallel_tools: false,
+                            extra: HashMap::new(),
+                        },
         );
         agents.insert(
             "product".to_string(),
             AgentConfig {
-                model: "default".to_string(),
-                system_prompt: Some("Handle product queries.".to_string()),
-                tools: vec![],
-                max_tool_iterations: 5,
-                parallel_tools: false,
-                extra: HashMap::new(),
-            },
+                            model: "default".to_string(),
+                            system_prompt: Some("Handle product queries.".to_string()),
+                            tools: vec![],
+                            allowed_tools: None,
+                            max_tool_iterations: 5,
+                            parallel_tools: false,
+                            extra: HashMap::new(),
+                        },
         );
 
         let mut workflows = HashMap::new();
@@ -476,6 +479,18 @@ mod tests {
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
             )),
             active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
+            skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
+                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+                tool_registry,
+                Arc::new(crate::RuntimeToolRegistry::new(
+                    sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+                )),
+                Arc::new(crate::ConfigBasedLLMFactory::new(
+                    provider_registry,
+                    "default",
+                )),
+                Arc::new(AresConfigManager::from_config((*config).clone())),
+            )),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -538,6 +553,18 @@ mod tests {
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
             )),
             active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
+            skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
+                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+                tool_registry,
+                Arc::new(crate::RuntimeToolRegistry::new(
+                    sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+                )),
+                Arc::new(crate::ConfigBasedLLMFactory::new(
+                    provider_registry,
+                    "default",
+                )),
+                Arc::new(AresConfigManager::from_config((*config).clone())),
+            )),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -600,6 +627,18 @@ mod tests {
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
             )),
             active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
+            skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
+                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+                tool_registry,
+                Arc::new(crate::RuntimeToolRegistry::new(
+                    sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+                )),
+                Arc::new(crate::ConfigBasedLLMFactory::new(
+                    provider_registry,
+                    "default",
+                )),
+                Arc::new(AresConfigManager::from_config((*config).clone())),
+            )),
         };
 
         let engine = WorkflowEngine::new(state);
@@ -721,6 +760,18 @@ mod tests {
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
             )),
             active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
+            skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
+                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+                tool_registry,
+                Arc::new(crate::RuntimeToolRegistry::new(
+                    sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
+                )),
+                Arc::new(crate::ConfigBasedLLMFactory::new(
+                    provider_registry,
+                    "default",
+                )),
+                Arc::new(AresConfigManager::from_config((*config).clone())),
+            )),
         };
 
         WorkflowEngine::new(state)

@@ -459,6 +459,7 @@ pub async fn v1_chat(
         &state.agent_registry,
         &tc.tenant_id,
         &agent_name,
+        &state.fleet_secrets,
     )
     .await?;
     let response = resolved_agent
@@ -692,6 +693,7 @@ pub async fn run_agent(
         &state.agent_registry,
         &tc.tenant_id,
         &name,
+        &state.fleet_secrets,
     )
     .await?;
 
@@ -1077,6 +1079,7 @@ pub async fn sandbox_run_agent(
         &state.agent_registry,
         &tc.tenant_id,
         &name,
+        &state.fleet_secrets,
     )
     .await?;
 

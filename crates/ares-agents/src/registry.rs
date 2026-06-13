@@ -221,6 +221,53 @@ impl AgentRegistry {
         ))
     }
 
+    /// Create an agent instance from an explicit configuration with tier
+    /// resolution and fallback providers wired in.
+    #[cfg(feature = "postgres")]
+    pub async fn create_agent_from_config_with_fallbacks(
+        &self,
+        name: &str,
+        config: &AgentConfig,
+        tenant_id: &str,
+        pool: &sqlx::PgPool,
+        fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
+    ) -> Result<ConfigurableAgent> {
+        let chain = self
+            .provider_registry
+            .resolve_with_fallback(&config.model, tenant_id, pool, fleet_secrets)
+            .await;
+
+        let mut iter = chain.into_iter();
+        let (primary_provider, _) = iter.next().ok_or_else(|| {
+            AppError::Configuration(format!(
+                "No provider resolved for model/tier '{}'",
+                config.model
+            ))
+        })?;
+
+        let llm = self
+            .provider_registry
+            .create_client_for_provider(&primary_provider)
+            .await?;
+
+        let mut fallback_llms = Vec::new();
+        for (provider_name, _) in iter {
+            if let Ok(client) = self.provider_registry.create_client_for_provider(&provider_name).await {
+                fallback_llms.push(client);
+            }
+        }
+
+        let mut agent = ConfigurableAgent::new_with_provider(
+            name,
+            config,
+            llm,
+            Some(Arc::clone(&self.tool_registry)),
+            primary_provider,
+        );
+        agent.set_fallback_llms(fallback_llms);
+        Ok(agent)
+    }
+
     /// Create an agent instance for a specific AgentType
     pub async fn create_agent_by_type(&self, agent_type: AgentType) -> Result<ConfigurableAgent> {
         let name = Self::type_to_name(&agent_type);
@@ -423,7 +470,8 @@ mod tests {
             max_tool_iterations: 5,
             parallel_tools: false,
             extra: HashMap::new(),
-        };
+            allowed_tools: None,
+};
 
         registry.register("test-agent", config);
 
@@ -448,7 +496,8 @@ mod tests {
                 max_tool_iterations: 10,
                 parallel_tools: false,
                 extra: HashMap::new(),
-            },
+                allowed_tools: None,
+},
         );
 
         registry.register(
@@ -460,7 +509,8 @@ mod tests {
                 max_tool_iterations: 10,
                 parallel_tools: false,
                 extra: HashMap::new(),
-            },
+                allowed_tools: None,
+},
         );
 
         let names = registry.agent_names();
@@ -484,7 +534,8 @@ mod tests {
                 max_tool_iterations: 10,
                 parallel_tools: false,
                 extra: HashMap::new(),
-            },
+                allowed_tools: None,
+},
         );
 
         assert_eq!(
@@ -509,7 +560,8 @@ mod tests {
                 max_tool_iterations: 10,
                 parallel_tools: false,
                 extra: HashMap::new(),
-            },
+                allowed_tools: None,
+},
         );
 
         registry.register(
@@ -521,7 +573,8 @@ mod tests {
                 max_tool_iterations: 10,
                 parallel_tools: false,
                 extra: HashMap::new(),
-            },
+                allowed_tools: None,
+},
         );
 
         let tools = registry.get_agent_tools("with_tools");
@@ -556,7 +609,8 @@ mod tests {
                     max_tool_iterations: 5,
                     parallel_tools: false,
                     extra: HashMap::new(),
-                },
+                    allowed_tools: None,
+},
             )
             .build();
 
@@ -596,7 +650,8 @@ mod tests {
                     max_tool_iterations: 5,
                     parallel_tools: false,
                     extra: HashMap::new(),
-                },
+                    allowed_tools: None,
+},
             );
             map
         });
@@ -631,7 +686,8 @@ mod tests {
                     max_tool_iterations: 10,
                     parallel_tools: true,
                     extra: HashMap::new(),
-                },
+                    allowed_tools: None,
+},
             );
             map
         });
@@ -666,7 +722,8 @@ mod tests {
                     max_tool_iterations: 5,
                     parallel_tools: false,
                     extra: HashMap::new(),
-                },
+                    allowed_tools: None,
+},
             )
             .build();
 
@@ -691,7 +748,8 @@ mod tests {
                     max_tool_iterations: 5,
                     parallel_tools: false,
                     extra: HashMap::new(),
-                },
+                    allowed_tools: None,
+},
             )
             .build();
 
@@ -733,7 +791,8 @@ mod tests {
                 max_tool_iterations: 5,
                 parallel_tools: false,
                 extra: HashMap::new(),
-            },
+                allowed_tools: None,
+},
         );
 
         assert_eq!(
@@ -757,7 +816,8 @@ mod tests {
                 max_tool_iterations: 5,
                 parallel_tools: false,
                 extra: HashMap::new(),
-            },
+                allowed_tools: None,
+},
         );
 
         assert_eq!(registry.get_agent_system_prompt("no-prompt"), None);
@@ -886,7 +946,8 @@ mod tests {
                 max_tool_iterations: 5,
                 parallel_tools: false,
                 extra: HashMap::new(),
-            },
+                allowed_tools: None,
+},
         );
 
         let names = registry.agent_names();

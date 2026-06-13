@@ -114,6 +114,7 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
             model: "default".to_string(),
             system_prompt: Some("registry-product-prompt".to_string()),
             tools: vec![],
+            allowed_tools: None,
             max_tool_iterations: 5,
             parallel_tools: false,
             extra: HashMap::new(),
@@ -125,6 +126,7 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
             model: "default".to_string(),
             system_prompt: Some("registry-orchestrator-prompt".to_string()),
             tools: vec![],
+            allowed_tools: None,
             max_tool_iterations: 5,
             parallel_tools: false,
             extra: HashMap::new(),
@@ -201,13 +203,13 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
     let db = Arc::new(db);
     let tenant_db = Arc::new(ares::db::TenantDb::new(db.clone()));
     let state = AppState {
-        config_manager,
+        config_manager: config_manager.clone(),
         db: db.clone(),
         tenant_db: tenant_db.clone(),
-        llm_factory,
-        provider_registry,
+        llm_factory: llm_factory.clone(),
+        provider_registry: provider_registry.clone(),
         agent_registry,
-        tool_registry,
+        tool_registry: tool_registry.clone(),
         auth_service: Arc::new(auth_service),
         dynamic_config,
         deploy_registry: ares::api::handlers::deploy::DeployRegistry::default(),
@@ -218,6 +220,14 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
         mcp_registry: None,
         fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
         runtime_tool_registry: Arc::new(ares::RuntimeToolRegistry::new(tenant_db.pool().clone())),
+        active_runs: Arc::new(ares::active_runs::ActiveRuns::new()),
+        skill_engine: Arc::new(ares::skill_engine::SkillEngine::new(
+            tenant_db.pool().clone(),
+            tool_registry,
+            Arc::new(ares::RuntimeToolRegistry::new(tenant_db.pool().clone())),
+            llm_factory,
+            config_manager,
+        )),
     };
 
     let app = Router::new()

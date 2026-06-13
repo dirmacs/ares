@@ -8,6 +8,7 @@ use crate::db::audit_log;
 use crate::db::tenant_model_tiers as db_tiers;
 use crate::db::skills as db_skills;
 use crate::db::schedules as db_schedules;
+use crate::db::tenant_allowlist as allowlist;
 use crate::db::tenant_agents::{
     clone_templates_for_tenant, create_tenant_agent as db_create_tenant_agent,
     delete_tenant_agent as db_delete_tenant_agent, get_tenant_agent as db_get_tenant_agent,
@@ -1272,6 +1273,118 @@ fn estimate_run_cost(billing: &BillingConfig, run: &agent_runs::AgentRun) -> Cos
 
 fn tokens_to_cost(tokens: i64, usd_per_million_tokens: f64) -> f64 {
     (tokens.max(0) as f64 / 1_000_000.0) * usd_per_million_tokens
+}
+
+// =============================================================================
+// Tenant Allowlists
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct AllowToolRequest {
+    pub tool_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AllowModelRequest {
+    pub model_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AllowRagSourceRequest {
+    pub rag_source: String,
+}
+
+pub async fn list_tenant_allowed_tools(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<Vec<allowlist::TenantToolAllowlistItem>>> {
+    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let items = store.list_tools(&tenant_id).await?;
+    Ok(Json(items))
+}
+
+pub async fn add_tenant_allowed_tool(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(req): Json<AllowToolRequest>,
+) -> Result<Json<allowlist::TenantToolAllowlistItem>> {
+    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let item = store.allow_tool(&tenant_id, &req.tool_name).await?;
+    Ok(Json(item))
+}
+
+pub async fn delete_tenant_allowed_tool(
+    State(state): State<AppState>,
+    Path((tenant_id, tool_name)): Path<(String, String)>,
+) -> Result<StatusCode> {
+    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let rows = store.deny_tool(&tenant_id, &tool_name).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("tool {} not found for tenant {}", tool_name, tenant_id)));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_tenant_allowed_models(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<Vec<allowlist::TenantModelAllowlistItem>>> {
+    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let items = store.list_models(&tenant_id).await?;
+    Ok(Json(items))
+}
+
+pub async fn add_tenant_allowed_model(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(req): Json<AllowModelRequest>,
+) -> Result<Json<allowlist::TenantModelAllowlistItem>> {
+    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let item = store.allow_model(&tenant_id, &req.model_id).await?;
+    Ok(Json(item))
+}
+
+pub async fn delete_tenant_allowed_model(
+    State(state): State<AppState>,
+    Path((tenant_id, model_id)): Path<(String, String)>,
+) -> Result<StatusCode> {
+    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let rows = store.deny_model(&tenant_id, &model_id).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("model {} not found for tenant {}", model_id, tenant_id)));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_tenant_allowed_rag_sources(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<Vec<allowlist::TenantRagAllowlistItem>>> {
+    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let items = store.list_rag_sources(&tenant_id).await?;
+    Ok(Json(items))
+}
+
+pub async fn add_tenant_allowed_rag_source(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(req): Json<AllowRagSourceRequest>,
+) -> Result<Json<allowlist::TenantRagAllowlistItem>> {
+    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let item = store.allow_rag_source(&tenant_id, &req.rag_source).await?;
+    Ok(Json(item))
+}
+
+pub async fn delete_tenant_allowed_rag_source(
+    State(state): State<AppState>,
+    Path((tenant_id, rag_source)): Path<(String, String)>,
+) -> Result<StatusCode> {
+    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let rows = store.deny_rag_source(&tenant_id, &rag_source).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("rag source {} not found for tenant {}", rag_source, tenant_id)));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
@@ -3447,6 +3560,64 @@ pub async fn delete_pipeline(
         .await;
     });
 
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_tenant_pipelines(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<Vec<db_schedules::AgentPipeline>>> {
+    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let pipelines = store.list_pipelines(&tenant_id).await?;
+    Ok(Json(pipelines))
+}
+
+pub async fn create_tenant_pipeline(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(mut req): Json<db_schedules::CreatePipelineRequest>,
+) -> Result<Json<db_schedules::AgentPipeline>> {
+    req.tenant_id = tenant_id;
+    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let pipeline = store.create_pipeline(&req).await?;
+    let pool = state.tenant_db.pool().clone();
+    let t_id = pipeline.tenant_id.clone();
+    let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "pipeline_create",
+            "agent_pipeline",
+            &link,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+    Ok(Json(pipeline))
+}
+
+pub async fn delete_tenant_pipeline(
+    State(state): State<AppState>,
+    Path((tenant_id, id)): Path<(String, String)>,
+) -> Result<StatusCode> {
+    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let rows = store.delete_pipeline(&id).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("pipeline {id} not found")));
+    }
+    let pool = state.tenant_db.pool().clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "pipeline_delete",
+            "agent_pipeline",
+            &id,
+            Some(&tenant_id),
+            None,
+        )
+        .await;
+    });
     Ok(StatusCode::NO_CONTENT)
 }
 

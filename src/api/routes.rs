@@ -300,6 +300,43 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
                 .put(crate::api::handlers::admin::set_tenant_model_tier)
                 .delete(crate::api::handlers::admin::delete_tenant_model_tier),
         )
+        // Tenant Allowlists
+        .route(
+            "/admin/tenants/{tenant_id}/allowed-tools",
+            get(crate::api::handlers::admin::list_tenant_allowed_tools)
+                .post(crate::api::handlers::admin::add_tenant_allowed_tool),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/allowed-tools/{tool_name}",
+            delete(crate::api::handlers::admin::delete_tenant_allowed_tool),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/allowed-models",
+            get(crate::api::handlers::admin::list_tenant_allowed_models)
+                .post(crate::api::handlers::admin::add_tenant_allowed_model),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/allowed-models/{model_id}",
+            delete(crate::api::handlers::admin::delete_tenant_allowed_model),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/allowed-rag-sources",
+            get(crate::api::handlers::admin::list_tenant_allowed_rag_sources)
+                .post(crate::api::handlers::admin::add_tenant_allowed_rag_source),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/allowed-rag-sources/{rag_source}",
+            delete(crate::api::handlers::admin::delete_tenant_allowed_rag_source),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/pipelines",
+            get(crate::api::handlers::admin::list_tenant_pipelines)
+                .post(crate::api::handlers::admin::create_tenant_pipeline),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/pipelines/{id}",
+            delete(crate::api::handlers::admin::delete_tenant_pipeline),
+        )
         // Fleet Provider Secrets — encrypted at rest, hot-swap in memory
         .route(
             "/admin/fleet-providers",

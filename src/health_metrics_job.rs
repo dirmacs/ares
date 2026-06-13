@@ -31,7 +31,9 @@ pub fn spawn(pool: PgPool) {
     });
 }
 
-async fn run_once(pool: &PgPool) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run_once(
+    pool: &PgPool,
+) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let now = chrono::Utc::now().timestamp();
     let hour_ago = now - 3600;
 
@@ -84,8 +86,7 @@ async fn run_once(pool: &PgPool) -> std::result::Result<(), Box<dyn std::error::
         .unwrap_or(Decimal::ZERO);
 
         let error_rate_pct = if total_runs > 0 {
-            Decimal::new(failed_runs * 100, 2)
-                / Decimal::new(total_runs, 0)
+            Decimal::new(failed_runs * 100, 2) / Decimal::new(total_runs, 0)
         } else {
             Decimal::ZERO
         };
@@ -127,11 +128,11 @@ async fn run_once(pool: &PgPool) -> std::result::Result<(), Box<dyn std::error::
             COUNT(*) AS total_calls, \
             COUNT(*) FILTER (WHERE status = 'success') AS successful_calls, \
             COUNT(*) FILTER (WHERE status = 'error') AS failed_calls, \
-            COALESCE(AVG(duration_ms), 0)::bigint AS avg_latency_ms, \
-            COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p50_latency_ms, \
-            COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p95_latency_ms, \
-            COALESCE(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p99_latency_ms, \
-            COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens \
+            COALESCE(AVG(latency_ms), 0)::bigint AS avg_latency_ms, \
+            COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p50_latency_ms, \
+            COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p95_latency_ms, \
+            COALESCE(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p99_latency_ms, \
+            COALESCE(SUM(total_tokens), 0) AS total_tokens \
          FROM run_llm_calls \
          WHERE created_at >= $1 AND created_at <= $2 \
          GROUP BY tenant_id, model",
@@ -166,8 +167,7 @@ async fn run_once(pool: &PgPool) -> std::result::Result<(), Box<dyn std::error::
         .unwrap_or(Decimal::ZERO);
 
         let error_rate_pct = if total_calls > 0 {
-            Decimal::new(failed_calls * 100, 2)
-                / Decimal::new(total_calls, 0)
+            Decimal::new(failed_calls * 100, 2) / Decimal::new(total_calls, 0)
         } else {
             Decimal::ZERO
         };

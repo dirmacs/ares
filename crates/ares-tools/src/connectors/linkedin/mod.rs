@@ -45,6 +45,7 @@ impl LinkedInClient {
             &self.master_key,
             tenant_id,
             "linkedin",
+            "oauth2",
             LINKEDIN_TOKEN_URL,
         )
         .await

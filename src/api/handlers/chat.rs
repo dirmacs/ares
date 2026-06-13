@@ -366,6 +366,7 @@ async fn execute_agent(
         pool: state.tenant_db.pool().clone(),
     });
     agent.set_observability(obs.clone());
+    agent.set_run_id(run_id.clone());
 
     state.active_runs.start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),

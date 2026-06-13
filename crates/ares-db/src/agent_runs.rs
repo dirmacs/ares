@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SECONDS_PER_UTC_DAY: i64 = 86_400;
 
-const LIST_AGENT_RUNS_SELECT: &str = "SELECT id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
+const LIST_AGENT_RUNS_SELECT: &str =
+    "SELECT id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
                     input_tokens, output_tokens, duration_ms, error, created_at,
                     COALESCE(model_name, 'unknown') AS model_name,
                     COALESCE(provider_name, 'unknown') AS provider_name,
@@ -92,7 +93,8 @@ pub fn build_list_agent_runs(filter: &AgentRunListFilter, limit: i64, offset: i6
 
 pub fn build_count_agent_runs(filter: &AgentRunListFilter) -> String {
     let mut bind_idx = 2i32;
-    let mut sql = String::from("SELECT COUNT(*)::BIGINT AS cnt FROM agent_runs WHERE tenant_id = $1");
+    let mut sql =
+        String::from("SELECT COUNT(*)::BIGINT AS cnt FROM agent_runs WHERE tenant_id = $1");
     append_agent_run_filters(&mut sql, filter, &mut bind_idx);
     sql
 }
@@ -260,6 +262,41 @@ pub async fn insert_agent_run_with_metadata(
     metadata: Option<&AgentRunMetadata>,
 ) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
+    insert_agent_run_with_id_and_metadata(
+        pool,
+        &id,
+        tenant_id,
+        agent_name,
+        user_id,
+        status,
+        input_tokens,
+        output_tokens,
+        duration_ms,
+        error,
+        model_name,
+        provider_name,
+        is_streaming,
+        metadata,
+    )
+    .await
+}
+
+pub async fn insert_agent_run_with_id_and_metadata(
+    pool: &PgPool,
+    id: &str,
+    tenant_id: &str,
+    agent_name: &str,
+    user_id: Option<&str>,
+    status: &str,
+    input_tokens: i64,
+    output_tokens: i64,
+    duration_ms: i64,
+    error: Option<&str>,
+    model_name: &str,
+    provider_name: &str,
+    is_streaming: bool,
+    metadata: Option<&AgentRunMetadata>,
+) -> Result<String> {
     let now = now_ts();
     let metadata = metadata.cloned().unwrap_or_default();
 
@@ -278,7 +315,7 @@ pub async fn insert_agent_run_with_metadata(
             $21, $22, $23, $24
          )",
     )
-    .bind(&id)
+    .bind(id)
     .bind(tenant_id)
     .bind(agent_name)
     .bind(user_id)
@@ -306,7 +343,7 @@ pub async fn insert_agent_run_with_metadata(
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    Ok(id)
+    Ok(id.to_string())
 }
 
 pub async fn list_agent_runs(
@@ -366,11 +403,11 @@ pub async fn get_agent_run_stats(
     agent_name: &str,
 ) -> Result<AgentRunStats> {
     let row = sqlx::query(GET_AGENT_RUN_STATS_SQL)
-    .bind(tenant_id)
-    .bind(agent_name)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+        .bind(tenant_id)
+        .bind(agent_name)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(AgentRunStats {
         total_runs: row.get("total_runs"),
@@ -822,8 +859,14 @@ mod tests {
     #[test]
     fn agent_run_from_row_select_lists_required_columns() {
         for col in [
-            "id", "tenant_id", "agent_name", "status", "created_at", "model_name",
-            "eruka_context_hit", "eruka_read_count",
+            "id",
+            "tenant_id",
+            "agent_name",
+            "status",
+            "created_at",
+            "model_name",
+            "eruka_context_hit",
+            "eruka_read_count",
         ] {
             assert!(LIST_AGENT_RUNS_SELECT.contains(col), "missing {col}");
         }
@@ -905,8 +948,13 @@ mod tests {
     }
 
     async fn try_test_pool() -> Option<PgPool> {
-        let db = crate::PostgresClient::new_remote(test_db_url(), String::new()).await.ok()?;
-        sqlx::migrate!("../../migrations").run(&db.pool).await.ok()?;
+        let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
+            .await
+            .ok()?;
+        sqlx::migrate!("../../migrations")
+            .run(&db.pool)
+            .await
+            .ok()?;
         Some(db.pool)
     }
 
@@ -959,17 +1007,34 @@ mod tests {
 
     #[tokio::test]
     async fn integration_insert_agent_run_with_real_pool() {
-        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
         let id = insert_agent_run(
-            &pool, &tenant_id, "coder", Some("u-1"), "completed",
-            100, 50, 1200, None, "gpt-4o", "openai", false,
-        ).await.expect("insert");
+            &pool,
+            &tenant_id,
+            "coder",
+            Some("u-1"),
+            "completed",
+            100,
+            50,
+            1200,
+            None,
+            "gpt-4o",
+            "openai",
+            false,
+        )
+        .await
+        .expect("insert");
 
         assert!(!id.is_empty());
-        let runs = list_agent_runs(&pool, &tenant_id, None, 10, 0).await.expect("list");
+        let runs = list_agent_runs(&pool, &tenant_id, None, 10, 0)
+            .await
+            .expect("list");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].tenant_id, tenant_id);
         assert_eq!(runs[0].agent_name, "coder");
@@ -986,7 +1051,10 @@ mod tests {
 
     #[tokio::test]
     async fn integration_insert_agent_run_with_metadata() {
-        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1005,13 +1073,27 @@ mod tests {
         };
 
         let id = insert_agent_run_with_metadata(
-            &pool, &tenant_id, "analyst", Some("u-2"), "failed",
-            200, 80, 3000, Some("timeout"), "claude-3", "anthropic", true,
+            &pool,
+            &tenant_id,
+            "analyst",
+            Some("u-2"),
+            "failed",
+            200,
+            80,
+            3000,
+            Some("timeout"),
+            "claude-3",
+            "anthropic",
+            true,
             Some(&metadata),
-        ).await.expect("insert with metadata");
+        )
+        .await
+        .expect("insert with metadata");
 
         assert!(!id.is_empty());
-        let runs = list_agent_runs(&pool, &tenant_id, None, 10, 0).await.expect("list");
+        let runs = list_agent_runs(&pool, &tenant_id, None, 10, 0)
+            .await
+            .expect("list");
         assert_eq!(runs.len(), 1);
         let run = &runs[0];
         assert_eq!(run.workspace_id, Some("ws-42".into()));
@@ -1030,30 +1112,122 @@ mod tests {
         cleanup_test_tenant(&pool, &tenant_id).await;
     }
 
+    #[tokio::test]
+    async fn integration_insert_agent_run_with_supplied_id_and_metadata() {
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+        let run_id = format!("run-test-{}", uuid::Uuid::new_v4());
+
+        let metadata = AgentRunMetadata {
+            session_id: Some(run_id.clone()),
+            request_source: Some("scheduled".into()),
+            ..Default::default()
+        };
+
+        let id = insert_agent_run_with_id_and_metadata(
+            &pool,
+            &run_id,
+            &tenant_id,
+            "scheduler",
+            None,
+            "completed",
+            0,
+            0,
+            25,
+            None,
+            "skill",
+            "skill",
+            false,
+            Some(&metadata),
+        )
+        .await
+        .expect("insert with supplied id");
+
+        assert_eq!(id, run_id);
+        let runs = list_agent_runs(&pool, &tenant_id, None, 10, 0)
+            .await
+            .expect("list");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, run_id);
+        assert_eq!(runs[0].session_id.as_deref(), Some(runs[0].id.as_str()));
+        assert_eq!(runs[0].request_source.as_deref(), Some("scheduled"));
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
     // ── Integration: list_agent_runs ─────────────────────────────────────
 
     #[tokio::test]
     async fn integration_list_agent_runs_with_agent_name_filter() {
-        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
-        insert_agent_run(&pool, &tenant_id, "alpha", None, "completed", 10, 5, 100, None, "m", "p", false).await.unwrap();
-        insert_agent_run(&pool, &tenant_id, "beta", None, "failed", 20, 10, 200, None, "m", "p", false).await.unwrap();
-        insert_agent_run(&pool, &tenant_id, "alpha", None, "completed", 30, 15, 300, None, "m", "p", false).await.unwrap();
+        insert_agent_run(
+            &pool,
+            &tenant_id,
+            "alpha",
+            None,
+            "completed",
+            10,
+            5,
+            100,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .unwrap();
+        insert_agent_run(
+            &pool, &tenant_id, "beta", None, "failed", 20, 10, 200, None, "m", "p", false,
+        )
+        .await
+        .unwrap();
+        insert_agent_run(
+            &pool,
+            &tenant_id,
+            "alpha",
+            None,
+            "completed",
+            30,
+            15,
+            300,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .unwrap();
 
-        let all = list_agent_runs(&pool, &tenant_id, None, 10, 0).await.expect("list all");
+        let all = list_agent_runs(&pool, &tenant_id, None, 10, 0)
+            .await
+            .expect("list all");
         assert_eq!(all.len(), 3);
 
-        let alpha = list_agent_runs(&pool, &tenant_id, Some("alpha"), 10, 0).await.expect("list alpha");
+        let alpha = list_agent_runs(&pool, &tenant_id, Some("alpha"), 10, 0)
+            .await
+            .expect("list alpha");
         assert_eq!(alpha.len(), 2);
         assert!(alpha.iter().all(|r| r.agent_name == "alpha"));
 
-        let beta = list_agent_runs(&pool, &tenant_id, Some("beta"), 10, 0).await.expect("list beta");
+        let beta = list_agent_runs(&pool, &tenant_id, Some("beta"), 10, 0)
+            .await
+            .expect("list beta");
         assert_eq!(beta.len(), 1);
         assert_eq!(beta[0].agent_name, "beta");
 
-        let none = list_agent_runs(&pool, &tenant_id, Some("gamma"), 10, 0).await.expect("list gamma");
+        let none = list_agent_runs(&pool, &tenant_id, Some("gamma"), 10, 0)
+            .await
+            .expect("list gamma");
         assert!(none.is_empty());
 
         cleanup_test_tenant(&pool, &tenant_id).await;
@@ -1061,21 +1235,45 @@ mod tests {
 
     #[tokio::test]
     async fn integration_list_agent_runs_pagination() {
-        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
         for i in 0..5 {
-            insert_agent_run(&pool, &tenant_id, "pager", None, "completed", i, i, i as i64 * 10, None, "m", "p", false).await.unwrap();
+            insert_agent_run(
+                &pool,
+                &tenant_id,
+                "pager",
+                None,
+                "completed",
+                i,
+                i,
+                i as i64 * 10,
+                None,
+                "m",
+                "p",
+                false,
+            )
+            .await
+            .unwrap();
         }
 
-        let page1 = list_agent_runs(&pool, &tenant_id, None, 2, 0).await.expect("page1");
+        let page1 = list_agent_runs(&pool, &tenant_id, None, 2, 0)
+            .await
+            .expect("page1");
         assert_eq!(page1.len(), 2);
 
-        let page2 = list_agent_runs(&pool, &tenant_id, None, 2, 2).await.expect("page2");
+        let page2 = list_agent_runs(&pool, &tenant_id, None, 2, 2)
+            .await
+            .expect("page2");
         assert_eq!(page2.len(), 2);
 
-        let page3 = list_agent_runs(&pool, &tenant_id, None, 2, 4).await.expect("page3");
+        let page3 = list_agent_runs(&pool, &tenant_id, None, 2, 4)
+            .await
+            .expect("page3");
         assert_eq!(page3.len(), 1);
 
         cleanup_test_tenant(&pool, &tenant_id).await;
@@ -1085,16 +1283,66 @@ mod tests {
 
     #[tokio::test]
     async fn integration_get_agent_run_stats_aggregation() {
-        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
         // Insert runs with different statuses
-        insert_agent_run(&pool, &tenant_id, "summary", None, "completed", 100, 50, 1000, None, "m", "p", false).await.unwrap();
-        insert_agent_run(&pool, &tenant_id, "summary", None, "completed", 200, 100, 2000, None, "m", "p", false).await.unwrap();
-        insert_agent_run(&pool, &tenant_id, "summary", None, "failed", 50, 25, 500, Some("err"), "m", "p", false).await.unwrap();
+        insert_agent_run(
+            &pool,
+            &tenant_id,
+            "summary",
+            None,
+            "completed",
+            100,
+            50,
+            1000,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .unwrap();
+        insert_agent_run(
+            &pool,
+            &tenant_id,
+            "summary",
+            None,
+            "completed",
+            200,
+            100,
+            2000,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .unwrap();
+        insert_agent_run(
+            &pool,
+            &tenant_id,
+            "summary",
+            None,
+            "failed",
+            50,
+            25,
+            500,
+            Some("err"),
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .unwrap();
 
-        let stats = get_agent_run_stats(&pool, &tenant_id, "summary").await.expect("stats");
+        let stats = get_agent_run_stats(&pool, &tenant_id, "summary")
+            .await
+            .expect("stats");
         assert_eq!(stats.total_runs, 3);
         assert_eq!(stats.success_count, 2);
         assert_eq!(stats.failed_count, 1);
@@ -1109,13 +1357,31 @@ mod tests {
 
     #[tokio::test]
     async fn integration_get_platform_stats_counts() {
-        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
         seed_tenant_agent(&pool, &tenant_id, "plat-agent").await;
 
         // Insert a run with created_at >= today_start
-        insert_agent_run(&pool, &tenant_id, "plat-agent", None, "completed", 10, 5, 100, None, "m", "p", false).await.unwrap();
+        insert_agent_run(
+            &pool,
+            &tenant_id,
+            "plat-agent",
+            None,
+            "completed",
+            10,
+            5,
+            100,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .unwrap();
 
         // Insert an unresolved alert
         let alert_id = format!("alert-{}", uuid::Uuid::new_v4());
@@ -1135,7 +1401,10 @@ mod tests {
         assert!(stats.active_alerts >= 1);
 
         // Cleanup alert
-        let _ = sqlx::query("DELETE FROM alerts WHERE id = $1").bind(&alert_id).execute(&pool).await;
+        let _ = sqlx::query("DELETE FROM alerts WHERE id = $1")
+            .bind(&alert_id)
+            .execute(&pool)
+            .await;
         cleanup_test_tenant(&pool, &tenant_id).await;
     }
 
@@ -1143,16 +1412,51 @@ mod tests {
 
     #[tokio::test]
     async fn integration_list_all_agents_returns_entry() {
-        let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
         seed_tenant_agent(&pool, &tenant_id, "all-agent").await;
 
-        insert_agent_run(&pool, &tenant_id, "all-agent", None, "completed", 10, 5, 100, None, "m", "p", false).await.unwrap();
-        insert_agent_run(&pool, &tenant_id, "all-agent", None, "completed", 20, 10, 200, None, "m", "p", false).await.unwrap();
+        insert_agent_run(
+            &pool,
+            &tenant_id,
+            "all-agent",
+            None,
+            "completed",
+            10,
+            5,
+            100,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .unwrap();
+        insert_agent_run(
+            &pool,
+            &tenant_id,
+            "all-agent",
+            None,
+            "completed",
+            20,
+            10,
+            200,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .unwrap();
 
         let agents = list_all_agents(&pool).await.expect("list all agents");
-        let found = agents.iter().find(|a| a.tenant_id == tenant_id && a.agent_name == "all-agent");
+        let found = agents
+            .iter()
+            .find(|a| a.tenant_id == tenant_id && a.agent_name == "all-agent");
         assert!(found.is_some(), "expected agent entry");
         let entry = found.unwrap();
         assert_eq!(entry.total_runs, 2);

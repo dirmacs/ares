@@ -170,19 +170,20 @@ async fn execute_target_agent(
             };
             app_state.active_runs.finish(&run_id, skill_status);
 
-            let metadata = AgentRunMetadata {
-                workspace_id: None,
-                session_id: Some(run_id.clone()),
-                request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
-                product: None,
-                agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-                agent_config_version: resolved_agent.config_version.clone(),
-                eruka_binding_id: None,
-                eruka_context_hit: false,
-                eruka_read_count: 0,
-                eruka_write_count: 0,
-                pipeline_id: Some(pipeline.id.clone()),
-            };
+            let effects = pipeline_target_run_effects(
+                pipeline,
+                tenant_id,
+                &run_id,
+                Some(resolved_agent.source.as_str()),
+                resolved_agent.config_version.clone(),
+                false,
+                0,
+                0,
+                "skill",
+                "skill",
+            );
+            let metadata = effects.metadata;
+            let usage = effects.usage;
             let status = if skill_result.is_ok() {
                 "completed"
             } else {
@@ -193,9 +194,11 @@ async fn execute_target_agent(
             let pool_clone = pool.clone();
             let tid = tenant_id.to_string();
             let aname = pipeline.target_agent.clone();
+            let run_id_for_insert = run_id.clone();
             tokio::spawn(async move {
-                let _ = agent_runs::insert_agent_run_with_metadata(
+                let _ = agent_runs::insert_agent_run_with_id_and_metadata(
                     &pool_clone,
+                    &run_id_for_insert,
                     &tid,
                     &aname,
                     None,
@@ -209,6 +212,26 @@ async fn execute_target_agent(
                     false,
                     Some(&metadata),
                 )
+                .await;
+            });
+
+            let usage_pool = pool.clone();
+            tokio::spawn(async move {
+                let _ = sqlx::query(
+                    "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+                )
+                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(usage.tenant_id)
+                .bind(usage.source)
+                .bind(usage.request_count)
+                .bind(usage.token_count)
+                .bind(usage.input_tokens)
+                .bind(usage.output_tokens)
+                .bind(usage.model_name)
+                .bind(usage.agent_name)
+                .bind(usage.provider_name)
+                .bind(chrono::Utc::now().timestamp())
+                .execute(&usage_pool)
                 .await;
             });
 
@@ -334,9 +357,11 @@ async fn execute_target_agent(
     let tid = tenant_id.to_string();
     let aname = pipeline.target_agent.clone();
     let err_clone = error_msg.clone();
+    let run_id_for_insert = run_id.clone();
     tokio::spawn(async move {
-        let _ = agent_runs::insert_agent_run_with_metadata(
+        let _ = agent_runs::insert_agent_run_with_id_and_metadata(
             &pool_clone,
+            &run_id_for_insert,
             &tid,
             &aname,
             None,

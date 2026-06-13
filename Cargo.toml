@@ -108,6 +108,9 @@ default = ["postgres", "openai", "ares-vector", "mcp"]
 # OpenAI - OpenAI API and compatible endpoints (e.g. NVIDIA NIM)
 openai = ["ares-llm/openai"]
 
+# AWS Bedrock - Claude via Bedrock Runtime invoke API
+bedrock = ["ares-llm/bedrock"]
+
 # ============= Database Backends =============
 # PostgreSQL database via sqlx (default)
 postgres = ["dep:sqlx", "ares-db/postgres", "ares-agents/postgres", "ares-mcp/postgres", "ares-tools/postgres"]
@@ -176,7 +179,7 @@ swagger-ui = ["dep:utoipa-swagger-ui"]
 
 # ============= Feature Bundles =============
 # All LLM providers
-all-llm = ["openai"]
+all-llm = ["openai", "bedrock"]
 
 # All database backends
 all-db = ["postgres"]
@@ -189,7 +192,7 @@ local-vectorstores = ["ares-vector"]
 
 # Full feature set for development/testing (Windows-compatible)
 # Note: local-embeddings excluded due to ort-sys linker issues on Windows MSVC
-full = ["openai", "postgres", "qdrant", "ares-vector", "mcp", "swagger-ui"]
+full = ["openai", "bedrock", "postgres", "qdrant", "ares-vector", "mcp", "swagger-ui"]
 
 # Full feature set with local embeddings (Linux/macOS only - NOT Windows MSVC)
 full-local-embeddings = ["full", "local-embeddings"]

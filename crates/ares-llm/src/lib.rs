@@ -18,6 +18,7 @@
 //!
 //! Enable providers via Cargo features:
 //! - `openai` - OpenAI API (GPT-4, GPT-3.5, etc.)
+//! - `bedrock` - AWS Bedrock Claude via Anthropic Messages JSON
 //! - `anthropic` - Anthropic API (Claude 3, Claude 3.5, etc.)
 //! - `ollama` - Local Ollama server
 //! - `llamacpp` - llama.cpp server
@@ -80,6 +81,8 @@ pub mod provider_registry;
 
 #[cfg(feature = "openai")]
 pub mod openai;
+#[cfg(feature = "bedrock")]
+pub mod bedrock;
 #[cfg(feature = "ollama")]
 pub mod ollama;
 #[cfg(feature = "anthropic")]

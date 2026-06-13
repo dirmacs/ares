@@ -247,8 +247,9 @@ impl Default for QdrantConfig {
 /// `openai` covers the OpenAI API and OpenAI-compatible endpoints
 /// (NVIDIA NIM, Groq, Azure OpenAI, local vLLM, etc.).
 ///
-/// `anthropic` requires the `anthropic` feature on `ares-llm`. `ollama`
-/// requires the `ollama` feature. Both are compiled out of the default
+/// `bedrock` requires the `bedrock` feature on `ares-llm`. `anthropic`
+/// requires the `anthropic` feature on `ares-llm`. `ollama`
+/// requires the `ollama` feature. These are compiled out of the default
 /// production build (`--no-default-features --features openai,postgres,mcp`),
 /// so they are not present in `ares-server` binaries that omit those
 /// features. The `ares.toml` schema is the same regardless: the runtime
@@ -277,6 +278,18 @@ pub enum ProviderConfig {
         #[serde(default = "default_anthropic_default_model")]
         default_model: String,
     },
+    /// AWS Bedrock Claude API.
+    Bedrock {
+        /// Environment variable containing the Bedrock bearer token.
+        #[serde(default = "default_bedrock_api_key_env")]
+        api_key_env: String,
+        /// Environment variable containing the AWS region.
+        #[serde(default = "default_bedrock_region_env")]
+        region_env: String,
+        /// Default Bedrock model id.
+        #[serde(default = "default_bedrock_default_model")]
+        default_model: String,
+    },
     /// Local Ollama server. The `api_key_env` is a dummy field (Ollama does
     /// not require authentication) so the same fleet-secrets storage layer can
     /// be used uniformly for all providers.
@@ -299,6 +312,7 @@ impl ProviderConfig {
         match self {
             ProviderConfig::OpenAI { .. } => "openai",
             ProviderConfig::Anthropic { .. } => "anthropic",
+            ProviderConfig::Bedrock { .. } => "bedrock",
             ProviderConfig::Ollama { .. } => "ollama",
         }
     }
@@ -308,7 +322,7 @@ impl std::str::FromStr for ProviderConfig {
     type Err = ConfigError;
 
     /// Parse a provider type name into a default `ProviderConfig` variant.
-    /// Accepts `openai` (and the `nvidia` alias), `anthropic`, and `ollama`.
+    /// Accepts `openai` (and the `nvidia` alias), `anthropic`, `bedrock`, and `ollama`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
             "openai" | "nvidia" => Ok(ProviderConfig::OpenAI {
@@ -320,13 +334,18 @@ impl std::str::FromStr for ProviderConfig {
                 api_key_env: default_anthropic_api_key_env(),
                 default_model: default_anthropic_default_model(),
             }),
+            "bedrock" => Ok(ProviderConfig::Bedrock {
+                api_key_env: default_bedrock_api_key_env(),
+                region_env: default_bedrock_region_env(),
+                default_model: default_bedrock_default_model(),
+            }),
             "ollama" => Ok(ProviderConfig::Ollama {
                 api_key_env: default_ollama_api_key_env(),
                 base_url: default_ollama_base_url(),
                 default_model: default_ollama_default_model(),
             }),
             other => Err(ConfigError::ValidationError(format!(
-                "Unknown provider type: {other}. Use: openai (or nvidia), anthropic, ollama"
+                "Unknown provider type: {other}. Use: openai (or nvidia), anthropic, bedrock, ollama"
             ))),
         }
     }
@@ -354,6 +373,18 @@ fn default_anthropic_api_key_env() -> String {
 
 fn default_anthropic_default_model() -> String {
     "claude-3-5-sonnet-20241022".to_string()
+}
+
+fn default_bedrock_api_key_env() -> String {
+    "AWS_BEARER_TOKEN_BEDROCK".to_string()
+}
+
+fn default_bedrock_region_env() -> String {
+    "AWS_REGION".to_string()
+}
+
+fn default_bedrock_default_model() -> String {
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0".to_string()
 }
 
 fn default_ollama_api_key_env() -> String {
@@ -1017,6 +1048,14 @@ impl AresConfig {
                 }
                 ProviderConfig::Anthropic { api_key_env, .. } => {
                     self.validate_env_var(api_key_env)?;
+                }
+                ProviderConfig::Bedrock {
+                    api_key_env,
+                    region_env,
+                    ..
+                } => {
+                    self.validate_env_var(api_key_env)?;
+                    self.validate_env_var(region_env)?;
                 }
                 ProviderConfig::Ollama { .. } => {
                     // Ollama has no auth; nothing to validate.
@@ -3583,4 +3622,3 @@ api_key_env = "API"
     }
 
 }
-

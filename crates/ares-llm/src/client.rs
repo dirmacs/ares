@@ -161,6 +161,19 @@ pub enum Provider {
         params: ModelParams,
     },
 
+    /// AWS Bedrock Claude API via Anthropic Messages request bodies
+    #[cfg(feature = "bedrock")]
+    Bedrock {
+        /// Bedrock bearer token for authentication
+        api_key: String,
+        /// AWS region for Bedrock Runtime (e.g., "us-east-1")
+        region: String,
+        /// Bedrock model identifier (e.g., "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+        model: String,
+        /// Model inference parameters
+        params: ModelParams,
+    },
+
     /// Runtime OpenAI-compatible provider with custom headers.
     #[cfg(feature = "openai")]
     RuntimeOpenAI {
@@ -245,6 +258,19 @@ impl Provider {
                 params.clone(),
             ))),
 
+            #[cfg(feature = "bedrock")]
+            Provider::Bedrock {
+                api_key,
+                region,
+                model,
+                params,
+            } => Ok(Box::new(super::bedrock::BedrockClient::with_params(
+                api_key.clone(),
+                region.clone(),
+                model.clone(),
+                params.clone(),
+            ))),
+
             #[cfg(feature = "ollama")]
             Provider::Ollama {
                 base_url,
@@ -262,6 +288,11 @@ impl Provider {
             Provider::TestStub { model } => {
                 Ok(Box::new(test_support::MockLLMClient::new(model.clone())))
             }
+
+            #[allow(unreachable_patterns)]
+            _ => Err(AppError::Configuration(
+                "No matching LLM provider feature is enabled for this provider".into(),
+            )),
         }
     }
 
@@ -281,6 +312,11 @@ impl Provider {
     /// - `OPENAI_API_KEY` - API key (required)
     /// - `OPENAI_API_BASE` - Base URL (default: <https://api.openai.com/v1>)
     /// - `OPENAI_MODEL` - Model name (default: gpt-4)
+    ///
+    /// ## AWS Bedrock
+    /// - `AWS_BEARER_TOKEN_BEDROCK` - Bedrock API bearer token (required)
+    /// - `AWS_REGION` - Bedrock Runtime region (required)
+    /// - `BEDROCK_MODEL` - Model name (default: us.anthropic.claude-haiku-4-5-20251001-v1:0)
     ///
     /// ## Ollama
     /// - `OLLAMA_BASE_URL` - Server URL (default: http://localhost:11434)
@@ -329,13 +365,37 @@ impl Provider {
             }
         }
 
-        #[cfg(not(feature = "openai"))]
+        #[cfg(feature = "bedrock")]
+        {
+            if let Ok(api_key) = std::env::var("AWS_BEARER_TOKEN_BEDROCK") {
+                if !api_key.is_empty() {
+                    let region = std::env::var("AWS_REGION").map_err(|_| {
+                        AppError::Configuration(
+                            "AWS_REGION must be set when AWS_BEARER_TOKEN_BEDROCK is configured"
+                                .into(),
+                        )
+                    })?;
+                    let model = std::env::var("BEDROCK_MODEL").unwrap_or_else(|_| {
+                        "us.anthropic.claude-haiku-4-5-20251001-v1:0".into()
+                    });
+                    return Ok(Provider::Bedrock {
+                        api_key,
+                        region,
+                        model,
+                        params: ModelParams::default(),
+                    });
+                }
+            }
+        }
+
+        #[cfg(all(not(feature = "openai"), not(feature = "bedrock")))]
         return Err(AppError::Configuration(
-            "OpenAI feature is not enabled.".into(),
+            "No LLM provider feature is enabled. Enable openai or bedrock.".into(),
         ));
 
+        #[cfg(any(feature = "openai", feature = "bedrock"))]
         Err(AppError::Configuration(
-            "No LLM provider configured. Set OPENAI_API_KEY or NVIDIA_API_KEY.".into(),
+            "No LLM provider configured. Set OPENAI_API_KEY, NVIDIA_API_KEY, or AWS_BEARER_TOKEN_BEDROCK.".into(),
         ))
     }
 
@@ -351,11 +411,17 @@ impl Provider {
             #[cfg(feature = "anthropic")]
             Provider::Anthropic { .. } => "anthropic",
 
+            #[cfg(feature = "bedrock")]
+            Provider::Bedrock { .. } => "bedrock",
+
             #[cfg(feature = "ollama")]
             Provider::Ollama { .. } => "ollama",
 
             #[cfg(test)]
             Provider::TestStub { .. } => "test-stub",
+
+            #[allow(unreachable_patterns)]
+            _ => "unknown",
         }
     }
 
@@ -371,11 +437,17 @@ impl Provider {
             #[cfg(feature = "anthropic")]
             Provider::Anthropic { .. } => true,
 
+            #[cfg(feature = "bedrock")]
+            Provider::Bedrock { .. } => true,
+
             #[cfg(feature = "ollama")]
             Provider::Ollama { .. } => false,
 
             #[cfg(test)]
             Provider::TestStub { .. } => false,
+
+            #[allow(unreachable_patterns)]
+            _ => false,
         }
     }
 
@@ -400,8 +472,14 @@ impl Provider {
             #[cfg(feature = "anthropic")]
             Provider::Anthropic { .. } => false,
 
+            #[cfg(feature = "bedrock")]
+            Provider::Bedrock { .. } => false,
+
             #[cfg(test)]
             Provider::TestStub { .. } => true,
+
+            #[allow(unreachable_patterns)]
+            _ => false,
         }
     }
 
@@ -473,6 +551,34 @@ impl Provider {
                 })
             }
 
+            #[cfg(feature = "bedrock")]
+            ProviderConfig::Bedrock {
+                api_key_env,
+                region_env,
+                default_model,
+            } => {
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    AppError::Configuration(format!(
+                        "Bedrock API key environment variable '{}' is not set",
+                        api_key_env
+                    ))
+                })?;
+                let region = std::env::var(region_env).map_err(|_| {
+                    AppError::Configuration(format!(
+                        "Bedrock region environment variable '{}' is not set",
+                        region_env
+                    ))
+                })?;
+                Ok(Provider::Bedrock {
+                    api_key,
+                    region,
+                    model: model_override
+                        .map(String::from)
+                        .unwrap_or_else(|| default_model.clone()),
+                    params,
+                })
+            }
+
             #[cfg(feature = "ollama")]
             ProviderConfig::Ollama {
                 base_url,
@@ -523,6 +629,22 @@ impl Provider {
             model,
             params,
             headers,
+        }
+    }
+
+    /// Create a runtime Bedrock provider from a runtime provider entry.
+    #[cfg(feature = "bedrock")]
+    pub fn from_runtime_bedrock(
+        api_key: String,
+        region: String,
+        model: String,
+        params: ModelParams,
+    ) -> Self {
+        Provider::Bedrock {
+            api_key,
+            region,
+            model,
+            params,
         }
     }
 }

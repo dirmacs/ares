@@ -292,6 +292,25 @@ impl<'a> EventTriggerStore<'a> {
         Ok(res.rows_affected())
     }
 
+    /// Return all triggers of a specific event type for a tenant.
+    pub async fn list_by_event_type(
+        &self,
+        tenant_id: &str,
+        event_type: &str,
+    ) -> Result<Vec<EventTrigger>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, name, event_type, event_config, target_agent, enabled, \
+                    created_at, updated_at \
+             FROM event_triggers WHERE tenant_id = $1 AND event_type = $2 ORDER BY name",
+        )
+        .bind(tenant_id)
+        .bind(event_type)
+        .fetch_all(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+        rows.iter().map(row_to_trigger).collect()
+    }
+
     /// Look up a single trigger by its id.
     pub async fn get_trigger(&self, id: &str) -> Result<Option<EventTrigger>> {
         let row = sqlx::query(

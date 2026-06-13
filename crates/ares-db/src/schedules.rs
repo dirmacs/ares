@@ -158,17 +158,7 @@ impl<'a> ScheduleStore<'a> {
     }
 
     pub async fn create_schedule(&self, req: &CreateScheduleRequest) -> Result<AgentSchedule> {
-        if req.agent_name.is_empty() {
-            return Err(AppError::InvalidInput(
-                "agent_name must not be empty".into(),
-            ));
-        }
-        if req.cron_expression.is_empty() {
-            return Err(AppError::InvalidInput(
-                "cron_expression must not be empty".into(),
-            ));
-        }
-        validate_grace_period(req.grace_period_seconds)?;
+        validate_schedule_request(req)?;
         let now = now_ts();
         let id = uuid::Uuid::new_v4().to_string();
         let next_run_at = compute_next_run(&req.cron_expression, &req.timezone)
@@ -196,6 +186,40 @@ impl<'a> ScheduleStore<'a> {
         .map_err(sqlx_err)?;
 
         row_to_schedule(&row)
+    }
+
+    pub async fn update_schedule(
+        &self,
+        id: &str,
+        req: &CreateScheduleRequest,
+    ) -> Result<Option<AgentSchedule>> {
+        validate_schedule_request(req)?;
+        let now = now_ts();
+        let next_run_at = compute_next_run(&req.cron_expression, &req.timezone)
+            .map_err(|e| AppError::InvalidInput(e))?;
+
+        let row = sqlx::query(
+            "UPDATE agent_schedules SET \
+                agent_name = $3, cron_expression = $4, timezone = $5, enabled = $6, \
+                next_run_at = $7, grace_period_seconds = $8, updated_at = $9 \
+             WHERE id = $1 AND tenant_id = $2 \
+             RETURNING id, tenant_id, agent_name, cron_expression, timezone, enabled, \
+                       last_run_at, next_run_at, grace_period_seconds, created_at, updated_at",
+        )
+        .bind(id)
+        .bind(&req.tenant_id)
+        .bind(&req.agent_name)
+        .bind(&req.cron_expression)
+        .bind(&req.timezone)
+        .bind(req.enabled)
+        .bind(next_run_at)
+        .bind(req.grace_period_seconds)
+        .bind(now)
+        .fetch_optional(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+
+        row.map(|r| row_to_schedule(&r)).transpose()
     }
 
     pub async fn delete_schedule(&self, id: &str) -> Result<u64> {
@@ -588,6 +612,23 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
     AppError::Database(e.to_string())
 }
 
+fn validate_schedule_request(req: &CreateScheduleRequest) -> Result<()> {
+    if req.tenant_id.trim().is_empty() {
+        return Err(AppError::InvalidInput("tenant_id must not be empty".into()));
+    }
+    if req.agent_name.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "agent_name must not be empty".into(),
+        ));
+    }
+    if req.cron_expression.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "cron_expression must not be empty".into(),
+        ));
+    }
+    validate_grace_period(req.grace_period_seconds)
+}
+
 fn validate_grace_period(grace_period_seconds: i32) -> Result<()> {
     if grace_period_seconds < 0 {
         return Err(AppError::InvalidInput(
@@ -639,5 +680,26 @@ mod tests {
         assert!(validate_grace_period(0).is_ok());
         assert!(validate_grace_period(120).is_ok());
         assert!(validate_grace_period(-1).is_err());
+    }
+
+    #[test]
+    fn validate_schedule_request_requires_tenant_agent_and_cron() {
+        let mut req = CreateScheduleRequest {
+            tenant_id: "tenant-1".to_string(),
+            agent_name: "agent-a".to_string(),
+            cron_expression: "0 0/5 * * * * *".to_string(),
+            timezone: "UTC".to_string(),
+            enabled: true,
+            grace_period_seconds: 120,
+        };
+        assert!(validate_schedule_request(&req).is_ok());
+        req.tenant_id.clear();
+        assert!(validate_schedule_request(&req).is_err());
+        req.tenant_id = "tenant-1".to_string();
+        req.agent_name.clear();
+        assert!(validate_schedule_request(&req).is_err());
+        req.agent_name = "agent-a".to_string();
+        req.cron_expression.clear();
+        assert!(validate_schedule_request(&req).is_err());
     }
 }

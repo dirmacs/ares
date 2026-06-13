@@ -342,6 +342,17 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/admin/runtime-tools/{id}/rollback/{version}",
             post(crate::api::handlers::admin::rollback_runtime_tool),
         )
+        // Runtime Providers
+        .route(
+            "/admin/runtime_providers",
+            get(crate::api::handlers::admin::list_runtime_providers)
+                .post(crate::api::handlers::admin::upsert_runtime_provider),
+        )
+        .route(
+            "/admin/runtime_providers/{name}",
+            get(crate::api::handlers::admin::get_runtime_provider)
+                .delete(crate::api::handlers::admin::delete_runtime_provider),
+        )
         // Run History
         .route(
             "/admin/run-history/llm-calls",

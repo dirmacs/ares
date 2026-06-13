@@ -9,7 +9,7 @@ use ares_llm::coordinator::ConversationMessage;
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use ares_llm::LLMClient;
 use ares_tools::registry::ToolRegistry;
-use ares_types::types::{AgentContext, AgentType, Result, ToolDefinition};
+use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
 use ares_config::toml_config::AgentConfig;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -37,6 +37,8 @@ pub struct ConfigurableAgent {
     parallel_tools: bool,
     /// Optional observability sink for run history logging
     observability: Option<Arc<dyn ObservabilitySink>>,
+    /// Optional fallback LLM clients to try if primary fails
+    fallback_llms: Vec<Box<dyn LLMClient>>,
 }
 
 impl ConfigurableAgent {
@@ -91,6 +93,7 @@ impl ConfigurableAgent {
             max_tool_iterations: config.max_tool_iterations,
             parallel_tools: config.parallel_tools,
             observability: None,
+            fallback_llms: Vec::new(),
         }
     }
 
@@ -117,6 +120,7 @@ impl ConfigurableAgent {
             max_tool_iterations,
             parallel_tools,
             observability: None,
+            fallback_llms: Vec::new(),
         }
     }
 
@@ -197,6 +201,74 @@ Handle employee info, policies, and benefits."#
         self.observability = Some(obs);
     }
 
+    /// Set fallback LLM clients to try if the primary fails.
+    pub fn set_fallback_llms(&mut self, fallbacks: Vec<Box<dyn LLMClient>>) {
+        self.fallback_llms = fallbacks;
+    }
+
+    /// Try the primary LLM, then each fallback in order.
+    async fn try_generate_with_history(
+        &self,
+        messages: &[(String, String)],
+    ) -> Result<ares_llm::LLMResponse> {
+        match self.llm.generate_with_history(messages).await {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                for (i, fallback) in self.fallback_llms.iter().enumerate() {
+                    tracing::warn!(
+                        agent = %self.name,
+                        fallback_idx = %i,
+                        "Primary LLM failed, trying fallback"
+                    );
+                    match fallback.generate_with_history(messages).await {
+                        Ok(resp) => {
+                            tracing::info!(
+                                agent = %self.name,
+                                fallback_idx = %i,
+                                "Fallback LLM succeeded"
+                            );
+                            return Ok(resp);
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Try the primary LLM with tools, then each fallback in order.
+    async fn try_generate_with_tools_and_history(
+        &self,
+        messages: &[ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<ares_llm::LLMResponse> {
+        match self.llm.generate_with_tools_and_history(messages, tools).await {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                for (i, fallback) in self.fallback_llms.iter().enumerate() {
+                    tracing::warn!(
+                        agent = %self.name,
+                        fallback_idx = %i,
+                        "Primary LLM (tools) failed, trying fallback"
+                    );
+                    match fallback.generate_with_tools_and_history(messages, tools).await {
+                        Ok(resp) => {
+                            tracing::info!(
+                                agent = %self.name,
+                                fallback_idx = %i,
+                                "Fallback LLM (tools) succeeded"
+                            );
+                            return Ok(resp);
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// Get tool definitions for this agent.
     ///
     /// If `allowed_tools` is set, returns only those tools (if enabled).
@@ -221,8 +293,8 @@ Handle employee info, policies, and benefits."#
     /// to the registry's own enablement check).
     pub fn can_use_tool(&self, tool_name: &str) -> bool {
         let whitelisted = match &self.allowed_tools {
-            Some(allowed) if !allowed.is_empty() => allowed.contains(&tool_name.to_string()),
-            _ => true,
+            Some(allowed) => allowed.contains(&tool_name.to_string()),
+            None => true,
         };
         whitelisted
             && self
@@ -287,8 +359,7 @@ Handle employee info, policies, and benefits."#
         for iteration in 0..self.max_tool_iterations {
             let llm_start = std::time::Instant::now();
             let response = self
-                .llm
-                .generate_with_tools_and_history(&messages, &tools)
+                .try_generate_with_tools_and_history(&messages, &tools)
                 .await?;
             let llm_latency = llm_start.elapsed().as_millis() as i64;
 
@@ -342,6 +413,21 @@ Handle employee info, policies, and benefits."#
 
             // Execute each tool call and add results
             for tc in &response.tool_calls {
+                // Runtime enforcement of allowed_tools (DIR1-46)
+                if let Some(allowed) = &self.allowed_tools {
+                    if !allowed.contains(&tc.name) {
+                        tracing::warn!(
+                            agent = %self.name,
+                            tool = %tc.name,
+                            "Tool not in allowed_tools list — denying execution"
+                        );
+                        return Err(AppError::Auth(format!(
+                            "Tool '{}' is not allowed for this agent",
+                            tc.name
+                        )));
+                    }
+                }
+
                 let tool_start = std::time::Instant::now();
                 let result = registry.execute(&tc.name, tc.arguments.clone()).await;
                 let tool_latency = tool_start.elapsed().as_millis() as i64;
@@ -383,8 +469,7 @@ Handle employee info, policies, and benefits."#
         );
         let synth_start = std::time::Instant::now();
         let final_response = self
-            .llm
-            .generate_with_tools_and_history(&messages, &[])
+            .try_generate_with_tools_and_history(&messages, &[])
             .await;
         let synth_latency = synth_start.elapsed().as_millis() as i64;
 
@@ -506,7 +591,7 @@ impl Agent for ConfigurableAgent {
         messages.push(("user".to_string(), input.to_string()));
 
         let llm_start = std::time::Instant::now();
-        let llm_response = self.llm.generate_with_history(&messages).await?;
+        let llm_response = self.try_generate_with_history(&messages).await?;
         let llm_latency = llm_start.elapsed().as_millis() as i64;
 
         // Log the LLM call
@@ -1319,5 +1404,274 @@ mod tests {
         // The tool error is caught and returned as a tool result JSON;
         // the LLM then produces a final response.
         assert_eq!(resp.content, "Error handled");
+    }
+
+    // ==========================================================
+    //  12. Runtime allowed_tools enforcement (DIR1-46)
+    // ==========================================================
+
+    #[test]
+    fn test_can_use_tool_empty_list_denies_all() {
+        let reg = Arc::new(ToolRegistry::new());
+        let agent = ConfigurableAgent::with_params(
+            "router",
+            AgentType::Router,
+            Box::new(MockLLM::new()),
+            "system".to_string(),
+            Some(reg),
+            Some(vec![]),
+            1,
+            false,
+        );
+        assert!(!agent.can_use_tool("anything"), "empty allowed_tools → deny all");
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_allowed_tool_succeeds() {
+        let reg = make_registry_with_tool("http");
+        let mut config = make_config(vec!["http"], Some("system"));
+        config.max_tool_iterations = 3;
+
+        let tc = ToolCall {
+            id: "tc_1".to_string(),
+            name: "http".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let responses = vec![
+            make_tool_response("", vec![tc]),
+            make_tool_response("HTTP result", vec![]),
+        ];
+
+        let agent = ConfigurableAgent::new(
+            "orchestrator",
+            &config,
+            Box::new(MockLLM::with_tool_responses(responses)),
+            Some(reg),
+        );
+        let ctx = make_context();
+        let resp = Agent::execute(&agent, "fetch", &ctx).await.unwrap();
+        assert_eq!(resp.content, "HTTP result");
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_disallowed_tool_returns_error() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(MockTool::new("http")));
+        reg.register(Arc::new(MockTool::new("sql")));
+        let reg = Arc::new(reg);
+
+        let agent = ConfigurableAgent::with_params(
+            "orchestrator",
+            AgentType::Orchestrator,
+            Box::new(MockLLM::with_tool_responses(vec![
+                make_tool_response("", vec![ToolCall {
+                    id: "tc_1".to_string(),
+                    name: "sql".to_string(),
+                    arguments: serde_json::json!({}),
+                }]),
+            ])),
+            "system".to_string(),
+            Some(reg),
+            Some(vec!["http".to_string()]),
+            3,
+            false,
+        );
+
+        let ctx = make_context();
+        let result = Agent::execute(&agent, "query", &ctx).await;
+        assert!(result.is_err(), "disallowed tool should return error");
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("sql"), "error should mention denied tool: {}", err);
+        assert!(err.contains("not allowed"), "error should say tool is not allowed: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_empty_allowed_tools_denies_all() {
+        let reg = make_registry_with_tool("http");
+        let agent = ConfigurableAgent::with_params(
+            "orchestrator",
+            AgentType::Orchestrator,
+            Box::new(MockLLM::with_tool_responses(vec![
+                make_tool_response("", vec![ToolCall {
+                    id: "tc_1".to_string(),
+                    name: "http".to_string(),
+                    arguments: serde_json::json!({}),
+                }]),
+            ])),
+            "system".to_string(),
+            Some(reg),
+            Some(vec![]),
+            3,
+            false,
+        );
+
+        let ctx = make_context();
+        let result = Agent::execute(&agent, "fetch", &ctx).await;
+        assert!(result.is_err(), "empty allowed_tools should deny all");
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("http"), "error should mention denied tool: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_none_allowed_tools_allows_all() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(MockTool::new("http")));
+        reg.register(Arc::new(MockTool::new("sql")));
+        let reg = Arc::new(reg);
+
+        let agent = ConfigurableAgent::with_params(
+            "orchestrator",
+            AgentType::Orchestrator,
+            Box::new(MockLLM::with_tool_responses(vec![
+                make_tool_response("", vec![ToolCall {
+                    id: "tc_1".to_string(),
+                    name: "sql".to_string(),
+                    arguments: serde_json::json!({}),
+                }]),
+                make_tool_response("SQL result", vec![]),
+            ])),
+            "system".to_string(),
+            Some(reg),
+            None,
+            3,
+            false,
+        );
+
+        let ctx = make_context();
+        let resp = Agent::execute(&agent, "query", &ctx).await.unwrap();
+        assert_eq!(resp.content, "SQL result");
+    }
+
+    // ============== Fallback tests ==============
+
+    struct FailingMockLLM {
+        error_msg: String,
+    }
+
+    #[async_trait]
+    impl LLMClient for FailingMockLLM {
+        async fn generate(&self, _: &str) -> Result<String> {
+            Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
+        }
+        async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
+            Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
+        }
+        async fn generate_with_history(
+            &self,
+            _: &[(String, String)],
+        ) -> Result<LLMResponse> {
+            Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
+        }
+        async fn generate_with_tools(
+            &self,
+            _: &str,
+            _: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
+        }
+        async fn generate_with_tools_and_history(
+            &self,
+            _: &[ares_llm::coordinator::ConversationMessage],
+            _: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
+        }
+        async fn stream(
+            &self,
+            _: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Ok(Box::new(futures::stream::empty()))
+        }
+        async fn stream_with_system(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Ok(Box::new(futures::stream::empty()))
+        }
+        async fn stream_with_history(
+            &self,
+            _: &[(String, String)],
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Ok(Box::new(futures::stream::empty()))
+        }
+        fn model_name(&self) -> &str {
+            "failing-mock"
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fallback_used_when_primary_fails() {
+        let mut agent = ConfigurableAgent::with_params(
+            "test",
+            AgentType::Product,
+            Box::new(FailingMockLLM {
+                error_msg: "primary failed".to_string(),
+            }),
+            "system".to_string(),
+            None,
+            None,
+            1,
+            false,
+        );
+
+        let fallback = MockLLM::with_content("fallback-success");
+        agent.set_fallback_llms(vec![Box::new(fallback)]);
+
+        let ctx = make_context();
+        let resp = Agent::execute(&agent, "hello", &ctx).await.unwrap();
+        assert_eq!(resp.content, "fallback-success");
+    }
+
+    #[tokio::test]
+    async fn test_primary_succeeds_without_fallback() {
+        let mut agent = ConfigurableAgent::with_params(
+            "test",
+            AgentType::Product,
+            Box::new(MockLLM::with_content("primary-success")),
+            "system".to_string(),
+            None,
+            None,
+            1,
+            false,
+        );
+
+        let fallback = FailingMockLLM {
+            error_msg: "fallback should not run".to_string(),
+        };
+        agent.set_fallback_llms(vec![Box::new(fallback)]);
+
+        let ctx = make_context();
+        let resp = Agent::execute(&agent, "hello", &ctx).await.unwrap();
+        assert_eq!(resp.content, "primary-success");
+    }
+
+    #[tokio::test]
+    async fn test_all_fallbacks_fail_returns_last_error() {
+        let mut agent = ConfigurableAgent::with_params(
+            "test",
+            AgentType::Product,
+            Box::new(FailingMockLLM {
+                error_msg: "primary failed".to_string(),
+            }),
+            "system".to_string(),
+            None,
+            None,
+            1,
+            false,
+        );
+
+        agent.set_fallback_llms(vec![
+            Box::new(FailingMockLLM {
+                error_msg: "fallback-0 failed".to_string(),
+            }),
+            Box::new(FailingMockLLM {
+                error_msg: "fallback-1 failed".to_string(),
+            }),
+        ]);
+
+        let ctx = make_context();
+        let result = Agent::execute(&agent, "hello", &ctx).await;
+        assert!(result.is_err(), "expected all LLMs to fail");
     }
 }

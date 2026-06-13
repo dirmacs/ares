@@ -133,9 +133,10 @@ mod tests {
             tools: vec!["search".into(), "calc".into()],
             max_tool_iterations: 7,
             parallel_tools: true,
+            allowed_tools: None,
             extra: HashMap::new(),
         }
-    }
+}
 
     fn minimal_ares_config(agent_name: &str, cfg: AgentConfig) -> AresConfig {
         let mut config: AresConfig = toml::from_str(

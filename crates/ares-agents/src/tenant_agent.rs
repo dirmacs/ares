@@ -201,12 +201,19 @@ pub async fn resolve_agent_for_tenant(
     agent_registry: &AgentRegistry,
     tenant_id: &str,
     agent_name: &str,
+    fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
 ) -> Result<ResolvedAgent> {
     if let Some((agent_config, config_version, config_json)) =
         load_tenant_agent_config(pool, tenant_id, agent_name).await?
     {
         let agent = agent_registry
-            .create_agent_from_config(agent_name, &agent_config)
+            .create_agent_from_config_with_fallbacks(
+                agent_name,
+                &agent_config,
+                tenant_id,
+                pool,
+                fleet_secrets,
+            )
             .await?;
 
         return Ok(ResolvedAgent {
@@ -233,6 +240,7 @@ pub async fn resolve_required_tenant_agent(
     agent_registry: &AgentRegistry,
     tenant_id: &str,
     agent_name: &str,
+    fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
 ) -> Result<ResolvedAgent> {
     let Some((agent_config, config_version, config_json)) =
         load_tenant_agent_config(pool, tenant_id, agent_name).await?
@@ -241,7 +249,13 @@ pub async fn resolve_required_tenant_agent(
     };
 
     let agent = agent_registry
-        .create_agent_from_config(agent_name, &agent_config)
+        .create_agent_from_config_with_fallbacks(
+            agent_name,
+            &agent_config,
+            tenant_id,
+            pool,
+            fleet_secrets,
+        )
         .await?;
 
     Ok(ResolvedAgent {
@@ -260,6 +274,7 @@ pub async fn create_tenant_agent(
     agent_registry: &AgentRegistry,
     tenant_id: &str,
     agent_name: &str,
+    fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
 ) -> Option<ConfigurableAgent> {
     let load_result = load_tenant_agent_config(pool, tenant_id, agent_name).await;
     if !legacy_create_should_use_tenant_config(&load_result) {
@@ -270,7 +285,13 @@ pub async fn create_tenant_agent(
         .and_then(|loaded| loaded)
         .expect("legacy_create_should_use_tenant_config implies Ok(Some(_))");
     agent_registry
-        .create_agent_from_config(agent_name, &agent_config)
+        .create_agent_from_config_with_fallbacks(
+            agent_name,
+            &agent_config,
+            tenant_id,
+            pool,
+            fleet_secrets,
+        )
         .await
         .ok()
 }
@@ -594,7 +615,8 @@ mod tests {
                 max_tool_iterations: 5,
                 parallel_tools: false,
                 extra: std::collections::HashMap::new(),
-            },
+                allowed_tools: None,
+},
             "v1".to_string(),
             serde_json::Value::Null,
         )));
@@ -764,7 +786,8 @@ mod tests {
                     max_tool_iterations: 5,
                     parallel_tools: false,
                     extra: HashMap::new(),
-                },
+                    allowed_tools: None,
+},
             );
             registry
         }
@@ -810,7 +833,7 @@ mod tests {
             let registry = registry_with_product("http://127.0.0.1:9");
             let tenant_id = unique_id("missing-row");
 
-            let agent = create_tenant_agent(&pool, &registry, &tenant_id, "product").await;
+            let agent = create_tenant_agent(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new()).await;
             assert!(agent.is_none());
         }
 
@@ -822,7 +845,7 @@ mod tests {
             let tenant_id = unique_id("create-legacy");
             insert_tenant_agent(&pool, &tenant_id, "product", "tenant-create-prompt").await;
 
-            let agent = create_tenant_agent(&pool, &registry, &tenant_id, "product")
+            let agent = create_tenant_agent(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new())
                 .await
                 .expect("tenant row should produce an agent");
 
@@ -837,7 +860,7 @@ mod tests {
             let tenant_id = unique_id("tenant-db-wins");
             insert_tenant_agent(&pool, &tenant_id, "product", "tenant-db-prompt").await;
 
-            let resolved = resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product")
+            let resolved = resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new())
                 .await
                 .expect("resolve tenant agent");
 
@@ -854,7 +877,7 @@ mod tests {
             let registry = registry_with_product(&mock_ollama);
             let tenant_id = unique_id("registry-fallback");
 
-            let resolved = resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product")
+            let resolved = resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new())
                 .await
                 .expect("resolve registry agent");
 
@@ -869,7 +892,7 @@ mod tests {
             let registry = registry_with_product("http://127.0.0.1:9");
             let tenant_id = unique_id("required-missing");
 
-            let err = match resolve_required_tenant_agent(&pool, &registry, &tenant_id, "product").await {
+            let err = match resolve_required_tenant_agent(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new()).await {
                 Err(err) => err,
                 Ok(_) => panic!("missing tenant row should fail"),
             };
@@ -886,7 +909,7 @@ mod tests {
             let tenant_id = unique_id("execute-flow");
             insert_tenant_agent(&pool, &tenant_id, "product", "tenant-execute-prompt").await;
 
-            let resolved = resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product")
+            let resolved = resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new())
                 .await
                 .expect("resolve for execution");
 
@@ -920,7 +943,7 @@ mod tests {
             .await
             .expect("disable tenant agent");
 
-            let err = match resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product").await {
+            let err = match resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new()).await {
                 Err(err) => err,
                 Ok(_) => panic!("disabled tenant agent should not resolve"),
             };
@@ -957,7 +980,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("insert invalid tenant config via raw SQL");
-            let err = match resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product").await {
+            let err = match resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new()).await {
                 Err(err) => err,
                 Ok(_) => panic!("invalid tenant config should fail"),
             };
@@ -994,7 +1017,7 @@ mod tests {
             .await
             .expect("insert empty-model tenant config via raw SQL");
 
-            let agent = create_tenant_agent(&pool, &registry, &tenant_id, "product").await;
+            let agent = create_tenant_agent(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new()).await;
             assert!(agent.is_none());
 
         }

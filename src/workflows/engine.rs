@@ -175,7 +175,13 @@ impl WorkflowEngine {
             let agent = self
                 .state
                 .agent_registry
-                .create_agent_from_config(&current_agent_name, &agent_config)
+                .create_agent_from_config_with_fallbacks(
+                    &current_agent_name,
+                    &agent_config,
+                    &context.user_id,
+                    self.state.tenant_db.pool(),
+                    &self.state.fleet_secrets,
+                )
                 .await?;
 
             // Execute the agent
@@ -461,9 +467,9 @@ mod tests {
                 provider_registry.clone(),
                 "default",
             )),
-            provider_registry,
+            provider_registry: provider_registry.clone(),
             agent_registry,
-            tool_registry,
+            tool_registry: tool_registry.clone(),
             auth_service: Arc::new(crate::auth::jwt::AuthService::new(
                 "secret".to_string(),
                 900,
@@ -481,12 +487,12 @@ mod tests {
             active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
             skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                tool_registry,
+                tool_registry.clone(),
                 Arc::new(crate::RuntimeToolRegistry::new(
                     sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
                 )),
                 Arc::new(crate::ConfigBasedLLMFactory::new(
-                    provider_registry,
+                    provider_registry.clone(),
                     "default",
                 )),
                 Arc::new(AresConfigManager::from_config((*config).clone())),
@@ -535,9 +541,9 @@ mod tests {
                 provider_registry.clone(),
                 "default",
             )),
-            provider_registry,
+            provider_registry: provider_registry.clone(),
             agent_registry,
-            tool_registry,
+            tool_registry: tool_registry.clone(),
             auth_service: Arc::new(crate::auth::jwt::AuthService::new(
                 "secret".to_string(),
                 900,
@@ -555,12 +561,12 @@ mod tests {
             active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
             skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                tool_registry,
+                tool_registry.clone(),
                 Arc::new(crate::RuntimeToolRegistry::new(
                     sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
                 )),
                 Arc::new(crate::ConfigBasedLLMFactory::new(
-                    provider_registry,
+                    provider_registry.clone(),
                     "default",
                 )),
                 Arc::new(AresConfigManager::from_config((*config).clone())),
@@ -609,9 +615,9 @@ mod tests {
                 provider_registry.clone(),
                 "default",
             )),
-            provider_registry,
+            provider_registry: provider_registry.clone(),
             agent_registry,
-            tool_registry,
+            tool_registry: tool_registry.clone(),
             auth_service: Arc::new(crate::auth::jwt::AuthService::new(
                 "secret".to_string(),
                 900,
@@ -629,12 +635,12 @@ mod tests {
             active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
             skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                tool_registry,
+                tool_registry.clone(),
                 Arc::new(crate::RuntimeToolRegistry::new(
                     sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
                 )),
                 Arc::new(crate::ConfigBasedLLMFactory::new(
-                    provider_registry,
+                    provider_registry.clone(),
                     "default",
                 )),
                 Arc::new(AresConfigManager::from_config((*config).clone())),
@@ -741,9 +747,9 @@ mod tests {
                 provider_registry.clone(),
                 "default",
             )),
-            provider_registry,
+            provider_registry: provider_registry.clone(),
             agent_registry,
-            tool_registry,
+            tool_registry: tool_registry.clone(),
             auth_service: Arc::new(crate::auth::jwt::AuthService::new(
                 "secret".to_string(),
                 900,
@@ -762,12 +768,12 @@ mod tests {
             active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
             skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
                 sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                tool_registry,
+                tool_registry.clone(),
                 Arc::new(crate::RuntimeToolRegistry::new(
                     sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
                 )),
                 Arc::new(crate::ConfigBasedLLMFactory::new(
-                    provider_registry,
+                    provider_registry.clone(),
                     "default",
                 )),
                 Arc::new(AresConfigManager::from_config((*config).clone())),

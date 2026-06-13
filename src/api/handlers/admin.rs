@@ -1447,6 +1447,8 @@ mod tests {
             eruka_context_hit: false,
             eruka_read_count: 0,
             eruka_write_count: 0,
+            pipeline_id: None,
+            schedule_id: None,
         }
     }
 

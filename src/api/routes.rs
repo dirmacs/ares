@@ -449,6 +449,23 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
                 .delete(crate::api::handlers::admin::delete_tenant_budget),
         )
         .route(
+            "/admin/token-budgets/{tenant_id}",
+            get(crate::api::handlers::admin::get_token_budget)
+                .put(crate::api::handlers::admin::set_token_budget),
+        )
+        .route(
+            "/admin/token-budgets/{tenant_id}/status",
+            get(crate::api::handlers::admin::get_token_budget_status),
+        )
+        .route(
+            "/admin/token-budgets/{tenant_id}/reset",
+            post(crate::api::handlers::admin::reset_token_budget_period),
+        )
+        .route(
+            "/admin/token-budgets/{tenant_id}/usage",
+            get(crate::api::handlers::admin::list_token_usage),
+        )
+        .route(
             "/admin/run-history/alerts",
             get(crate::api::handlers::admin::list_budget_alerts),
         )
@@ -970,6 +987,24 @@ mod tests {
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server.get("/admin/run-history/budgets/tenant-1").await;
+        assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
+        response.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_token_budget_routes() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        for path in [
+            "/admin/token-budgets/tenant-1",
+            "/admin/token-budgets/tenant-1/status",
+            "/admin/token-budgets/tenant-1/usage",
+        ] {
+            let response = server.get(path).await;
+            assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
+            response.assert_status_unauthorized();
+        }
+        let response = server.post("/admin/token-budgets/tenant-1/reset").await;
         assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
         response.assert_status_unauthorized();
     }

@@ -147,6 +147,9 @@ pub mod scheduler;
 /// Skill execution engine.
 #[cfg(feature = "postgres")]
 pub mod skill_engine;
+/// Inter-agent pipeline execution engine.
+#[cfg(feature = "postgres")]
+pub mod pipeline_engine;
 /// JWT authentication and middleware.
 #[cfg(feature = "postgres")]
 pub mod auth;
@@ -317,27 +320,14 @@ pub async fn resolve_model_tier(
 /// downstream agents whose source agent matches.
 #[cfg(feature = "postgres")]
 pub async fn trigger_pipelines(
-    pool: &sqlx::PgPool,
+    app_state: &Arc<AppState>,
     tenant_id: &str,
     source_agent: &str,
-    _run_result: &serde_json::Value,
+    source_output: &str,
 ) -> Result<Vec<String>> {
-    let store = db::schedules::PipelineStore::new(pool);
-    let pipelines = store.get_pipelines_for_source(tenant_id, source_agent).await?;
-    let mut triggered = Vec::new();
-    for pipeline in pipelines {
-        if pipeline.enabled {
-            // TODO: evaluate `pipeline.condition` against `_run_result`
-            triggered.push(pipeline.target_agent.clone());
-            tracing::info!(
-                tenant = %tenant_id,
-                source = %source_agent,
-                target = %pipeline.target_agent,
-                "Pipeline triggered"
-            );
-        }
-    }
-    Ok(triggered)
+    crate::pipeline_engine::execute_pipeline(source_agent, source_output, tenant_id, app_state)
+        .await
+        .map_err(|e| crate::types::AppError::Internal(e))
 }
 
 #[cfg(all(test, feature = "postgres"))]

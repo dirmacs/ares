@@ -498,6 +498,7 @@ pub async fn v1_chat(
             eruka_context_hit,
             eruka_read_count: if eruka_context_hit { 1 } else { 0 },
             eruka_write_count: 0,
+            pipeline_id: None,
         };
         tokio::spawn(async move {
             let _ = agent_runs::insert_agent_run_with_metadata(
@@ -738,6 +739,7 @@ pub async fn run_agent(
                     eruka_context_hit: false,
                     eruka_read_count: 0,
                     eruka_write_count: 0,
+                    pipeline_id: None,
                 };
                 let status = if skill_result.is_ok() { "completed" } else { "failed" };
                 let err_msg = skill_result.as_ref().err().cloned();
@@ -927,6 +929,7 @@ pub async fn run_agent(
                     eruka_context_hit,
                     eruka_read_count: if eruka_context_hit { 1 } else { 0 },
                     eruka_write_count: 0,
+                    pipeline_id: None,
                 };
                 tokio::spawn(async move {
                     let _ = agent_runs::insert_agent_run_with_metadata(
@@ -1011,6 +1014,7 @@ pub async fn run_agent(
                     eruka_context_hit,
                     eruka_read_count: if eruka_context_hit { 1 } else { 0 },
                     eruka_write_count: 0,
+                    pipeline_id: None,
                 };
                 tokio::spawn(async move {
                     let _ = agent_runs::insert_agent_run_with_metadata(

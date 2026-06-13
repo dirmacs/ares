@@ -79,6 +79,7 @@ async fn execute_scheduled_agent(
             &app_state.agent_registry,
             &sched.tenant_id,
             &sched.agent_name,
+            &app_state.fleet_secrets,
         )
         .await
         {
@@ -359,8 +360,8 @@ mod tests {
 
     #[test]
     fn compute_next_run_with_standard_cron() {
-        // Standard 5-field cron: every day at midnight
-        let next = compute_next_run("0 0 * * *", "UTC").expect("valid standard cron");
+        // Standard 6-field cron (with seconds): every day at midnight
+        let next = compute_next_run("0 0 0 * * *", "UTC").expect("valid standard cron");
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

@@ -58,6 +58,7 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
         AgentConfig {
             model: "test-model".to_string(),
             tools: vec!["calculator".to_string()],
+            allowed_tools: None,
             system_prompt: Some("You are a test agent.".to_string()),
             max_tool_iterations: 10,
             parallel_tools: false,
@@ -69,6 +70,7 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
         AgentConfig {
             model: "test-model".to_string(),
             tools: vec![],
+            allowed_tools: None,
             system_prompt: Some("You are a fallback agent.".to_string()),
             max_tool_iterations: 10,
             parallel_tools: false,
@@ -207,9 +209,17 @@ async fn test_workflow_engine_from_config() {
         tool_registry.clone(),
     ));
 
+    let config_manager = Arc::new(AresConfigManager::from_config(config));
+    let llm_factory = Arc::new(ConfigBasedLLMFactory::new(
+        provider_registry.clone(),
+        "test-model",
+    ));
+    let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool");
+    let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(pool.clone()));
+
     // Create AppState
     let state = AppState {
-        config_manager: Arc::new(AresConfigManager::from_config(config)),
+        config_manager: config_manager.clone(),
         dynamic_config: Arc::new(
             DynamicConfigManager::new(
                 std::path::PathBuf::from("config/agents"),
@@ -225,13 +235,10 @@ async fn test_workflow_engine_from_config() {
         tenant_db: Arc::new(ares::db::TenantDb::new(Arc::new(
             ares::db::PostgresClient::new_test(),
         ))),
-        llm_factory: Arc::new(ConfigBasedLLMFactory::new(
-            provider_registry.clone(),
-            "test-model",
-        )),
-        provider_registry,
+        llm_factory: llm_factory.clone(),
+        provider_registry: provider_registry.clone(),
         agent_registry,
-        tool_registry,
+        tool_registry: tool_registry.clone(),
         auth_service: Arc::new(ares::auth::jwt::AuthService::new(
             "secret".to_string(),
             900,
@@ -244,8 +251,14 @@ async fn test_workflow_engine_from_config() {
         #[cfg(feature = "mcp")]
         mcp_registry: None,
         fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
-        runtime_tool_registry: Arc::new(ares::RuntimeToolRegistry::new(
-            sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool"),
+        runtime_tool_registry: runtime_tool_registry.clone(),
+        active_runs: Arc::new(ares::active_runs::ActiveRuns::new()),
+        skill_engine: Arc::new(ares::skill_engine::SkillEngine::new(
+            pool,
+            tool_registry,
+            runtime_tool_registry,
+            llm_factory,
+            config_manager,
         )),
     };
 
@@ -307,6 +320,7 @@ fn test_missing_reference_rejected() {
         AgentConfig {
             model: "nonexistent-model".to_string(),
             tools: vec![],
+            allowed_tools: None,
             system_prompt: None,
             max_tool_iterations: 10,
             parallel_tools: false,
@@ -334,6 +348,7 @@ fn test_tool_filtering_in_agent() {
     let agent_config = AgentConfig {
         model: "test-model".to_string(),
         tools: vec!["calculator".to_string()],
+        allowed_tools: None,
         system_prompt: None,
         max_tool_iterations: 10,
         parallel_tools: false,

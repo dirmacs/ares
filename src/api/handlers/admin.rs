@@ -805,7 +805,13 @@ pub async fn test_tenant_agent_handler(
     let agent_config = tenant_agent::agent_config_from_json(&req.config)?;
     let mut draft_agent = state
         .agent_registry
-        .create_agent_from_config(&agent_name, &agent_config)
+        .create_agent_from_config_with_fallbacks(
+            &agent_name,
+            &agent_config,
+            &tenant_id,
+            state.tenant_db.pool(),
+            &state.fleet_secrets,
+        )
         .await?;
 
     // Attach observability
@@ -1818,6 +1824,31 @@ mod tests {
         assert!(err.to_string().contains("Tenant not found"));
     }
 
+    #[test]
+    fn runtime_provider_response_serializes_correctly() {
+        let resp = RuntimeProviderResponse {
+            id: "test-id".into(),
+            tenant_id: None,
+            name: "test-provider".into(),
+            display_name: "Test Provider".into(),
+            provider_type: "openai".into(),
+            api_base: "https://api.openai.com".into(),
+            auth_type: "bearer".into(),
+            default_model: Some("gpt-4".into()),
+            headers: None,
+            request_transform: None,
+            response_transform: None,
+            enabled: true,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_001,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "test-provider");
+        assert_eq!(json["provider_type"], "openai");
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["created_at"], 1_700_000_000);
+    }
+
 }
 
 pub async fn get_agent_stats_handler(
@@ -2671,6 +2702,101 @@ pub async fn rollback_runtime_tool(
         "rolled_back_to": version,
         "updated_at": updated.updated_at,
     })))
+}
+
+// =============================================================================
+// Runtime Providers
+// =============================================================================
+
+use ares_db::runtime_providers::{CreateRuntimeProviderRequest, RuntimeProviderStore};
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeProviderResponse {
+    pub id: String,
+    pub tenant_id: Option<String>,
+    pub name: String,
+    pub display_name: String,
+    pub provider_type: String,
+    pub api_base: String,
+    pub auth_type: String,
+    pub default_model: Option<String>,
+    pub headers: Option<serde_json::Value>,
+    pub request_transform: Option<serde_json::Value>,
+    pub response_transform: Option<serde_json::Value>,
+    pub enabled: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl From<ares_db::runtime_providers::RuntimeProvider> for RuntimeProviderResponse {
+    fn from(p: ares_db::runtime_providers::RuntimeProvider) -> Self {
+        Self {
+            id: p.id,
+            tenant_id: p.tenant_id,
+            name: p.name,
+            display_name: p.display_name,
+            provider_type: p.provider_type,
+            api_base: p.api_base,
+            auth_type: p.auth_type,
+            default_model: p.default_model,
+            headers: p.headers,
+            request_transform: p.request_transform,
+            response_transform: p.response_transform,
+            enabled: p.enabled,
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+        }
+    }
+}
+
+/// List all runtime providers (global / tenant-scoped).
+pub async fn list_runtime_providers(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<RuntimeProviderResponse>>> {
+    let store = RuntimeProviderStore::new(state.tenant_db.pool());
+    let providers = store.list(None).await?;
+    let response: Vec<RuntimeProviderResponse> = providers.into_iter().map(|p| p.into()).collect();
+    tracing::info!("Listed {} runtime providers", response.len());
+    Ok(Json(response))
+}
+
+/// Get a single runtime provider by name.
+pub async fn get_runtime_provider(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<RuntimeProviderResponse>> {
+    let store = RuntimeProviderStore::new(state.tenant_db.pool());
+    let provider = store
+        .get(&name)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("runtime provider {name} not found")))?;
+    tracing::info!("Retrieved runtime provider {}", name);
+    Ok(Json(provider.into()))
+}
+
+/// Create or update a runtime provider.
+pub async fn upsert_runtime_provider(
+    State(state): State<AppState>,
+    Json(req): Json<CreateRuntimeProviderRequest>,
+) -> Result<Json<RuntimeProviderResponse>> {
+    let store = RuntimeProviderStore::new(state.tenant_db.pool());
+    let provider = store.upsert(&req).await?;
+    tracing::info!("Upserted runtime provider {}", provider.name);
+    Ok(Json(provider.into()))
+}
+
+/// Hard-delete a runtime provider by name.
+pub async fn delete_runtime_provider(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<StatusCode> {
+    let store = RuntimeProviderStore::new(state.tenant_db.pool());
+    let rows = store.delete(&name).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("runtime provider {name} not found")));
+    }
+    tracing::info!("Deleted runtime provider {}", name);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // =============================================================================

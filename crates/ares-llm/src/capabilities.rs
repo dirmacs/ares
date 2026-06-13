@@ -170,6 +170,7 @@ impl ModelCapabilities {
     /// This provides sensible defaults for popular models.
     pub fn for_model(model_name: &str) -> Self {
         let model_lower = model_name.to_lowercase();
+        let model_lower = model_lower.strip_prefix("bedrock/").unwrap_or(&model_lower);
 
         // Claude models
         if model_lower.contains("claude-3-5-sonnet") || model_lower.contains("claude-sonnet-4") {

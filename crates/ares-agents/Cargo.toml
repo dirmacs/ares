@@ -10,7 +10,7 @@ description = "AI agent orchestration for A.R.E.S"
 
 [features]
 default = []
-postgres = ["dep:sqlx", "dep:ares-db", "ares-db/postgres", "ares-llm/ollama"]
+postgres = ["dep:sqlx", "dep:ares-db", "ares-db/postgres", "ares-llm/postgres", "ares-llm/ollama"]
 eruka-context = []
 
 [dependencies]

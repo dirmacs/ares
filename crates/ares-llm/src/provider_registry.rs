@@ -535,7 +535,7 @@ impl ProviderRegistry {
         let mut seen = HashSet::new();
 
         // 2. Primary provider config.
-        if let Some(cfg) = self.get_provider(&primary_provider).cloned() {
+        if let Some(cfg) = self.get_provider(&primary_provider) {
             seen.insert(primary_provider.clone());
             result.push((primary_provider.clone(), cfg));
         }
@@ -546,7 +546,7 @@ impl ProviderRegistry {
                 if seen.contains(fallback_name) {
                     continue;
                 }
-                if let Some(cfg) = self.get_provider(fallback_name).cloned() {
+                if let Some(cfg) = self.get_provider(fallback_name) {
                     seen.insert(fallback_name.clone());
                     result.push((fallback_name.clone(), cfg));
                 }

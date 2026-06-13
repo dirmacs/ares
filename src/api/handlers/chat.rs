@@ -348,7 +348,13 @@ async fn execute_agent(
     // Create agent from registry using the resolved config
     let mut agent = state
         .agent_registry
-        .create_agent_from_config(agent_name, &config)
+        .create_agent_from_config_with_fallbacks(
+            agent_name,
+            &config,
+            &context.user_id,
+            state.tenant_db.pool(),
+            &state.fleet_secrets,
+        )
         .await?;
 
     // Attach observability

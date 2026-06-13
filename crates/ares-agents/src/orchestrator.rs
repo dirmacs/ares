@@ -252,6 +252,7 @@ mod tests {
             tools: vec![],
             max_tool_iterations: 10,
             parallel_tools: false,
+            allowed_tools: None,
             extra: HashMap::new(),
         }
     }
@@ -430,7 +431,8 @@ mod tests {
                 tools: vec![],
                 max_tool_iterations: 10,
                 parallel_tools: false,
-                extra: HashMap::new(),
+            allowed_tools: None,
+            extra: HashMap::new(),
             },
         );
         let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_ares_config(agents));

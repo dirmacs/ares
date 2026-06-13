@@ -3,25 +3,44 @@ use crate::types::Claims;
 use axum::{extract::Request, http::StatusCode, middleware::Next, response::Response};
 use std::sync::Arc;
 
-/// Axum middleware that validates JWT tokens from the Authorization header.
+/// Axum middleware that validates JWT tokens from the Authorization header
+/// or from the `?token=` query parameter (used by EventSource which cannot
+/// set custom headers).
 ///
 /// Expects tokens in the format: `Authorization: Bearer <token>`
 /// On success, injects `Claims` into request extensions for downstream handlers.
 pub async fn auth_middleware(auth_service: Arc<AuthService>, req: Request, next: Next) -> Response {
-    // Extract Authorization header
-    if let Some(auth_header) = req.headers().get("authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                match auth_service.verify_token(token) {
-                    Ok(claims) => {
-                        let mut req = req;
-                        req.extensions_mut().insert(claims);
-                        return next.run(req).await;
+    // Try Authorization header first
+    let token = req
+        .headers()
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(|s| s.to_string())
+        .or_else(|| {
+            // Fallback to ?token=... query param for EventSource compatibility
+            req.uri().query().and_then(|q| {
+                q.split('&').find_map(|pair| {
+                    let mut kv = pair.splitn(2, '=');
+                    let key = kv.next()?;
+                    if key == "token" {
+                        kv.next().map(|v| v.to_string())
+                    } else {
+                        None
                     }
-                    Err(e) => {
-                        tracing::debug!("Token verification failed: {}", e);
-                    }
-                }
+                })
+            })
+        });
+
+    if let Some(token) = token {
+        match auth_service.verify_token(&token) {
+            Ok(claims) => {
+                let mut req = req;
+                req.extensions_mut().insert(claims);
+                return next.run(req).await;
+            }
+            Err(e) => {
+                tracing::debug!("Token verification failed: {}", e);
             }
         }
     }

@@ -324,6 +324,7 @@ impl BedrockClient {
         }
     }
 
+    #[allow(dead_code)] // superseded by build_converse_messages; retained for tests
     fn message_from_conversation(
         msg: &ConversationMessage,
         system_prompt: &mut Option<String>,
@@ -359,6 +360,72 @@ impl BedrockClient {
                 })
             }
         }
+    }
+
+    /// Convert an ARES conversation history into Converse messages.
+    ///
+    /// Unlike a 1:1 mapping, this groups consecutive `Tool` (tool-result)
+    /// messages into a SINGLE Converse `user` message whose content holds one
+    /// `toolResult` block per result. Bedrock Converse requires every `toolUse`
+    /// from an assistant turn to be answered by matching `toolResult` blocks in
+    /// the immediately-following user message; emitting one user message per
+    /// result (the naive mapping) makes Bedrock reject multi-tool turns with
+    /// "Expected toolResult blocks ... for the following Ids".
+    fn build_converse_messages(
+        messages: &[ConversationMessage],
+        system_prompt: &mut Option<String>,
+    ) -> Vec<ConverseMessage> {
+        let mut out: Vec<ConverseMessage> = Vec::new();
+        let mut pending_tool_results: Vec<ConverseContentBlock> = Vec::new();
+
+        for msg in messages {
+            match msg.role {
+                MessageRole::System => Self::push_system_prompt(system_prompt, &msg.content),
+                MessageRole::Tool => {
+                    let id = msg.tool_call_id.as_deref().unwrap_or_default();
+                    pending_tool_results.push(Self::tool_result_block(id, &msg.content));
+                }
+                MessageRole::User => {
+                    if !pending_tool_results.is_empty() {
+                        out.push(ConverseMessage {
+                            role: "user",
+                            content: std::mem::take(&mut pending_tool_results),
+                        });
+                    }
+                    out.push(ConverseMessage {
+                        role: "user",
+                        content: vec![Self::text_block(&msg.content)],
+                    });
+                }
+                MessageRole::Assistant => {
+                    if !pending_tool_results.is_empty() {
+                        out.push(ConverseMessage {
+                            role: "user",
+                            content: std::mem::take(&mut pending_tool_results),
+                        });
+                    }
+                    let mut content = Vec::new();
+                    if !msg.content.is_empty() {
+                        content.push(Self::text_block(&msg.content));
+                    }
+                    content.extend(msg.tool_calls.iter().map(Self::tool_use_block));
+                    if content.is_empty() {
+                        content.push(Self::text_block(""));
+                    }
+                    out.push(ConverseMessage {
+                        role: "assistant",
+                        content,
+                    });
+                }
+            }
+        }
+        if !pending_tool_results.is_empty() {
+            out.push(ConverseMessage {
+                role: "user",
+                content: pending_tool_results,
+            });
+        }
+        out
     }
 
     fn extract_text_content(content: &[ConverseContentBlock]) -> String {
@@ -497,10 +564,7 @@ impl LLMClient for BedrockClient {
     ) -> Result<LLMResponse> {
         let bedrock_tools = tools.iter().map(Self::convert_tool).collect();
         let mut system_prompt = None;
-        let bedrock_messages = messages
-            .iter()
-            .filter_map(|msg| Self::message_from_conversation(msg, &mut system_prompt))
-            .collect();
+        let bedrock_messages = Self::build_converse_messages(messages, &mut system_prompt);
 
         self.generate_response(bedrock_messages, bedrock_tools, system_prompt)
             .await

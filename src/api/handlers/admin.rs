@@ -3644,6 +3644,21 @@ pub async fn receive_webhook(
                 payload = %payload,
                 "Webhook received — triggering agent"
             );
+            let message = serde_json::to_string(&payload).unwrap_or_default();
+            if let Err(e) = crate::trigger_engine::execute_triggered_agent(
+                &trigger,
+                &message,
+                &std::sync::Arc::new(state),
+            )
+            .await
+            {
+                tracing::warn!(
+                    trigger_id = %trigger_id,
+                    agent = %trigger.target_agent,
+                    error = %e,
+                    "Webhook trigger execution failed"
+                );
+            }
             Ok(Json(
                 serde_json::json!({"status": "triggered", "agent": trigger.target_agent}),
             ))

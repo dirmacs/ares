@@ -34,7 +34,7 @@ use std::sync::Arc;
 pub struct RuntimeProviderEntry {
     /// Display name for UI purposes.
     pub display_name: String,
-    /// Provider compatibility type: "openai-compatible", "anthropic-compatible", "custom".
+    /// Provider compatibility type: "openai-compatible", "anthropic-compatible", "bedrock", "custom".
     pub provider_type: String,
     /// Base URL for the API.
     pub api_base: String,
@@ -96,6 +96,11 @@ impl ProviderRegistry {
                 },
             );
         }
+
+        #[cfg(feature = "bedrock")]
+        providers
+            .entry("bedrock".to_string())
+            .or_insert_with(Self::default_bedrock_provider_config);
 
         let default_model = config
             .nvidia
@@ -184,6 +189,15 @@ impl ProviderRegistry {
                     .unwrap_or_else(|| "ANTHROPIC_API_KEY".to_string()),
                 default_model: entry.default_model.clone().unwrap_or_default(),
             },
+            "bedrock" | "bedrock-compatible" => ProviderConfig::Bedrock {
+                api_key_env: "AWS_BEARER_TOKEN_BEDROCK".to_string(),
+                region_env: entry
+                    .headers
+                    .get("region_env")
+                    .cloned()
+                    .unwrap_or_else(|| "AWS_REGION".to_string()),
+                default_model: entry.default_model.clone().unwrap_or_default(),
+            },
             _ => ProviderConfig::OpenAI {
                 api_key_env: entry
                     .api_key
@@ -219,6 +233,66 @@ impl ProviderRegistry {
             entry.default_model.as_deref(),
             ModelParams::default(),
         )
+    }
+
+    #[cfg(feature = "postgres")]
+    fn provider_default_model(config: &ProviderConfig) -> &str {
+        match config {
+            ProviderConfig::OpenAI { default_model, .. }
+            | ProviderConfig::Anthropic { default_model, .. }
+            | ProviderConfig::Bedrock { default_model, .. }
+            | ProviderConfig::Ollama { default_model, .. } => default_model,
+            _ => "",
+        }
+    }
+
+    fn default_bedrock_provider_config() -> ProviderConfig {
+        ProviderConfig::Bedrock {
+            api_key_env: "AWS_BEARER_TOKEN_BEDROCK".to_string(),
+            region_env: "AWS_REGION".to_string(),
+            default_model: "us.anthropic.claude-haiku-4-5-20251001-v1:0".to_string(),
+        }
+    }
+
+    fn bedrock_model_id_from_name(model_name: &str) -> Option<&str> {
+        let trimmed = model_name.trim();
+        if let Some(model_id) = trimmed.strip_prefix("bedrock/") {
+            return (!model_id.trim().is_empty()).then_some(model_id.trim());
+        }
+        if trimmed.starts_with("us.anthropic.") || trimmed.starts_with("anthropic.claude") {
+            return Some(trimmed);
+        }
+        None
+    }
+
+    fn bedrock_model_config(model_id: &str) -> ModelConfig {
+        ModelConfig {
+            provider: "bedrock".to_string(),
+            model: model_id.to_string(),
+            temperature: 0.7,
+            max_tokens: 4096,
+        }
+    }
+
+    fn runtime_bedrock_region(provider_name: &str, entry: &RuntimeProviderEntry) -> Result<String> {
+        entry
+            .headers
+            .get("region")
+            .cloned()
+            .or_else(|| {
+                entry
+                    .headers
+                    .get("region_env")
+                    .and_then(|env| std::env::var(env).ok())
+            })
+            .or_else(|| std::env::var("AWS_REGION").ok())
+            .filter(|region| !region.is_empty())
+            .ok_or_else(|| {
+                AppError::Configuration(format!(
+                    "Runtime Bedrock provider '{}' must define headers.region or AWS_REGION",
+                    provider_name
+                ))
+            })
     }
 
     fn provider_from_runtime_entry_with_params(
@@ -268,6 +342,24 @@ impl ProviderRegistry {
                     ))
                 }
             }
+            "bedrock" | "bedrock-compatible" => {
+                #[cfg(feature = "bedrock")]
+                {
+                    Ok(Provider::from_runtime_bedrock(
+                        Self::runtime_api_key(provider_name, entry)?,
+                        Self::runtime_bedrock_region(provider_name, entry)?,
+                        model,
+                        params,
+                    ))
+                }
+
+                #[cfg(not(feature = "bedrock"))]
+                {
+                    Err(AppError::Configuration(
+                        "Bedrock provider configured but the corresponding feature is not enabled in this build".into(),
+                    ))
+                }
+            }
             provider_type => Err(AppError::Configuration(format!(
                 "Runtime provider '{}' has unsupported provider_type '{}'",
                 provider_name, provider_type
@@ -281,6 +373,10 @@ impl ProviderRegistry {
         // 1. explicit legacy models
         if let Some(cfg) = self.models.get(name) {
             return Some(cfg.clone());
+        }
+        // 2. direct Bedrock model ids (`bedrock/<model-id>` or Bedrock Anthropic ids)
+        if let Some(model_id) = Self::bedrock_model_id_from_name(name) {
+            return Some(Self::bedrock_model_config(model_id));
         }
         // 2. catalog lookup – synthesize a ModelConfig on the fly
         if let Some(ref catalog) = self.catalog {
@@ -312,6 +408,12 @@ impl ProviderRegistry {
     /// Get all model names (legacy + catalog ids)
     pub fn model_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.models.keys().cloned().collect();
+        if let Some(ProviderConfig::Bedrock { default_model, .. }) = self.get_provider("bedrock") {
+            let name = format!("bedrock/{default_model}");
+            if !default_model.is_empty() && !names.contains(&name) {
+                names.push(name);
+            }
+        }
         if let Some(ref catalog) = self.catalog {
             for entry in catalog.snapshot() {
                 names.push(entry.id.clone());
@@ -352,7 +454,17 @@ impl ProviderRegistry {
             return provider.create_client().await;
         }
 
-        // 2. Try catalog lookup
+        // 2. Try direct Bedrock model routing (`bedrock/<model-id>`).
+        if let Some(model_id) = Self::bedrock_model_id_from_name(model_name) {
+            let model_config = Self::bedrock_model_config(model_id);
+            let provider_config = self
+                .get_provider("bedrock")
+                .unwrap_or_else(Self::default_bedrock_provider_config);
+            let provider = Provider::from_model_config(&model_config, &provider_config)?;
+            return provider.create_client().await;
+        }
+
+        // 3. Try catalog lookup
         if let Some(ref catalog) = self.catalog {
             let snapshot = catalog.snapshot();
             if snapshot.iter().any(|e| e.id == model_name) {
@@ -412,6 +524,7 @@ impl ProviderRegistry {
     /// Check if a model exists in the registry
     pub fn has_model(&self, name: &str) -> bool {
         self.models.contains_key(name)
+            || Self::bedrock_model_id_from_name(name).is_some()
             || self
                 .catalog
                 .as_ref()
@@ -428,11 +541,20 @@ impl ProviderRegistry {
 
     /// Get capabilities for a registered model.
     pub fn get_model_capabilities(&self, model_name: &str) -> Option<ModelCapabilities> {
+        if let Some(model_id) = Self::bedrock_model_id_from_name(model_name) {
+            let mut caps = ModelCapabilities::for_model(model_id);
+            caps.is_local = false;
+            return Some(caps);
+        }
+
         // If it's a legacy model, use the explicit config
         if let Some(model_config) = self.models.get(model_name) {
             let provider_config = self.get_provider(&model_config.provider)?;
             let mut caps = ModelCapabilities::for_model(&model_config.model);
-            if matches!(provider_config, ProviderConfig::OpenAI { .. }) {
+            if matches!(
+                provider_config,
+                ProviderConfig::OpenAI { .. } | ProviderConfig::Bedrock { .. }
+            ) {
                 caps.is_local = false;
             }
             return Some(caps);
@@ -462,6 +584,20 @@ impl ProviderRegistry {
                     name: name.clone(),
                     provider: config.provider.clone(),
                     model_id: config.model.clone(),
+                    capabilities: caps,
+                });
+            }
+        }
+
+        if let Some(ProviderConfig::Bedrock { default_model, .. }) = self.get_provider("bedrock") {
+            let name = format!("bedrock/{default_model}");
+            if !default_model.is_empty() && !result.iter().any(|model| model.name == name) {
+                let mut caps = ModelCapabilities::for_model(&default_model);
+                caps.is_local = false;
+                result.push(ModelWithCapabilities {
+                    name,
+                    provider: "bedrock".to_string(),
+                    model_id: default_model,
                     capabilities: caps,
                 });
             }
@@ -562,6 +698,20 @@ impl ProviderRegistry {
                 quality_score: 75,
                 is_chat: true,
             });
+        }
+
+        if let Some(ProviderConfig::Bedrock { default_model, .. }) = self.get_provider("bedrock") {
+            let name = format!("bedrock/{default_model}");
+            if !default_model.is_empty() && !models.iter().any(|model| model.name == name) {
+                models.push(ModelInfo {
+                    name,
+                    provider: "bedrock".to_string(),
+                    model: default_model,
+                    owned_by: "aws-bedrock".to_string(),
+                    quality_score: 85,
+                    is_chat: true,
+                });
+            }
         }
 
         // Catalog entries

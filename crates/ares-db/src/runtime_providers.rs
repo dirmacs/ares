@@ -220,9 +220,10 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
 
 fn validate_provider_type(t: &str) -> Result<()> {
     match t {
-        "openai-compatible" | "anthropic-compatible" | "custom" => Ok(()),
+        "openai-compatible" | "anthropic-compatible" | "bedrock" | "bedrock-compatible"
+        | "custom" => Ok(()),
         _ => Err(AppError::InvalidInput(format!(
-            "Invalid provider_type '{}'. Must be: openai-compatible, anthropic-compatible, or custom",
+            "Invalid provider_type '{}'. Must be: openai-compatible, anthropic-compatible, bedrock, bedrock-compatible, or custom",
             t
         ))),
     }

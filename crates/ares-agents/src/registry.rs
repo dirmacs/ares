@@ -12,11 +12,11 @@
 //! This allows TOML to override TOON configs for specific deployments.
 
 use crate::configurable::ConfigurableAgent;
+use ares_config::toml_config::{AgentConfig, AresConfig};
+use ares_config::toon_config::{DynamicConfigManager, ToonAgentConfig};
 use ares_llm::ProviderRegistry;
 use ares_tools::registry::ToolRegistry;
 use ares_types::types::{AgentType, AppError, Result};
-use ares_config::toml_config::{AgentConfig, AresConfig};
-use ares_config::toon_config::{DynamicConfigManager, ToonAgentConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -252,7 +252,11 @@ impl AgentRegistry {
 
         let mut fallback_llms = Vec::new();
         for (provider_name, _) in iter {
-            if let Ok(client) = self.provider_registry.create_client_for_provider(&provider_name).await {
+            if let Ok(client) = self
+                .provider_registry
+                .create_client_for_provider(&provider_name)
+                .await
+            {
                 fallback_llms.push(client);
             }
         }
@@ -292,7 +296,8 @@ impl AgentRegistry {
             )));
         }
 
-        // Tool enforcement: intersect config allowed_tools with tenant allowlist
+        // Tool enforcement: intersect config allowed_tools with tenant allowlist.
+        // If both are absent/empty, ConfigurableAgent remains deny-by-default.
         let db_tools = allowlist_store
             .list_tools(tenant_id)
             .await
@@ -339,8 +344,8 @@ impl AgentRegistry {
 
     /// Get the tools for an agent (checks both TOML and TOON).
     /// Returns the explicit allowed_tools list, falling back to the legacy
-    /// tools field.  An empty result means "all tools permitted" when
-    /// allowed_tools is absent.
+    /// tools field.  An empty result means no configured tools; runtime
+    /// execution remains deny-by-default.
     pub fn get_agent_tools(&self, name: &str) -> Vec<String> {
         // Check TOML first
         if let Some(config) = self.configs.get(name) {
@@ -443,7 +448,10 @@ impl Default for AgentRegistryBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_config::toml_config::{ProviderConfig, ServerConfig, AuthConfig, DatabaseConfig, RagConfig, BillingConfig, DynamicConfigPaths};
+    use ares_config::toml_config::{
+        AuthConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths, ProviderConfig, RagConfig,
+        ServerConfig,
+    };
     use std::collections::HashMap;
 
     fn create_test_ares_config() -> AresConfig {
@@ -519,7 +527,7 @@ mod tests {
             parallel_tools: false,
             extra: HashMap::new(),
             allowed_tools: None,
-};
+        };
 
         registry.register("test-agent", config);
 
@@ -545,7 +553,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
-},
+            },
         );
 
         registry.register(
@@ -558,7 +566,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
-},
+            },
         );
 
         let names = registry.agent_names();
@@ -583,7 +591,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
-},
+            },
         );
 
         assert_eq!(
@@ -609,7 +617,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
-},
+            },
         );
 
         registry.register(
@@ -622,7 +630,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
-},
+            },
         );
 
         let tools = registry.get_agent_tools("with_tools");
@@ -658,7 +666,7 @@ mod tests {
                     parallel_tools: false,
                     extra: HashMap::new(),
                     allowed_tools: None,
-},
+                },
             )
             .build();
 
@@ -699,13 +707,12 @@ mod tests {
                     parallel_tools: false,
                     extra: HashMap::new(),
                     allowed_tools: None,
-},
+                },
             );
             map
         });
 
-        let registry =
-            AgentRegistry::from_config(&ares_config, provider_registry, tool_registry);
+        let registry = AgentRegistry::from_config(&ares_config, provider_registry, tool_registry);
 
         assert!(registry.has_agent("toml-agent"));
         assert!(registry.get_config("toml-agent").is_some());
@@ -735,12 +742,13 @@ mod tests {
                     parallel_tools: true,
                     extra: HashMap::new(),
                     allowed_tools: None,
-},
+                },
             );
             map
         });
 
-        let result = AgentRegistryBuilder::new().from_config(&ares_config)
+        let result = AgentRegistryBuilder::new()
+            .from_config(&ares_config)
             .with_provider_registry(provider_registry)
             .build();
 
@@ -771,7 +779,7 @@ mod tests {
                     parallel_tools: false,
                     extra: HashMap::new(),
                     allowed_tools: None,
-},
+                },
             )
             .build();
 
@@ -797,7 +805,7 @@ mod tests {
                     parallel_tools: false,
                     extra: HashMap::new(),
                     allowed_tools: None,
-},
+                },
             )
             .build();
 
@@ -840,7 +848,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
-},
+            },
         );
 
         assert_eq!(
@@ -865,7 +873,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
-},
+            },
         );
 
         assert_eq!(registry.get_agent_system_prompt("no-prompt"), None);
@@ -995,7 +1003,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
-},
+            },
         );
 
         let names = registry.agent_names();
@@ -1083,10 +1091,9 @@ mod tests {
 
         // Test Number (i64) extra
         let mut toon_i64 = ToonAgentConfig::new("agent", "default");
-        toon_i64.extra.insert(
-            "int_key".to_string(),
-            serde_json::json!(42),
-        );
+        toon_i64
+            .extra
+            .insert("int_key".to_string(), serde_json::json!(42));
         let agent_config = AgentRegistry::toon_to_agent_config(&toon_i64);
         assert_eq!(
             agent_config.extra.get("int_key"),
@@ -1095,10 +1102,9 @@ mod tests {
 
         // Test Number (f64) extra
         let mut toon_f64 = ToonAgentConfig::new("agent", "default");
-        toon_f64.extra.insert(
-            "float_key".to_string(),
-            serde_json::json!(3.14159),
-        );
+        toon_f64
+            .extra
+            .insert("float_key".to_string(), serde_json::json!(3.14159));
         let agent_config = AgentRegistry::toon_to_agent_config(&toon_f64);
         assert_eq!(
             agent_config.extra.get("float_key"),
@@ -1107,10 +1113,9 @@ mod tests {
 
         // Test Bool extra
         let mut toon_bool = ToonAgentConfig::new("agent", "default");
-        toon_bool.extra.insert(
-            "bool_key".to_string(),
-            serde_json::Value::Bool(true),
-        );
+        toon_bool
+            .extra
+            .insert("bool_key".to_string(), serde_json::Value::Bool(true));
         let agent_config = AgentRegistry::toon_to_agent_config(&toon_bool);
         assert_eq!(
             agent_config.extra.get("bool_key"),
@@ -1119,10 +1124,9 @@ mod tests {
 
         // Test Array/Object extra (converts to String)
         let mut toon_array = ToonAgentConfig::new("agent", "default");
-        toon_array.extra.insert(
-            "array_key".to_string(),
-            serde_json::json!(vec![1, 2, 3]),
-        );
+        toon_array
+            .extra
+            .insert("array_key".to_string(), serde_json::json!(vec![1, 2, 3]));
         let agent_config = AgentRegistry::toon_to_agent_config(&toon_array);
         assert_eq!(
             agent_config.extra.get("array_key"),

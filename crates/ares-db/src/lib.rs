@@ -103,6 +103,9 @@ pub mod tenant_model_tiers;
 /// Per-tenant allowlist for tools, models, and RAG sources.
 pub mod tenant_allowlist;
 #[cfg(feature = "postgres")]
+/// Per-tenant LLM token budget tracking.
+pub mod token_budgets;
+#[cfg(feature = "postgres")]
 /// Runtime-defined tools (HTTP, MCP, Script, SQL).
 pub mod runtime_tools;
 #[cfg(feature = "postgres")]
@@ -114,6 +117,9 @@ pub mod skills;
 #[cfg(feature = "postgres")]
 /// Agent schedules, event triggers, and pipeline links.
 pub mod schedules;
+#[cfg(feature = "postgres")]
+/// OAuth credential storage for third-party connectors.
+pub mod oauth_credentials;
 #[cfg(feature = "postgres")]
 /// Pure SQL builders and row conversions (testable without a live DB).
 pub mod query_builders;

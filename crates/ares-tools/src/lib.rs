@@ -20,6 +20,9 @@ pub mod web_scrape;
 #[cfg(any(feature = "mcp", test))]
 pub mod mcp_bridge;
 
+#[cfg(any(feature = "postgres", test))]
+pub mod connectors;
+
 pub use registry::{Tool, ToolRegistry};
 
 #[cfg(test)]

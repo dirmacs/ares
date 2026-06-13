@@ -35,6 +35,14 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .route(
             "/webhooks/{trigger_id}",
             post(crate::api::handlers::admin::receive_webhook),
+        )
+        .route(
+            "/events/document-upload",
+            post(crate::api::handlers::document_upload::handle_document_upload),
+        )
+        .route(
+            "/events/field-change",
+            post(crate::api::handlers::field_change::handle_field_change),
         );
 
     #[allow(unused_mut)]

@@ -348,9 +348,8 @@ async fn run_server(
     let catalog_for_registry = catalog.clone();
     catalog.start_background_refresh();
 
-    let provider_registry = Arc::new(
-        ProviderRegistry::from_config(&config).with_catalog(catalog_for_registry),
-    );
+    let provider_registry =
+        Arc::new(ProviderRegistry::from_config(&config).with_catalog(catalog_for_registry));
     tracing::info!(
         "[nvidia] api_base={} default_model={}",
         nvidia_cfg.api_base,
@@ -415,13 +414,27 @@ async fn run_server(
     #[cfg(feature = "search-tools")]
     tool_registry.register(Arc::new(ares::tools::web_scrape::WebScrape::new()));
 
+    if let Some(master_key) = MasterKey::from_env() {
+        ares::tools::connectors::register_prebuilt_connector_tools(
+            &mut tool_registry,
+            db.pool.clone(),
+            master_key,
+        );
+    } else {
+        tracing::warn!(
+            "FLEET_SECRETS_KEY is not set; pre-built connector tools are not registered"
+        );
+    }
+
     // Proprietary tools (POM, DCRM, Eruka) are registered by ares-dirmacs, not here.
     // Extension crates call tool_registry.register() in their own main.rs.
 
     // Register MCP client tools as agent-callable tools (MCP→ToolRegistry bridge)
     #[cfg(feature = "mcp")]
     {
-        if let Ok(mcp_reg) = ares::mcp::McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref()) {
+        if let Ok(mcp_reg) =
+            ares::mcp::McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref())
+        {
             for client_name in mcp_reg.client_names() {
                 if mcp_reg.get_client(&client_name).is_some() {
                     ares::tools::mcp_bridge::register_mcp_tools(&mut tool_registry, &client_name);
@@ -542,6 +555,10 @@ async fn run_server(
         skill_engine,
     };
 
+    if let Err(e) = api::handlers::admin::reload_runtime_provider_registry(&state).await {
+        tracing::warn!("Failed to preload runtime providers on startup: {}", e);
+    }
+
     // =================================================================
     // Health Metrics Aggregation Job
     // =================================================================
@@ -568,12 +585,9 @@ async fn run_server(
         // Startup snapshot: record all currently loaded agent configs
         let startup_agents = state.dynamic_config.agents();
         if !startup_agents.is_empty() {
-            if let Err(e) = ares::db::agent_versions::record_agent_versions(
-                &pool,
-                &startup_agents,
-                "startup",
-            )
-            .await
+            if let Err(e) =
+                ares::db::agent_versions::record_agent_versions(&pool, &startup_agents, "startup")
+                    .await
             {
                 tracing::warn!("Failed to snapshot agent versions on startup: {}", e);
             } else {
@@ -585,18 +599,16 @@ async fn run_server(
         }
 
         // Hot-reload version tracking: background task drains mpsc channel
-        let (version_tx, mut version_rx) =
-            tokio::sync::mpsc::unbounded_channel::<Vec<ares::utils::toon_config::ToonAgentConfig>>();
+        let (version_tx, mut version_rx) = tokio::sync::mpsc::unbounded_channel::<
+            Vec<ares::utils::toon_config::ToonAgentConfig>,
+        >();
         state.dynamic_config.set_version_tx(version_tx);
 
         tokio::spawn(async move {
             while let Some(agents) = version_rx.recv().await {
-                if let Err(e) = ares::db::agent_versions::record_agent_versions(
-                    &pool,
-                    &agents,
-                    "hot_reload",
-                )
-                .await
+                if let Err(e) =
+                    ares::db::agent_versions::record_agent_versions(&pool, &agents, "hot_reload")
+                        .await
                 {
                     tracing::warn!("Failed to record hot-reload agent versions: {}", e);
                 }
@@ -895,8 +907,8 @@ async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std
     let tenant_db = Arc::new(ares::TenantDb::new(Arc::new(db)));
 
     // Get API URL from environment or config
-    let ares_api_url = std::env::var("ARES_API_URL")
-        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let ares_api_url =
+        std::env::var("ARES_API_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
     tracing::info!("ARES API URL: {}", ares_api_url);
 
     // Start MCP server (extensions like Eruka are registered by managed platform crates)

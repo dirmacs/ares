@@ -6,9 +6,7 @@
 //! The store handles encryption/decryption internally; callers work with
 //! plaintext strings in requests and `EncryptedPayload` structs in responses.
 
-use ares_config::fleet_secrets::{
-    encrypt_api_key, EncryptedPayload, MasterKey,
-};
+use ares_config::fleet_secrets::{encrypt_api_key, EncryptedPayload, MasterKey};
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
@@ -240,6 +238,18 @@ impl<'a> OAuthCredentialStore<'a> {
 
         Ok(res.rows_affected())
     }
+
+    /// Hard-delete a row by tenant + id. Returns the number of rows affected.
+    pub async fn delete_for_tenant(&self, tenant_id: &str, id: &str) -> Result<u64> {
+        let res = sqlx::query("DELETE FROM oauth_credentials WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id)
+            .bind(id)
+            .execute(self.pool)
+            .await
+            .map_err(sqlx_err)?;
+
+        Ok(res.rows_affected())
+    }
 }
 
 // =============================================================================
@@ -253,14 +263,19 @@ fn row_to_oauth_credential(row: &sqlx::postgres::PgRow) -> Result<OAuthCredentia
     let connector_type: String = row.try_get("connector_type").map_err(sqlx_err)?;
     let client_id: String = row.try_get("client_id").map_err(sqlx_err)?;
 
-    let client_secret_ciphertext: Vec<u8> = row.try_get("client_secret_ciphertext").map_err(sqlx_err)?;
+    let client_secret_ciphertext: Vec<u8> =
+        row.try_get("client_secret_ciphertext").map_err(sqlx_err)?;
     let client_secret_nonce: Vec<u8> = row.try_get("client_secret_nonce").map_err(sqlx_err)?;
 
-    let access_token_ciphertext: Option<Vec<u8>> = row.try_get("access_token_ciphertext").map_err(sqlx_err)?;
-    let access_token_nonce: Option<Vec<u8>> = row.try_get("access_token_nonce").map_err(sqlx_err)?;
+    let access_token_ciphertext: Option<Vec<u8>> =
+        row.try_get("access_token_ciphertext").map_err(sqlx_err)?;
+    let access_token_nonce: Option<Vec<u8>> =
+        row.try_get("access_token_nonce").map_err(sqlx_err)?;
 
-    let refresh_token_ciphertext: Option<Vec<u8>> = row.try_get("refresh_token_ciphertext").map_err(sqlx_err)?;
-    let refresh_token_nonce: Option<Vec<u8>> = row.try_get("refresh_token_nonce").map_err(sqlx_err)?;
+    let refresh_token_ciphertext: Option<Vec<u8>> =
+        row.try_get("refresh_token_ciphertext").map_err(sqlx_err)?;
+    let refresh_token_nonce: Option<Vec<u8>> =
+        row.try_get("refresh_token_nonce").map_err(sqlx_err)?;
 
     let expires_at: Option<i64> = row.try_get("expires_at").map_err(sqlx_err)?;
     let scope: Option<String> = row.try_get("scope").map_err(sqlx_err)?;
@@ -272,15 +287,19 @@ fn row_to_oauth_credential(row: &sqlx::postgres::PgRow) -> Result<OAuthCredentia
         ciphertext: client_secret_ciphertext,
     };
 
-    let access_token = access_token_ciphertext.zip(access_token_nonce).map(|(ct, nonce)| EncryptedPayload {
-        nonce,
-        ciphertext: ct,
-    });
+    let access_token = access_token_ciphertext
+        .zip(access_token_nonce)
+        .map(|(ct, nonce)| EncryptedPayload {
+            nonce,
+            ciphertext: ct,
+        });
 
-    let refresh_token = refresh_token_ciphertext.zip(refresh_token_nonce).map(|(ct, nonce)| EncryptedPayload {
-        nonce,
-        ciphertext: ct,
-    });
+    let refresh_token = refresh_token_ciphertext
+        .zip(refresh_token_nonce)
+        .map(|(ct, nonce)| EncryptedPayload {
+            nonce,
+            ciphertext: ct,
+        });
 
     Ok(OAuthCredential {
         id,
@@ -320,7 +339,10 @@ mod tests {
 
     fn ensure_master_key() {
         if std::env::var("FLEET_SECRETS_KEY").is_err() {
-            std::env::set_var("FLEET_SECRETS_KEY", "test-master-key-for-oauth-credentials-12345");
+            std::env::set_var(
+                "FLEET_SECRETS_KEY",
+                "test-master-key-for-oauth-credentials-12345",
+            );
         }
     }
 
@@ -376,7 +398,12 @@ mod tests {
 
         // Update tokens
         store
-            .update_tokens(&created.id, "new-access-token", Some("new-refresh-token"), 1_800_000_000)
+            .update_tokens(
+                &created.id,
+                "new-access-token",
+                Some("new-refresh-token"),
+                1_800_000_000,
+            )
             .await
             .expect("update_tokens should succeed");
 
@@ -385,15 +412,20 @@ mod tests {
             .await
             .expect("get after update should succeed")
             .unwrap();
-        let decrypted_at = decrypt_api_key(after_update.access_token.as_ref().unwrap(), &master).unwrap();
-        let decrypted_rt = decrypt_api_key(after_update.refresh_token.as_ref().unwrap(), &master).unwrap();
+        let decrypted_at =
+            decrypt_api_key(after_update.access_token.as_ref().unwrap(), &master).unwrap();
+        let decrypted_rt =
+            decrypt_api_key(after_update.refresh_token.as_ref().unwrap(), &master).unwrap();
         assert_eq!(decrypted_at, "new-access-token");
         assert_eq!(decrypted_rt, "new-refresh-token");
         assert_eq!(after_update.expires_at, Some(1_800_000_000));
         assert!(after_update.updated_at >= created.updated_at);
 
         // Delete
-        let deleted = store.delete(&created.id).await.expect("delete should succeed");
+        let deleted = store
+            .delete(&created.id)
+            .await
+            .expect("delete should succeed");
         assert_eq!(deleted, 1);
 
         let after_delete = store

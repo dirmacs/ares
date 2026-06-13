@@ -5,32 +5,32 @@ use crate::db::agent_runs;
 use crate::db::agent_versions;
 use crate::db::alerts as db_alerts;
 use crate::db::audit_log;
-use crate::db::tenant_model_tiers as db_tiers;
-use crate::db::skills as db_skills;
 use crate::db::schedules as db_schedules;
-use crate::db::tenant_allowlist as allowlist;
+use crate::db::skills as db_skills;
 use crate::db::tenant_agents::{
     clone_templates_for_tenant, create_tenant_agent as db_create_tenant_agent,
     delete_tenant_agent as db_delete_tenant_agent, get_tenant_agent as db_get_tenant_agent,
     list_agent_templates, list_all_tenant_agents, list_tenant_agent_versions,
     list_tenant_agents as db_list_tenant_agents, record_tenant_agent_version,
-    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent,
-    AgentTemplate, AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest,
-    TenantAgent, UpdateTenantAgentRequest,
+    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent, AgentTemplate,
+    AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest, TenantAgent,
+    UpdateTenantAgentRequest,
 };
+use crate::db::tenant_allowlist as allowlist;
+use crate::db::tenant_model_tiers as db_tiers;
 use crate::db::tenants::UsageSummary;
-use crate::llm::provider_registry::ModelInfo;
-use ares_config::toml_config::ProviderConfig;
+use crate::llm::provider_registry::{ModelInfo, RuntimeProviderEntry};
 use crate::memory::estimate_tokens;
 use crate::models::{Tenant, TenantTier};
 use crate::types::{AgentContext, AppError, Result};
 use crate::utils::toml_config::BillingConfig;
 use crate::AppState;
+use ares_config::toml_config::ProviderConfig;
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{Redirect, Response},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -70,6 +70,21 @@ fn has_admin_role(claims: &AdminClaims) -> bool {
     false
 }
 
+fn admin_token_from_request(req: &axum::extract::Request) -> Option<&str> {
+    req.headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .or_else(|| {
+            req.uri().query().and_then(|query| {
+                query.split('&').find_map(|param| {
+                    let (key, value) = param.split_once('=')?;
+                    (key == "token" && !value.is_empty()).then_some(value)
+                })
+            })
+        })
+}
+
 pub async fn admin_middleware(req: axum::extract::Request, next: Next) -> Response {
     // Method 1: X-Admin-Secret header (legacy, backward-compatible)
     let admin_secret = std::env::var("ADMIN_API_KEY").ok();
@@ -85,15 +100,10 @@ pub async fn admin_middleware(req: axum::extract::Request, next: Next) -> Respon
         }
     }
 
-    // Method 2: JWT Bearer token with admin role
+    // Method 2: JWT token with admin role (Authorization Bearer, or SSE ?token=<jwt>)
     let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_default();
     if !jwt_secret.is_empty() {
-        if let Some(token) = req
-            .headers()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-        {
+        if let Some(token) = admin_token_from_request(&req) {
             let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
             validation.leeway = 60;
             if let Ok(data) = jsonwebtoken::decode::<AdminClaims>(
@@ -193,7 +203,6 @@ impl From<UsageSummary> for UsageResponse {
     }
 }
 
-
 const INVALID_TIER_MSG: &str = "Invalid tier. Must be: free, dev, pro, or enterprise";
 
 /// Validates a tier string from admin request payloads.
@@ -208,13 +217,18 @@ fn validate_agent_config_tools(
     config: &serde_json::Value,
     runtime_tool_registry: &ares_tools::runtime_registry::RuntimeToolRegistry,
 ) -> Result<()> {
-    let tool_names: Vec<String> = if let Some(arr) = config.get("allowed_tools").and_then(|v| v.as_array()) {
-        arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-    } else if let Some(arr) = config.get("tools").and_then(|v| v.as_array()) {
-        arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-    } else {
-        return Ok(());
-    };
+    let tool_names: Vec<String> =
+        if let Some(arr) = config.get("allowed_tools").and_then(|v| v.as_array()) {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        } else if let Some(arr) = config.get("tools").and_then(|v| v.as_array()) {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        } else {
+            return Ok(());
+        };
 
     if tool_names.is_empty() {
         return Ok(());
@@ -633,7 +647,8 @@ pub async fn update_agent(
         config: req.config,
         enabled: req.enabled,
     };
-    let agent = db_update_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name, db_req).await?;
+    let agent =
+        db_update_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name, db_req).await?;
 
     let pool = state.tenant_db.pool().clone();
     let aid = agent.id.clone();
@@ -1322,7 +1337,10 @@ pub async fn delete_tenant_allowed_tool(
     let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
     let rows = store.deny_tool(&tenant_id, &tool_name).await?;
     if rows == 0 {
-        return Err(AppError::NotFound(format!("tool {} not found for tenant {}", tool_name, tenant_id)));
+        return Err(AppError::NotFound(format!(
+            "tool {} not found for tenant {}",
+            tool_name, tenant_id
+        )));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1353,7 +1371,10 @@ pub async fn delete_tenant_allowed_model(
     let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
     let rows = store.deny_model(&tenant_id, &model_id).await?;
     if rows == 0 {
-        return Err(AppError::NotFound(format!("model {} not found for tenant {}", model_id, tenant_id)));
+        return Err(AppError::NotFound(format!(
+            "model {} not found for tenant {}",
+            model_id, tenant_id
+        )));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1384,7 +1405,10 @@ pub async fn delete_tenant_allowed_rag_source(
     let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
     let rows = store.deny_rag_source(&tenant_id, &rag_source).await?;
     if rows == 0 {
-        return Err(AppError::NotFound(format!("rag source {} not found for tenant {}", rag_source, tenant_id)));
+        return Err(AppError::NotFound(format!(
+            "rag source {} not found for tenant {}",
+            rag_source, tenant_id
+        )));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1435,6 +1459,71 @@ mod tests {
             },
         );
         billing
+    }
+
+    #[test]
+    fn oauth_provider_mapping_covers_google_calendar() {
+        let provider = oauth_provider_config("google_calendar").unwrap();
+        assert_eq!(provider.provider, "google");
+        assert_eq!(provider.token_url, "https://oauth2.googleapis.com/token");
+        assert!(provider.scope.contains("calendar"));
+    }
+
+    #[test]
+    fn oauth_provider_mapping_rejects_unknown_connector() {
+        assert!(matches!(
+            oauth_provider_config("unknown"),
+            Err(AppError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn oauth_state_roundtrips_and_sanitizes_redirect() {
+        let state = OAuthState {
+            tenant_id: "tenant 1".into(),
+            connector_type: "gmail".into(),
+            redirect_uri: "https://evil.example/callback".into(),
+        };
+        let decoded = decode_oauth_state(&encode_oauth_state(&state)).unwrap();
+        assert_eq!(decoded.tenant_id, "tenant 1");
+        assert_eq!(decoded.connector_type, "gmail");
+        assert_eq!(decoded.redirect_uri, "/connectors");
+    }
+
+    #[test]
+    fn safe_callback_redirect_uri_allows_relative_only() {
+        assert_eq!(safe_callback_redirect_uri("/connectors/callback"), "/connectors/callback");
+        assert_eq!(safe_callback_redirect_uri("//evil.example/path"), "/connectors");
+        assert_eq!(safe_callback_redirect_uri("https://evil.example/path"), "/connectors");
+        assert_eq!(safe_callback_redirect_uri("/bad\\path"), "/connectors");
+    }
+
+    #[test]
+    fn build_authorize_url_contains_encoded_oauth_fields() {
+        let provider = oauth_provider_config("slack").unwrap();
+        let state = OAuthState {
+            tenant_id: "tenant-1".into(),
+            connector_type: "slack".into(),
+            redirect_uri: "/connectors".into(),
+        };
+        let url = build_authorize_url(
+            provider,
+            "client id",
+            "https://app.example/api/oauth/callback",
+            &state,
+        );
+        assert!(url.starts_with("https://slack.com/oauth/v2/authorize?"));
+        assert!(url.contains("client_id=client%20id"));
+        assert!(url.contains("redirect_uri=https%3A%2F%2Fapp.example%2Fapi%2Foauth%2Fcallback"));
+        assert!(url.contains("state=tenant_id%3Dtenant-1%26connector_type%3Dslack%26redirect_uri%3D%252Fconnectors"));
+    }
+
+    #[test]
+    fn build_token_form_uses_authorization_code_grant() {
+        let form = build_token_form("code", "client", "secret", "https://app.example/api/oauth/callback");
+        assert_eq!(form[0], ("grant_type", "authorization_code"));
+        assert!(form.contains(&("code", "code")));
+        assert!(form.contains(&("client_secret", "secret")));
     }
 
     #[test]
@@ -1713,7 +1802,10 @@ mod tests {
 
     #[test]
     fn parse_tenant_tier_accepts_free_and_dev() {
-        assert!(matches!(parse_tenant_tier("free").unwrap(), TenantTier::Free));
+        assert!(matches!(
+            parse_tenant_tier("free").unwrap(),
+            TenantTier::Free
+        ));
         assert!(matches!(parse_tenant_tier("DEV").unwrap(), TenantTier::Dev));
     }
 
@@ -1813,8 +1905,7 @@ mod tests {
 
     #[test]
     fn resolve_alert_request_deserializes_optional_reviewer() {
-        let req: ResolveAlertRequest =
-            serde_json::from_str(r#"{"resolved_by":"alice"}"#).unwrap();
+        let req: ResolveAlertRequest = serde_json::from_str(r#"{"resolved_by":"alice"}"#).unwrap();
         assert_eq!(req.resolved_by.as_deref(), Some("alice"));
     }
 
@@ -1963,7 +2054,6 @@ mod tests {
         assert_eq!(json["enabled"], true);
         assert_eq!(json["created_at"], 1_700_000_000);
     }
-
 }
 
 pub async fn get_agent_stats_handler(
@@ -2118,7 +2208,7 @@ pub async fn emergency_stop_handler(
 // =============================================================================
 
 use crate::db::fleet_provider_secrets as fps;
-use ares_config::fleet_secrets::{last_n_visible, MasterKey};
+use ares_config::fleet_secrets::{decrypt_api_key, last_n_visible, MasterKey};
 
 /// List every fleet provider override currently stored in the DB.
 ///
@@ -2149,10 +2239,7 @@ pub async fn list_fleet_providers(
     let mut out: Vec<serde_json::Value> = map
         .into_iter()
         .map(|(name, entry)| {
-            let api_key_last4 = entry
-                .api_key
-                .as_deref()
-                .and_then(|k| last_n_visible(k, 4));
+            let api_key_last4 = entry.api_key.as_deref().and_then(|k| last_n_visible(k, 4));
             serde_json::json!({
                 "name": name,
                 "has_api_key": entry.api_key.is_some(),
@@ -2197,11 +2284,18 @@ pub async fn upsert_fleet_provider(
     Json(req): Json<FleetProviderUpsertRequest>,
 ) -> Result<Json<serde_json::Value>> {
     if provider_name.is_empty() {
-        return Err(AppError::InvalidInput("provider_name must not be empty".into()));
-    }
-    if req.api_key.is_none() && req.api_base.is_none() && req.default_model.is_none() && req.fallback_providers.is_none() {
         return Err(AppError::InvalidInput(
-            "At least one of api_key, api_base, default_model, fallback_providers must be provided".into(),
+            "provider_name must not be empty".into(),
+        ));
+    }
+    if req.api_key.is_none()
+        && req.api_base.is_none()
+        && req.default_model.is_none()
+        && req.fallback_providers.is_none()
+    {
+        return Err(AppError::InvalidInput(
+            "At least one of api_key, api_base, default_model, fallback_providers must be provided"
+                .into(),
         ));
     }
 
@@ -2771,9 +2865,7 @@ pub async fn rollback_runtime_tool(
     let target = versions
         .into_iter()
         .find(|v| v.version == version)
-        .ok_or_else(|| {
-            AppError::NotFound(format!("version {version} not found for tool {id}"))
-        })?;
+        .ok_or_else(|| AppError::NotFound(format!("version {version} not found for tool {id}")))?;
 
     let update_req = UpdateRuntimeToolRequest {
         display_name: None,
@@ -2864,6 +2956,49 @@ impl From<ares_db::runtime_providers::RuntimeProvider> for RuntimeProviderRespon
     }
 }
 
+pub async fn reload_runtime_provider_registry(state: &AppState) -> Result<()> {
+    let store = RuntimeProviderStore::new(state.tenant_db.pool());
+    let providers = store.list(None).await?;
+    let mut entries = Vec::with_capacity(providers.len());
+    let mut names = Vec::with_capacity(providers.len());
+
+    for provider in providers {
+        let mut headers = provider
+            .headers
+            .as_ref()
+            .and_then(|value| value.as_object())
+            .map(|object| {
+                object
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        value.as_str().map(|value| (key.clone(), value.to_string()))
+                    })
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let api_key = headers
+            .remove("api_key_env")
+            .or_else(|| headers.remove("api_key"));
+
+        names.push(provider.name);
+        entries.push(RuntimeProviderEntry {
+            display_name: provider.display_name,
+            provider_type: provider.provider_type,
+            api_base: provider.api_base,
+            auth_type: provider.auth_type,
+            default_model: provider.default_model,
+            headers,
+            api_key,
+            enabled: provider.enabled,
+        });
+    }
+
+    state
+        .provider_registry
+        .reload_runtime_providers(entries, names);
+    Ok(())
+}
+
 /// List all runtime providers (global / tenant-scoped).
 pub async fn list_runtime_providers(
     State(state): State<AppState>,
@@ -2896,6 +3031,7 @@ pub async fn upsert_runtime_provider(
 ) -> Result<Json<RuntimeProviderResponse>> {
     let store = RuntimeProviderStore::new(state.tenant_db.pool());
     let provider = store.upsert(&req).await?;
+    reload_runtime_provider_registry(&state).await?;
     tracing::info!("Upserted runtime provider {}", provider.name);
     Ok(Json(provider.into()))
 }
@@ -2908,8 +3044,11 @@ pub async fn delete_runtime_provider(
     let store = RuntimeProviderStore::new(state.tenant_db.pool());
     let rows = store.delete(&name).await?;
     if rows == 0 {
-        return Err(AppError::NotFound(format!("runtime provider {name} not found")));
+        return Err(AppError::NotFound(format!(
+            "runtime provider {name} not found"
+        )));
     }
+    reload_runtime_provider_registry(&state).await?;
     tracing::info!("Deleted runtime provider {}", name);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2920,8 +3059,9 @@ pub async fn delete_runtime_provider(
 
 use crate::db::run_history::{
     AcknowledgeBudgetAlertRequest, AgentHealthMetrics, BudgetAlert, ListBudgetAlertsQuery,
-    ListLlmCallsQuery, ListToolCallsQuery, LogLlmCallRequest, LogToolCallRequest, ModelHealthMetrics,
-    RunCost, RunHistoryStore, RunLlmCall, RunToolCall, SetTenantBudgetRequest, TenantBudget,
+    ListLlmCallsQuery, ListToolCallsQuery, LogLlmCallRequest, LogToolCallRequest,
+    ModelHealthMetrics, RunCost, RunHistoryStore, RunLlmCall, RunToolCall, SetTenantBudgetRequest,
+    TenantBudget,
 };
 
 #[derive(Debug, Deserialize)]
@@ -2931,6 +3071,8 @@ pub struct ListRunCostsQuery {
     pub limit: i32,
     #[serde(default)]
     pub offset: i32,
+    pub created_after: Option<i64>,
+    pub created_before: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3040,7 +3182,17 @@ pub async fn list_run_costs(
     Query(q): Query<ListRunCostsQuery>,
 ) -> Result<Json<Vec<RunCost>>> {
     let store = RunHistoryStore::new(state.tenant_db.pool());
-    let costs = store.list_run_costs(&q.tenant_id, q.limit, q.offset).await?;
+    let limit = q.limit.clamp(1, 10_000);
+    let offset = q.offset.max(0);
+    let costs = store
+        .list_run_costs(
+            &q.tenant_id,
+            limit,
+            offset,
+            q.created_after,
+            q.created_before,
+        )
+        .await?;
     Ok(Json(costs))
 }
 
@@ -3076,7 +3228,9 @@ pub async fn delete_tenant_budget(
 ) -> Result<Json<serde_json::Value>> {
     let store = RunHistoryStore::new(state.tenant_db.pool());
     let rows = store.delete_tenant_budget(&tenant_id).await?;
-    Ok(Json(serde_json::json!({ "deleted": rows > 0, "tenant_id": tenant_id })))
+    Ok(Json(
+        serde_json::json!({ "deleted": rows > 0, "tenant_id": tenant_id }),
+    ))
 }
 
 /// List budget alerts with optional filtering.
@@ -3106,7 +3260,9 @@ pub async fn list_health_metrics(
     Query(q): Query<ListHealthMetricsQuery>,
 ) -> Result<Json<Vec<AgentHealthMetrics>>> {
     let store = RunHistoryStore::new(state.tenant_db.pool());
-    let metrics = store.list_health_metrics(&q.tenant_id, q.limit, q.offset).await?;
+    let metrics = store
+        .list_health_metrics(&q.tenant_id, q.limit, q.offset)
+        .await?;
     Ok(Json(metrics))
 }
 
@@ -3116,7 +3272,9 @@ pub async fn list_model_metrics(
     Query(q): Query<ListModelMetricsQuery>,
 ) -> Result<Json<Vec<ModelHealthMetrics>>> {
     let store = RunHistoryStore::new(state.tenant_db.pool());
-    let metrics = store.list_model_metrics(&q.tenant_id, q.limit, q.offset).await?;
+    let metrics = store
+        .list_model_metrics(&q.tenant_id, q.limit, q.offset)
+        .await?;
     Ok(Json(metrics))
 }
 
@@ -3148,10 +3306,9 @@ pub async fn get_tenant_model_tier(
     Path((tenant_id, tier_name)): Path<(String, String)>,
 ) -> Result<Json<db_tiers::TenantModelTier>> {
     let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
-    let tier = store
-        .get(&tenant_id, &tier_name)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("tier {tier_name} not found for tenant {tenant_id}")))?;
+    let tier = store.get(&tenant_id, &tier_name).await?.ok_or_else(|| {
+        AppError::NotFound(format!("tier {tier_name} not found for tenant {tenant_id}"))
+    })?;
     Ok(Json(tier))
 }
 
@@ -3248,15 +3405,9 @@ pub async fn create_skill(
     let t_id = skill.tenant_id.clone();
     let s_name = skill.name.clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "skill_create",
-            "skill",
-            &s_name,
-            Some(&t_id),
-            None,
-        )
-        .await;
+        let _ =
+            audit_log::log_admin_action(&pool, "skill_create", "skill", &s_name, Some(&t_id), None)
+                .await;
     });
 
     Ok(Json(skill))
@@ -3275,15 +3426,7 @@ pub async fn delete_skill(
     let pool = state.tenant_db.pool().clone();
     let sid = id.clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "skill_delete",
-            "skill",
-            &sid,
-            None,
-            None,
-        )
-        .await;
+        let _ = audit_log::log_admin_action(&pool, "skill_delete", "skill", &sid, None, None).await;
     });
 
     Ok(StatusCode::NO_CONTENT)
@@ -3318,7 +3461,9 @@ pub async fn list_connectors(
 ) -> Result<Json<Vec<db_skills::Connector>>> {
     let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
     if tenant_id.is_empty() {
-        return Err(AppError::InvalidInput("tenant_id query param is required".into()));
+        return Err(AppError::InvalidInput(
+            "tenant_id query param is required".into(),
+        ));
     }
     let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
     let connectors = store.list_connectors(tenant_id).await?;
@@ -3363,12 +3508,482 @@ pub async fn delete_connector(
     let pool = state.tenant_db.pool().clone();
     let cid = id.clone();
     tokio::spawn(async move {
+        let _ =
+            audit_log::log_admin_action(&pool, "connector_delete", "connector", &cid, None, None)
+                .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminEncryptedPayload {
+    pub ciphertext: String,
+    pub nonce: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OAuthCredentialResponse {
+    pub id: String,
+    pub tenant_id: String,
+    pub provider: String,
+    pub connector_type: String,
+    pub client_id: String,
+    pub client_secret: AdminEncryptedPayload,
+    pub access_token: Option<AdminEncryptedPayload>,
+    pub refresh_token: Option<AdminEncryptedPayload>,
+    pub expires_at: Option<i64>,
+    pub scope: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn encrypted_payload_response(
+    payload: ares_config::fleet_secrets::EncryptedPayload,
+) -> AdminEncryptedPayload {
+    AdminEncryptedPayload {
+        ciphertext: bytes_to_hex(&payload.ciphertext),
+        nonce: bytes_to_hex(&payload.nonce),
+    }
+}
+
+impl From<ares_db::oauth_credentials::OAuthCredential> for OAuthCredentialResponse {
+    fn from(value: ares_db::oauth_credentials::OAuthCredential) -> Self {
+        Self {
+            id: value.id,
+            tenant_id: value.tenant_id,
+            provider: value.provider,
+            connector_type: value.connector_type,
+            client_id: value.client_id,
+            client_secret: encrypted_payload_response(value.client_secret),
+            access_token: value.access_token.map(encrypted_payload_response),
+            refresh_token: value.refresh_token.map(encrypted_payload_response),
+            expires_at: value.expires_at,
+            scope: value.scope,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OAuthAuthorizeQuery {
+    tenant_id: String,
+    connector_type: String,
+    redirect_uri: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OAuthCallbackQuery {
+    code: String,
+    state: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OAuthProviderConfig {
+    provider: &'static str,
+    auth_url: &'static str,
+    token_url: &'static str,
+    scope: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OAuthState {
+    tenant_id: String,
+    connector_type: String,
+    redirect_uri: String,
+}
+
+fn oauth_provider_config(connector_type: &str) -> Result<OAuthProviderConfig> {
+    match connector_type.trim() {
+        "google_calendar" => Ok(OAuthProviderConfig {
+            provider: "google",
+            auth_url: "https://accounts.google.com/o/oauth2/v2/auth",
+            token_url: "https://oauth2.googleapis.com/token",
+            scope: "https://www.googleapis.com/auth/calendar.events",
+        }),
+        "gmail" => Ok(OAuthProviderConfig {
+            provider: "google",
+            auth_url: "https://accounts.google.com/o/oauth2/v2/auth",
+            token_url: "https://oauth2.googleapis.com/token",
+            scope: "https://www.googleapis.com/auth/gmail.modify",
+        }),
+        "slack" => Ok(OAuthProviderConfig {
+            provider: "slack",
+            auth_url: "https://slack.com/oauth/v2/authorize",
+            token_url: "https://slack.com/api/oauth.v2.access",
+            scope: "channels:read chat:write users:read",
+        }),
+        "linkedin" => Ok(OAuthProviderConfig {
+            provider: "linkedin",
+            auth_url: "https://www.linkedin.com/oauth/v2/authorization",
+            token_url: "https://www.linkedin.com/oauth/v2/accessToken",
+            scope: "openid profile email w_member_social",
+        }),
+        "hubspot" => Ok(OAuthProviderConfig {
+            provider: "hubspot",
+            auth_url: "https://app.hubspot.com/oauth/authorize",
+            token_url: "https://api.hubapi.com/oauth/v1/token",
+            scope: "crm.objects.contacts.read crm.objects.contacts.write",
+        }),
+        "salesforce" => Ok(OAuthProviderConfig {
+            provider: "salesforce",
+            auth_url: "https://login.salesforce.com/services/oauth2/authorize",
+            token_url: "https://login.salesforce.com/services/oauth2/token",
+            scope: "api refresh_token offline_access",
+        }),
+        other => Err(AppError::InvalidInput(format!(
+            "unsupported OAuth connector_type: {other}"
+        ))),
+    }
+}
+
+fn percent_encode_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn percent_decode_component(value: &str) -> Result<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' => {
+                if i + 2 >= bytes.len() {
+                    return Err(AppError::InvalidInput("malformed OAuth state".into()));
+                }
+                let hi = hex_value(bytes[i + 1])
+                    .ok_or_else(|| AppError::InvalidInput("malformed OAuth state".into()))?;
+                let lo = hex_value(bytes[i + 2])
+                    .ok_or_else(|| AppError::InvalidInput("malformed OAuth state".into()))?;
+                out.push((hi << 4) | lo);
+                i += 3;
+            }
+            other => {
+                out.push(other);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).map_err(|_| AppError::InvalidInput("malformed OAuth state".into()))
+}
+
+fn safe_callback_redirect_uri(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.starts_with('/') && !trimmed.starts_with("//") && !trimmed.contains("\\") {
+        trimmed.to_string()
+    } else {
+        "/connectors".to_string()
+    }
+}
+
+fn encode_oauth_state(state: &OAuthState) -> String {
+    format!(
+        "tenant_id={}&connector_type={}&redirect_uri={}",
+        percent_encode_component(&state.tenant_id),
+        percent_encode_component(&state.connector_type),
+        percent_encode_component(&safe_callback_redirect_uri(&state.redirect_uri))
+    )
+}
+
+fn decode_oauth_state(value: &str) -> Result<OAuthState> {
+    let mut tenant_id = None;
+    let mut connector_type = None;
+    let mut redirect_uri = None;
+
+    for pair in value.split('&') {
+        let (key, raw_value) = pair
+            .split_once('=')
+            .ok_or_else(|| AppError::InvalidInput("malformed OAuth state".into()))?;
+        match key {
+            "tenant_id" => tenant_id = Some(percent_decode_component(raw_value)?),
+            "connector_type" => connector_type = Some(percent_decode_component(raw_value)?),
+            "redirect_uri" => redirect_uri = Some(percent_decode_component(raw_value)?),
+            _ => return Err(AppError::InvalidInput("malformed OAuth state".into())),
+        }
+    }
+
+    let tenant_id = tenant_id.ok_or_else(|| AppError::InvalidInput("malformed OAuth state".into()))?;
+    let connector_type =
+        connector_type.ok_or_else(|| AppError::InvalidInput("malformed OAuth state".into()))?;
+    let redirect_uri =
+        redirect_uri.ok_or_else(|| AppError::InvalidInput("malformed OAuth state".into()))?;
+
+    if tenant_id.trim().is_empty() || connector_type.trim().is_empty() {
+        return Err(AppError::InvalidInput("malformed OAuth state".into()));
+    }
+
+    Ok(OAuthState {
+        tenant_id,
+        connector_type,
+        redirect_uri: safe_callback_redirect_uri(&redirect_uri),
+    })
+}
+
+fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn oauth_callback_url(headers: &HeaderMap) -> String {
+    let proto = header_value(headers, "x-forwarded-proto").unwrap_or_else(|| "https".to_string());
+    let host = header_value(headers, "x-forwarded-host")
+        .or_else(|| header_value(headers, "host"))
+        .unwrap_or_else(|| "localhost".to_string());
+    format!("{proto}://{host}/api/oauth/callback")
+}
+
+fn build_authorize_url(
+    provider: OAuthProviderConfig,
+    client_id: &str,
+    callback_url: &str,
+    state: &OAuthState,
+) -> String {
+    format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&access_type=offline&prompt=consent",
+        provider.auth_url,
+        percent_encode_component(client_id),
+        percent_encode_component(callback_url),
+        percent_encode_component(provider.scope),
+        percent_encode_component(&encode_oauth_state(state))
+    )
+}
+
+fn build_token_form<'a>(
+    code: &'a str,
+    client_id: &'a str,
+    client_secret: &'a str,
+    callback_url: &'a str,
+) -> [(&'static str, &'a str); 5] {
+    [
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+        ("redirect_uri", callback_url),
+    ]
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthTokenResponse {
+    access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    expires_in: Option<i64>,
+}
+
+pub async fn oauth_authorize(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<OAuthAuthorizeQuery>,
+) -> Result<Redirect> {
+    if query.tenant_id.trim().is_empty() || query.connector_type.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "tenant_id and connector_type are required".into(),
+        ));
+    }
+
+    let provider = oauth_provider_config(&query.connector_type)?;
+    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
+    let credential = store
+        .get(&query.tenant_id, provider.provider, &query.connector_type)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "OAuth credential for tenant {} connector {} not found",
+                query.tenant_id, query.connector_type
+            ))
+        })?;
+
+    let oauth_state = OAuthState {
+        tenant_id: query.tenant_id,
+        connector_type: query.connector_type,
+        redirect_uri: safe_callback_redirect_uri(&query.redirect_uri),
+    };
+    let auth_url = build_authorize_url(
+        provider,
+        &credential.client_id,
+        &oauth_callback_url(&headers),
+        &oauth_state,
+    );
+
+    Ok(Redirect::temporary(&auth_url))
+}
+
+pub async fn oauth_callback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<OAuthCallbackQuery>,
+) -> Result<Redirect> {
+    if query.code.trim().is_empty() {
+        return Err(AppError::InvalidInput("OAuth code is required".into()));
+    }
+
+    let oauth_state = decode_oauth_state(&query.state)?;
+    let provider = oauth_provider_config(&oauth_state.connector_type)?;
+    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
+    let credential = store
+        .get(
+            &oauth_state.tenant_id,
+            provider.provider,
+            &oauth_state.connector_type,
+        )
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "OAuth credential for tenant {} connector {} not found",
+                oauth_state.tenant_id, oauth_state.connector_type
+            ))
+        })?;
+
+    let master = MasterKey::from_env()
+        .ok_or_else(|| AppError::Configuration("FLEET_SECRETS_KEY not set".into()))?;
+    let client_secret = decrypt_api_key(&credential.client_secret, &master)
+        .map_err(|e| AppError::Configuration(format!("decrypt failed: {e}")))?;
+    let callback_url = oauth_callback_url(&headers);
+    let form = build_token_form(
+        &query.code,
+        &credential.client_id,
+        &client_secret,
+        &callback_url,
+    );
+
+    let response = reqwest::Client::new()
+        .post(provider.token_url)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| AppError::External(format!("OAuth token request failed: {e}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::External(format!(
+            "OAuth token exchange failed with {status}: {body}"
+        )));
+    }
+
+    let token: OAuthTokenResponse = response
+        .json()
+        .await
+        .map_err(|e| AppError::External(format!("OAuth token response parse failed: {e}")))?;
+    let expires_at = chrono::Utc::now().timestamp() + token.expires_in.unwrap_or(3600).max(0);
+    store
+        .update_tokens(
+            &credential.id,
+            &token.access_token,
+            token.refresh_token.as_deref(),
+            expires_at,
+        )
+        .await?;
+
+    Ok(Redirect::temporary(&oauth_state.redirect_uri))
+}
+
+pub async fn list_oauth_credentials(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<Vec<OAuthCredentialResponse>>> {
+    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
+    let credentials = store
+        .list_by_tenant(&tenant_id)
+        .await?
+        .into_iter()
+        .map(OAuthCredentialResponse::from)
+        .collect();
+    Ok(Json(credentials))
+}
+
+pub async fn create_oauth_credential(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(mut req): Json<ares_db::oauth_credentials::CreateOAuthCredentialRequest>,
+) -> Result<Json<OAuthCredentialResponse>> {
+    req.tenant_id = tenant_id;
+    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
+    let credential = store.create(&req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let cred_id = credential.id.clone();
+    let t_id = credential.tenant_id.clone();
+    tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
             &pool,
-            "connector_delete",
-            "connector",
-            &cid,
+            "oauth_credential_create",
+            "oauth_credential",
+            &cred_id,
+            Some(&t_id),
             None,
+        )
+        .await;
+    });
+
+    Ok(Json(credential.into()))
+}
+
+pub async fn delete_oauth_credential(
+    State(state): State<AppState>,
+    Path((tenant_id, id)): Path<(String, String)>,
+) -> Result<StatusCode> {
+    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
+    let rows = store.delete_for_tenant(&tenant_id, &id).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!(
+            "oauth credential {id} not found for tenant {tenant_id}"
+        )));
+    }
+
+    let pool = state.tenant_db.pool().clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "oauth_credential_delete",
+            "oauth_credential",
+            &id,
+            Some(&tenant_id),
             None,
         )
         .await;
@@ -3387,7 +4002,9 @@ pub async fn list_schedules(
 ) -> Result<Json<Vec<db_schedules::AgentSchedule>>> {
     let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
     if tenant_id.is_empty() {
-        return Err(AppError::InvalidInput("tenant_id query param is required".into()));
+        return Err(AppError::InvalidInput(
+            "tenant_id query param is required".into(),
+        ));
     }
     let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
     let schedules = store.list_schedules(tenant_id).await?;
@@ -3456,7 +4073,9 @@ pub async fn list_triggers(
 ) -> Result<Json<Vec<db_schedules::EventTrigger>>> {
     let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
     if tenant_id.is_empty() {
-        return Err(AppError::InvalidInput("tenant_id query param is required".into()));
+        return Err(AppError::InvalidInput(
+            "tenant_id query param is required".into(),
+        ));
     }
     let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
     let triggers = store.list_triggers(tenant_id).await?;
@@ -3501,12 +4120,70 @@ pub async fn delete_trigger(
     let pool = state.tenant_db.pool().clone();
     let tid = id.clone();
     tokio::spawn(async move {
+        let _ =
+            audit_log::log_admin_action(&pool, "trigger_delete", "event_trigger", &tid, None, None)
+                .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_tenant_triggers(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<Vec<db_schedules::EventTrigger>>> {
+    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let triggers = store.list_triggers(&tenant_id).await?;
+    Ok(Json(triggers))
+}
+
+pub async fn create_tenant_trigger(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(mut req): Json<db_schedules::CreateTriggerRequest>,
+) -> Result<Json<db_schedules::EventTrigger>> {
+    req.tenant_id = tenant_id;
+    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let trigger = store.create_trigger(&req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = trigger.tenant_id.clone();
+    let tr_name = trigger.name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "trigger_create",
+            "event_trigger",
+            &tr_name,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(trigger))
+}
+
+pub async fn delete_tenant_trigger(
+    State(state): State<AppState>,
+    Path((tenant_id, id)): Path<(String, String)>,
+) -> Result<StatusCode> {
+    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let rows = store.delete_trigger_for_tenant(&tenant_id, &id).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!(
+            "trigger {id} not found for tenant {tenant_id}"
+        )));
+    }
+
+    let pool = state.tenant_db.pool().clone();
+    tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
             &pool,
             "trigger_delete",
             "event_trigger",
-            &tid,
-            None,
+            &id,
+            Some(&tenant_id),
             None,
         )
         .await;
@@ -3525,7 +4202,9 @@ pub async fn list_pipelines(
 ) -> Result<Json<Vec<db_schedules::AgentPipeline>>> {
     let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
     if tenant_id.is_empty() {
-        return Err(AppError::InvalidInput("tenant_id query param is required".into()));
+        return Err(AppError::InvalidInput(
+            "tenant_id query param is required".into(),
+        ));
     }
     let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
     let pipelines = store.list_pipelines(tenant_id).await?;
@@ -3689,7 +4368,9 @@ pub async fn receive_webhook(
             ))
         }
     } else {
-        Err(AppError::NotFound(format!("Trigger {trigger_id} not found")))
+        Err(AppError::NotFound(format!(
+            "Trigger {trigger_id} not found"
+        )))
     }
 }
 

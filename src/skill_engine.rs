@@ -7,26 +7,51 @@ use ares_llm::{LLMClient, LLMResponse};
 use sqlx::PgPool;
 use std::sync::Arc;
 
+const MAX_SKILL_CALL_DEPTH: usize = 8;
+
+fn default_step_input() -> serde_json::Value {
+    serde_json::Value::Null
+}
+
+fn validate_skill_call_depth(depth: usize) -> Result<(), String> {
+    if depth > MAX_SKILL_CALL_DEPTH {
+        return Err(format!(
+            "Skill call depth exceeded maximum of {}",
+            MAX_SKILL_CALL_DEPTH
+        ));
+    }
+    Ok(())
+}
+
 /// One step inside a skill workflow.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[allow(dead_code)]
 pub enum SkillStep {
     /// Call a tool by name with JSON arguments.
-    #[serde(rename = "tool_call")]
     ToolCall {
+        #[serde(alias = "tool", alias = "name")]
         tool_name: String,
+        #[serde(default = "default_step_input", alias = "arguments", alias = "input")]
         args: serde_json::Value,
     },
     /// Call an LLM with a prompt and a model tier.
-    #[serde(rename = "llm_call")]
     LlmCall {
         prompt: String,
+        #[serde(alias = "model")]
         model_tier: String,
     },
+    /// Execute another skill with optional JSON input.
+    SkillCall {
+        #[serde(alias = "skill", alias = "id")]
+        skill_id: String,
+        #[serde(default = "default_step_input", alias = "args", alias = "arguments")]
+        input: serde_json::Value,
+    },
     /// Conditional branch evaluated against execution context.
-    #[serde(rename = "condition")]
     Condition {
         expression: String,
+        #[serde(default)]
         then_steps: Vec<SkillStep>,
     },
 }
@@ -69,6 +94,20 @@ impl SkillEngine {
         input: serde_json::Value,
         run_id: &str,
     ) -> Result<serde_json::Value, String> {
+        self.execute_skill_at_depth(skill_id, tenant_id, input, run_id, 0)
+            .await
+    }
+
+    async fn execute_skill_at_depth(
+        &self,
+        skill_id: &str,
+        tenant_id: &str,
+        input: serde_json::Value,
+        run_id: &str,
+        depth: usize,
+    ) -> Result<serde_json::Value, String> {
+        validate_skill_call_depth(depth)?;
+
         // 1. Load the skill definition
         let skill_store = SkillStore::new(&self.pool);
         let skill = skill_store
@@ -78,8 +117,8 @@ impl SkillEngine {
             .ok_or_else(|| "Skill not found".to_string())?;
 
         // 2. Parse steps JSONB into SkillStep vec
-        let steps: Vec<SkillStep> =
-            serde_json::from_value(skill.steps).map_err(|e| format!("Invalid skill steps: {}", e))?;
+        let steps: Vec<SkillStep> = serde_json::from_value(skill.steps)
+            .map_err(|e| format!("Invalid skill steps: {}", e))?;
 
         // 3. Execute each step sequentially
         let mut context = serde_json::json!({"input": input});
@@ -172,15 +211,27 @@ impl SkillEngine {
                     )
                     .await?;
                 }
+                SkillStep::SkillCall { skill_id, input } => {
+                    tracing::info!("Step {}: skill_call {}", step_index, skill_id);
+                    let result = Box::pin(self.execute_skill_at_depth(
+                        &skill_id,
+                        tenant_id,
+                        input,
+                        run_id,
+                        depth + 1,
+                    ))
+                    .await?;
+                    context[&format!("step_{}", step_index)] = result;
+                }
                 SkillStep::Condition {
                     expression,
                     then_steps,
                 } => {
                     tracing::info!("Step {}: condition {}", step_index, expression);
-                    let condition_met = evaluate_condition(&expression, &context);
-                    if condition_met {
+                    if let Some(ready_steps) = ready_then_steps(&expression, &then_steps, &context)
+                    {
                         // Recursively execute then_steps
-                        for (sub_idx, sub_step) in then_steps.iter().enumerate() {
+                        for (sub_idx, sub_step) in ready_steps.iter().enumerate() {
                             let sub_step_index = step_index + 1 + sub_idx as i32;
                             self.execute_sub_step(
                                 sub_step,
@@ -188,6 +239,7 @@ impl SkillEngine {
                                 run_id,
                                 sub_step_index,
                                 &mut context,
+                                depth,
                             )
                             .await?;
                         }
@@ -208,6 +260,7 @@ impl SkillEngine {
         run_id: &str,
         step_index: i32,
         context: &mut serde_json::Value,
+        depth: usize,
     ) -> Result<(), String> {
         match step {
             SkillStep::ToolCall { tool_name, args } => {
@@ -286,14 +339,25 @@ impl SkillEngine {
                 )
                 .await?;
             }
+            SkillStep::SkillCall { skill_id, input } => {
+                tracing::info!("Sub-step {}: skill_call {}", step_index, skill_id);
+                let result = Box::pin(self.execute_skill_at_depth(
+                    skill_id,
+                    tenant_id,
+                    input.clone(),
+                    run_id,
+                    depth + 1,
+                ))
+                .await?;
+                context[&format!("step_{}", step_index)] = result;
+            }
             SkillStep::Condition {
                 expression,
                 then_steps,
             } => {
                 tracing::info!("Sub-step {}: condition {}", step_index, expression);
-                let condition_met = evaluate_condition(expression, context);
-                if condition_met {
-                    for (sub_idx, sub_step) in then_steps.iter().enumerate() {
+                if let Some(ready_steps) = ready_then_steps(expression, then_steps, context) {
+                    for (sub_idx, sub_step) in ready_steps.iter().enumerate() {
                         let sub_step_index = step_index + 1 + sub_idx as i32;
                         Box::pin(self.execute_sub_step(
                             sub_step,
@@ -301,6 +365,7 @@ impl SkillEngine {
                             run_id,
                             sub_step_index,
                             context,
+                            depth,
                         ))
                         .await?;
                     }
@@ -385,6 +450,14 @@ impl SkillEngine {
     }
 }
 
+fn ready_then_steps<'a>(
+    expression: &str,
+    then_steps: &'a [SkillStep],
+    context: &serde_json::Value,
+) -> Option<&'a [SkillStep]> {
+    evaluate_condition(expression, context).then_some(then_steps)
+}
+
 /// Evaluate a simple condition expression against the execution context.
 ///
 /// Supported forms:
@@ -443,5 +516,160 @@ fn evaluate_condition(expression: &str, context: &serde_json::Value) -> bool {
         "==" => actual == right_val,
         "!=" => actual != right_val,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn collect_ready_skill_calls<'a>(
+        steps: &'a [SkillStep],
+        context: &serde_json::Value,
+        ready_skill_ids: &mut Vec<&'a str>,
+    ) {
+        for step in steps {
+            match step {
+                SkillStep::SkillCall { skill_id, .. } => ready_skill_ids.push(skill_id.as_str()),
+                SkillStep::Condition {
+                    expression,
+                    then_steps,
+                } => {
+                    if let Some(ready_steps) = ready_then_steps(expression, then_steps, context) {
+                        collect_ready_skill_calls(ready_steps, context, ready_skill_ids);
+                    }
+                }
+                SkillStep::ToolCall { .. } | SkillStep::LlmCall { .. } => {}
+            }
+        }
+    }
+
+    #[test]
+    fn skill_step_deserializes_internally_tagged_nested_chain() {
+        let steps: Vec<SkillStep> = serde_json::from_value(json!([
+            {
+                "type": "condition",
+                "expression": "step_0.status == 'success'",
+                "then_steps": [
+                    {
+                        "type": "condition",
+                        "expression": "step_1.result == 'ready'",
+                        "then_steps": [
+                            {
+                                "type": "skill_call",
+                                "skill": "child-skill",
+                                "args": {"source": "nested-then"}
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]))
+        .expect("nested internally tagged skill steps should deserialize");
+
+        let SkillStep::Condition { then_steps, .. } = &steps[0] else {
+            panic!("top-level step should be a condition");
+        };
+        let SkillStep::Condition { then_steps, .. } = &then_steps[0] else {
+            panic!("then_steps should contain the nested condition");
+        };
+        let SkillStep::SkillCall { skill_id, input } = &then_steps[0] else {
+            panic!("nested condition should contain a skill call");
+        };
+        assert_eq!(skill_id, "child-skill");
+        assert_eq!(input, &json!({"source": "nested-then"}));
+    }
+
+    #[test]
+    fn nested_skill_call_is_ready_only_when_each_condition_matches() {
+        let steps: Vec<SkillStep> = serde_json::from_value(json!([
+            {
+                "type": "condition",
+                "expression": "step_0.status == 'success'",
+                "then_steps": [
+                    {
+                        "type": "condition",
+                        "expression": "step_1.result == 'ready'",
+                        "then_steps": [
+                            {"type": "skill_call", "skill_id": "child-skill"}
+                        ]
+                    }
+                ]
+            }
+        ]))
+        .expect("nested chain should deserialize");
+
+        let mut ready = Vec::new();
+        collect_ready_skill_calls(
+            &steps,
+            &json!({
+                "step_0": {"status": "failed"},
+                "step_1": {"content": "ready"}
+            }),
+            &mut ready,
+        );
+        assert!(
+            ready.is_empty(),
+            "nested skill_call metadata must not be considered executable when the outer condition fails"
+        );
+
+        collect_ready_skill_calls(
+            &steps,
+            &json!({
+                "step_0": {"status": "success"},
+                "step_1": {"content": "not-ready"}
+            }),
+            &mut ready,
+        );
+        assert!(
+            ready.is_empty(),
+            "outer condition readiness alone must not bypass the inner condition"
+        );
+
+        collect_ready_skill_calls(
+            &steps,
+            &json!({
+                "step_0": {"status": "success"},
+                "step_1": {"content": "ready"}
+            }),
+            &mut ready,
+        );
+        assert_eq!(ready, vec!["child-skill"]);
+    }
+
+    #[test]
+    fn aliases_cover_existing_tool_and_input_shapes() {
+        let steps: Vec<SkillStep> = serde_json::from_value(json!([
+            {"type": "tool_call", "tool": "lookup", "input": {"q": "x"}},
+            {"type": "llm_call", "prompt": "summarize", "model": "fast"},
+            {"type": "skill_call", "id": "follow-up", "arguments": {"from": "alias"}}
+        ]))
+        .expect("aliased skill step fields should deserialize");
+
+        let SkillStep::ToolCall { tool_name, args } = &steps[0] else {
+            panic!("first step should be a tool call");
+        };
+        assert_eq!(tool_name, "lookup");
+        assert_eq!(args, &json!({"q": "x"}));
+
+        let SkillStep::LlmCall { model_tier, .. } = &steps[1] else {
+            panic!("second step should be an LLM call");
+        };
+        assert_eq!(model_tier, "fast");
+
+        let SkillStep::SkillCall { skill_id, input } = &steps[2] else {
+            panic!("third step should be a skill call");
+        };
+        assert_eq!(skill_id, "follow-up");
+        assert_eq!(input, &json!({"from": "alias"}));
+    }
+
+    #[test]
+    fn skill_call_depth_guard_allows_boundary_and_rejects_next_level() {
+        assert!(validate_skill_call_depth(MAX_SKILL_CALL_DEPTH).is_ok());
+        let err = validate_skill_call_depth(MAX_SKILL_CALL_DEPTH + 1)
+            .expect_err("depth above the maximum should be rejected");
+        assert!(err.contains("Skill call depth exceeded maximum"));
     }
 }

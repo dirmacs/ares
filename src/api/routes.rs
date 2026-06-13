@@ -43,6 +43,14 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .route(
             "/events/field-change",
             post(crate::api::handlers::field_change::handle_field_change),
+        )
+        .route(
+            "/oauth/authorize",
+            get(crate::api::handlers::admin::oauth_authorize),
+        )
+        .route(
+            "/oauth/callback",
+            get(crate::api::handlers::admin::oauth_callback),
         );
 
     #[allow(unused_mut)]
@@ -337,6 +345,15 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             delete(crate::api::handlers::admin::delete_tenant_allowed_rag_source),
         )
         .route(
+            "/admin/tenants/{tenant_id}/triggers",
+            get(crate::api::handlers::admin::list_tenant_triggers)
+                .post(crate::api::handlers::admin::create_tenant_trigger),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/triggers/{id}",
+            delete(crate::api::handlers::admin::delete_tenant_trigger),
+        )
+        .route(
             "/admin/tenants/{tenant_id}/pipelines",
             get(crate::api::handlers::admin::list_tenant_pipelines)
                 .post(crate::api::handlers::admin::create_tenant_pipeline),
@@ -476,6 +493,15 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/admin/connectors/{id}",
             delete(crate::api::handlers::admin::delete_connector),
         )
+        .route(
+            "/admin/tenants/{tenant_id}/oauth-creds",
+            get(crate::api::handlers::admin::list_oauth_credentials)
+                .post(crate::api::handlers::admin::create_oauth_credential),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/oauth-creds/{id}",
+            delete(crate::api::handlers::admin::delete_oauth_credential),
+        )
         // Schedules, Triggers & Pipelines
         .route(
             "/admin/schedules",
@@ -582,8 +608,6 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .nest("/v1", v1_routes)
 }
 
-
-
 /// Joins a route prefix and suffix into a single path (for nested routers).
 pub(crate) fn join_route_paths(prefix: &str, suffix: &str) -> String {
     let prefix = prefix.trim_end_matches('/');
@@ -603,6 +627,8 @@ pub(crate) fn public_route_paths() -> &'static [&'static str] {
         "/auth/refresh",
         "/auth/logout",
         "/agents",
+        "/oauth/authorize",
+        "/oauth/callback",
     ]
 }
 
@@ -681,18 +707,18 @@ mod tests {
     use super::*;
     use crate::agents::context_provider::NoOpContextProvider;
     use crate::utils::toml_config::{
-        AgentConfig, AresConfig, AuthConfig, BillingConfig, DatabaseConfig,
-        DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig, ServerConfig,
+        AgentConfig, AresConfig, AuthConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths,
+        ModelConfig, ProviderConfig, RagConfig, ServerConfig,
     };
     use crate::{
-        AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory,
-        DynamicConfigManager, ProviderRegistry, ToolRegistry,
+        AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
+        ProviderRegistry, ToolRegistry,
     };
+    use axum::http::StatusCode;
+    use axum_test::TestServer;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
-    use axum::http::StatusCode;
-    use axum_test::TestServer;
 
     fn minimal_config() -> AresConfig {
         let mut providers = HashMap::new();
@@ -718,14 +744,14 @@ mod tests {
         agents.insert(
             "a".into(),
             AgentConfig {
-                            model: "default".into(),
-                            system_prompt: None,
-                            tools: vec![],
-                            allowed_tools: None,
-                            max_tool_iterations: 1,
-                            parallel_tools: false,
-                            extra: HashMap::new(),
-                        },
+                model: "default".into(),
+                system_prompt: None,
+                tools: vec![],
+                allowed_tools: None,
+                max_tool_iterations: 1,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
         );
         AresConfig {
             server: ServerConfig::default(),
@@ -833,15 +859,19 @@ mod tests {
             "/auth/refresh",
             "/auth/logout",
             "/agents",
+            "/oauth/authorize",
+            "/oauth/callback",
         ]
     }
 
     #[test]
-    fn public_api_paths_include_auth_and_agents() {
+    fn public_api_paths_include_auth_agents_and_oauth() {
         let paths = public_api_paths();
         assert!(paths.contains(&"/auth/register"));
         assert!(paths.contains(&"/auth/login"));
         assert!(paths.contains(&"/agents"));
+        assert!(paths.contains(&"/oauth/authorize"));
+        assert!(paths.contains(&"/oauth/callback"));
     }
 
     #[test]
@@ -861,7 +891,7 @@ mod tests {
     fn route_contract_does_not_depend_on_env() {
         std::env::remove_var("DATABASE_URL");
         std::env::remove_var("JWT_SECRET");
-        assert_eq!(public_api_paths().len(), 5);
+        assert_eq!(public_api_paths().len(), 7);
     }
 
     #[tokio::test]
@@ -900,7 +930,10 @@ mod tests {
     async fn create_router_admin_deploys_rejects_missing_secret() {
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
-        server.get("/admin/deploys").await.assert_status_unauthorized();
+        server
+            .get("/admin/deploys")
+            .await
+            .assert_status_unauthorized();
     }
 
     #[tokio::test]

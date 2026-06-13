@@ -213,7 +213,7 @@ impl<'a> ScheduleStore<'a> {
             "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
                     last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
              FROM agent_schedules \
-             WHERE enabled = TRUE AND (next_run_at IS NULL OR next_run_at <= $1)"
+             WHERE enabled = TRUE AND (next_run_at IS NULL OR next_run_at <= $1)",
         )
         .bind(now)
         .fetch_all(self.pool)
@@ -228,7 +228,7 @@ impl<'a> ScheduleStore<'a> {
         let res = sqlx::query(
             "UPDATE agent_schedules \
              SET last_run_at = $1, next_run_at = $2, updated_at = $1 \
-             WHERE id = $3"
+             WHERE id = $3",
         )
         .bind(now)
         .bind(next_run_at)
@@ -257,7 +257,11 @@ impl<'a> ScheduleStore<'a> {
         Ok(())
     }
 
-    pub async fn list_missed_runs(&self, schedule_id: &str, limit: i32) -> Result<Vec<MissedRunAudit>> {
+    pub async fn list_missed_runs(
+        &self,
+        schedule_id: &str,
+        limit: i32,
+    ) -> Result<Vec<MissedRunAudit>> {
         let rows = sqlx::query(
             "SELECT id, schedule_id, expected_at, detected_at, action_taken, created_at \
              FROM missed_runs \
@@ -362,6 +366,16 @@ impl<'a> EventTriggerStore<'a> {
         Ok(res.rows_affected())
     }
 
+    pub async fn delete_trigger_for_tenant(&self, tenant_id: &str, id: &str) -> Result<u64> {
+        let res = sqlx::query("DELETE FROM event_triggers WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id)
+            .bind(id)
+            .execute(self.pool)
+            .await
+            .map_err(sqlx_err)?;
+        Ok(res.rows_affected())
+    }
+
     /// Return all triggers of a specific event type for a tenant.
     pub async fn list_by_event_type(
         &self,
@@ -386,7 +400,7 @@ impl<'a> EventTriggerStore<'a> {
         let row = sqlx::query(
             "SELECT id, tenant_id, name, event_type, event_config, target_agent, enabled, \
                     created_at, updated_at \
-             FROM event_triggers WHERE id = $1"
+             FROM event_triggers WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(self.pool)
@@ -479,7 +493,7 @@ impl<'a> PipelineStore<'a> {
                     created_at, updated_at \
              FROM agent_pipelines \
              WHERE tenant_id = $1 AND source_agent = $2 AND enabled = TRUE \
-             ORDER BY target_agent"
+             ORDER BY target_agent",
         )
         .bind(tenant_id)
         .bind(source_agent)
@@ -553,7 +567,12 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
 }
 
 fn validate_event_type(t: &str) -> Result<()> {
-    const VALID: &[&str] = &["webhook", "document_upload", "field_change", "agent_complete"];
+    const VALID: &[&str] = &[
+        "webhook",
+        "document_upload",
+        "field_change",
+        "agent_complete",
+    ];
     if VALID.contains(&t) {
         Ok(())
     } else {

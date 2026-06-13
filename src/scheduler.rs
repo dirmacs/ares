@@ -11,6 +11,24 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScheduledPipelineTrigger<'a> {
+    pub(crate) source_agent: &'a str,
+    pub(crate) source_output: &'a str,
+    pub(crate) tenant_id: &'a str,
+}
+
+pub(crate) fn scheduled_pipeline_trigger<'a>(
+    sched: &'a AgentSchedule,
+    source_output: &'a str,
+) -> ScheduledPipelineTrigger<'a> {
+    ScheduledPipelineTrigger {
+        source_agent: &sched.agent_name,
+        source_output,
+        tenant_id: &sched.tenant_id,
+    }
+}
+
 /// Start the background scheduler loop.
 pub async fn start_scheduler(pool: PgPool, app_state: Arc<crate::AppState>) {
     let mut ticker = interval(Duration::from_secs(60));
@@ -49,11 +67,7 @@ async fn run_due_schedules(pool: &PgPool, app_state: &Arc<crate::AppState>) -> R
         match compute_next_run(&sched.cron_expression, &sched.timezone) {
             Ok(next) => {
                 if let Err(e) = store.update_schedule_run(&sched.id, next).await {
-                    tracing::warn!(
-                        "Failed to update schedule {} next_run_at: {}",
-                        sched.id,
-                        e
-                    );
+                    tracing::warn!("Failed to update schedule {} next_run_at: {}", sched.id, e);
                 }
             }
             Err(e) => {
@@ -112,11 +126,7 @@ async fn run_catchup_schedules(
             created_at: now,
         };
         if let Err(e) = store.insert_missed_run_audit(&audit).await {
-            tracing::warn!(
-                "Failed to record missed_run audit for {}: {}",
-                sched.id,
-                e
-            );
+            tracing::warn!("Failed to record missed_run audit for {}: {}", sched.id, e);
         }
 
         if let Err(e) = execute_scheduled_agent(&sched, app_state, true).await {
@@ -165,27 +175,26 @@ async fn execute_scheduled_agent(
     let pool = app_state.tenant_db.pool();
 
     // 1. Resolve agent
-    let mut resolved_agent =
-        match tenant_agent::resolve_agent_for_tenant(
-            pool,
-            &app_state.agent_registry,
-            &sched.tenant_id,
-            &sched.agent_name,
-            &app_state.fleet_secrets,
-        )
-        .await
-        {
-            Ok(agent) => agent,
-            Err(e) => {
-                tracing::error!(
-                    "Failed to resolve agent {} for tenant {}: {}",
-                    sched.agent_name,
-                    sched.tenant_id,
-                    e
-                );
-                return Err(format!("Agent resolution failed: {}", e));
-            }
-        };
+    let mut resolved_agent = match tenant_agent::resolve_agent_for_tenant(
+        pool,
+        &app_state.agent_registry,
+        &sched.tenant_id,
+        &sched.agent_name,
+        &app_state.fleet_secrets,
+    )
+    .await
+    {
+        Ok(agent) => agent,
+        Err(e) => {
+            tracing::error!(
+                "Failed to resolve agent {} for tenant {}: {}",
+                sched.agent_name,
+                sched.tenant_id,
+                e
+            );
+            return Err(format!("Agent resolution failed: {}", e));
+        }
+    };
 
     let start = std::time::Instant::now();
     let run_id = uuid::Uuid::new_v4().to_string();
@@ -227,12 +236,14 @@ async fn execute_scheduled_agent(
 
             if let Ok(val) = &skill_result {
                 let output_str = serde_json::to_string(val).unwrap_or_default();
+                let trigger = scheduled_pipeline_trigger(sched, &output_str);
                 let _ = crate::pipeline_engine::execute_pipeline(
-                    &sched.agent_name,
-                    &output_str,
-                    &sched.tenant_id,
+                    trigger.source_agent,
+                    trigger.source_output,
+                    trigger.tenant_id,
                     app_state,
-                ).await;
+                )
+                .await;
             }
 
             // Record agent run
@@ -249,7 +260,11 @@ async fn execute_scheduled_agent(
                 eruka_write_count: 0,
                 pipeline_id: None,
             };
-            let status = if skill_result.is_ok() { "completed" } else { "failed" };
+            let status = if skill_result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            };
             let err_msg = skill_result.as_ref().err().cloned();
 
             let pool_clone = pool.clone();
@@ -371,15 +386,19 @@ async fn execute_scheduled_agent(
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
 
-            app_state.active_runs.update_model(&run_id, Some(&model_name));
+            app_state
+                .active_runs
+                .update_model(&run_id, Some(&model_name));
             app_state.active_runs.finish(&run_id, "completed");
 
+            let trigger = scheduled_pipeline_trigger(sched, &response.content);
             let _ = crate::pipeline_engine::execute_pipeline(
-                &sched.agent_name,
-                &response.content,
-                &sched.tenant_id,
+                trigger.source_agent,
+                trigger.source_output,
+                trigger.tenant_id,
                 app_state,
-            ).await;
+            )
+            .await;
         }
         Err(e) => {
             status = "failed";
@@ -440,8 +459,16 @@ async fn execute_scheduled_agent(
     //      VALUES ($1, $2, 'scheduled', $3, $4, $5, $6, $7, $8, $9, $10)
     let usage_pool = pool.clone();
     let usage_tid = sched.tenant_id.clone();
-    let usage_model = if model_clone != "unknown" { Some(model_clone) } else { None };
-    let usage_provider = if provider_clone != "unknown" { Some(provider_clone) } else { None };
+    let usage_model = if model_clone != "unknown" {
+        Some(model_clone)
+    } else {
+        None
+    };
+    let usage_provider = if provider_clone != "unknown" {
+        Some(provider_clone)
+    } else {
+        None
+    };
     let usage_agent = sched.agent_name.clone();
     let input_tok = input_tokens;
     let output_tok = output_tokens;
@@ -474,7 +501,7 @@ async fn execute_scheduled_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_db::agent_runs::AgentRunMetadata;
+    use ares_db::schedules::AgentPipeline;
 
     #[test]
     fn compute_next_run_with_valid_cron() {
@@ -504,29 +531,72 @@ mod tests {
         );
     }
 
-    // DIR1-64: E2E integration tests — scheduled→pipeline→connector flow
-
     #[test]
-    fn scheduled_metadata_has_correct_request_source() {
-        let metadata = AgentRunMetadata {
-            request_source: Some("scheduled".to_string()),
-            session_id: Some("test-session-id".to_string()),
-            pipeline_id: None,
-            ..Default::default()
+    fn scheduled_agent_success_prepares_downstream_pipeline_execution_and_billing() {
+        let schedule = AgentSchedule {
+            id: "schedule-1".to_string(),
+            tenant_id: "tenant-a".to_string(),
+            agent_name: "source-agent".to_string(),
+            cron_expression: "* * * * * *".to_string(),
+            timezone: "UTC".to_string(),
+            enabled: true,
+            last_run_at: None,
+            next_run_at: Some(1_700_000_000),
+            grace_period_seconds: 120,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
         };
-        assert_eq!(metadata.request_source.as_deref(), Some("scheduled"));
-        assert!(metadata.pipeline_id.is_none());
-    }
+        let source_output = r#"{"status":"success","result":"ready"}"#;
+        let trigger = scheduled_pipeline_trigger(&schedule, source_output);
+        let pipeline = AgentPipeline {
+            id: "pipeline-source-to-target".to_string(),
+            tenant_id: trigger.tenant_id.to_string(),
+            source_agent: trigger.source_agent.to_string(),
+            target_agent: "target-agent".to_string(),
+            condition: Some("output.contains(\"success\")".to_string()),
+            enabled: true,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        };
 
-    #[test]
-    fn scheduled_usage_sql_source_is_scheduled() {
-        let sql = "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'scheduled', $3, $4, $5, $6, $7, $8, $9, $10)";
-        assert!(sql.contains("'scheduled'"));
-        assert!(sql.contains("input_tokens"));
-        assert!(sql.contains("output_tokens"));
-        assert!(sql.contains("model_name"));
-        assert!(sql.contains("agent_name"));
-        assert!(sql.contains("provider_name"));
+        assert_eq!(trigger.source_agent, "source-agent");
+        assert_eq!(trigger.tenant_id, "tenant-a");
+        assert!(crate::pipeline_engine::evaluate_condition(
+            pipeline.condition.as_deref().unwrap(),
+            trigger.source_output
+        ));
+        assert_eq!(pipeline.source_agent, schedule.agent_name);
+
+        let effects = crate::pipeline_engine::pipeline_target_run_effects(
+            &pipeline,
+            trigger.tenant_id,
+            "target-run-1",
+            Some("tenant-db"),
+            Some("cfg-v1".to_string()),
+            true,
+            17,
+            23,
+            "gpt-4o-mini",
+            "openai",
+        );
+
+        assert_eq!(effects.metadata.request_source.as_deref(), Some("pipeline"));
+        assert_eq!(
+            effects.metadata.pipeline_id.as_deref(),
+            Some("pipeline-source-to-target")
+        );
+        assert_eq!(effects.metadata.session_id.as_deref(), Some("target-run-1"));
+        assert!(effects.metadata.eruka_context_hit);
+        assert_eq!(effects.metadata.eruka_read_count, 1);
+        assert_eq!(effects.usage.tenant_id, "tenant-a");
+        assert_eq!(effects.usage.source, "pipeline");
+        assert_eq!(effects.usage.request_count, 1);
+        assert_eq!(effects.usage.agent_name, "target-agent");
+        assert_eq!(effects.usage.input_tokens, 17);
+        assert_eq!(effects.usage.output_tokens, 23);
+        assert_eq!(effects.usage.token_count, 40);
+        assert_eq!(effects.usage.model_name.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(effects.usage.provider_name.as_deref(), Some("openai"));
     }
 
     #[test]

@@ -9,7 +9,10 @@ use ares_db::oauth_credentials::{OAuthCredential, OAuthCredentialStore};
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::sync::Arc;
 use std::time::Duration;
+
+pub mod slack;
 
 // =============================================================================
 // Error handling
@@ -21,7 +24,11 @@ pub enum ConnectorError {
     #[error("Auth failed for {provider}: {message}")]
     Auth { provider: String, message: String },
     #[error("HTTP error for {provider}: {status} — {message}")]
-    Http { provider: String, status: u16, message: String },
+    Http {
+        provider: String,
+        status: u16,
+        message: String,
+    },
     #[error("Rate limited by {provider}: {message}")]
     RateLimited { provider: String, message: String },
     #[error("Configuration error for {provider}: {message}")]
@@ -34,9 +41,11 @@ impl From<ConnectorError> for AppError {
             ConnectorError::Auth { provider, message } => {
                 AppError::Auth(format!("{provider} auth failed: {message}"))
             }
-            ConnectorError::Http { provider, status, message } => {
-                AppError::External(format!("{provider} HTTP {status}: {message}"))
-            }
+            ConnectorError::Http {
+                provider,
+                status,
+                message,
+            } => AppError::External(format!("{provider} HTTP {status}: {message}")),
             ConnectorError::RateLimited { provider, message } => {
                 AppError::RateLimited(format!("{provider}: {message}"))
             }
@@ -202,11 +211,7 @@ pub struct ApiErrorDetail {
 pub fn extract_error_message(body: &str) -> String {
     serde_json::from_str::<ApiErrorBody>(body)
         .ok()
-        .and_then(|e| {
-            e.error
-                .and_then(|d| d.message)
-                .or(e.message)
-        })
+        .and_then(|e| e.error.and_then(|d| d.message).or(e.message))
         .unwrap_or_else(|| body.to_string())
 }
 
@@ -228,9 +233,10 @@ pub async fn refresh_oauth2_token(
 ) -> Result<String> {
     let cred = get_oauth_credential(pool, master_key, tenant_id, provider, connector_type).await?;
 
-    let refresh_token = cred.refresh_token.as_ref().ok_or_else(|| {
-        AppError::Auth(format!("{provider} credential has no refresh token"))
-    })?;
+    let refresh_token = cred
+        .refresh_token
+        .as_ref()
+        .ok_or_else(|| AppError::Auth(format!("{provider} credential has no refresh token")))?;
     let refresh_token_plain = decrypt_api_key(refresh_token, master_key)
         .map_err(|e| AppError::Auth(format!("Failed to decrypt refresh token: {e}")))?;
 
@@ -251,10 +257,7 @@ pub async fn refresh_oauth2_token(
         .map_err(|e| AppError::External(format!("{provider} refresh token request failed: {e}")))?;
 
     if !response.status().is_success() {
-        let body = response
-            .text()
-            .await
-            .unwrap_or_default();
+        let body = response.text().await.unwrap_or_default();
         return Err(AppError::Auth(format!(
             "{provider} token refresh failed: {body}"
         )));
@@ -275,7 +278,10 @@ pub async fn refresh_oauth2_token(
 
     let now = chrono::Utc::now().timestamp();
     let expires_at = now + refresh_data.expires_in;
-    let new_refresh_token = refresh_data.refresh_token.as_deref().unwrap_or(&refresh_token_plain);
+    let new_refresh_token = refresh_data
+        .refresh_token
+        .as_deref()
+        .unwrap_or(&refresh_token_plain);
 
     let store = OAuthCredentialStore::new(pool);
     store
@@ -312,7 +318,15 @@ pub async fn get_valid_access_token(
     let now = chrono::Utc::now().timestamp();
     // Refresh if expires within 5 minutes
     if cred.expires_at.map(|e| e <= now + 300).unwrap_or(true) {
-        return refresh_oauth2_token(pool, master_key, tenant_id, provider, connector_type, token_url).await;
+        return refresh_oauth2_token(
+            pool,
+            master_key,
+            tenant_id,
+            provider,
+            connector_type,
+            token_url,
+        )
+        .await;
     }
 
     let at_payload = cred.access_token.ok_or_else(|| {
@@ -334,4 +348,20 @@ pub fn require_tenant_id(args: &serde_json::Value) -> Result<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| AppError::InvalidInput("tenant_id is required".to_string()))
+}
+
+/// Register bundled connector tools in the static agent tool registry.
+///
+/// Runtime-created tools are loaded separately by [`RuntimeToolRegistry`]; these
+/// pre-built connector tools are normal [`ToolRegistry`] entries so configured
+/// agents can discover and execute them through the existing tool-calling path.
+pub fn register_prebuilt_connector_tools(
+    registry: &mut crate::registry::ToolRegistry,
+    pool: PgPool,
+    master_key: MasterKey,
+) {
+    let slack = slack::SlackClient::new(pool, master_key);
+    registry.register(Arc::new(slack::SlackSendMessage::new(slack.clone())));
+    registry.register(Arc::new(slack::SlackListChannels::new(slack.clone())));
+    registry.register(Arc::new(slack::SlackUploadFile::new(slack)));
 }

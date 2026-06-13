@@ -123,6 +123,22 @@ fn default_quality_tier() -> String {
     "standard".to_string()
 }
 
+fn has_model_prefix(model_id: &str, prefix: &str) -> bool {
+    model_id == prefix
+        || model_id
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with(|c: char| !c.is_ascii_alphanumeric()))
+}
+
+fn is_openai_reasoning_model(model_lower: &str) -> bool {
+    let model_id = model_lower.rsplit(['/', ':']).next().unwrap_or(model_lower);
+
+    has_model_prefix(model_id, "gpt-5")
+        || has_model_prefix(model_id, "o1")
+        || has_model_prefix(model_id, "o3")
+        || has_model_prefix(model_id, "o4")
+}
+
 impl Default for ModelCapabilities {
     fn default() -> Self {
         Self {
@@ -213,6 +229,22 @@ impl ModelCapabilities {
             };
         }
 
+        // OpenAI reasoning models
+        if is_openai_reasoning_model(&model_lower) {
+            let is_gpt5 = model_lower
+                .rsplit(['/', ':'])
+                .next()
+                .is_some_and(|model_id| has_model_prefix(model_id, "gpt-5"));
+
+            return Self {
+                supports_reasoning: true,
+                quality_tier: "premium".to_string(),
+                family: Some(if is_gpt5 { "gpt-5" } else { "openai-reasoning" }.to_string()),
+                production_ready: true,
+                ..Default::default()
+            };
+        }
+
         // GPT models
         if model_lower.contains("gpt-4o") {
             return Self {
@@ -292,7 +324,10 @@ impl ModelCapabilities {
         }
 
         // Llama models (NVIDIA NIM)
-        if model_lower.contains("llama-3.3") || model_lower.contains("llama-3.1") || model_lower.contains("llama-3.2") {
+        if model_lower.contains("llama-3.3")
+            || model_lower.contains("llama-3.1")
+            || model_lower.contains("llama-3.2")
+        {
             let context = if model_lower.contains("70b") {
                 128_000
             } else {
@@ -321,7 +356,10 @@ impl ModelCapabilities {
         }
 
         // Mistral models (NVIDIA NIM)
-        if model_lower.contains("ministral") || model_lower.contains("mistral") || model_lower.contains("codestral") {
+        if model_lower.contains("ministral")
+            || model_lower.contains("mistral")
+            || model_lower.contains("codestral")
+        {
             return Self {
                 supports_tools: true,
                 supports_vision: false,
@@ -968,7 +1006,7 @@ mod tests {
         let qwen_vl = ModelCapabilities::for_model("qwen2.5-vl-72b");
         assert!(qwen_vl.supports_vision);
 
-        for unknown in ["gemini-1.5-pro", "o3-mini", "o1-preview", "claude", "deepseek-r1"] {
+        for unknown in ["gemini-1.5-pro", "claude", "deepseek-r1"] {
             let caps = ModelCapabilities::for_model(unknown);
             assert_eq!(
                 caps,
@@ -976,6 +1014,26 @@ mod tests {
                 "{unknown} should use default capabilities"
             );
         }
+    }
+
+    #[test]
+    fn test_openai_reasoning_capabilities() {
+        for model in ["gpt-5", "gpt-5-mini", "gpt-5.1", "openai/gpt-5"] {
+            let caps = ModelCapabilities::for_model(model);
+            assert!(caps.supports_reasoning, "{model} should support reasoning");
+            assert_eq!(caps.family.as_deref(), Some("gpt-5"));
+            assert_ne!(caps, ModelCapabilities::default());
+        }
+
+        for model in ["o1-preview", "o3-mini", "o4-mini", "openai/o3"] {
+            let caps = ModelCapabilities::for_model(model);
+            assert!(caps.supports_reasoning, "{model} should support reasoning");
+            assert_eq!(caps.family.as_deref(), Some("openai-reasoning"));
+            assert_ne!(caps, ModelCapabilities::default());
+        }
+
+        let gpt35 = ModelCapabilities::for_model("gpt-3.5-turbo");
+        assert!(!gpt35.supports_reasoning);
     }
 
     #[test]
@@ -1146,7 +1204,6 @@ mod tests {
         assert!(vision_reqs.requires_vision);
     }
 
-
     #[test]
     fn test_builder_method_chaining() {
         let reqs = CapabilityRequirements::builder()
@@ -1194,9 +1251,7 @@ mod tests {
         assert!(empty.required_tags.is_empty());
         assert!(empty.excluded_families.is_empty());
 
-        let tools_only = CapabilityRequirements::builder()
-            .requires_tools()
-            .build();
+        let tools_only = CapabilityRequirements::builder().requires_tools().build();
         assert!(tools_only.requires_tools);
         assert!(!tools_only.requires_vision);
     }

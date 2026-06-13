@@ -238,6 +238,64 @@ Handle employee info, policies, and benefits."#
         self.run_id = Some(run_id);
     }
 
+    /// Pre-flight check: reject the call if the tenant has already exhausted
+    /// their token budget.
+    #[cfg(feature = "postgres")]
+    async fn preflight_budget_check(&self, tenant_id: &str) -> Result<()> {
+        if let Some(pool) = &self.token_budget_pool {
+            let store = ares_db::token_budgets::TokenBudgetStore::new(pool);
+            let status = store.check_budget(tenant_id).await?;
+            if status.would_exceed {
+                return Err(AppError::RateLimited(format!(
+                    "Tenant {} token budget exceeded ({} / {})",
+                    tenant_id, status.tokens_used, status.token_limit
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Record actual token usage and log alerts when thresholds are crossed.
+    #[cfg(feature = "postgres")]
+    async fn record_and_check_budget(
+        &self,
+        tenant_id: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+    ) -> Result<()> {
+        if let Some(pool) = &self.token_budget_pool {
+            let store = ares_db::token_budgets::TokenBudgetStore::new(pool);
+            let total = prompt_tokens + completion_tokens;
+            store
+                .record_usage(
+                    tenant_id,
+                    self.run_id.as_deref(),
+                    &self.name,
+                    self.llm.model_name(),
+                    prompt_tokens,
+                    completion_tokens,
+                )
+                .await?;
+            let status = store.check_budget(tenant_id).await?;
+            if status.percentage >= status.alert_threshold {
+                tracing::warn!(
+                    tenant_id,
+                    usage_pct = status.percentage,
+                    threshold = status.alert_threshold,
+                    "Token budget alert threshold crossed"
+                );
+            }
+            if status.would_exceed {
+                tracing::warn!(
+                    tenant_id,
+                    remaining = status.remaining,
+                    "Tenant token budget would be exceeded"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Try the primary LLM, then each fallback in order.
     async fn try_generate_with_history(
         &self,
@@ -389,11 +447,30 @@ Handle employee info, policies, and benefits."#
         let mut total_usage = TokenUsage::default();
 
         for iteration in 0..self.max_tool_iterations {
+            #[cfg(feature = "postgres")]
+            self.preflight_budget_check(&context.user_id).await?;
+
             let llm_start = std::time::Instant::now();
             let response = self
                 .try_generate_with_tools_and_history(&messages, &tools)
                 .await?;
             let llm_latency = llm_start.elapsed().as_millis() as i64;
+
+            #[cfg(feature = "postgres")]
+            {
+                let prompt_tok = response
+                    .usage
+                    .as_ref()
+                    .map(|u| u.prompt_tokens as i64)
+                    .unwrap_or(0);
+                let completion_tok = response
+                    .usage
+                    .as_ref()
+                    .map(|u| u.completion_tokens as i64)
+                    .unwrap_or(0);
+                self.record_and_check_budget(&context.user_id, prompt_tok, completion_tok)
+                    .await?;
+            }
 
             // Log the LLM call
             if let Some(obs) = &self.observability {
@@ -499,11 +576,23 @@ Handle employee info, policies, and benefits."#
             "Max tool iterations ({}) reached — making final synthesis call",
             self.max_tool_iterations
         );
+        #[cfg(feature = "postgres")]
+        self.preflight_budget_check(&context.user_id).await?;
+
         let synth_start = std::time::Instant::now();
         let final_response = self
             .try_generate_with_tools_and_history(&messages, &[])
             .await;
         let synth_latency = synth_start.elapsed().as_millis() as i64;
+
+        #[cfg(feature = "postgres")]
+        if let Ok(resp) = &final_response {
+            let prompt_tok = resp.usage.as_ref().map(|u| u.prompt_tokens as i64).unwrap_or(0);
+            let completion_tok = resp.usage.as_ref().map(|u| u.completion_tokens as i64).unwrap_or(0);
+            let _ = self
+                .record_and_check_budget(&context.user_id, prompt_tok, completion_tok)
+                .await;
+        }
 
         // Log the final synthesis call
         if let Some(obs) = &self.observability {
@@ -622,9 +711,28 @@ impl Agent for ConfigurableAgent {
 
         messages.push(("user".to_string(), input.to_string()));
 
+        #[cfg(feature = "postgres")]
+        self.preflight_budget_check(&context.user_id).await?;
+
         let llm_start = std::time::Instant::now();
         let llm_response = self.try_generate_with_history(&messages).await?;
         let llm_latency = llm_start.elapsed().as_millis() as i64;
+
+        #[cfg(feature = "postgres")]
+        {
+            let prompt_tok = llm_response
+                .usage
+                .as_ref()
+                .map(|u| u.prompt_tokens as i64)
+                .unwrap_or(0);
+            let completion_tok = llm_response
+                .usage
+                .as_ref()
+                .map(|u| u.completion_tokens as i64)
+                .unwrap_or(0);
+            self.record_and_check_budget(&context.user_id, prompt_tok, completion_tok)
+                .await?;
+        }
 
         // Log the LLM call
         if let Some(obs) = &self.observability {

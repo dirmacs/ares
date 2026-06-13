@@ -43,6 +43,7 @@ impl GoogleClient {
             &self.master_key,
             tenant_id,
             "google",
+            "oauth2",
             GOOGLE_TOKEN_URL,
         )
         .await

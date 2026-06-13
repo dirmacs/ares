@@ -824,6 +824,7 @@ pub async fn test_tenant_agent_handler(
         pool: state.tenant_db.pool().clone(),
     });
     draft_agent.set_observability(obs.clone());
+    draft_agent.set_run_id(run_id.clone());
 
     state.active_runs.start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),

@@ -265,6 +265,7 @@ impl AgentRegistry {
             primary_provider,
         );
         agent.set_fallback_llms(fallback_llms);
+        agent.set_token_budget_pool(pool.clone());
 
         // --- tenant allowlist enforcement ---
         let allowlist_store = ares_db::tenant_allowlist::TenantAllowlistStore::new(pool);

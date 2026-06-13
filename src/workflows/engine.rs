@@ -172,7 +172,7 @@ impl WorkflowEngine {
             };
 
             // Create the agent
-            let agent = self
+            let mut agent = self
                 .state
                 .agent_registry
                 .create_agent_from_config_with_fallbacks(
@@ -183,6 +183,7 @@ impl WorkflowEngine {
                     &self.state.fleet_secrets,
                 )
                 .await?;
+            agent.set_run_id(uuid::Uuid::new_v4().to_string());
 
             // Execute the agent
             let agent_resp = agent.execute(&current_input, context).await?;

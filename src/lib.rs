@@ -100,6 +100,7 @@
 //! |---------|-------------|
 //! | `ollama` | Ollama local inference (default) |
 //! | `openai` | OpenAI API support |
+//! | `azure` | Azure AI Foundry OpenAI-compatible support |
 //! | `llamacpp` | Direct GGUF model loading |
 //! | `postgres` | PostgreSQL database (default) |
 //! | `qdrant` | Qdrant vector database |

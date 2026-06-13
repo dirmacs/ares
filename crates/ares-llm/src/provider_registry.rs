@@ -111,6 +111,11 @@ impl ProviderRegistry {
             .entry("bedrock".to_string())
             .or_insert_with(Self::default_bedrock_provider_config);
 
+        #[cfg(feature = "azure")]
+        providers
+            .entry("azure".to_string())
+            .or_insert_with(Self::default_azure_provider_config);
+
         let default_model = config
             .nvidia
             .as_ref()
@@ -207,6 +212,11 @@ impl ProviderRegistry {
                     .unwrap_or_else(|| "AWS_REGION".to_string()),
                 default_model: entry.default_model.clone().unwrap_or_default(),
             },
+            "azure" | "azure-compatible" => ProviderConfig::Azure {
+                api_key_env: "AZURE_FOUNDRY_API_KEY".to_string(),
+                base_url_env: "AZURE_FOUNDRY_BASE_URL".to_string(),
+                default_model: entry.default_model.clone().unwrap_or_default(),
+            },
             _ => ProviderConfig::OpenAI {
                 api_key_env: entry
                     .api_key
@@ -249,6 +259,7 @@ impl ProviderRegistry {
         match config {
             ProviderConfig::OpenAI { default_model, .. }
             | ProviderConfig::Anthropic { default_model, .. }
+            | ProviderConfig::Azure { default_model, .. }
             | ProviderConfig::Bedrock { default_model, .. }
             | ProviderConfig::Ollama { default_model, .. } => default_model,
             _ => "",
@@ -263,6 +274,14 @@ impl ProviderRegistry {
         }
     }
 
+    fn default_azure_provider_config() -> ProviderConfig {
+        ProviderConfig::Azure {
+            api_key_env: "AZURE_FOUNDRY_API_KEY".to_string(),
+            base_url_env: "AZURE_FOUNDRY_BASE_URL".to_string(),
+            default_model: "DeepSeek-V4-Flash".to_string(),
+        }
+    }
+
     fn bedrock_model_id_from_name(model_name: &str) -> Option<&str> {
         let trimmed = model_name.trim();
         if let Some(model_id) = trimmed.strip_prefix("bedrock/") {
@@ -274,9 +293,26 @@ impl ProviderRegistry {
         None
     }
 
+    fn azure_model_id_from_name(model_name: &str) -> Option<&str> {
+        let trimmed = model_name.trim();
+        if let Some(model_id) = trimmed.strip_prefix("azure/") {
+            return (!model_id.trim().is_empty()).then_some(model_id.trim());
+        }
+        None
+    }
+
     fn bedrock_model_config(model_id: &str) -> ModelConfig {
         ModelConfig {
             provider: "bedrock".to_string(),
+            model: model_id.to_string(),
+            temperature: 0.7,
+            max_tokens: 4096,
+        }
+    }
+
+    fn azure_model_config(model_id: &str) -> ModelConfig {
+        ModelConfig {
+            provider: "azure".to_string(),
             model: model_id.to_string(),
             temperature: 0.7,
             max_tokens: 4096,
@@ -369,6 +405,24 @@ impl ProviderRegistry {
                     ))
                 }
             }
+            "azure" | "azure-compatible" => {
+                #[cfg(feature = "azure")]
+                {
+                    Ok(Provider::Azure {
+                        api_key: Self::runtime_api_key(provider_name, entry)?,
+                        api_base: entry.api_base.clone(),
+                        model,
+                        params,
+                    })
+                }
+
+                #[cfg(not(feature = "azure"))]
+                {
+                    Err(AppError::Configuration(
+                        "Azure provider configured but the corresponding feature is not enabled in this build".into(),
+                    ))
+                }
+            }
             provider_type => Err(AppError::Configuration(format!(
                 "Runtime provider '{}' has unsupported provider_type '{}'",
                 provider_name, provider_type
@@ -387,7 +441,11 @@ impl ProviderRegistry {
         if let Some(model_id) = Self::bedrock_model_id_from_name(name) {
             return Some(Self::bedrock_model_config(model_id));
         }
-        // 2. catalog lookup – synthesize a ModelConfig on the fly
+        // 3. direct Azure model ids (`azure/<model-id>`)
+        if let Some(model_id) = Self::azure_model_id_from_name(name) {
+            return Some(Self::azure_model_config(model_id));
+        }
+        // 4. catalog lookup – synthesize a ModelConfig on the fly
         if let Some(ref catalog) = self.catalog {
             let snapshot = catalog.snapshot();
             if snapshot.iter().any(|e| e.id == name) {
@@ -419,6 +477,12 @@ impl ProviderRegistry {
         let mut names: Vec<String> = self.models.keys().cloned().collect();
         if let Some(ProviderConfig::Bedrock { default_model, .. }) = self.get_provider("bedrock") {
             let name = format!("bedrock/{default_model}");
+            if !default_model.is_empty() && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        if let Some(ProviderConfig::Azure { default_model, .. }) = self.get_provider("azure") {
+            let name = format!("azure/{default_model}");
             if !default_model.is_empty() && !names.contains(&name) {
                 names.push(name);
             }
@@ -473,7 +537,17 @@ impl ProviderRegistry {
             return provider.create_client().await;
         }
 
-        // 3. Try catalog lookup
+        // 3. Try direct Azure model routing (`azure/<model-id>`).
+        if let Some(model_id) = Self::azure_model_id_from_name(model_name) {
+            let model_config = Self::azure_model_config(model_id);
+            let provider_config = self
+                .get_provider("azure")
+                .unwrap_or_else(Self::default_azure_provider_config);
+            let provider = Provider::from_model_config(&model_config, &provider_config)?;
+            return provider.create_client().await;
+        }
+
+        // 4. Try catalog lookup
         if let Some(ref catalog) = self.catalog {
             let snapshot = catalog.snapshot();
             if snapshot.iter().any(|e| e.id == model_name) {
@@ -561,6 +635,7 @@ impl ProviderRegistry {
     pub fn has_model(&self, name: &str) -> bool {
         self.models.contains_key(name)
             || Self::bedrock_model_id_from_name(name).is_some()
+            || Self::azure_model_id_from_name(name).is_some()
             || self
                 .catalog
                 .as_ref()
@@ -582,6 +657,11 @@ impl ProviderRegistry {
             caps.is_local = false;
             return Some(caps);
         }
+        if let Some(model_id) = Self::azure_model_id_from_name(model_name) {
+            let mut caps = ModelCapabilities::for_model(model_id);
+            caps.is_local = false;
+            return Some(caps);
+        }
 
         // If it's a legacy model, use the explicit config
         if let Some(model_config) = self.models.get(model_name) {
@@ -589,7 +669,9 @@ impl ProviderRegistry {
             let mut caps = ModelCapabilities::for_model(&model_config.model);
             if matches!(
                 provider_config,
-                ProviderConfig::OpenAI { .. } | ProviderConfig::Bedrock { .. }
+                ProviderConfig::OpenAI { .. }
+                    | ProviderConfig::Azure { .. }
+                    | ProviderConfig::Bedrock { .. }
             ) {
                 caps.is_local = false;
             }
@@ -633,6 +715,20 @@ impl ProviderRegistry {
                 result.push(ModelWithCapabilities {
                     name,
                     provider: "bedrock".to_string(),
+                    model_id: default_model,
+                    capabilities: caps,
+                });
+            }
+        }
+
+        if let Some(ProviderConfig::Azure { default_model, .. }) = self.get_provider("azure") {
+            let name = format!("azure/{default_model}");
+            if !default_model.is_empty() && !result.iter().any(|model| model.name == name) {
+                let mut caps = ModelCapabilities::for_model(&default_model);
+                caps.is_local = false;
+                result.push(ModelWithCapabilities {
+                    name,
+                    provider: "azure".to_string(),
                     model_id: default_model,
                     capabilities: caps,
                 });
@@ -745,6 +841,20 @@ impl ProviderRegistry {
                     model: default_model,
                     owned_by: "aws-bedrock".to_string(),
                     quality_score: 85,
+                    is_chat: true,
+                });
+            }
+        }
+
+        if let Some(ProviderConfig::Azure { default_model, .. }) = self.get_provider("azure") {
+            let name = format!("azure/{default_model}");
+            if !default_model.is_empty() && !models.iter().any(|model| model.name == name) {
+                models.push(ModelInfo {
+                    name,
+                    provider: "azure".to_string(),
+                    model: default_model,
+                    owned_by: "azure-foundry".to_string(),
+                    quality_score: 80,
                     is_chat: true,
                 });
             }

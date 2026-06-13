@@ -94,6 +94,13 @@ default_model = "ministral-3:3b"
 # api_base = "https://api.openai.com/v1"
 # default_model = "gpt-4"
 
+# Azure AI Foundry (requires 'azure' feature, AZURE_FOUNDRY_API_KEY, and AZURE_FOUNDRY_BASE_URL)
+# [providers.azure]
+# type = "azure"
+# api_key_env = "AZURE_FOUNDRY_API_KEY"
+# base_url_env = "AZURE_FOUNDRY_BASE_URL"
+# default_model = "DeepSeek-V4-Flash"
+
 # AWS Bedrock Claude (requires 'bedrock' feature, AWS_BEARER_TOKEN_BEDROCK, and AWS_REGION)
 # [providers.bedrock]
 # type = "bedrock"
@@ -171,6 +178,13 @@ max_tokens = 2048
 # [models.bedrock-haiku]
 # provider = "bedrock"
 # model = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+# temperature = 0.7
+# max_tokens = 4096
+
+# Azure Foundry model for tool-capable tenant agents
+# [models.azure-deepseek]
+# provider = "azure"
+# model = "DeepSeek-V4-Flash"
 # temperature = 0.7
 # max_tokens = 4096
 

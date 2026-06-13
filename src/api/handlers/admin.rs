@@ -2570,6 +2570,7 @@ pub async fn verify_fleet_provider(
     let resp = match client
         .get(&models_url)
         .header("Authorization", format!("Bearer {}", api_key))
+        .header("api-key", &api_key)
         .header("Accept", "application/json")
         .timeout(std::time::Duration::from_secs(10))
         .send()
@@ -2652,6 +2653,8 @@ pub struct FleetProviderCapabilities {
 /// can only select providers that this build can actually instantiate.
 pub async fn fleet_provider_capabilities() -> Json<FleetProviderCapabilities> {
     let mut providers: Vec<&'static str> = vec!["openai"];
+    #[cfg(feature = "azure")]
+    providers.push("azure");
     #[cfg(feature = "anthropic")]
     providers.push("anthropic");
     #[cfg(feature = "bedrock")]
@@ -2668,6 +2671,7 @@ pub async fn fleet_provider_capabilities() -> Json<FleetProviderCapabilities> {
 fn default_api_base(pc: &ProviderConfig) -> Option<String> {
     match pc {
         ProviderConfig::OpenAI { api_base, .. } => Some(api_base.clone()),
+        ProviderConfig::Azure { base_url_env, .. } => std::env::var(base_url_env).ok(),
         ProviderConfig::Anthropic { .. } => Some("https://api.anthropic.com".to_string()),
         ProviderConfig::Bedrock { region_env, .. } => std::env::var(region_env)
             .ok()
@@ -2680,6 +2684,7 @@ fn default_api_base(pc: &ProviderConfig) -> Option<String> {
 fn resolve_env_key(pc: &ProviderConfig) -> Option<String> {
     let var = match pc {
         ProviderConfig::OpenAI { api_key_env, .. } => api_key_env,
+        ProviderConfig::Azure { api_key_env, .. } => api_key_env,
         ProviderConfig::Anthropic { api_key_env, .. } => api_key_env,
         ProviderConfig::Bedrock { api_key_env, .. } => api_key_env,
         ProviderConfig::Ollama { api_key_env, .. } => api_key_env,

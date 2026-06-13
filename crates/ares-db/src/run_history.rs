@@ -558,16 +558,24 @@ impl<'a> RunHistoryStore<'a> {
         tenant_id: &str,
         limit: i32,
         offset: i32,
+        created_after: Option<i64>,
+        created_before: Option<i64>,
     ) -> Result<Vec<RunCost>> {
         let rows = sqlx::query(
             "SELECT run_id, tenant_id, agent_name, total_llm_calls, total_tool_calls, \
                     total_prompt_tokens, total_completion_tokens, total_estimated_cost_usd, \
                     total_duration_ms, created_at \
-             FROM run_costs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+             FROM run_costs \
+             WHERE tenant_id = $1 \
+               AND ($4::BIGINT IS NULL OR created_at >= $4) \
+               AND ($5::BIGINT IS NULL OR created_at <= $5) \
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         )
         .bind(tenant_id)
         .bind(limit)
         .bind(offset)
+        .bind(created_after)
+        .bind(created_before)
         .fetch_all(self.pool)
         .await
         .map_err(sqlx_err)?;
@@ -760,7 +768,10 @@ impl<'a> RunHistoryStore<'a> {
     // -------------------------------------------------------------------------
 
     /// Insert agent health metrics.
-    pub async fn insert_health_metrics(&self, record: &AgentHealthMetrics) -> Result<AgentHealthMetrics> {
+    pub async fn insert_health_metrics(
+        &self,
+        record: &AgentHealthMetrics,
+    ) -> Result<AgentHealthMetrics> {
         let row = sqlx::query(
             "INSERT INTO agent_health_metrics \
                 (id, tenant_id, agent_name, period_start, period_end, total_runs, \
@@ -807,7 +818,10 @@ impl<'a> RunHistoryStore<'a> {
     }
 
     /// Insert model health metrics.
-    pub async fn insert_model_health_metrics(&self, record: &ModelHealthMetrics) -> Result<ModelHealthMetrics> {
+    pub async fn insert_model_health_metrics(
+        &self,
+        record: &ModelHealthMetrics,
+    ) -> Result<ModelHealthMetrics> {
         let row = sqlx::query(
             "INSERT INTO model_health_metrics \
                 (id, tenant_id, model, period_start, period_end, total_calls, \
@@ -1305,7 +1319,10 @@ mod tests {
         let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
             .await
             .ok()?;
-        sqlx::migrate!("../../migrations").run(&db.pool).await.ok()?;
+        sqlx::migrate!("../../migrations")
+            .run(&db.pool)
+            .await
+            .ok()?;
         Some(db.pool)
     }
 
@@ -1348,12 +1365,18 @@ mod tests {
         assert_eq!(inserted.total_tokens, 150);
 
         // Get
-        let fetched = store.get_llm_call(&inserted.id).await.expect("get_llm_call");
+        let fetched = store
+            .get_llm_call(&inserted.id)
+            .await
+            .expect("get_llm_call");
         assert!(fetched.is_some());
         assert_eq!(fetched.unwrap().id, inserted.id);
 
         // List for run
-        let for_run = store.get_llm_calls_for_run(&req.run_id).await.expect("get_llm_calls_for_run");
+        let for_run = store
+            .get_llm_calls_for_run(&req.run_id)
+            .await
+            .expect("get_llm_calls_for_run");
         assert_eq!(for_run.len(), 1);
         assert_eq!(for_run[0].id, inserted.id);
 
@@ -1378,9 +1401,10 @@ mod tests {
         let store = RunHistoryStore::new(&pool);
 
         // Clean up
-        let _ = sqlx::query("DELETE FROM run_tool_calls WHERE agent_name LIKE 'integration-test-%'")
-            .execute(&pool)
-            .await;
+        let _ =
+            sqlx::query("DELETE FROM run_tool_calls WHERE agent_name LIKE 'integration-test-%'")
+                .execute(&pool)
+                .await;
 
         let req = LogToolCallRequest {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1399,17 +1423,26 @@ mod tests {
         };
 
         // Insert
-        let inserted = store.insert_tool_call(&req).await.expect("insert_tool_call");
+        let inserted = store
+            .insert_tool_call(&req)
+            .await
+            .expect("insert_tool_call");
         assert_eq!(inserted.run_id, req.run_id);
         assert_eq!(inserted.tool_name, "http_get");
 
         // Get
-        let fetched = store.get_tool_call(&inserted.id).await.expect("get_tool_call");
+        let fetched = store
+            .get_tool_call(&inserted.id)
+            .await
+            .expect("get_tool_call");
         assert!(fetched.is_some());
         assert_eq!(fetched.unwrap().id, inserted.id);
 
         // List for run
-        let for_run = store.get_tool_calls_for_run(&req.run_id).await.expect("get_tool_calls_for_run");
+        let for_run = store
+            .get_tool_calls_for_run(&req.run_id)
+            .await
+            .expect("get_tool_calls_for_run");
         assert_eq!(for_run.len(), 1);
         assert_eq!(for_run[0].id, inserted.id);
 
@@ -1420,9 +1453,10 @@ mod tests {
         assert!(listed.iter().any(|c| c.id == inserted.id));
 
         // Cleanup
-        let _ = sqlx::query("DELETE FROM run_tool_calls WHERE agent_name LIKE 'integration-test-%'")
-            .execute(&pool)
-            .await;
+        let _ =
+            sqlx::query("DELETE FROM run_tool_calls WHERE agent_name LIKE 'integration-test-%'")
+                .execute(&pool)
+                .await;
     }
 
     #[tokio::test]
@@ -1475,19 +1509,32 @@ mod tests {
             alert_threshold_pct: 85,
             currency: "USD".into(),
         };
-        let budget = store.set_tenant_budget(&req).await.expect("set_tenant_budget");
+        let budget = store
+            .set_tenant_budget(&req)
+            .await
+            .expect("set_tenant_budget");
         assert_eq!(budget.monthly_limit_usd, dec!(1000.00));
         assert_eq!(budget.currency, "USD");
 
         // Get
-        let fetched = store.get_tenant_budget(&tenant_id).await.expect("get_tenant_budget");
+        let fetched = store
+            .get_tenant_budget(&tenant_id)
+            .await
+            .expect("get_tenant_budget");
         assert!(fetched.is_some());
         assert_eq!(fetched.unwrap().tenant_id, tenant_id);
 
         // Delete
-        let deleted = store.delete_tenant_budget(&tenant_id).await.expect("delete_tenant_budget");
+        let deleted = store
+            .delete_tenant_budget(&tenant_id)
+            .await
+            .expect("delete_tenant_budget");
         assert_eq!(deleted, 1);
-        assert!(store.get_tenant_budget(&tenant_id).await.expect("get after delete").is_none());
+        assert!(store
+            .get_tenant_budget(&tenant_id)
+            .await
+            .expect("get after delete")
+            .is_none());
     }
 
     #[tokio::test]
@@ -1524,7 +1571,10 @@ mod tests {
         };
 
         // Insert
-        let inserted = store.insert_budget_alert(&alert).await.expect("insert_budget_alert");
+        let inserted = store
+            .insert_budget_alert(&alert)
+            .await
+            .expect("insert_budget_alert");
         assert_eq!(inserted.id, id);
         assert!(!inserted.acknowledged);
 
@@ -1536,13 +1586,19 @@ mod tests {
         let ack_req = AcknowledgeBudgetAlertRequest {
             acknowledged_by: "admin".into(),
         };
-        let acked = store.acknowledge_budget_alert(&id, &ack_req).await.expect("acknowledge");
+        let acked = store
+            .acknowledge_budget_alert(&id, &ack_req)
+            .await
+            .expect("acknowledge");
         assert!(acked.acknowledged);
         assert_eq!(acked.acknowledged_by.as_deref(), Some("admin"));
         assert!(acked.acknowledged_at.is_some());
 
         // Cleanup
-        let _ = sqlx::query("DELETE FROM budget_alerts WHERE id = $1").bind(&id).execute(&pool).await;
+        let _ = sqlx::query("DELETE FROM budget_alerts WHERE id = $1")
+            .bind(&id)
+            .execute(&pool)
+            .await;
     }
 
     #[tokio::test]
@@ -1555,9 +1611,11 @@ mod tests {
         let id = format!("health-{}", uuid::Uuid::new_v4());
 
         // Clean up
-        let _ = sqlx::query("DELETE FROM agent_health_metrics WHERE tenant_id LIKE 'integration-test-%'")
-            .execute(&pool)
-            .await;
+        let _ = sqlx::query(
+            "DELETE FROM agent_health_metrics WHERE tenant_id LIKE 'integration-test-%'",
+        )
+        .execute(&pool)
+        .await;
 
         let now = chrono::Utc::now().timestamp();
         let record = AgentHealthMetrics {
@@ -1580,22 +1638,33 @@ mod tests {
         };
 
         // Insert
-        let inserted = store.insert_health_metrics(&record).await.expect("insert_health_metrics");
+        let inserted = store
+            .insert_health_metrics(&record)
+            .await
+            .expect("insert_health_metrics");
         assert_eq!(inserted.id, id);
         assert_eq!(inserted.total_runs, 100);
 
         // Get
-        let fetched = store.get_health_metrics(&id).await.expect("get_health_metrics");
+        let fetched = store
+            .get_health_metrics(&id)
+            .await
+            .expect("get_health_metrics");
         assert!(fetched.is_some());
         assert_eq!(fetched.unwrap().total_runs, 100);
 
         // List
-        let listed = store.list_health_metrics(&record.tenant_id, 10, 0).await.expect("list_health_metrics");
+        let listed = store
+            .list_health_metrics(&record.tenant_id, 10, 0)
+            .await
+            .expect("list_health_metrics");
         assert!(listed.iter().any(|h| h.id == id));
 
         // Cleanup
-        let _ = sqlx::query("DELETE FROM agent_health_metrics WHERE tenant_id LIKE 'integration-test-%'")
-            .execute(&pool)
-            .await;
+        let _ = sqlx::query(
+            "DELETE FROM agent_health_metrics WHERE tenant_id LIKE 'integration-test-%'",
+        )
+        .execute(&pool)
+        .await;
     }
 }

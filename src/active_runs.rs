@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+const TERMINAL_RUN_RETENTION_SECONDS: i64 = 60;
+
 /// Snapshot of an active agent run for the live dashboard.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ActiveRun {
@@ -80,9 +82,18 @@ impl ActiveRuns {
     }
 
     pub fn list(&self) -> Vec<ActiveRun> {
-        let runs = self.runs.read().expect("active runs lock poisoned");
+        let now = chrono::Utc::now().timestamp();
+        let mut runs = self.runs.write().expect("active runs lock poisoned");
+        runs.retain(|_, run| {
+            !is_terminal_status(&run.status)
+                || now.saturating_sub(run.last_update) <= TERMINAL_RUN_RETENTION_SECONDS
+        });
         runs.values().cloned().collect()
     }
+}
+
+fn is_terminal_status(status: &str) -> bool {
+    matches!(status, "completed" | "failed" | "error" | "cancelled")
 }
 
 impl Default for ActiveRuns {

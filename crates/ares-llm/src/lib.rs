@@ -18,6 +18,7 @@
 //!
 //! Enable providers via Cargo features:
 //! - `openai` - OpenAI API (GPT-4, GPT-3.5, etc.)
+//! - `azure` - Azure AI Foundry OpenAI-compatible chat completions
 //! - `bedrock` - AWS Bedrock Claude via Anthropic Messages JSON
 //! - `anthropic` - Anthropic API (Claude 3, Claude 3.5, etc.)
 //! - `ollama` - Local Ollama server
@@ -81,6 +82,8 @@ pub mod provider_registry;
 
 #[cfg(feature = "openai")]
 pub mod openai;
+#[cfg(feature = "azure")]
+pub mod azure;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
 #[cfg(feature = "ollama")]

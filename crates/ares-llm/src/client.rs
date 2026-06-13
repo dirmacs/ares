@@ -150,6 +150,19 @@ pub enum Provider {
         params: ModelParams,
     },
 
+    /// Azure AI Foundry OpenAI-compatible chat completions
+    #[cfg(feature = "azure")]
+    Azure {
+        /// Foundry API key for authentication
+        api_key: String,
+        /// Foundry base URL (e.g., <https://resource.services.ai.azure.com/openai/v1>)
+        api_base: String,
+        /// Model identifier (e.g., "DeepSeek-V4-Flash")
+        model: String,
+        /// Model inference parameters
+        params: ModelParams,
+    },
+
     /// Anthropic Claude API
     #[cfg(feature = "anthropic")]
     Anthropic {
@@ -232,6 +245,20 @@ impl Provider {
                 params.clone(),
             ))),
 
+            #[cfg(feature = "azure")]
+            Provider::Azure {
+                api_key,
+                api_base,
+                model,
+                params,
+            } => Ok(Box::new(super::openai::OpenAIClient::with_params_and_headers(
+                api_key.clone(),
+                super::azure::normalize_base_url(api_base),
+                super::azure::strip_model_prefix(model).to_string(),
+                params.clone(),
+                super::azure::foundry_headers(api_key),
+            ))),
+
             #[cfg(feature = "openai")]
             Provider::RuntimeOpenAI {
                 api_key,
@@ -301,7 +328,10 @@ impl Provider {
     /// Provider priority (first match wins):
     /// 1. **LlamaCpp** - if `LLAMACPP_MODEL_PATH` is set
     /// 2. **OpenAI** - if `OPENAI_API_KEY` is set
-    /// 3. **Ollama** - default fallback for local inference
+    /// 3. **NVIDIA NIM** - if `NVIDIA_API_KEY` is set
+    /// 4. **Azure AI Foundry** - if `AZURE_FOUNDRY_API_KEY` is set
+    /// 5. **AWS Bedrock** - if `AWS_BEARER_TOKEN_BEDROCK` is set
+    /// 6. **Ollama** - default fallback for local inference
     ///
     /// # Environment Variables
     ///
@@ -312,6 +342,11 @@ impl Provider {
     /// - `OPENAI_API_KEY` - API key (required)
     /// - `OPENAI_API_BASE` - Base URL (default: <https://api.openai.com/v1>)
     /// - `OPENAI_MODEL` - Model name (default: gpt-4)
+    ///
+    /// ## Azure AI Foundry
+    /// - `AZURE_FOUNDRY_API_KEY` - Foundry API key (required)
+    /// - `AZURE_FOUNDRY_BASE_URL` - Foundry `/openai/v1` base URL (required)
+    /// - `AZURE_FOUNDRY_MODEL` - Model name (default: DeepSeek-V4-Flash)
     ///
     /// ## AWS Bedrock
     /// - `AWS_BEARER_TOKEN_BEDROCK` - Bedrock API bearer token (required)
@@ -365,6 +400,31 @@ impl Provider {
             }
         }
 
+        #[cfg(feature = "azure")]
+        {
+            if let Ok(api_key) = std::env::var(super::azure::DEFAULT_API_KEY_ENV) {
+                if !api_key.is_empty() {
+                    let api_base = std::env::var(super::azure::DEFAULT_BASE_URL_ENV).map_err(
+                        |_| {
+                            AppError::Configuration(format!(
+                                "{} must be set when {} is configured",
+                                super::azure::DEFAULT_BASE_URL_ENV,
+                                super::azure::DEFAULT_API_KEY_ENV
+                            ))
+                        },
+                    )?;
+                    let model = std::env::var(super::azure::DEFAULT_MODEL_ENV)
+                        .unwrap_or_else(|_| super::azure::DEFAULT_MODEL.to_string());
+                    return Ok(Provider::Azure {
+                        api_key,
+                        api_base,
+                        model,
+                        params: ModelParams::default(),
+                    });
+                }
+            }
+        }
+
         #[cfg(feature = "bedrock")]
         {
             if let Ok(api_key) = std::env::var("AWS_BEARER_TOKEN_BEDROCK") {
@@ -388,14 +448,18 @@ impl Provider {
             }
         }
 
-        #[cfg(all(not(feature = "openai"), not(feature = "bedrock")))]
+        #[cfg(all(
+            not(feature = "openai"),
+            not(feature = "azure"),
+            not(feature = "bedrock")
+        ))]
         return Err(AppError::Configuration(
-            "No LLM provider feature is enabled. Enable openai or bedrock.".into(),
+            "No LLM provider feature is enabled. Enable openai, azure, or bedrock.".into(),
         ));
 
-        #[cfg(any(feature = "openai", feature = "bedrock"))]
+        #[cfg(any(feature = "openai", feature = "azure", feature = "bedrock"))]
         Err(AppError::Configuration(
-            "No LLM provider configured. Set OPENAI_API_KEY, NVIDIA_API_KEY, or AWS_BEARER_TOKEN_BEDROCK.".into(),
+            "No LLM provider configured. Set OPENAI_API_KEY, NVIDIA_API_KEY, AZURE_FOUNDRY_API_KEY, or AWS_BEARER_TOKEN_BEDROCK.".into(),
         ))
     }
 
@@ -404,6 +468,9 @@ impl Provider {
         match self {
             #[cfg(feature = "openai")]
             Provider::OpenAI { .. } => "openai",
+
+            #[cfg(feature = "azure")]
+            Provider::Azure { .. } => "azure",
 
             #[cfg(feature = "openai")]
             Provider::RuntimeOpenAI { .. } => "openai",
@@ -430,6 +497,9 @@ impl Provider {
         match self {
             #[cfg(feature = "openai")]
             Provider::OpenAI { .. } => true,
+
+            #[cfg(feature = "azure")]
+            Provider::Azure { .. } => true,
 
             #[cfg(feature = "openai")]
             Provider::RuntimeOpenAI { .. } => true,
@@ -458,6 +528,9 @@ impl Provider {
             Provider::OpenAI { api_base, .. } => {
                 api_base.contains("localhost") || api_base.contains("127.0.0.1")
             }
+
+            #[cfg(feature = "azure")]
+            Provider::Azure { .. } => false,
 
             #[cfg(feature = "openai")]
             Provider::RuntimeOpenAI { api_base, .. } => {
@@ -524,6 +597,34 @@ impl Provider {
                 Ok(Provider::OpenAI {
                     api_key,
                     api_base: api_base.clone(),
+                    model: model_override
+                        .map(String::from)
+                        .unwrap_or_else(|| default_model.clone()),
+                    params,
+                })
+            }
+
+            #[cfg(feature = "azure")]
+            ProviderConfig::Azure {
+                api_key_env,
+                base_url_env,
+                default_model,
+            } => {
+                let api_key = std::env::var(api_key_env).map_err(|_| {
+                    AppError::Configuration(format!(
+                        "Azure Foundry API key environment variable '{}' is not set",
+                        api_key_env
+                    ))
+                })?;
+                let api_base = std::env::var(base_url_env).map_err(|_| {
+                    AppError::Configuration(format!(
+                        "Azure Foundry base URL environment variable '{}' is not set",
+                        base_url_env
+                    ))
+                })?;
+                Ok(Provider::Azure {
+                    api_key,
+                    api_base,
                     model: model_override
                         .map(String::from)
                         .unwrap_or_else(|| default_model.clone()),

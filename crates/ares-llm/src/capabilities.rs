@@ -171,6 +171,7 @@ impl ModelCapabilities {
     pub fn for_model(model_name: &str) -> Self {
         let model_lower = model_name.to_lowercase();
         let model_lower = model_lower.strip_prefix("bedrock/").unwrap_or(&model_lower);
+        let model_lower = model_lower.strip_prefix("azure/").unwrap_or(model_lower);
 
         // Claude models
         if model_lower.contains("claude-3-5-sonnet") || model_lower.contains("claude-sonnet-4") {
@@ -319,6 +320,32 @@ impl ModelCapabilities {
                 speed_tier: "fast".to_string(),
                 quality_tier: "standard".to_string(),
                 family: Some("gpt-3.5".to_string()),
+                production_ready: true,
+                ..Default::default()
+            };
+        }
+
+        // DeepSeek models (Azure AI Foundry and OpenAI-compatible gateways)
+        if model_lower.contains("deepseek") {
+            return Self {
+                supports_tools: true,
+                supports_vision: false,
+                supports_json_mode: true,
+                supports_streaming: true,
+                supports_system_prompt: true,
+                context_window: 128_000,
+                max_output_tokens: 8192,
+                supports_reasoning: model_lower.contains("r1")
+                    || model_lower.contains("reason")
+                    || model_lower.contains("v4"),
+                cost_tier: "medium".to_string(),
+                speed_tier: if model_lower.contains("flash") {
+                    "fast".to_string()
+                } else {
+                    "medium".to_string()
+                },
+                quality_tier: "high".to_string(),
+                family: Some("deepseek".to_string()),
                 production_ready: true,
                 ..Default::default()
             };

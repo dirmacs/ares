@@ -128,7 +128,7 @@ impl<'a> RuntimeToolStore<'a> {
     /// Return every tool ordered by name.
     pub async fn get_all(&self) -> Result<Vec<RuntimeTool>> {
         let rows = sqlx::query(
-            "SELECT id, name, display_name, description, tool_type, parameters_schema, \
+            "SELECT id::text AS id, name, display_name, description, tool_type, parameters_schema, \
                     execution_config, enabled, version, is_public, created_by, tenant_id, \
                     created_at, updated_at \
              FROM runtime_tools ORDER BY name",
@@ -143,10 +143,10 @@ impl<'a> RuntimeToolStore<'a> {
     /// Fetch a single tool by its UUID. Returns `None` if not found.
     pub async fn get_by_id(&self, id: &str) -> Result<Option<RuntimeTool>> {
         let row = sqlx::query(
-            "SELECT id, name, display_name, description, tool_type, parameters_schema, \
+            "SELECT id::text AS id, name, display_name, description, tool_type, parameters_schema, \
                     execution_config, enabled, version, is_public, created_by, tenant_id, \
                     created_at, updated_at \
-             FROM runtime_tools WHERE id = $1",
+             FROM runtime_tools WHERE id = $1::uuid",
         )
         .bind(id)
         .fetch_optional(self.pool)
@@ -160,7 +160,7 @@ impl<'a> RuntimeToolStore<'a> {
     /// all public tools.
     pub async fn get_by_tenant(&self, tenant_id: &str) -> Result<Vec<RuntimeTool>> {
         let rows = sqlx::query(
-            "SELECT id, name, display_name, description, tool_type, parameters_schema, \
+            "SELECT id::text AS id, name, display_name, description, tool_type, parameters_schema, \
                     execution_config, enabled, version, is_public, created_by, tenant_id, \
                     created_at, updated_at \
              FROM runtime_tools \
@@ -205,8 +205,8 @@ impl<'a> RuntimeToolStore<'a> {
             "INSERT INTO runtime_tools \
                 (id, name, display_name, description, tool_type, parameters_schema, \
                  execution_config, enabled, version, is_public, created_by, tenant_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9, $10, $11) \
-             RETURNING id, name, display_name, description, tool_type, parameters_schema, \
+             VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, 1, $9, $10, $11) \
+             RETURNING id::text AS id, name, display_name, description, tool_type, parameters_schema, \
                        execution_config, enabled, version, is_public, created_by, tenant_id, \
                        created_at, updated_at",
         )
@@ -270,7 +270,7 @@ impl<'a> RuntimeToolStore<'a> {
         sqlx::query(
             "INSERT INTO runtime_tool_versions \
                 (tool_id, version, parameters_schema, execution_config, description, change_summary) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             VALUES ($1::uuid, $2, $3, $4, $5, $6)",
         )
         .bind(id)
         .bind(existing.version)
@@ -288,8 +288,8 @@ impl<'a> RuntimeToolStore<'a> {
                 display_name = $1, description = $2, parameters_schema = $3, \
                 execution_config = $4, enabled = $5, is_public = $6, version = $7, \
                 updated_at = NOW() \
-             WHERE id = $8 \
-             RETURNING id, name, display_name, description, tool_type, parameters_schema, \
+             WHERE id = $8::uuid \
+             RETURNING id::text AS id, name, display_name, description, tool_type, parameters_schema, \
                        execution_config, enabled, version, is_public, created_by, tenant_id, \
                        created_at, updated_at",
         )
@@ -313,7 +313,7 @@ impl<'a> RuntimeToolStore<'a> {
     /// Hard delete a tool (cascades to versions & executions).
     /// Returns the number of rows affected (`0` or `1`).
     pub async fn delete(&self, id: &str) -> Result<u64> {
-        let res = sqlx::query("DELETE FROM runtime_tools WHERE id = $1")
+        let res = sqlx::query("DELETE FROM runtime_tools WHERE id = $1::uuid")
             .bind(id)
             .execute(self.pool)
             .await
@@ -328,10 +328,10 @@ impl<'a> RuntimeToolStore<'a> {
     /// Return version history for a tool, most recent first.
     pub async fn get_versions(&self, tool_id: &str, limit: i64) -> Result<Vec<RuntimeToolVersion>> {
         let rows = sqlx::query(
-            "SELECT id, tool_id, version, parameters_schema, execution_config, description, \
+            "SELECT id::text AS id, tool_id::text AS tool_id, version, parameters_schema, execution_config, description, \
                     changed_by, change_summary, created_at \
              FROM runtime_tool_versions \
-             WHERE tool_id = $1 \
+             WHERE tool_id = $1::uuid \
              ORDER BY version DESC \
              LIMIT $2",
         )
@@ -362,8 +362,8 @@ impl<'a> RuntimeToolStore<'a> {
             "INSERT INTO runtime_tool_versions \
                 (tool_id, version, parameters_schema, execution_config, description, \
                  changed_by, change_summary) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
-             RETURNING id, tool_id, version, parameters_schema, execution_config, description, \
+             VALUES ($1::uuid, $2, $3, $4, $5, $6, $7) \
+             RETURNING id::text AS id, tool_id::text AS tool_id, version, parameters_schema, execution_config, description, \
                        changed_by, change_summary, created_at",
         )
         .bind(tool_id)
@@ -405,8 +405,8 @@ impl<'a> RuntimeToolStore<'a> {
             "INSERT INTO runtime_tool_executions \
                 (id, tool_id, tenant_id, agent_run_id, input_args, output_result, \
                  status, error_message, duration_ms) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-             RETURNING id, tool_id, tenant_id, agent_run_id, input_args, output_result, \
+             VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9) \
+             RETURNING id::text AS id, tool_id::text AS tool_id, tenant_id, agent_run_id, input_args, output_result, \
                        status, error_message, duration_ms, created_at",
         )
         .bind(&id)
@@ -436,7 +436,7 @@ impl<'a> RuntimeToolStore<'a> {
         limit: i64,
     ) -> Result<Vec<RuntimeToolExecution>> {
         let mut sql = String::from(
-            "SELECT id, tool_id, tenant_id, agent_run_id, input_args, output_result, status, \
+            "SELECT id::text AS id, tool_id::text AS tool_id, tenant_id, agent_run_id, input_args, output_result, status, \
                     error_message, duration_ms, created_at \
              FROM runtime_tool_executions \
              WHERE 1=1",
@@ -445,7 +445,7 @@ impl<'a> RuntimeToolStore<'a> {
 
         if tool_id.is_some() {
             idx += 1;
-            sql.push_str(&format!(" AND tool_id = ${idx}"));
+            sql.push_str(&format!(" AND tool_id = ${idx}::uuid"));
         }
         if tenant_id.is_some() {
             idx += 1;

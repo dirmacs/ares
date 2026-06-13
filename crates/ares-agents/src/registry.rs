@@ -265,6 +265,53 @@ impl AgentRegistry {
             primary_provider,
         );
         agent.set_fallback_llms(fallback_llms);
+
+        // --- tenant allowlist enforcement ---
+        let allowlist_store = ares_db::tenant_allowlist::TenantAllowlistStore::new(pool);
+
+        // Model enforcement
+        let resolved_model = {
+            let tier_store = ares_db::tenant_model_tiers::TenantModelTierStore::new(pool);
+            if let Ok(Some(tier)) = tier_store.get(tenant_id, &config.model).await {
+                tier.model_name
+            } else if let Some(model_cfg) = self.provider_registry.get_model(&config.model) {
+                model_cfg.model.clone()
+            } else {
+                config.model.clone()
+            }
+        };
+        if !allowlist_store
+            .is_model_allowed(tenant_id, &resolved_model)
+            .await
+            .map_err(|e| AppError::Auth(format!("Failed to check model allowlist: {}", e)))?
+        {
+            return Err(AppError::Auth(format!(
+                "Model '{}' is not allowed for this tenant",
+                resolved_model
+            )));
+        }
+
+        // Tool enforcement: intersect config allowed_tools with tenant allowlist
+        let db_tools = allowlist_store
+            .list_tools(tenant_id)
+            .await
+            .map_err(|e| AppError::Auth(format!("Failed to check tool allowlist: {}", e)))?;
+        if !db_tools.is_empty() {
+            let db_tool_names: Vec<String> = db_tools.iter().map(|t| t.tool_name.clone()).collect();
+            let new_allowed = match agent.allowed_tools() {
+                Some(agent_tools) => {
+                    let intersect: Vec<String> = agent_tools
+                        .iter()
+                        .cloned()
+                        .filter(|t| db_tool_names.contains(t))
+                        .collect();
+                    Some(intersect)
+                }
+                None => Some(db_tool_names),
+            };
+            agent.set_allowed_tools(new_allowed);
+        }
+
         Ok(agent)
     }
 

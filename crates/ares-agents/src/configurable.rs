@@ -196,6 +196,12 @@ Handle employee info, policies, and benefits."#
         self.allowed_tools.as_deref()
     }
 
+    /// Override the allowed tools list at runtime (e.g. after merging with
+    /// a per-tenant allowlist).
+    pub fn set_allowed_tools(&mut self, allowed_tools: Option<Vec<String>>) {
+        self.allowed_tools = allowed_tools;
+    }
+
     /// Attach an observability sink to this agent.
     pub fn set_observability(&mut self, obs: Arc<dyn ObservabilitySink>) {
         self.observability = Some(obs);
@@ -1540,6 +1546,30 @@ mod tests {
         let ctx = make_context();
         let resp = Agent::execute(&agent, "query", &ctx).await.unwrap();
         assert_eq!(resp.content, "SQL result");
+    }
+
+    #[test]
+    fn test_set_allowed_tools_intersection() {
+        let reg = Arc::new(ToolRegistry::new());
+        let mut agent = ConfigurableAgent::with_params(
+            "router",
+            AgentType::Router,
+            Box::new(MockLLM::new()),
+            "system".to_string(),
+            Some(reg),
+            Some(vec!["http".to_string(), "sql".to_string()]),
+            1,
+            false,
+        );
+        assert!(agent.can_use_tool("http"));
+        assert!(agent.can_use_tool("sql"));
+        agent.set_allowed_tools(Some(vec!["http".to_string()]));
+        assert!(agent.can_use_tool("http"));
+        assert!(!agent.can_use_tool("sql"));
+        agent.set_allowed_tools(Some(vec![]));
+        assert!(!agent.can_use_tool("http"));
+        agent.set_allowed_tools(None);
+        assert!(agent.can_use_tool("sql"));
     }
 
     // ============== Fallback tests ==============

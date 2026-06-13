@@ -209,6 +209,7 @@ pub struct AgentRunMetadata {
     pub eruka_context_hit: bool,
     pub eruka_read_count: i64,
     pub eruka_write_count: i64,
+    pub pipeline_id: Option<String>,
 }
 
 pub async fn insert_agent_run(
@@ -268,13 +269,13 @@ pub async fn insert_agent_run_with_metadata(
             input_tokens, output_tokens, duration_ms, error, created_at,
             model_name, provider_name, is_streaming, request_source, product,
             agent_config_source, agent_config_version, eruka_binding_id,
-            eruka_context_hit, eruka_read_count, eruka_write_count
+            eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id
          ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
             $13, $14, $15, $16, $17,
             $18, $19, $20,
-            $21, $22, $23
+            $21, $22, $23, $24
          )",
     )
     .bind(&id)
@@ -300,6 +301,7 @@ pub async fn insert_agent_run_with_metadata(
     .bind(metadata.eruka_context_hit)
     .bind(metadata.eruka_read_count)
     .bind(metadata.eruka_write_count)
+    .bind(&metadata.pipeline_id)
     .execute(pool)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;

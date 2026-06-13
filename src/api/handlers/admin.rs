@@ -2266,6 +2266,7 @@ use ares_config::fleet_secrets::{decrypt_api_key, last_n_visible, MasterKey};
 /// [
 ///   {
 ///     "name": "nvidia",
+///     "provider_type": "nvidia",
 ///     "has_api_key": true,
 ///     "api_key_last4": "…XYZW",
 ///     "api_base": "https://integrate.api.nvidia.com/v1",
@@ -2291,6 +2292,7 @@ pub async fn list_fleet_providers(
             let api_key_last4 = entry.api_key.as_deref().and_then(|k| last_n_visible(k, 4));
             serde_json::json!({
                 "name": name,
+                "provider_type": name,
                 "has_api_key": entry.api_key.is_some(),
                 "api_key_last4": api_key_last4,
                 "api_base": entry.api_base,

@@ -386,6 +386,7 @@ mod lib_tests {
                 model: "default".into(),
                 system_prompt: None,
                 tools: vec![],
+                allowed_tools: None,
                 max_tool_iterations: 1,
                 parallel_tools: false,
                 extra: HashMap::new(),
@@ -443,6 +444,9 @@ mod lib_tests {
         std::mem::forget(temp_dir);
 
         let db = Arc::new(crate::db::PostgresClient::new_test());
+        let tool_registry_for_skill = tool_registry.clone();
+        let provider_registry_for_skill = provider_registry.clone();
+        let config_manager_for_skill = config_manager.clone();
         AppState {
             config_manager,
             dynamic_config,
@@ -469,6 +473,13 @@ mod lib_tests {
             fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
             runtime_tool_registry: Arc::new(RuntimeToolRegistry::new(db.pool.clone())),
             active_runs: Arc::new(active_runs::ActiveRuns::new()),
+            skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
+                db.pool.clone(),
+                tool_registry_for_skill,
+                Arc::new(RuntimeToolRegistry::new(db.pool.clone())),
+                Arc::new(ConfigBasedLLMFactory::new(provider_registry_for_skill, "default")),
+                config_manager_for_skill,
+            )),
         }
     }
 

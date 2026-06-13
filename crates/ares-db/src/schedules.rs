@@ -4,9 +4,27 @@
 //! tables (migration 020).
 
 use ares_types::types::{AppError, Result};
+use chrono::Utc;
+use cron::Schedule;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Compute the next Unix timestamp at which a cron expression will fire.
+///
+/// Uses the `cron` crate with chrono.  For now UTC is assumed regardless
+/// of the supplied timezone string (timezone support can be layered in
+/// later via `chrono-tz`).
+pub fn compute_next_run(cron: &str, _tz: &str) -> std::result::Result<i64, String> {
+    let schedule: Schedule = cron
+        .parse()
+        .map_err(|e| format!("Invalid cron expression '{}': {}", cron, e))?;
+    let next = schedule
+        .after(&Utc::now())
+        .next()
+        .ok_or_else(|| "No future occurrence found for cron expression".to_string())?;
+    Ok(next.timestamp())
+}
 
 fn now_ts() -> i64 {
     SystemTime::now()
@@ -136,12 +154,14 @@ impl<'a> ScheduleStore<'a> {
         }
         let now = now_ts();
         let id = uuid::Uuid::new_v4().to_string();
+        let next_run_at = compute_next_run(&req.cron_expression, &req.timezone)
+            .map_err(|e| AppError::InvalidInput(e))?;
 
         let row = sqlx::query(
             "INSERT INTO agent_schedules \
                 (id, tenant_id, agent_name, cron_expression, timezone, enabled, \
                  last_run_at, next_run_at, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, $7, $7) \
+             VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $8) \
              RETURNING id, tenant_id, agent_name, cron_expression, timezone, enabled, \
                        last_run_at, next_run_at, created_at, updated_at",
         )
@@ -151,6 +171,7 @@ impl<'a> ScheduleStore<'a> {
         .bind(&req.cron_expression)
         .bind(&req.timezone)
         .bind(req.enabled)
+        .bind(next_run_at)
         .bind(now)
         .fetch_one(self.pool)
         .await

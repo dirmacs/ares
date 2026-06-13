@@ -153,13 +153,14 @@ mod tests {
         agents.insert(
             "orchestrator".to_string(),
             AgentConfig {
-                model: model.to_string(),
-                system_prompt: None,
-                tools: vec![],
-                max_tool_iterations: 5,
-                parallel_tools: false,
-                extra: HashMap::new(),
-            },
+                            model: model.to_string(),
+                            system_prompt: None,
+                            tools: vec![],
+                            allowed_tools: None,
+                            max_tool_iterations: 5,
+                            parallel_tools: false,
+                            extra: HashMap::new(),
+                        },
         );
         minimal_ares_config(agents)
     }
@@ -286,13 +287,14 @@ mod tests {
         agents.insert(
             "researcher".to_string(),
             AgentConfig {
-                model: "other-model".to_string(),
-                system_prompt: None,
-                tools: vec![],
-                max_tool_iterations: 1,
-                parallel_tools: false,
-                extra: HashMap::new(),
-            },
+                            model: "other-model".to_string(),
+                            system_prompt: None,
+                            tools: vec![],
+                            allowed_tools: None,
+                            max_tool_iterations: 1,
+                            parallel_tools: false,
+                            extra: HashMap::new(),
+                        },
         );
         let config = minimal_ares_config(agents);
         assert_eq!(orchestrator_model_name(&config), "powerful");
@@ -304,13 +306,14 @@ mod tests {
         agents.insert(
             "Orchestrator".to_string(),
             AgentConfig {
-                model: "wrong-case".to_string(),
-                system_prompt: None,
-                tools: vec![],
-                max_tool_iterations: 1,
-                parallel_tools: false,
-                extra: HashMap::new(),
-            },
+                            model: "wrong-case".to_string(),
+                            system_prompt: None,
+                            tools: vec![],
+                            allowed_tools: None,
+                            max_tool_iterations: 1,
+                            parallel_tools: false,
+                            extra: HashMap::new(),
+                        },
         );
         let config = minimal_ares_config(agents);
         assert_eq!(orchestrator_model_name(&config), "powerful");

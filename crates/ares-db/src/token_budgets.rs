@@ -81,6 +81,9 @@ impl<'a> TokenBudgetStore<'a> {
         period: &str,
         token_limit: i64,
     ) -> Result<TokenBudget> {
+        validate_token_limit(token_limit)?;
+        validate_period(period)?;
+
         if let Some(budget) = self.get(tenant_id).await? {
             return Ok(budget);
         }
@@ -112,9 +115,9 @@ impl<'a> TokenBudgetStore<'a> {
         if let Some(row) = row {
             Ok(row_to_budget(&row))
         } else {
-            self.get(tenant_id)
-                .await?
-                .ok_or_else(|| AppError::Internal("Failed to get or create token budget".to_string()))
+            self.get(tenant_id).await?.ok_or_else(|| {
+                AppError::Internal("Failed to get or create token budget".to_string())
+            })
         }
     }
 
@@ -125,6 +128,9 @@ impl<'a> TokenBudgetStore<'a> {
         token_limit: i64,
         period: &str,
     ) -> Result<TokenBudget> {
+        validate_token_limit(token_limit)?;
+        validate_period(period)?;
+
         let now = Utc::now();
         let (period_start, period_end) = compute_period_bounds(period, now);
         let updated_at = now.timestamp();
@@ -168,6 +174,8 @@ impl<'a> TokenBudgetStore<'a> {
         input_tokens: i64,
         output_tokens: i64,
     ) -> Result<()> {
+        self.roll_over_if_expired(tenant_id).await?;
+
         let total = input_tokens + output_tokens;
         let now = Utc::now().timestamp();
 
@@ -209,6 +217,8 @@ impl<'a> TokenBudgetStore<'a> {
 
     /// Check the current budget status for a tenant.
     pub async fn check_budget(&self, tenant_id: &str) -> Result<BudgetStatus> {
+        self.roll_over_if_expired(tenant_id).await?;
+
         match self.get(tenant_id).await? {
             Some(b) => {
                 let remaining = b.token_limit - b.tokens_used;
@@ -260,6 +270,12 @@ impl<'a> TokenBudgetStore<'a> {
         Ok(())
     }
 
+    /// Fetch a tenant budget without creating a default row.
+    pub async fn get_budget(&self, tenant_id: &str) -> Result<Option<TokenBudget>> {
+        self.roll_over_if_expired(tenant_id).await?;
+        self.get(tenant_id).await
+    }
+
     /// List recent token usage entries for a tenant.
     pub async fn list_usage(&self, tenant_id: &str, limit: i64) -> Result<Vec<TokenUsageEntry>> {
         let rows = sqlx::query(
@@ -283,6 +299,29 @@ impl<'a> TokenBudgetStore<'a> {
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
+
+    async fn roll_over_if_expired(&self, tenant_id: &str) -> Result<()> {
+        let Some(budget) = self.get(tenant_id).await? else {
+            return Ok(());
+        };
+        let now = Utc::now();
+        if now.timestamp() <= budget.period_end {
+            return Ok(());
+        }
+        let (period_start, period_end) = compute_period_bounds(&budget.period, now);
+        let updated_at = now.timestamp();
+        sqlx::query(
+            "UPDATE tenant_token_budgets SET tokens_used = 0, period_start = $1, period_end = $2, updated_at = $3 WHERE tenant_id = $4",
+        )
+        .bind(period_start)
+        .bind(period_end)
+        .bind(updated_at)
+        .bind(tenant_id)
+        .execute(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+        Ok(())
+    }
 
     async fn get(&self, tenant_id: &str) -> Result<Option<TokenBudget>> {
         let row = sqlx::query(
@@ -342,6 +381,24 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
     AppError::Database(e.to_string())
 }
 
+fn validate_token_limit(token_limit: i64) -> Result<()> {
+    if token_limit < 0 {
+        return Err(AppError::InvalidInput(
+            "token_limit must not be negative".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_period(period: &str) -> Result<()> {
+    match period {
+        "daily" | "weekly" | "monthly" => Ok(()),
+        _ => Err(AppError::InvalidInput(
+            "period must be daily, weekly, or monthly".to_string(),
+        )),
+    }
+}
+
 fn compute_period_bounds(period: &str, now: chrono::DateTime<Utc>) -> (i64, i64) {
     match period {
         "daily" => {
@@ -365,10 +422,8 @@ fn compute_period_bounds(period: &str, now: chrono::DateTime<Utc>) -> (i64, i64)
             } else {
                 (year, month + 1)
             };
-            let start_naive =
-                chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap();
-            let end_naive =
-                chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1).unwrap();
+            let start_naive = chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+            let end_naive = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1).unwrap();
             let start = start_naive.and_hms_opt(0, 0, 0).unwrap().and_utc();
             let end = end_naive.and_hms_opt(0, 0, 0).unwrap().and_utc();
             (start.timestamp(), end.timestamp())
@@ -447,8 +502,19 @@ mod tests {
             alert_threshold: 80,
             would_exceed: true,
         };
-        assert!(status.would_exceed_with(0));
+        assert!(status.would_exceed);
+        assert!(!status.would_exceed_with(0));
         assert!(status.would_exceed_with(1));
+    }
+
+    #[test]
+    fn validate_token_budget_inputs_reject_bad_values() {
+        assert!(validate_token_limit(0).is_ok());
+        assert!(validate_token_limit(-1).is_err());
+        assert!(validate_period("daily").is_ok());
+        assert!(validate_period("weekly").is_ok());
+        assert!(validate_period("monthly").is_ok());
+        assert!(validate_period("yearly").is_err());
     }
 
     #[test]

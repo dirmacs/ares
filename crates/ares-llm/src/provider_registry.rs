@@ -50,6 +50,15 @@ pub struct RuntimeProviderEntry {
     pub enabled: bool,
 }
 
+/// Resolved provider plus the concrete model id that must be sent to that provider.
+#[derive(Debug, Clone)]
+pub struct ResolvedProviderConfig {
+    pub provider_name: String,
+    pub model_name: String,
+    pub provider_config: ProviderConfig,
+    pub params: ModelParams,
+}
+
 /// Registry for managing multiple named LLM providers
 ///
 /// The ProviderRegistry holds references to provider configurations and allows
@@ -511,6 +520,33 @@ impl ProviderRegistry {
         provider.create_client().await
     }
 
+    /// Create an LLM client for an already-resolved provider/model pair.
+    pub async fn create_client_for_resolved_provider(
+        &self,
+        resolved: &ResolvedProviderConfig,
+    ) -> Result<Box<dyn LLMClient>> {
+        let runtime_entry = {
+            let runtime = self.runtime_providers.load();
+            runtime.get(&resolved.provider_name).cloned()
+        };
+        if let Some(entry) = runtime_entry {
+            let provider = Self::provider_from_runtime_entry_with_params(
+                &resolved.provider_name,
+                &entry,
+                Some(&resolved.model_name),
+                resolved.params.clone(),
+            )?;
+            return provider.create_client().await;
+        }
+
+        let provider = Provider::from_config_with_params(
+            &resolved.provider_config,
+            Some(&resolved.model_name),
+            resolved.params.clone(),
+        )?;
+        provider.create_client().await
+    }
+
     /// Create an LLM client using the default model
     pub async fn create_default_client(&self) -> Result<Box<dyn LLMClient>> {
         let model_name = self
@@ -758,15 +794,14 @@ impl ProviderRegistry {
     // Helpers
     // ============================================================
 
-    /// Resolve a model tier or model name to a chain of `(provider_name,
-    /// ProviderConfig)` pairs, following the fallback chain stored in
-    /// `fleet_secrets` for the primary provider.
+    /// Resolve a model tier or model name to concrete provider/model entries,
+    /// following the fallback chain stored in `fleet_secrets` for the primary provider.
     ///
     /// 1. Looks up `tenant_model_tiers` for the tenant + tier.
     /// 2. Falls back to the registry's configured models.
     /// 3. Falls back to treating `tier_or_model` as a provider name.
     /// 4. Loads the primary provider's `fallback_providers` from fleet secrets
-    ///    and appends each resolved configuration.
+    ///    and appends each resolved provider with its own concrete default model.
     #[cfg(feature = "postgres")]
     pub async fn resolve_with_fallback(
         &self,
@@ -774,47 +809,104 @@ impl ProviderRegistry {
         tenant_id: &str,
         pool: &sqlx::PgPool,
         fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
-    ) -> Vec<(String, ProviderConfig)> {
+    ) -> Result<Vec<ResolvedProviderConfig>> {
         use ares_db::tenant_model_tiers::TenantModelTierStore;
         use std::collections::HashSet;
 
-        // 1. Resolve primary provider name.
-        let primary_provider = {
-            let store = TenantModelTierStore::new(pool);
-            if let Ok(Some(tier)) = store.get(tenant_id, tier_or_model).await {
-                tier.provider_name
-            } else if let Some(model_cfg) = self.get_model(tier_or_model) {
-                model_cfg.provider
-            } else if self.has_provider(tier_or_model) {
-                tier_or_model.to_string()
-            } else {
-                return Vec::new();
+        let store = TenantModelTierStore::new(pool);
+        let primary = match store.get(tenant_id, tier_or_model).await {
+            Ok(Some(tier)) => {
+                let provider_config = self.get_provider(&tier.provider_name).ok_or_else(|| {
+                    AppError::Configuration(format!(
+                        "Provider '{}' configured for tenant '{}' tier '{}' not found",
+                        tier.provider_name, tenant_id, tier_or_model
+                    ))
+                })?;
+                ResolvedProviderConfig {
+                    provider_name: tier.provider_name,
+                    model_name: tier.model_name,
+                    provider_config,
+                    params: ModelParams::default(),
+                }
+            }
+            Ok(None) => {
+                if let Some(model_cfg) = self.get_model(tier_or_model) {
+                    let provider_config =
+                        self.get_provider(&model_cfg.provider).ok_or_else(|| {
+                            AppError::Configuration(format!(
+                                "Provider '{}' referenced by model/tier '{}' not found",
+                                model_cfg.provider, tier_or_model
+                            ))
+                        })?;
+                    ResolvedProviderConfig {
+                        provider_name: model_cfg.provider.clone(),
+                        model_name: model_cfg.model.clone(),
+                        provider_config,
+                        params: ModelParams::from_model_config(&model_cfg),
+                    }
+                } else if let Some(provider_config) = self.get_provider(tier_or_model) {
+                    let model_name = Self::provider_default_model(&provider_config).to_string();
+                    if model_name.is_empty() {
+                        return Err(AppError::Configuration(format!(
+                            "Provider '{}' has no concrete default model configured",
+                            tier_or_model
+                        )));
+                    }
+                    ResolvedProviderConfig {
+                        provider_name: tier_or_model.to_string(),
+                        model_name,
+                        provider_config,
+                        params: ModelParams::default(),
+                    }
+                } else {
+                    return Err(AppError::Configuration(format!(
+                        "No provider or model/tier '{}' found for tenant '{}'",
+                        tier_or_model, tenant_id
+                    )));
+                }
+            }
+            Err(e) => {
+                return Err(AppError::Database(format!(
+                    "Failed to resolve tenant '{}' model tier '{}': {}",
+                    tenant_id, tier_or_model, e
+                )));
             }
         };
 
-        let mut result = Vec::new();
+        let primary_provider = primary.provider_name.clone();
+        let mut result = vec![primary];
         let mut seen = HashSet::new();
+        seen.insert(primary_provider.clone());
 
-        // 2. Primary provider config.
-        if let Some(cfg) = self.get_provider(&primary_provider) {
-            seen.insert(primary_provider.clone());
-            result.push((primary_provider.clone(), cfg));
-        }
-
-        // 3. Fallback chain from fleet secrets.
         if let Some(override_) = fleet_secrets.get(&primary_provider) {
             for fallback_name in &override_.fallback_providers {
                 if seen.contains(fallback_name) {
                     continue;
                 }
-                if let Some(cfg) = self.get_provider(fallback_name) {
-                    seen.insert(fallback_name.clone());
-                    result.push((fallback_name.clone(), cfg));
+                let provider_config = self.get_provider(fallback_name).ok_or_else(|| {
+                    AppError::Configuration(format!(
+                        "Fallback provider '{}' configured for primary provider '{}' not found",
+                        fallback_name, primary_provider
+                    ))
+                })?;
+                let model_name = Self::provider_default_model(&provider_config).to_string();
+                if model_name.is_empty() {
+                    return Err(AppError::Configuration(format!(
+                        "Fallback provider '{}' configured for primary provider '{}' has no concrete default model configured",
+                        fallback_name, primary_provider
+                    )));
                 }
+                seen.insert(fallback_name.clone());
+                result.push(ResolvedProviderConfig {
+                    provider_name: fallback_name.clone(),
+                    model_name,
+                    provider_config,
+                    params: ModelParams::default(),
+                });
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Extract NVIDIA config from the synthetic provider we inserted.

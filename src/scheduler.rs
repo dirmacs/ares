@@ -43,7 +43,7 @@ pub async fn start_scheduler(pool: PgPool, app_state: Arc<crate::AppState>) {
 async fn run_due_schedules(pool: &PgPool, app_state: &Arc<crate::AppState>) -> Result<(), String> {
     let store = ScheduleStore::new(pool);
 
-    // 1. First, handle catchup for missed runs within grace period
+    // 1. First, handle catch-up for schedules that are past their grace window.
     if let Err(e) = run_catchup_schedules(&store, app_state).await {
         tracing::warn!("Scheduler catchup failed: {}", e);
     }
@@ -125,8 +125,13 @@ async fn run_catchup_schedules(
             action_taken: "catchup_triggered".to_string(),
             created_at: now,
         };
-        if let Err(e) = store.insert_missed_run_audit(&audit).await {
-            tracing::warn!("Failed to record missed_run audit for {}: {}", sched.id, e);
+        match store.insert_missed_run_audit(&audit).await {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                tracing::warn!("Failed to record missed_run audit for {}: {}", sched.id, e);
+                continue;
+            }
         }
 
         if let Err(e) = execute_scheduled_agent(&sched, app_state, true).await {
@@ -214,6 +219,9 @@ async fn execute_scheduled_agent(
                 tool_name: Some(format!("skill:{}", skill_id)),
                 model: None,
                 is_catchup,
+                request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
+                pipeline_id: None,
+                schedule_id: Some(sched.id.clone()),
             });
 
             let skill_result = app_state
@@ -250,7 +258,7 @@ async fn execute_scheduled_agent(
             let metadata = AgentRunMetadata {
                 workspace_id: None,
                 session_id: Some(run_id.clone()),
-                request_source: Some("scheduled".to_string()),
+                request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
                 product: None,
                 agent_config_source: Some(resolved_agent.source.as_str().to_string()),
                 agent_config_version: resolved_agent.config_version.clone(),
@@ -368,6 +376,9 @@ async fn execute_scheduled_agent(
         tool_name: None,
         model: None,
         is_catchup,
+        request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
+        pipeline_id: None,
+        schedule_id: Some(sched.id.clone()),
     });
 
     let result = resolved_agent
@@ -439,7 +450,7 @@ async fn execute_scheduled_agent(
     let metadata = AgentRunMetadata {
         workspace_id: None,
         session_id: Some(run_id.clone()),
-        request_source: Some("scheduled".to_string()),
+        request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
         product: None,
         agent_config_source: Some(resolved_agent.source.as_str().to_string()),
         agent_config_version: resolved_agent.config_version.clone(),

@@ -17,6 +17,9 @@ pub struct ActiveRun {
     pub tool_name: Option<String>,
     pub model: Option<String>,
     pub is_catchup: bool,
+    pub request_source: Option<String>,
+    pub pipeline_id: Option<String>,
+    pub schedule_id: Option<String>,
 }
 
 /// Thread-safe registry of in-progress agent runs.

@@ -1,7 +1,7 @@
 use crate::configurable::ConfigurableAgent;
 use crate::registry::AgentRegistry;
-use ares_types::types::{AppError, Result};
 use ares_config::toml_config::AgentConfig;
+use ares_types::types::{AppError, Result};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 
@@ -83,7 +83,8 @@ pub fn agent_config_from_json(json: &serde_json::Value) -> Result<AgentConfig> {
             .map(|value| {
                 value.as_str().map(|s| s.to_string()).ok_or_else(|| {
                     AppError::Configuration(
-                        "Tenant agent config field 'allowed_tools' must be an array of strings".into(),
+                        "Tenant agent config field 'allowed_tools' must be an array of strings"
+                            .into(),
                     )
                 })
             })
@@ -110,7 +111,6 @@ pub fn agent_config_from_json(json: &serde_json::Value) -> Result<AgentConfig> {
         extra: HashMap::new(),
     })
 }
-
 
 pub(crate) fn tenant_agent_disabled_error(agent_name: &str, tenant_id: &str) -> AppError {
     AppError::NotFound(format!(
@@ -225,7 +225,21 @@ pub async fn resolve_agent_for_tenant(
         });
     }
 
-    let agent = agent_registry.create_agent(agent_name).await?;
+    let registry_config = agent_registry.get_config_any(agent_name).ok_or_else(|| {
+        AppError::Configuration(format!(
+            "Agent '{}' not found in TOML or TOON configuration",
+            agent_name
+        ))
+    })?;
+    let agent = agent_registry
+        .create_agent_from_config_with_fallbacks(
+            agent_name,
+            &registry_config,
+            tenant_id,
+            pool,
+            fleet_secrets,
+        )
+        .await?;
     Ok(ResolvedAgent {
         agent,
         source: AgentConfigSource::Registry,
@@ -382,7 +396,10 @@ mod tests {
 
         assert_eq!(config.model, "default");
         assert_eq!(config.system_prompt.as_deref(), Some("You are helpful"));
-        assert_eq!(config.tools, vec!["calculator".to_string(), "search".to_string()]);
+        assert_eq!(
+            config.tools,
+            vec!["calculator".to_string(), "search".to_string()]
+        );
         assert_eq!(config.max_tool_iterations, 7);
         assert!(config.parallel_tools);
     }
@@ -400,7 +417,9 @@ mod tests {
             "model": "   "
         }))
         .expect_err("empty model");
-        assert!(err.to_string().contains("missing a valid non-empty 'model'"));
+        assert!(err
+            .to_string()
+            .contains("missing a valid non-empty 'model'"));
     }
 
     #[test]
@@ -447,14 +466,18 @@ mod tests {
             "max_tool_iterations": -1
         }))
         .expect_err("negative max_tool_iterations");
-        assert!(err.to_string().contains("'max_tool_iterations' must be a non-negative integer"));
+        assert!(err
+            .to_string()
+            .contains("'max_tool_iterations' must be a non-negative integer"));
 
         let err = agent_config_from_json(&serde_json::json!({
             "model": "default",
             "max_tool_iterations": "five"
         }))
         .expect_err("string max_tool_iterations");
-        assert!(err.to_string().contains("'max_tool_iterations' must be a number"));
+        assert!(err
+            .to_string()
+            .contains("'max_tool_iterations' must be a number"));
     }
 
     #[test]
@@ -474,28 +497,19 @@ mod tests {
 
     #[test]
     fn tenant_config_version_empty_string_falls_back_to_updated_at() {
-        let version = tenant_config_version(
-            &serde_json::json!({ "version": "" }),
-            99,
-        );
+        let version = tenant_config_version(&serde_json::json!({ "version": "" }), 99);
         assert_eq!(version, "tenant-db:99");
     }
 
     #[test]
     fn tenant_config_version_whitespace_only_falls_back_to_updated_at() {
-        let version = tenant_config_version(
-            &serde_json::json!({ "version": "   " }),
-            77,
-        );
+        let version = tenant_config_version(&serde_json::json!({ "version": "   " }), 77);
         assert_eq!(version, "tenant-db:77");
     }
 
     #[test]
     fn tenant_config_version_trims_explicit_version() {
-        let version = tenant_config_version(
-            &serde_json::json!({ "version": "  fleet-9  " }),
-            1,
-        );
+        let version = tenant_config_version(&serde_json::json!({ "version": "  fleet-9  " }), 1);
         assert_eq!(version, "fleet-9");
     }
 
@@ -616,7 +630,7 @@ mod tests {
                 parallel_tools: false,
                 extra: std::collections::HashMap::new(),
                 allowed_tools: None,
-},
+            },
             "v1".to_string(),
             serde_json::Value::Null,
         )));
@@ -625,7 +639,8 @@ mod tests {
         let ok_none: AresResult<Option<(AgentConfig, String, serde_json::Value)>> = Ok(None);
         assert!(!legacy_create_should_use_tenant_config(&ok_none));
 
-        let err_load: AresResult<Option<(AgentConfig, String, serde_json::Value)>> = Err(AppError::Database("x".into()));
+        let err_load: AresResult<Option<(AgentConfig, String, serde_json::Value)>> =
+            Err(AppError::Database("x".into()));
         assert!(!legacy_create_should_use_tenant_config(&err_load));
     }
 
@@ -655,6 +670,7 @@ mod tests {
             create_tenant_agent as db_create_tenant_agent, update_tenant_agent,
             CreateTenantAgentRequest, UpdateTenantAgentRequest,
         };
+        use ares_db::tenant_allowlist::TenantAllowlistStore;
         use ares_llm::ProviderRegistry;
         use ares_tools::registry::ToolRegistry;
         use ares_types::types::{AgentContext, AppError};
@@ -745,9 +761,7 @@ mod tests {
             let addr = listener.local_addr().expect("mock ollama addr");
 
             tokio::spawn(async move {
-                axum::serve(listener, app)
-                    .await
-                    .expect("serve mock ollama");
+                axum::serve(listener, app).await.expect("serve mock ollama");
             });
 
             format!("http://{}", addr)
@@ -757,9 +771,9 @@ mod tests {
             let mut provider_registry = ProviderRegistry::new();
             provider_registry.register_provider(
                 "ollama-local",
-                ProviderConfig::OpenAI {
-                    api_key_env: "TEST_KEY".to_string(),
-                    api_base: "https://test.example.com/v1".to_string(),
+                ProviderConfig::Ollama {
+                    api_key_env: "OLLAMA_API_KEY".to_string(),
+                    base_url: mock_ollama_url.to_string(),
                     default_model: "mock-model".to_string(),
                 },
             );
@@ -773,10 +787,8 @@ mod tests {
                 },
             );
 
-            let mut registry = AgentRegistry::new(
-                Arc::new(provider_registry),
-                Arc::new(ToolRegistry::new()),
-            );
+            let mut registry =
+                AgentRegistry::new(Arc::new(provider_registry), Arc::new(ToolRegistry::new()));
             registry.register(
                 "product",
                 AgentConfig {
@@ -787,9 +799,16 @@ mod tests {
                     parallel_tools: false,
                     extra: HashMap::new(),
                     allowed_tools: None,
-},
+                },
             );
             registry
+        }
+
+        async fn allow_mock_model(pool: &PgPool, tenant_id: &str) {
+            TenantAllowlistStore::new(pool)
+                .allow_model(tenant_id, "mock-model")
+                .await
+                .expect("allow mock model");
         }
 
         async fn insert_tenant_agent(
@@ -833,7 +852,14 @@ mod tests {
             let registry = registry_with_product("http://127.0.0.1:9");
             let tenant_id = unique_id("missing-row");
 
-            let agent = create_tenant_agent(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new()).await;
+            let agent = create_tenant_agent(
+                &pool,
+                &registry,
+                &tenant_id,
+                "product",
+                &ares_config::fleet_secrets::FleetSecrets::new(),
+            )
+            .await;
             assert!(agent.is_none());
         }
 
@@ -843,11 +869,18 @@ mod tests {
             let pool = test_pool().await;
             let registry = registry_with_product(&mock_ollama);
             let tenant_id = unique_id("create-legacy");
+            allow_mock_model(&pool, &tenant_id).await;
             insert_tenant_agent(&pool, &tenant_id, "product", "tenant-create-prompt").await;
 
-            let agent = create_tenant_agent(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new())
-                .await
-                .expect("tenant row should produce an agent");
+            let agent = create_tenant_agent(
+                &pool,
+                &registry,
+                &tenant_id,
+                "product",
+                &ares_config::fleet_secrets::FleetSecrets::new(),
+            )
+            .await
+            .expect("tenant row should produce an agent");
 
             assert_eq!(agent.system_prompt(), "tenant-create-prompt");
         }
@@ -858,11 +891,18 @@ mod tests {
             let pool = test_pool().await;
             let registry = registry_with_product(&mock_ollama);
             let tenant_id = unique_id("tenant-db-wins");
+            allow_mock_model(&pool, &tenant_id).await;
             insert_tenant_agent(&pool, &tenant_id, "product", "tenant-db-prompt").await;
 
-            let resolved = resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new())
-                .await
-                .expect("resolve tenant agent");
+            let resolved = resolve_agent_for_tenant(
+                &pool,
+                &registry,
+                &tenant_id,
+                "product",
+                &ares_config::fleet_secrets::FleetSecrets::new(),
+            )
+            .await
+            .expect("resolve tenant agent");
 
             assert_eq!(resolved.source, AgentConfigSource::TenantDb);
             assert_eq!(resolved.agent_name, "product");
@@ -876,14 +916,101 @@ mod tests {
             let pool = test_pool().await;
             let registry = registry_with_product(&mock_ollama);
             let tenant_id = unique_id("registry-fallback");
+            allow_mock_model(&pool, &tenant_id).await;
 
-            let resolved = resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new())
-                .await
-                .expect("resolve registry agent");
+            let resolved = resolve_agent_for_tenant(
+                &pool,
+                &registry,
+                &tenant_id,
+                "product",
+                &ares_config::fleet_secrets::FleetSecrets::new(),
+            )
+            .await
+            .expect("resolve registry agent");
 
             assert_eq!(resolved.source, AgentConfigSource::Registry);
             assert!(resolved.config_version.is_none());
             assert_eq!(resolved.agent.system_prompt(), "registry-product-prompt");
+            assert!(matches!(
+                resolved.agent.allowed_tools(),
+                Some(tools) if tools.is_empty()
+            ));
+        }
+
+        #[tokio::test]
+        async fn resolve_agent_for_tenant_rejects_unallowed_fallback_model() {
+            let mock_ollama = spawn_mock_ollama_server().await;
+            let pool = test_pool().await;
+            let tenant_id = unique_id("fallback-deny");
+            allow_mock_model(&pool, &tenant_id).await;
+
+            let mut provider_registry = ProviderRegistry::new();
+            provider_registry.register_provider(
+                "ollama-primary",
+                ProviderConfig::Ollama {
+                    api_key_env: "OLLAMA_API_KEY".to_string(),
+                    base_url: mock_ollama.clone(),
+                    default_model: "mock-model".to_string(),
+                },
+            );
+            provider_registry.register_provider(
+                "ollama-fallback",
+                ProviderConfig::Ollama {
+                    api_key_env: "OLLAMA_API_KEY".to_string(),
+                    base_url: mock_ollama,
+                    default_model: "fallback-model".to_string(),
+                },
+            );
+            provider_registry.register_model(
+                "default",
+                ModelConfig {
+                    provider: "ollama-primary".to_string(),
+                    model: "mock-model".to_string(),
+                    temperature: 0.0,
+                    max_tokens: 512,
+                },
+            );
+
+            let mut registry =
+                AgentRegistry::new(Arc::new(provider_registry), Arc::new(ToolRegistry::new()));
+            registry.register(
+                "product",
+                AgentConfig {
+                    model: "default".to_string(),
+                    system_prompt: Some("registry-product-prompt".to_string()),
+                    tools: vec![],
+                    max_tool_iterations: 5,
+                    parallel_tools: false,
+                    extra: HashMap::new(),
+                    allowed_tools: None,
+                },
+            );
+
+            let mut overrides = HashMap::new();
+            overrides.insert(
+                "ollama-primary".to_string(),
+                ares_config::fleet_secrets::ProviderOverride {
+                    fallback_providers: vec!["ollama-fallback".to_string()],
+                    ..Default::default()
+                },
+            );
+            let fleet_secrets = ares_config::fleet_secrets::FleetSecrets::from_providers(overrides);
+
+            let err = match resolve_agent_for_tenant(
+                &pool,
+                &registry,
+                &tenant_id,
+                "product",
+                &fleet_secrets,
+            )
+            .await
+            {
+                Err(err) => err,
+                Ok(_) => panic!("unallowed fallback model should fail"),
+            };
+
+            assert!(matches!(err, AppError::Auth(_)));
+            assert!(err.to_string().contains("fallback-model"));
         }
 
         #[tokio::test]
@@ -892,7 +1019,15 @@ mod tests {
             let registry = registry_with_product("http://127.0.0.1:9");
             let tenant_id = unique_id("required-missing");
 
-            let err = match resolve_required_tenant_agent(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new()).await {
+            let err = match resolve_required_tenant_agent(
+                &pool,
+                &registry,
+                &tenant_id,
+                "product",
+                &ares_config::fleet_secrets::FleetSecrets::new(),
+            )
+            .await
+            {
                 Err(err) => err,
                 Ok(_) => panic!("missing tenant row should fail"),
             };
@@ -907,11 +1042,18 @@ mod tests {
             let pool = test_pool().await;
             let registry = registry_with_product(&mock_ollama);
             let tenant_id = unique_id("execute-flow");
+            allow_mock_model(&pool, &tenant_id).await;
             insert_tenant_agent(&pool, &tenant_id, "product", "tenant-execute-prompt").await;
 
-            let resolved = resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new())
-                .await
-                .expect("resolve for execution");
+            let resolved = resolve_agent_for_tenant(
+                &pool,
+                &registry,
+                &tenant_id,
+                "product",
+                &ares_config::fleet_secrets::FleetSecrets::new(),
+            )
+            .await
+            .expect("resolve for execution");
 
             let response = resolved
                 .agent
@@ -919,7 +1061,9 @@ mod tests {
                 .await
                 .expect("execute resolved tenant agent");
 
-            assert!(response.content.contains("SYSTEM_PROMPT=tenant-execute-prompt"));
+            assert!(response
+                .content
+                .contains("SYSTEM_PROMPT=tenant-execute-prompt"));
         }
 
         #[tokio::test]
@@ -943,7 +1087,15 @@ mod tests {
             .await
             .expect("disable tenant agent");
 
-            let err = match resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new()).await {
+            let err = match resolve_agent_for_tenant(
+                &pool,
+                &registry,
+                &tenant_id,
+                "product",
+                &ares_config::fleet_secrets::FleetSecrets::new(),
+            )
+            .await
+            {
                 Err(err) => err,
                 Ok(_) => panic!("disabled tenant agent should not resolve"),
             };
@@ -980,7 +1132,15 @@ mod tests {
             .execute(&pool)
             .await
             .expect("insert invalid tenant config via raw SQL");
-            let err = match resolve_agent_for_tenant(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new()).await {
+            let err = match resolve_agent_for_tenant(
+                &pool,
+                &registry,
+                &tenant_id,
+                "product",
+                &ares_config::fleet_secrets::FleetSecrets::new(),
+            )
+            .await
+            {
                 Err(err) => err,
                 Ok(_) => panic!("invalid tenant config should fail"),
             };
@@ -1017,9 +1177,15 @@ mod tests {
             .await
             .expect("insert empty-model tenant config via raw SQL");
 
-            let agent = create_tenant_agent(&pool, &registry, &tenant_id, "product", &ares_config::fleet_secrets::FleetSecrets::new()).await;
+            let agent = create_tenant_agent(
+                &pool,
+                &registry,
+                &tenant_id,
+                "product",
+                &ares_config::fleet_secrets::FleetSecrets::new(),
+            )
+            .await;
             assert!(agent.is_none());
-
         }
         #[test]
         fn agent_config_from_json_matches_tenant_db_shape() {
@@ -1036,5 +1202,4 @@ mod tests {
             assert_eq!(config.system_prompt.as_deref(), Some("tenant shape"));
         }
     }
-
 }

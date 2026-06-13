@@ -1,4 +1,4 @@
--- Migration 025: Model health metrics table
+-- Migration 20250613000000: Model health metrics table
 -- Supports DIR1-72: Per-model aggregation UI panel
 
 CREATE TABLE IF NOT EXISTS model_health_metrics (

@@ -168,6 +168,7 @@ impl<'a> ScheduleStore<'a> {
                 "cron_expression must not be empty".into(),
             ));
         }
+        validate_grace_period(req.grace_period_seconds)?;
         let now = now_ts();
         let id = uuid::Uuid::new_v4().to_string();
         let next_run_at = compute_next_run(&req.cron_expression, &req.timezone)
@@ -239,11 +240,16 @@ impl<'a> ScheduleStore<'a> {
         Ok(res.rows_affected())
     }
 
-    pub async fn insert_missed_run_audit(&self, audit: &MissedRunAudit) -> Result<()> {
-        sqlx::query(
+    pub async fn insert_missed_run_audit(&self, audit: &MissedRunAudit) -> Result<bool> {
+        let inserted = sqlx::query(
             "INSERT INTO missed_runs \
                 (id, schedule_id, expected_at, detected_at, action_taken, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             SELECT $1, $2, $3, $4, $5, $6 \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM missed_runs \
+                 WHERE schedule_id = $2 AND expected_at = $3 \
+             ) \
+             RETURNING id",
         )
         .bind(&audit.id)
         .bind(&audit.schedule_id)
@@ -251,10 +257,11 @@ impl<'a> ScheduleStore<'a> {
         .bind(audit.detected_at)
         .bind(&audit.action_taken)
         .bind(audit.created_at)
-        .execute(self.pool)
+        .fetch_optional(self.pool)
         .await
-        .map_err(sqlx_err)?;
-        Ok(())
+        .map_err(sqlx_err)?
+        .is_some();
+        Ok(inserted)
     }
 
     pub async fn list_missed_runs(
@@ -286,7 +293,12 @@ impl<'a> ScheduleStore<'a> {
                     last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
              FROM agent_schedules \
              WHERE enabled = TRUE AND next_run_at IS NOT NULL AND \
-                   next_run_at + grace_period_seconds < $1 \
+                   next_run_at + grace_period_seconds < $1 AND \
+                   NOT EXISTS ( \
+                       SELECT 1 FROM missed_runs \
+                       WHERE missed_runs.schedule_id = agent_schedules.id AND \
+                             missed_runs.expected_at = agent_schedules.next_run_at \
+                   ) \
              ORDER BY next_run_at ASC",
         )
         .bind(now)
@@ -576,6 +588,15 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
     AppError::Database(e.to_string())
 }
 
+fn validate_grace_period(grace_period_seconds: i32) -> Result<()> {
+    if grace_period_seconds < 0 {
+        return Err(AppError::InvalidInput(
+            "grace_period_seconds must be non-negative".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_event_type(t: &str) -> Result<()> {
     const VALID: &[&str] = &[
         "webhook",
@@ -611,5 +632,12 @@ mod tests {
         assert!(validate_event_type("webhook").is_ok());
         assert!(validate_event_type("agent_complete").is_ok());
         assert!(validate_event_type("unknown").is_err());
+    }
+
+    #[test]
+    fn validate_grace_period_rejects_negative_values() {
+        assert!(validate_grace_period(0).is_ok());
+        assert!(validate_grace_period(120).is_ok());
+        assert!(validate_grace_period(-1).is_err());
     }
 }

@@ -150,6 +150,9 @@ async fn execute_target_agent(
                 tool_name: Some(format!("skill:{}", skill_id)),
                 model: None,
                 is_catchup: false,
+                request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
+                pipeline_id: Some(pipeline.id.clone()),
+                schedule_id: None,
             });
 
             let skill_result = app_state
@@ -285,6 +288,9 @@ async fn execute_target_agent(
         tool_name: None,
         model: None,
         is_catchup: false,
+        request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
+        pipeline_id: Some(pipeline.id.clone()),
+        schedule_id: None,
     });
 
     let result = resolved_agent

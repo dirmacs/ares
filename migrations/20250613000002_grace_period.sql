@@ -1,4 +1,4 @@
--- Migration 027: Add grace_period_seconds to agent_schedules
+-- Migration 20250613000002: Add grace_period_seconds to agent_schedules
 -- Supports DIR1-73: Configurable missed-run grace period
 
 ALTER TABLE agent_schedules 

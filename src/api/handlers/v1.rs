@@ -711,6 +711,9 @@ pub async fn run_agent(
                 tool_name: Some(format!("skill:{}", skill_id)),
                 model: None,
                 is_catchup: false,
+                request_source: Some("api_v1_agent_run".to_string()),
+                pipeline_id: None,
+                schedule_id: None,
             });
             let skill_result = state
                 .skill_engine
@@ -880,6 +883,9 @@ pub async fn run_agent(
         tool_name: None,
         model: None,
         is_catchup: false,
+        request_source: Some("api_v1_agent_run".to_string()),
+        pipeline_id: None,
+        schedule_id: None,
     });
     let result = resolved_agent
         .agent
@@ -1374,6 +1380,18 @@ pub async fn semantic_search(
     }
     // Enforce max limit
     let limit = payload.limit.min(100).max(1);
+
+    let allowlist_store =
+        crate::db::tenant_allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    if !allowlist_store
+        .is_rag_source_allowed(&tc.tenant_id, &payload.collection)
+        .await?
+    {
+        return Err(AppError::Auth(format!(
+            "RAG source '{}' is not allowed for this tenant",
+            payload.collection
+        )));
+    }
 
     // Get services
     let embedding_service = get_embedding_service().await?;

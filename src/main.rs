@@ -520,6 +520,24 @@ async fn run_server(
     let db_arc = Arc::new(db);
     let tenant_db = Arc::new(ares::TenantDb::new(db_arc.clone()));
 
+    let fleet_secrets = ares::FleetSecrets::new();
+    let fleet_provider_store =
+        ares::db::fleet_provider_secrets::FleetProviderSecretsStore::new(&db_arc.pool);
+    let fleet_provider_master = MasterKey::from_env();
+    match fleet_provider_store
+        .load_all(fleet_provider_master.as_ref())
+        .await
+    {
+        Ok(providers) => {
+            let count = providers.len();
+            fleet_secrets.store(providers);
+            tracing::info!(count, "Fleet provider secrets loaded");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load fleet provider secrets on startup");
+        }
+    }
+
     let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(db_arc.pool.clone()));
     if let Err(e) = runtime_tool_registry.reload().await {
         tracing::warn!("Failed to preload runtime tools on startup: {}", e);
@@ -549,7 +567,7 @@ async fn run_server(
         loop_registry: ares::api::handlers::loops::LoopRegistry::new(),
         emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         context_provider: Arc::new(ares::agents::NoOpContextProvider),
-        fleet_secrets: ares::FleetSecrets::new(),
+        fleet_secrets,
         runtime_tool_registry,
         active_runs: Arc::new(ares::active_runs::ActiveRuns::new()),
         skill_engine,

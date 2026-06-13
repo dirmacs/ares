@@ -300,7 +300,6 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Once};
 
-
     static WF_LOAD_ENV: Once = Once::new();
     static WF_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     static WF_DB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -359,38 +358,38 @@ mod tests {
         agents.insert(
             "router".to_string(),
             AgentConfig {
-                            model: "default".to_string(),
-                            system_prompt: Some("Route queries to the appropriate agent.".to_string()),
-                            tools: vec![],
-                            allowed_tools: None,
-                            max_tool_iterations: 1,
-                            parallel_tools: false,
-                            extra: HashMap::new(),
-                        },
+                model: "default".to_string(),
+                system_prompt: Some("Route queries to the appropriate agent.".to_string()),
+                tools: vec![],
+                allowed_tools: None,
+                max_tool_iterations: 1,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
         );
         agents.insert(
             "orchestrator".to_string(),
             AgentConfig {
-                            model: "default".to_string(),
-                            system_prompt: Some("Handle complex queries.".to_string()),
-                            tools: vec![],
-                            allowed_tools: None,
-                            max_tool_iterations: 10,
-                            parallel_tools: false,
-                            extra: HashMap::new(),
-                        },
+                model: "default".to_string(),
+                system_prompt: Some("Handle complex queries.".to_string()),
+                tools: vec![],
+                allowed_tools: None,
+                max_tool_iterations: 10,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
         );
         agents.insert(
             "product".to_string(),
             AgentConfig {
-                            model: "default".to_string(),
-                            system_prompt: Some("Handle product queries.".to_string()),
-                            tools: vec![],
-                            allowed_tools: None,
-                            max_tool_iterations: 5,
-                            parallel_tools: false,
-                            extra: HashMap::new(),
-                        },
+                model: "default".to_string(),
+                system_prompt: Some("Handle product queries.".to_string()),
+                tools: vec![],
+                allowed_tools: None,
+                max_tool_iterations: 5,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
         );
 
         let mut workflows = HashMap::new();
@@ -476,6 +475,7 @@ mod tests {
                 900,
                 604800,
             )),
+            #[cfg(feature = "mcp")]
             mcp_registry: None,
             deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
             loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
@@ -550,6 +550,7 @@ mod tests {
                 900,
                 604800,
             )),
+            #[cfg(feature = "mcp")]
             mcp_registry: None,
             deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
             loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
@@ -624,6 +625,7 @@ mod tests {
                 900,
                 604800,
             )),
+            #[cfg(feature = "mcp")]
             mcp_registry: None,
             deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
             loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
@@ -823,8 +825,7 @@ mod tests {
     #[test]
     fn test_parse_routing_decision_substring_match() {
         assert_eq!(
-            WorkflowEngine::parse_routing_decision("I would route this to finance")
-                .as_deref(),
+            WorkflowEngine::parse_routing_decision("I would route this to finance").as_deref(),
             Some("finance")
         );
     }
@@ -853,13 +854,16 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(mock_ollama_chat_response(
-                "Orchestrator handled the request",
-            )))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_ollama_chat_response(
+                    "Orchestrator handled the request",
+                )),
+            )
             .mount(&mock_server)
             .await;
 
-        let engine = build_engine_from_config(create_test_config_with_ollama(&mock_server.uri())).await;
+        let engine =
+            build_engine_from_config(create_test_config_with_ollama(&mock_server.uri())).await;
         let output = engine
             .execute_workflow("research", "complex task", &test_agent_context())
             .await
@@ -901,14 +905,22 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let engine = build_engine_from_config(create_test_config_with_ollama(&mock_server.uri())).await;
+        let engine =
+            build_engine_from_config(create_test_config_with_ollama(&mock_server.uri())).await;
         let output = engine
-            .execute_workflow("default", "What products do we have?", &test_agent_context())
+            .execute_workflow(
+                "default",
+                "What products do we have?",
+                &test_agent_context(),
+            )
             .await
             .expect("routed workflow");
 
         assert_eq!(output.steps_executed, 2);
-        assert_eq!(output.agents_used, vec!["router".to_string(), "product".to_string()]);
+        assert_eq!(
+            output.agents_used,
+            vec!["router".to_string(), "product".to_string()]
+        );
         assert!(output.final_response.contains("widgets"));
     }
 
@@ -943,7 +955,8 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let engine = build_engine_from_config(create_test_config_with_ollama(&mock_server.uri())).await;
+        let engine =
+            build_engine_from_config(create_test_config_with_ollama(&mock_server.uri())).await;
         let output = engine
             .execute_workflow("default", "weird query", &test_agent_context())
             .await
@@ -953,5 +966,4 @@ mod tests {
         assert!(output.agents_used.contains(&"orchestrator".to_string()));
         assert!(output.final_response.contains("Fallback"));
     }
-
 }

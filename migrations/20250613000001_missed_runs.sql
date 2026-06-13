@@ -1,4 +1,4 @@
--- Migration 026: Missed runs audit table
+-- Migration 20250613000001: Missed runs audit table
 -- Supports DIR1-73: Configurable missed-run grace period
 
 CREATE TABLE IF NOT EXISTS missed_runs (

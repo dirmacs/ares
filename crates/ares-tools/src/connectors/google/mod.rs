@@ -20,19 +20,35 @@ pub struct GoogleClient {
     http: reqwest::Client,
     pool: PgPool,
     master_key: MasterKey,
+    connector_type: &'static str,
 }
 
 impl GoogleClient {
-    /// Create a new Google client.
-    pub fn new(pool: PgPool, master_key: MasterKey) -> Self {
+    /// Create a new Google client for the Calendar API.
+    pub fn calendar(pool: PgPool, master_key: MasterKey) -> Self {
+        Self::new(pool, master_key, "google_calendar", "calendar/v3")
+    }
+
+    /// Create a new Google client for the Gmail API.
+    pub fn gmail(pool: PgPool, master_key: MasterKey) -> Self {
+        Self::new(pool, master_key, "gmail", "gmail/v1")
+    }
+
+    fn new(
+        pool: PgPool,
+        master_key: MasterKey,
+        connector_type: &'static str,
+        api_prefix: &'static str,
+    ) -> Self {
         Self {
             config: ConnectorConfig {
                 base_url: "https://www.googleapis.com".to_string(),
-                version: "v3".to_string(),
+                version: api_prefix.to_string(),
             },
             http: reqwest::Client::new(),
             pool,
             master_key,
+            connector_type,
         }
     }
 
@@ -43,7 +59,7 @@ impl GoogleClient {
             &self.master_key,
             tenant_id,
             "google",
-            "oauth2",
+            self.connector_type,
             GOOGLE_TOKEN_URL,
         )
         .await
@@ -58,10 +74,7 @@ impl GoogleClient {
     ) -> Result<reqwest::RequestBuilder> {
         let token = self.access_token(tenant_id).await?;
         let url = format!("{}/{}{}", self.config.base_url, self.config.version, path);
-        Ok(self
-            .http
-            .request(method, &url)
-            .bearer_auth(token))
+        Ok(self.http.request(method, &url).bearer_auth(token))
     }
 
     /// Execute a request with automatic retry on 429.

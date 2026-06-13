@@ -1492,9 +1492,18 @@ mod tests {
 
     #[test]
     fn safe_callback_redirect_uri_allows_relative_only() {
-        assert_eq!(safe_callback_redirect_uri("/connectors/callback"), "/connectors/callback");
-        assert_eq!(safe_callback_redirect_uri("//evil.example/path"), "/connectors");
-        assert_eq!(safe_callback_redirect_uri("https://evil.example/path"), "/connectors");
+        assert_eq!(
+            safe_callback_redirect_uri("/connectors/callback"),
+            "/connectors/callback"
+        );
+        assert_eq!(
+            safe_callback_redirect_uri("//evil.example/path"),
+            "/connectors"
+        );
+        assert_eq!(
+            safe_callback_redirect_uri("https://evil.example/path"),
+            "/connectors"
+        );
         assert_eq!(safe_callback_redirect_uri("/bad\\path"), "/connectors");
     }
 
@@ -1515,15 +1524,40 @@ mod tests {
         assert!(url.starts_with("https://slack.com/oauth/v2/authorize?"));
         assert!(url.contains("client_id=client%20id"));
         assert!(url.contains("redirect_uri=https%3A%2F%2Fapp.example%2Fapi%2Foauth%2Fcallback"));
-        assert!(url.contains("state=tenant_id%3Dtenant-1%26connector_type%3Dslack%26redirect_uri%3D%252Fconnectors"));
+        assert!(url.contains(
+            "state=tenant_id%3Dtenant-1%26connector_type%3Dslack%26redirect_uri%3D%252Fconnectors"
+        ));
     }
 
     #[test]
     fn build_token_form_uses_authorization_code_grant() {
-        let form = build_token_form("code", "client", "secret", "https://app.example/api/oauth/callback");
+        let form = build_token_form(
+            "code",
+            "client",
+            "secret",
+            "https://app.example/api/oauth/callback",
+        );
         assert_eq!(form[0], ("grant_type", "authorization_code"));
         assert!(form.contains(&("code", "code")));
         assert!(form.contains(&("client_secret", "secret")));
+    }
+
+    #[test]
+    fn oauth_stored_scope_preserves_instance_url_metadata() {
+        let scope = oauth_stored_scope(
+            "api refresh_token",
+            Some("api"),
+            Some("https://acme.my.salesforce.com"),
+        );
+        assert_eq!(scope, "api instance_url=https://acme.my.salesforce.com");
+        assert_eq!(
+            oauth_stored_scope("fallback", None, Some("https://acme.my.salesforce.com")),
+            "fallback instance_url=https://acme.my.salesforce.com"
+        );
+        assert_eq!(
+            oauth_stored_scope("fallback", Some("api"), Some("javascript:bad")),
+            "api"
+        );
     }
 
     #[test]
@@ -3634,7 +3668,7 @@ fn oauth_provider_config(connector_type: &str) -> Result<OAuthProviderConfig> {
             provider: "hubspot",
             auth_url: "https://app.hubspot.com/oauth/authorize",
             token_url: "https://api.hubapi.com/oauth/v1/token",
-            scope: "crm.objects.contacts.read crm.objects.contacts.write",
+            scope: "crm.objects.contacts.read crm.objects.contacts.write crm.objects.deals.read crm.objects.deals.write",
         }),
         "salesforce" => Ok(OAuthProviderConfig {
             provider: "salesforce",
@@ -3740,7 +3774,8 @@ fn decode_oauth_state(value: &str) -> Result<OAuthState> {
         }
     }
 
-    let tenant_id = tenant_id.ok_or_else(|| AppError::InvalidInput("malformed OAuth state".into()))?;
+    let tenant_id =
+        tenant_id.ok_or_else(|| AppError::InvalidInput("malformed OAuth state".into()))?;
     let connector_type =
         connector_type.ok_or_else(|| AppError::InvalidInput("malformed OAuth state".into()))?;
     let redirect_uri =
@@ -3806,6 +3841,37 @@ fn build_token_form<'a>(
     ]
 }
 
+fn oauth_stored_scope(
+    default_scope: &str,
+    token_scope: Option<&str>,
+    instance_url: Option<&str>,
+) -> String {
+    let mut scope = token_scope
+        .filter(|scope| !scope.trim().is_empty())
+        .unwrap_or(default_scope)
+        .trim()
+        .to_string();
+    if let Some(instance_url) = instance_url.and_then(|url| safe_oauth_instance_url(url)) {
+        if !scope.is_empty() {
+            scope.push(' ');
+        }
+        scope.push_str("instance_url=");
+        scope.push_str(instance_url);
+    }
+    scope
+}
+
+fn safe_oauth_instance_url(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if (trimmed.starts_with("https://") || trimmed.starts_with("http://"))
+        && !trimmed.contains(char::is_whitespace)
+    {
+        Some(trimmed)
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct OAuthTokenResponse {
     access_token: String,
@@ -3813,6 +3879,10 @@ struct OAuthTokenResponse {
     refresh_token: Option<String>,
     #[serde(default)]
     expires_in: Option<i64>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    instance_url: Option<String>,
 }
 
 pub async fn oauth_authorize(
@@ -3911,12 +3981,18 @@ pub async fn oauth_callback(
         .await
         .map_err(|e| AppError::External(format!("OAuth token response parse failed: {e}")))?;
     let expires_at = chrono::Utc::now().timestamp() + token.expires_in.unwrap_or(3600).max(0);
+    let stored_scope = oauth_stored_scope(
+        provider.scope,
+        token.scope.as_deref(),
+        token.instance_url.as_deref(),
+    );
     store
-        .update_tokens(
+        .update_tokens_and_scope(
             &credential.id,
             &token.access_token,
             token.refresh_token.as_deref(),
             expires_at,
+            Some(&stored_scope),
         )
         .await?;
 

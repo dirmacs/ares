@@ -3,8 +3,9 @@
 use crate::connectors::google::GoogleClient;
 use crate::connectors::require_tenant_id;
 use crate::registry::Tool;
-use ares_types::types::Result;
+use ares_types::types::{AppError, Result};
 use async_trait::async_trait;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -61,10 +62,7 @@ impl GmailSendEmail {
         subject: &str,
         body: &str,
     ) -> Result<GmailMessage> {
-        let raw = format!(
-            "To: {}\r\nSubject: {}\r\n\r\n{}\r\n",
-            to, subject, body
-        );
+        let raw = format!("To: {}\r\nSubject: {}\r\n\r\n{}\r\n", to, subject, body);
         let encoded = base64::engine::general_purpose::STANDARD.encode(&raw);
         let payload = json!({ "raw": encoded });
 
@@ -74,7 +72,7 @@ impl GmailSendEmail {
             .await?
             .json(&payload);
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let resp_body = resp.text().await.map_err(|e| {
             ares_types::AppError::External(format!("gmail send email read body: {e}"))
         })?;
@@ -149,7 +147,7 @@ impl GmailListMessages {
         }
         req = req.query(&[("maxResults", &max_results.to_string())]);
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let resp_body = resp.text().await.map_err(|e| {
             ares_types::AppError::External(format!("gmail list messages read body: {e}"))
         })?;
@@ -221,7 +219,7 @@ impl GmailGetMessage {
             .request(tenant_id, reqwest::Method::GET, &path)
             .await?;
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let resp_body = resp.text().await.map_err(|e| {
             ares_types::AppError::External(format!("gmail get message read body: {e}"))
         })?;
@@ -257,9 +255,9 @@ impl Tool for GmailGetMessage {
 
     async fn execute(&self, args: Value) -> Result<Value> {
         let tenant_id = require_tenant_id(&args)?;
-        let id = args["message_id"]
-            .as_str()
-            .ok_or_else(|| ares_types::AppError::InvalidInput("message_id is required".to_string()))?;
+        let id = args["message_id"].as_str().ok_or_else(|| {
+            ares_types::AppError::InvalidInput("message_id is required".to_string())
+        })?;
 
         let msg = self.get_message(&tenant_id, id).await?;
         Ok(json!({ "message": msg }))

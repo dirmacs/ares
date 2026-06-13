@@ -6,7 +6,7 @@
 
 use ares_db::run_history::{AgentHealthMetrics, ModelHealthMetrics, RunHistoryStore};
 use rust_decimal::Decimal;
-use sqlx::{PgPool, Row};
+use sqlx::{postgres::PgRow, PgPool, Row};
 use std::time::Duration;
 use tokio::time::interval;
 use uuid::Uuid;
@@ -47,76 +47,35 @@ pub fn spawn(pool: PgPool) {
 async fn run_once(
     pool: &PgPool,
 ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let now = chrono::Utc::now().timestamp();
-    let hour_ago = now - 3600;
-
-    // Aggregate agent_runs for the last hour
-    let rows = sqlx::query(
-        "SELECT \
-            tenant_id, \
-            agent_name, \
-            COUNT(*) AS total_runs, \
-            COUNT(*) FILTER (WHERE status = 'completed') AS successful_runs, \
-            COUNT(*) FILTER (WHERE status = 'failed') AS failed_runs, \
-            COALESCE(AVG(duration_ms), 0)::bigint AS avg_latency_ms, \
-            COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p50_latency_ms, \
-            COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p95_latency_ms, \
-            COALESCE(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p99_latency_ms, \
-            COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens \
-         FROM agent_runs \
-         WHERE created_at >= $1 AND created_at <= $2 \
-         GROUP BY tenant_id, agent_name",
-    )
-    .bind(hour_ago)
-    .bind(now)
-    .fetch_all(pool)
-    .await?;
-
+    let period_end = chrono::Utc::now().timestamp();
+    let period_start = period_end - 3600;
     let store = RunHistoryStore::new(pool);
+
+    aggregate_agent_health_metrics(pool, &store, period_start, period_end).await?;
+    aggregate_model_health_metrics(pool, &store, period_start, period_end).await?;
+
+    tracing::info!("Health metrics aggregation complete for the last hour");
+    Ok(())
+}
+
+async fn aggregate_agent_health_metrics(
+    pool: &PgPool,
+    store: &RunHistoryStore<'_>,
+    period_start: i64,
+    period_end: i64,
+) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let rows = sqlx::query(agent_health_sql())
+        .bind(period_start)
+        .bind(period_end)
+        .fetch_all(pool)
+        .await?;
 
     for row in rows {
         let tenant_id: String = row.try_get("tenant_id")?;
         let agent_name: String = row.try_get("agent_name")?;
-        let total_runs: i64 = row.try_get("total_runs")?;
-        let successful_runs: i64 = row.try_get("successful_runs")?;
-        let failed_runs: i64 = row.try_get("failed_runs")?;
-        let avg_latency_ms: i64 = row.try_get("avg_latency_ms")?;
-        let p50_latency_ms: i64 = row.try_get("p50_latency_ms")?;
-        let p95_latency_ms: i64 = row.try_get("p95_latency_ms")?;
-        let p99_latency_ms: i64 = row.try_get("p99_latency_ms")?;
-        let total_tokens: i64 = row.try_get("total_tokens")?;
-
-        // Fetch only this agent's costs in the same window.
-        let total_cost_usd: Decimal = sqlx::query_scalar(agent_cost_sql())
-            .bind(&tenant_id)
-            .bind(&agent_name)
-            .bind(hour_ago)
-            .bind(now)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(Decimal::ZERO);
-
-        let error_rate_pct = percent_rate(failed_runs, total_runs);
-
-        let metrics = AgentHealthMetrics {
-            id: Uuid::new_v4().to_string(),
-            tenant_id,
-            agent_name,
-            period_start: hour_ago,
-            period_end: now,
-            total_runs,
-            successful_runs,
-            failed_runs,
-            avg_latency_ms,
-            p50_latency_ms,
-            p95_latency_ms,
-            p99_latency_ms,
-            total_tokens,
-            total_cost_usd,
-            error_rate_pct,
-            created_at: now,
-        };
-
+        let total_cost_usd =
+            fetch_agent_cost(pool, &tenant_id, &agent_name, period_start, period_end).await;
+        let metrics = agent_metrics_from_row(row, period_start, period_end, total_cost_usd)?;
         if let Err(e) = store.insert_health_metrics(&metrics).await {
             tracing::warn!(
                 error = %e,
@@ -127,63 +86,23 @@ async fn run_once(
         }
     }
 
-    // Aggregate run_llm_calls for the last hour by (tenant_id, model)
-    let model_rows = sqlx::query(
-        "SELECT \
-            tenant_id, \
-            model, \
-            COUNT(*) AS total_calls, \
-            COUNT(*) FILTER (WHERE status = 'success') AS successful_calls, \
-            COUNT(*) FILTER (WHERE status <> 'success') AS failed_calls, \
-            COALESCE(AVG(latency_ms), 0)::bigint AS avg_latency_ms, \
-            COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p50_latency_ms, \
-            COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p95_latency_ms, \
-            COALESCE(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p99_latency_ms, \
-            COALESCE(SUM(total_tokens), 0) AS total_tokens, \
-            COALESCE(SUM(estimated_cost_usd), 0) AS total_cost_usd \
-         FROM run_llm_calls \
-         WHERE created_at >= $1 AND created_at <= $2 \
-         GROUP BY tenant_id, model",
-    )
-    .bind(hour_ago)
-    .bind(now)
-    .fetch_all(pool)
-    .await?;
+    Ok(())
+}
 
-    for row in model_rows {
-        let tenant_id: String = row.try_get("tenant_id")?;
-        let model: String = row.try_get("model")?;
-        let total_calls: i64 = row.try_get("total_calls")?;
-        let successful_calls: i64 = row.try_get("successful_calls")?;
-        let failed_calls: i64 = row.try_get("failed_calls")?;
-        let avg_latency_ms: i64 = row.try_get("avg_latency_ms")?;
-        let p50_latency_ms: i64 = row.try_get("p50_latency_ms")?;
-        let p95_latency_ms: i64 = row.try_get("p95_latency_ms")?;
-        let p99_latency_ms: i64 = row.try_get("p99_latency_ms")?;
-        let total_tokens: i64 = row.try_get("total_tokens")?;
+async fn aggregate_model_health_metrics(
+    pool: &PgPool,
+    store: &RunHistoryStore<'_>,
+    period_start: i64,
+    period_end: i64,
+) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let rows = sqlx::query(model_health_sql())
+        .bind(period_start)
+        .bind(period_end)
+        .fetch_all(pool)
+        .await?;
 
-        let total_cost_usd: Decimal = row.try_get("total_cost_usd")?;
-        let error_rate_pct = percent_rate(failed_calls, total_calls);
-
-        let metrics = ModelHealthMetrics {
-            id: Uuid::new_v4().to_string(),
-            tenant_id,
-            model,
-            period_start: hour_ago,
-            period_end: now,
-            total_calls,
-            successful_calls,
-            failed_calls,
-            avg_latency_ms,
-            p50_latency_ms,
-            p95_latency_ms,
-            p99_latency_ms,
-            total_tokens,
-            total_cost_usd,
-            error_rate_pct,
-            created_at: now,
-        };
-
+    for row in rows {
+        let metrics = model_metrics_from_row(row, period_start, period_end)?;
         if let Err(e) = store.insert_model_health_metrics(&metrics).await {
             tracing::warn!(
                 error = %e,
@@ -194,13 +113,119 @@ async fn run_once(
         }
     }
 
-    tracing::info!("Health metrics aggregation complete for the last hour");
     Ok(())
+}
+
+async fn fetch_agent_cost(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+    period_start: i64,
+    period_end: i64,
+) -> Decimal {
+    sqlx::query_scalar(agent_cost_sql())
+        .bind(tenant_id)
+        .bind(agent_name)
+        .bind(period_start)
+        .bind(period_end)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(Decimal::ZERO)
+}
+
+fn agent_metrics_from_row(
+    row: PgRow,
+    period_start: i64,
+    period_end: i64,
+    total_cost_usd: Decimal,
+) -> sqlx::Result<AgentHealthMetrics> {
+    let total_runs = row.try_get("total_runs")?;
+    let failed_runs = row.try_get("failed_runs")?;
+    Ok(AgentHealthMetrics {
+        id: Uuid::new_v4().to_string(),
+        tenant_id: row.try_get("tenant_id")?,
+        agent_name: row.try_get("agent_name")?,
+        period_start,
+        period_end,
+        total_runs,
+        successful_runs: row.try_get("successful_runs")?,
+        failed_runs,
+        avg_latency_ms: row.try_get("avg_latency_ms")?,
+        p50_latency_ms: row.try_get("p50_latency_ms")?,
+        p95_latency_ms: row.try_get("p95_latency_ms")?,
+        p99_latency_ms: row.try_get("p99_latency_ms")?,
+        total_tokens: row.try_get("total_tokens")?,
+        total_cost_usd,
+        error_rate_pct: percent_rate(failed_runs, total_runs),
+        created_at: period_end,
+    })
+}
+
+fn model_metrics_from_row(
+    row: PgRow,
+    period_start: i64,
+    period_end: i64,
+) -> sqlx::Result<ModelHealthMetrics> {
+    let total_calls = row.try_get("total_calls")?;
+    let failed_calls = row.try_get("failed_calls")?;
+    Ok(ModelHealthMetrics {
+        id: Uuid::new_v4().to_string(),
+        tenant_id: row.try_get("tenant_id")?,
+        model: row.try_get("model")?,
+        period_start,
+        period_end,
+        total_calls,
+        successful_calls: row.try_get("successful_calls")?,
+        failed_calls,
+        avg_latency_ms: row.try_get("avg_latency_ms")?,
+        p50_latency_ms: row.try_get("p50_latency_ms")?,
+        p95_latency_ms: row.try_get("p95_latency_ms")?,
+        p99_latency_ms: row.try_get("p99_latency_ms")?,
+        total_tokens: row.try_get("total_tokens")?,
+        total_cost_usd: row.try_get("total_cost_usd")?,
+        error_rate_pct: percent_rate(failed_calls, total_calls),
+        created_at: period_end,
+    })
+}
+
+fn agent_health_sql() -> &'static str {
+    "SELECT \
+        tenant_id, \
+        agent_name, \
+        COUNT(*) AS total_runs, \
+        COUNT(*) FILTER (WHERE status = 'completed') AS successful_runs, \
+        COUNT(*) FILTER (WHERE status = 'failed') AS failed_runs, \
+        COALESCE(AVG(duration_ms), 0)::bigint AS avg_latency_ms, \
+        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p50_latency_ms, \
+        COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p95_latency_ms, \
+        COALESCE(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p99_latency_ms, \
+        COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens \
+     FROM agent_runs \
+     WHERE created_at >= $1 AND created_at <= $2 \
+     GROUP BY tenant_id, agent_name"
+}
+
+fn model_health_sql() -> &'static str {
+    "SELECT \
+        tenant_id, \
+        model, \
+        COUNT(*) AS total_calls, \
+        COUNT(*) FILTER (WHERE status = 'success') AS successful_calls, \
+        COUNT(*) FILTER (WHERE status <> 'success') AS failed_calls, \
+        COALESCE(AVG(latency_ms), 0)::bigint AS avg_latency_ms, \
+        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p50_latency_ms, \
+        COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p95_latency_ms, \
+        COALESCE(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p99_latency_ms, \
+        COALESCE(SUM(total_tokens), 0) AS total_tokens, \
+        COALESCE(SUM(estimated_cost_usd), 0) AS total_cost_usd \
+     FROM run_llm_calls \
+     WHERE created_at >= $1 AND created_at <= $2 \
+     GROUP BY tenant_id, model"
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_cost_sql, percent_rate};
+    use super::{agent_cost_sql, agent_health_sql, model_health_sql, percent_rate};
     use rust_decimal::Decimal;
 
     #[test]
@@ -208,6 +233,24 @@ mod tests {
         assert_eq!(percent_rate(1, 4), Decimal::new(25, 0));
         assert_eq!(percent_rate(0, 4), Decimal::ZERO);
         assert_eq!(percent_rate(1, 0), Decimal::ZERO);
+    }
+
+    #[test]
+    fn agent_health_sql_groups_agent_window() {
+        let sql = agent_health_sql();
+        assert!(sql.contains("FROM agent_runs"));
+        assert!(sql.contains("created_at >= $1"));
+        assert!(sql.contains("created_at <= $2"));
+        assert!(sql.contains("GROUP BY tenant_id, agent_name"));
+    }
+
+    #[test]
+    fn model_health_sql_groups_model_window() {
+        let sql = model_health_sql();
+        assert!(sql.contains("FROM run_llm_calls"));
+        assert!(sql.contains("created_at >= $1"));
+        assert!(sql.contains("created_at <= $2"));
+        assert!(sql.contains("GROUP BY tenant_id, model"));
     }
 
     #[test]

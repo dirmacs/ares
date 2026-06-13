@@ -660,13 +660,14 @@ mod tests {
         agents.insert(
             "a".into(),
             AgentConfig {
-                model: "default".into(),
-                system_prompt: None,
-                tools: vec![],
-                max_tool_iterations: 1,
-                parallel_tools: false,
-                extra: HashMap::new(),
-            },
+                            model: "default".into(),
+                            system_prompt: None,
+                            tools: vec![],
+                            allowed_tools: None,
+                            max_tool_iterations: 1,
+                            parallel_tools: false,
+                            extra: HashMap::new(),
+                        },
         );
         AresConfig {
             server: ServerConfig::default(),
@@ -720,8 +721,9 @@ mod tests {
         std::mem::forget(temp_dir);
 
         let db = Arc::new(crate::db::PostgresClient::new_test());
+        let provider_registry_for_skill = provider_registry.clone();
         AppState {
-            config_manager,
+            config_manager: config_manager.clone(),
             dynamic_config,
             db: db.clone(),
             tenant_db: Arc::new(TenantDb::new(db.clone())),
@@ -731,7 +733,7 @@ mod tests {
             )),
             provider_registry,
             agent_registry,
-            tool_registry,
+            tool_registry: tool_registry.clone(),
             auth_service: Arc::new(AuthService::new(
                 "test-secret-at-least-32-characters-long".into(),
                 900,
@@ -746,6 +748,16 @@ mod tests {
             fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
             runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(db.pool.clone())),
             active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
+            skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
+                db.pool.clone(),
+                tool_registry,
+                Arc::new(crate::RuntimeToolRegistry::new(db.pool.clone())),
+                Arc::new(crate::ConfigBasedLLMFactory::new(
+                    provider_registry_for_skill,
+                    "default",
+                )),
+                config_manager,
+            )),
         }
     }
 

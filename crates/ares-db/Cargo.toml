@@ -23,6 +23,7 @@ ares-config = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+cron = "0.15"
 hex = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }

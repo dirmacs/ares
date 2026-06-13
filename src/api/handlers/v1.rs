@@ -6,8 +6,8 @@
 
 use crate::agents::context_provider::AgentRuntimeContext;
 use crate::agents::tenant_agent;
-use ares_agents::Agent;
 use crate::db::agent_runs;
+use crate::db::run_history::{LogToolCallRequest, RunHistoryStore};
 use crate::db::tenant_agents::{self, TenantAgent};
 use crate::memory::estimate_tokens;
 use crate::models::{TenantContext, TenantTier};
@@ -18,15 +18,16 @@ use crate::types::{
     ResearchResponse, Result,
 };
 use crate::AppState;
+use ares_agents::Agent;
 use axum::{
     extract::{Extension, Path, Query, State},
     http::{HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
-use std::sync::Arc;
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 // =============================================================================
 // Response types — designed to match enterprise-portal's expected types
@@ -187,7 +188,6 @@ fn set_header(headers: &mut axum::http::HeaderMap, name: &'static str, value: im
         headers.insert(HeaderName::from_static(name), value);
     }
 }
-
 
 pub(crate) fn normalize_page(page: Option<u32>) -> u32 {
     page.unwrap_or(1).max(1)
@@ -472,11 +472,8 @@ pub async fn v1_chat(
     let (model_name, provider_name) = execution_metadata_names(response.metadata.as_ref());
 
     // Use actual LLM token counts; fall back to heuristic estimates if unavailable
-    let (input_tokens, output_tokens) = llm_token_counts_u32(
-        response.usage.as_ref(),
-        &effective_message,
-        &response_text,
-    );
+    let (input_tokens, output_tokens) =
+        llm_token_counts_u32(response.usage.as_ref(), &effective_message, &response_text);
 
     // Record agent run with real model/provider
     {
@@ -720,7 +717,11 @@ pub async fn run_agent(
                 .execute_skill(skill_id, &tc.tenant_id, input.clone(), &run_id)
                 .await;
             let duration_ms = start.elapsed().as_millis() as u64;
-            let skill_status = if skill_result.is_ok() { "completed" } else { "error" };
+            let skill_status = if skill_result.is_ok() {
+                "completed"
+            } else {
+                "error"
+            };
             state.active_runs.finish(&run_id, skill_status);
 
             // Record agent run
@@ -742,7 +743,11 @@ pub async fn run_agent(
                     eruka_write_count: 0,
                     pipeline_id: None,
                 };
-                let status = if skill_result.is_ok() { "completed" } else { "failed" };
+                let status = if skill_result.is_ok() {
+                    "completed"
+                } else {
+                    "failed"
+                };
                 let err_msg = skill_result.as_ref().err().cloned();
                 tokio::spawn(async move {
                     let _ = agent_runs::insert_agent_run_with_metadata(
@@ -1089,7 +1094,13 @@ pub async fn sandbox_run_agent(
     )
     .await?;
 
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let started = Utc::now();
     let tools = resolved_agent.agent.get_filtered_tool_definitions();
+    let tool_names = tools
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect::<Vec<_>>();
     let message = extract_agent_run_message(&input);
 
     let trace = vec![
@@ -1097,20 +1108,65 @@ pub async fn sandbox_run_agent(
         format!("Config source: {}", resolved_agent.source.as_str()),
         format!("System prompt: {}", resolved_agent.agent.system_prompt()),
         format!("Allowed tools: {:?}", resolved_agent.agent.allowed_tools()),
-        format!("Max tool iterations: {}", resolved_agent.agent.max_tool_iterations()),
+        format!(
+            "Max tool iterations: {}",
+            resolved_agent.agent.max_tool_iterations()
+        ),
         format!("Parallel tools: {}", resolved_agent.agent.parallel_tools()),
         format!("Input message: {}", message),
         "Sandbox mode active — no LLM calls or tool executions performed".to_string(),
     ];
 
+    let metadata = agent_runs::AgentRunMetadata {
+        workspace_id: None,
+        session_id: Some(run_id.clone()),
+        request_source: Some("api_v1_sandbox".to_string()),
+        product: Some("fleet_manager".to_string()),
+        agent_config_source: Some(resolved_agent.source.as_str().to_string()),
+        agent_config_version: resolved_agent.config_version.clone(),
+        eruka_binding_id: None,
+        eruka_context_hit: false,
+        eruka_read_count: 0,
+        eruka_write_count: 0,
+        pipeline_id: None,
+    };
+    agent_runs::insert_agent_run_with_metadata(
+        state.tenant_db.pool(),
+        &tc.tenant_id,
+        &name,
+        None,
+        "completed",
+        0,
+        0,
+        0,
+        None,
+        "sandbox",
+        "sandbox",
+        false,
+        Some(&metadata),
+    )
+    .await?;
+
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    for call in sandbox_tool_call_requests(
+        &run_id,
+        &tc.tenant_id,
+        &name,
+        &tool_names,
+        started.timestamp(),
+    ) {
+        store.insert_tool_call(&call).await?;
+    }
+
     Ok(Json(serde_json::json!({
         "sandbox": true,
+        "run_id": run_id,
         "agent_name": name,
         "tenant_id": tc.tenant_id,
         "config_source": resolved_agent.source.as_str(),
         "config_version": resolved_agent.config_version,
         "system_prompt": resolved_agent.agent.system_prompt(),
-        "tools": tools.iter().map(|t| &t.name).collect::<Vec<_>>(),
+        "tools": tool_names,
         "input": input,
         "trace": trace,
         "mock_response": {
@@ -1121,6 +1177,34 @@ pub async fn sandbox_run_agent(
             })).collect::<Vec<_>>(),
         }
     })))
+}
+
+fn sandbox_tool_call_requests(
+    run_id: &str,
+    tenant_id: &str,
+    agent_name: &str,
+    tool_names: &[String],
+    created_at: i64,
+) -> Vec<LogToolCallRequest> {
+    tool_names
+        .iter()
+        .enumerate()
+        .map(|(idx, tool_name)| LogToolCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: run_id.to_string(),
+            tenant_id: tenant_id.to_string(),
+            agent_name: agent_name.to_string(),
+            step_index: idx as i32,
+            tool_name: tool_name.clone(),
+            tool_type: "mcp".to_string(),
+            arguments: serde_json::json!({ "sandbox": true }),
+            result: Some(serde_json::json!({ "status": "skipped", "reason": "sandbox_mode" })),
+            latency_ms: 0,
+            status: "success".to_string(),
+            error_message: None,
+            created_at,
+        })
+        .collect()
 }
 
 /// GET /v1/agents/{name}/runs — list runs for an agent
@@ -1525,7 +1609,10 @@ mod tests {
         assert_eq!(v1.agent_type, "custom");
         assert!(matches!(v1.status, V1AgentStatus::Active));
         assert_eq!(v1.config, serde_json::json!({"model": "fast"}));
-        assert_eq!(v1.created_at, Utc.timestamp_opt(1_700_000_000, 0).single().unwrap());
+        assert_eq!(
+            v1.created_at,
+            Utc.timestamp_opt(1_700_000_000, 0).single().unwrap()
+        );
         assert!(v1.last_run.is_none());
         assert_eq!(v1.total_runs, 0);
         assert_eq!(v1.success_rate, 0.0);
@@ -1580,10 +1667,8 @@ mod tests {
 
     #[test]
     fn create_api_key_request_deserializes_expiry() {
-        let req: CreateApiKeyRequest = serde_json::from_str(
-            r#"{"name":"ci-key","expires_in_days":30}"#,
-        )
-        .expect("deserialize");
+        let req: CreateApiKeyRequest =
+            serde_json::from_str(r#"{"name":"ci-key","expires_in_days":30}"#).expect("deserialize");
         assert_eq!(req.name, "ci-key");
         assert_eq!(req.expires_in_days, Some(30));
     }
@@ -1682,7 +1767,6 @@ mod tests {
             "\"error\""
         );
     }
-
 
     #[test]
     fn v1_agent_serializes_snake_case_fields() {
@@ -1819,7 +1903,10 @@ mod tests {
             research_depth_and_iterations(None, None, Some(3), Some(7)),
             (3, 7)
         );
-        assert_eq!(research_depth_and_iterations(None, None, None, None), (2, 5));
+        assert_eq!(
+            research_depth_and_iterations(None, None, None, None),
+            (2, 5)
+        );
     }
 
     #[test]
@@ -1838,6 +1925,30 @@ mod tests {
     fn extract_agent_run_message_serializes_object_without_text_fields() {
         let input = serde_json::json!({"count": 3});
         assert_eq!(extract_agent_run_message(&input), r#"{"count":3}"#);
+    }
+
+    #[test]
+    fn sandbox_tool_call_requests_persist_skipped_trace_rows() {
+        let tool_names = vec![
+            "slack_send_message".to_string(),
+            "gmail_send_email".to_string(),
+        ];
+        let calls = sandbox_tool_call_requests("run-1", "tenant-1", "agent-1", &tool_names, 123);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].run_id, "run-1");
+        assert_eq!(calls[0].tenant_id, "tenant-1");
+        assert_eq!(calls[0].agent_name, "agent-1");
+        assert_eq!(calls[0].step_index, 0);
+        assert_eq!(calls[0].tool_name, "slack_send_message");
+        assert_eq!(calls[0].tool_type, "mcp");
+        assert_eq!(calls[0].status, "success");
+        assert_eq!(calls[0].latency_ms, 0);
+        assert_eq!(calls[0].created_at, 123);
+        assert_eq!(
+            calls[0].result,
+            Some(serde_json::json!({"status":"skipped","reason":"sandbox_mode"}))
+        );
+        assert_eq!(calls[1].step_index, 1);
     }
 
     #[test]
@@ -1999,5 +2110,4 @@ mod tests {
         let dt = ts_to_dt(0);
         assert_eq!(dt, Utc.timestamp_opt(0, 0).single().unwrap());
     }
-
 }

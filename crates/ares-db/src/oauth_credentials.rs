@@ -229,6 +229,8 @@ impl<'a> OAuthCredentialStore<'a> {
     }
 
     /// Update tokens and provider metadata stored in the scope field.
+    ///
+    /// When `refresh_token` is `None`, the existing stored refresh token is preserved.
     pub async fn update_tokens_and_scope(
         &self,
         id: &str,
@@ -256,8 +258,8 @@ impl<'a> OAuthCredentialStore<'a> {
             SET
                 access_token_ciphertext = $1,
                 access_token_nonce = $2,
-                refresh_token_ciphertext = $3,
-                refresh_token_nonce = $4,
+                refresh_token_ciphertext = COALESCE($3, refresh_token_ciphertext),
+                refresh_token_nonce = COALESCE($4, refresh_token_nonce),
                 expires_at = $5,
                 scope = $6,
                 updated_at = $7
@@ -471,6 +473,28 @@ mod tests {
         assert_eq!(decrypted_rt, "new-refresh-token");
         assert_eq!(after_update.expires_at, Some(1_800_000_000));
         assert!(after_update.updated_at >= created.updated_at);
+
+        store
+            .update_tokens_and_scope(
+                &created.id,
+                "access-without-refresh",
+                None,
+                1_900_000_000,
+                Some("email profile"),
+            )
+            .await
+            .expect("update_tokens_and_scope should preserve refresh token when omitted");
+
+        let after_scope_update = store
+            .get(&tenant_id, "google", "oauth2")
+            .await
+            .expect("get after scope update should succeed")
+            .unwrap();
+        let preserved_rt =
+            decrypt_api_key(after_scope_update.refresh_token.as_ref().unwrap(), &master).unwrap();
+        assert_eq!(preserved_rt, "new-refresh-token");
+        assert_eq!(after_scope_update.expires_at, Some(1_900_000_000));
+        assert_eq!(after_scope_update.scope.as_deref(), Some("email profile"));
 
         // Delete
         let deleted = store

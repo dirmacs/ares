@@ -17,6 +17,14 @@ use uuid::Uuid;
 /// 1. Scans `agent_runs` for the past hour.
 /// 2. Computes aggregations grouped by `(tenant_id, agent_name)`.
 /// 3. Upserts rows into `agent_health_metrics`.
+fn percent_rate(failed: i64, total: i64) -> Decimal {
+    if total > 0 {
+        Decimal::new(failed * 100, 0) / Decimal::new(total, 0)
+    } else {
+        Decimal::ZERO
+    }
+}
+
 pub fn spawn(pool: PgPool) {
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(3600));
@@ -85,11 +93,7 @@ async fn run_once(
         .await
         .unwrap_or(Decimal::ZERO);
 
-        let error_rate_pct = if total_runs > 0 {
-            Decimal::new(failed_runs * 100, 2) / Decimal::new(total_runs, 0)
-        } else {
-            Decimal::ZERO
-        };
+        let error_rate_pct = percent_rate(failed_runs, total_runs);
 
         let metrics = AgentHealthMetrics {
             id: Uuid::new_v4().to_string(),
@@ -127,12 +131,13 @@ async fn run_once(
             model, \
             COUNT(*) AS total_calls, \
             COUNT(*) FILTER (WHERE status = 'success') AS successful_calls, \
-            COUNT(*) FILTER (WHERE status = 'error') AS failed_calls, \
+            COUNT(*) FILTER (WHERE status <> 'success') AS failed_calls, \
             COALESCE(AVG(latency_ms), 0)::bigint AS avg_latency_ms, \
             COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p50_latency_ms, \
             COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p95_latency_ms, \
             COALESCE(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p99_latency_ms, \
-            COALESCE(SUM(total_tokens), 0) AS total_tokens \
+            COALESCE(SUM(total_tokens), 0) AS total_tokens, \
+            COALESCE(SUM(estimated_cost_usd), 0) AS total_cost_usd \
          FROM run_llm_calls \
          WHERE created_at >= $1 AND created_at <= $2 \
          GROUP BY tenant_id, model",
@@ -154,23 +159,8 @@ async fn run_once(
         let p99_latency_ms: i64 = row.try_get("p99_latency_ms")?;
         let total_tokens: i64 = row.try_get("total_tokens")?;
 
-        // Fetch total cost from run_costs for this tenant/model in the same window
-        let total_cost_usd: Decimal = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(total_estimated_cost_usd), 0) FROM run_costs \
-             WHERE tenant_id = $1 AND created_at >= $2 AND created_at <= $3",
-        )
-        .bind(&tenant_id)
-        .bind(hour_ago)
-        .bind(now)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(Decimal::ZERO);
-
-        let error_rate_pct = if total_calls > 0 {
-            Decimal::new(failed_calls * 100, 2) / Decimal::new(total_calls, 0)
-        } else {
-            Decimal::ZERO
-        };
+        let total_cost_usd: Decimal = row.try_get("total_cost_usd")?;
+        let error_rate_pct = percent_rate(failed_calls, total_calls);
 
         let metrics = ModelHealthMetrics {
             id: Uuid::new_v4().to_string(),
@@ -203,4 +193,17 @@ async fn run_once(
 
     tracing::info!("Health metrics aggregation complete for the last hour");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percent_rate;
+    use rust_decimal::Decimal;
+
+    #[test]
+    fn percent_rate_returns_percentage_not_fraction() {
+        assert_eq!(percent_rate(1, 4), Decimal::new(25, 0));
+        assert_eq!(percent_rate(0, 4), Decimal::ZERO);
+        assert_eq!(percent_rate(1, 0), Decimal::ZERO);
+    }
 }

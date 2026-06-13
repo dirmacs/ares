@@ -2646,9 +2646,11 @@ pub struct FleetProviderCapabilities {
 /// features. The admin UI uses this to filter the type dropdown so users
 /// can only select providers that this build can actually instantiate.
 pub async fn fleet_provider_capabilities() -> Json<FleetProviderCapabilities> {
-    let providers: Vec<&'static str> = vec!["openai"];
+    let mut providers: Vec<&'static str> = vec!["openai"];
     #[cfg(feature = "anthropic")]
     providers.push("anthropic");
+    #[cfg(feature = "bedrock")]
+    providers.push("bedrock");
     #[cfg(feature = "ollama")]
     providers.push("ollama");
 
@@ -2662,6 +2664,9 @@ fn default_api_base(pc: &ProviderConfig) -> Option<String> {
     match pc {
         ProviderConfig::OpenAI { api_base, .. } => Some(api_base.clone()),
         ProviderConfig::Anthropic { .. } => Some("https://api.anthropic.com".to_string()),
+        ProviderConfig::Bedrock { region_env, .. } => std::env::var(region_env)
+            .ok()
+            .map(|region| format!("https://bedrock-runtime.{region}.amazonaws.com")),
         ProviderConfig::Ollama { base_url, .. } => Some(base_url.clone()),
         _ => None,
     }
@@ -2671,6 +2676,7 @@ fn resolve_env_key(pc: &ProviderConfig) -> Option<String> {
     let var = match pc {
         ProviderConfig::OpenAI { api_key_env, .. } => api_key_env,
         ProviderConfig::Anthropic { api_key_env, .. } => api_key_env,
+        ProviderConfig::Bedrock { api_key_env, .. } => api_key_env,
         ProviderConfig::Ollama { api_key_env, .. } => api_key_env,
         _ => return None,
     };

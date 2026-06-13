@@ -806,6 +806,53 @@ impl<'a> RunHistoryStore<'a> {
         row_to_agent_health(&row)
     }
 
+    /// Insert model health metrics.
+    pub async fn insert_model_health_metrics(&self, record: &ModelHealthMetrics) -> Result<ModelHealthMetrics> {
+        let row = sqlx::query(
+            "INSERT INTO model_health_metrics \
+                (id, tenant_id, model, period_start, period_end, total_calls, \
+                 successful_calls, failed_calls, avg_latency_ms, p50_latency_ms, p95_latency_ms, \
+                 p99_latency_ms, total_tokens, total_cost_usd, error_rate_pct, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+             ON CONFLICT (tenant_id, model, period_start, period_end) DO UPDATE SET \
+                 total_calls = EXCLUDED.total_calls, \
+                 successful_calls = EXCLUDED.successful_calls, \
+                 failed_calls = EXCLUDED.failed_calls, \
+                 avg_latency_ms = EXCLUDED.avg_latency_ms, \
+                 p50_latency_ms = EXCLUDED.p50_latency_ms, \
+                 p95_latency_ms = EXCLUDED.p95_latency_ms, \
+                 p99_latency_ms = EXCLUDED.p99_latency_ms, \
+                 total_tokens = EXCLUDED.total_tokens, \
+                 total_cost_usd = EXCLUDED.total_cost_usd, \
+                 error_rate_pct = EXCLUDED.error_rate_pct, \
+                 created_at = EXCLUDED.created_at \
+             RETURNING id, tenant_id, model, period_start, period_end, total_calls, \
+                       successful_calls, failed_calls, avg_latency_ms, p50_latency_ms, p95_latency_ms, \
+                       p99_latency_ms, total_tokens, total_cost_usd, error_rate_pct, created_at",
+        )
+        .bind(&record.id)
+        .bind(&record.tenant_id)
+        .bind(&record.model)
+        .bind(record.period_start)
+        .bind(record.period_end)
+        .bind(record.total_calls)
+        .bind(record.successful_calls)
+        .bind(record.failed_calls)
+        .bind(record.avg_latency_ms)
+        .bind(record.p50_latency_ms)
+        .bind(record.p95_latency_ms)
+        .bind(record.p99_latency_ms)
+        .bind(record.total_tokens)
+        .bind(record.total_cost_usd)
+        .bind(record.error_rate_pct)
+        .bind(record.created_at)
+        .fetch_one(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+
+        row_to_model_health(&row)
+    }
+
     /// Fetch health metrics by id.
     pub async fn get_health_metrics(&self, id: &str) -> Result<Option<AgentHealthMetrics>> {
         let row = sqlx::query(

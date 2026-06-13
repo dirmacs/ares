@@ -51,6 +51,7 @@ pub(crate) fn pipeline_target_run_effects(
             eruka_read_count: if eruka_context_hit { 1 } else { 0 },
             eruka_write_count: 0,
             pipeline_id: Some(pipeline.id.clone()),
+            schedule_id: None,
         },
         usage: PipelineUsageRecord {
             tenant_id: tenant_id.to_string(),

@@ -454,7 +454,7 @@ pub async fn v1_chat(
     };
 
     use crate::agents::Agent;
-    let resolved_agent = tenant_agent::resolve_agent_for_tenant(
+    let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
         state.tenant_db.pool(),
         &state.agent_registry,
         &tc.tenant_id,
@@ -462,6 +462,12 @@ pub async fn v1_chat(
         &state.fleet_secrets,
     )
     .await?;
+    // Give the agent access to its tenant's runtime (DB-defined) tools so the
+    // LLM can actually call them. Tenant-scoped — never cross-tenant.
+    #[cfg(feature = "postgres")]
+    resolved_agent
+        .agent
+        .set_runtime_tools(state.runtime_tool_registry.clone(), tc.tenant_id.clone());
     let response = resolved_agent
         .agent
         .execute(&effective_message, &agent_context)

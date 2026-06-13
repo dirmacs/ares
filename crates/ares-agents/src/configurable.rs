@@ -45,6 +45,15 @@ pub struct ConfigurableAgent {
     /// Optional run id to associate with token usage records.
     #[cfg(feature = "postgres")]
     run_id: Option<String>,
+    /// Optional runtime (DB-defined) tool registry — http/mcp/sql/script tools.
+    /// Tenant-scoped: tool definitions and execution are filtered by
+    /// `runtime_tenant_id` so an agent never sees another tenant's tools.
+    #[cfg(feature = "postgres")]
+    runtime_tool_registry: Option<Arc<ares_tools::runtime_registry::RuntimeToolRegistry>>,
+    /// The tenant whose runtime tools this agent may use. Required for runtime
+    /// tool visibility/execution; `None` disables runtime tools entirely.
+    #[cfg(feature = "postgres")]
+    runtime_tenant_id: Option<String>,
 }
 
 impl ConfigurableAgent {
@@ -104,6 +113,10 @@ impl ConfigurableAgent {
             token_budget_pool: None,
             #[cfg(feature = "postgres")]
             run_id: None,
+            #[cfg(feature = "postgres")]
+            runtime_tool_registry: None,
+            #[cfg(feature = "postgres")]
+            runtime_tenant_id: None,
         }
     }
 
@@ -135,6 +148,10 @@ impl ConfigurableAgent {
             token_budget_pool: None,
             #[cfg(feature = "postgres")]
             run_id: None,
+            #[cfg(feature = "postgres")]
+            runtime_tool_registry: None,
+            #[cfg(feature = "postgres")]
+            runtime_tenant_id: None,
         }
     }
 
@@ -194,9 +211,17 @@ Handle employee info, policies, and benefits."#
         self.parallel_tools
     }
 
-    /// Check if this agent has a tool registry (and thus may use tools).
+    /// Check if this agent may use tools (built-in registry, or a tenant-scoped
+    /// runtime registry).
     pub fn has_tools(&self) -> bool {
-        self.tool_registry.is_some()
+        if self.tool_registry.is_some() {
+            return true;
+        }
+        #[cfg(feature = "postgres")]
+        if self.runtime_tool_registry.is_some() && self.runtime_tenant_id.is_some() {
+            return true;
+        }
+        false
     }
 
     /// Get the tool registry (if any)
@@ -236,6 +261,22 @@ Handle employee info, policies, and benefits."#
     #[cfg(feature = "postgres")]
     pub fn set_run_id(&mut self, run_id: String) {
         self.run_id = Some(run_id);
+    }
+
+    /// Wire in the runtime (DB-defined) tool registry, scoped to `tenant_id`.
+    ///
+    /// After this call the agent can see and execute the tenant's runtime
+    /// `http`/`mcp`/`sql`/`script` tools whose names are in `allowed_tools`.
+    /// All visibility and execution is filtered by `tenant_id`, so the agent
+    /// can never reach another tenant's tools.
+    #[cfg(feature = "postgres")]
+    pub fn set_runtime_tools(
+        &mut self,
+        registry: Arc<ares_tools::runtime_registry::RuntimeToolRegistry>,
+        tenant_id: String,
+    ) {
+        self.runtime_tool_registry = Some(registry);
+        self.runtime_tenant_id = Some(tenant_id);
     }
 
     /// Pre-flight check: reject the call if the tenant has already exhausted
@@ -397,13 +438,31 @@ Handle employee info, policies, and benefits."#
     /// If `allowed_tools` is set, returns only those tools (if enabled).
     /// Otherwise returns no tools: tool use is deny-by-default.
     pub fn get_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {
-        match (&self.tool_registry, &self.allowed_tools) {
+        let mut defs = match (&self.tool_registry, &self.allowed_tools) {
             (Some(registry), Some(allowed)) if !allowed.is_empty() => {
                 let allowed_refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
                 registry.get_tool_definitions_for(&allowed_refs)
             }
             _ => Vec::new(),
+        };
+
+        // Append runtime (DB-defined) tools the agent is allowed to use,
+        // scoped to its tenant. Built-in tools take precedence on name clashes.
+        #[cfg(feature = "postgres")]
+        if let (Some(rt), Some(tid), Some(allowed)) = (
+            &self.runtime_tool_registry,
+            &self.runtime_tenant_id,
+            &self.allowed_tools,
+        ) {
+            let existing: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
+            for def in rt.get_tool_definitions_for_tenant(Some(tid)) {
+                if allowed.iter().any(|a| a == &def.name) && !existing.contains(&def.name) {
+                    defs.push(def);
+                }
+            }
         }
+
+        defs
     }
 
     /// Check if a specific tool is allowed for this agent.
@@ -413,12 +472,49 @@ Handle employee info, policies, and benefits."#
             Some(allowed) => allowed.iter().any(|allowed| allowed == tool_name),
             None => false,
         };
-        whitelisted
-            && self
-                .tool_registry
-                .as_ref()
-                .map(|r| r.is_enabled(tool_name))
-                .unwrap_or(false)
+        if !whitelisted {
+            return false;
+        }
+        let builtin = self
+            .tool_registry
+            .as_ref()
+            .map(|r| r.is_enabled(tool_name))
+            .unwrap_or(false);
+        if builtin {
+            return true;
+        }
+        // A runtime tool counts as usable only if it is visible to this agent's
+        // tenant (tenant-scoped lookup — never cross-tenant).
+        #[cfg(feature = "postgres")]
+        if let (Some(rt), Some(tid)) = (&self.runtime_tool_registry, &self.runtime_tenant_id) {
+            if rt.get_for_tenant(tool_name, Some(tid)).is_some() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Execute a single tool call, routing to the correct registry.
+    ///
+    /// Built-in tools (in-process `ToolRegistry`) are tried first. If the tool
+    /// is not built-in, it is dispatched to the tenant-scoped runtime registry
+    /// (`execute_for_tenant`), so DB-defined http/mcp/sql/script tools work and
+    /// stay isolated to the agent's tenant.
+    async fn dispatch_tool(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        if let Some(reg) = &self.tool_registry {
+            if reg.has_tool(name) {
+                return reg.execute(name, args).await;
+            }
+        }
+        #[cfg(feature = "postgres")]
+        if let (Some(rt), Some(tid)) = (&self.runtime_tool_registry, &self.runtime_tenant_id) {
+            return rt.execute_for_tenant(name, args, Some(tid)).await;
+        }
+        Err(AppError::NotFound(format!("Tool not found: {name}")))
     }
 
     /// Execute the agent with tool-calling support (multi-turn loop).
@@ -436,7 +532,6 @@ Handle employee info, policies, and benefits."#
             tool_count = tools.len(),
             "execute_with_tools: tool definitions loaded"
         );
-        let registry = self.tool_registry.as_ref().unwrap();
 
         let mut messages: Vec<ConversationMessage> = Vec::new();
 
@@ -564,7 +659,12 @@ Handle employee info, policies, and benefits."#
                 }
 
                 let tool_start = std::time::Instant::now();
-                let result = registry.execute(&tc.name, tc.arguments.clone()).await;
+                let is_builtin = self
+                    .tool_registry
+                    .as_ref()
+                    .map(|r| r.has_tool(&tc.name))
+                    .unwrap_or(false);
+                let result = self.dispatch_tool(&tc.name, tc.arguments.clone()).await;
                 let tool_latency = tool_start.elapsed().as_millis() as i64;
                 let result_value = match result {
                     Ok(v) => v,
@@ -581,7 +681,7 @@ Handle employee info, policies, and benefits."#
                     let tool_record = ToolCallRecord {
                         step_index: iteration as i32,
                         tool_name: tc.name.clone(),
-                        tool_type: "builtin".to_string(),
+                        tool_type: if is_builtin { "builtin" } else { "runtime" }.to_string(),
                         arguments: tc.arguments.clone(),
                         result: Some(result_value.clone()),
                         latency_ms: tool_latency,

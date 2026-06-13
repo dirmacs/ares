@@ -12,6 +12,7 @@ description = "LLM provider clients and abstractions for A.R.E.S"
 default = []
 ollama = ["dep:ollama-rs"]
 openai = ["dep:async-openai", "dep:reqwest"]
+azure = ["openai"]
 bedrock = ["dep:reqwest"]
 llamacpp = ["dep:llama-cpp-2"]
 anthropic = ["dep:claude-sdk"]

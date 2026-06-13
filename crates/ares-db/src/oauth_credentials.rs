@@ -228,6 +228,57 @@ impl<'a> OAuthCredentialStore<'a> {
         Ok(())
     }
 
+    /// Update tokens and provider metadata stored in the scope field.
+    pub async fn update_tokens_and_scope(
+        &self,
+        id: &str,
+        access_token: &str,
+        refresh_token: Option<&str>,
+        expires_at: i64,
+        scope: Option<&str>,
+    ) -> Result<()> {
+        let master = MasterKey::from_env()
+            .ok_or_else(|| AppError::Configuration("FLEET_SECRETS_KEY not set".into()))?;
+
+        let at_payload = encrypt_api_key(access_token, &master)
+            .map_err(|e| AppError::Configuration(format!("encrypt failed: {e}")))?;
+
+        let rt_payload = refresh_token
+            .map(|t| encrypt_api_key(t, &master))
+            .transpose()
+            .map_err(|e| AppError::Configuration(format!("encrypt failed: {e}")))?;
+
+        let now = chrono::Utc::now().timestamp();
+
+        sqlx::query(
+            r#"
+            UPDATE oauth_credentials
+            SET
+                access_token_ciphertext = $1,
+                access_token_nonce = $2,
+                refresh_token_ciphertext = $3,
+                refresh_token_nonce = $4,
+                expires_at = $5,
+                scope = $6,
+                updated_at = $7
+            WHERE id = $8
+            "#,
+        )
+        .bind(&at_payload.ciphertext)
+        .bind(&at_payload.nonce)
+        .bind(rt_payload.as_ref().map(|p| &p.ciphertext))
+        .bind(rt_payload.as_ref().map(|p| &p.nonce))
+        .bind(expires_at)
+        .bind(scope)
+        .bind(now)
+        .bind(id)
+        .execute(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+
+        Ok(())
+    }
+
     /// Hard-delete a row by its id. Returns the number of rows affected.
     pub async fn delete(&self, id: &str) -> Result<u64> {
         let res = sqlx::query("DELETE FROM oauth_credentials WHERE id = $1")

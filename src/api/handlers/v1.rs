@@ -713,6 +713,7 @@ pub async fn run_agent(
                 last_update: chrono::Utc::now().timestamp(),
                 tool_name: Some(format!("skill:{}", skill_id)),
                 model: None,
+                is_catchup: false,
             });
             let skill_result = state
                 .skill_engine
@@ -871,6 +872,7 @@ pub async fn run_agent(
         last_update: chrono::Utc::now().timestamp(),
         tool_name: None,
         model: None,
+        is_catchup: false,
     });
     let result = resolved_agent
         .agent

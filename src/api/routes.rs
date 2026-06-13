@@ -444,6 +444,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             get(crate::api::handlers::admin::list_health_metrics)
                 .post(crate::api::handlers::admin::insert_health_metrics),
         )
+        .route(
+            "/admin/run-history/model-metrics",
+            get(crate::api::handlers::admin::list_model_metrics),
+        )
         // Skills & Connectors
         .route(
             "/admin/runs/live",

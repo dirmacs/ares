@@ -3447,6 +3447,29 @@ pub async fn create_skill(
     Ok(Json(skill))
 }
 
+pub async fn update_skill(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<db_skills::CreateSkillRequest>,
+) -> Result<Json<db_skills::Skill>> {
+    let store = db_skills::SkillStore::new(state.tenant_db.pool());
+    let skill = store
+        .update_skill(&id, &req)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("skill {id} not found")))?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = skill.tenant_id.clone();
+    let s_name = skill.name.clone();
+    tokio::spawn(async move {
+        let _ =
+            audit_log::log_admin_action(&pool, "skill_update", "skill", &s_name, Some(&t_id), None)
+                .await;
+    });
+
+    Ok(Json(skill))
+}
+
 pub async fn delete_skill(
     State(state): State<AppState>,
     Path(id): Path<String>,

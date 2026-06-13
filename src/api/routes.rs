@@ -482,6 +482,7 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .route(
             "/admin/skills/{id}",
             get(crate::api::handlers::admin::get_skill)
+                .put(crate::api::handlers::admin::update_skill)
                 .delete(crate::api::handlers::admin::delete_skill),
         )
         .route(

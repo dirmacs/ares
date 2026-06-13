@@ -126,6 +126,26 @@ async fn run_catchup_schedules(
                 sched.tenant_id,
                 e
             );
+        } else {
+            // Mark schedule as caught up and compute next future run time
+            match compute_next_run(&sched.cron_expression, &sched.timezone) {
+                Ok(next) => {
+                    if let Err(e) = store.update_schedule_run(&sched.id, next).await {
+                        tracing::warn!(
+                            "Failed to update schedule {} after catchup: {}",
+                            sched.id,
+                            e
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to compute next run for schedule {} after catchup: {}",
+                        sched.id,
+                        e
+                    );
+                }
+            }
         }
     }
 

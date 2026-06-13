@@ -25,6 +25,11 @@ fn percent_rate(failed: i64, total: i64) -> Decimal {
     }
 }
 
+fn agent_cost_sql() -> &'static str {
+    "SELECT COALESCE(SUM(total_estimated_cost_usd), 0) FROM run_costs \
+     WHERE tenant_id = $1 AND agent_name = $2 AND created_at >= $3 AND created_at <= $4"
+}
+
 pub fn spawn(pool: PgPool) {
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(3600));
@@ -81,17 +86,15 @@ async fn run_once(
         let p99_latency_ms: i64 = row.try_get("p99_latency_ms")?;
         let total_tokens: i64 = row.try_get("total_tokens")?;
 
-        // Fetch total cost from run_costs for this tenant in the same window
-        let total_cost_usd: Decimal = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(total_estimated_cost_usd), 0) FROM run_costs \
-             WHERE tenant_id = $1 AND created_at >= $2 AND created_at <= $3",
-        )
-        .bind(&tenant_id)
-        .bind(hour_ago)
-        .bind(now)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(Decimal::ZERO);
+        // Fetch only this agent's costs in the same window.
+        let total_cost_usd: Decimal = sqlx::query_scalar(agent_cost_sql())
+            .bind(&tenant_id)
+            .bind(&agent_name)
+            .bind(hour_ago)
+            .bind(now)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(Decimal::ZERO);
 
         let error_rate_pct = percent_rate(failed_runs, total_runs);
 
@@ -197,7 +200,7 @@ async fn run_once(
 
 #[cfg(test)]
 mod tests {
-    use super::percent_rate;
+    use super::{agent_cost_sql, percent_rate};
     use rust_decimal::Decimal;
 
     #[test]
@@ -205,5 +208,14 @@ mod tests {
         assert_eq!(percent_rate(1, 4), Decimal::new(25, 0));
         assert_eq!(percent_rate(0, 4), Decimal::ZERO);
         assert_eq!(percent_rate(1, 0), Decimal::ZERO);
+    }
+
+    #[test]
+    fn agent_cost_sql_filters_to_agent_window() {
+        let sql = agent_cost_sql();
+        assert!(sql.contains("tenant_id = $1"));
+        assert!(sql.contains("agent_name = $2"));
+        assert!(sql.contains("created_at >= $3"));
+        assert!(sql.contains("created_at <= $4"));
     }
 }

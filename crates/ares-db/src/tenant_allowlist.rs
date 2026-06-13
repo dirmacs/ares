@@ -62,7 +62,7 @@ impl<'a> TenantAllowlistStore<'a> {
         let rows = sqlx::query(
             "SELECT id, tenant_id, tool_name, enabled, created_at, updated_at
              FROM tenant_tool_allowlist
-             WHERE tenant_id = $1
+             WHERE tenant_id = $1 AND enabled = TRUE
              ORDER BY tool_name",
         )
         .bind(tenant_id)
@@ -113,18 +113,6 @@ impl<'a> TenantAllowlistStore<'a> {
     }
 
     pub async fn is_tool_allowed(&self, tenant_id: &str, tool_name: &str) -> Result<bool> {
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM tenant_tool_allowlist WHERE tenant_id = $1",
-        )
-        .bind(tenant_id)
-        .fetch_one(self.pool)
-        .await
-        .map_err(sqlx_err)?;
-
-        if total == 0 {
-            return Ok(true);
-        }
-
         let enabled: Option<bool> = sqlx::query_scalar(
             "SELECT enabled FROM tenant_tool_allowlist WHERE tenant_id = $1 AND tool_name = $2",
         )
@@ -145,7 +133,7 @@ impl<'a> TenantAllowlistStore<'a> {
         let rows = sqlx::query(
             "SELECT id, tenant_id, model_id, enabled, created_at, updated_at
              FROM tenant_model_allowlist
-             WHERE tenant_id = $1
+             WHERE tenant_id = $1 AND enabled = TRUE
              ORDER BY model_id",
         )
         .bind(tenant_id)
@@ -196,18 +184,6 @@ impl<'a> TenantAllowlistStore<'a> {
     }
 
     pub async fn is_model_allowed(&self, tenant_id: &str, model_id: &str) -> Result<bool> {
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM tenant_model_allowlist WHERE tenant_id = $1",
-        )
-        .bind(tenant_id)
-        .fetch_one(self.pool)
-        .await
-        .map_err(sqlx_err)?;
-
-        if total == 0 {
-            return Ok(true);
-        }
-
         let enabled: Option<bool> = sqlx::query_scalar(
             "SELECT enabled FROM tenant_model_allowlist WHERE tenant_id = $1 AND model_id = $2",
         )
@@ -224,14 +200,11 @@ impl<'a> TenantAllowlistStore<'a> {
     // RAG Sources
     // -------------------------------------------------------------------------
 
-    pub async fn list_rag_sources(
-        &self,
-        tenant_id: &str,
-    ) -> Result<Vec<TenantRagAllowlistItem>> {
+    pub async fn list_rag_sources(&self, tenant_id: &str) -> Result<Vec<TenantRagAllowlistItem>> {
         let rows = sqlx::query(
             "SELECT id, tenant_id, rag_source, enabled, created_at, updated_at
              FROM tenant_rag_allowlist
-             WHERE tenant_id = $1
+             WHERE tenant_id = $1 AND enabled = TRUE
              ORDER BY rag_source",
         )
         .bind(tenant_id)
@@ -281,23 +254,7 @@ impl<'a> TenantAllowlistStore<'a> {
         Ok(result.rows_affected())
     }
 
-    pub async fn is_rag_source_allowed(
-        &self,
-        tenant_id: &str,
-        rag_source: &str,
-    ) -> Result<bool> {
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM tenant_rag_allowlist WHERE tenant_id = $1",
-        )
-        .bind(tenant_id)
-        .fetch_one(self.pool)
-        .await
-        .map_err(sqlx_err)?;
-
-        if total == 0 {
-            return Ok(true);
-        }
-
+    pub async fn is_rag_source_allowed(&self, tenant_id: &str, rag_source: &str) -> Result<bool> {
         let enabled: Option<bool> = sqlx::query_scalar(
             "SELECT enabled FROM tenant_rag_allowlist WHERE tenant_id = $1 AND rag_source = $2",
         )
@@ -366,6 +323,57 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::PgPool;
+
+    fn test_db_url() -> String {
+        if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
+            return url;
+        }
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            if url.contains("/ares") && !url.contains("ares_test") {
+                return url.replace("/ares", "/ares_test");
+            }
+            return url;
+        }
+        "postgres:///ares_test".to_string()
+    }
+
+    async fn try_test_pool() -> Option<PgPool> {
+        let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
+            .await
+            .ok()?;
+        sqlx::migrate!("../../migrations")
+            .run(&db.pool)
+            .await
+            .ok()?;
+        Some(db.pool)
+    }
+
+    async fn cleanup_test_tenant(pool: &PgPool, tenant_id: &str) {
+        let _ = sqlx::query("DELETE FROM tenant_tool_allowlist WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM tenant_model_allowlist WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM tenant_rag_allowlist WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(pool)
+            .await;
+    }
+
+    fn test_tenant_id(suffix: &str) -> String {
+        format!(
+            "tenant_allowlist_{}_{}",
+            suffix,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )
+    }
 
     #[test]
     fn tenant_tool_allowlist_item_roundtrip() {
@@ -410,5 +418,90 @@ mod tests {
         let json = serde_json::to_string(&item).unwrap();
         let back: TenantRagAllowlistItem = serde_json::from_str(&json).unwrap();
         assert_eq!(item, back);
+    }
+
+    #[tokio::test]
+    async fn empty_allowlists_are_default_deny() {
+        let Some(pool) = try_test_pool().await else {
+            return;
+        };
+        let tenant_id = test_tenant_id("default_deny");
+        cleanup_test_tenant(&pool, &tenant_id).await;
+
+        let store = TenantAllowlistStore::new(&pool);
+        assert!(!store
+            .is_tool_allowed(&tenant_id, "web_search")
+            .await
+            .unwrap());
+        assert!(!store.is_model_allowed(&tenant_id, "gpt-4o").await.unwrap());
+        assert!(!store
+            .is_rag_source_allowed(&tenant_id, "docs")
+            .await
+            .unwrap());
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    #[tokio::test]
+    async fn list_methods_return_enabled_rows_only() {
+        let Some(pool) = try_test_pool().await else {
+            return;
+        };
+        let tenant_id = test_tenant_id("enabled_only");
+        cleanup_test_tenant(&pool, &tenant_id).await;
+
+        sqlx::query(
+            "INSERT INTO tenant_tool_allowlist (tenant_id, tool_name, enabled, created_at, updated_at)
+             VALUES ($1, 'allowed_tool', TRUE, 1, 1), ($1, 'disabled_tool', FALSE, 1, 1)",
+        )
+        .bind(&tenant_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO tenant_model_allowlist (tenant_id, model_id, enabled, created_at, updated_at)
+             VALUES ($1, 'allowed_model', TRUE, 1, 1), ($1, 'disabled_model', FALSE, 1, 1)",
+        )
+        .bind(&tenant_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO tenant_rag_allowlist (tenant_id, rag_source, enabled, created_at, updated_at)
+             VALUES ($1, 'allowed_docs', TRUE, 1, 1), ($1, 'disabled_docs', FALSE, 1, 1)",
+        )
+        .bind(&tenant_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let store = TenantAllowlistStore::new(&pool);
+        let tools = store.list_tools(&tenant_id).await.unwrap();
+        let models = store.list_models(&tenant_id).await.unwrap();
+        let rag_sources = store.list_rag_sources(&tenant_id).await.unwrap();
+
+        assert_eq!(
+            tools
+                .iter()
+                .map(|t| t.tool_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["allowed_tool"]
+        );
+        assert_eq!(
+            models
+                .iter()
+                .map(|m| m.model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["allowed_model"]
+        );
+        assert_eq!(
+            rag_sources
+                .iter()
+                .map(|r| r.rag_source.as_str())
+                .collect::<Vec<_>>(),
+            vec!["allowed_docs"]
+        );
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
     }
 }

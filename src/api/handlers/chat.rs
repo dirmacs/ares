@@ -1,3 +1,4 @@
+use crate::db::postgres::UserAgent;
 use crate::{
     agents::{registry::AgentRegistry, router::RouterAgent, Agent},
     api::handlers::user_agents::resolve_agent,
@@ -13,7 +14,6 @@ use crate::{
     AppState,
 };
 use axum::{extract::State, response::Response, Extension, Json};
-use crate::db::postgres::UserAgent;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -69,7 +69,6 @@ fn agent_config_from_user_agent(user_agent: &UserAgent) -> AgentConfig {
         extra: std::collections::HashMap::new(),
     }
 }
-
 
 /// Returns user memory when facts or preferences are present.
 pub(crate) fn build_user_memory_if_present(
@@ -158,7 +157,11 @@ pub(crate) fn stream_token_event(token: &str) -> StreamEvent {
     }
 }
 
-pub(crate) fn stream_done_event(agent_type: &AgentType, source: &str, context_id: &str) -> StreamEvent {
+pub(crate) fn stream_done_event(
+    agent_type: &AgentType,
+    source: &str,
+    context_id: &str,
+) -> StreamEvent {
     StreamEvent {
         event: "done".to_string(),
         content: None,
@@ -206,8 +209,7 @@ pub async fn chat(
     // Load user memory
     let memory_facts = state.db.get_user_memory(&claims.sub).await?;
     let preferences = state.db.get_user_preferences(&claims.sub).await?;
-    let user_memory =
-        build_user_memory_if_present(&claims.sub, memory_facts, preferences);
+    let user_memory = build_user_memory_if_present(&claims.sub, memory_facts, preferences);
 
     // Build agent context
     let agent_context = AgentContext {
@@ -380,6 +382,9 @@ async fn execute_agent(
         tool_name: None,
         model: None,
         is_catchup: false,
+        request_source: Some("api_chat".to_string()),
+        pipeline_id: None,
+        schedule_id: None,
     });
 
     // Execute the agent
@@ -597,6 +602,9 @@ pub async fn chat_stream(
             tool_name: None,
             model: None,
             is_catchup: false,
+            request_source: Some("api_chat_stream".to_string()),
+            pipeline_id: None,
+            schedule_id: None,
         });
         let start_event = stream_start_event(&agent_type, &context_id_clone);
         yield Ok(Event::default().data(serde_json::to_string(&start_event).unwrap_or_default()));
@@ -896,7 +904,10 @@ mod tests {
 
     #[test]
     fn default_stream_system_prompt_returns_documented_default() {
-        assert_eq!(default_stream_system_prompt(), "You are a helpful assistant.");
+        assert_eq!(
+            default_stream_system_prompt(),
+            "You are a helpful assistant."
+        );
     }
 
     #[test]
@@ -921,9 +932,7 @@ mod tests {
 
     #[test]
     fn agent_config_from_user_agent_extracts_tools_and_model() {
-        let config = agent_config_from_user_agent(&sample_user_agent(
-            r#"["search","calculator"]"#,
-        ));
+        let config = agent_config_from_user_agent(&sample_user_agent(r#"["search","calculator"]"#));
         assert_eq!(config.tools, vec!["search", "calculator"]);
         assert_eq!(config.model, "fast");
         assert_eq!(config.max_tool_iterations, 5);
@@ -980,8 +989,8 @@ mod tests {
 
     #[test]
     fn build_user_memory_if_present_returns_some_with_facts() {
-        let memory = build_user_memory_if_present("user-1", vec![sample_fact()], vec![])
-            .expect("memory");
+        let memory =
+            build_user_memory_if_present("user-1", vec![sample_fact()], vec![]).expect("memory");
         assert_eq!(memory.user_id, "user-1");
         assert_eq!(memory.facts.len(), 1);
         assert!(memory.preferences.is_empty());
@@ -1012,12 +1021,8 @@ mod tests {
 
     #[test]
     fn chat_response_from_agent_output_formats_agent_label() {
-        let resp = chat_response_from_agent_output(
-            AgentType::Finance,
-            "user",
-            "ctx-9",
-            "done".into(),
-        );
+        let resp =
+            chat_response_from_agent_output(AgentType::Finance, "user", "ctx-9", "done".into());
         assert_eq!(resp.response, "done");
         assert_eq!(resp.context_id, "ctx-9");
         assert!(resp.agent.contains("Finance"));

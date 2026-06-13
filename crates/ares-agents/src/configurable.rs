@@ -304,6 +304,8 @@ Handle employee info, policies, and benefits."#
         match self.llm.generate_with_history(messages).await {
             Ok(resp) => Ok(resp),
             Err(e) => {
+                let primary_error = e.to_string();
+                let mut fallback_errors = Vec::new();
                 for (i, fallback) in self.fallback_llms.iter().enumerate() {
                     tracing::warn!(
                         agent = %self.name,
@@ -319,10 +321,21 @@ Handle employee info, policies, and benefits."#
                             );
                             return Ok(resp);
                         }
-                        Err(_) => continue,
+                        Err(fallback_error) => {
+                            fallback_errors.push(format!("fallback[{i}]: {fallback_error}"));
+                        }
                     }
                 }
-                Err(e)
+                if fallback_errors.is_empty() {
+                    Err(e)
+                } else {
+                    Err(AppError::LLM(format!(
+                        "All LLM providers failed for agent '{}'; primary: {}; {}",
+                        self.name,
+                        primary_error,
+                        fallback_errors.join("; ")
+                    )))
+                }
             }
         }
     }
@@ -340,6 +353,8 @@ Handle employee info, policies, and benefits."#
         {
             Ok(resp) => Ok(resp),
             Err(e) => {
+                let primary_error = e.to_string();
+                let mut fallback_errors = Vec::new();
                 for (i, fallback) in self.fallback_llms.iter().enumerate() {
                     tracing::warn!(
                         agent = %self.name,
@@ -358,10 +373,21 @@ Handle employee info, policies, and benefits."#
                             );
                             return Ok(resp);
                         }
-                        Err(_) => continue,
+                        Err(fallback_error) => {
+                            fallback_errors.push(format!("fallback[{i}]: {fallback_error}"));
+                        }
                     }
                 }
-                Err(e)
+                if fallback_errors.is_empty() {
+                    Err(e)
+                } else {
+                    Err(AppError::LLM(format!(
+                        "All LLM providers failed for agent '{}'; primary: {}; {}",
+                        self.name,
+                        primary_error,
+                        fallback_errors.join("; ")
+                    )))
+                }
             }
         }
     }
@@ -1860,7 +1886,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_all_fallbacks_fail_returns_last_error() {
+    async fn test_all_fallbacks_fail_reports_every_error() {
         let mut agent = ConfigurableAgent::with_params(
             "test",
             AgentType::Product,
@@ -1884,7 +1910,14 @@ mod tests {
         ]);
 
         let ctx = make_context();
-        let result = Agent::execute(&agent, "hello", &ctx).await;
-        assert!(result.is_err(), "expected all LLMs to fail");
+        let err = match Agent::execute(&agent, "hello", &ctx).await {
+            Ok(_) => panic!("expected all LLMs to fail"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("primary failed"), "got: {err}");
+        assert!(err.contains("fallback[0]"), "got: {err}");
+        assert!(err.contains("fallback-0 failed"), "got: {err}");
+        assert!(err.contains("fallback[1]"), "got: {err}");
+        assert!(err.contains("fallback-1 failed"), "got: {err}");
     }
 }

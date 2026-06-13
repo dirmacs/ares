@@ -5,7 +5,7 @@ use crate::connectors::{
 };
 use crate::registry::Tool;
 use ares_config::fleet_secrets::MasterKey;
-use ares_types::types::Result;
+use ares_types::types::{AppError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -72,9 +72,10 @@ impl SlackClient {
 
     /// Slack returns 200 OK with JSON `{ "ok": false, ... }` for errors.
     pub async fn parse_slack_response(&self, resp: reqwest::Response) -> Result<Value> {
-        let body = resp.text().await.map_err(|e| {
-            ares_types::AppError::External(format!("slack read body: {e}"))
-        })?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| ares_types::AppError::External(format!("slack read body: {e}")))?;
         let value: Value = serde_json::from_str(&body).map_err(|e| {
             ares_types::AppError::External(format!("slack parse failed: {e} (body: {body})"))
         })?;
@@ -157,7 +158,7 @@ impl Tool for SlackSendMessage {
             .await?
             .json(&json!({"channel": channel, "text": text}));
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let data = self.client.parse_slack_response(resp).await?;
         Ok(data)
     }
@@ -205,7 +206,7 @@ impl Tool for SlackListChannels {
             .request(&tenant_id, reqwest::Method::GET, "/conversations.list")
             .await?;
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let data = self.client.parse_slack_response(resp).await?;
         Ok(data)
     }
@@ -268,7 +269,7 @@ impl Tool for SlackUploadFile {
             .await?
             .multipart(form);
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let data = self.client.parse_slack_response(resp).await?;
         Ok(data)
     }

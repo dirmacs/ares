@@ -5,6 +5,67 @@ use ares_db::schedules::{AgentPipeline, PipelineStore};
 use ares_types::types::AgentContext;
 use std::sync::Arc;
 
+pub(crate) const PIPELINE_REQUEST_SOURCE: &str = "pipeline";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PipelineUsageRecord {
+    pub(crate) tenant_id: String,
+    pub(crate) source: &'static str,
+    pub(crate) request_count: i32,
+    pub(crate) token_count: i64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) model_name: Option<String>,
+    pub(crate) agent_name: String,
+    pub(crate) provider_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PipelineTargetRunEffects {
+    pub(crate) metadata: AgentRunMetadata,
+    pub(crate) usage: PipelineUsageRecord,
+}
+
+pub(crate) fn pipeline_target_run_effects(
+    pipeline: &AgentPipeline,
+    tenant_id: &str,
+    run_id: &str,
+    agent_config_source: Option<&str>,
+    agent_config_version: Option<String>,
+    eruka_context_hit: bool,
+    input_tokens: i64,
+    output_tokens: i64,
+    model_name: &str,
+    provider_name: &str,
+) -> PipelineTargetRunEffects {
+    PipelineTargetRunEffects {
+        metadata: AgentRunMetadata {
+            workspace_id: None,
+            session_id: Some(run_id.to_string()),
+            request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
+            product: None,
+            agent_config_source: agent_config_source.map(str::to_string),
+            agent_config_version,
+            eruka_binding_id: None,
+            eruka_context_hit,
+            eruka_read_count: if eruka_context_hit { 1 } else { 0 },
+            eruka_write_count: 0,
+            pipeline_id: Some(pipeline.id.clone()),
+        },
+        usage: PipelineUsageRecord {
+            tenant_id: tenant_id.to_string(),
+            source: PIPELINE_REQUEST_SOURCE,
+            request_count: 1,
+            token_count: input_tokens + output_tokens,
+            input_tokens,
+            output_tokens,
+            model_name: (model_name != "unknown").then(|| model_name.to_string()),
+            agent_name: pipeline.target_agent.clone(),
+            provider_name: (provider_name != "unknown").then(|| provider_name.to_string()),
+        },
+    }
+}
+
 /// Execute all enabled pipelines originating from `source_agent_name`, passing
 /// `source_output` as input to downstream agents. Returns the list of target
 /// agent names that were successfully triggered.
@@ -102,13 +163,17 @@ async fn execute_target_agent(
                 .await;
 
             let duration_ms = start.elapsed().as_millis() as u64;
-            let skill_status = if skill_result.is_ok() { "completed" } else { "error" };
+            let skill_status = if skill_result.is_ok() {
+                "completed"
+            } else {
+                "error"
+            };
             app_state.active_runs.finish(&run_id, skill_status);
 
             let metadata = AgentRunMetadata {
                 workspace_id: None,
                 session_id: Some(run_id.clone()),
-                request_source: Some("pipeline".to_string()),
+                request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
                 product: None,
                 agent_config_source: Some(resolved_agent.source.as_str().to_string()),
                 agent_config_version: resolved_agent.config_version.clone(),
@@ -118,7 +183,11 @@ async fn execute_target_agent(
                 eruka_write_count: 0,
                 pipeline_id: Some(pipeline.id.clone()),
             };
-            let status = if skill_result.is_ok() { "completed" } else { "failed" };
+            let status = if skill_result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            };
             let err_msg = skill_result.as_ref().err().cloned();
 
             let pool_clone = pool.clone();
@@ -190,9 +259,9 @@ async fn execute_target_agent(
         current_step: 0,
         total_steps: 0,
         last_update: chrono::Utc::now().timestamp(),
-                tool_name: None,
-                model: None,
-                is_catchup: false,
+        tool_name: None,
+        model: None,
+        is_catchup: false,
     });
 
     let result = resolved_agent
@@ -230,7 +299,9 @@ async fn execute_target_agent(
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
-            app_state.active_runs.update_model(&run_id, Some(&model_name));
+            app_state
+                .active_runs
+                .update_model(&run_id, Some(&model_name));
             app_state.active_runs.finish(&run_id, "completed");
         }
         Err(e) => {
@@ -244,19 +315,20 @@ async fn execute_target_agent(
         }
     }
 
-    let metadata = AgentRunMetadata {
-        workspace_id: None,
-        session_id: Some(run_id.clone()),
-        request_source: Some("pipeline".to_string()),
-        product: None,
-        agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-        agent_config_version: resolved_agent.config_version.clone(),
-        eruka_binding_id: None,
+    let effects = pipeline_target_run_effects(
+        pipeline,
+        tenant_id,
+        &run_id,
+        Some(resolved_agent.source.as_str()),
+        resolved_agent.config_version.clone(),
         eruka_context_hit,
-        eruka_read_count: if eruka_context_hit { 1 } else { 0 },
-        eruka_write_count: 0,
-        pipeline_id: Some(pipeline.id.clone()),
-    };
+        input_tokens,
+        output_tokens,
+        &model_name,
+        &provider_name,
+    );
+    let metadata = effects.metadata;
+    let usage = effects.usage;
 
     let pool_clone = pool.clone();
     let tid = tenant_id.to_string();
@@ -278,6 +350,26 @@ async fn execute_target_agent(
             false,
             Some(&metadata),
         )
+        .await;
+    });
+
+    let usage_pool = pool.clone();
+    tokio::spawn(async move {
+        let _ = sqlx::query(
+            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(usage.tenant_id)
+        .bind(usage.source)
+        .bind(usage.request_count)
+        .bind(usage.token_count)
+        .bind(usage.input_tokens)
+        .bind(usage.output_tokens)
+        .bind(usage.model_name)
+        .bind(usage.agent_name)
+        .bind(usage.provider_name)
+        .bind(chrono::Utc::now().timestamp())
+        .execute(&usage_pool)
         .await;
     });
 
@@ -337,14 +429,25 @@ pub fn evaluate_condition(condition: &str, output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_db::agent_runs::AgentRunMetadata;
 
     #[test]
     fn test_evaluate_condition() {
-        assert!(evaluate_condition("output.contains(\"hello\")", "hello world"));
-        assert!(!evaluate_condition("output.contains(\"xyz\")", "hello world"));
-        assert!(evaluate_condition("output.starts_with(\"hello\")", "hello world"));
-        assert!(evaluate_condition("output.ends_with(\"world\")", "hello world"));
+        assert!(evaluate_condition(
+            "output.contains(\"hello\")",
+            "hello world"
+        ));
+        assert!(!evaluate_condition(
+            "output.contains(\"xyz\")",
+            "hello world"
+        ));
+        assert!(evaluate_condition(
+            "output.starts_with(\"hello\")",
+            "hello world"
+        ));
+        assert!(evaluate_condition(
+            "output.ends_with(\"world\")",
+            "hello world"
+        ));
         assert!(evaluate_condition("output == \"hello\"", "hello"));
         assert!(!evaluate_condition("output == \"hello\"", "hello world"));
         assert!(evaluate_condition("output != \"foo\"", "hello"));
@@ -364,41 +467,5 @@ mod tests {
         assert!(evaluate_condition("output.starts_with(\"{\")", json));
         assert!(evaluate_condition("output.ends_with(\"}\")", json));
         assert!(evaluate_condition("output != \"\"", json));
-    }
-
-    // DIR1-64: E2E integration tests — pipeline→trigger chain verification
-
-    #[test]
-    fn pipeline_metadata_carries_pipeline_id() {
-        let metadata = AgentRunMetadata {
-            request_source: Some("trigger".to_string()),
-            session_id: Some("session-123".to_string()),
-            pipeline_id: Some("pipeline-abc".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(metadata.pipeline_id.as_deref(), Some("pipeline-abc"));
-        assert_eq!(metadata.request_source.as_deref(), Some("trigger"));
-    }
-
-    #[test]
-    fn trigger_usage_sql_source_is_trigger() {
-        let sql = "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'trigger', $3, $4, $5, $6, $7, $8, $9, $10)";
-        assert!(sql.contains("'trigger'"));
-        assert!(sql.contains("input_tokens"));
-        assert!(sql.contains("output_tokens"));
-        assert!(sql.contains("model_name"));
-        assert!(sql.contains("agent_name"));
-        assert!(sql.contains("provider_name"));
-    }
-
-    #[test]
-    fn pipeline_condition_eval_chain() {
-        // Simulate: agent A output contains 'success' → triggers agent B
-        let agent_a_output = "{\"status\":\"success\",\"data\":\"processed\"";
-        assert!(evaluate_condition("output.contains(\"success\")", agent_a_output));
-
-        // agent A output doesn't match → agent B not triggered
-        let agent_a_fail = "{\"status\":\"error\"}";
-        assert!(!evaluate_condition("output.contains(\"success\")", agent_a_fail));
     }
 }

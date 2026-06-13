@@ -15,7 +15,8 @@ const LIST_AGENT_RUNS_SELECT: &str =
                     agent_config_source, agent_config_version, eruka_binding_id,
                     COALESCE(eruka_context_hit, false) AS eruka_context_hit,
                     COALESCE(eruka_read_count, 0)::BIGINT AS eruka_read_count,
-                    COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count";
+                    COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count,
+                    pipeline_id, schedule_id";
 
 pub const GET_AGENT_RUN_STATS_SQL: &str = "SELECT
             COUNT(*) as total_runs,
@@ -138,6 +139,8 @@ pub fn agent_run_from_row(row: &sqlx::postgres::PgRow) -> Result<AgentRun> {
         eruka_context_hit: row.get("eruka_context_hit"),
         eruka_read_count: row.get("eruka_read_count"),
         eruka_write_count: row.get("eruka_write_count"),
+        pipeline_id: row.get("pipeline_id"),
+        schedule_id: row.get("schedule_id"),
     })
 }
 
@@ -166,6 +169,8 @@ pub struct AgentRun {
     pub eruka_context_hit: bool,
     pub eruka_read_count: i64,
     pub eruka_write_count: i64,
+    pub pipeline_id: Option<String>,
+    pub schedule_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +217,7 @@ pub struct AgentRunMetadata {
     pub eruka_read_count: i64,
     pub eruka_write_count: i64,
     pub pipeline_id: Option<String>,
+    pub schedule_id: Option<String>,
 }
 
 pub async fn insert_agent_run(
@@ -306,13 +312,13 @@ pub async fn insert_agent_run_with_id_and_metadata(
             input_tokens, output_tokens, duration_ms, error, created_at,
             model_name, provider_name, is_streaming, request_source, product,
             agent_config_source, agent_config_version, eruka_binding_id,
-            eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id
+            eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id, schedule_id
          ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
             $13, $14, $15, $16, $17,
             $18, $19, $20,
-            $21, $22, $23, $24
+            $21, $22, $23, $24, $25
          )",
     )
     .bind(id)
@@ -339,6 +345,7 @@ pub async fn insert_agent_run_with_id_and_metadata(
     .bind(metadata.eruka_read_count)
     .bind(metadata.eruka_write_count)
     .bind(&metadata.pipeline_id)
+    .bind(&metadata.schedule_id)
     .execute(pool)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
@@ -615,6 +622,8 @@ mod tests {
             eruka_context_hit: false,
             eruka_read_count: 0,
             eruka_write_count: 0,
+            pipeline_id: None,
+            schedule_id: None,
         };
         let back: AgentRun = serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
         assert_eq!(back.error, Some("timeout".into()));
@@ -631,6 +640,7 @@ mod tests {
     fn agent_run_metadata_serde_roundtrip() {
         let meta = AgentRunMetadata {
             pipeline_id: None,
+            schedule_id: None,
             workspace_id: Some("ws-1".into()),
             session_id: Some("sess-2".into()),
             request_source: Some("cli".into()),
@@ -867,6 +877,8 @@ mod tests {
             "model_name",
             "eruka_context_hit",
             "eruka_read_count",
+            "pipeline_id",
+            "schedule_id",
         ] {
             assert!(LIST_AGENT_RUNS_SELECT.contains(col), "missing {col}");
         }
@@ -932,6 +944,8 @@ mod tests {
             eruka_context_hit: true,
             eruka_read_count: 3,
             eruka_write_count: 1,
+            pipeline_id: None,
+            schedule_id: None,
         }
     }
 
@@ -1060,6 +1074,7 @@ mod tests {
 
         let metadata = AgentRunMetadata {
             pipeline_id: None,
+            schedule_id: Some("schedule-42".into()),
             workspace_id: Some("ws-42".into()),
             session_id: Some("sess-99".into()),
             request_source: Some("cli".into()),
@@ -1106,6 +1121,7 @@ mod tests {
         assert!(run.eruka_context_hit);
         assert_eq!(run.eruka_read_count, 5);
         assert_eq!(run.eruka_write_count, 2);
+        assert_eq!(run.schedule_id, Some("schedule-42".into()));
         assert_eq!(run.error, Some("timeout".into()));
         assert!(run.is_streaming);
 
@@ -1125,6 +1141,7 @@ mod tests {
         let metadata = AgentRunMetadata {
             session_id: Some(run_id.clone()),
             request_source: Some("scheduled".into()),
+            schedule_id: Some("schedule-1".into()),
             ..Default::default()
         };
 
@@ -1155,6 +1172,7 @@ mod tests {
         assert_eq!(runs[0].id, run_id);
         assert_eq!(runs[0].session_id.as_deref(), Some(runs[0].id.as_str()));
         assert_eq!(runs[0].request_source.as_deref(), Some("scheduled"));
+        assert_eq!(runs[0].schedule_id.as_deref(), Some("schedule-1"));
 
         cleanup_test_tenant(&pool, &tenant_id).await;
     }
@@ -1574,20 +1592,20 @@ mod tests {
     }
 
     #[test]
-    fn insert_agent_run_has_23_placeholders() {
+    fn insert_agent_run_has_25_placeholders() {
         let sql = "INSERT INTO agent_runs (
             id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
             input_tokens, output_tokens, duration_ms, error, created_at,
             model_name, provider_name, is_streaming, request_source, product,
             agent_config_source, agent_config_version, eruka_binding_id,
-            eruka_context_hit, eruka_read_count, eruka_write_count
+            eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id, schedule_id
          ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
             $13, $14, $15, $16, $17,
             $18, $19, $20,
-            $21, $22, $23
+            $21, $22, $23, $24, $25
          )";
-        assert_eq!(count_bind_placeholders(sql), 23);
+        assert_eq!(count_bind_placeholders(sql), 25);
     }
 }

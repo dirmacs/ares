@@ -3157,6 +3157,7 @@ use crate::db::run_history::{
     ModelHealthMetrics, RunCost, RunHistoryStore, RunLlmCall, RunToolCall, SetTenantBudgetRequest,
     TenantBudget,
 };
+use crate::db::token_budgets::{BudgetStatus, TokenBudget, TokenBudgetStore, TokenUsageEntry};
 
 #[derive(Debug, Deserialize)]
 pub struct ListRunCostsQuery {
@@ -3187,7 +3188,23 @@ pub struct ListModelMetricsQuery {
     pub offset: i32,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SetTokenBudgetRequest {
+    pub token_limit: i64,
+    pub period: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListTokenUsageQuery {
+    #[serde(default = "default_list_limit_i64")]
+    pub limit: i64,
+}
+
 fn default_list_limit() -> i32 {
+    50
+}
+
+fn default_list_limit_i64() -> i64 {
     50
 }
 
@@ -3325,6 +3342,66 @@ pub async fn delete_tenant_budget(
     Ok(Json(
         serde_json::json!({ "deleted": rows > 0, "tenant_id": tenant_id }),
     ))
+}
+
+/// Get the enforced token budget for a tenant.
+pub async fn get_token_budget(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<TokenBudget>> {
+    let store = TokenBudgetStore::new(state.tenant_db.pool());
+    let budget = store
+        .get_budget(&tenant_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("token budget {tenant_id} not found")))?;
+    Ok(Json(budget))
+}
+
+/// Set the enforced token budget for a tenant.
+pub async fn set_token_budget(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(req): Json<SetTokenBudgetRequest>,
+) -> Result<Json<TokenBudget>> {
+    let store = TokenBudgetStore::new(state.tenant_db.pool());
+    let budget = store
+        .set_budget(&tenant_id, req.token_limit, &req.period)
+        .await?;
+    Ok(Json(budget))
+}
+
+/// Get enforced token budget status for a tenant.
+pub async fn get_token_budget_status(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<BudgetStatus>> {
+    let store = TokenBudgetStore::new(state.tenant_db.pool());
+    let status = store.check_budget(&tenant_id).await?;
+    Ok(Json(status))
+}
+
+/// Reset the current enforced token-budget period for a tenant.
+pub async fn reset_token_budget_period(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<BudgetStatus>> {
+    let store = TokenBudgetStore::new(state.tenant_db.pool());
+    store.reset_period(&tenant_id).await?;
+    let status = store.check_budget(&tenant_id).await?;
+    Ok(Json(status))
+}
+
+/// List recent enforced token-usage entries for a tenant.
+pub async fn list_token_usage(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<ListTokenUsageQuery>,
+) -> Result<Json<Vec<TokenUsageEntry>>> {
+    let store = TokenBudgetStore::new(state.tenant_db.pool());
+    let usage = store
+        .list_usage(&tenant_id, q.limit.clamp(1, 10_000))
+        .await?;
+    Ok(Json(usage))
 }
 
 /// List budget alerts with optional filtering.

@@ -26,7 +26,7 @@ use ares::{
     db::PostgresClient,
     utils::toml_config::AresConfig,
     AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
-    NvidiaCatalogCache, ProviderRegistry, ToolRegistry,
+    MasterKey, NvidiaCatalogCache, ProviderRegistry, ToolRegistry,
 };
 #[cfg(feature = "postgres")]
 use axum::{routing::get, Router};

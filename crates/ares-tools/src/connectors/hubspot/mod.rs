@@ -45,6 +45,7 @@ impl HubSpotClient {
             &self.master_key,
             tenant_id,
             "hubspot",
+            "oauth2",
             HUBSPOT_TOKEN_URL,
         )
         .await

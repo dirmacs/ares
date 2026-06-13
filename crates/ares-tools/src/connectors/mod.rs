@@ -4,7 +4,7 @@
 //! All connectors authenticate via OAuth2 credentials stored in the database
 //! (`oauth_credentials` table) and encrypt/decrypt using the fleet master key.
 
-use ares_config::fleet_secrets::MasterKey;
+use ares_config::fleet_secrets::{decrypt_api_key, MasterKey};
 use ares_db::oauth_credentials::{OAuthCredential, OAuthCredentialStore};
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
@@ -60,10 +60,11 @@ pub async fn get_access_token(
     master_key: &MasterKey,
     tenant_id: &str,
     provider: &str,
+    connector_type: &str,
 ) -> Result<String> {
-    let store = OAuthCredentialStore::new(pool, master_key.clone());
+    let store = OAuthCredentialStore::new(pool);
     let cred = store
-        .get(tenant_id, provider)
+        .get(tenant_id, provider, connector_type)
         .await?
         .ok_or_else(|| {
             AppError::Auth(format!(
@@ -72,28 +73,36 @@ pub async fn get_access_token(
         })?;
 
     let now = chrono::Utc::now().timestamp();
-    if cred.expires_at <= now {
+    if cred.expires_at.map(|e| e <= now).unwrap_or(false) {
         return Err(AppError::Auth(format!(
-            "OAuth token for {provider} has expired (expires_at={expires_at}, now={now}). Re-authentication required.",
+            "OAuth token for {provider} has expired (expires_at={expires_at:?}, now={now}). Re-authentication required.",
             provider = provider,
             expires_at = cred.expires_at,
             now = now
         )));
     }
 
-    Ok(cred.access_token)
+    let at_payload = cred.access_token.ok_or_else(|| {
+        AppError::Auth(format!(
+            "OAuth credential for {provider} has no access token"
+        ))
+    })?;
+    let token = decrypt_api_key(&at_payload, master_key)
+        .map_err(|e| AppError::Auth(format!("Failed to decrypt access token: {e}")))?;
+    Ok(token)
 }
 
 /// Full OAuth credential (used when refresh is needed).
 pub async fn get_oauth_credential(
     pool: &PgPool,
-    master_key: &MasterKey,
+    _master_key: &MasterKey,
     tenant_id: &str,
     provider: &str,
+    connector_type: &str,
 ) -> Result<OAuthCredential> {
-    let store = OAuthCredentialStore::new(pool, master_key.clone());
+    let store = OAuthCredentialStore::new(pool);
     store
-        .get(tenant_id, provider)
+        .get(tenant_id, provider, connector_type)
         .await?
         .ok_or_else(|| {
             AppError::Auth(format!(
@@ -214,18 +223,28 @@ pub async fn refresh_oauth2_token(
     master_key: &MasterKey,
     tenant_id: &str,
     provider: &str,
+    connector_type: &str,
     token_url: &str,
 ) -> Result<String> {
-    let cred = get_oauth_credential(pool, master_key, tenant_id, provider).await?;
+    let cred = get_oauth_credential(pool, master_key, tenant_id, provider, connector_type).await?;
+
+    let refresh_token = cred.refresh_token.as_ref().ok_or_else(|| {
+        AppError::Auth(format!("{provider} credential has no refresh token"))
+    })?;
+    let refresh_token_plain = decrypt_api_key(refresh_token, master_key)
+        .map_err(|e| AppError::Auth(format!("Failed to decrypt refresh token: {e}")))?;
+
+    let client_secret_plain = decrypt_api_key(&cred.client_secret, master_key)
+        .map_err(|e| AppError::Auth(format!("Failed to decrypt client secret: {e}")))?;
 
     let client = reqwest::Client::new();
     let response = client
         .post(token_url)
         .form(&[
             ("grant_type", "refresh_token"),
-            ("refresh_token", &cred.refresh_token),
+            ("refresh_token", &refresh_token_plain),
             ("client_id", &cred.client_id),
-            ("client_secret", &cred.client_secret),
+            ("client_secret", &client_secret_plain),
         ])
         .send()
         .await
@@ -256,20 +275,16 @@ pub async fn refresh_oauth2_token(
 
     let now = chrono::Utc::now().timestamp();
     let expires_at = now + refresh_data.expires_in;
-    let new_refresh_token = refresh_data.refresh_token.unwrap_or_else(|| cred.refresh_token.clone());
+    let new_refresh_token = refresh_data.refresh_token.as_deref().unwrap_or(&refresh_token_plain);
 
-    let store = OAuthCredentialStore::new(pool, master_key.clone());
+    let store = OAuthCredentialStore::new(pool);
     store
-        .upsert(&ares_db::oauth_credentials::UpsertOAuthCredentialRequest {
-            tenant_id: tenant_id.to_string(),
-            provider: provider.to_string(),
-            client_id: cred.client_id.clone(),
-            client_secret: cred.client_secret.clone(),
-            access_token: refresh_data.access_token.clone(),
-            refresh_token: new_refresh_token,
+        .update_tokens(
+            &cred.id,
+            &refresh_data.access_token,
+            Some(new_refresh_token),
             expires_at,
-            scope: cred.scope.clone(),
-        })
+        )
         .await?;
 
     Ok(refresh_data.access_token)
@@ -281,11 +296,12 @@ pub async fn get_valid_access_token(
     master_key: &MasterKey,
     tenant_id: &str,
     provider: &str,
+    connector_type: &str,
     token_url: &str,
 ) -> Result<String> {
-    let store = OAuthCredentialStore::new(pool, master_key.clone());
+    let store = OAuthCredentialStore::new(pool);
     let cred = store
-        .get(tenant_id, provider)
+        .get(tenant_id, provider, connector_type)
         .await?
         .ok_or_else(|| {
             AppError::Auth(format!(
@@ -295,11 +311,17 @@ pub async fn get_valid_access_token(
 
     let now = chrono::Utc::now().timestamp();
     // Refresh if expires within 5 minutes
-    if cred.expires_at <= now + 300 {
-        return refresh_oauth2_token(pool, master_key, tenant_id, provider, token_url).await;
+    if cred.expires_at.map(|e| e <= now + 300).unwrap_or(true) {
+        return refresh_oauth2_token(pool, master_key, tenant_id, provider, connector_type, token_url).await;
     }
 
-    Ok(cred.access_token)
+    let at_payload = cred.access_token.ok_or_else(|| {
+        AppError::Auth(format!(
+            "OAuth credential for {provider} has no access token"
+        ))
+    })?;
+    decrypt_api_key(&at_payload, master_key)
+        .map_err(|e| AppError::Auth(format!("Failed to decrypt access token: {e}")))
 }
 
 // =============================================================================

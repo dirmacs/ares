@@ -1462,6 +1462,21 @@ mod tests {
     }
 
     #[test]
+    fn run_skill_request_defaults_tenant_id() {
+        let req: RunSkillRequest = serde_json::from_value(serde_json::json!({
+            "skill_id": "skill-1",
+            "input": {"x": 1}
+        }))
+        .expect("missing tenant_id should deserialize");
+        assert_eq!(req.tenant_id, "default");
+        assert_eq!(
+            normalized_run_skill_tenant_id("tenant-a").unwrap(),
+            "tenant-a"
+        );
+        assert!(normalized_run_skill_tenant_id("  ").is_err());
+    }
+
+    #[test]
     fn oauth_provider_mapping_covers_google_calendar() {
         let provider = oauth_provider_config("google_calendar").unwrap();
         assert_eq!(provider.provider, "google");
@@ -3492,7 +3507,22 @@ pub async fn delete_skill(
 #[derive(Debug, Deserialize)]
 pub struct RunSkillRequest {
     pub skill_id: String,
+    #[serde(default = "default_run_skill_tenant_id")]
+    pub tenant_id: String,
     pub input: serde_json::Value,
+}
+
+fn default_run_skill_tenant_id() -> String {
+    "default".to_string()
+}
+
+fn normalized_run_skill_tenant_id(tenant_id: &str) -> Result<&str> {
+    let trimmed = tenant_id.trim();
+    if trimmed.is_empty() {
+        Err(AppError::InvalidInput("tenant_id must not be empty".into()))
+    } else {
+        Ok(trimmed)
+    }
 }
 
 pub async fn run_skill(
@@ -3500,9 +3530,10 @@ pub async fn run_skill(
     Json(req): Json<RunSkillRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let run_id = uuid::Uuid::new_v4().to_string();
+    let tenant_id = normalized_run_skill_tenant_id(&req.tenant_id)?;
     let result = state
         .skill_engine
-        .execute_skill(&req.skill_id, "default", req.input, &run_id)
+        .execute_skill(&req.skill_id, tenant_id, req.input, &run_id)
         .await
         .map_err(|e| AppError::InvalidInput(e))?;
     Ok(Json(result))

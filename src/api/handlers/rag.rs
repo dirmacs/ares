@@ -7,7 +7,7 @@
 
 use crate::{
     auth::middleware::AuthUser,
-    db::{AresVectorStore, VectorStore},
+    db::{tenant_allowlist as allowlist, AresVectorStore, VectorStore},
     rag::{
         chunker::{ChunkingStrategy, TextChunker},
         embeddings::{EmbeddingModelType, EmbeddingService},
@@ -178,6 +178,14 @@ pub async fn ingest(
         return Err(AppError::InvalidInput("Content required".into()));
     }
 
+    let allowlist_store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    if !allowlist_store.is_rag_source_allowed(&claims.sub, &payload.collection).await? {
+        return Err(AppError::Auth(format!(
+            "RAG source '{}' is not allowed for this tenant",
+            payload.collection
+        )));
+    }
+
     // Scope collection to user for isolation
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
@@ -293,6 +301,14 @@ pub async fn search(
         return Err(AppError::FeatureDisabled(
             "RAG feature is disabled. Set `[rag.vector] enabled = true` in ares.toml".into(),
         ));
+    }
+
+    let allowlist_store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    if !allowlist_store.is_rag_source_allowed(&claims.sub, &payload.collection).await? {
+        return Err(AppError::Auth(format!(
+            "RAG source '{}' is not allowed for this tenant",
+            payload.collection
+        )));
     }
 
     // Validate input
@@ -496,6 +512,14 @@ pub async fn delete_collection(
         return Err(AppError::InvalidInput("Collection name required".into()));
     }
 
+    let allowlist_store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    if !allowlist_store.is_rag_source_allowed(&claims.sub, &payload.collection).await? {
+        return Err(AppError::Auth(format!(
+            "RAG source '{}' is not allowed for this tenant",
+            payload.collection
+        )));
+    }
+
     // Scope collection to user for isolation
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
@@ -566,6 +590,15 @@ pub async fn list_collections(
         })
         .collect();
 
+    let allowlist_store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let db_sources = allowlist_store.list_rag_sources(&claims.sub).await?;
+    let user_collections: Vec<_> = if db_sources.is_empty() {
+        user_collections
+    } else {
+        let allowed: std::collections::HashSet<String> = db_sources.into_iter().map(|s| s.rag_source).collect();
+        user_collections.into_iter().filter(|info| allowed.contains(&info.name)).collect()
+    };
+
     Ok(Json(user_collections))
 }
 
@@ -592,5 +625,24 @@ mod tests {
 
         let strategy: ChunkingStrategy = "semantic".parse().unwrap();
         assert_eq!(strategy, ChunkingStrategy::Semantic);
+    }
+
+    #[test]
+    fn test_list_collections_allowlist_filtering() {
+        let allowed: std::collections::HashSet<String> =
+            ["docs".to_string(), "wiki".to_string()].into_iter().collect();
+        let collections = vec![
+            crate::db::CollectionInfo { name: "docs".into(), document_count: 1, dimensions: 384 },
+            crate::db::CollectionInfo { name: "images".into(), document_count: 2, dimensions: 384 },
+            crate::db::CollectionInfo { name: "wiki".into(), document_count: 3, dimensions: 384 },
+        ];
+        let filtered: Vec<_> = collections
+            .into_iter()
+            .filter(|info| allowed.contains(&info.name))
+            .collect();
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().any(|c| c.name == "docs"));
+        assert!(filtered.iter().any(|c| c.name == "wiki"));
+        assert!(!filtered.iter().any(|c| c.name == "images"));
     }
 }

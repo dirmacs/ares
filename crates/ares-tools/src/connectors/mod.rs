@@ -12,6 +12,10 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub mod google;
+pub mod hubspot;
+pub mod linkedin;
+pub mod salesforce;
 pub mod slack;
 
 // =============================================================================
@@ -360,8 +364,94 @@ pub fn register_prebuilt_connector_tools(
     pool: PgPool,
     master_key: MasterKey,
 ) {
+    let google_calendar = google::GoogleClient::calendar(pool.clone(), master_key.clone());
+    registry.register(Arc::new(google::calendar::GoogleCalendarListEvents::new(
+        google_calendar.clone(),
+    )));
+    registry.register(Arc::new(google::calendar::GoogleCalendarCreateEvent::new(
+        google_calendar.clone(),
+    )));
+    registry.register(Arc::new(google::calendar::GoogleCalendarDeleteEvent::new(
+        google_calendar.clone(),
+    )));
+    registry.register(Arc::new(google::calendar::GoogleCalendarGetFreeBusy::new(
+        google_calendar,
+    )));
+
+    let gmail = google::GoogleClient::gmail(pool.clone(), master_key.clone());
+    registry.register(Arc::new(google::gmail::GmailSendEmail::new(gmail.clone())));
+    registry.register(Arc::new(google::gmail::GmailListMessages::new(
+        gmail.clone(),
+    )));
+    registry.register(Arc::new(google::gmail::GmailGetMessage::new(gmail)));
+
+    let hubspot = hubspot::HubSpotClient::new(pool.clone(), master_key.clone());
+    registry.register(Arc::new(hubspot::HubSpotGetContact::new(hubspot.clone())));
+    registry.register(Arc::new(hubspot::HubSpotCreateContact::new(
+        hubspot.clone(),
+    )));
+    registry.register(Arc::new(hubspot::HubSpotListDeals::new(hubspot.clone())));
+    registry.register(Arc::new(hubspot::HubSpotCreateDeal::new(hubspot)));
+
+    let linkedin = linkedin::LinkedInClient::new(pool.clone(), master_key.clone());
+    registry.register(Arc::new(linkedin::LinkedInCreateShare::new(
+        linkedin.clone(),
+    )));
+    registry.register(Arc::new(linkedin::LinkedInGetCompanyUpdates::new(linkedin)));
+
+    let salesforce = salesforce::SalesforceClient::new(pool.clone(), master_key.clone());
+    registry.register(Arc::new(salesforce::SalesforceSoqlQuery::new(
+        salesforce.clone(),
+    )));
+    registry.register(Arc::new(salesforce::SalesforceGetRecord::new(
+        salesforce.clone(),
+    )));
+    registry.register(Arc::new(salesforce::SalesforceCreateRecord::new(
+        salesforce,
+    )));
+
     let slack = slack::SlackClient::new(pool, master_key);
     registry.register(Arc::new(slack::SlackSendMessage::new(slack.clone())));
     registry.register(Arc::new(slack::SlackListChannels::new(slack.clone())));
     registry.register(Arc::new(slack::SlackUploadFile::new(slack)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn register_prebuilt_connector_tools_registers_all_bundled_tools() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://dirmacs@localhost/ares_test")
+            .expect("lazy pool");
+        let master_key = MasterKey::from_secret("test-only-master-key");
+        let mut registry = crate::registry::ToolRegistry::new();
+
+        register_prebuilt_connector_tools(&mut registry, pool, master_key);
+
+        for name in [
+            "google_calendar_list_events",
+            "google_calendar_create_event",
+            "google_calendar_delete_event",
+            "google_calendar_get_free_busy",
+            "gmail_send_email",
+            "gmail_list_messages",
+            "gmail_get_message",
+            "hubspot_get_contact",
+            "hubspot_create_contact",
+            "hubspot_list_deals",
+            "hubspot_create_deal",
+            "linkedin_create_share",
+            "linkedin_get_company_updates",
+            "salesforce_soql_query",
+            "salesforce_get_record",
+            "salesforce_create_record",
+            "slack_send_message",
+            "slack_list_channels",
+            "slack_upload_file",
+        ] {
+            assert!(registry.get(name).is_some(), "missing {name}");
+        }
+    }
 }

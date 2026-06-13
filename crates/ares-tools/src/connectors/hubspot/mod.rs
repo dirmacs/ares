@@ -5,7 +5,7 @@ use crate::connectors::{
 };
 use crate::registry::Tool;
 use ares_config::fleet_secrets::MasterKey;
-use ares_types::types::Result;
+use ares_types::types::{AppError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -45,7 +45,7 @@ impl HubSpotClient {
             &self.master_key,
             tenant_id,
             "hubspot",
-            "oauth2",
+            "hubspot",
             HUBSPOT_TOKEN_URL,
         )
         .await
@@ -135,10 +135,17 @@ impl Tool for HubSpotGetContact {
 
         let req = self
             .client
-            .request(&tenant_id, reqwest::Method::GET, &format!("/crm/v3/objects/contacts/{}?idProperty=email", urlencoding::encode(email)))
+            .request(
+                &tenant_id,
+                reqwest::Method::GET,
+                &format!(
+                    "/crm/v3/objects/contacts/{}?idProperty=email",
+                    urlencoding::encode(email)
+                ),
+            )
             .await?;
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let resp_body = resp.text().await.map_err(|e| {
             ares_types::AppError::External(format!("hubspot get contact read body: {e}"))
         })?;
@@ -203,11 +210,15 @@ impl Tool for HubSpotCreateContact {
         let body = json!({ "properties": properties });
         let req = self
             .client
-            .request(&tenant_id, reqwest::Method::POST, "/crm/v3/objects/contacts")
+            .request(
+                &tenant_id,
+                reqwest::Method::POST,
+                "/crm/v3/objects/contacts",
+            )
             .await?
             .json(&body);
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let resp_body = resp.text().await.map_err(|e| {
             ares_types::AppError::External(format!("hubspot create contact read body: {e}"))
         })?;
@@ -263,7 +274,10 @@ impl Tool for HubSpotListDeals {
 
         let mut path = "/crm/v3/objects/deals?limit=100".to_string();
         if let Some(p) = pipeline {
-            path.push_str(&format!("&properties=pipeline&filter={}", urlencoding::encode(p)));
+            path.push_str(&format!(
+                "&properties=pipeline&filter={}",
+                urlencoding::encode(p)
+            ));
         }
 
         let req = self
@@ -271,7 +285,7 @@ impl Tool for HubSpotListDeals {
             .request(&tenant_id, reqwest::Method::GET, &path)
             .await?;
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let resp_body = resp.text().await.map_err(|e| {
             ares_types::AppError::External(format!("hubspot list deals read body: {e}"))
         })?;
@@ -332,7 +346,7 @@ impl Tool for HubSpotCreateDeal {
             .await?
             .json(&body);
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let resp_body = resp.text().await.map_err(|e| {
             ares_types::AppError::External(format!("hubspot create deal read body: {e}"))
         })?;

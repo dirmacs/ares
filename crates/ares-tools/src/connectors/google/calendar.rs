@@ -3,7 +3,7 @@
 use crate::connectors::google::{GoogleClient, GoogleError};
 use crate::connectors::{require_tenant_id, ConnectorError};
 use crate::registry::Tool;
-use ares_types::types::Result;
+use ares_types::types::{AppError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -68,7 +68,10 @@ impl GoogleCalendarListEvents {
             format!("/calendars/{}/events", urlencoding::encode(calendar_id))
         };
 
-        let mut req = self.client.request(tenant_id, reqwest::Method::GET, &path).await?;
+        let mut req = self
+            .client
+            .request(tenant_id, reqwest::Method::GET, &path)
+            .await?;
         if let Some(tmin) = time_min {
             req = req.query(&[("timeMin", tmin)]);
         }
@@ -76,7 +79,7 @@ impl GoogleCalendarListEvents {
             req = req.query(&[("timeMax", tmax)]);
         }
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let body = resp.text().await.map_err(|e| {
             ares_types::AppError::External(format!("google calendar list events read body: {e}"))
         })?;
@@ -125,7 +128,9 @@ impl Tool for GoogleCalendarListEvents {
         let time_min = args["time_min"].as_str();
         let time_max = args["time_max"].as_str();
 
-        let events = self.list_events(&tenant_id, calendar_id, time_min, time_max).await?;
+        let events = self
+            .list_events(&tenant_id, calendar_id, time_min, time_max)
+            .await?;
         Ok(json!({ "events": events }))
     }
 }
@@ -161,7 +166,7 @@ impl GoogleCalendarCreateEvent {
             .await?
             .json(event);
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let body = resp.text().await.map_err(|e| {
             ares_types::AppError::External(format!("google calendar create event read body: {e}"))
         })?;
@@ -239,14 +244,12 @@ impl GoogleCalendarDeleteEvent {
         Self { client }
     }
 
-    async fn delete_event(
-        &self,
-        tenant_id: &str,
-        calendar_id: &str,
-        event_id: &str,
-    ) -> Result<()> {
+    async fn delete_event(&self, tenant_id: &str, calendar_id: &str, event_id: &str) -> Result<()> {
         let path = if calendar_id == "primary" {
-            format!("/calendars/primary/events/{}", urlencoding::encode(event_id))
+            format!(
+                "/calendars/primary/events/{}",
+                urlencoding::encode(event_id)
+            )
         } else {
             format!(
                 "/calendars/{}/events/{}",
@@ -255,8 +258,11 @@ impl GoogleCalendarDeleteEvent {
             )
         };
 
-        let req = self.client.request(tenant_id, reqwest::Method::DELETE, &path).await?;
-        self.client.execute(req).await.map_err(|e| e.into())?;
+        let req = self
+            .client
+            .request(tenant_id, reqwest::Method::DELETE, &path)
+            .await?;
+        self.client.execute(req).await.map_err(AppError::from)?;
         Ok(())
     }
 }
@@ -286,9 +292,9 @@ impl Tool for GoogleCalendarDeleteEvent {
     async fn execute(&self, args: Value) -> Result<Value> {
         let tenant_id = require_tenant_id(&args)?;
         let calendar_id = args["calendar_id"].as_str().unwrap_or("primary");
-        let event_id = args["event_id"]
-            .as_str()
-            .ok_or_else(|| ares_types::AppError::InvalidInput("event_id is required".to_string()))?;
+        let event_id = args["event_id"].as_str().ok_or_else(|| {
+            ares_types::AppError::InvalidInput("event_id is required".to_string())
+        })?;
 
         self.delete_event(&tenant_id, calendar_id, event_id).await?;
         Ok(json!({ "deleted": true }))
@@ -327,7 +333,7 @@ impl GoogleCalendarGetFreeBusy {
             .await?
             .json(&body);
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let resp_body = resp.text().await.map_err(|e| {
             ares_types::AppError::External(format!("google freebusy read body: {e}"))
         })?;
@@ -388,16 +394,22 @@ impl Tool for GoogleCalendarGetFreeBusy {
         let tenant_id = require_tenant_id(&args)?;
         let calendar_ids: Vec<String> = args["calendar_ids"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
-        let time_min = args["time_min"]
-            .as_str()
-            .ok_or_else(|| ares_types::AppError::InvalidInput("time_min is required".to_string()))?;
-        let time_max = args["time_max"]
-            .as_str()
-            .ok_or_else(|| ares_types::AppError::InvalidInput("time_max is required".to_string()))?;
+        let time_min = args["time_min"].as_str().ok_or_else(|| {
+            ares_types::AppError::InvalidInput("time_min is required".to_string())
+        })?;
+        let time_max = args["time_max"].as_str().ok_or_else(|| {
+            ares_types::AppError::InvalidInput("time_max is required".to_string())
+        })?;
 
-        let result = self.get_free_busy(&tenant_id, &calendar_ids, time_min, time_max).await?;
+        let result = self
+            .get_free_busy(&tenant_id, &calendar_ids, time_min, time_max)
+            .await?;
         Ok(json!({ "calendars": result }))
     }
 }
@@ -419,11 +431,12 @@ mod tests {
         GoogleClient {
             config: crate::connectors::ConnectorConfig {
                 base_url: server_uri.to_string(),
-                version: "v3".to_string(),
+                version: "calendar/v3".to_string(),
             },
             http: reqwest::Client::new(),
             pool: PgPool::connect_lazy("postgres://localhost/test").expect("lazy"),
-            master_key: MasterKey::new(b"test-key-32-bytes-long!!!!!!!!!").unwrap(),
+            master_key: MasterKey::from_secret("test-key-32-bytes-long!!!!!!!!!"),
+            connector_type: "google_calendar",
         }
     }
 
@@ -431,7 +444,7 @@ mod tests {
     async fn list_events_parses_response() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v3/calendars/primary/events"))
+            .and(path("/calendar/v3/calendars/primary/events"))
             .and(bearer_token("mock-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "items": [

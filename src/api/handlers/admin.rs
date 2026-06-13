@@ -837,6 +837,7 @@ pub async fn test_tenant_agent_handler(
         last_update: chrono::Utc::now().timestamp(),
         tool_name: None,
         model: None,
+        is_catchup: false,
     });
 
     let agent_context = AgentContext {
@@ -2919,8 +2920,8 @@ pub async fn delete_runtime_provider(
 
 use crate::db::run_history::{
     AcknowledgeBudgetAlertRequest, AgentHealthMetrics, BudgetAlert, ListBudgetAlertsQuery,
-    ListLlmCallsQuery, ListToolCallsQuery, LogLlmCallRequest, LogToolCallRequest, RunCost,
-    RunHistoryStore, RunLlmCall, RunToolCall, SetTenantBudgetRequest, TenantBudget,
+    ListLlmCallsQuery, ListToolCallsQuery, LogLlmCallRequest, LogToolCallRequest, ModelHealthMetrics,
+    RunCost, RunHistoryStore, RunLlmCall, RunToolCall, SetTenantBudgetRequest, TenantBudget,
 };
 
 #[derive(Debug, Deserialize)]
@@ -2934,6 +2935,15 @@ pub struct ListRunCostsQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct ListHealthMetricsQuery {
+    pub tenant_id: String,
+    #[serde(default = "default_list_limit")]
+    pub limit: i32,
+    #[serde(default)]
+    pub offset: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListModelMetricsQuery {
     pub tenant_id: String,
     #[serde(default = "default_list_limit")]
     pub limit: i32,
@@ -3097,6 +3107,16 @@ pub async fn list_health_metrics(
 ) -> Result<Json<Vec<AgentHealthMetrics>>> {
     let store = RunHistoryStore::new(state.tenant_db.pool());
     let metrics = store.list_health_metrics(&q.tenant_id, q.limit, q.offset).await?;
+    Ok(Json(metrics))
+}
+
+/// List model health metrics for a tenant, grouped by (tenant_id, model).
+pub async fn list_model_metrics(
+    State(state): State<AppState>,
+    Query(q): Query<ListModelMetricsQuery>,
+) -> Result<Json<Vec<ModelHealthMetrics>>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let metrics = store.list_model_metrics(&q.tenant_id, q.limit, q.offset).await?;
     Ok(Json(metrics))
 }
 

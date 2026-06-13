@@ -509,7 +509,8 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         )
         .route(
             "/admin/connectors/{id}",
-            delete(crate::api::handlers::admin::delete_connector),
+            put(crate::api::handlers::admin::update_connector)
+                .delete(crate::api::handlers::admin::delete_connector),
         )
         .route(
             "/admin/tenants/{tenant_id}/oauth-creds",
@@ -987,6 +988,25 @@ mod tests {
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server.get("/admin/run-history/budgets/tenant-1").await;
+        assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
+        response.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_connector_update_route() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server
+            .put("/admin/connectors/connector-1")
+            .json(&serde_json::json!({
+                "tenant_id": "tenant-1",
+                "name": "github-main",
+                "service_type": "github",
+                "auth_config": {},
+                "endpoints": {},
+                "enabled": true
+            }))
+            .await;
         assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
         response.assert_status_unauthorized();
     }

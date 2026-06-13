@@ -5,12 +5,12 @@
 //! configuration-driven approach.
 
 use crate::{Agent, AgentResponse, ExecutionMetadata};
+use ares_config::toml_config::AgentConfig;
 use ares_llm::coordinator::ConversationMessage;
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use ares_llm::LLMClient;
 use ares_tools::registry::ToolRegistry;
 use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
-use ares_config::toml_config::AgentConfig;
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -29,7 +29,7 @@ pub struct ConfigurableAgent {
     /// Tools available to this agent
     tool_registry: Option<Arc<ToolRegistry>>,
     /// Optional whitelist of tool names this agent is allowed to use.
-    /// `None` means all tools are permitted.
+    /// `None` means no tools are permitted.
     allowed_tools: Option<Vec<String>>,
     /// Maximum tool calling iterations
     max_tool_iterations: usize,
@@ -205,7 +205,7 @@ Handle employee info, policies, and benefits."#
     }
 
     /// Get the list of allowed tool names for this agent.
-    /// `None` means all tools are permitted.
+    /// `None` means no tools are permitted.
     pub fn allowed_tools(&self) -> Option<&[String]> {
         self.allowed_tools.as_deref()
     }
@@ -333,7 +333,11 @@ Handle employee info, policies, and benefits."#
         messages: &[ConversationMessage],
         tools: &[ToolDefinition],
     ) -> Result<ares_llm::LLMResponse> {
-        match self.llm.generate_with_tools_and_history(messages, tools).await {
+        match self
+            .llm
+            .generate_with_tools_and_history(messages, tools)
+            .await
+        {
             Ok(resp) => Ok(resp),
             Err(e) => {
                 for (i, fallback) in self.fallback_llms.iter().enumerate() {
@@ -342,7 +346,10 @@ Handle employee info, policies, and benefits."#
                         fallback_idx = %i,
                         "Primary LLM (tools) failed, trying fallback"
                     );
-                    match fallback.generate_with_tools_and_history(messages, tools).await {
+                    match fallback
+                        .generate_with_tools_and_history(messages, tools)
+                        .await
+                    {
                         Ok(resp) => {
                             tracing::info!(
                                 agent = %self.name,
@@ -362,29 +369,23 @@ Handle employee info, policies, and benefits."#
     /// Get tool definitions for this agent.
     ///
     /// If `allowed_tools` is set, returns only those tools (if enabled).
-    /// Otherwise returns all enabled tools from the registry.
+    /// Otherwise returns no tools: tool use is deny-by-default.
     pub fn get_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {
-        match &self.tool_registry {
-            Some(registry) => {
-                match &self.allowed_tools {
-                    Some(allowed) if !allowed.is_empty() => {
-                        let allowed_refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
-                        registry.get_tool_definitions_for(&allowed_refs)
-                    }
-                    _ => registry.get_tool_definitions(),
-                }
+        match (&self.tool_registry, &self.allowed_tools) {
+            (Some(registry), Some(allowed)) if !allowed.is_empty() => {
+                let allowed_refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
+                registry.get_tool_definitions_for(&allowed_refs)
             }
-            None => Vec::new(),
+            _ => Vec::new(),
         }
     }
 
     /// Check if a specific tool is allowed for this agent.
-    /// When no whitelist is set, any tool in the registry is allowed (subject
-    /// to the registry's own enablement check).
+    /// When no whitelist is set, no tool is allowed.
     pub fn can_use_tool(&self, tool_name: &str) -> bool {
         let whitelisted = match &self.allowed_tools {
-            Some(allowed) => allowed.contains(&tool_name.to_string()),
-            None => true,
+            Some(allowed) => allowed.iter().any(|allowed| allowed == tool_name),
+            None => false,
         };
         whitelisted
             && self
@@ -522,19 +523,18 @@ Handle employee info, policies, and benefits."#
 
             // Execute each tool call and add results
             for tc in &response.tool_calls {
-                // Runtime enforcement of allowed_tools (DIR1-46)
-                if let Some(allowed) = &self.allowed_tools {
-                    if !allowed.contains(&tc.name) {
-                        tracing::warn!(
-                            agent = %self.name,
-                            tool = %tc.name,
-                            "Tool not in allowed_tools list — denying execution"
-                        );
-                        return Err(AppError::Auth(format!(
-                            "Tool '{}' is not allowed for this agent",
-                            tc.name
-                        )));
-                    }
+                // Runtime enforcement of allowed_tools (DIR1-46): deny-by-default.
+                if !self.can_use_tool(&tc.name) {
+                    tracing::warn!(
+                        agent = %self.name,
+                        tool = %tc.name,
+                        allowed_tools = ?self.allowed_tools,
+                        "Tool not in allowed_tools list — denying execution"
+                    );
+                    return Err(AppError::Auth(format!(
+                        "Tool '{}' is not allowed for this agent",
+                        tc.name
+                    )));
                 }
 
                 let tool_start = std::time::Instant::now();
@@ -587,8 +587,16 @@ Handle employee info, policies, and benefits."#
 
         #[cfg(feature = "postgres")]
         if let Ok(resp) = &final_response {
-            let prompt_tok = resp.usage.as_ref().map(|u| u.prompt_tokens as i64).unwrap_or(0);
-            let completion_tok = resp.usage.as_ref().map(|u| u.completion_tokens as i64).unwrap_or(0);
+            let prompt_tok = resp
+                .usage
+                .as_ref()
+                .map(|u| u.prompt_tokens as i64)
+                .unwrap_or(0);
+            let completion_tok = resp
+                .usage
+                .as_ref()
+                .map(|u| u.completion_tokens as i64)
+                .unwrap_or(0);
             let _ = self
                 .record_and_check_budget(&context.user_id, prompt_tok, completion_tok)
                 .await;
@@ -598,8 +606,14 @@ Handle employee info, policies, and benefits."#
         if let Some(obs) = &self.observability {
             let (prompt_tok, completion_tok, status) = match &final_response {
                 Ok(resp) => (
-                    resp.usage.as_ref().map(|u| u.prompt_tokens as i64).unwrap_or(0),
-                    resp.usage.as_ref().map(|u| u.completion_tokens as i64).unwrap_or(0),
+                    resp.usage
+                        .as_ref()
+                        .map(|u| u.prompt_tokens as i64)
+                        .unwrap_or(0),
+                    resp.usage
+                        .as_ref()
+                        .map(|u| u.completion_tokens as i64)
+                        .unwrap_or(0),
                     "success".to_string(),
                 ),
                 Err(_) => (0, 0, "error".to_string()),
@@ -780,9 +794,9 @@ impl Agent for ConfigurableAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_llm::LLMResponse;
-    use ares_llm::client::TokenUsage;
     use ares_config::toml_config::AgentConfig;
+    use ares_llm::client::TokenUsage;
+    use ares_llm::LLMResponse;
     use ares_types::types::{Message, MessageRole, Preference, ToolCall, UserMemory};
     use chrono::Utc;
     use std::collections::{HashMap, VecDeque};
@@ -838,11 +852,7 @@ mod tests {
                 usage: None,
             })
         }
-        async fn generate_with_tools(
-            &self,
-            _: &str,
-            _: &[ToolDefinition],
-        ) -> Result<LLMResponse> {
+        async fn generate_with_tools(&self, _: &str, _: &[ToolDefinition]) -> Result<LLMResponse> {
             Ok(LLMResponse {
                 content: self.content.clone(),
                 tool_calls: vec![],
@@ -866,23 +876,20 @@ mod tests {
         async fn stream(
             &self,
             _: &str,
-        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
-        {
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
             Ok(Box::new(futures::stream::empty()))
         }
         async fn stream_with_system(
             &self,
             _: &str,
             _: &str,
-        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
-        {
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
             Ok(Box::new(futures::stream::empty()))
         }
         async fn stream_with_history(
             &self,
             _: &[(String, String)],
-        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
-        {
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
             Ok(Box::new(futures::stream::empty()))
         }
         fn model_name(&self) -> &str {
@@ -908,9 +915,15 @@ mod tests {
 
     #[async_trait]
     impl ares_tools::registry::Tool for MockTool {
-        fn name(&self) -> &str { &self.name }
-        fn description(&self) -> &str { &self.description }
-        fn parameters_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            &self.description
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
         async fn execute(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
             Ok(serde_json::json!({"result": "ok"}))
         }
@@ -956,7 +969,11 @@ mod tests {
     }
 
     fn make_tool_response(content: &str, calls: Vec<ToolCall>) -> LLMResponse {
-        let finish_reason = if calls.is_empty() { "stop" } else { "tool_calls" };
+        let finish_reason = if calls.is_empty() {
+            "stop"
+        } else {
+            "tool_calls"
+        };
         LLMResponse {
             content: content.to_string(),
             tool_calls: calls,
@@ -978,7 +995,10 @@ mod tests {
     #[test]
     fn test_default_system_prompt_router() {
         let p = ConfigurableAgent::default_system_prompt("router");
-        assert!(p.contains("routing"), "router prompt should mention 'routing'");
+        assert!(
+            p.contains("routing"),
+            "router prompt should mention 'routing'"
+        );
     }
 
     #[test]
@@ -1145,7 +1165,12 @@ mod tests {
     fn test_tool_registry_returns_some_when_provided() {
         let config = make_config(vec![], None);
         let reg = Arc::new(ToolRegistry::new());
-        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), Some(reg.clone()));
+        let agent = ConfigurableAgent::new(
+            "router",
+            &config,
+            Box::new(MockLLM::new()),
+            Some(reg.clone()),
+        );
         assert!(agent.tool_registry().is_some());
         // Same Arc
         assert!(Arc::ptr_eq(agent.tool_registry().unwrap(), &reg));
@@ -1508,9 +1533,15 @@ mod tests {
         struct FailingTool;
         #[async_trait]
         impl ares_tools::registry::Tool for FailingTool {
-            fn name(&self) -> &str { "fail_tool" }
-            fn description(&self) -> &str { "always fails" }
-            fn parameters_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+            fn name(&self) -> &str {
+                "fail_tool"
+            }
+            fn description(&self) -> &str {
+                "always fails"
+            }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
             async fn execute(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
                 Err(ares_types::AppError::Internal("tool crashed".to_string()))
             }
@@ -1563,7 +1594,10 @@ mod tests {
             1,
             false,
         );
-        assert!(!agent.can_use_tool("anything"), "empty allowed_tools → deny all");
+        assert!(
+            !agent.can_use_tool("anything"),
+            "empty allowed_tools → deny all"
+        );
     }
 
     #[tokio::test]
@@ -1603,13 +1637,14 @@ mod tests {
         let agent = ConfigurableAgent::with_params(
             "orchestrator",
             AgentType::Orchestrator,
-            Box::new(MockLLM::with_tool_responses(vec![
-                make_tool_response("", vec![ToolCall {
+            Box::new(MockLLM::with_tool_responses(vec![make_tool_response(
+                "",
+                vec![ToolCall {
                     id: "tc_1".to_string(),
                     name: "sql".to_string(),
                     arguments: serde_json::json!({}),
-                }]),
-            ])),
+                }],
+            )])),
             "system".to_string(),
             Some(reg),
             Some(vec!["http".to_string()]),
@@ -1621,8 +1656,16 @@ mod tests {
         let result = Agent::execute(&agent, "query", &ctx).await;
         assert!(result.is_err(), "disallowed tool should return error");
         let err = result.err().unwrap().to_string();
-        assert!(err.contains("sql"), "error should mention denied tool: {}", err);
-        assert!(err.contains("not allowed"), "error should say tool is not allowed: {}", err);
+        assert!(
+            err.contains("sql"),
+            "error should mention denied tool: {}",
+            err
+        );
+        assert!(
+            err.contains("not allowed"),
+            "error should say tool is not allowed: {}",
+            err
+        );
     }
 
     #[tokio::test]
@@ -1631,13 +1674,14 @@ mod tests {
         let agent = ConfigurableAgent::with_params(
             "orchestrator",
             AgentType::Orchestrator,
-            Box::new(MockLLM::with_tool_responses(vec![
-                make_tool_response("", vec![ToolCall {
+            Box::new(MockLLM::with_tool_responses(vec![make_tool_response(
+                "",
+                vec![ToolCall {
                     id: "tc_1".to_string(),
                     name: "http".to_string(),
                     arguments: serde_json::json!({}),
-                }]),
-            ])),
+                }],
+            )])),
             "system".to_string(),
             Some(reg),
             Some(vec![]),
@@ -1649,11 +1693,15 @@ mod tests {
         let result = Agent::execute(&agent, "fetch", &ctx).await;
         assert!(result.is_err(), "empty allowed_tools should deny all");
         let err = result.err().unwrap().to_string();
-        assert!(err.contains("http"), "error should mention denied tool: {}", err);
+        assert!(
+            err.contains("http"),
+            "error should mention denied tool: {}",
+            err
+        );
     }
 
     #[tokio::test]
-    async fn test_execute_tool_none_allowed_tools_allows_all() {
+    async fn test_execute_tool_none_allowed_tools_denies_all() {
         let mut reg = ToolRegistry::new();
         reg.register(Arc::new(MockTool::new("http")));
         reg.register(Arc::new(MockTool::new("sql")));
@@ -1663,11 +1711,14 @@ mod tests {
             "orchestrator",
             AgentType::Orchestrator,
             Box::new(MockLLM::with_tool_responses(vec![
-                make_tool_response("", vec![ToolCall {
-                    id: "tc_1".to_string(),
-                    name: "sql".to_string(),
-                    arguments: serde_json::json!({}),
-                }]),
+                make_tool_response(
+                    "",
+                    vec![ToolCall {
+                        id: "tc_1".to_string(),
+                        name: "sql".to_string(),
+                        arguments: serde_json::json!({}),
+                    }],
+                ),
                 make_tool_response("SQL result", vec![]),
             ])),
             "system".to_string(),
@@ -1678,8 +1729,13 @@ mod tests {
         );
 
         let ctx = make_context();
-        let resp = Agent::execute(&agent, "query", &ctx).await.unwrap();
-        assert_eq!(resp.content, "SQL result");
+        let result = Agent::execute(&agent, "query", &ctx).await;
+        assert!(result.is_err(), "missing allowed_tools should deny all");
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("sql"),
+            "error should mention denied tool: {err}"
+        );
     }
 
     #[test]
@@ -1703,7 +1759,7 @@ mod tests {
         agent.set_allowed_tools(Some(vec![]));
         assert!(!agent.can_use_tool("http"));
         agent.set_allowed_tools(None);
-        assert!(agent.can_use_tool("sql"));
+        assert!(!agent.can_use_tool("sql"));
     }
 
     // ============== Fallback tests ==============
@@ -1720,17 +1776,10 @@ mod tests {
         async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
             Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
         }
-        async fn generate_with_history(
-            &self,
-            _: &[(String, String)],
-        ) -> Result<LLMResponse> {
+        async fn generate_with_history(&self, _: &[(String, String)]) -> Result<LLMResponse> {
             Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
         }
-        async fn generate_with_tools(
-            &self,
-            _: &str,
-            _: &[ToolDefinition],
-        ) -> Result<LLMResponse> {
+        async fn generate_with_tools(&self, _: &str, _: &[ToolDefinition]) -> Result<LLMResponse> {
             Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
         }
         async fn generate_with_tools_and_history(

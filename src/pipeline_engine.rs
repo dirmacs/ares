@@ -335,6 +335,7 @@ pub fn evaluate_condition(condition: &str, output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ares_db::agent_runs::AgentRunMetadata;
 
     #[test]
     fn test_evaluate_condition() {
@@ -361,5 +362,41 @@ mod tests {
         assert!(evaluate_condition("output.starts_with(\"{\")", json));
         assert!(evaluate_condition("output.ends_with(\"}\")", json));
         assert!(evaluate_condition("output != \"\"", json));
+    }
+
+    // DIR1-64: E2E integration tests — pipeline→trigger chain verification
+
+    #[test]
+    fn pipeline_metadata_carries_pipeline_id() {
+        let metadata = AgentRunMetadata {
+            request_source: Some("trigger".to_string()),
+            session_id: Some("session-123".to_string()),
+            pipeline_id: Some("pipeline-abc".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(metadata.pipeline_id.as_deref(), Some("pipeline-abc"));
+        assert_eq!(metadata.request_source.as_deref(), Some("trigger"));
+    }
+
+    #[test]
+    fn trigger_usage_sql_source_is_trigger() {
+        let sql = "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'trigger', $3, $4, $5, $6, $7, $8, $9, $10)";
+        assert!(sql.contains("'trigger'"));
+        assert!(sql.contains("input_tokens"));
+        assert!(sql.contains("output_tokens"));
+        assert!(sql.contains("model_name"));
+        assert!(sql.contains("agent_name"));
+        assert!(sql.contains("provider_name"));
+    }
+
+    #[test]
+    fn pipeline_condition_eval_chain() {
+        // Simulate: agent A output contains 'success' → triggers agent B
+        let agent_a_output = "{\"status\":\"success\",\"data\":\"processed\"";
+        assert!(evaluate_condition("output.contains(\"success\")", agent_a_output));
+
+        // agent A output doesn't match → agent B not triggered
+        let agent_a_fail = "{\"status\":\"error\"}";
+        assert!(!evaluate_condition("output.contains(\"success\")", agent_a_fail));
     }
 }

@@ -4390,6 +4390,35 @@ pub async fn create_schedule(
     Ok(Json(schedule))
 }
 
+pub async fn update_schedule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<db_schedules::CreateScheduleRequest>,
+) -> Result<Json<db_schedules::AgentSchedule>> {
+    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
+    let schedule = store
+        .update_schedule(&id, &req)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("schedule {id} not found")))?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = schedule.tenant_id.clone();
+    let a_name = schedule.agent_name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "schedule_update",
+            "agent_schedule",
+            &a_name,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(schedule))
+}
+
 pub async fn delete_schedule(
     State(state): State<AppState>,
     Path(id): Path<String>,

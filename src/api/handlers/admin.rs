@@ -34,6 +34,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -1446,6 +1447,15 @@ mod tests {
         }
     }
 
+    fn ensure_oauth_state_signing_key() {
+        if std::env::var("FLEET_SECRETS_KEY").is_err() {
+            std::env::set_var(
+                "FLEET_SECRETS_KEY",
+                "test-master-key-for-oauth-state-signing-12345",
+            );
+        }
+    }
+
     fn billing() -> BillingConfig {
         let mut billing = BillingConfig::default();
         billing.model_pricing.insert(
@@ -1494,15 +1504,36 @@ mod tests {
 
     #[test]
     fn oauth_state_roundtrips_and_sanitizes_redirect() {
+        ensure_oauth_state_signing_key();
         let state = OAuthState {
             tenant_id: "tenant 1".into(),
             connector_type: "gmail".into(),
             redirect_uri: "https://evil.example/callback".into(),
         };
-        let decoded = decode_oauth_state(&encode_oauth_state(&state)).unwrap();
+        let encoded = encode_oauth_state(&state).unwrap();
+        assert!(encoded.contains("&signature="));
+        let decoded = decode_oauth_state(&encoded).unwrap();
         assert_eq!(decoded.tenant_id, "tenant 1");
         assert_eq!(decoded.connector_type, "gmail");
         assert_eq!(decoded.redirect_uri, "/connectors");
+    }
+
+    #[test]
+    fn oauth_state_rejects_tampering_before_decoding_payload() {
+        ensure_oauth_state_signing_key();
+        let state = OAuthState {
+            tenant_id: "tenant-1".into(),
+            connector_type: "gmail".into(),
+            redirect_uri: "/connectors".into(),
+        };
+        let tampered = encode_oauth_state(&state)
+            .unwrap()
+            .replace("tenant-1", "tenant-2");
+
+        assert!(matches!(
+            decode_oauth_state(&tampered),
+            Err(AppError::InvalidInput(msg)) if msg == "invalid OAuth state"
+        ));
     }
 
     #[test]
@@ -1524,6 +1555,7 @@ mod tests {
 
     #[test]
     fn build_authorize_url_contains_encoded_oauth_fields() {
+        ensure_oauth_state_signing_key();
         let provider = oauth_provider_config("slack").unwrap();
         let state = OAuthState {
             tenant_id: "tenant-1".into(),
@@ -1535,7 +1567,8 @@ mod tests {
             "client id",
             "https://app.example/api/oauth/callback",
             &state,
-        );
+        )
+        .unwrap();
         assert!(url.starts_with("https://slack.com/oauth/v2/authorize?"));
         assert!(url.contains("client_id=client%20id"));
         assert!(url.contains("redirect_uri=https%3A%2F%2Fapp.example%2Fapi%2Foauth%2Fcallback"));
@@ -2086,9 +2119,9 @@ mod tests {
             tenant_id: None,
             name: "test-provider".into(),
             display_name: "Test Provider".into(),
-            provider_type: "openai".into(),
+            provider_type: "openai-compatible".into(),
             api_base: "https://api.openai.com".into(),
-            auth_type: "bearer".into(),
+            auth_type: "api_key".into(),
             default_model: Some("gpt-4".into()),
             headers: None,
             request_transform: None,
@@ -2099,7 +2132,8 @@ mod tests {
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["name"], "test-provider");
-        assert_eq!(json["provider_type"], "openai");
+        assert_eq!(json["provider_type"], "openai-compatible");
+        assert_eq!(json["auth_type"], "api_key");
         assert_eq!(json["enabled"], true);
         assert_eq!(json["created_at"], 1_700_000_000);
     }
@@ -3804,7 +3838,41 @@ fn safe_callback_redirect_uri(value: &str) -> String {
     }
 }
 
-fn encode_oauth_state(state: &OAuthState) -> String {
+fn oauth_state_signing_key() -> Result<String> {
+    std::env::var("FLEET_SECRETS_KEY")
+        .map_err(|_| AppError::Configuration("FLEET_SECRETS_KEY not set".into()))
+}
+
+fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
+    const BLOCK_SIZE: usize = 64;
+    let mut key_block = [0_u8; BLOCK_SIZE];
+
+    if key.len() > BLOCK_SIZE {
+        let digest = Sha256::digest(key);
+        key_block[..digest.len()].copy_from_slice(&digest);
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+
+    let mut inner_pad = [0x36_u8; BLOCK_SIZE];
+    let mut outer_pad = [0x5c_u8; BLOCK_SIZE];
+    for i in 0..BLOCK_SIZE {
+        inner_pad[i] ^= key_block[i];
+        outer_pad[i] ^= key_block[i];
+    }
+
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    inner.update(message);
+    let inner_hash = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner_hash);
+    bytes_to_hex(&outer.finalize())
+}
+
+fn encode_oauth_state_payload(state: &OAuthState) -> String {
     format!(
         "tenant_id={}&connector_type={}&redirect_uri={}",
         percent_encode_component(&state.tenant_id),
@@ -3813,7 +3881,39 @@ fn encode_oauth_state(state: &OAuthState) -> String {
     )
 }
 
+fn encode_oauth_state(state: &OAuthState) -> Result<String> {
+    let payload = encode_oauth_state_payload(state);
+    let signing_key = oauth_state_signing_key()?;
+    let signature = hmac_sha256_hex(signing_key.as_bytes(), payload.as_bytes());
+    Ok(format!("{payload}&signature={signature}"))
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+
+    let mut diff = 0_u8;
+    for (&l, &r) in left.iter().zip(right) {
+        diff |= l ^ r;
+    }
+    diff == 0
+}
+
 fn decode_oauth_state(value: &str) -> Result<OAuthState> {
+    let (payload, signature) = value
+        .rsplit_once("&signature=")
+        .ok_or_else(|| AppError::InvalidInput("invalid OAuth state".into()))?;
+    let signing_key = oauth_state_signing_key()?;
+    let expected = hmac_sha256_hex(signing_key.as_bytes(), payload.as_bytes());
+    if !constant_time_eq(signature.as_bytes(), expected.as_bytes()) {
+        return Err(AppError::InvalidInput("invalid OAuth state".into()));
+    }
+
+    decode_oauth_state_payload(payload)
+}
+
+fn decode_oauth_state_payload(value: &str) -> Result<OAuthState> {
     let mut tenant_id = None;
     let mut connector_type = None;
     let mut redirect_uri = None;
@@ -3871,15 +3971,15 @@ fn build_authorize_url(
     client_id: &str,
     callback_url: &str,
     state: &OAuthState,
-) -> String {
-    format!(
+) -> Result<String> {
+    Ok(format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&access_type=offline&prompt=consent",
         provider.auth_url,
         percent_encode_component(client_id),
         percent_encode_component(callback_url),
         percent_encode_component(provider.scope),
-        percent_encode_component(&encode_oauth_state(state))
-    )
+        percent_encode_component(&encode_oauth_state(state)?)
+    ))
 }
 
 fn build_token_form<'a>(
@@ -3974,7 +4074,7 @@ pub async fn oauth_authorize(
         &credential.client_id,
         &oauth_callback_url(&headers),
         &oauth_state,
-    );
+    )?;
 
     Ok(Redirect::temporary(&auth_url))
 }
@@ -4434,9 +4534,11 @@ pub async fn delete_tenant_pipeline(
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
     let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
-    let rows = store.delete_pipeline(&id).await?;
+    let rows = store.delete_pipeline_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
-        return Err(AppError::NotFound(format!("pipeline {id} not found")));
+        return Err(AppError::NotFound(format!(
+            "pipeline {id} not found for tenant {tenant_id}"
+        )));
     }
     let pool = state.tenant_db.pool().clone();
     tokio::spawn(async move {

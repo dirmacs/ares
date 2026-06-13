@@ -22,10 +22,10 @@
 
 use crate::capabilities::{CapabilityRequirements, ModelCapabilities, ModelWithCapabilities};
 use crate::client::{LLMClient, ModelParams, Provider};
-use ares_types::types::{AppError, Result};
-use ares_config::toml_config::{AresConfig, ModelConfig, ProviderConfig};
-use ares_config::nvidia_catalog::{CatalogEntry, NvidiaCatalogCache, NvidiaConfig};
 use arc_swap::ArcSwap;
+use ares_config::nvidia_catalog::{NvidiaCatalogCache, NvidiaConfig};
+use ares_config::toml_config::{AresConfig, ModelConfig, ProviderConfig};
+use ares_types::types::{AppError, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -114,7 +114,11 @@ impl ProviderRegistry {
 
     /// Hot-swap the runtime provider map. Called by admin endpoints after
     /// mutating the DB so the new providers are visible immediately.
-    pub fn reload_runtime_providers(&self, providers: Vec<RuntimeProviderEntry>, names: Vec<String>) {
+    pub fn reload_runtime_providers(
+        &self,
+        providers: Vec<RuntimeProviderEntry>,
+        names: Vec<String>,
+    ) {
         let mut map = HashMap::new();
         for (entry, name) in providers.into_iter().zip(names.into_iter()) {
             if entry.enabled {
@@ -174,14 +178,100 @@ impl ProviderRegistry {
     fn synthesize_provider_config(entry: &RuntimeProviderEntry) -> ProviderConfig {
         match entry.provider_type.as_str() {
             "anthropic-compatible" => ProviderConfig::Anthropic {
-                api_key_env: entry.api_key.clone().unwrap_or_else(|| "ANTHROPIC_API_KEY".to_string()),
+                api_key_env: entry
+                    .api_key
+                    .clone()
+                    .unwrap_or_else(|| "ANTHROPIC_API_KEY".to_string()),
                 default_model: entry.default_model.clone().unwrap_or_default(),
             },
             _ => ProviderConfig::OpenAI {
-                api_key_env: entry.api_key.clone().unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
+                api_key_env: entry
+                    .api_key
+                    .clone()
+                    .unwrap_or_else(|| "OPENAI_API_KEY".to_string()),
                 api_base: entry.api_base.clone(),
                 default_model: entry.default_model.clone().unwrap_or_default(),
             },
+        }
+    }
+
+    fn runtime_api_key(provider_name: &str, entry: &RuntimeProviderEntry) -> Result<String> {
+        entry
+            .api_key
+            .as_ref()
+            .filter(|api_key| !api_key.is_empty())
+            .cloned()
+            .ok_or_else(|| {
+                AppError::Configuration(format!(
+                    "Runtime provider '{}' API key is not resolved",
+                    provider_name
+                ))
+            })
+    }
+
+    fn provider_from_runtime_entry(
+        provider_name: &str,
+        entry: &RuntimeProviderEntry,
+    ) -> Result<Provider> {
+        Self::provider_from_runtime_entry_with_params(
+            provider_name,
+            entry,
+            entry.default_model.as_deref(),
+            ModelParams::default(),
+        )
+    }
+
+    fn provider_from_runtime_entry_with_params(
+        provider_name: &str,
+        entry: &RuntimeProviderEntry,
+        model_override: Option<&str>,
+        params: ModelParams,
+    ) -> Result<Provider> {
+        let model = model_override
+            .map(String::from)
+            .or_else(|| entry.default_model.clone())
+            .unwrap_or_default();
+        match entry.provider_type.as_str() {
+            "openai-compatible" | "custom" => {
+                #[cfg(feature = "openai")]
+                {
+                    Ok(Provider::from_runtime_openai(
+                        Self::runtime_api_key(provider_name, entry)?,
+                        entry.api_base.clone(),
+                        model,
+                        params,
+                        entry.headers.clone(),
+                    ))
+                }
+
+                #[cfg(not(feature = "openai"))]
+                {
+                    Err(AppError::Configuration(
+                        "OpenAI provider configured but the corresponding feature is not enabled in this build".into(),
+                    ))
+                }
+            }
+            "anthropic-compatible" => {
+                #[cfg(feature = "anthropic")]
+                {
+                    Ok(Provider::Anthropic {
+                        api_key: Self::runtime_api_key(provider_name, entry)?,
+                        model,
+                        params,
+                    })
+                }
+
+                #[cfg(not(feature = "anthropic"))]
+                {
+                    Err(AppError::Configuration(
+                        "Anthropic provider configured but the corresponding feature is not enabled in this build".into(),
+                    ))
+                }
+            }
+            provider_type => Err(AppError::Configuration(format!(
+                "Runtime provider '{}' has unsupported provider_type '{}'",
+                provider_name, provider_type
+            ))),
         }
     }
 
@@ -234,12 +324,30 @@ impl ProviderRegistry {
     pub async fn create_client_for_model(&self, model_name: &str) -> Result<Box<dyn LLMClient>> {
         // 1. Try legacy explicit models first
         if let Some(model_config) = self.models.get(model_name) {
-            let provider_config = self.get_provider(&model_config.provider).ok_or_else(|| {
-                AppError::Configuration(format!(
-                    "Provider '{}' referenced by model '{}' not found",
-                    model_config.provider, model_name
-                ))
-            })?;
+            let runtime_entry = {
+                let runtime = self.runtime_providers.load();
+                runtime.get(&model_config.provider).cloned()
+            };
+            if let Some(entry) = runtime_entry {
+                let provider = Self::provider_from_runtime_entry_with_params(
+                    &model_config.provider,
+                    &entry,
+                    Some(&model_config.model),
+                    ModelParams::from_model_config(model_config),
+                )?;
+                return provider.create_client().await;
+            }
+
+            let provider_config = self
+                .providers
+                .get(&model_config.provider)
+                .cloned()
+                .ok_or_else(|| {
+                    AppError::Configuration(format!(
+                        "Provider '{}' referenced by model '{}' not found",
+                        model_config.provider, model_name
+                    ))
+                })?;
             let provider = Provider::from_model_config(model_config, &provider_config)?;
             return provider.create_client().await;
         }
@@ -270,10 +378,13 @@ impl ProviderRegistry {
         &self,
         provider_name: &str,
     ) -> Result<Box<dyn LLMClient>> {
-        // Check runtime providers first so headers and custom base URLs are preserved.
-        if let Some(entry) = self.runtime_providers.load().get(provider_name) {
-            let provider_config = Self::synthesize_provider_config(entry);
-            let provider = Provider::from_config(&provider_config, None)?;
+        // Check runtime providers first so resolved API keys and custom headers are preserved.
+        let runtime_entry = {
+            let runtime = self.runtime_providers.load();
+            runtime.get(provider_name).cloned()
+        };
+        if let Some(entry) = runtime_entry {
+            let provider = Self::provider_from_runtime_entry(provider_name, &entry)?;
             return provider.create_client().await;
         }
 
@@ -714,9 +825,9 @@ mod tests {
                 );
             }
             Err(other) => panic!("expected Configuration error, got: {other:?}"),
-            Ok(_) => panic!(
-                "expected Configuration error containing {expected_substring:?}, got Ok"
-            ),
+            Ok(_) => {
+                panic!("expected Configuration error containing {expected_substring:?}, got Ok")
+            }
         }
     }
 
@@ -822,7 +933,6 @@ mod tests {
         let fast_caps = registry.get_model_capabilities("fast-local").unwrap();
         assert!(!fast_caps.is_local);
         assert!(fast_caps.supports_tools);
-
     }
 
     #[test]
@@ -954,6 +1064,64 @@ mod tests {
         assert!(registry.get_provider("missing").is_none());
     }
 
+    #[cfg(feature = "openai")]
+    #[test]
+    fn test_runtime_openai_provider_preserves_key_and_headers() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Test-Header".to_string(), "runtime-value".to_string());
+        let entry = RuntimeProviderEntry {
+            display_name: "Runtime OpenAI".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://runtime.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("runtime-model".to_string()),
+            headers,
+            api_key: Some("resolved-runtime-key".to_string()),
+            enabled: true,
+        };
+
+        let provider = ProviderRegistry::provider_from_runtime_entry("runtime-openai", &entry)
+            .expect("runtime provider should resolve");
+        match provider {
+            Provider::RuntimeOpenAI {
+                api_key,
+                api_base,
+                model,
+                headers,
+                ..
+            } => {
+                assert_eq!(api_key, "resolved-runtime-key");
+                assert_eq!(api_base, "https://runtime.example.com/v1");
+                assert_eq!(model, "runtime-model");
+                assert_eq!(
+                    headers.get("X-Test-Header").map(String::as_str),
+                    Some("runtime-value")
+                );
+            }
+            _ => panic!("expected RuntimeOpenAI provider"),
+        }
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn test_runtime_provider_requires_resolved_api_key() {
+        let entry = RuntimeProviderEntry {
+            display_name: "Runtime OpenAI".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://runtime.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("runtime-model".to_string()),
+            headers: HashMap::new(),
+            api_key: None,
+            enabled: true,
+        };
+
+        assert_configuration_error(
+            ProviderRegistry::provider_from_runtime_entry("runtime-openai", &entry),
+            "Runtime provider 'runtime-openai' API key is not resolved",
+        );
+    }
+
     #[test]
     fn test_default_registry() {
         let registry = ProviderRegistry::default();
@@ -1024,7 +1192,9 @@ mod tests {
         let models = registry.list_models();
 
         assert_eq!(models.len(), 3);
-        assert!(models.iter().any(|m| m.name == "fast-local" && m.provider == "nvidia"));
+        assert!(models
+            .iter()
+            .any(|m| m.name == "fast-local" && m.provider == "nvidia"));
     }
 
     #[test]
@@ -1032,7 +1202,10 @@ mod tests {
         let mut providers = HashMap::new();
         providers.insert("nvidia".to_string(), sample_openai_provider());
         let mut models = HashMap::new();
-        models.insert("fast".to_string(), sample_model_config("nvidia", "test-model"));
+        models.insert(
+            "fast".to_string(),
+            sample_model_config("nvidia", "test-model"),
+        );
 
         let config = minimal_ares_config(providers, models);
         let registry = ProviderRegistry::from_config(&config);
@@ -1117,7 +1290,10 @@ mod tests {
         let mut providers = HashMap::new();
         providers.insert("nvidia".to_string(), sample_openai_provider());
         let mut models = HashMap::new();
-        models.insert("fast".to_string(), sample_model_config("nvidia", "test-model"));
+        models.insert(
+            "fast".to_string(),
+            sample_model_config("nvidia", "test-model"),
+        );
 
         let config = minimal_ares_config(providers, models);
         let factory = ConfigBasedLLMFactory::from_config(&config).unwrap();

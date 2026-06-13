@@ -270,9 +270,11 @@ async fn execute_scheduled_agent(
             let pool_clone = pool.clone();
             let tid = sched.tenant_id.clone();
             let aname = sched.agent_name.clone();
+            let run_id_for_insert = run_id.clone();
             tokio::spawn(async move {
-                let _ = agent_runs::insert_agent_run_with_metadata(
+                let _ = agent_runs::insert_agent_run_with_id_and_metadata(
                     &pool_clone,
+                    &run_id_for_insert,
                     &tid,
                     &aname,
                     None,
@@ -286,6 +288,27 @@ async fn execute_scheduled_agent(
                     false,
                     Some(&metadata),
                 )
+                .await;
+            });
+
+            let usage_pool = pool.clone();
+            let usage_tid = sched.tenant_id.clone();
+            let usage_agent = sched.agent_name.clone();
+            tokio::spawn(async move {
+                let _ = sqlx::query(
+                    "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'scheduled', $3, $4, $5, $6, $7, $8, $9, $10)"
+                )
+                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(usage_tid)
+                .bind(1i32)
+                .bind(0i64)
+                .bind(0i64)
+                .bind(0i64)
+                .bind(Some("skill".to_string()))
+                .bind(usage_agent)
+                .bind(Some("skill".to_string()))
+                .bind(chrono::Utc::now().timestamp())
+                .execute(&usage_pool)
                 .await;
             });
 
@@ -432,12 +455,14 @@ async fn execute_scheduled_agent(
     let tid = sched.tenant_id.clone();
     let aname = sched.agent_name.clone();
     let err_clone = error_msg.clone();
+    let run_id_for_insert = run_id.clone();
     // Clone model/provider for usage event recording (both spawns need them)
     let model_clone = model_name.clone();
     let provider_clone = provider_name.clone();
     tokio::spawn(async move {
-        let _ = agent_runs::insert_agent_run_with_metadata(
+        let _ = agent_runs::insert_agent_run_with_id_and_metadata(
             &pool_clone,
+            &run_id_for_insert,
             &tid,
             &aname,
             None,

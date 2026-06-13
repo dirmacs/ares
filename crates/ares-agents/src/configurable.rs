@@ -39,6 +39,12 @@ pub struct ConfigurableAgent {
     observability: Option<Arc<dyn ObservabilitySink>>,
     /// Optional fallback LLM clients to try if primary fails
     fallback_llms: Vec<Box<dyn LLMClient>>,
+    /// Optional DB pool for token-budget tracking.
+    #[cfg(feature = "postgres")]
+    token_budget_pool: Option<sqlx::PgPool>,
+    /// Optional run id to associate with token usage records.
+    #[cfg(feature = "postgres")]
+    run_id: Option<String>,
 }
 
 impl ConfigurableAgent {
@@ -94,6 +100,10 @@ impl ConfigurableAgent {
             parallel_tools: config.parallel_tools,
             observability: None,
             fallback_llms: Vec::new(),
+            #[cfg(feature = "postgres")]
+            token_budget_pool: None,
+            #[cfg(feature = "postgres")]
+            run_id: None,
         }
     }
 
@@ -121,6 +131,10 @@ impl ConfigurableAgent {
             parallel_tools,
             observability: None,
             fallback_llms: Vec::new(),
+            #[cfg(feature = "postgres")]
+            token_budget_pool: None,
+            #[cfg(feature = "postgres")]
+            run_id: None,
         }
     }
 
@@ -210,6 +224,18 @@ Handle employee info, policies, and benefits."#
     /// Set fallback LLM clients to try if the primary fails.
     pub fn set_fallback_llms(&mut self, fallbacks: Vec<Box<dyn LLMClient>>) {
         self.fallback_llms = fallbacks;
+    }
+
+    /// Attach a DB pool for token-budget tracking.
+    #[cfg(feature = "postgres")]
+    pub fn set_token_budget_pool(&mut self, pool: sqlx::PgPool) {
+        self.token_budget_pool = Some(pool);
+    }
+
+    /// Set the run id to associate with token usage records.
+    #[cfg(feature = "postgres")]
+    pub fn set_run_id(&mut self, run_id: String) {
+        self.run_id = Some(run_id);
     }
 
     /// Try the primary LLM, then each fallback in order.

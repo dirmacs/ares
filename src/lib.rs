@@ -144,6 +144,9 @@ pub mod health_metrics_job;
 /// Background cron scheduler for agent schedules.
 #[cfg(feature = "postgres")]
 pub mod scheduler;
+/// Unified trigger execution engine.
+#[cfg(feature = "postgres")]
+pub mod trigger_engine;
 /// Skill execution engine.
 #[cfg(feature = "postgres")]
 pub mod skill_engine;

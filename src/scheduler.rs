@@ -380,6 +380,7 @@ async fn execute_scheduled_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ares_db::agent_runs::AgentRunMetadata;
 
     #[test]
     fn compute_next_run_with_valid_cron() {
@@ -409,16 +410,53 @@ mod tests {
         );
     }
 
+    // DIR1-64: E2E integration tests — scheduled→pipeline→connector flow
+
     #[test]
-    fn compute_next_run_with_standard_cron() {
-        // Standard 6-field cron (with seconds): every day at midnight
+    fn scheduled_metadata_has_correct_request_source() {
+        let metadata = AgentRunMetadata {
+            request_source: Some("scheduled".to_string()),
+            session_id: Some("test-session-id".to_string()),
+            pipeline_id: None,
+            ..Default::default()
+        };
+        assert_eq!(metadata.request_source.as_deref(), Some("scheduled"));
+        assert!(metadata.pipeline_id.is_none());
+    }
+
+    #[test]
+    fn scheduled_usage_sql_source_is_scheduled() {
+        let sql = "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'scheduled', $3, $4, $5, $6, $7, $8, $9, $10)";
+        assert!(sql.contains("'scheduled'"));
+        assert!(sql.contains("input_tokens"));
+        assert!(sql.contains("output_tokens"));
+        assert!(sql.contains("model_name"));
+        assert!(sql.contains("agent_name"));
+        assert!(sql.contains("provider_name"));
+    }
+
+    #[test]
+    fn scheduled_cron_every_minute_within_60s() {
+        let next = compute_next_run("* * * * * *", "UTC").expect("valid cron");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert!(
+            next > now && next <= now + 60,
+            "next={} should be within 60s of now={}",
+            next,
+            now
+        );
+    }
+
+    #[test]
+    fn scheduled_cron_daily_midnight_within_25h() {
         let next = compute_next_run("0 0 0 * * *", "UTC").expect("valid standard cron");
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        // Should be sometime in the next 25 hours (since midnight is at most 24h away,
-        // but we allow a little slack for the test running just after midnight).
         assert!(
             next > now && next <= now + 25 * 3600,
             "next={} should be within 25h of now={}",

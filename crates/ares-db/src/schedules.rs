@@ -482,6 +482,16 @@ impl<'a> PipelineStore<'a> {
         Ok(res.rows_affected())
     }
 
+    pub async fn delete_pipeline_for_tenant(&self, tenant_id: &str, id: &str) -> Result<u64> {
+        let res = sqlx::query("DELETE FROM agent_pipelines WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id)
+            .bind(id)
+            .execute(self.pool)
+            .await
+            .map_err(sqlx_err)?;
+        Ok(res.rows_affected())
+    }
+
     /// Return all enabled pipelines for a given source agent within a tenant.
     pub async fn get_pipelines_for_source(
         &self,

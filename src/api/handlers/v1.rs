@@ -749,9 +749,11 @@ pub async fn run_agent(
                     "failed"
                 };
                 let err_msg = skill_result.as_ref().err().cloned();
+                let run_id_for_insert = run_id.clone();
                 tokio::spawn(async move {
-                    let _ = agent_runs::insert_agent_run_with_metadata(
+                    let _ = agent_runs::insert_agent_run_with_id_and_metadata(
                         &pool,
+                        &run_id_for_insert,
                         &tid,
                         &aname,
                         None,
@@ -916,7 +918,7 @@ pub async fn run_agent(
 
             // Record agent run
             {
-                let _run_id = run_id.clone();
+                let run_id_for_insert = run_id.clone();
                 let pool = state.tenant_db.pool().clone();
                 let tid = tc.tenant_id.clone();
                 let aname = resolved_agent.agent_name.clone();
@@ -939,8 +941,9 @@ pub async fn run_agent(
                     pipeline_id: None,
                 };
                 tokio::spawn(async move {
-                    let _ = agent_runs::insert_agent_run_with_metadata(
+                    let _ = agent_runs::insert_agent_run_with_id_and_metadata(
                         &pool,
+                        &run_id_for_insert,
                         &tid,
                         &aname,
                         None,
@@ -1023,9 +1026,11 @@ pub async fn run_agent(
                     eruka_write_count: 0,
                     pipeline_id: None,
                 };
+                let run_id_for_insert = run_id.clone();
                 tokio::spawn(async move {
-                    let _ = agent_runs::insert_agent_run_with_metadata(
+                    let _ = agent_runs::insert_agent_run_with_id_and_metadata(
                         &pool,
+                        &run_id_for_insert,
                         &tid,
                         &aname,
                         None,
@@ -1130,8 +1135,9 @@ pub async fn sandbox_run_agent(
         eruka_write_count: 0,
         pipeline_id: None,
     };
-    agent_runs::insert_agent_run_with_metadata(
+    agent_runs::insert_agent_run_with_id_and_metadata(
         state.tenant_db.pool(),
+        &run_id,
         &tc.tenant_id,
         &name,
         None,

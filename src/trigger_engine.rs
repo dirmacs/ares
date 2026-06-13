@@ -67,7 +67,11 @@ pub async fn execute_triggered_agent(
                 .await;
 
             let duration_ms = start.elapsed().as_millis() as u64;
-            let skill_status = if skill_result.is_ok() { "completed" } else { "error" };
+            let skill_status = if skill_result.is_ok() {
+                "completed"
+            } else {
+                "error"
+            };
             app_state.active_runs.finish(&run_id, skill_status);
 
             let metadata = AgentRunMetadata {
@@ -83,15 +87,21 @@ pub async fn execute_triggered_agent(
                 eruka_write_count: 0,
                 pipeline_id: Some(trigger.id.clone()),
             };
-            let status = if skill_result.is_ok() { "completed" } else { "failed" };
+            let status = if skill_result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            };
             let err_msg = skill_result.as_ref().err().cloned();
 
             let pool_clone = pool.clone();
             let tid = trigger.tenant_id.clone();
             let aname = trigger.target_agent.clone();
+            let run_id_for_insert = run_id.clone();
             tokio::spawn(async move {
-                let _ = agent_runs::insert_agent_run_with_metadata(
+                let _ = agent_runs::insert_agent_run_with_id_and_metadata(
                     &pool_clone,
+                    &run_id_for_insert,
                     &tid,
                     &aname,
                     None,
@@ -105,6 +115,27 @@ pub async fn execute_triggered_agent(
                     false,
                     Some(&metadata),
                 )
+                .await;
+            });
+
+            let usage_pool = pool.clone();
+            let usage_tid = trigger.tenant_id.clone();
+            let usage_agent = trigger.target_agent.clone();
+            tokio::spawn(async move {
+                let _ = sqlx::query(
+                    "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'trigger', $3, $4, $5, $6, $7, $8, $9, $10)"
+                )
+                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(usage_tid)
+                .bind(1i32)
+                .bind(0i64)
+                .bind(0i64)
+                .bind(0i64)
+                .bind(Some("skill".to_string()))
+                .bind(usage_agent)
+                .bind(Some("skill".to_string()))
+                .bind(chrono::Utc::now().timestamp())
+                .execute(&usage_pool)
                 .await;
             });
 
@@ -166,9 +197,9 @@ pub async fn execute_triggered_agent(
         current_step: 0,
         total_steps: 0,
         last_update: chrono::Utc::now().timestamp(),
-                tool_name: None,
-                model: None,
-                is_catchup: false,
+        tool_name: None,
+        model: None,
+        is_catchup: false,
     });
 
     let result = resolved_agent
@@ -206,7 +237,9 @@ pub async fn execute_triggered_agent(
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
-            app_state.active_runs.update_model(&run_id, Some(&model_name));
+            app_state
+                .active_runs
+                .update_model(&run_id, Some(&model_name));
             app_state.active_runs.finish(&run_id, "completed");
 
             let _ = crate::pipeline_engine::execute_pipeline(
@@ -246,12 +279,14 @@ pub async fn execute_triggered_agent(
     let tid = trigger.tenant_id.clone();
     let aname = trigger.target_agent.clone();
     let err_clone = error_msg.clone();
+    let run_id_for_insert = run_id.clone();
     // Clone model/provider for usage event recording (both spawns need them)
     let model_clone = model_name.clone();
     let provider_clone = provider_name.clone();
     tokio::spawn(async move {
-        let _ = agent_runs::insert_agent_run_with_metadata(
+        let _ = agent_runs::insert_agent_run_with_id_and_metadata(
             &pool_clone,
+            &run_id_for_insert,
             &tid,
             &aname,
             None,
@@ -273,8 +308,16 @@ pub async fn execute_triggered_agent(
     //      VALUES ($1, $2, 'trigger', $3, $4, $5, $6, $7, $8, $9, $10)
     let usage_pool = pool.clone();
     let usage_tid = trigger.tenant_id.clone();
-    let usage_model = if model_clone != "unknown" { Some(model_clone) } else { None };
-    let usage_provider = if provider_clone != "unknown" { Some(provider_clone) } else { None };
+    let usage_model = if model_clone != "unknown" {
+        Some(model_clone)
+    } else {
+        None
+    };
+    let usage_provider = if provider_clone != "unknown" {
+        Some(provider_clone)
+    } else {
+        None
+    };
     let usage_agent = trigger.target_agent.clone();
     let input_tok = input_tokens;
     let output_tok = output_tokens;

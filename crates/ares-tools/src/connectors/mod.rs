@@ -7,7 +7,7 @@
 use ares_config::fleet_secrets::{decrypt_api_key, MasterKey};
 use ares_db::oauth_credentials::{OAuthCredential, OAuthCredentialStore};
 use ares_types::types::{AppError, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -300,6 +300,27 @@ pub async fn refresh_oauth2_token(
     Ok(refresh_data.access_token)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessTokenPlan {
+    UseStored,
+    Refresh,
+    ExpiredWithoutRefresh,
+}
+
+fn access_token_plan(
+    expires_at: Option<i64>,
+    has_refresh_token: bool,
+    now: i64,
+) -> AccessTokenPlan {
+    match expires_at {
+        Some(expires_at) if expires_at <= now + 300 && has_refresh_token => {
+            AccessTokenPlan::Refresh
+        }
+        Some(expires_at) if expires_at <= now + 300 => AccessTokenPlan::ExpiredWithoutRefresh,
+        _ => AccessTokenPlan::UseStored,
+    }
+}
+
 /// Get a valid access token, refreshing if near expiry.
 pub async fn get_valid_access_token(
     pool: &PgPool,
@@ -319,27 +340,36 @@ pub async fn get_valid_access_token(
             ))
         })?;
 
-    let now = chrono::Utc::now().timestamp();
-    // Refresh if expires within 5 minutes
-    if cred.expires_at.map(|e| e <= now + 300).unwrap_or(true) {
-        return refresh_oauth2_token(
-            pool,
-            master_key,
-            tenant_id,
-            provider,
-            connector_type,
-            token_url,
-        )
-        .await;
-    }
-
     let at_payload = cred.access_token.ok_or_else(|| {
         AppError::Auth(format!(
             "OAuth credential for {provider} has no access token"
         ))
     })?;
-    decrypt_api_key(&at_payload, master_key)
-        .map_err(|e| AppError::Auth(format!("Failed to decrypt access token: {e}")))
+
+    match access_token_plan(
+        cred.expires_at,
+        cred.refresh_token.is_some(),
+        chrono::Utc::now().timestamp(),
+    ) {
+        AccessTokenPlan::UseStored => decrypt_api_key(&at_payload, master_key),
+        AccessTokenPlan::Refresh => {
+            return refresh_oauth2_token(
+                pool,
+                master_key,
+                tenant_id,
+                provider,
+                connector_type,
+                token_url,
+            )
+            .await;
+        }
+        AccessTokenPlan::ExpiredWithoutRefresh => {
+            return Err(AppError::Auth(format!(
+                "OAuth credential for {provider} is expired and has no refresh token"
+            )));
+        }
+    }
+    .map_err(|e| AppError::Auth(format!("Failed to decrypt access token: {e}")))
 }
 
 // =============================================================================
@@ -419,6 +449,35 @@ pub fn register_prebuilt_connector_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_token_plan_treats_missing_expiry_as_stored_token() {
+        assert_eq!(
+            access_token_plan(None, false, 1_700_000_000),
+            AccessTokenPlan::UseStored
+        );
+        assert_eq!(
+            access_token_plan(None, true, 1_700_000_000),
+            AccessTokenPlan::UseStored
+        );
+    }
+
+    #[test]
+    fn access_token_plan_refreshes_only_expiring_credentials_with_refresh_token() {
+        let now = 1_700_000_000;
+        assert_eq!(
+            access_token_plan(Some(now + 299), true, now),
+            AccessTokenPlan::Refresh
+        );
+        assert_eq!(
+            access_token_plan(Some(now + 299), false, now),
+            AccessTokenPlan::ExpiredWithoutRefresh
+        );
+        assert_eq!(
+            access_token_plan(Some(now + 301), true, now),
+            AccessTokenPlan::UseStored
+        );
+    }
 
     #[tokio::test]
     async fn register_prebuilt_connector_tools_registers_all_bundled_tools() {

@@ -89,6 +89,7 @@ pub async fn execute_triggered_agent(
                 eruka_read_count: 0,
                 eruka_write_count: 0,
                 pipeline_id: Some(trigger.id.clone()),
+                schedule_id: None,
             };
             let status = if skill_result.is_ok() {
                 "completed"
@@ -279,6 +280,7 @@ pub async fn execute_triggered_agent(
         eruka_read_count: if eruka_context_hit { 1 } else { 0 },
         eruka_write_count: 0,
         pipeline_id: Some(trigger.id.clone()),
+        schedule_id: None,
     };
 
     let pool_clone = pool.clone();

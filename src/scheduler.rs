@@ -267,6 +267,7 @@ async fn execute_scheduled_agent(
                 eruka_read_count: 0,
                 eruka_write_count: 0,
                 pipeline_id: None,
+                schedule_id: Some(sched.id.clone()),
             };
             let status = if skill_result.is_ok() {
                 "completed"
@@ -459,6 +460,7 @@ async fn execute_scheduled_agent(
         eruka_read_count: if eruka_context_hit { 1 } else { 0 },
         eruka_write_count: 0,
         pipeline_id: None,
+        schedule_id: Some(sched.id.clone()),
     };
 
     let _has_error = error_msg.is_some();

@@ -496,6 +496,7 @@ pub async fn v1_chat(
             eruka_read_count: if eruka_context_hit { 1 } else { 0 },
             eruka_write_count: 0,
             pipeline_id: None,
+            schedule_id: None,
         };
         tokio::spawn(async move {
             let _ = agent_runs::insert_agent_run_with_metadata(
@@ -745,6 +746,7 @@ pub async fn run_agent(
                     eruka_read_count: 0,
                     eruka_write_count: 0,
                     pipeline_id: None,
+                    schedule_id: None,
                 };
                 let status = if skill_result.is_ok() {
                     "completed"
@@ -945,6 +947,7 @@ pub async fn run_agent(
                     eruka_read_count: if eruka_context_hit { 1 } else { 0 },
                     eruka_write_count: 0,
                     pipeline_id: None,
+                    schedule_id: None,
                 };
                 tokio::spawn(async move {
                     let _ = agent_runs::insert_agent_run_with_id_and_metadata(
@@ -1031,6 +1034,7 @@ pub async fn run_agent(
                     eruka_read_count: if eruka_context_hit { 1 } else { 0 },
                     eruka_write_count: 0,
                     pipeline_id: None,
+                    schedule_id: None,
                 };
                 let run_id_for_insert = run_id.clone();
                 tokio::spawn(async move {
@@ -1140,6 +1144,7 @@ pub async fn sandbox_run_agent(
         eruka_read_count: 0,
         eruka_write_count: 0,
         pipeline_id: None,
+        schedule_id: None,
     };
     agent_runs::insert_agent_run_with_id_and_metadata(
         state.tenant_db.pool(),
@@ -2054,6 +2059,8 @@ mod tests {
             eruka_context_hit: false,
             eruka_read_count: 0,
             eruka_write_count: 0,
+            pipeline_id: None,
+            schedule_id: None,
         };
         let v1 = agent_run_row_to_v1(row);
         assert_eq!(v1.id, "run-1");

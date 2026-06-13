@@ -17,6 +17,8 @@ postgres = ["dep:sqlx", "dep:ares-db", "ares-db/postgres"]
 [dependencies]
 ares-types = { workspace = true }
 ares-config = { workspace = true }
+base64 = "0.22"
+urlencoding = "2.1"
 ares-db = { workspace = true, optional = true }
 arc-swap = "1.7.1"
 ares-mcp = { workspace = true, optional = true }

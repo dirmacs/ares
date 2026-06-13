@@ -5,7 +5,7 @@ use crate::connectors::{
 };
 use crate::registry::Tool;
 use ares_config::fleet_secrets::MasterKey;
-use ares_types::types::Result;
+use ares_types::types::{AppError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -45,7 +45,7 @@ impl LinkedInClient {
             &self.master_key,
             tenant_id,
             "linkedin",
-            "oauth2",
+            "linkedin",
             LINKEDIN_TOKEN_URL,
         )
         .await
@@ -152,7 +152,7 @@ impl Tool for LinkedInCreateShare {
             .await?
             .json(&body);
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let resp_body = resp.text().await.map_err(|e| {
             ares_types::AppError::External(format!("linkedin create share read body: {e}"))
         })?;
@@ -215,11 +215,9 @@ impl Tool for LinkedInGetCompanyUpdates {
             .request(&tenant_id, reqwest::Method::GET, &path)
             .await?;
 
-        let resp = self.client.execute(req).await.map_err(|e| e.into())?;
+        let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let resp_body = resp.text().await.map_err(|e| {
-            ares_types::AppError::External(format!(
-                "linkedin get company updates read body: {e}"
-            ))
+            ares_types::AppError::External(format!("linkedin get company updates read body: {e}"))
         })?;
 
         let data: Value = serde_json::from_str(&resp_body).map_err(|e| {

@@ -46,7 +46,7 @@ impl SlackClient {
             &self.master_key,
             tenant_id,
             "slack",
-            "oauth2",
+            "slack",
             SLACK_TOKEN_URL,
         )
         .await

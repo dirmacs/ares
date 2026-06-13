@@ -542,12 +542,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
 
     // Semantic search (requires local-embeddings and ares-vector features)
     #[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
-    {
-        v1_routes = v1_routes.route(
-            "/search/semantic",
-            post(crate::api::handlers::v1::semantic_search),
-        );
-    }
+    let v1_routes = v1_routes.route(
+        "/search/semantic",
+        post(crate::api::handlers::v1::semantic_search),
+    );
 
     // Eruka context middleware — only when eruka-context feature is enabled
     #[cfg(feature = "eruka-context")]

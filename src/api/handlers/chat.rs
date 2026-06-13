@@ -379,6 +379,7 @@ async fn execute_agent(
         last_update: chrono::Utc::now().timestamp(),
         tool_name: None,
         model: None,
+        is_catchup: false,
     });
 
     // Execute the agent
@@ -595,6 +596,7 @@ pub async fn chat_stream(
             last_update: chrono::Utc::now().timestamp(),
             tool_name: None,
             model: None,
+            is_catchup: false,
         });
         let start_event = stream_start_event(&agent_type, &context_id_clone);
         yield Ok(Event::default().data(serde_json::to_string(&start_event).unwrap_or_default()));

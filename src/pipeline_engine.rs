@@ -88,6 +88,7 @@ async fn execute_target_agent(
                 last_update: chrono::Utc::now().timestamp(),
                 tool_name: Some(format!("skill:{}", skill_id)),
                 model: None,
+                is_catchup: false,
             });
 
             let skill_result = app_state
@@ -189,8 +190,9 @@ async fn execute_target_agent(
         current_step: 0,
         total_steps: 0,
         last_update: chrono::Utc::now().timestamp(),
-        tool_name: None,
-        model: None,
+                tool_name: None,
+                model: None,
+                is_catchup: false,
     });
 
     let result = resolved_agent

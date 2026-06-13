@@ -4,7 +4,7 @@
 //! is in the past, runs them, and updates `last_run_at` / `next_run_at`.
 
 use ares_db::agent_runs::{self, AgentRunMetadata};
-use ares_db::schedules::{compute_next_run, AgentSchedule, ScheduleStore};
+use ares_db::schedules::{compute_next_run, AgentSchedule, MissedRunAudit, ScheduleStore};
 use ares_types::types::AgentContext;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -24,6 +24,13 @@ pub async fn start_scheduler(pool: PgPool, app_state: Arc<crate::AppState>) {
 
 async fn run_due_schedules(pool: &PgPool, app_state: &Arc<crate::AppState>) -> Result<(), String> {
     let store = ScheduleStore::new(pool);
+
+    // 1. First, handle catchup for missed runs within grace period
+    if let Err(e) = run_catchup_schedules(&store, app_state).await {
+        tracing::warn!("Scheduler catchup failed: {}", e);
+    }
+
+    // 2. Then, run normally scheduled agents
     let due = store.get_due_schedules().await.map_err(|e| e.to_string())?;
     for sched in due {
         tracing::info!(
@@ -31,7 +38,7 @@ async fn run_due_schedules(pool: &PgPool, app_state: &Arc<crate::AppState>) -> R
             sched.agent_name,
             sched.tenant_id
         );
-        if let Err(e) = execute_scheduled_agent(&sched, app_state).await {
+        if let Err(e) = execute_scheduled_agent(&sched, app_state, false).await {
             tracing::warn!(
                 "Scheduled run failed for agent {} (tenant {}): {}",
                 sched.agent_name,
@@ -61,9 +68,74 @@ async fn run_due_schedules(pool: &PgPool, app_state: &Arc<crate::AppState>) -> R
     Ok(())
 }
 
+/// Detect schedules whose `next_run_at` is past their grace window and trigger
+/// a single catch-up run. Records each catch-up in the `missed_runs` audit
+/// table so we never trigger the same missed slot twice.
+async fn run_catchup_schedules(
+    store: &ScheduleStore<'_>,
+    app_state: &Arc<crate::AppState>,
+) -> Result<(), String> {
+    let overdue = store
+        .get_overdue_for_catchup()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if overdue.is_empty() {
+        return Ok(());
+    }
+
+    let now = chrono::Utc::now().timestamp();
+
+    for sched in overdue {
+        // Already caught up since last_run_at >= next_run_at? Skip.
+        if let (Some(last), Some(next)) = (sched.last_run_at, sched.next_run_at) {
+            if last >= next {
+                continue;
+            }
+        }
+
+        let expected_at = sched.next_run_at.unwrap_or(now);
+        tracing::info!(
+            "Scheduler catchup: scheduling {} for tenant {} (was due at {}, grace={}s)",
+            sched.agent_name,
+            sched.tenant_id,
+            expected_at,
+            sched.grace_period_seconds,
+        );
+
+        let audit = MissedRunAudit {
+            id: uuid::Uuid::new_v4().to_string(),
+            schedule_id: sched.id.clone(),
+            expected_at,
+            detected_at: now,
+            action_taken: "catchup_triggered".to_string(),
+            created_at: now,
+        };
+        if let Err(e) = store.insert_missed_run_audit(&audit).await {
+            tracing::warn!(
+                "Failed to record missed_run audit for {}: {}",
+                sched.id,
+                e
+            );
+        }
+
+        if let Err(e) = execute_scheduled_agent(&sched, app_state, true).await {
+            tracing::warn!(
+                "Catchup run failed for agent {} (tenant {}): {}",
+                sched.agent_name,
+                sched.tenant_id,
+                e
+            );
+        }
+    }
+
+    Ok(())
+}
+
 async fn execute_scheduled_agent(
     sched: &AgentSchedule,
     app_state: &Arc<crate::AppState>,
+    is_catchup: bool,
 ) -> Result<(), String> {
     use crate::agents::context_provider::AgentRuntimeContext;
     use crate::agents::tenant_agent;
@@ -112,6 +184,7 @@ async fn execute_scheduled_agent(
                 last_update: chrono::Utc::now().timestamp(),
                 tool_name: Some(format!("skill:{}", skill_id)),
                 model: None,
+                is_catchup,
             });
 
             let skill_result = app_state
@@ -236,6 +309,7 @@ async fn execute_scheduled_agent(
         last_update: chrono::Utc::now().timestamp(),
         tool_name: None,
         model: None,
+        is_catchup,
     });
 
     let result = resolved_agent

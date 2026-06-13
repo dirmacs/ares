@@ -854,6 +854,9 @@ pub async fn test_tenant_agent_handler(
         tool_name: None,
         model: None,
         is_catchup: false,
+        request_source: Some("admin_test_agent".to_string()),
+        pipeline_id: None,
+        schedule_id: None,
     });
 
     let agent_context = AgentContext {
@@ -3408,6 +3411,13 @@ pub async fn set_tenant_model_tier(
     Path((tenant_id, tier_name)): Path<(String, String)>,
     Json(req): Json<db_tiers::SetTenantModelTierRequest>,
 ) -> Result<Json<db_tiers::TenantModelTier>> {
+    if !state.provider_registry.has_provider(&req.provider_name) {
+        return Err(AppError::InvalidInput(format!(
+            "Provider '{}' not found in configuration",
+            req.provider_name
+        )));
+    }
+
     let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
     let tier = store.set(&tenant_id, &tier_name, &req).await?;
 

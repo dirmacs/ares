@@ -54,6 +54,9 @@ pub async fn execute_triggered_agent(
                 tool_name: Some(format!("skill:{}", skill_id)),
                 model: None,
                 is_catchup: false,
+                request_source: Some("trigger".to_string()),
+                pipeline_id: None,
+                schedule_id: None,
             });
 
             let skill_result = app_state
@@ -200,6 +203,9 @@ pub async fn execute_triggered_agent(
         tool_name: None,
         model: None,
         is_catchup: false,
+        request_source: Some("trigger".to_string()),
+        pipeline_id: None,
+        schedule_id: None,
     });
 
     let result = resolved_agent

@@ -92,6 +92,14 @@ impl AgentRegistry {
         self.configs.get(name)
     }
 
+    /// Get an agent configuration by name from TOML or TOON.
+    pub fn get_config_any(&self, name: &str) -> Option<AgentConfig> {
+        self.configs.get(name).cloned().or_else(|| {
+            self.get_toon_config(name)
+                .map(|toon| Self::toon_to_agent_config(&toon))
+        })
+    }
+
     /// Get TOON agent config by name
     pub fn get_toon_config(&self, name: &str) -> Option<ToonAgentConfig> {
         self.dynamic_config.as_ref().and_then(|dc| dc.agent(name))
@@ -235,30 +243,56 @@ impl AgentRegistry {
         let chain = self
             .provider_registry
             .resolve_with_fallback(&config.model, tenant_id, pool, fleet_secrets)
-            .await;
+            .await?;
+
+        let allowlist_store = ares_db::tenant_allowlist::TenantAllowlistStore::new(pool);
+        for resolved in &chain {
+            if !allowlist_store
+                .is_model_allowed(tenant_id, &resolved.model_name)
+                .await
+                .map_err(|e| AppError::Auth(format!("Failed to check model allowlist: {}", e)))?
+            {
+                return Err(AppError::Auth(format!(
+                    "Model '{}' is not allowed for this tenant",
+                    resolved.model_name
+                )));
+            }
+        }
 
         let mut iter = chain.into_iter();
-        let (primary_provider, _) = iter.next().ok_or_else(|| {
+        let primary = iter.next().ok_or_else(|| {
             AppError::Configuration(format!(
                 "No provider resolved for model/tier '{}'",
                 config.model
             ))
         })?;
 
+        let primary_provider_name = primary.provider_name.clone();
+
         let llm = self
             .provider_registry
-            .create_client_for_provider(&primary_provider)
-            .await?;
+            .create_client_for_resolved_provider(&primary)
+            .await
+            .map_err(|e| {
+                AppError::Configuration(format!(
+                    "Failed to construct primary provider '{}' for model '{}': {}",
+                    primary.provider_name, primary.model_name, e
+                ))
+            })?;
 
         let mut fallback_llms = Vec::new();
-        for (provider_name, _) in iter {
-            if let Ok(client) = self
+        for fallback in iter {
+            let client = self
                 .provider_registry
-                .create_client_for_provider(&provider_name)
+                .create_client_for_resolved_provider(&fallback)
                 .await
-            {
-                fallback_llms.push(client);
-            }
+                .map_err(|e| {
+                    AppError::Configuration(format!(
+                        "Failed to construct fallback provider '{}' for model '{}': {}",
+                        fallback.provider_name, fallback.model_name, e
+                    ))
+                })?;
+            fallback_llms.push(client);
         }
 
         let mut agent = ConfigurableAgent::new_with_provider(
@@ -266,57 +300,31 @@ impl AgentRegistry {
             config,
             llm,
             Some(Arc::clone(&self.tool_registry)),
-            primary_provider,
+            primary_provider_name,
         );
         agent.set_fallback_llms(fallback_llms);
         agent.set_token_budget_pool(pool.clone());
 
         // --- tenant allowlist enforcement ---
-        let allowlist_store = ares_db::tenant_allowlist::TenantAllowlistStore::new(pool);
-
-        // Model enforcement
-        let resolved_model = {
-            let tier_store = ares_db::tenant_model_tiers::TenantModelTierStore::new(pool);
-            if let Ok(Some(tier)) = tier_store.get(tenant_id, &config.model).await {
-                tier.model_name
-            } else if let Some(model_cfg) = self.provider_registry.get_model(&config.model) {
-                model_cfg.model.clone()
-            } else {
-                config.model.clone()
-            }
-        };
-        if !allowlist_store
-            .is_model_allowed(tenant_id, &resolved_model)
-            .await
-            .map_err(|e| AppError::Auth(format!("Failed to check model allowlist: {}", e)))?
-        {
-            return Err(AppError::Auth(format!(
-                "Model '{}' is not allowed for this tenant",
-                resolved_model
-            )));
-        }
-
         // Tool enforcement: intersect config allowed_tools with tenant allowlist.
-        // If both are absent/empty, ConfigurableAgent remains deny-by-default.
+        // Empty tenant allowlist rows mean default-deny.
         let db_tools = allowlist_store
             .list_tools(tenant_id)
             .await
             .map_err(|e| AppError::Auth(format!("Failed to check tool allowlist: {}", e)))?;
-        if !db_tools.is_empty() {
-            let db_tool_names: Vec<String> = db_tools.iter().map(|t| t.tool_name.clone()).collect();
-            let new_allowed = match agent.allowed_tools() {
-                Some(agent_tools) => {
-                    let intersect: Vec<String> = agent_tools
-                        .iter()
-                        .cloned()
-                        .filter(|t| db_tool_names.contains(t))
-                        .collect();
-                    Some(intersect)
-                }
-                None => Some(db_tool_names),
-            };
-            agent.set_allowed_tools(new_allowed);
-        }
+        let db_tool_names: Vec<String> = db_tools.iter().map(|t| t.tool_name.clone()).collect();
+        let new_allowed = match agent.allowed_tools() {
+            Some(agent_tools) => {
+                let intersect: Vec<String> = agent_tools
+                    .iter()
+                    .cloned()
+                    .filter(|t| db_tool_names.contains(t))
+                    .collect();
+                Some(intersect)
+            }
+            None => Some(db_tool_names),
+        };
+        agent.set_allowed_tools(new_allowed);
 
         Ok(agent)
     }

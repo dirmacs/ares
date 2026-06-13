@@ -1,4 +1,4 @@
--- Migration 015: Add fallback_providers to fleet_provider_secrets
+-- Migration 20250613000003: Add fallback_providers to fleet_provider_secrets
 -- Stores an ordered list of fallback provider names as JSONB.
 
 ALTER TABLE fleet_provider_secrets

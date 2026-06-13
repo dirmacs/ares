@@ -45,6 +45,26 @@ fn extract_user_collection(user_id: &str, scoped_name: &str) -> Option<String> {
     scoped_name.strip_prefix(&prefix).map(|s| s.to_string())
 }
 
+fn filter_collections_by_allowed_sources(
+    collections: Vec<crate::db::CollectionInfo>,
+    allowed_sources: &[allowlist::TenantRagAllowlistItem],
+) -> Vec<crate::db::CollectionInfo> {
+    if allowed_sources.is_empty() {
+        return Vec::new();
+    }
+
+    let allowed: std::collections::HashSet<&str> = allowed_sources
+        .iter()
+        .filter(|source| source.enabled)
+        .map(|source| source.rag_source.as_str())
+        .collect();
+
+    collections
+        .into_iter()
+        .filter(|info| allowed.contains(info.name.as_str()))
+        .collect()
+}
+
 // ============================================================================
 // Shared RAG Services
 // ============================================================================
@@ -179,7 +199,10 @@ pub async fn ingest(
     }
 
     let allowlist_store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    if !allowlist_store.is_rag_source_allowed(&claims.sub, &payload.collection).await? {
+    if !allowlist_store
+        .is_rag_source_allowed(&claims.sub, &payload.collection)
+        .await?
+    {
         return Err(AppError::Auth(format!(
             "RAG source '{}' is not allowed for this tenant",
             payload.collection
@@ -304,7 +327,10 @@ pub async fn search(
     }
 
     let allowlist_store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    if !allowlist_store.is_rag_source_allowed(&claims.sub, &payload.collection).await? {
+    if !allowlist_store
+        .is_rag_source_allowed(&claims.sub, &payload.collection)
+        .await?
+    {
         return Err(AppError::Auth(format!(
             "RAG source '{}' is not allowed for this tenant",
             payload.collection
@@ -513,7 +539,10 @@ pub async fn delete_collection(
     }
 
     let allowlist_store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    if !allowlist_store.is_rag_source_allowed(&claims.sub, &payload.collection).await? {
+    if !allowlist_store
+        .is_rag_source_allowed(&claims.sub, &payload.collection)
+        .await?
+    {
         return Err(AppError::Auth(format!(
             "RAG source '{}' is not allowed for this tenant",
             payload.collection
@@ -592,12 +621,7 @@ pub async fn list_collections(
 
     let allowlist_store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
     let db_sources = allowlist_store.list_rag_sources(&claims.sub).await?;
-    let user_collections: Vec<_> = if db_sources.is_empty() {
-        user_collections
-    } else {
-        let allowed: std::collections::HashSet<String> = db_sources.into_iter().map(|s| s.rag_source).collect();
-        user_collections.into_iter().filter(|info| allowed.contains(&info.name)).collect()
-    };
+    let user_collections = filter_collections_by_allowed_sources(user_collections, &db_sources);
 
     Ok(Json(user_collections))
 }
@@ -629,20 +653,66 @@ mod tests {
 
     #[test]
     fn test_list_collections_allowlist_filtering() {
-        let allowed: std::collections::HashSet<String> =
-            ["docs".to_string(), "wiki".to_string()].into_iter().collect();
         let collections = vec![
-            crate::db::CollectionInfo { name: "docs".into(), document_count: 1, dimensions: 384 },
-            crate::db::CollectionInfo { name: "images".into(), document_count: 2, dimensions: 384 },
-            crate::db::CollectionInfo { name: "wiki".into(), document_count: 3, dimensions: 384 },
+            crate::db::CollectionInfo {
+                name: "docs".into(),
+                document_count: 1,
+                dimensions: 384,
+            },
+            crate::db::CollectionInfo {
+                name: "images".into(),
+                document_count: 2,
+                dimensions: 384,
+            },
+            crate::db::CollectionInfo {
+                name: "wiki".into(),
+                document_count: 3,
+                dimensions: 384,
+            },
         ];
-        let filtered: Vec<_> = collections
-            .into_iter()
-            .filter(|info| allowed.contains(&info.name))
-            .collect();
+        let allowed_sources = vec![
+            allowlist::TenantRagAllowlistItem {
+                id: "allow-1".into(),
+                tenant_id: "tenant-1".into(),
+                rag_source: "docs".into(),
+                enabled: true,
+                created_at: 1,
+                updated_at: 1,
+            },
+            allowlist::TenantRagAllowlistItem {
+                id: "allow-2".into(),
+                tenant_id: "tenant-1".into(),
+                rag_source: "wiki".into(),
+                enabled: true,
+                created_at: 1,
+                updated_at: 1,
+            },
+            allowlist::TenantRagAllowlistItem {
+                id: "disabled-1".into(),
+                tenant_id: "tenant-1".into(),
+                rag_source: "images".into(),
+                enabled: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        ];
+
+        let filtered = filter_collections_by_allowed_sources(collections, &allowed_sources);
         assert_eq!(filtered.len(), 2);
         assert!(filtered.iter().any(|c| c.name == "docs"));
         assert!(filtered.iter().any(|c| c.name == "wiki"));
         assert!(!filtered.iter().any(|c| c.name == "images"));
+    }
+
+    #[test]
+    fn test_list_collections_empty_allowlist_default_denies() {
+        let collections = vec![crate::db::CollectionInfo {
+            name: "docs".into(),
+            document_count: 1,
+            dimensions: 384,
+        }];
+
+        let filtered = filter_collections_by_allowed_sources(collections, &[]);
+        assert!(filtered.is_empty());
     }
 }

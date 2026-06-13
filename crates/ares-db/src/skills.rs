@@ -245,17 +245,7 @@ impl<'a> ConnectorStore<'a> {
     }
 
     pub async fn create_connector(&self, req: &CreateConnectorRequest) -> Result<Connector> {
-        if req.name.is_empty() {
-            return Err(AppError::InvalidInput(
-                "connector name must not be empty".into(),
-            ));
-        }
-        if req.service_type.is_empty() {
-            return Err(AppError::InvalidInput(
-                "connector service_type must not be empty".into(),
-            ));
-        }
-        validate_service_type(&req.service_type)?;
+        validate_connector_request(req)?;
         let now = now_ts();
         let id = uuid::Uuid::new_v4().to_string();
 
@@ -278,6 +268,35 @@ impl<'a> ConnectorStore<'a> {
         .map_err(sqlx_err)?;
 
         row_to_connector(&row)
+    }
+
+    pub async fn update_connector(
+        &self,
+        id: &str,
+        req: &CreateConnectorRequest,
+    ) -> Result<Option<Connector>> {
+        validate_connector_request(req)?;
+        let now = now_ts();
+
+        let row = sqlx::query(
+            "UPDATE connectors SET \
+                name = $3, service_type = $4, auth_config = $5, endpoints = $6, enabled = $7, updated_at = $8 \
+             WHERE id = $1 AND tenant_id = $2 \
+             RETURNING id, tenant_id, name, service_type, auth_config, endpoints, enabled, created_at, updated_at",
+        )
+        .bind(id)
+        .bind(&req.tenant_id)
+        .bind(&req.name)
+        .bind(&req.service_type)
+        .bind(&req.auth_config)
+        .bind(&req.endpoints)
+        .bind(req.enabled)
+        .bind(now)
+        .fetch_optional(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+
+        row.map(|r| row_to_connector(&r)).transpose()
     }
 
     pub async fn delete_connector(&self, id: &str) -> Result<u64> {
@@ -354,6 +373,25 @@ fn validate_skill_type(t: &str) -> Result<()> {
     }
 }
 
+fn validate_connector_request(req: &CreateConnectorRequest) -> Result<()> {
+    if req.tenant_id.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "connector tenant_id must not be empty".into(),
+        ));
+    }
+    if req.name.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "connector name must not be empty".into(),
+        ));
+    }
+    if req.service_type.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "connector service_type must not be empty".into(),
+        ));
+    }
+    validate_service_type(&req.service_type)
+}
+
 fn validate_service_type(t: &str) -> Result<()> {
     const VALID: &[&str] = &[
         "google_drive",
@@ -363,6 +401,13 @@ fn validate_service_type(t: &str) -> Result<()> {
         "salesforce",
         "email",
         "custom",
+        "webhook",
+        "oauth2",
+        "api_key",
+        "graphql",
+        "rest",
+        "jira",
+        "github",
     ];
     if VALID.contains(&t) {
         Ok(())
@@ -490,6 +535,108 @@ mod tests {
     fn validate_service_type_accepts_known() {
         assert!(validate_service_type("slack").is_ok());
         assert!(validate_service_type("custom").is_ok());
+        assert!(validate_service_type("webhook").is_ok());
+        assert!(validate_service_type("github").is_ok());
         assert!(validate_service_type("unknown").is_err());
+    }
+
+    #[test]
+    fn validate_connector_request_requires_tenant_and_name() {
+        let mut req = CreateConnectorRequest {
+            tenant_id: "tenant-1".to_string(),
+            name: "github-main".to_string(),
+            service_type: "github".to_string(),
+            auth_config: serde_json::json!({}),
+            endpoints: serde_json::json!({}),
+            enabled: true,
+        };
+        assert!(validate_connector_request(&req).is_ok());
+        req.tenant_id.clear();
+        assert!(validate_connector_request(&req).is_err());
+        req.tenant_id = "tenant-1".to_string();
+        req.name.clear();
+        assert!(validate_connector_request(&req).is_err());
+    }
+
+    fn test_db_url() -> String {
+        if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
+            return url;
+        }
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            if url.contains("/ares") && !url.contains("ares_test") {
+                return url.replace("/ares", "/ares_test");
+            }
+            return url;
+        }
+        "postgres://postgres:postgres@localhost:5432/ares_test".into()
+    }
+
+    async fn try_test_pool() -> Option<PgPool> {
+        let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
+            .await
+            .ok()?;
+        sqlx::migrate!("../../migrations")
+            .run(&db.pool)
+            .await
+            .ok()?;
+        Some(db.pool)
+    }
+
+    #[tokio::test]
+    async fn integration_update_connector_is_tenant_scoped() {
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
+        let store = ConnectorStore::new(&pool);
+        let _ = sqlx::query("DELETE FROM connectors WHERE name LIKE 'integration-connector-%'")
+            .execute(&pool)
+            .await;
+
+        let create_req = CreateConnectorRequest {
+            tenant_id: "tenant-a".to_string(),
+            name: "integration-connector-original".to_string(),
+            service_type: "github".to_string(),
+            auth_config: serde_json::json!({"type": "api_key"}),
+            endpoints: serde_json::json!({"base_url": "https://api.github.com"}),
+            enabled: true,
+        };
+        let created = store
+            .create_connector(&create_req)
+            .await
+            .expect("create connector");
+
+        let wrong_tenant_req = CreateConnectorRequest {
+            tenant_id: "tenant-b".to_string(),
+            name: "integration-connector-wrong-tenant".to_string(),
+            service_type: "slack".to_string(),
+            auth_config: serde_json::json!({}),
+            endpoints: serde_json::json!({}),
+            enabled: false,
+        };
+        let wrong_tenant = store
+            .update_connector(&created.id, &wrong_tenant_req)
+            .await
+            .expect("wrong tenant update should not error");
+        assert!(wrong_tenant.is_none());
+
+        let update_req = CreateConnectorRequest {
+            tenant_id: "tenant-a".to_string(),
+            name: "integration-connector-updated".to_string(),
+            service_type: "slack".to_string(),
+            auth_config: serde_json::json!({"type": "oauth2"}),
+            endpoints: serde_json::json!({"base_url": "https://slack.com/api"}),
+            enabled: false,
+        };
+        let updated = store
+            .update_connector(&created.id, &update_req)
+            .await
+            .expect("update connector")
+            .expect("updated connector");
+        assert_eq!(updated.id, created.id);
+        assert_eq!(updated.tenant_id, "tenant-a");
+        assert_eq!(updated.name, "integration-connector-updated");
+        assert_eq!(updated.service_type, "slack");
+        assert!(!updated.enabled);
     }
 }

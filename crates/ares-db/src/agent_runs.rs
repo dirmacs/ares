@@ -593,6 +593,7 @@ mod tests {
     #[test]
     fn agent_run_metadata_serde_roundtrip() {
         let meta = AgentRunMetadata {
+            pipeline_id: None,
             workspace_id: Some("ws-1".into()),
             session_id: Some("sess-2".into()),
             request_source: Some("cli".into()),
@@ -990,6 +991,7 @@ mod tests {
         seed_tenant(&pool, &tenant_id).await;
 
         let metadata = AgentRunMetadata {
+            pipeline_id: None,
             workspace_id: Some("ws-42".into()),
             session_id: Some("sess-99".into()),
             request_source: Some("cli".into()),

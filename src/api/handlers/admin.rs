@@ -3712,6 +3712,35 @@ pub async fn create_connector(
     Ok(Json(connector))
 }
 
+pub async fn update_connector(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<db_skills::CreateConnectorRequest>,
+) -> Result<Json<db_skills::Connector>> {
+    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
+    let connector = store
+        .update_connector(&id, &req)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("connector {id} not found")))?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = connector.tenant_id.clone();
+    let c_name = connector.name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "connector_update",
+            "connector",
+            &c_name,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(connector))
+}
+
 pub async fn delete_connector(
     State(state): State<AppState>,
     Path(id): Path<String>,

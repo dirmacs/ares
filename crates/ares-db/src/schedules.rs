@@ -246,6 +246,16 @@ impl<'a> ScheduleStore<'a> {
         Ok(res.rows_affected())
     }
 
+    pub async fn delete_schedule_for_tenant(&self, tenant_id: &str, id: &str) -> Result<u64> {
+        let res = sqlx::query(delete_schedule_for_tenant_sql())
+            .bind(id)
+            .bind(tenant_id)
+            .execute(self.pool)
+            .await
+            .map_err(sqlx_err)?;
+        Ok(res.rows_affected())
+    }
+
     /// Return all enabled schedules whose `next_run_at` is in the past (or never set).
     pub async fn get_due_schedules(&self) -> Result<Vec<AgentSchedule>> {
         let now = now_ts();
@@ -568,6 +578,10 @@ fn insert_missed_run_audit_sql() -> &'static str {
      RETURNING id"
 }
 
+fn delete_schedule_for_tenant_sql() -> &'static str {
+    "DELETE FROM agent_schedules WHERE id = $1 AND tenant_id = $2"
+}
+
 fn row_to_schedule(row: &sqlx::postgres::PgRow) -> Result<AgentSchedule> {
     Ok(AgentSchedule {
         id: row.try_get("id").map_err(sqlx_err)?,
@@ -714,6 +728,13 @@ mod tests {
         assert!(validate_grace_period(0).is_ok());
         assert!(validate_grace_period(120).is_ok());
         assert!(validate_grace_period(-1).is_err());
+    }
+
+    #[test]
+    fn delete_schedule_for_tenant_sql_is_tenant_scoped() {
+        let sql = delete_schedule_for_tenant_sql();
+        assert!(sql.contains("id = $1"));
+        assert!(sql.contains("tenant_id = $2"));
     }
 
     #[test]

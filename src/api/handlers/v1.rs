@@ -19,6 +19,7 @@ use crate::types::{
 };
 use crate::AppState;
 use ares_agents::Agent;
+use ares_types::types::ToolDefinition;
 use axum::{
     extract::{Extension, Path, Query, State},
     http::{HeaderName, HeaderValue, StatusCode},
@@ -1127,7 +1128,7 @@ pub async fn sandbox_run_agent(
 ) -> Result<Json<serde_json::Value>> {
     let tc = extract_tenant(ctx)?;
 
-    let resolved_agent = tenant_agent::resolve_required_tenant_agent(
+    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent(
         state.tenant_db.pool(),
         &state.agent_registry,
         &tc.tenant_id,
@@ -1135,10 +1136,15 @@ pub async fn sandbox_run_agent(
         &state.fleet_secrets,
     )
     .await?;
+    resolved_agent
+        .agent
+        .set_runtime_tools(state.runtime_tool_registry.clone(), tc.tenant_id.clone());
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let started = Utc::now();
     let tools = resolved_agent.agent.get_filtered_tool_definitions();
+    let tool_trace_specs =
+        sandbox_tool_trace_specs(state.runtime_tool_registry.as_ref(), &tc.tenant_id, &tools);
     let tool_names = tools
         .iter()
         .map(|tool| tool.name.clone())
@@ -1197,7 +1203,7 @@ pub async fn sandbox_run_agent(
         &run_id,
         &tc.tenant_id,
         &name,
-        &tool_names,
+        &tool_trace_specs,
         started.timestamp(),
     ) {
         store.insert_tool_call(&call).await?;
@@ -1224,24 +1230,46 @@ pub async fn sandbox_run_agent(
     })))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SandboxToolTraceSpec {
+    name: String,
+    tool_type: String,
+}
+
+fn sandbox_tool_trace_specs(
+    runtime_registry: &ares_tools::runtime_registry::RuntimeToolRegistry,
+    tenant_id: &str,
+    tools: &[ToolDefinition],
+) -> Vec<SandboxToolTraceSpec> {
+    tools
+        .iter()
+        .map(|tool| SandboxToolTraceSpec {
+            name: tool.name.clone(),
+            tool_type: runtime_registry
+                .tool_type_for_tenant(&tool.name, Some(tenant_id))
+                .unwrap_or_else(|| "mcp".to_string()),
+        })
+        .collect()
+}
+
 fn sandbox_tool_call_requests(
     run_id: &str,
     tenant_id: &str,
     agent_name: &str,
-    tool_names: &[String],
+    tool_specs: &[SandboxToolTraceSpec],
     created_at: i64,
 ) -> Vec<LogToolCallRequest> {
-    tool_names
+    tool_specs
         .iter()
         .enumerate()
-        .map(|(idx, tool_name)| LogToolCallRequest {
+        .map(|(idx, tool)| LogToolCallRequest {
             id: uuid::Uuid::new_v4().to_string(),
             run_id: run_id.to_string(),
             tenant_id: tenant_id.to_string(),
             agent_name: agent_name.to_string(),
             step_index: idx as i32,
-            tool_name: tool_name.clone(),
-            tool_type: "mcp".to_string(),
+            tool_name: tool.name.clone(),
+            tool_type: tool.tool_type.clone(),
             arguments: serde_json::json!({ "sandbox": true }),
             result: Some(serde_json::json!({ "status": "skipped", "reason": "sandbox_mode" })),
             latency_ms: 0,
@@ -1986,12 +2014,22 @@ mod tests {
 
     #[test]
     fn sandbox_tool_call_requests_persist_skipped_trace_rows() {
-        let tool_names = vec![
-            "slack_send_message".to_string(),
-            "gmail_send_email".to_string(),
+        let tool_specs = vec![
+            SandboxToolTraceSpec {
+                name: "slack_send_message".to_string(),
+                tool_type: "mcp".to_string(),
+            },
+            SandboxToolTraceSpec {
+                name: "tenant_http_tool".to_string(),
+                tool_type: "http".to_string(),
+            },
+            SandboxToolTraceSpec {
+                name: "tenant_sql_tool".to_string(),
+                tool_type: "sql".to_string(),
+            },
         ];
-        let calls = sandbox_tool_call_requests("run-1", "tenant-1", "agent-1", &tool_names, 123);
-        assert_eq!(calls.len(), 2);
+        let calls = sandbox_tool_call_requests("run-1", "tenant-1", "agent-1", &tool_specs, 123);
+        assert_eq!(calls.len(), 3);
         assert_eq!(calls[0].run_id, "run-1");
         assert_eq!(calls[0].tenant_id, "tenant-1");
         assert_eq!(calls[0].agent_name, "agent-1");
@@ -2006,6 +2044,11 @@ mod tests {
             Some(serde_json::json!({"status":"skipped","reason":"sandbox_mode"}))
         );
         assert_eq!(calls[1].step_index, 1);
+        assert_eq!(calls[1].tool_name, "tenant_http_tool");
+        assert_eq!(calls[1].tool_type, "http");
+        assert_eq!(calls[2].step_index, 2);
+        assert_eq!(calls[2].tool_name, "tenant_sql_tool");
+        assert_eq!(calls[2].tool_type, "sql");
     }
 
     #[test]

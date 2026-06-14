@@ -385,6 +385,7 @@ async fn execute_agent(
         request_source: Some("api_chat".to_string()),
         pipeline_id: None,
         schedule_id: None,
+        trigger_id: None,
     });
 
     // Execute the agent
@@ -605,6 +606,7 @@ pub async fn chat_stream(
             request_source: Some("api_chat_stream".to_string()),
             pipeline_id: None,
             schedule_id: None,
+            trigger_id: None,
         });
         let start_event = stream_start_event(&agent_type, &context_id_clone);
         yield Ok(Event::default().data(serde_json::to_string(&start_event).unwrap_or_default()));

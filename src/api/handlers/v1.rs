@@ -503,6 +503,7 @@ pub async fn v1_chat(
             eruka_write_count: 0,
             pipeline_id: None,
             schedule_id: None,
+            trigger_id: None,
         };
         tokio::spawn(async move {
             let _ = agent_runs::insert_agent_run_with_metadata(
@@ -725,6 +726,7 @@ pub async fn run_agent(
                 request_source: Some("api_v1_agent_run".to_string()),
                 pipeline_id: None,
                 schedule_id: None,
+                trigger_id: None,
             });
             let skill_result = state
                 .skill_engine
@@ -757,6 +759,7 @@ pub async fn run_agent(
                     eruka_write_count: 0,
                     pipeline_id: None,
                     schedule_id: None,
+                    trigger_id: None,
                 };
                 let status = if skill_result.is_ok() {
                     "completed"
@@ -898,6 +901,7 @@ pub async fn run_agent(
         request_source: Some("api_v1_agent_run".to_string()),
         pipeline_id: None,
         schedule_id: None,
+        trigger_id: None,
     });
     let result = resolved_agent
         .agent
@@ -958,6 +962,7 @@ pub async fn run_agent(
                     eruka_write_count: 0,
                     pipeline_id: None,
                     schedule_id: None,
+                    trigger_id: None,
                 };
                 tokio::spawn(async move {
                     let _ = agent_runs::insert_agent_run_with_id_and_metadata(
@@ -1045,6 +1050,7 @@ pub async fn run_agent(
                     eruka_write_count: 0,
                     pipeline_id: None,
                     schedule_id: None,
+                    trigger_id: None,
                 };
                 let run_id_for_insert = run_id.clone();
                 tokio::spawn(async move {
@@ -1155,6 +1161,7 @@ pub async fn sandbox_run_agent(
         eruka_write_count: 0,
         pipeline_id: None,
         schedule_id: None,
+        trigger_id: None,
     };
     agent_runs::insert_agent_run_with_id_and_metadata(
         state.tenant_db.pool(),
@@ -2071,6 +2078,7 @@ mod tests {
             eruka_write_count: 0,
             pipeline_id: None,
             schedule_id: None,
+            trigger_id: None,
         };
         let v1 = agent_run_row_to_v1(row);
         assert_eq!(v1.id, "run-1");

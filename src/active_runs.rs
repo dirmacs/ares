@@ -20,6 +20,7 @@ pub struct ActiveRun {
     pub request_source: Option<String>,
     pub pipeline_id: Option<String>,
     pub schedule_id: Option<String>,
+    pub trigger_id: Option<String>,
 }
 
 /// Thread-safe registry of in-progress agent runs.

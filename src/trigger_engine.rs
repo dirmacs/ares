@@ -163,10 +163,13 @@ pub async fn execute_triggered_agent(
 
             if let Ok(val) = &skill_result {
                 let output_str = serde_json::to_string(val).unwrap_or_default();
-                let _ = crate::pipeline_engine::execute_pipeline(
+                let _ = crate::pipeline_engine::execute_pipeline_with_origin(
                     &trigger.target_agent,
                     &output_str,
                     &trigger.tenant_id,
+                    Some(crate::pipeline_engine::PipelineOrigin::trigger(
+                        trigger.id.clone(),
+                    )),
                     app_state,
                 )
                 .await;
@@ -272,10 +275,13 @@ pub async fn execute_triggered_agent(
                 .update_model(&run_id, Some(&model_name));
             app_state.active_runs.finish(&run_id, "completed");
 
-            let _ = crate::pipeline_engine::execute_pipeline(
+            let _ = crate::pipeline_engine::execute_pipeline_with_origin(
                 &trigger.target_agent,
                 &response.content,
                 &trigger.tenant_id,
+                Some(crate::pipeline_engine::PipelineOrigin::trigger(
+                    trigger.id.clone(),
+                )),
                 app_state,
             )
             .await;

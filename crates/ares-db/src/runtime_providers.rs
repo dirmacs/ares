@@ -14,7 +14,6 @@
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
-use std::collections::HashMap;
 
 // =============================================================================
 // Structs
@@ -100,7 +99,28 @@ impl<'a> RuntimeProviderStore<'a> {
             .await
         };
 
-        rows.map_err(sqlx_err)?.iter().map(row_to_runtime_provider).collect()
+        rows.map_err(sqlx_err)?
+            .iter()
+            .map(row_to_runtime_provider)
+            .collect()
+    }
+
+    /// List every runtime provider, including tenant-scoped rows.
+    pub async fn list_all(&self) -> Result<Vec<RuntimeProvider>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, tenant_id, name, display_name, provider_type, api_base,
+                   auth_type, default_model, headers, request_transform,
+                   response_transform, enabled, created_at, updated_at
+            FROM runtime_providers
+            ORDER BY name
+            "#,
+        )
+        .fetch_all(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+
+        rows.iter().map(row_to_runtime_provider).collect()
     }
 
     /// Get a single runtime provider by its unique name.
@@ -289,10 +309,65 @@ mod tests {
         let list = store.list(None).await.expect("list should succeed");
         assert!(list.iter().any(|p| p.name == "test_azure"));
 
-        let deleted = store.delete("test_azure").await.expect("delete should succeed");
+        let deleted = store
+            .delete("test_azure")
+            .await
+            .expect("delete should succeed");
         assert_eq!(deleted, 1);
 
-        let after_delete = store.get("test_azure").await.expect("get after delete should succeed");
+        let after_delete = store
+            .get("test_azure")
+            .await
+            .expect("get after delete should succeed");
         assert!(after_delete.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_all_includes_global_and_tenant_scoped_providers() {
+        let pool = create_test_pool().await;
+        let store = RuntimeProviderStore::new(&pool);
+        let _ = store.delete("test_global_provider").await;
+        let _ = store.delete("test_tenant_provider").await;
+
+        let global = CreateRuntimeProviderRequest {
+            tenant_id: None,
+            name: "test_global_provider".to_string(),
+            display_name: "Global Provider".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://global.example.com".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("global-model".to_string()),
+            headers: None,
+            request_transform: None,
+            response_transform: None,
+            enabled: Some(true),
+        };
+        let tenant = CreateRuntimeProviderRequest {
+            tenant_id: Some("tenant-a".to_string()),
+            name: "test_tenant_provider".to_string(),
+            display_name: "Tenant Provider".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://tenant.example.com".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("tenant-model".to_string()),
+            headers: None,
+            request_transform: None,
+            response_transform: None,
+            enabled: Some(true),
+        };
+
+        store.upsert(&global).await.expect("global upsert");
+        store.upsert(&tenant).await.expect("tenant upsert");
+
+        let global_only = store.list(None).await.expect("global list");
+        assert!(global_only.iter().any(|p| p.name == "test_global_provider"));
+        assert!(!global_only.iter().any(|p| p.name == "test_tenant_provider"));
+
+        let all = store.list_all().await.expect("list all");
+        assert!(all.iter().any(|p| p.name == "test_global_provider"));
+        assert!(all.iter().any(|p| p.name == "test_tenant_provider"));
+
+        let _ = store.delete("test_global_provider").await;
+        let _ = store.delete("test_tenant_provider").await;
     }
 }

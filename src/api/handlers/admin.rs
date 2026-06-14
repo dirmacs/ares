@@ -2287,6 +2287,40 @@ mod tests {
         assert_eq!(json["enabled"], true);
         assert_eq!(json["created_at"], 1_700_000_000);
     }
+
+    #[test]
+    fn runtime_provider_entry_headers_resolve_api_key_env() {
+        let env_name = "ARES_TEST_RUNTIME_PROVIDER_API_KEY";
+        std::env::set_var(env_name, "resolved-test-key");
+        let headers = serde_json::json!({
+            "api_key_env": env_name,
+            "api-version": "2024-02-01"
+        });
+
+        let (headers, api_key) = runtime_provider_entry_headers_and_key(Some(&headers));
+
+        std::env::remove_var(env_name);
+        assert_eq!(api_key.as_deref(), Some("resolved-test-key"));
+        assert_eq!(
+            headers.get("api-version").map(String::as_str),
+            Some("2024-02-01")
+        );
+        assert!(!headers.contains_key("api_key_env"));
+    }
+
+    #[test]
+    fn runtime_provider_entry_headers_accept_direct_api_key() {
+        let headers = serde_json::json!({
+            "api_key": "direct-test-key",
+            "region": "us-east-1"
+        });
+
+        let (headers, api_key) = runtime_provider_entry_headers_and_key(Some(&headers));
+
+        assert_eq!(api_key.as_deref(), Some("direct-test-key"));
+        assert_eq!(headers.get("region").map(String::as_str), Some("us-east-1"));
+        assert!(!headers.contains_key("api_key"));
+    }
 }
 
 pub async fn get_agent_stats_handler(
@@ -3224,27 +3258,12 @@ impl From<ares_db::runtime_providers::RuntimeProvider> for RuntimeProviderRespon
 
 pub async fn reload_runtime_provider_registry(state: &AppState) -> Result<()> {
     let store = RuntimeProviderStore::new(state.tenant_db.pool());
-    let providers = store.list(None).await?;
+    let providers = store.list_all().await?;
     let mut entries = Vec::with_capacity(providers.len());
     let mut names = Vec::with_capacity(providers.len());
 
     for provider in providers {
-        let mut headers = provider
-            .headers
-            .as_ref()
-            .and_then(|value| value.as_object())
-            .map(|object| {
-                object
-                    .iter()
-                    .filter_map(|(key, value)| {
-                        value.as_str().map(|value| (key.clone(), value.to_string()))
-                    })
-                    .collect::<HashMap<_, _>>()
-            })
-            .unwrap_or_default();
-        let api_key = headers
-            .remove("api_key_env")
-            .or_else(|| headers.remove("api_key"));
+        let (headers, api_key) = runtime_provider_entry_headers_and_key(provider.headers.as_ref());
 
         names.push(provider.name);
         entries.push(RuntimeProviderEntry {
@@ -3265,12 +3284,40 @@ pub async fn reload_runtime_provider_registry(state: &AppState) -> Result<()> {
     Ok(())
 }
 
+fn runtime_provider_entry_headers_and_key(
+    headers: Option<&serde_json::Value>,
+) -> (HashMap<String, String>, Option<String>) {
+    let mut headers = headers
+        .and_then(|value| value.as_object())
+        .map(|object| {
+            object
+                .iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let api_key = runtime_provider_api_key(&mut headers);
+    (headers, api_key)
+}
+
+fn runtime_provider_api_key(headers: &mut HashMap<String, String>) -> Option<String> {
+    if let Some(env_name) = headers.remove("api_key_env") {
+        return std::env::var(env_name)
+            .ok()
+            .filter(|value| !value.is_empty());
+    }
+
+    headers.remove("api_key").filter(|value| !value.is_empty())
+}
+
 /// List all runtime providers (global / tenant-scoped).
 pub async fn list_runtime_providers(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<RuntimeProviderResponse>>> {
     let store = RuntimeProviderStore::new(state.tenant_db.pool());
-    let providers = store.list(None).await?;
+    let providers = store.list_all().await?;
     let response: Vec<RuntimeProviderResponse> = providers.into_iter().map(|p| p.into()).collect();
     tracing::info!("Listed {} runtime providers", response.len());
     Ok(Json(response))

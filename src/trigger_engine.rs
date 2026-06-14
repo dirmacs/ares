@@ -166,6 +166,10 @@ pub async fn execute_triggered_agent(
         pool: pool.clone(),
     });
     resolved_agent.agent.set_observability(obs.clone());
+    resolved_agent.agent.set_runtime_tools(
+        app_state.runtime_tool_registry.clone(),
+        trigger.tenant_id.clone(),
+    );
 
     let mut runtime_context = AgentRuntimeContext::new(
         trigger.tenant_id.clone(),

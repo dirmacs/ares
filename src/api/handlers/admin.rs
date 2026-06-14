@@ -2289,6 +2289,51 @@ mod tests {
     }
 
     #[test]
+    fn runtime_provider_response_redacts_direct_api_key() {
+        let provider = ares_db::runtime_providers::RuntimeProvider {
+            id: "test-id".into(),
+            tenant_id: None,
+            name: "test-provider".into(),
+            display_name: "Test Provider".into(),
+            provider_type: "openai-compatible".into(),
+            api_base: "https://api.openai.com".into(),
+            auth_type: "api_key".into(),
+            default_model: Some("gpt-4".into()),
+            headers: Some(serde_json::json!({
+                "api_key": "secret-key",
+                "region": "us-east-1"
+            })),
+            request_transform: None,
+            response_transform: None,
+            enabled: true,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_001,
+        };
+
+        let response = RuntimeProviderResponse::from(provider);
+        let headers = response.headers.expect("headers");
+
+        assert_eq!(headers["api_key"], RUNTIME_PROVIDER_SECRET_REDACTION);
+        assert_eq!(headers["region"], "us-east-1");
+    }
+
+    #[test]
+    fn runtime_provider_detects_redacted_api_key() {
+        let headers = serde_json::json!({
+            "api_key": RUNTIME_PROVIDER_SECRET_REDACTION,
+            "region": "us-east-1"
+        });
+
+        assert!(runtime_provider_headers_have_redacted_api_key(Some(
+            &headers
+        )));
+        assert_eq!(
+            runtime_provider_header_value(Some(&headers), "api_key").as_deref(),
+            Some(RUNTIME_PROVIDER_SECRET_REDACTION)
+        );
+    }
+
+    #[test]
     fn runtime_provider_entry_headers_resolve_api_key_env() {
         let env_name = "ARES_TEST_RUNTIME_PROVIDER_API_KEY";
         std::env::set_var(env_name, "resolved-test-key");
@@ -3217,6 +3262,8 @@ pub async fn rollback_runtime_tool(
 
 use ares_db::runtime_providers::{CreateRuntimeProviderRequest, RuntimeProviderStore};
 
+const RUNTIME_PROVIDER_SECRET_REDACTION: &str = "********";
+
 #[derive(Debug, Serialize)]
 pub struct RuntimeProviderResponse {
     pub id: String,
@@ -3246,7 +3293,7 @@ impl From<ares_db::runtime_providers::RuntimeProvider> for RuntimeProviderRespon
             api_base: p.api_base,
             auth_type: p.auth_type,
             default_model: p.default_model,
-            headers: p.headers,
+            headers: redact_runtime_provider_headers(p.headers),
             request_transform: p.request_transform,
             response_transform: p.response_transform,
             enabled: p.enabled,
@@ -3282,6 +3329,70 @@ pub async fn reload_runtime_provider_registry(state: &AppState) -> Result<()> {
         .provider_registry
         .reload_runtime_providers(entries, names);
     Ok(())
+}
+
+fn redact_runtime_provider_headers(
+    headers: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let mut headers = headers?;
+    if let Some(object) = headers.as_object_mut() {
+        if object.contains_key("api_key") {
+            object.insert(
+                "api_key".to_string(),
+                serde_json::Value::String(RUNTIME_PROVIDER_SECRET_REDACTION.to_string()),
+            );
+        }
+    }
+    Some(headers)
+}
+
+async fn preserve_redacted_runtime_provider_secret(
+    store: &RuntimeProviderStore<'_>,
+    req: &mut CreateRuntimeProviderRequest,
+) -> Result<()> {
+    if !runtime_provider_headers_have_redacted_api_key(req.headers.as_ref()) {
+        return Ok(());
+    }
+
+    let Some(existing) = store.get(&req.name).await? else {
+        return Err(AppError::InvalidInput(
+            "runtime provider api_key is redacted but no existing provider secret was found".into(),
+        ));
+    };
+    let Some(existing_api_key) =
+        runtime_provider_header_value(existing.headers.as_ref(), "api_key")
+    else {
+        return Err(AppError::InvalidInput(
+            "runtime provider api_key is redacted but existing provider has no direct api_key"
+                .into(),
+        ));
+    };
+
+    if let Some(headers) = req
+        .headers
+        .as_mut()
+        .and_then(|headers| headers.as_object_mut())
+    {
+        headers.insert(
+            "api_key".to_string(),
+            serde_json::Value::String(existing_api_key),
+        );
+    }
+    Ok(())
+}
+
+fn runtime_provider_headers_have_redacted_api_key(headers: Option<&serde_json::Value>) -> bool {
+    runtime_provider_header_value(headers, "api_key").as_deref()
+        == Some(RUNTIME_PROVIDER_SECRET_REDACTION)
+}
+
+fn runtime_provider_header_value(headers: Option<&serde_json::Value>, key: &str) -> Option<String> {
+    headers
+        .and_then(|headers| headers.as_object())
+        .and_then(|headers| headers.get(key))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .filter(|value| !value.is_empty())
 }
 
 fn runtime_provider_entry_headers_and_key(
@@ -3340,9 +3451,10 @@ pub async fn get_runtime_provider(
 /// Create or update a runtime provider.
 pub async fn upsert_runtime_provider(
     State(state): State<AppState>,
-    Json(req): Json<CreateRuntimeProviderRequest>,
+    Json(mut req): Json<CreateRuntimeProviderRequest>,
 ) -> Result<Json<RuntimeProviderResponse>> {
     let store = RuntimeProviderStore::new(state.tenant_db.pool());
+    preserve_redacted_runtime_provider_secret(&store, &mut req).await?;
     let provider = store.upsert(&req).await?;
     reload_runtime_provider_registry(&state).await?;
     tracing::info!("Upserted runtime provider {}", provider.name);

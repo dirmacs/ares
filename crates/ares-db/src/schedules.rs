@@ -116,7 +116,7 @@ pub struct CreateTriggerRequest {
     pub enabled: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CreatePipelineRequest {
     pub tenant_id: String,
     pub source_agent: String,
@@ -492,16 +492,7 @@ impl<'a> PipelineStore<'a> {
     }
 
     pub async fn create_pipeline(&self, req: &CreatePipelineRequest) -> Result<AgentPipeline> {
-        if req.source_agent.is_empty() {
-            return Err(AppError::InvalidInput(
-                "source_agent must not be empty".into(),
-            ));
-        }
-        if req.target_agent.is_empty() {
-            return Err(AppError::InvalidInput(
-                "target_agent must not be empty".into(),
-            ));
-        }
+        validate_pipeline_request(req)?;
         let now = now_ts();
         let id = uuid::Uuid::new_v4().to_string();
 
@@ -523,6 +514,31 @@ impl<'a> PipelineStore<'a> {
         .map_err(sqlx_err)?;
 
         row_to_pipeline(&row)
+    }
+
+    pub async fn update_pipeline(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        req: &CreatePipelineRequest,
+    ) -> Result<Option<AgentPipeline>> {
+        let mut req = req.clone();
+        req.tenant_id = tenant_id.to_string();
+        validate_pipeline_request(&req)?;
+        let now = now_ts();
+        let row = sqlx::query(update_pipeline_sql())
+            .bind(tenant_id)
+            .bind(id)
+            .bind(&req.source_agent)
+            .bind(&req.target_agent)
+            .bind(&req.condition)
+            .bind(req.enabled)
+            .bind(now)
+            .fetch_optional(self.pool)
+            .await
+            .map_err(sqlx_err)?;
+
+        row.map(|row| row_to_pipeline(&row)).transpose()
     }
 
     pub async fn delete_pipeline(&self, id: &str) -> Result<u64> {
@@ -580,6 +596,30 @@ fn insert_missed_run_audit_sql() -> &'static str {
 
 fn delete_schedule_for_tenant_sql() -> &'static str {
     "DELETE FROM agent_schedules WHERE id = $1 AND tenant_id = $2"
+}
+
+fn validate_pipeline_request(req: &CreatePipelineRequest) -> Result<()> {
+    if req.tenant_id.is_empty() {
+        return Err(AppError::InvalidInput("tenant_id must not be empty".into()));
+    }
+    if req.source_agent.is_empty() {
+        return Err(AppError::InvalidInput(
+            "source_agent must not be empty".into(),
+        ));
+    }
+    if req.target_agent.is_empty() {
+        return Err(AppError::InvalidInput(
+            "target_agent must not be empty".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn update_pipeline_sql() -> &'static str {
+    "UPDATE agent_pipelines SET \
+        source_agent = $3, target_agent = $4, condition = $5, enabled = $6, updated_at = $7 \
+     WHERE tenant_id = $1 AND id = $2 \
+     RETURNING id, tenant_id, source_agent, target_agent, condition, enabled, created_at, updated_at"
 }
 
 fn row_to_schedule(row: &sqlx::postgres::PgRow) -> Result<AgentSchedule> {
@@ -728,6 +768,13 @@ mod tests {
         assert!(validate_grace_period(0).is_ok());
         assert!(validate_grace_period(120).is_ok());
         assert!(validate_grace_period(-1).is_err());
+    }
+
+    #[test]
+    fn update_pipeline_sql_is_tenant_scoped() {
+        let sql = update_pipeline_sql();
+        assert!(sql.contains("tenant_id = $1"));
+        assert!(sql.contains("id = $2"));
     }
 
     #[test]

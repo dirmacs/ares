@@ -1622,6 +1622,20 @@ mod tests {
     }
 
     #[test]
+    fn required_skill_tenant_id_rejects_missing_or_blank() {
+        let missing = HashMap::new();
+        assert!(required_skill_tenant_id(&missing).is_err());
+
+        let mut blank = HashMap::new();
+        blank.insert("tenant_id".to_string(), "  ".to_string());
+        assert!(required_skill_tenant_id(&blank).is_err());
+
+        let mut present = HashMap::new();
+        present.insert("tenant_id".to_string(), " tenant-a ".to_string());
+        assert_eq!(required_skill_tenant_id(&present).unwrap(), "tenant-a");
+    }
+
+    #[test]
     fn run_skill_request_requires_explicit_tenant_id() {
         let err = serde_json::from_value::<RunSkillRequest>(serde_json::json!({
             "skill_id": "skill-1",
@@ -3956,19 +3970,21 @@ pub async fn list_skills(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<db_skills::Skill>>> {
-    let tenant_id = params.get("tenant_id").map(|s| s.as_str());
+    let tenant_id = required_skill_tenant_id(&params)?.to_string();
     let store = db_skills::SkillStore::new(state.tenant_db.pool());
-    let skills = store.list_skills(tenant_id).await?;
+    let skills = store.list_skills(Some(&tenant_id)).await?;
     Ok(Json(skills))
 }
 
 pub async fn get_skill(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<db_skills::Skill>> {
+    let tenant_id = required_skill_tenant_id(&params)?.to_string();
     let store = db_skills::SkillStore::new(state.tenant_db.pool());
     let skill = store
-        .get_skill(&id)
+        .get_skill_for_tenant(&id, &tenant_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("skill {id} not found")))?;
     Ok(Json(skill))
@@ -3998,6 +4014,7 @@ pub async fn update_skill(
     Path(id): Path<String>,
     Json(req): Json<db_skills::CreateSkillRequest>,
 ) -> Result<Json<db_skills::Skill>> {
+    normalized_skill_tenant_id(&req.tenant_id)?;
     let store = db_skills::SkillStore::new(state.tenant_db.pool());
     let skill = store
         .update_skill(&id, &req)
@@ -4019,20 +4036,42 @@ pub async fn update_skill(
 pub async fn delete_skill(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<StatusCode> {
+    let tenant_id = required_skill_tenant_id(&params)?.to_string();
     let store = db_skills::SkillStore::new(state.tenant_db.pool());
-    let rows = store.delete_skill(&id).await?;
+    let rows = store.delete_skill_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!("skill {id} not found")));
     }
 
     let pool = state.tenant_db.pool().clone();
     let sid = id.clone();
+    let t_id = tenant_id.clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "skill_delete", "skill", &sid, None, None).await;
+        let _ =
+            audit_log::log_admin_action(&pool, "skill_delete", "skill", &sid, Some(&t_id), None)
+                .await;
     });
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn required_skill_tenant_id(params: &HashMap<String, String>) -> Result<&str> {
+    params
+        .get("tenant_id")
+        .map(String::as_str)
+        .ok_or_else(|| AppError::InvalidInput("tenant_id is required".into()))
+        .and_then(normalized_skill_tenant_id)
+}
+
+fn normalized_skill_tenant_id(tenant_id: &str) -> Result<&str> {
+    let trimmed = tenant_id.trim();
+    if trimmed.is_empty() {
+        Err(AppError::InvalidInput("tenant_id must not be empty".into()))
+    } else {
+        Ok(trimmed)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -4046,12 +4085,7 @@ const ADMIN_SKILL_RUN_SOURCE: &str = "admin_skill_run";
 const ADMIN_SKILL_CONFIG_SOURCE: &str = "admin_skill";
 
 fn normalized_run_skill_tenant_id(tenant_id: &str) -> Result<&str> {
-    let trimmed = tenant_id.trim();
-    if trimmed.is_empty() {
-        Err(AppError::InvalidInput("tenant_id must not be empty".into()))
-    } else {
-        Ok(trimmed)
-    }
+    normalized_skill_tenant_id(tenant_id)
 }
 
 fn admin_skill_agent_name(skill_id: &str) -> String {

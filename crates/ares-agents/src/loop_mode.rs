@@ -128,9 +128,8 @@ pub enum LoopFinishReason {
 }
 
 /// Boxed async tick function: returns Ok(()) on success, Err on failure.
-pub type TickFn = Box<
-    dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync,
->;
+pub type TickFn =
+    Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
 /// Runtime scheduler that drives an iteration-mode agent.
 pub struct LoopRunner {
@@ -153,11 +152,24 @@ impl LoopRunner {
     }
 
     pub async fn run(&mut self, tick: &TickFn) -> LoopFinishReason {
+        self.run_with_state_observer(tick, |_| async {}).await
+    }
+
+    pub async fn run_with_state_observer<F, Fut>(
+        &mut self,
+        tick: &TickFn,
+        mut observe: F,
+    ) -> LoopFinishReason
+    where
+        F: FnMut(LoopModeState) -> Fut,
+        Fut: Future<Output = ()>,
+    {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         self.state.started_at_epoch_secs = now;
+        observe(self.state.clone()).await;
 
         let mut interval = tokio::time::interval(self.config.interval());
         interval.tick().await; // first tick fires immediately
@@ -176,6 +188,7 @@ impl LoopRunner {
                 Ok(()) => self.state.record_success(now),
                 Err(_) => self.state.record_failure(now),
             }
+            observe(self.state.clone()).await;
 
             if let Some(reason) = self.state.should_halt(&self.config) {
                 return reason;
@@ -320,6 +333,36 @@ mod tests {
         let reason = runner.run(&tick).await;
         assert_eq!(reason, LoopFinishReason::MaxIterationsReached);
         assert_eq!(runner.state.iterations_run, 3);
+    }
+
+    #[tokio::test]
+    async fn loop_runner_observes_started_and_tick_state() {
+        let config = LoopModeConfig {
+            interval_secs: 0,
+            max_iterations: Some(2),
+            halt_on_consecutive_failures: 999,
+            ..LoopModeConfig::default()
+        };
+        let mut runner = LoopRunner::new(config);
+        let observed = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let observed_for_callback = observed.clone();
+        let tick: TickFn = Box::new(|| Box::pin(async { Ok(()) }));
+
+        let reason = runner
+            .run_with_state_observer(&tick, move |state| {
+                let observed = observed_for_callback.clone();
+                async move {
+                    observed.lock().await.push(state);
+                }
+            })
+            .await;
+
+        assert_eq!(reason, LoopFinishReason::MaxIterationsReached);
+        let snapshots = observed.lock().await;
+        assert!(snapshots[0].started_at_epoch_secs > 0);
+        assert_eq!(snapshots[0].iterations_run, 0);
+        assert_eq!(snapshots[1].iterations_run, 1);
+        assert_eq!(snapshots[2].iterations_run, 2);
     }
 
     #[tokio::test]

@@ -4966,6 +4966,15 @@ pub async fn delete_schedule(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn update_tenant_schedule(
+    State(state): State<AppState>,
+    Path((tenant_id, id)): Path<(String, String)>,
+    Json(mut req): Json<db_schedules::CreateScheduleRequest>,
+) -> Result<Json<db_schedules::AgentSchedule>> {
+    req.tenant_id = tenant_id.clone();
+    update_schedule(State(state), Path(id), Json(req)).await
+}
+
 pub async fn delete_tenant_schedule(
     State(state): State<AppState>,
     Path((tenant_id, id)): Path<(String, String)>,

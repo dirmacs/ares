@@ -4665,6 +4665,36 @@ pub async fn delete_schedule(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn delete_tenant_schedule(
+    State(state): State<AppState>,
+    Path((tenant_id, id)): Path<(String, String)>,
+) -> Result<StatusCode> {
+    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
+    let rows = store.delete_schedule_for_tenant(&tenant_id, &id).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!(
+            "schedule {id} not found for tenant {tenant_id}"
+        )));
+    }
+
+    let pool = state.tenant_db.pool().clone();
+    let sid = id.clone();
+    let t_id = tenant_id.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "schedule_delete",
+            "agent_schedule",
+            &sid,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // =============================================================================
 // Event Triggers
 // =============================================================================

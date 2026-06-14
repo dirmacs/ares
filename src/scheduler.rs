@@ -7,6 +7,7 @@ use ares_db::agent_runs::{self, AgentRunMetadata};
 use ares_db::schedules::{compute_next_run, AgentSchedule, MissedRunAudit, ScheduleStore};
 use ares_types::types::AgentContext;
 use sqlx::PgPool;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
@@ -44,12 +45,23 @@ async fn run_due_schedules(pool: &PgPool, app_state: &Arc<crate::AppState>) -> R
     let store = ScheduleStore::new(pool);
 
     // 1. First, handle catch-up for schedules that are past their grace window.
-    if let Err(e) = run_catchup_schedules(&store, app_state).await {
-        tracing::warn!("Scheduler catchup failed: {}", e);
-    }
+    let catchup_attempted = match run_catchup_schedules(&store, app_state).await {
+        Ok(ids) => ids.into_iter().collect::<HashSet<_>>(),
+        Err(e) => {
+            tracing::warn!("Scheduler catchup failed: {}", e);
+            HashSet::new()
+        }
+    };
 
-    // 2. Then, run normally scheduled agents
+    // 2. Then, run normally scheduled agents.  A schedule that already had its
+    // missed slot attempted as catch-up in this tick must not be run again as a
+    // normal due schedule before the next scheduler tick.
     let due = store.get_due_schedules().await.map_err(|e| e.to_string())?;
+    let due = if catchup_attempted.is_empty() {
+        due
+    } else {
+        skip_catchup_attempted_due_schedules(due, &catchup_attempted)
+    };
     for sched in due {
         tracing::info!(
             "Scheduler: running agent {} for tenant {}",
@@ -88,14 +100,15 @@ async fn run_due_schedules(pool: &PgPool, app_state: &Arc<crate::AppState>) -> R
 async fn run_catchup_schedules(
     store: &ScheduleStore<'_>,
     app_state: &Arc<crate::AppState>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
+    let mut attempted = Vec::new();
     let overdue = store
         .get_overdue_for_catchup()
         .await
         .map_err(|e| e.to_string())?;
 
     if overdue.is_empty() {
-        return Ok(());
+        return Ok(attempted);
     }
 
     let now = chrono::Utc::now().timestamp();
@@ -126,7 +139,7 @@ async fn run_catchup_schedules(
             created_at: now,
         };
         match store.insert_missed_run_audit(&audit).await {
-            Ok(true) => {}
+            Ok(true) => attempted.push(sched.id.clone()),
             Ok(false) => continue,
             Err(e) => {
                 tracing::warn!("Failed to record missed_run audit for {}: {}", sched.id, e);
@@ -164,7 +177,16 @@ async fn run_catchup_schedules(
         }
     }
 
-    Ok(())
+    Ok(attempted)
+}
+
+fn skip_catchup_attempted_due_schedules(
+    due: Vec<AgentSchedule>,
+    catchup_attempted: &HashSet<String>,
+) -> Vec<AgentSchedule> {
+    due.into_iter()
+        .filter(|sched| !catchup_attempted.contains(&sched.id))
+        .collect()
 }
 
 async fn execute_scheduled_agent(
@@ -573,10 +595,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn scheduled_agent_success_prepares_downstream_pipeline_execution_and_billing() {
-        let schedule = AgentSchedule {
-            id: "schedule-1".to_string(),
+    fn schedule(id: &str) -> AgentSchedule {
+        AgentSchedule {
+            id: id.to_string(),
             tenant_id: "tenant-a".to_string(),
             agent_name: "source-agent".to_string(),
             cron_expression: "* * * * * *".to_string(),
@@ -587,7 +608,23 @@ mod tests {
             grace_period_seconds: 120,
             created_at: 1_700_000_000,
             updated_at: 1_700_000_000,
-        };
+        }
+    }
+
+    #[test]
+    fn skip_catchup_attempted_due_schedules_removes_same_tick_attempts() {
+        let due = vec![schedule("schedule-1"), schedule("schedule-2")];
+        let catchup_attempted = HashSet::from(["schedule-1".to_string()]);
+
+        let pending = skip_catchup_attempted_due_schedules(due, &catchup_attempted);
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "schedule-2");
+    }
+
+    #[test]
+    fn scheduled_agent_success_prepares_downstream_pipeline_execution_and_billing() {
+        let schedule = schedule("schedule-1");
         let source_output = r#"{"status":"success","result":"ready"}"#;
         let trigger = scheduled_pipeline_trigger(&schedule, source_output);
         let pipeline = AgentPipeline {

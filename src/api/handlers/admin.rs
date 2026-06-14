@@ -881,6 +881,7 @@ pub async fn test_tenant_agent_handler(
         pool: state.tenant_db.pool().clone(),
     });
     draft_agent.set_observability(obs.clone());
+    draft_agent.set_runtime_tools(state.runtime_tool_registry.clone(), tenant_id.clone());
     draft_agent.set_run_id(run_id.clone());
 
     state.active_runs.start(crate::active_runs::ActiveRun {
@@ -1557,6 +1558,13 @@ mod tests {
 
         assert!(err.contains("invalid execution_config"));
         assert!(err.contains("Invalid HTTP tool config"));
+    }
+
+    #[test]
+    fn draft_test_agent_runtime_tools_must_be_attached() {
+        let source = include_str!("admin.rs");
+        assert!(source.contains("draft_agent.set_runtime_tools("));
+        assert!(source.contains("state.runtime_tool_registry.clone()"));
     }
 
     #[tokio::test]

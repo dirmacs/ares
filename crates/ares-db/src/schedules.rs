@@ -280,26 +280,17 @@ impl<'a> ScheduleStore<'a> {
     }
 
     pub async fn insert_missed_run_audit(&self, audit: &MissedRunAudit) -> Result<bool> {
-        let inserted = sqlx::query(
-            "INSERT INTO missed_runs \
-                (id, schedule_id, expected_at, detected_at, action_taken, created_at) \
-             SELECT $1, $2, $3, $4, $5, $6 \
-             WHERE NOT EXISTS ( \
-                 SELECT 1 FROM missed_runs \
-                 WHERE schedule_id = $2 AND expected_at = $3 \
-             ) \
-             RETURNING id",
-        )
-        .bind(&audit.id)
-        .bind(&audit.schedule_id)
-        .bind(audit.expected_at)
-        .bind(audit.detected_at)
-        .bind(&audit.action_taken)
-        .bind(audit.created_at)
-        .fetch_optional(self.pool)
-        .await
-        .map_err(sqlx_err)?
-        .is_some();
+        let inserted = sqlx::query(insert_missed_run_audit_sql())
+            .bind(&audit.id)
+            .bind(&audit.schedule_id)
+            .bind(audit.expected_at)
+            .bind(audit.detected_at)
+            .bind(&audit.action_taken)
+            .bind(audit.created_at)
+            .fetch_optional(self.pool)
+            .await
+            .map_err(sqlx_err)?
+            .is_some();
         Ok(inserted)
     }
 
@@ -569,6 +560,14 @@ impl<'a> PipelineStore<'a> {
 // Row mappers
 // =============================================================================
 
+fn insert_missed_run_audit_sql() -> &'static str {
+    "INSERT INTO missed_runs \
+        (id, schedule_id, expected_at, detected_at, action_taken, created_at) \
+     VALUES ($1, $2, $3, $4, $5, $6) \
+     ON CONFLICT (schedule_id, expected_at) DO NOTHING \
+     RETURNING id"
+}
+
 fn row_to_schedule(row: &sqlx::postgres::PgRow) -> Result<AgentSchedule> {
     Ok(AgentSchedule {
         id: row.try_get("id").map_err(sqlx_err)?,
@@ -715,6 +714,13 @@ mod tests {
         assert!(validate_grace_period(0).is_ok());
         assert!(validate_grace_period(120).is_ok());
         assert!(validate_grace_period(-1).is_err());
+    }
+
+    #[test]
+    fn insert_missed_run_audit_sql_is_atomic_per_schedule_slot() {
+        let sql = insert_missed_run_audit_sql();
+        assert!(sql.contains("ON CONFLICT (schedule_id, expected_at) DO NOTHING"));
+        assert!(!sql.contains("WHERE NOT EXISTS"));
     }
 
     #[test]

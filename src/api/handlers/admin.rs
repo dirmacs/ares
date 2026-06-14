@@ -5237,33 +5237,6 @@ pub async fn create_pipeline(
     Ok(Json(pipeline))
 }
 
-pub async fn delete_pipeline(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<StatusCode> {
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
-    let rows = store.delete_pipeline(&id).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!("pipeline {id} not found")));
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let pid = id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "pipeline_delete",
-            "agent_pipeline",
-            &pid,
-            None,
-            None,
-        )
-        .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
 pub async fn list_tenant_pipelines(
     State(state): State<AppState>,
     Path(tenant_id): Path<String>,

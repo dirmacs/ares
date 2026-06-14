@@ -135,7 +135,7 @@ async fn run_catchup_schedules(
             schedule_id: sched.id.clone(),
             expected_at,
             detected_at: now,
-            action_taken: "catchup_triggered".to_string(),
+            action_taken: catchup_audit_action_claimed().to_string(),
             created_at: now,
         };
         match store.insert_missed_run_audit(&audit).await {
@@ -148,6 +148,16 @@ async fn run_catchup_schedules(
         }
 
         if let Err(e) = execute_scheduled_agent(&sched, app_state, true).await {
+            if let Err(update_err) = store
+                .update_missed_run_action(&sched.id, expected_at, catchup_audit_action_failed())
+                .await
+            {
+                tracing::warn!(
+                    "Failed to update missed_run audit for {} after catchup failure: {}",
+                    sched.id,
+                    update_err
+                );
+            }
             tracing::warn!(
                 "Catchup run failed for agent {} (tenant {}): {}",
                 sched.agent_name,
@@ -155,6 +165,16 @@ async fn run_catchup_schedules(
                 e
             );
         } else {
+            if let Err(update_err) = store
+                .update_missed_run_action(&sched.id, expected_at, catchup_audit_action_succeeded())
+                .await
+            {
+                tracing::warn!(
+                    "Failed to update missed_run audit for {} after catchup success: {}",
+                    sched.id,
+                    update_err
+                );
+            }
             // Mark schedule as caught up and compute next future run time
             match compute_next_run(&sched.cron_expression, &sched.timezone) {
                 Ok(next) => {
@@ -187,6 +207,18 @@ fn skip_catchup_attempted_due_schedules(
     due.into_iter()
         .filter(|sched| !catchup_attempted.contains(&sched.id))
         .collect()
+}
+
+fn catchup_audit_action_claimed() -> &'static str {
+    "catchup_claimed"
+}
+
+fn catchup_audit_action_succeeded() -> &'static str {
+    "catchup_succeeded"
+}
+
+fn catchup_audit_action_failed() -> &'static str {
+    "catchup_failed"
 }
 
 fn scheduled_usage_source(is_catchup: bool) -> &'static str {
@@ -647,6 +679,13 @@ mod tests {
 
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, "schedule-2");
+    }
+
+    #[test]
+    fn catchup_audit_actions_track_claim_success_and_failure() {
+        assert_eq!(catchup_audit_action_claimed(), "catchup_claimed");
+        assert_eq!(catchup_audit_action_succeeded(), "catchup_succeeded");
+        assert_eq!(catchup_audit_action_failed(), "catchup_failed");
     }
 
     #[test]

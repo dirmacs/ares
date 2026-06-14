@@ -305,6 +305,22 @@ impl<'a> ScheduleStore<'a> {
         Ok(inserted)
     }
 
+    pub async fn update_missed_run_action(
+        &self,
+        schedule_id: &str,
+        expected_at: i64,
+        action_taken: &str,
+    ) -> Result<u64> {
+        let result = sqlx::query(update_missed_run_action_sql())
+            .bind(schedule_id)
+            .bind(expected_at)
+            .bind(action_taken)
+            .execute(self.pool)
+            .await
+            .map_err(sqlx_err)?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn list_missed_runs(
         &self,
         schedule_id: &str,
@@ -558,17 +574,8 @@ impl<'a> PipelineStore<'a> {
         row.map(|row| row_to_pipeline(&row)).transpose()
     }
 
-    pub async fn delete_pipeline(&self, id: &str) -> Result<u64> {
-        let res = sqlx::query("DELETE FROM agent_pipelines WHERE id = $1")
-            .bind(id)
-            .execute(self.pool)
-            .await
-            .map_err(sqlx_err)?;
-        Ok(res.rows_affected())
-    }
-
     pub async fn delete_pipeline_for_tenant(&self, tenant_id: &str, id: &str) -> Result<u64> {
-        let res = sqlx::query("DELETE FROM agent_pipelines WHERE tenant_id = $1 AND id = $2")
+        let res = sqlx::query(delete_pipeline_for_tenant_sql())
             .bind(tenant_id)
             .bind(id)
             .execute(self.pool)
@@ -609,6 +616,14 @@ fn insert_missed_run_audit_sql() -> &'static str {
      VALUES ($1, $2, $3, $4, $5, $6) \
      ON CONFLICT (schedule_id, expected_at) DO NOTHING \
      RETURNING id"
+}
+
+fn update_missed_run_action_sql() -> &'static str {
+    "UPDATE missed_runs SET action_taken = $3 WHERE schedule_id = $1 AND expected_at = $2"
+}
+
+fn delete_pipeline_for_tenant_sql() -> &'static str {
+    "DELETE FROM agent_pipelines WHERE tenant_id = $1 AND id = $2"
 }
 
 fn update_schedule_where_clause_sql() -> &'static str {
@@ -828,6 +843,21 @@ mod tests {
         assert!(sql.contains("JOIN agent_schedules"));
         assert!(sql.contains("agent_schedules.tenant_id = $1"));
         assert!(sql.contains("missed_runs.schedule_id = $2"));
+    }
+
+    #[test]
+    fn delete_pipeline_for_tenant_sql_is_tenant_scoped() {
+        let sql = delete_pipeline_for_tenant_sql();
+        assert!(sql.contains("tenant_id = $1"));
+        assert!(sql.contains("id = $2"));
+    }
+
+    #[test]
+    fn update_missed_run_action_sql_targets_schedule_slot() {
+        let sql = update_missed_run_action_sql();
+        assert!(sql.contains("schedule_id = $1"));
+        assert!(sql.contains("expected_at = $2"));
+        assert!(sql.contains("action_taken = $3"));
     }
 
     #[test]

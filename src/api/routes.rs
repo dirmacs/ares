@@ -564,10 +564,6 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             get(crate::api::handlers::admin::list_pipelines)
                 .post(crate::api::handlers::admin::create_pipeline),
         )
-        .route(
-            "/admin/pipelines/{id}",
-            delete(crate::api::handlers::admin::delete_pipeline),
-        )
         .layer(middleware::from_fn(
             crate::api::handlers::admin::admin_middleware,
         ));
@@ -1114,6 +1110,17 @@ mod tests {
             .await;
         assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
         response.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn create_router_does_not_register_unscoped_pipeline_delete_route() {
+        std::env::set_var("ADMIN_API_KEY", "test-admin-secret");
+        let server = test_server(test_app_state());
+        let response = server
+            .delete("/admin/pipelines/pipeline-1")
+            .add_header("x-admin-secret", "test-admin-secret")
+            .await;
+        assert_eq!(response.status_code(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

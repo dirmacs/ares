@@ -4696,6 +4696,23 @@ pub async fn list_schedules(
     Ok(Json(schedules))
 }
 
+pub async fn list_schedule_missed_runs(
+    State(state): State<AppState>,
+    Path((tenant_id, schedule_id)): Path<(String, String)>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<db_schedules::MissedRunAudit>>> {
+    let limit = params
+        .get("limit")
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(10)
+        .clamp(1, 100);
+    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
+    let audits = store
+        .list_missed_runs_for_tenant(&tenant_id, &schedule_id, limit)
+        .await?;
+    Ok(Json(audits))
+}
+
 pub async fn create_schedule(
     State(state): State<AppState>,
     Json(req): Json<db_schedules::CreateScheduleRequest>,

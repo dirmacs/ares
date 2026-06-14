@@ -4,7 +4,8 @@ use crate::db::run_history::{LogLlmCallRequest, LogToolCallRequest, RunHistorySt
 use crate::db::skills::SkillStore;
 use crate::db::tenant_allowlist::TenantAllowlistStore;
 use crate::{AresConfigManager, ConfigBasedLLMFactory, RuntimeToolRegistry, ToolRegistry};
-use ares_llm::{LLMClient, LLMResponse};
+use ares_llm::LLMResponse;
+use ares_types::AppError;
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -132,20 +133,32 @@ impl SkillEngine {
                     ensure_tenant_tool_allowed(&self.pool, tenant_id, &tool_name).await?;
                     let start = std::time::Instant::now();
 
-                    // Try runtime registry first, then static registry
-                    let result = if let Ok(rt) = self
+                    // Try runtime registry first; fall back to static registry only when
+                    // no tenant-visible runtime tool exists. Runtime execution failures
+                    // must surface instead of silently invoking a different built-in tool
+                    // with the same name.
+                    let result = match self
                         .runtime_tool_registry
                         .execute_for_tenant(&tool_name, args.clone(), Some(tenant_id))
                         .await
                     {
-                        rt
-                    } else if let Some(tool) = self.tool_registry.get(&tool_name) {
-                        let tool = Arc::clone(tool);
-                        tool.execute(args.clone())
-                            .await
-                            .map_err(|e| format!("Tool execution error: {}", e))?
-                    } else {
-                        return Err(format!("Tool {} not found", tool_name));
+                        Ok(rt) => rt,
+                        Err(err) if runtime_tool_error_allows_static_fallback(&err) => {
+                            if let Some(tool) = self.tool_registry.get(&tool_name) {
+                                let tool = Arc::clone(tool);
+                                tool.execute(args.clone())
+                                    .await
+                                    .map_err(|e| format!("Tool execution error: {}", e))?
+                            } else {
+                                return Err(format!("Tool {} not found", tool_name));
+                            }
+                        }
+                        Err(err) => {
+                            return Err(format!(
+                                "Runtime tool {} execution error: {}",
+                                tool_name, err
+                            ));
+                        }
                     };
 
                     let latency_ms = start.elapsed().as_millis() as i64;
@@ -270,19 +283,28 @@ impl SkillEngine {
                 ensure_tenant_tool_allowed(&self.pool, tenant_id, tool_name).await?;
                 let start = std::time::Instant::now();
 
-                let result = if let Ok(rt) = self
+                let result = match self
                     .runtime_tool_registry
                     .execute_for_tenant(tool_name, args.clone(), Some(tenant_id))
                     .await
                 {
-                    rt
-                } else if let Some(tool) = self.tool_registry.get(tool_name) {
-                    let tool = Arc::clone(tool);
-                    tool.execute(args.clone())
-                        .await
-                        .map_err(|e| format!("Tool execution error: {}", e))?
-                } else {
-                    return Err(format!("Tool {} not found", tool_name));
+                    Ok(rt) => rt,
+                    Err(err) if runtime_tool_error_allows_static_fallback(&err) => {
+                        if let Some(tool) = self.tool_registry.get(tool_name) {
+                            let tool = Arc::clone(tool);
+                            tool.execute(args.clone())
+                                .await
+                                .map_err(|e| format!("Tool execution error: {}", e))?
+                        } else {
+                            return Err(format!("Tool {} not found", tool_name));
+                        }
+                    }
+                    Err(err) => {
+                        return Err(format!(
+                            "Runtime tool {} execution error: {}",
+                            tool_name, err
+                        ));
+                    }
                 };
 
                 let latency_ms = start.elapsed().as_millis() as i64;
@@ -453,6 +475,10 @@ impl SkillEngine {
     }
 }
 
+fn runtime_tool_error_allows_static_fallback(error: &AppError) -> bool {
+    matches!(error, AppError::NotFound(_))
+}
+
 async fn ensure_tenant_tool_allowed(
     pool: &PgPool,
     tenant_id: &str,
@@ -573,6 +599,22 @@ mod tests {
                 SkillStep::ToolCall { .. } | SkillStep::LlmCall { .. } => {}
             }
         }
+    }
+
+    #[test]
+    fn runtime_tool_error_falls_back_only_when_tool_missing() {
+        assert!(runtime_tool_error_allows_static_fallback(
+            &AppError::NotFound("Runtime tool not found: calendar".to_string())
+        ));
+        assert!(!runtime_tool_error_allows_static_fallback(
+            &AppError::External("runtime HTTP tool failed".to_string())
+        ));
+        assert!(!runtime_tool_error_allows_static_fallback(
+            &AppError::Configuration("invalid runtime tool config".to_string())
+        ));
+        assert!(!runtime_tool_error_allows_static_fallback(
+            &AppError::Unavailable("runtime tool disabled".to_string())
+        ));
     }
 
     #[tokio::test]

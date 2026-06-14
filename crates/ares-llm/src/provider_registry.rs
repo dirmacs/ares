@@ -32,6 +32,8 @@ use std::sync::Arc;
 /// Runtime provider entry, synthesized from the DB `runtime_providers` table.
 #[derive(Debug, Clone)]
 pub struct RuntimeProviderEntry {
+    /// Optional tenant owner. `None` means fleet-wide.
+    pub tenant_id: Option<String>,
     /// Display name for UI purposes.
     pub display_name: String,
     /// Provider compatibility type: "openai-compatible", "anthropic-compatible", "bedrock", "custom".
@@ -57,6 +59,7 @@ pub struct ResolvedProviderConfig {
     pub model_name: String,
     pub provider_config: ProviderConfig,
     pub params: ModelParams,
+    pub tenant_id: Option<String>,
 }
 
 /// Registry for managing multiple named LLM providers
@@ -186,11 +189,35 @@ impl ProviderRegistry {
     /// providers are materialised from the arc-swapped map rather than stored as
     /// [`ProviderConfig`] internally.
     pub fn get_provider(&self, name: &str) -> Option<ProviderConfig> {
-        let runtime = self.runtime_providers.load();
-        if let Some(entry) = runtime.get(name) {
-            return Some(Self::synthesize_provider_config(entry));
+        self.get_provider_for_tenant(name, None)
+    }
+
+    /// Get a provider visible to `tenant_id`. Tenant-scoped runtime providers
+    /// are only visible to their owning tenant; fleet-wide runtime providers and
+    /// static providers remain visible to every tenant.
+    pub fn get_provider_for_tenant(
+        &self,
+        name: &str,
+        tenant_id: Option<&str>,
+    ) -> Option<ProviderConfig> {
+        if let Some(entry) = self.runtime_provider_entry_for_tenant(name, tenant_id) {
+            return Some(Self::synthesize_provider_config(&entry));
         }
         self.providers.get(name).cloned()
+    }
+
+    fn runtime_provider_entry_for_tenant(
+        &self,
+        name: &str,
+        tenant_id: Option<&str>,
+    ) -> Option<RuntimeProviderEntry> {
+        let runtime = self.runtime_providers.load();
+        let entry = runtime.get(name)?;
+        match (entry.tenant_id.as_deref(), tenant_id) {
+            (None, _) => Some(entry.clone()),
+            (Some(owner), Some(requester)) if owner == requester => Some(entry.clone()),
+            _ => None,
+        }
     }
 
     /// Synthesize a legacy [`ProviderConfig`] from a runtime provider entry.
@@ -464,8 +491,8 @@ impl ProviderRegistry {
     pub fn provider_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.providers.keys().cloned().collect();
         let runtime = self.runtime_providers.load();
-        for name in runtime.keys() {
-            if !names.contains(name) {
+        for (name, entry) in runtime.iter() {
+            if entry.tenant_id.is_none() && !names.contains(name) {
                 names.push(name.clone());
             }
         }
@@ -499,10 +526,8 @@ impl ProviderRegistry {
     pub async fn create_client_for_model(&self, model_name: &str) -> Result<Box<dyn LLMClient>> {
         // 1. Try legacy explicit models first
         if let Some(model_config) = self.models.get(model_name) {
-            let runtime_entry = {
-                let runtime = self.runtime_providers.load();
-                runtime.get(&model_config.provider).cloned()
-            };
+            let runtime_entry =
+                self.runtime_provider_entry_for_tenant(&model_config.provider, None);
             if let Some(entry) = runtime_entry {
                 let provider = Self::provider_from_runtime_entry_with_params(
                     &model_config.provider,
@@ -574,10 +599,7 @@ impl ProviderRegistry {
         provider_name: &str,
     ) -> Result<Box<dyn LLMClient>> {
         // Check runtime providers first so resolved API keys and custom headers are preserved.
-        let runtime_entry = {
-            let runtime = self.runtime_providers.load();
-            runtime.get(provider_name).cloned()
-        };
+        let runtime_entry = self.runtime_provider_entry_for_tenant(provider_name, None);
         if let Some(entry) = runtime_entry {
             let provider = Self::provider_from_runtime_entry(provider_name, &entry)?;
             return provider.create_client().await;
@@ -599,10 +621,10 @@ impl ProviderRegistry {
         &self,
         resolved: &ResolvedProviderConfig,
     ) -> Result<Box<dyn LLMClient>> {
-        let runtime_entry = {
-            let runtime = self.runtime_providers.load();
-            runtime.get(&resolved.provider_name).cloned()
-        };
+        let runtime_entry = self.runtime_provider_entry_for_tenant(
+            &resolved.provider_name,
+            resolved.tenant_id.as_deref(),
+        );
         if let Some(entry) = runtime_entry {
             let provider = Self::provider_from_runtime_entry_with_params(
                 &resolved.provider_name,
@@ -645,7 +667,14 @@ impl ProviderRegistry {
 
     /// Check if a provider exists in the registry (legacy or runtime).
     pub fn has_provider(&self, name: &str) -> bool {
-        self.providers.contains_key(name) || self.runtime_providers.load().contains_key(name)
+        self.has_provider_for_tenant(name, None)
+    }
+
+    pub fn has_provider_for_tenant(&self, name: &str, tenant_id: Option<&str>) -> bool {
+        self.providers.contains_key(name)
+            || self
+                .runtime_provider_entry_for_tenant(name, tenant_id)
+                .is_some()
     }
 
     // ================== Capability-Based Model Selection (DIR-43) ==================
@@ -926,23 +955,27 @@ impl ProviderRegistry {
         let store = TenantModelTierStore::new(pool);
         let primary = match store.get(tenant_id, tier_or_model).await {
             Ok(Some(tier)) => {
-                let provider_config = self.get_provider(&tier.provider_name).ok_or_else(|| {
-                    AppError::Configuration(format!(
-                        "Provider '{}' configured for tenant '{}' tier '{}' not found",
-                        tier.provider_name, tenant_id, tier_or_model
-                    ))
-                })?;
+                let provider_config = self
+                    .get_provider_for_tenant(&tier.provider_name, Some(tenant_id))
+                    .ok_or_else(|| {
+                        AppError::Configuration(format!(
+                            "Provider '{}' configured for tenant '{}' tier '{}' not found",
+                            tier.provider_name, tenant_id, tier_or_model
+                        ))
+                    })?;
                 ResolvedProviderConfig {
                     provider_name: tier.provider_name,
                     model_name: tier.model_name,
                     provider_config,
                     params: ModelParams::default(),
+                    tenant_id: Some(tenant_id.to_string()),
                 }
             }
             Ok(None) => {
                 if let Some(model_cfg) = self.get_model(tier_or_model) {
-                    let provider_config =
-                        self.get_provider(&model_cfg.provider).ok_or_else(|| {
+                    let provider_config = self
+                        .get_provider_for_tenant(&model_cfg.provider, Some(tenant_id))
+                        .ok_or_else(|| {
                             AppError::Configuration(format!(
                                 "Provider '{}' referenced by model/tier '{}' not found",
                                 model_cfg.provider, tier_or_model
@@ -953,8 +986,11 @@ impl ProviderRegistry {
                         model_name: model_cfg.model.clone(),
                         provider_config,
                         params: ModelParams::from_model_config(&model_cfg),
+                        tenant_id: Some(tenant_id.to_string()),
                     }
-                } else if let Some(provider_config) = self.get_provider(tier_or_model) {
+                } else if let Some(provider_config) =
+                    self.get_provider_for_tenant(tier_or_model, Some(tenant_id))
+                {
                     let model_name = Self::provider_default_model(&provider_config).to_string();
                     if model_name.is_empty() {
                         return Err(AppError::Configuration(format!(
@@ -967,6 +1003,7 @@ impl ProviderRegistry {
                         model_name,
                         provider_config,
                         params: ModelParams::default(),
+                        tenant_id: Some(tenant_id.to_string()),
                     }
                 } else {
                     return Err(AppError::Configuration(format!(
@@ -993,12 +1030,14 @@ impl ProviderRegistry {
                 if seen.contains(fallback_name) {
                     continue;
                 }
-                let provider_config = self.get_provider(fallback_name).ok_or_else(|| {
-                    AppError::Configuration(format!(
-                        "Fallback provider '{}' configured for primary provider '{}' not found",
-                        fallback_name, primary_provider
-                    ))
-                })?;
+                let provider_config = self
+                    .get_provider_for_tenant(fallback_name, Some(tenant_id))
+                    .ok_or_else(|| {
+                        AppError::Configuration(format!(
+                            "Fallback provider '{}' configured for primary provider '{}' not found",
+                            fallback_name, primary_provider
+                        ))
+                    })?;
                 let model_name = Self::provider_default_model(&provider_config).to_string();
                 if model_name.is_empty() {
                     return Err(AppError::Configuration(format!(
@@ -1012,6 +1051,7 @@ impl ProviderRegistry {
                     model_name,
                     provider_config,
                     params: ModelParams::default(),
+                    tenant_id: Some(tenant_id.to_string()),
                 });
             }
         }
@@ -1422,6 +1462,7 @@ mod tests {
         let mut headers = HashMap::new();
         headers.insert("X-Test-Header".to_string(), "runtime-value".to_string());
         let entry = RuntimeProviderEntry {
+            tenant_id: None,
             display_name: "Runtime OpenAI".to_string(),
             provider_type: "openai-compatible".to_string(),
             api_base: "https://runtime.example.com/v1".to_string(),
@@ -1458,6 +1499,7 @@ mod tests {
     #[test]
     fn test_runtime_provider_requires_resolved_api_key() {
         let entry = RuntimeProviderEntry {
+            tenant_id: None,
             display_name: "Runtime OpenAI".to_string(),
             provider_type: "openai-compatible".to_string(),
             api_base: "https://runtime.example.com/v1".to_string(),
@@ -1471,6 +1513,52 @@ mod tests {
         assert_configuration_error(
             ProviderRegistry::provider_from_runtime_entry("runtime-openai", &entry),
             "Runtime provider 'runtime-openai' API key is not resolved",
+        );
+    }
+
+    #[test]
+    fn runtime_provider_visibility_respects_tenant_scope() {
+        let registry = ProviderRegistry::new();
+        let global = RuntimeProviderEntry {
+            tenant_id: None,
+            display_name: "Global Runtime".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://global.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("global-model".to_string()),
+            headers: HashMap::new(),
+            api_key: Some("global-key".to_string()),
+            enabled: true,
+        };
+        let scoped = RuntimeProviderEntry {
+            tenant_id: Some("tenant-a".to_string()),
+            display_name: "Scoped Runtime".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://tenant.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("tenant-model".to_string()),
+            headers: HashMap::new(),
+            api_key: Some("tenant-key".to_string()),
+            enabled: true,
+        };
+        registry.reload_runtime_providers(
+            vec![global, scoped],
+            vec!["global-runtime".to_string(), "tenant-runtime".to_string()],
+        );
+
+        assert!(registry.has_provider("global-runtime"));
+        assert!(!registry.has_provider("tenant-runtime"));
+        assert!(registry.has_provider_for_tenant("tenant-runtime", Some("tenant-a")));
+        assert!(!registry.has_provider_for_tenant("tenant-runtime", Some("tenant-b")));
+        assert!(registry
+            .get_provider_for_tenant("tenant-runtime", Some("tenant-a"))
+            .is_some());
+        assert!(registry
+            .get_provider_for_tenant("tenant-runtime", Some("tenant-b"))
+            .is_none());
+        assert_eq!(
+            registry.provider_names(),
+            vec!["global-runtime".to_string()]
         );
     }
 

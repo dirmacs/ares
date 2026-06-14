@@ -310,6 +310,10 @@ async fn execute_scheduled_agent(
             } else {
                 "failed"
             };
+            let (input_tokens, output_tokens) = skill_result
+                .as_ref()
+                .map(crate::skill_engine::skill_result_token_counts)
+                .unwrap_or((0, 0));
             let err_msg = skill_result.as_ref().err().cloned();
 
             let pool_clone = pool.clone();
@@ -324,8 +328,8 @@ async fn execute_scheduled_agent(
                     &aname,
                     None,
                     status,
-                    0,
-                    0,
+                    input_tokens,
+                    output_tokens,
                     duration_ms as i64,
                     err_msg.as_deref(),
                     "skill",
@@ -340,6 +344,7 @@ async fn execute_scheduled_agent(
             let usage_tid = sched.tenant_id.clone();
             let usage_agent = sched.agent_name.clone();
             let usage_source = scheduled_usage_source(is_catchup);
+            let token_count = input_tokens + output_tokens;
             tokio::spawn(async move {
                 let _ = sqlx::query(
                     "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
@@ -348,9 +353,9 @@ async fn execute_scheduled_agent(
                 .bind(usage_tid)
                 .bind(usage_source)
                 .bind(1i32)
-                .bind(0i64)
-                .bind(0i64)
-                .bind(0i64)
+                .bind(token_count)
+                .bind(input_tokens)
+                .bind(output_tokens)
                 .bind(Some("skill".to_string()))
                 .bind(usage_agent)
                 .bind(Some("skill".to_string()))
@@ -470,10 +475,14 @@ async fn execute_scheduled_agent(
             app_state.active_runs.finish(&run_id, "completed");
 
             let trigger = scheduled_pipeline_trigger(sched, &response.content);
-            let _ = crate::pipeline_engine::execute_pipeline(
+            let _ = crate::pipeline_engine::execute_pipeline_with_origin(
                 trigger.source_agent,
                 trigger.source_output,
                 trigger.tenant_id,
+                Some(crate::pipeline_engine::PipelineOrigin::scheduled(
+                    sched.id.clone(),
+                    is_catchup,
+                )),
                 app_state,
             )
             .await;
@@ -703,6 +712,48 @@ mod tests {
         assert_eq!(effects.usage.token_count, 40);
         assert_eq!(effects.usage.model_name.as_deref(), Some("gpt-4o-mini"));
         assert_eq!(effects.usage.provider_name.as_deref(), Some("openai"));
+    }
+
+    #[test]
+    fn scheduled_catchup_pipeline_origin_preserves_schedule_id() {
+        let schedule = schedule("schedule-1");
+        let origin = crate::pipeline_engine::PipelineOrigin::scheduled(schedule.id.clone(), true);
+        let pipeline = AgentPipeline {
+            id: "pipeline-source-to-target".to_string(),
+            tenant_id: schedule.tenant_id.clone(),
+            source_agent: schedule.agent_name.clone(),
+            target_agent: "target-agent".to_string(),
+            condition: None,
+            enabled: true,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        };
+
+        let run = crate::pipeline_engine::pipeline_active_run(
+            "target-run-1",
+            &schedule.tenant_id,
+            &pipeline.target_agent,
+            &pipeline.id,
+            Some(&origin),
+            None,
+        );
+        let effects = crate::pipeline_engine::pipeline_target_run_effects(
+            &pipeline,
+            &schedule.tenant_id,
+            "target-run-1",
+            Some(&origin),
+            None,
+            None,
+            false,
+            0,
+            0,
+            "unknown",
+            "unknown",
+        );
+
+        assert!(run.is_catchup);
+        assert_eq!(run.schedule_id.as_deref(), Some("schedule-1"));
+        assert_eq!(effects.metadata.schedule_id.as_deref(), Some("schedule-1"));
     }
 
     #[test]

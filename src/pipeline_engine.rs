@@ -51,7 +51,7 @@ impl PipelineOrigin {
     }
 }
 
-fn pipeline_active_run(
+pub(crate) fn pipeline_active_run(
     run_id: &str,
     tenant_id: &str,
     agent_name: &str,
@@ -241,16 +241,20 @@ async fn execute_target_agent(
             };
             app_state.active_runs.finish(&run_id, skill_status);
 
+            let (input_tokens, output_tokens) = skill_result
+                .as_ref()
+                .map(crate::skill_engine::skill_result_token_counts)
+                .unwrap_or((0, 0));
             let effects = pipeline_target_run_effects(
-                pipeline,
+                &pipeline,
                 tenant_id,
                 &run_id,
                 origin_ref,
                 Some(resolved_agent.source.as_str()),
                 resolved_agent.config_version.clone(),
                 false,
-                0,
-                0,
+                input_tokens,
+                output_tokens,
                 "skill",
                 "skill",
             );
@@ -275,8 +279,8 @@ async fn execute_target_agent(
                     &aname,
                     None,
                     status,
-                    0,
-                    0,
+                    input_tokens,
+                    output_tokens,
                     duration_ms as i64,
                     err_msg.as_deref(),
                     "skill",

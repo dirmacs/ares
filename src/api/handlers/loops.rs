@@ -72,12 +72,23 @@ impl LoopRegistry {
         }
     }
 
+    /// Update the latest state snapshot for `loop_id`. Returns `false` when unknown.
+    pub async fn update_state(&self, loop_id: &str, state: LoopModeState) -> bool {
+        let mut entries = self.entries.lock().await;
+        if let Some(e) = entries.get_mut(loop_id) {
+            e.state = state;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Whether the loop is still running. Returns `None` when `loop_id` is unknown.
     pub async fn running_flag_for(&self, loop_id: &str) -> Option<bool> {
         let entries = self.entries.lock().await;
-        entries.get(loop_id).map(|e| {
-            e.finish_reason.is_none() && !e.stop.load(Ordering::Relaxed)
-        })
+        entries
+            .get(loop_id)
+            .map(|e| e.finish_reason.is_none() && !e.stop.load(Ordering::Relaxed))
     }
 
     fn entry_to_summary(e: &LoopEntry) -> LoopSummary {
@@ -169,7 +180,17 @@ pub async fn start_loop(
         // Future phases will call agent.execute() here once the orchestrator
         // is wired up to LoopRunner.
         let tick = build_tick(agent_name, prompt);
-        let finish_reason = runner.run(&tick).await;
+        let state_registry = registry.clone();
+        let state_loop_id = loop_id.clone();
+        let finish_reason = runner
+            .run_with_state_observer(&tick, move |state| {
+                let registry = state_registry.clone();
+                let loop_id = state_loop_id.clone();
+                async move {
+                    registry.update_state(&loop_id, state).await;
+                }
+            })
+            .await;
 
         // Write back the final state and finish reason.
         let mut entries = registry.entries.lock().await;
@@ -205,10 +226,7 @@ pub async fn stop_loop(
 
 /// Build a no-op tick function that logs agent name and prompt.
 /// Returns Ok(()) immediately — real agent dispatch lands in a future phase.
-fn build_tick(
-    agent_name: String,
-    prompt: String,
-) -> crate::agents::loop_mode::TickFn {
+fn build_tick(agent_name: String, prompt: String) -> crate::agents::loop_mode::TickFn {
     Box::new(move || {
         let agent = agent_name.clone();
         let p = prompt.clone();
@@ -303,6 +321,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn registry_update_state_refreshes_listed_snapshot() {
+        let registry = LoopRegistry::new();
+        registry.insert(dummy_entry("loop-state", 1)).await;
+
+        let state = LoopModeState {
+            iterations_run: 3,
+            iterations_succeeded: 2,
+            iterations_failed: 1,
+            consecutive_failures: 1,
+            started_at_epoch_secs: 100,
+            last_tick_epoch_secs: 130,
+        };
+        assert!(registry.update_state("loop-state", state.clone()).await);
+        assert!(!registry.update_state("missing", state.clone()).await);
+
+        let list = registry.list().await;
+        let entry = list.iter().find(|l| l.id == "loop-state").expect("entry");
+        assert_eq!(entry.state, state);
+    }
+
+    #[tokio::test]
     async fn registry_running_flag_reflects_state() {
         let registry = LoopRegistry::new();
         let entry = dummy_entry("loop-run", 1);
@@ -331,8 +370,7 @@ mod tests {
 
     #[test]
     fn start_loop_request_deserializes_defaults() {
-        let req: StartLoopRequest =
-            serde_json::from_str(r#"{"agent":"support"}"#).unwrap();
+        let req: StartLoopRequest = serde_json::from_str(r#"{"agent":"support"}"#).unwrap();
         assert_eq!(req.agent, "support");
         assert_eq!(req.config, LoopModeConfig::default());
         assert!(req.prompt.is_empty());

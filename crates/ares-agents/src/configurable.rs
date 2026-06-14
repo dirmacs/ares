@@ -8,11 +8,22 @@ use crate::{Agent, AgentResponse, ExecutionMetadata};
 use ares_config::toml_config::AgentConfig;
 use ares_llm::coordinator::ConversationMessage;
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
-use ares_llm::LLMClient;
+use ares_llm::{LLMClient, LLMResponse};
 use ares_tools::registry::ToolRegistry;
 use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
 use async_trait::async_trait;
 use std::sync::Arc;
+
+struct ProviderLlm {
+    provider_name: String,
+    llm: Box<dyn LLMClient>,
+}
+
+struct LlmAttemptResponse {
+    response: LLMResponse,
+    provider_name: String,
+    model_name: String,
+}
 
 /// A configurable agent that derives its behavior from TOML configuration
 pub struct ConfigurableAgent {
@@ -38,7 +49,7 @@ pub struct ConfigurableAgent {
     /// Optional observability sink for run history logging
     observability: Option<Arc<dyn ObservabilitySink>>,
     /// Optional fallback LLM clients to try if primary fails
-    fallback_llms: Vec<Box<dyn LLMClient>>,
+    fallback_llms: Vec<ProviderLlm>,
     /// Optional DB pool for token-budget tracking.
     #[cfg(feature = "postgres")]
     token_budget_pool: Option<sqlx::PgPool>,
@@ -248,7 +259,24 @@ Handle employee info, policies, and benefits."#
 
     /// Set fallback LLM clients to try if the primary fails.
     pub fn set_fallback_llms(&mut self, fallbacks: Vec<Box<dyn LLMClient>>) {
-        self.fallback_llms = fallbacks;
+        self.fallback_llms = fallbacks
+            .into_iter()
+            .map(|llm| ProviderLlm {
+                provider_name: "unknown".to_string(),
+                llm,
+            })
+            .collect();
+    }
+
+    /// Set fallback LLM clients with provider names for observability and billing metadata.
+    pub fn set_fallback_llms_with_providers(
+        &mut self,
+        fallbacks: Vec<(String, Box<dyn LLMClient>)>,
+    ) {
+        self.fallback_llms = fallbacks
+            .into_iter()
+            .map(|(provider_name, llm)| ProviderLlm { provider_name, llm })
+            .collect();
     }
 
     /// Attach a DB pool for token-budget tracking.
@@ -306,7 +334,6 @@ Handle employee info, policies, and benefits."#
     ) -> Result<()> {
         if let Some(pool) = &self.token_budget_pool {
             let store = ares_db::token_budgets::TokenBudgetStore::new(pool);
-            let total = prompt_tokens + completion_tokens;
             store
                 .record_usage(
                     tenant_id,
@@ -341,9 +368,13 @@ Handle employee info, policies, and benefits."#
     async fn try_generate_with_history(
         &self,
         messages: &[(String, String)],
-    ) -> Result<ares_llm::LLMResponse> {
+    ) -> Result<LlmAttemptResponse> {
         match self.llm.generate_with_history(messages).await {
-            Ok(resp) => Ok(resp),
+            Ok(response) => Ok(LlmAttemptResponse {
+                response,
+                provider_name: self.provider_name.clone(),
+                model_name: self.llm.model_name().to_string(),
+            }),
             Err(e) => {
                 let primary_error = e.to_string();
                 let mut fallback_errors = Vec::new();
@@ -353,14 +384,19 @@ Handle employee info, policies, and benefits."#
                         fallback_idx = %i,
                         "Primary LLM failed, trying fallback"
                     );
-                    match fallback.generate_with_history(messages).await {
-                        Ok(resp) => {
+                    match fallback.llm.generate_with_history(messages).await {
+                        Ok(response) => {
                             tracing::info!(
                                 agent = %self.name,
                                 fallback_idx = %i,
+                                provider = %fallback.provider_name,
                                 "Fallback LLM succeeded"
                             );
-                            return Ok(resp);
+                            return Ok(LlmAttemptResponse {
+                                response,
+                                provider_name: fallback.provider_name.clone(),
+                                model_name: fallback.llm.model_name().to_string(),
+                            });
                         }
                         Err(fallback_error) => {
                             fallback_errors.push(format!("fallback[{i}]: {fallback_error}"));
@@ -386,13 +422,17 @@ Handle employee info, policies, and benefits."#
         &self,
         messages: &[ConversationMessage],
         tools: &[ToolDefinition],
-    ) -> Result<ares_llm::LLMResponse> {
+    ) -> Result<LlmAttemptResponse> {
         match self
             .llm
             .generate_with_tools_and_history(messages, tools)
             .await
         {
-            Ok(resp) => Ok(resp),
+            Ok(response) => Ok(LlmAttemptResponse {
+                response,
+                provider_name: self.provider_name.clone(),
+                model_name: self.llm.model_name().to_string(),
+            }),
             Err(e) => {
                 let primary_error = e.to_string();
                 let mut fallback_errors = Vec::new();
@@ -403,16 +443,22 @@ Handle employee info, policies, and benefits."#
                         "Primary LLM (tools) failed, trying fallback"
                     );
                     match fallback
+                        .llm
                         .generate_with_tools_and_history(messages, tools)
                         .await
                     {
-                        Ok(resp) => {
+                        Ok(response) => {
                             tracing::info!(
                                 agent = %self.name,
                                 fallback_idx = %i,
+                                provider = %fallback.provider_name,
                                 "Fallback LLM (tools) succeeded"
                             );
-                            return Ok(resp);
+                            return Ok(LlmAttemptResponse {
+                                response,
+                                provider_name: fallback.provider_name.clone(),
+                                model_name: fallback.llm.model_name().to_string(),
+                            });
                         }
                         Err(fallback_error) => {
                             fallback_errors.push(format!("fallback[{i}]: {fallback_error}"));
@@ -580,16 +626,21 @@ Handle employee info, policies, and benefits."#
         messages.push(ConversationMessage::user(input));
 
         let mut total_usage = TokenUsage::default();
+        let mut last_provider_name = self.provider_name.clone();
+        let mut last_model_name = self.llm.model_name().to_string();
 
         for iteration in 0..self.max_tool_iterations {
             #[cfg(feature = "postgres")]
             self.preflight_budget_check(&context.user_id).await?;
 
             let llm_start = std::time::Instant::now();
-            let response = self
+            let attempt = self
                 .try_generate_with_tools_and_history(&messages, &tools)
                 .await?;
             let llm_latency = llm_start.elapsed().as_millis() as i64;
+            last_provider_name = attempt.provider_name;
+            last_model_name = attempt.model_name;
+            let response = attempt.response;
 
             #[cfg(feature = "postgres")]
             {
@@ -621,8 +672,8 @@ Handle employee info, policies, and benefits."#
                     .unwrap_or(0);
                 let record = LlmCallRecord {
                     step_index: iteration as i32,
-                    provider: self.provider_name.clone(),
-                    model: self.llm.model_name().to_string(),
+                    provider: last_provider_name.clone(),
+                    model: last_model_name.clone(),
                     prompt_tokens: prompt_tok,
                     completion_tokens: completion_tok,
                     latency_ms: llm_latency,
@@ -643,8 +694,8 @@ Handle employee info, policies, and benefits."#
                     content: response.content,
                     usage: Some(total_usage),
                     metadata: Some(ExecutionMetadata {
-                        model_name: self.llm.model_name().to_string(),
-                        provider_name: self.provider_name.clone(),
+                        model_name: last_model_name,
+                        provider_name: last_provider_name,
                     }),
                 });
             }
@@ -724,15 +775,21 @@ Handle employee info, policies, and benefits."#
             .try_generate_with_tools_and_history(&messages, &[])
             .await;
         let synth_latency = synth_start.elapsed().as_millis() as i64;
+        if let Ok(attempt) = &final_response {
+            last_provider_name = attempt.provider_name.clone();
+            last_model_name = attempt.model_name.clone();
+        }
 
         #[cfg(feature = "postgres")]
-        if let Ok(resp) = &final_response {
-            let prompt_tok = resp
+        if let Ok(attempt) = &final_response {
+            let prompt_tok = attempt
+                .response
                 .usage
                 .as_ref()
                 .map(|u| u.prompt_tokens as i64)
                 .unwrap_or(0);
-            let completion_tok = resp
+            let completion_tok = attempt
+                .response
                 .usage
                 .as_ref()
                 .map(|u| u.completion_tokens as i64)
@@ -745,12 +802,16 @@ Handle employee info, policies, and benefits."#
         // Log the final synthesis call
         if let Some(obs) = &self.observability {
             let (prompt_tok, completion_tok, status) = match &final_response {
-                Ok(resp) => (
-                    resp.usage
+                Ok(attempt) => (
+                    attempt
+                        .response
+                        .usage
                         .as_ref()
                         .map(|u| u.prompt_tokens as i64)
                         .unwrap_or(0),
-                    resp.usage
+                    attempt
+                        .response
+                        .usage
                         .as_ref()
                         .map(|u| u.completion_tokens as i64)
                         .unwrap_or(0),
@@ -760,8 +821,8 @@ Handle employee info, policies, and benefits."#
             };
             let record = LlmCallRecord {
                 step_index: self.max_tool_iterations as i32,
-                provider: self.provider_name.clone(),
-                model: self.llm.model_name().to_string(),
+                provider: last_provider_name.clone(),
+                model: last_model_name.clone(),
                 prompt_tokens: prompt_tok,
                 completion_tokens: completion_tok,
                 latency_ms: synth_latency,
@@ -771,7 +832,7 @@ Handle employee info, policies, and benefits."#
         }
 
         let content = match final_response {
-            Ok(resp) if !resp.content.is_empty() => resp.content,
+            Ok(attempt) if !attempt.response.content.is_empty() => attempt.response.content,
             Ok(_) => {
                 // Final call also returned empty — find any non-empty assistant content
                 messages
@@ -806,8 +867,8 @@ Handle employee info, policies, and benefits."#
             content,
             usage: Some(total_usage),
             metadata: Some(ExecutionMetadata {
-                model_name: self.llm.model_name().to_string(),
-                provider_name: self.provider_name.clone(),
+                model_name: last_model_name,
+                provider_name: last_provider_name,
             }),
         })
     }
@@ -869,8 +930,11 @@ impl Agent for ConfigurableAgent {
         self.preflight_budget_check(&context.user_id).await?;
 
         let llm_start = std::time::Instant::now();
-        let llm_response = self.try_generate_with_history(&messages).await?;
+        let attempt = self.try_generate_with_history(&messages).await?;
         let llm_latency = llm_start.elapsed().as_millis() as i64;
+        let provider_name = attempt.provider_name;
+        let model_name = attempt.model_name;
+        let llm_response = attempt.response;
 
         #[cfg(feature = "postgres")]
         {
@@ -902,8 +966,8 @@ impl Agent for ConfigurableAgent {
                 .unwrap_or(0);
             let record = LlmCallRecord {
                 step_index: 0,
-                provider: self.provider_name.clone(),
-                model: self.llm.model_name().to_string(),
+                provider: provider_name.clone(),
+                model: model_name.clone(),
                 prompt_tokens: prompt_tok,
                 completion_tokens: completion_tok,
                 latency_ms: llm_latency,
@@ -916,8 +980,8 @@ impl Agent for ConfigurableAgent {
             content: llm_response.content,
             usage: llm_response.usage,
             metadata: Some(ExecutionMetadata {
-                model_name: self.llm.model_name().to_string(),
-                provider_name: self.provider_name.clone(),
+                model_name,
+                provider_name,
             }),
         })
     }
@@ -2001,11 +2065,17 @@ mod tests {
         );
 
         let fallback = MockLLM::with_content("fallback-success");
-        agent.set_fallback_llms(vec![Box::new(fallback)]);
+        agent.set_fallback_llms_with_providers(vec![(
+            "fallback-provider".to_string(),
+            Box::new(fallback),
+        )]);
 
         let ctx = make_context();
         let resp = Agent::execute(&agent, "hello", &ctx).await.unwrap();
         assert_eq!(resp.content, "fallback-success");
+        let metadata = resp.metadata.expect("metadata");
+        assert_eq!(metadata.provider_name, "fallback-provider");
+        assert_eq!(metadata.model_name, "mock");
     }
 
     #[tokio::test]

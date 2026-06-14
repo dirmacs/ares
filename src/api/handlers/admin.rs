@@ -3407,6 +3407,7 @@ pub async fn reload_runtime_provider_registry(state: &AppState) -> Result<()> {
 
         names.push(provider.name);
         entries.push(RuntimeProviderEntry {
+            tenant_id: provider.tenant_id,
             display_name: provider.display_name,
             provider_type: provider.provider_type,
             api_base: provider.api_base,
@@ -3912,7 +3913,10 @@ pub async fn set_tenant_model_tier(
     Path((tenant_id, tier_name)): Path<(String, String)>,
     Json(req): Json<db_tiers::SetTenantModelTierRequest>,
 ) -> Result<Json<db_tiers::TenantModelTier>> {
-    if !state.provider_registry.has_provider(&req.provider_name) {
+    if !state
+        .provider_registry
+        .has_provider_for_tenant(&req.provider_name, Some(&tenant_id))
+    {
         return Err(AppError::InvalidInput(format!(
             "Provider '{}' not found in configuration",
             req.provider_name

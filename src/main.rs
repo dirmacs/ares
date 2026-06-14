@@ -58,6 +58,11 @@ fn main() {
 }
 
 #[cfg(feature = "postgres")]
+fn start_runtime_tool_background_reload(registry: &Arc<ares::RuntimeToolRegistry>) -> bool {
+    Arc::clone(registry).start_background_reload()
+}
+
+#[cfg(feature = "postgres")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse CLI arguments
@@ -541,6 +546,9 @@ async fn run_server(
     let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(db_arc.pool.clone()));
     if let Err(e) = runtime_tool_registry.reload().await {
         tracing::warn!("Failed to preload runtime tools on startup: {}", e);
+    }
+    if start_runtime_tool_background_reload(&runtime_tool_registry) {
+        tracing::info!("Runtime tool background reload started");
     }
 
     let skill_engine = Arc::new(ares::skill_engine::SkillEngine::new(
@@ -1147,4 +1155,18 @@ mod ui {
 #[cfg(all(feature = "postgres", feature = "ui"))]
 fn ui_routes() -> Router<AppState> {
     ui::routes()
+}
+
+#[cfg(all(test, feature = "postgres"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn start_runtime_tool_background_reload_reports_started() {
+        let pool =
+            sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool never fails");
+        let registry = Arc::new(ares::RuntimeToolRegistry::with_interval(pool, 60));
+
+        assert!(start_runtime_tool_background_reload(&registry));
+    }
 }

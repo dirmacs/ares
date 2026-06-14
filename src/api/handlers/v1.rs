@@ -703,6 +703,10 @@ pub async fn run_agent(
     .await?;
 
     // Skill-based agent execution
+    resolved_agent
+        .agent
+        .set_runtime_tools(state.runtime_tool_registry.clone(), tc.tenant_id.clone());
+
     if let Some(config) = &resolved_agent.config {
         if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {
             let run_id = uuid::Uuid::new_v4().to_string();

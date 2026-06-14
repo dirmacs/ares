@@ -26,10 +26,36 @@ pub(crate) struct PipelineTargetRunEffects {
     pub(crate) usage: PipelineUsageRecord,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PipelineOrigin {
+    pub(crate) is_catchup: bool,
+    pub(crate) schedule_id: Option<String>,
+    pub(crate) trigger_id: Option<String>,
+}
+
+impl PipelineOrigin {
+    pub(crate) fn scheduled(schedule_id: String, is_catchup: bool) -> Self {
+        Self {
+            is_catchup,
+            schedule_id: Some(schedule_id),
+            trigger_id: None,
+        }
+    }
+
+    pub(crate) fn trigger(trigger_id: String) -> Self {
+        Self {
+            is_catchup: false,
+            schedule_id: None,
+            trigger_id: Some(trigger_id),
+        }
+    }
+}
+
 pub(crate) fn pipeline_target_run_effects(
     pipeline: &AgentPipeline,
     tenant_id: &str,
     run_id: &str,
+    origin: Option<&PipelineOrigin>,
     agent_config_source: Option<&str>,
     agent_config_version: Option<String>,
     eruka_context_hit: bool,
@@ -51,8 +77,8 @@ pub(crate) fn pipeline_target_run_effects(
             eruka_read_count: if eruka_context_hit { 1 } else { 0 },
             eruka_write_count: 0,
             pipeline_id: Some(pipeline.id.clone()),
-            schedule_id: None,
-            trigger_id: None,
+            schedule_id: origin.and_then(|origin| origin.schedule_id.clone()),
+            trigger_id: origin.and_then(|origin| origin.trigger_id.clone()),
         },
         usage: PipelineUsageRecord {
             tenant_id: tenant_id.to_string(),
@@ -77,6 +103,16 @@ pub async fn execute_pipeline(
     tenant_id: &str,
     app_state: &Arc<crate::AppState>,
 ) -> Result<Vec<String>, String> {
+    execute_pipeline_with_origin(source_agent_name, source_output, tenant_id, None, app_state).await
+}
+
+pub(crate) async fn execute_pipeline_with_origin(
+    source_agent_name: &str,
+    source_output: &str,
+    tenant_id: &str,
+    origin: Option<PipelineOrigin>,
+    app_state: &Arc<crate::AppState>,
+) -> Result<Vec<String>, String> {
     let store = PipelineStore::new(app_state.tenant_db.pool());
     let pipelines = store
         .get_pipelines_for_source(tenant_id, source_agent_name)
@@ -98,7 +134,15 @@ pub async fn execute_pipeline(
             tenant_id
         );
 
-        match execute_target_agent(&pipeline, source_output, tenant_id, app_state).await {
+        match execute_target_agent(
+            &pipeline,
+            source_output,
+            tenant_id,
+            origin.as_ref(),
+            app_state,
+        )
+        .await
+        {
             Ok(_) => triggered.push(pipeline.target_agent.clone()),
             Err(e) => tracing::error!(
                 "Pipeline target {} failed for tenant {}: {}",
@@ -115,6 +159,7 @@ async fn execute_target_agent(
     pipeline: &AgentPipeline,
     source_output: &str,
     tenant_id: &str,
+    origin: Option<&PipelineOrigin>,
     app_state: &Arc<crate::AppState>,
 ) -> Result<(), String> {
     use crate::agents::context_provider::AgentRuntimeContext;
@@ -151,11 +196,11 @@ async fn execute_target_agent(
                 last_update: chrono::Utc::now().timestamp(),
                 tool_name: Some(format!("skill:{}", skill_id)),
                 model: None,
-                is_catchup: false,
+                is_catchup: origin.map(|origin| origin.is_catchup).unwrap_or(false),
                 request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
                 pipeline_id: Some(pipeline.id.clone()),
-                schedule_id: None,
-                trigger_id: None,
+                schedule_id: origin.and_then(|origin| origin.schedule_id.clone()),
+                trigger_id: origin.and_then(|origin| origin.trigger_id.clone()),
             });
 
             let skill_result = app_state
@@ -180,6 +225,7 @@ async fn execute_target_agent(
                 pipeline,
                 tenant_id,
                 &run_id,
+                origin,
                 Some(resolved_agent.source.as_str()),
                 resolved_agent.config_version.clone(),
                 false,
@@ -356,6 +402,7 @@ async fn execute_target_agent(
         pipeline,
         tenant_id,
         &run_id,
+        origin,
         Some(resolved_agent.source.as_str()),
         resolved_agent.config_version.clone(),
         eruka_context_hit,
@@ -506,5 +553,72 @@ mod tests {
         assert!(evaluate_condition("output.starts_with(\"{\")", json));
         assert!(evaluate_condition("output.ends_with(\"}\")", json));
         assert!(evaluate_condition("output != \"\"", json));
+    }
+
+    #[test]
+    fn pipeline_target_run_effects_preserve_scheduled_origin() {
+        let pipeline = AgentPipeline {
+            id: "pipeline-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            source_agent: "source".to_string(),
+            target_agent: "target".to_string(),
+            condition: None,
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let origin = PipelineOrigin::scheduled("schedule-1".to_string(), true);
+
+        let effects = pipeline_target_run_effects(
+            &pipeline,
+            "tenant-1",
+            "run-1",
+            Some(&origin),
+            Some("tenant-db"),
+            Some("v1".to_string()),
+            false,
+            1,
+            2,
+            "model",
+            "provider",
+        );
+
+        assert_eq!(effects.metadata.request_source.as_deref(), Some("pipeline"));
+        assert_eq!(effects.metadata.pipeline_id.as_deref(), Some("pipeline-1"));
+        assert_eq!(effects.metadata.schedule_id.as_deref(), Some("schedule-1"));
+        assert_eq!(effects.metadata.trigger_id, None);
+    }
+
+    #[test]
+    fn pipeline_target_run_effects_preserve_trigger_origin() {
+        let pipeline = AgentPipeline {
+            id: "pipeline-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            source_agent: "source".to_string(),
+            target_agent: "target".to_string(),
+            condition: None,
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let origin = PipelineOrigin::trigger("trigger-1".to_string());
+
+        let effects = pipeline_target_run_effects(
+            &pipeline,
+            "tenant-1",
+            "run-1",
+            Some(&origin),
+            Some("tenant-db"),
+            Some("v1".to_string()),
+            false,
+            1,
+            2,
+            "model",
+            "provider",
+        );
+
+        assert_eq!(effects.metadata.pipeline_id.as_deref(), Some("pipeline-1"));
+        assert_eq!(effects.metadata.schedule_id, None);
+        assert_eq!(effects.metadata.trigger_id.as_deref(), Some("trigger-1"));
     }
 }

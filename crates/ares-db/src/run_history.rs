@@ -778,7 +778,7 @@ impl<'a> RunHistoryStore<'a> {
                  successful_runs, failed_runs, avg_latency_ms, p50_latency_ms, p95_latency_ms, \
                  p99_latency_ms, total_tokens, total_cost_usd, error_rate_pct, created_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
-             ON CONFLICT ON CONSTRAINT idx_agent_health_unique DO UPDATE SET \
+             ON CONFLICT (tenant_id, agent_name, period_start, period_end) DO UPDATE SET \
                  total_runs = EXCLUDED.total_runs, \
                  successful_runs = EXCLUDED.successful_runs, \
                  failed_runs = EXCLUDED.failed_runs, \
@@ -1530,11 +1530,13 @@ mod tests {
             .await
             .expect("delete_tenant_budget");
         assert_eq!(deleted, 1);
-        assert!(store
-            .get_tenant_budget(&tenant_id)
-            .await
-            .expect("get after delete")
-            .is_none());
+        assert!(
+            store
+                .get_tenant_budget(&tenant_id)
+                .await
+                .expect("get after delete")
+                .is_none()
+        );
     }
 
     #[tokio::test]

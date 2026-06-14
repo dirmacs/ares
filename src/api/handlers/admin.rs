@@ -1622,13 +1622,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_schedule_request_rejects_negative_grace_period() {
-        let req: RunSkillRequest = serde_json::from_value(serde_json::json!({
+    fn run_skill_request_requires_explicit_tenant_id() {
+        let err = serde_json::from_value::<RunSkillRequest>(serde_json::json!({
             "skill_id": "skill-1",
             "input": {"x": 1}
         }))
-        .expect("missing tenant_id should deserialize");
-        assert_eq!(req.tenant_id, "default");
+        .expect_err("missing tenant_id should be rejected");
+        assert!(err.to_string().contains("tenant_id"));
         assert_eq!(
             normalized_run_skill_tenant_id("tenant-a").unwrap(),
             "tenant-a"
@@ -4038,17 +4038,12 @@ pub async fn delete_skill(
 #[derive(Debug, Deserialize)]
 pub struct RunSkillRequest {
     pub skill_id: String,
-    #[serde(default = "default_run_skill_tenant_id")]
     pub tenant_id: String,
     pub input: serde_json::Value,
 }
 
 const ADMIN_SKILL_RUN_SOURCE: &str = "admin_skill_run";
 const ADMIN_SKILL_CONFIG_SOURCE: &str = "admin_skill";
-
-fn default_run_skill_tenant_id() -> String {
-    "default".to_string()
-}
 
 fn normalized_run_skill_tenant_id(tenant_id: &str) -> Result<&str> {
     let trimmed = tenant_id.trim();

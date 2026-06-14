@@ -9,6 +9,30 @@ use ares_db::schedules::EventTrigger;
 use ares_types::types::AgentContext;
 use std::sync::Arc;
 
+fn triggered_agent_run_metadata(
+    trigger: &EventTrigger,
+    run_id: &str,
+    agent_config_source: &str,
+    agent_config_version: Option<String>,
+    eruka_context_hit: bool,
+) -> AgentRunMetadata {
+    AgentRunMetadata {
+        workspace_id: None,
+        session_id: Some(run_id.to_string()),
+        request_source: Some("trigger".to_string()),
+        product: None,
+        agent_config_source: Some(agent_config_source.to_string()),
+        agent_config_version,
+        eruka_binding_id: None,
+        eruka_context_hit,
+        eruka_read_count: if eruka_context_hit { 1 } else { 0 },
+        eruka_write_count: 0,
+        pipeline_id: None,
+        schedule_id: None,
+        trigger_id: Some(trigger.id.clone()),
+    }
+}
+
 /// Execute an agent in response to an event trigger.
 ///
 /// This is the common pathway for webhook, document-upload, and field-change
@@ -57,6 +81,7 @@ pub async fn execute_triggered_agent(
                 request_source: Some("trigger".to_string()),
                 pipeline_id: None,
                 schedule_id: None,
+                trigger_id: Some(trigger.id.clone()),
             });
 
             let skill_result = app_state
@@ -77,20 +102,13 @@ pub async fn execute_triggered_agent(
             };
             app_state.active_runs.finish(&run_id, skill_status);
 
-            let metadata = AgentRunMetadata {
-                workspace_id: None,
-                session_id: Some(run_id.clone()),
-                request_source: Some("trigger".to_string()),
-                product: None,
-                agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-                agent_config_version: resolved_agent.config_version.clone(),
-                eruka_binding_id: None,
-                eruka_context_hit: false,
-                eruka_read_count: 0,
-                eruka_write_count: 0,
-                pipeline_id: Some(trigger.id.clone()),
-                schedule_id: None,
-            };
+            let metadata = triggered_agent_run_metadata(
+                trigger,
+                &run_id,
+                resolved_agent.source.as_str(),
+                resolved_agent.config_version.clone(),
+                false,
+            );
             let status = if skill_result.is_ok() {
                 "completed"
             } else {
@@ -211,6 +229,7 @@ pub async fn execute_triggered_agent(
         request_source: Some("trigger".to_string()),
         pipeline_id: None,
         schedule_id: None,
+        trigger_id: Some(trigger.id.clone()),
     });
 
     let result = resolved_agent
@@ -272,20 +291,13 @@ pub async fn execute_triggered_agent(
         }
     }
 
-    let metadata = AgentRunMetadata {
-        workspace_id: None,
-        session_id: Some(run_id.clone()),
-        request_source: Some("trigger".to_string()),
-        product: None,
-        agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-        agent_config_version: resolved_agent.config_version.clone(),
-        eruka_binding_id: None,
+    let metadata = triggered_agent_run_metadata(
+        trigger,
+        &run_id,
+        resolved_agent.source.as_str(),
+        resolved_agent.config_version.clone(),
         eruka_context_hit,
-        eruka_read_count: if eruka_context_hit { 1 } else { 0 },
-        eruka_write_count: 0,
-        pipeline_id: Some(trigger.id.clone()),
-        schedule_id: None,
-    };
+    );
 
     let pool_clone = pool.clone();
     let tid = trigger.tenant_id.clone();
@@ -356,4 +368,41 @@ pub async fn execute_triggered_agent(
         return Err(format!("Agent execution failed: {}", err));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn trigger() -> EventTrigger {
+        EventTrigger {
+            id: "trigger-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            name: "on document".to_string(),
+            event_type: "document_upload".to_string(),
+            event_config: serde_json::json!({"bucket":"docs"}),
+            target_agent: "agent-1".to_string(),
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn triggered_agent_run_metadata_uses_trigger_id_not_pipeline_id() {
+        let metadata = triggered_agent_run_metadata(
+            &trigger(),
+            "run-1",
+            "tenant_db",
+            Some("v1".to_string()),
+            true,
+        );
+
+        assert_eq!(metadata.request_source.as_deref(), Some("trigger"));
+        assert_eq!(metadata.trigger_id.as_deref(), Some("trigger-1"));
+        assert_eq!(metadata.pipeline_id, None);
+        assert_eq!(metadata.schedule_id, None);
+        assert!(metadata.eruka_context_hit);
+        assert_eq!(metadata.eruka_read_count, 1);
+    }
 }

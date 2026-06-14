@@ -539,7 +539,8 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         )
         .route(
             "/admin/tenants/{tenant_id}/schedules/{id}",
-            delete(crate::api::handlers::admin::delete_tenant_schedule),
+            put(crate::api::handlers::admin::update_tenant_schedule)
+                .delete(crate::api::handlers::admin::delete_tenant_schedule),
         )
         .route(
             "/admin/tenants/{tenant_id}/schedules/{id}/missed-runs",
@@ -1046,13 +1047,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_router_registers_tenant_schedule_delete_route() {
+    async fn create_router_registers_tenant_schedule_routes() {
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
-        let response = server
+        let update_response = server
+            .put("/admin/tenants/tenant-1/schedules/schedule-1")
+            .json(&serde_json::json!({
+                "tenant_id": "other-tenant",
+                "agent_name": "agent-a",
+                "cron_expression": "0 9 * * *",
+                "timezone": "UTC",
+                "enabled": true,
+                "grace_period_seconds": 120
+            }))
+            .await;
+        assert_ne!(
+            update_response.status_code(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+
+        let delete_response = server
             .delete("/admin/tenants/tenant-1/schedules/schedule-1")
             .await;
-        assert_ne!(response.status_code(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_ne!(
+            delete_response.status_code(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
     }
 
     #[tokio::test]

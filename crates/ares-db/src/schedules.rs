@@ -213,14 +213,15 @@ impl<'a> ScheduleStore<'a> {
         let next_run_at = compute_next_run(&req.cron_expression, &req.timezone)
             .map_err(|e| AppError::InvalidInput(e))?;
 
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "UPDATE agent_schedules SET \
                 agent_name = $3, cron_expression = $4, timezone = $5, enabled = $6, \
                 next_run_at = $7, grace_period_seconds = $8, updated_at = $9 \
-             WHERE id = $1 AND tenant_id = $2 \
+             {} \
              RETURNING id, tenant_id, agent_name, cron_expression, timezone, enabled, \
                        last_run_at, next_run_at, grace_period_seconds, created_at, updated_at",
-        )
+            update_schedule_where_clause_sql()
+        ))
         .bind(id)
         .bind(&req.tenant_id)
         .bind(&req.agent_name)
@@ -610,6 +611,10 @@ fn insert_missed_run_audit_sql() -> &'static str {
      RETURNING id"
 }
 
+fn update_schedule_where_clause_sql() -> &'static str {
+    "WHERE id = $1 AND tenant_id = $2"
+}
+
 fn delete_schedule_for_tenant_sql() -> &'static str {
     "DELETE FROM agent_schedules WHERE id = $1 AND tenant_id = $2"
 }
@@ -801,6 +806,13 @@ mod tests {
         let sql = update_pipeline_sql();
         assert!(sql.contains("tenant_id = $1"));
         assert!(sql.contains("id = $2"));
+    }
+
+    #[test]
+    fn update_schedule_sql_is_tenant_scoped() {
+        let sql = update_schedule_where_clause_sql();
+        assert!(sql.contains("id = $1"));
+        assert!(sql.contains("tenant_id = $2"));
     }
 
     #[test]

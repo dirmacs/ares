@@ -395,6 +395,8 @@ fn validate_connector_request(req: &CreateConnectorRequest) -> Result<()> {
 fn validate_service_type(t: &str) -> Result<()> {
     const VALID: &[&str] = &[
         "google_drive",
+        "google_calendar",
+        "gmail",
         "slack",
         "linkedin",
         "hubspot",
@@ -534,6 +536,8 @@ mod tests {
     #[test]
     fn validate_service_type_accepts_known() {
         assert!(validate_service_type("slack").is_ok());
+        assert!(validate_service_type("google_calendar").is_ok());
+        assert!(validate_service_type("gmail").is_ok());
         assert!(validate_service_type("custom").is_ok());
         assert!(validate_service_type("webhook").is_ok());
         assert!(validate_service_type("github").is_ok());

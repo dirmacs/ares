@@ -360,7 +360,8 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         )
         .route(
             "/admin/tenants/{tenant_id}/pipelines/{id}",
-            delete(crate::api::handlers::admin::delete_tenant_pipeline),
+            put(crate::api::handlers::admin::update_tenant_pipeline)
+                .delete(crate::api::handlers::admin::delete_tenant_pipeline),
         )
         // Fleet Provider Secrets — encrypted at rest, hot-swap in memory
         .route(
@@ -1014,6 +1015,26 @@ mod tests {
             .await;
         assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
         response.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_tenant_pipeline_update_route() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server
+            .put("/admin/tenants/tenant-1/pipelines/pipeline-1")
+            .json(&serde_json::json!({
+                "tenant_id": "ignored-client-tenant",
+                "source_agent": "agent-a",
+                "target_agent": "agent-b",
+                "condition": null,
+                "enabled": true
+            }))
+            .await;
+        assert_ne!(
+            response.status_code(),
+            axum::http::StatusCode::METHOD_NOT_ALLOWED
+        );
     }
 
     #[tokio::test]

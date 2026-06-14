@@ -4929,6 +4929,37 @@ pub async fn create_tenant_pipeline(
     Ok(Json(pipeline))
 }
 
+pub async fn update_tenant_pipeline(
+    State(state): State<AppState>,
+    Path((tenant_id, id)): Path<(String, String)>,
+    Json(req): Json<db_schedules::CreatePipelineRequest>,
+) -> Result<Json<db_schedules::AgentPipeline>> {
+    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let pipeline = store
+        .update_pipeline(&tenant_id, &id, &req)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("pipeline {id} not found for tenant {tenant_id}"))
+        })?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = pipeline.tenant_id.clone();
+    let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "pipeline_update",
+            "agent_pipeline",
+            &link,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(pipeline))
+}
+
 pub async fn delete_tenant_pipeline(
     State(state): State<AppState>,
     Path((tenant_id, id)): Path<(String, String)>,

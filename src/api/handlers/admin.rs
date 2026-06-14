@@ -1637,6 +1637,35 @@ mod tests {
     }
 
     #[test]
+    fn admin_skill_run_helpers_mark_history_and_active_source() {
+        assert_eq!(admin_skill_agent_name("skill-1"), "skill:skill-1");
+
+        let metadata = admin_skill_run_metadata("run-1");
+        assert_eq!(metadata.session_id.as_deref(), Some("run-1"));
+        assert_eq!(
+            metadata.request_source.as_deref(),
+            Some(ADMIN_SKILL_RUN_SOURCE)
+        );
+        assert_eq!(
+            metadata.agent_config_source.as_deref(),
+            Some(ADMIN_SKILL_CONFIG_SOURCE)
+        );
+
+        let active = admin_skill_active_run("run-1", "tenant-a", "skill-1");
+        assert_eq!(active.run_id, "run-1");
+        assert_eq!(active.tenant_id, "tenant-a");
+        assert_eq!(active.agent_name, "skill:skill-1");
+        assert_eq!(active.status, "running");
+        assert_eq!(active.tool_name.as_deref(), Some("skill:skill-1"));
+        assert_eq!(active.model.as_deref(), Some("skill"));
+        assert_eq!(
+            active.request_source.as_deref(),
+            Some(ADMIN_SKILL_RUN_SOURCE)
+        );
+        assert!(!active.is_catchup);
+    }
+
+    #[test]
     fn oauth_provider_mapping_covers_google_calendar() {
         let provider = oauth_provider_config("google_calendar").unwrap();
         assert_eq!(provider.provider, "google");
@@ -4014,6 +4043,9 @@ pub struct RunSkillRequest {
     pub input: serde_json::Value,
 }
 
+const ADMIN_SKILL_RUN_SOURCE: &str = "admin_skill_run";
+const ADMIN_SKILL_CONFIG_SOURCE: &str = "admin_skill";
+
 fn default_run_skill_tenant_id() -> String {
     "default".to_string()
 }
@@ -4027,18 +4059,116 @@ fn normalized_run_skill_tenant_id(tenant_id: &str) -> Result<&str> {
     }
 }
 
+fn admin_skill_agent_name(skill_id: &str) -> String {
+    format!("skill:{skill_id}")
+}
+
+fn admin_skill_run_metadata(run_id: &str) -> agent_runs::AgentRunMetadata {
+    agent_runs::AgentRunMetadata {
+        session_id: Some(run_id.to_string()),
+        request_source: Some(ADMIN_SKILL_RUN_SOURCE.to_string()),
+        agent_config_source: Some(ADMIN_SKILL_CONFIG_SOURCE.to_string()),
+        ..Default::default()
+    }
+}
+
+fn admin_skill_active_run(
+    run_id: &str,
+    tenant_id: &str,
+    skill_id: &str,
+) -> crate::active_runs::ActiveRun {
+    let now = chrono::Utc::now().timestamp();
+    crate::active_runs::ActiveRun {
+        run_id: run_id.to_string(),
+        tenant_id: tenant_id.to_string(),
+        agent_name: admin_skill_agent_name(skill_id),
+        started_at: now,
+        status: "running".to_string(),
+        current_step: 0,
+        total_steps: 0,
+        last_update: now,
+        tool_name: Some(admin_skill_agent_name(skill_id)),
+        model: Some("skill".to_string()),
+        is_catchup: false,
+        request_source: Some(ADMIN_SKILL_RUN_SOURCE.to_string()),
+        pipeline_id: None,
+        schedule_id: None,
+        trigger_id: None,
+    }
+}
+
 pub async fn run_skill(
     State(state): State<AppState>,
     Json(req): Json<RunSkillRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let run_id = uuid::Uuid::new_v4().to_string();
-    let tenant_id = normalized_run_skill_tenant_id(&req.tenant_id)?;
+    let tenant_id = normalized_run_skill_tenant_id(&req.tenant_id)?.to_string();
+    let skill_id = req.skill_id;
+    let agent_name = admin_skill_agent_name(&skill_id);
+    state
+        .active_runs
+        .start(admin_skill_active_run(&run_id, &tenant_id, &skill_id));
+
+    let obs = Arc::new(crate::observability::RunObservability {
+        run_id: run_id.clone(),
+        tenant_id: tenant_id.clone(),
+        agent_name: agent_name.clone(),
+        pool: state.tenant_db.pool().clone(),
+    });
+    let start = std::time::Instant::now();
     let result = state
         .skill_engine
-        .execute_skill(&req.skill_id, tenant_id, req.input, &run_id)
-        .await
-        .map_err(|e| AppError::InvalidInput(e))?;
-    Ok(Json(result))
+        .execute_skill(&skill_id, &tenant_id, req.input, &run_id)
+        .await;
+    let duration_ms = start.elapsed().as_millis() as i64;
+    let status = if result.is_ok() {
+        "completed"
+    } else {
+        "failed"
+    };
+    let active_status = if result.is_ok() { "completed" } else { "error" };
+    state.active_runs.finish(&run_id, active_status);
+
+    let (input_tokens, output_tokens) = result
+        .as_ref()
+        .map(crate::skill_engine::skill_result_token_counts)
+        .unwrap_or((0, 0));
+    let error_message = result.as_ref().err().cloned();
+    let metadata = admin_skill_run_metadata(&run_id);
+
+    let obs_for_spawn = obs.clone();
+    tokio::spawn(async move {
+        obs_for_spawn.aggregate_run_cost(duration_ms).await;
+    });
+
+    let pool = state.tenant_db.pool().clone();
+    let run_id_for_insert = run_id.clone();
+    let tenant_id_for_insert = tenant_id.clone();
+    let agent_name_for_insert = agent_name.clone();
+    tokio::spawn(async move {
+        let _ = agent_runs::insert_agent_run_with_id_and_metadata(
+            &pool,
+            &run_id_for_insert,
+            &tenant_id_for_insert,
+            &agent_name_for_insert,
+            None,
+            status,
+            input_tokens,
+            output_tokens,
+            duration_ms,
+            error_message.as_deref(),
+            "skill",
+            "skill",
+            false,
+            Some(&metadata),
+        )
+        .await;
+    });
+
+    match result {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => Err(AppError::InvalidInput(e)),
+    }
 }
 
 // =============================================================================

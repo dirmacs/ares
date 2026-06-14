@@ -4,7 +4,8 @@
 //! tables (migration 020).
 
 use ares_types::types::{AppError, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
@@ -12,18 +13,32 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Compute the next Unix timestamp at which a cron expression will fire.
 ///
-/// Uses the `cron` crate with chrono.  For now UTC is assumed regardless
-/// of the supplied timezone string (timezone support can be layered in
-/// later via `chrono-tz`).
-pub fn compute_next_run(cron: &str, _tz: &str) -> std::result::Result<i64, String> {
+/// Uses the `cron` crate with chrono and evaluates the expression in the
+/// supplied IANA timezone before returning the UTC Unix timestamp.
+pub fn compute_next_run(cron: &str, tz: &str) -> std::result::Result<i64, String> {
+    compute_next_run_after(cron, tz, Utc::now())
+}
+
+fn compute_next_run_after(
+    cron: &str,
+    tz: &str,
+    after_utc: DateTime<Utc>,
+) -> std::result::Result<i64, String> {
+    let timezone = parse_timezone(tz)?;
     let schedule: Schedule = cron
         .parse()
         .map_err(|e| format!("Invalid cron expression '{}': {}", cron, e))?;
+    let after_local = after_utc.with_timezone(&timezone);
     let next = schedule
-        .after(&Utc::now())
+        .after(&after_local)
         .next()
         .ok_or_else(|| "No future occurrence found for cron expression".to_string())?;
     Ok(next.timestamp())
+}
+
+fn parse_timezone(tz: &str) -> std::result::Result<Tz, String> {
+    tz.parse::<Tz>()
+        .map_err(|_| format!("Invalid timezone '{}': expected IANA timezone", tz))
 }
 
 fn now_ts() -> i64 {
@@ -626,6 +641,7 @@ fn validate_schedule_request(req: &CreateScheduleRequest) -> Result<()> {
             "cron_expression must not be empty".into(),
         ));
     }
+    parse_timezone(&req.timezone).map_err(AppError::InvalidInput)?;
     validate_grace_period(req.grace_period_seconds)
 }
 
@@ -676,6 +692,25 @@ mod tests {
     }
 
     #[test]
+    fn compute_next_run_after_honors_non_utc_timezone() {
+        let after = DateTime::from_timestamp(1_720_008_000, 0).expect("valid timestamp");
+        let utc_next = compute_next_run_after("0 0 9 * * * *", "UTC", after).unwrap();
+        let pacific_next =
+            compute_next_run_after("0 0 9 * * * *", "America/Los_Angeles", after).unwrap();
+
+        assert_ne!(utc_next, pacific_next);
+        assert_eq!(utc_next, 1_720_083_600);
+        assert_eq!(pacific_next, 1_720_022_400);
+    }
+
+    #[test]
+    fn compute_next_run_after_rejects_invalid_timezone() {
+        let after = DateTime::from_timestamp(1_720_008_000, 0).expect("valid timestamp");
+        let err = compute_next_run_after("0 0 9 * * * *", "Not/AZone", after).unwrap_err();
+        assert!(err.contains("Invalid timezone"));
+    }
+
+    #[test]
     fn validate_grace_period_rejects_negative_values() {
         assert!(validate_grace_period(0).is_ok());
         assert!(validate_grace_period(120).is_ok());
@@ -700,6 +735,10 @@ mod tests {
         assert!(validate_schedule_request(&req).is_err());
         req.agent_name = "agent-a".to_string();
         req.cron_expression.clear();
+        assert!(validate_schedule_request(&req).is_err());
+
+        req.cron_expression = "0 0/5 * * * * *".to_string();
+        req.timezone = "Not/AZone".to_string();
         assert!(validate_schedule_request(&req).is_err());
     }
 }

@@ -1840,6 +1840,28 @@ mod tests {
         assert_eq!(response.run.id, "run-1");
     }
 
+    fn trigger(event_type: &str, enabled: bool) -> db_schedules::EventTrigger {
+        db_schedules::EventTrigger {
+            id: "trigger-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            name: "Trigger".to_string(),
+            event_type: event_type.to_string(),
+            event_config: serde_json::json!({}),
+            target_agent: "agent-1".to_string(),
+            enabled,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn webhook_trigger_matches_webhook_type_only() {
+        assert!(webhook_trigger_matches(&trigger("webhook", true)));
+        assert!(webhook_trigger_matches(&trigger("webhook", false)));
+        assert!(!webhook_trigger_matches(&trigger("document_upload", true)));
+        assert!(!webhook_trigger_matches(&trigger("field_change", true)));
+    }
+
     #[test]
     fn create_tenant_request_roundtrip() {
         let req = CreateTenantRequest {
@@ -5139,6 +5161,10 @@ pub async fn delete_tenant_pipeline(
 // Webhook Receiver (public — no admin middleware)
 // =============================================================================
 
+fn webhook_trigger_matches(trigger: &db_schedules::EventTrigger) -> bool {
+    trigger.event_type == "webhook"
+}
+
 /// POST /api/webhooks/{trigger_id}
 ///
 /// Public webhook endpoint that receives events and triggers the
@@ -5151,6 +5177,11 @@ pub async fn receive_webhook(
     let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
     let trigger = store.get_trigger(&trigger_id).await?;
     if let Some(trigger) = trigger {
+        if !webhook_trigger_matches(&trigger) {
+            return Err(AppError::NotFound(format!(
+                "Webhook trigger {trigger_id} not found"
+            )));
+        }
         if trigger.enabled {
             tracing::info!(
                 trigger_id = %trigger_id,

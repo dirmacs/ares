@@ -4,7 +4,7 @@
 //! field-change triggers for the tenant.
 
 use crate::db::schedules as db_schedules;
-use crate::{AppState, trigger_engine};
+use crate::{trigger_engine, AppState};
 use ares_types::types::AppError;
 use axum::{
     extract::State,
@@ -79,12 +79,8 @@ pub async fn handle_field_change(
             "new_value": payload.new_value,
         });
         let message = serde_json::to_string(&context).unwrap_or_default();
-        if let Err(e) = trigger_engine::execute_triggered_agent(
-            &trigger,
-            &message,
-            &app_state,
-        )
-        .await
+        if let Err(e) =
+            trigger_engine::execute_triggered_agent(&trigger, &message, &app_state).await
         {
             tracing::warn!(
                 trigger_id = %trigger.id,
@@ -120,9 +116,13 @@ fn verify_webhook_secret(headers: &HeaderMap) -> crate::types::Result<()> {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use std::sync::Mutex;
+
+    static WEBHOOK_SECRET_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn verify_webhook_secret_empty_env_allows_all() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
         std::env::remove_var("WEBHOOK_SECRET");
         let mut headers = HeaderMap::new();
         headers.insert("X-Webhook-Secret", HeaderValue::from_static("anything"));
@@ -131,6 +131,7 @@ mod tests {
 
     #[test]
     fn verify_webhook_secret_rejects_mismatch() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
         std::env::set_var("WEBHOOK_SECRET", "secret456");
         let mut headers = HeaderMap::new();
         headers.insert("X-Webhook-Secret", HeaderValue::from_static("wrong"));
@@ -140,6 +141,7 @@ mod tests {
 
     #[test]
     fn verify_webhook_secret_accepts_match() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
         std::env::set_var("WEBHOOK_SECRET", "secret456");
         let mut headers = HeaderMap::new();
         headers.insert("X-Webhook-Secret", HeaderValue::from_static("secret456"));

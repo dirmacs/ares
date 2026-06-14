@@ -518,6 +518,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
                 .delete(crate::api::handlers::admin::delete_connector),
         )
         .route(
+            "/admin/tenants/{tenant_id}/connectors/{id}",
+            delete(crate::api::handlers::admin::delete_tenant_connector),
+        )
+        .route(
             "/admin/tenants/{tenant_id}/oauth-creds",
             get(crate::api::handlers::admin::list_oauth_credentials)
                 .post(crate::api::handlers::admin::create_oauth_credential),
@@ -1107,6 +1111,17 @@ mod tests {
                 "endpoints": {},
                 "enabled": true
             }))
+            .await;
+        assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
+        response.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_tenant_connector_delete_route() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server
+            .delete("/admin/tenants/tenant-1/connectors/connector-1")
             .await;
         assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
         response.assert_status_unauthorized();

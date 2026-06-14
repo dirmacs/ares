@@ -316,6 +316,43 @@ impl RuntimeToolRegistry {
         Ok(())
     }
 
+    /// Validate that `execution_config` can build the selected runtime tool type.
+    pub fn validate_execution_config(tool_type: &str, execution_config: &Value) -> Result<()> {
+        match tool_type {
+            "http" => HttpTool::parse_config(execution_config).map(|_| ()),
+            "script" => ScriptTool::parse_config(execution_config).map(|_| ()),
+            "sql" => Self::validate_sql_config(execution_config),
+            "mcp" => Self::validate_mcp_config(execution_config),
+            _ => Err(AppError::Configuration(format!(
+                "Unknown runtime tool type '{tool_type}'"
+            ))),
+        }
+    }
+
+    #[cfg(any(feature = "postgres", test))]
+    fn validate_sql_config(execution_config: &Value) -> Result<()> {
+        SqlTool::parse_config(execution_config).map(|_| ())
+    }
+
+    #[cfg(not(any(feature = "postgres", test)))]
+    fn validate_sql_config(_execution_config: &Value) -> Result<()> {
+        Err(AppError::FeatureDisabled(
+            "SQL tools require postgres feature".into(),
+        ))
+    }
+
+    #[cfg(any(feature = "mcp", test))]
+    fn validate_mcp_config(execution_config: &Value) -> Result<()> {
+        RuntimeMcpTool::parse_config(execution_config).map(|_| ())
+    }
+
+    #[cfg(not(any(feature = "mcp", test)))]
+    fn validate_mcp_config(_execution_config: &Value) -> Result<()> {
+        Err(AppError::FeatureDisabled(
+            "MCP tools require mcp feature".into(),
+        ))
+    }
+
     /// Convert a [`RuntimeTool`] DB row into an `Arc<dyn Tool>`.
     ///
     /// Returns `None` if the tool type is unsupported, the config is invalid,
@@ -325,16 +362,14 @@ impl RuntimeToolRegistry {
             return None;
         }
 
-        let result = match row.tool_type.as_str() {
-            "http" => Self::materialise_http(row),
-            "script" => Self::materialise_script(row),
-            "sql" => Self::materialise_sql(row),
-            "mcp" => Self::materialise_mcp(row),
-            _ => Err(AppError::Configuration(format!(
-                "Unknown runtime tool type '{}'",
-                row.tool_type
-            ))),
-        };
+        let result = Self::validate_execution_config(&row.tool_type, &row.execution_config)
+            .and_then(|()| match row.tool_type.as_str() {
+                "http" => Self::materialise_http(row),
+                "script" => Self::materialise_script(row),
+                "sql" => Self::materialise_sql(row),
+                "mcp" => Self::materialise_mcp(row),
+                _ => unreachable!("validated runtime tool type"),
+            });
 
         match result {
             Ok(tool) => Some(tool),
@@ -720,6 +755,18 @@ mod tests {
         let row = sample_runtime_tool("weird_tool", "unknown", true);
         let tool = RuntimeToolRegistry::materialise(&row);
         assert!(tool.is_none());
+    }
+
+    #[tokio::test]
+    async fn validate_execution_config_rejects_invalid_http_config() {
+        let err = RuntimeToolRegistry::validate_execution_config(
+            "http",
+            &json!({"missing_required_url": true}),
+        )
+        .expect_err("invalid http config should fail")
+        .to_string();
+
+        assert!(err.contains("Invalid HTTP tool config"));
     }
 
     #[tokio::test]

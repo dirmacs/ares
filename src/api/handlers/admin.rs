@@ -1532,6 +1532,19 @@ mod tests {
         ares_tools::runtime_registry::RuntimeToolRegistry::with_interval(pool, 0)
     }
 
+    #[test]
+    fn validate_runtime_tool_execution_config_rejects_invalid_http_config() {
+        let err = validate_runtime_tool_execution_config(
+            "http",
+            &serde_json::json!({"missing_required_url": true}),
+        )
+        .expect_err("invalid http config should fail")
+        .to_string();
+
+        assert!(err.contains("invalid execution_config"));
+        assert!(err.contains("Invalid HTTP tool config"));
+    }
+
     #[tokio::test]
     async fn validate_agent_config_tools_accepts_builtin_tools() {
         let mut registry = ares_tools::registry::ToolRegistry::new();
@@ -2791,6 +2804,17 @@ use ares_db::runtime_tools::{
     CreateRuntimeToolRequest, RuntimeToolStore, UpdateRuntimeToolRequest,
 };
 
+fn validate_runtime_tool_execution_config(
+    tool_type: &str,
+    execution_config: &serde_json::Value,
+) -> Result<()> {
+    ares_tools::runtime_registry::RuntimeToolRegistry::validate_execution_config(
+        tool_type,
+        execution_config,
+    )
+    .map_err(|e| AppError::InvalidInput(format!("invalid execution_config: {e}")))
+}
+
 /// List every runtime tool currently stored in the DB.
 pub async fn list_runtime_tools(
     State(state): State<AppState>,
@@ -2819,6 +2843,8 @@ pub async fn create_runtime_tool(
     State(state): State<AppState>,
     Json(req): Json<CreateRuntimeToolRequest>,
 ) -> Result<Json<serde_json::Value>> {
+    validate_runtime_tool_execution_config(&req.tool_type, &req.execution_config)?;
+
     let store = RuntimeToolStore::new(state.tenant_db.pool());
     let tool = store.create(&req).await?;
 
@@ -2864,6 +2890,13 @@ pub async fn update_runtime_tool(
     Json(req): Json<UpdateRuntimeToolRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let store = RuntimeToolStore::new(state.tenant_db.pool());
+    if let Some(execution_config) = &req.execution_config {
+        let existing = store
+            .get_by_id(&id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("runtime tool {id} not found")))?;
+        validate_runtime_tool_execution_config(&existing.tool_type, execution_config)?;
+    }
     let tool = store.update(&id, &req).await?;
 
     if let Err(e) = state.runtime_tool_registry.reload().await {

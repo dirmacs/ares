@@ -4,7 +4,7 @@
 //! document-upload triggers for the tenant.
 
 use crate::db::schedules as db_schedules;
-use crate::{AppState, trigger_engine};
+use crate::{trigger_engine, AppState};
 use ares_types::types::AppError;
 use axum::{
     extract::State,
@@ -53,14 +53,7 @@ pub async fn handle_document_upload(
 
     let matching: Vec<_> = triggers
         .into_iter()
-        .filter(|t| t.enabled)
-        .filter(|t| {
-            t.event_config
-                .get("bucket")
-                .and_then(|v| v.as_str())
-                .map(|b| b == payload.bucket)
-                .unwrap_or(false)
-        })
+        .filter(|trigger| document_upload_trigger_matches(trigger, &payload))
         .collect();
 
     let app_state = Arc::new(state);
@@ -74,12 +67,8 @@ pub async fn handle_document_upload(
             "signed_url": payload.signed_url,
         });
         let message = serde_json::to_string(&context).unwrap_or_default();
-        if let Err(e) = trigger_engine::execute_triggered_agent(
-            &trigger,
-            &message,
-            &app_state,
-        )
-        .await
+        if let Err(e) =
+            trigger_engine::execute_triggered_agent(&trigger, &message, &app_state).await
         {
             tracing::warn!(
                 trigger_id = %trigger.id,
@@ -91,6 +80,27 @@ pub async fn handle_document_upload(
     }
 
     Ok(StatusCode::OK)
+}
+
+fn document_upload_trigger_matches(
+    trigger: &db_schedules::EventTrigger,
+    payload: &DocumentUploadEvent,
+) -> bool {
+    if !trigger.enabled {
+        return false;
+    }
+
+    let Some(bucket) = trigger.event_config.get("bucket").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    if bucket != payload.bucket {
+        return false;
+    }
+
+    match trigger.event_config.get("prefix").and_then(|v| v.as_str()) {
+        Some(prefix) if !prefix.is_empty() => payload.key.starts_with(prefix),
+        _ => true,
+    }
 }
 
 /// Check the `X-Webhook-Secret` header against the `WEBHOOK_SECRET` env var.
@@ -115,9 +125,77 @@ fn verify_webhook_secret(headers: &HeaderMap) -> crate::types::Result<()> {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use std::sync::Mutex;
+
+    static WEBHOOK_SECRET_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn document_trigger(bucket: &str, prefix: &str, enabled: bool) -> db_schedules::EventTrigger {
+        db_schedules::EventTrigger {
+            id: "trigger-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            name: "docs".to_string(),
+            event_type: "document_upload".to_string(),
+            event_config: serde_json::json!({
+                "bucket": bucket,
+                "prefix": prefix,
+            }),
+            target_agent: "agent-a".to_string(),
+            enabled,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn document_event(bucket: &str, key: &str) -> DocumentUploadEvent {
+        DocumentUploadEvent {
+            tenant_id: "tenant-1".to_string(),
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            size: 0,
+            content_type: String::new(),
+            signed_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn document_upload_trigger_match_honors_optional_prefix() {
+        let trigger = document_trigger("docs", "uploads/invoices/", true);
+
+        assert!(document_upload_trigger_matches(
+            &trigger,
+            &document_event("docs", "uploads/invoices/june.pdf")
+        ));
+        assert!(!document_upload_trigger_matches(
+            &trigger,
+            &document_event("docs", "uploads/contracts/june.pdf")
+        ));
+    }
+
+    #[test]
+    fn document_upload_trigger_match_accepts_empty_prefix() {
+        let trigger = document_trigger("docs", "", true);
+
+        assert!(document_upload_trigger_matches(
+            &trigger,
+            &document_event("docs", "any/key.pdf")
+        ));
+    }
+
+    #[test]
+    fn document_upload_trigger_match_rejects_disabled_or_wrong_bucket() {
+        assert!(!document_upload_trigger_matches(
+            &document_trigger("docs", "", false),
+            &document_event("docs", "any/key.pdf")
+        ));
+        assert!(!document_upload_trigger_matches(
+            &document_trigger("docs", "", true),
+            &document_event("other", "any/key.pdf")
+        ));
+    }
 
     #[test]
     fn verify_webhook_secret_empty_env_allows_all() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
         std::env::remove_var("WEBHOOK_SECRET");
         let mut headers = HeaderMap::new();
         headers.insert("X-Webhook-Secret", HeaderValue::from_static("anything"));
@@ -126,6 +204,7 @@ mod tests {
 
     #[test]
     fn verify_webhook_secret_rejects_mismatch() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
         std::env::set_var("WEBHOOK_SECRET", "secret123");
         let mut headers = HeaderMap::new();
         headers.insert("X-Webhook-Secret", HeaderValue::from_static("wrong"));
@@ -135,6 +214,7 @@ mod tests {
 
     #[test]
     fn verify_webhook_secret_accepts_match() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
         std::env::set_var("WEBHOOK_SECRET", "secret123");
         let mut headers = HeaderMap::new();
         headers.insert("X-Webhook-Secret", HeaderValue::from_static("secret123"));

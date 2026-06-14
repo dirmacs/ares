@@ -35,6 +35,18 @@ pub struct AgentRegistry {
     dynamic_config: Option<Arc<DynamicConfigManager>>,
 }
 
+fn intersect_agent_tools_with_tenant_allowlist(
+    agent_tools: Option<&[String]>,
+    tenant_allowed_tools: &[String],
+) -> Vec<String> {
+    agent_tools
+        .unwrap_or(&[])
+        .iter()
+        .filter(|tool| tenant_allowed_tools.contains(*tool))
+        .cloned()
+        .collect()
+}
+
 impl AgentRegistry {
     /// Create a new agent registry
     pub fn new(provider_registry: Arc<ProviderRegistry>, tool_registry: Arc<ToolRegistry>) -> Self {
@@ -313,18 +325,9 @@ impl AgentRegistry {
             .await
             .map_err(|e| AppError::Auth(format!("Failed to check tool allowlist: {}", e)))?;
         let db_tool_names: Vec<String> = db_tools.iter().map(|t| t.tool_name.clone()).collect();
-        let new_allowed = match agent.allowed_tools() {
-            Some(agent_tools) => {
-                let intersect: Vec<String> = agent_tools
-                    .iter()
-                    .cloned()
-                    .filter(|t| db_tool_names.contains(t))
-                    .collect();
-                Some(intersect)
-            }
-            None => Some(db_tool_names),
-        };
-        agent.set_allowed_tools(new_allowed);
+        let new_allowed =
+            intersect_agent_tools_with_tenant_allowlist(agent.allowed_tools(), &db_tool_names);
+        agent.set_allowed_tools(Some(new_allowed));
 
         Ok(agent)
     }
@@ -505,6 +508,22 @@ mod tests {
             },
         );
         Arc::new(registry)
+    }
+
+    #[test]
+    fn intersect_agent_tools_defaults_to_deny() {
+        let tenant_tools = vec!["calendar".to_string(), "search".to_string()];
+        let allowed = intersect_agent_tools_with_tenant_allowlist(None, &tenant_tools);
+        assert!(allowed.is_empty());
+    }
+
+    #[test]
+    fn intersect_agent_tools_keeps_only_configured_and_tenant_allowed() {
+        let agent_tools = vec!["calendar".to_string(), "sql".to_string()];
+        let tenant_tools = vec!["calendar".to_string(), "search".to_string()];
+        let allowed =
+            intersect_agent_tools_with_tenant_allowlist(Some(&agent_tools), &tenant_tools);
+        assert_eq!(allowed, vec!["calendar".to_string()]);
     }
 
     #[test]

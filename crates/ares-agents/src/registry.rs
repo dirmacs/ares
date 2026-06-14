@@ -294,6 +294,7 @@ impl AgentRegistry {
 
         let mut fallback_llms = Vec::new();
         for fallback in iter {
+            let fallback_provider_name = fallback.provider_name.clone();
             let client = self
                 .provider_registry
                 .create_client_for_resolved_provider(&fallback)
@@ -304,7 +305,7 @@ impl AgentRegistry {
                         fallback.provider_name, fallback.model_name, e
                     ))
                 })?;
-            fallback_llms.push(client);
+            fallback_llms.push((fallback_provider_name, client));
         }
 
         let mut agent = ConfigurableAgent::new_with_provider(
@@ -314,7 +315,7 @@ impl AgentRegistry {
             Some(Arc::clone(&self.tool_registry)),
             primary_provider_name,
         );
-        agent.set_fallback_llms(fallback_llms);
+        agent.set_fallback_llms_with_providers(fallback_llms);
         agent.set_token_budget_pool(pool.clone());
 
         // --- tenant allowlist enforcement ---

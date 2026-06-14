@@ -244,6 +244,7 @@ async fn execute_scheduled_agent(
                 request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
                 pipeline_id: None,
                 schedule_id: Some(sched.id.clone()),
+                trigger_id: None,
             });
 
             let skill_result = app_state
@@ -290,6 +291,7 @@ async fn execute_scheduled_agent(
                 eruka_write_count: 0,
                 pipeline_id: None,
                 schedule_id: Some(sched.id.clone()),
+                trigger_id: None,
             };
             let status = if skill_result.is_ok() {
                 "completed"
@@ -406,6 +408,7 @@ async fn execute_scheduled_agent(
         request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
         pipeline_id: None,
         schedule_id: Some(sched.id.clone()),
+        trigger_id: None,
     });
 
     let result = resolved_agent
@@ -487,6 +490,7 @@ async fn execute_scheduled_agent(
         eruka_write_count: 0,
         pipeline_id: None,
         schedule_id: Some(sched.id.clone()),
+        trigger_id: None,
     };
 
     let _has_error = error_msg.is_some();

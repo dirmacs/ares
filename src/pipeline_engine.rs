@@ -52,6 +52,7 @@ pub(crate) fn pipeline_target_run_effects(
             eruka_write_count: 0,
             pipeline_id: Some(pipeline.id.clone()),
             schedule_id: None,
+            trigger_id: None,
         },
         usage: PipelineUsageRecord {
             tenant_id: tenant_id.to_string(),
@@ -154,6 +155,7 @@ async fn execute_target_agent(
                 request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
                 pipeline_id: Some(pipeline.id.clone()),
                 schedule_id: None,
+                trigger_id: None,
             });
 
             let skill_result = app_state
@@ -296,6 +298,7 @@ async fn execute_target_agent(
         request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
         pipeline_id: Some(pipeline.id.clone()),
         schedule_id: None,
+        trigger_id: None,
     });
 
     let result = resolved_agent

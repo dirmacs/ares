@@ -884,6 +884,7 @@ pub async fn test_tenant_agent_handler(
         request_source: Some("admin_test_agent".to_string()),
         pipeline_id: None,
         schedule_id: None,
+        trigger_id: None,
     });
 
     let agent_context = AgentContext {
@@ -1476,6 +1477,7 @@ mod tests {
             eruka_write_count: 0,
             pipeline_id: None,
             schedule_id: None,
+            trigger_id: None,
         }
     }
 

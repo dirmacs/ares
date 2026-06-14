@@ -517,6 +517,19 @@ Handle employee info, policies, and benefits."#
         Err(AppError::NotFound(format!("Tool not found: {name}")))
     }
 
+    fn observed_tool_type(&self, name: &str, is_builtin: bool) -> String {
+        if is_builtin {
+            return "builtin".to_string();
+        }
+        #[cfg(feature = "postgres")]
+        if let (Some(rt), Some(tid)) = (&self.runtime_tool_registry, &self.runtime_tenant_id) {
+            if let Some(tool_type) = rt.tool_type_for_tenant(name, Some(tid)) {
+                return tool_type;
+            }
+        }
+        "runtime".to_string()
+    }
+
     /// Execute the agent with tool-calling support (multi-turn loop).
     async fn execute_with_tools(
         &self,
@@ -664,6 +677,7 @@ Handle employee info, policies, and benefits."#
                     .as_ref()
                     .map(|r| r.has_tool(&tc.name))
                     .unwrap_or(false);
+                let tool_type = self.observed_tool_type(&tc.name, is_builtin);
                 let result = self.dispatch_tool(&tc.name, tc.arguments.clone()).await;
                 let tool_latency = tool_start.elapsed().as_millis() as i64;
                 let result_value = match result {
@@ -681,7 +695,7 @@ Handle employee info, policies, and benefits."#
                     let tool_record = ToolCallRecord {
                         step_index: iteration as i32,
                         tool_name: tc.name.clone(),
-                        tool_type: if is_builtin { "builtin" } else { "runtime" }.to_string(),
+                        tool_type,
                         arguments: tc.arguments.clone(),
                         result: Some(result_value.clone()),
                         latency_ms: tool_latency,
@@ -1862,6 +1876,38 @@ mod tests {
             err.contains("sql"),
             "error should mention denied tool: {err}"
         );
+    }
+
+    #[test]
+    fn test_observed_tool_type_marks_builtins() {
+        let agent = ConfigurableAgent::with_params(
+            "router",
+            AgentType::Router,
+            Box::new(MockLLM::new()),
+            "system".to_string(),
+            None,
+            Some(vec!["http".to_string()]),
+            1,
+            false,
+        );
+
+        assert_eq!(agent.observed_tool_type("http", true), "builtin");
+    }
+
+    #[test]
+    fn test_observed_tool_type_falls_back_for_runtime_tools() {
+        let agent = ConfigurableAgent::with_params(
+            "router",
+            AgentType::Router,
+            Box::new(MockLLM::new()),
+            "system".to_string(),
+            None,
+            Some(vec!["tenant_http".to_string()]),
+            1,
+            false,
+        );
+
+        assert_eq!(agent.observed_tool_type("tenant_http", false), "runtime");
     }
 
     #[test]

@@ -447,6 +447,20 @@ impl RuntimeToolRegistry {
         tool.execute(args).await
     }
 
+    /// Return the concrete runtime tool type after tenant visibility checks.
+    pub fn tool_type_for_tenant(&self, name: &str, tenant_id: Option<&str>) -> Option<String> {
+        let row = self.metadata.load().get(name)?.clone();
+        if !row.enabled {
+            return None;
+        }
+        if let Some(tid) = tenant_id {
+            if !row.is_public && row.tenant_id.as_deref() != Some(tid) {
+                return None;
+            }
+        }
+        Some(row.tool_type)
+    }
+
     /// Execute a tool by name with tenant verification.
     pub async fn execute_for_tenant(
         &self,
@@ -455,9 +469,7 @@ impl RuntimeToolRegistry {
         tenant_id: Option<&str>,
     ) -> Result<Value> {
         let tool = self.get_for_tenant(name, tenant_id).ok_or_else(|| {
-            AppError::NotFound(format!(
-                "Runtime tool not found or not accessible: {name}"
-            ))
+            AppError::NotFound(format!("Runtime tool not found or not accessible: {name}"))
         })?;
         tool.execute(args).await
     }
@@ -484,10 +496,7 @@ impl RuntimeToolRegistry {
     }
 
     /// Get tool definitions scoped to a tenant.
-    pub fn get_tool_definitions_for_tenant(
-        &self,
-        tenant_id: Option<&str>,
-    ) -> Vec<ToolDefinition> {
+    pub fn get_tool_definitions_for_tenant(&self, tenant_id: Option<&str>) -> Vec<ToolDefinition> {
         let tools = self.tools.load();
         let meta = self.metadata.load();
 
@@ -873,6 +882,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_type_for_tenant_filters_like_get_for_tenant() {
+        let reg = make_registry_with_tools();
+
+        assert_eq!(
+            reg.tool_type_for_tenant("private_a", Some("tenant-a")),
+            Some("http".to_string())
+        );
+        assert_eq!(
+            reg.tool_type_for_tenant("private_a", Some("tenant-b")),
+            None
+        );
+        assert_eq!(reg.tool_type_for_tenant("disabled", Some("tenant-a")), None);
+    }
+
+    #[tokio::test]
     async fn enabled_tool_names_filters_by_tenant() {
         let reg = make_registry_with_tools();
 
@@ -939,17 +963,15 @@ mod tests {
     #[tokio::test]
     async fn reload_swaps_atomically() {
         // Use a lazy pool so we never connect to a real DB.
-        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test")
-            .expect("lazy pool never fails");
+        let pool =
+            sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool never fails");
         let reg = Arc::new(RuntimeToolRegistry::with_interval(pool, 0));
 
         // Pre-populate with a mock
         let mut tools = HashMap::new();
         tools.insert(
             "old".into(),
-            Arc::new(MockTool {
-                name: "old".into(),
-            }) as Arc<dyn Tool>,
+            Arc::new(MockTool { name: "old".into() }) as Arc<dyn Tool>,
         );
         reg.tools.store(Arc::new(tools));
 
@@ -960,9 +982,7 @@ mod tests {
         let mut tools = HashMap::new();
         tools.insert(
             "new".into(),
-            Arc::new(MockTool {
-                name: "new".into(),
-            }) as Arc<dyn Tool>,
+            Arc::new(MockTool { name: "new".into() }) as Arc<dyn Tool>,
         );
         reg.tools.store(Arc::new(tools));
 

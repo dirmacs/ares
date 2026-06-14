@@ -221,18 +221,13 @@ fn validate_agent_config_tools(
     runtime_tool_registry: &ares_tools::runtime_registry::RuntimeToolRegistry,
     tenant_id: &str,
 ) -> Result<()> {
-    let tool_names: Vec<String> =
-        if let Some(arr) = config.get("allowed_tools").and_then(|v| v.as_array()) {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        } else if let Some(arr) = config.get("tools").and_then(|v| v.as_array()) {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        } else {
-            return Ok(());
-        };
+    let tool_names: Vec<String> = if let Some(value) = config.get("allowed_tools") {
+        parse_agent_config_tool_names("allowed_tools", value)?
+    } else if let Some(value) = config.get("tools") {
+        parse_agent_config_tool_names("tools", value)?
+    } else {
+        return Ok(());
+    };
 
     if tool_names.is_empty() {
         return Ok(());
@@ -257,6 +252,25 @@ fn validate_agent_config_tools(
     }
 
     Ok(())
+}
+
+fn parse_agent_config_tool_names(field: &str, value: &serde_json::Value) -> Result<Vec<String>> {
+    match value {
+        serde_json::Value::Array(values) => values
+            .iter()
+            .map(|value| {
+                value.as_str().map(|name| name.to_string()).ok_or_else(|| {
+                    AppError::InvalidInput(format!(
+                        "Agent config field '{field}' must be an array of strings"
+                    ))
+                })
+            })
+            .collect(),
+        serde_json::Value::Null => Ok(Vec::new()),
+        _ => Err(AppError::InvalidInput(format!(
+            "Agent config field '{field}' must be an array"
+        ))),
+    }
 }
 
 pub async fn create_tenant(
@@ -1579,8 +1593,36 @@ mod tests {
             .expect("legacy tools field should validate built-in tools");
     }
 
+    #[tokio::test]
+    async fn validate_agent_config_tools_rejects_non_string_allowed_tools() {
+        let registry = ares_tools::registry::ToolRegistry::new();
+        let runtime_registry = empty_runtime_tool_registry();
+        let config = serde_json::json!({"allowed_tools": ["builtin_search", 7]});
+
+        let err = validate_agent_config_tools(&config, &registry, &runtime_registry, "tenant-a")
+            .expect_err("non-string allowed_tools entry should fail validation")
+            .to_string();
+
+        assert!(err.contains("allowed_tools"), "got: {err}");
+        assert!(err.contains("array of strings"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn validate_agent_config_tools_rejects_non_array_legacy_tools() {
+        let registry = ares_tools::registry::ToolRegistry::new();
+        let runtime_registry = empty_runtime_tool_registry();
+        let config = serde_json::json!({"tools": "builtin_search"});
+
+        let err = validate_agent_config_tools(&config, &registry, &runtime_registry, "tenant-a")
+            .expect_err("non-array tools field should fail validation")
+            .to_string();
+
+        assert!(err.contains("tools"), "got: {err}");
+        assert!(err.contains("must be an array"), "got: {err}");
+    }
+
     #[test]
-    fn run_skill_request_defaults_tenant_id() {
+    fn validate_schedule_request_rejects_negative_grace_period() {
         let req: RunSkillRequest = serde_json::from_value(serde_json::json!({
             "skill_id": "skill-1",
             "input": {"x": 1}

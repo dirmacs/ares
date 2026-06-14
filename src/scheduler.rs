@@ -333,6 +333,10 @@ async fn execute_scheduled_agent(
         pool: pool.clone(),
     });
     resolved_agent.agent.set_observability(obs.clone());
+    resolved_agent.agent.set_runtime_tools(
+        app_state.runtime_tool_registry.clone(),
+        sched.tenant_id.clone(),
+    );
 
     let mut runtime_context = AgentRuntimeContext::new(
         sched.tenant_id.clone(),

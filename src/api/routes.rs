@@ -538,6 +538,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             delete(crate::api::handlers::admin::delete_tenant_schedule),
         )
         .route(
+            "/admin/tenants/{tenant_id}/schedules/{id}/missed-runs",
+            get(crate::api::handlers::admin::list_schedule_missed_runs),
+        )
+        .route(
             "/admin/triggers",
             get(crate::api::handlers::admin::list_triggers)
                 .post(crate::api::handlers::admin::create_trigger),
@@ -1043,6 +1047,16 @@ mod tests {
         let server = test_server(test_app_state());
         let response = server
             .delete("/admin/tenants/tenant-1/schedules/schedule-1")
+            .await;
+        assert_ne!(response.status_code(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_schedule_missed_runs_route() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server
+            .get("/admin/tenants/tenant-1/schedules/schedule-1/missed-runs")
             .await;
         assert_ne!(response.status_code(), StatusCode::METHOD_NOT_ALLOWED);
     }

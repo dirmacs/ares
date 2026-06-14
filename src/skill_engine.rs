@@ -10,6 +10,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 const MAX_SKILL_CALL_DEPTH: usize = 8;
+const RUN_HISTORY_STATUS_SUCCESS: &str = "success";
 
 fn default_step_input() -> serde_json::Value {
     serde_json::Value::Null
@@ -424,7 +425,7 @@ impl SkillEngine {
             arguments: args,
             result,
             latency_ms,
-            status: "completed".to_string(),
+            status: RUN_HISTORY_STATUS_SUCCESS.to_string(),
             error_message: None,
             created_at: chrono::Utc::now().timestamp(),
         };
@@ -460,7 +461,7 @@ impl SkillEngine {
             total_tokens: usage.total_tokens as i64,
             estimated_cost_usd: rust_decimal::Decimal::ZERO,
             latency_ms: latency_ms,
-            status: "completed".to_string(),
+            status: RUN_HISTORY_STATUS_SUCCESS.to_string(),
             error_message: None,
             request_payload: None,
             response_payload: Some(serde_json::json!({
@@ -691,6 +692,11 @@ mod tests {
             .await
             .expect("enabled allowlist row should permit model");
         let _ = store.deny_model(&tenant_id, "gpt-4o").await;
+    }
+
+    #[test]
+    fn skill_run_history_status_matches_store_validation() {
+        assert_eq!(RUN_HISTORY_STATUS_SUCCESS, "success");
     }
 
     #[test]

@@ -317,6 +317,16 @@ impl<'a> ConnectorStore<'a> {
             .map_err(sqlx_err)?;
         Ok(res.rows_affected())
     }
+
+    pub async fn delete_connector_for_tenant(&self, tenant_id: &str, id: &str) -> Result<u64> {
+        let res = sqlx::query(delete_connector_for_tenant_sql())
+            .bind(id)
+            .bind(tenant_id)
+            .execute(self.pool)
+            .await
+            .map_err(sqlx_err)?;
+        Ok(res.rows_affected())
+    }
 }
 
 // =============================================================================
@@ -354,6 +364,10 @@ fn row_to_connector(row: &sqlx::postgres::PgRow) -> Result<Connector> {
         created_at: row.try_get("created_at").map_err(sqlx_err)?,
         updated_at: row.try_get("updated_at").map_err(sqlx_err)?,
     })
+}
+
+fn delete_connector_for_tenant_sql() -> &'static str {
+    "DELETE FROM connectors WHERE id = $1 AND tenant_id = $2"
 }
 
 fn get_skill_for_tenant_sql() -> &'static str {
@@ -566,6 +580,13 @@ mod tests {
         assert!(validate_service_type("webhook").is_ok());
         assert!(validate_service_type("github").is_ok());
         assert!(validate_service_type("unknown").is_err());
+    }
+
+    #[test]
+    fn delete_connector_for_tenant_sql_is_tenant_scoped() {
+        let sql = delete_connector_for_tenant_sql();
+        assert!(sql.contains("id = $1"));
+        assert!(sql.contains("tenant_id = $2"));
     }
 
     #[test]

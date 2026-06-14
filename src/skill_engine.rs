@@ -2,6 +2,7 @@
 
 use crate::db::run_history::{LogLlmCallRequest, LogToolCallRequest, RunHistoryStore};
 use crate::db::skills::SkillStore;
+use crate::db::tenant_allowlist::TenantAllowlistStore;
 use crate::{AresConfigManager, ConfigBasedLLMFactory, RuntimeToolRegistry, ToolRegistry};
 use ares_llm::{LLMClient, LLMResponse};
 use sqlx::PgPool;
@@ -128,6 +129,7 @@ impl SkillEngine {
             match step {
                 SkillStep::ToolCall { tool_name, args } => {
                     tracing::info!("Step {}: tool_call {}", step_index, tool_name);
+                    ensure_tenant_tool_allowed(&self.pool, tenant_id, &tool_name).await?;
                     let start = std::time::Instant::now();
 
                     // Try runtime registry first, then static registry
@@ -265,6 +267,7 @@ impl SkillEngine {
         match step {
             SkillStep::ToolCall { tool_name, args } => {
                 tracing::info!("Sub-step {}: tool_call {}", step_index, tool_name);
+                ensure_tenant_tool_allowed(&self.pool, tenant_id, tool_name).await?;
                 let start = std::time::Instant::now();
 
                 let result = if let Ok(rt) = self
@@ -450,6 +453,22 @@ impl SkillEngine {
     }
 }
 
+async fn ensure_tenant_tool_allowed(
+    pool: &PgPool,
+    tenant_id: &str,
+    tool_name: &str,
+) -> Result<(), String> {
+    let store = TenantAllowlistStore::new(pool);
+    match store.is_tool_allowed(tenant_id, tool_name).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "Tool '{}' is not allowed for tenant '{}'",
+            tool_name, tenant_id
+        )),
+        Err(e) => Err(format!("Failed to check tool allowlist: {}", e)),
+    }
+}
+
 fn ready_then_steps<'a>(
     expression: &str,
     then_steps: &'a [SkillStep],
@@ -524,6 +543,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn test_db_url() -> Option<String> {
+        std::env::var("TEST_DATABASE_URL")
+            .ok()
+            .or_else(|| std::env::var("DATABASE_URL").ok())
+    }
+
+    async fn try_test_pool() -> Option<PgPool> {
+        let pool = PgPool::connect(&test_db_url()?).await.ok()?;
+        Some(pool)
+    }
+
     fn collect_ready_skill_calls<'a>(
         steps: &'a [SkillStep],
         context: &serde_json::Value,
@@ -543,6 +573,35 @@ mod tests {
                 SkillStep::ToolCall { .. } | SkillStep::LlmCall { .. } => {}
             }
         }
+    }
+
+    #[tokio::test]
+    async fn ensure_tenant_tool_allowed_defaults_to_deny() {
+        let Some(pool) = try_test_pool().await else {
+            return;
+        };
+        let tenant_id = format!("tenant-{}", uuid::Uuid::new_v4());
+        let err = ensure_tenant_tool_allowed(&pool, &tenant_id, "calendar")
+            .await
+            .expect_err("missing allowlist row should deny");
+        assert!(err.contains("calendar"));
+    }
+
+    #[tokio::test]
+    async fn ensure_tenant_tool_allowed_accepts_enabled_row() {
+        let Some(pool) = try_test_pool().await else {
+            return;
+        };
+        let tenant_id = format!("tenant-{}", uuid::Uuid::new_v4());
+        let store = TenantAllowlistStore::new(&pool);
+        store
+            .allow_tool(&tenant_id, "calendar")
+            .await
+            .expect("allow tool");
+        ensure_tenant_tool_allowed(&pool, &tenant_id, "calendar")
+            .await
+            .expect("enabled allowlist row should permit tool");
+        let _ = store.deny_tool(&tenant_id, "calendar").await;
     }
 
     #[test]

@@ -211,12 +211,15 @@ fn parse_tenant_tier(tier: &str) -> Result<TenantTier> {
     TenantTier::from_str(tier).ok_or_else(|| AppError::InvalidInput(INVALID_TIER_MSG.to_string()))
 }
 
-/// Validates that every tool name referenced in an agent config exists in the
-/// runtime tool registry.  Checks `allowed_tools` first, then falls back to the
-/// legacy `tools` field.
+/// Validates that every tool name referenced in an agent config is executable
+/// by this tenant: either an enabled built-in tool or a tenant-visible runtime
+/// tool. Checks `allowed_tools` first, then falls back to the legacy `tools`
+/// field.
 fn validate_agent_config_tools(
     config: &serde_json::Value,
+    tool_registry: &ares_tools::registry::ToolRegistry,
     runtime_tool_registry: &ares_tools::runtime_registry::RuntimeToolRegistry,
+    tenant_id: &str,
 ) -> Result<()> {
     let tool_names: Vec<String> =
         if let Some(arr) = config.get("allowed_tools").and_then(|v| v.as_array()) {
@@ -237,7 +240,11 @@ fn validate_agent_config_tools(
 
     let mut invalid = Vec::new();
     for name in &tool_names {
-        if !runtime_tool_registry.has_tool(name) {
+        let builtin = tool_registry.has_tool(name) && tool_registry.is_enabled(name);
+        let runtime = runtime_tool_registry
+            .get_for_tenant(name, Some(tenant_id))
+            .is_some();
+        if !builtin && !runtime {
             invalid.push(name.clone());
         }
     }
@@ -467,7 +474,12 @@ pub async fn create_tenant_agent_handler(
     Path(tenant_id): Path<String>,
     Json(req): Json<CreateTenantAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
-    validate_agent_config_tools(&req.config, &state.runtime_tool_registry)?;
+    validate_agent_config_tools(
+        &req.config,
+        &state.tool_registry,
+        &state.runtime_tool_registry,
+        &tenant_id,
+    )?;
 
     let agent = db_create_tenant_agent(state.tenant_db.pool(), &tenant_id, req).await?;
 
@@ -486,7 +498,12 @@ pub async fn update_tenant_agent_handler(
     Json(req): Json<UpdateTenantAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
     if let Some(cfg) = &req.config {
-        validate_agent_config_tools(cfg, &state.runtime_tool_registry)?;
+        validate_agent_config_tools(
+            cfg,
+            &state.tool_registry,
+            &state.runtime_tool_registry,
+            &tenant_id,
+        )?;
     }
 
     let agent =
@@ -613,7 +630,12 @@ pub async fn create_agent(
         req.config
     };
 
-    validate_agent_config_tools(&config, &state.runtime_tool_registry)?;
+    validate_agent_config_tools(
+        &config,
+        &state.tool_registry,
+        &state.runtime_tool_registry,
+        &req.tenant_id,
+    )?;
 
     let db_req = CreateTenantAgentRequest {
         agent_name: req.agent_name,
@@ -639,7 +661,12 @@ pub async fn update_agent(
     Json(req): Json<UpdateAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
     if let Some(cfg) = &req.config {
-        validate_agent_config_tools(cfg, &state.runtime_tool_registry)?;
+        validate_agent_config_tools(
+            cfg,
+            &state.tool_registry,
+            &state.runtime_tool_registry,
+            &tenant_id,
+        )?;
     }
 
     let db_req = UpdateTenantAgentRequest {
@@ -1474,6 +1501,67 @@ mod tests {
             },
         );
         billing
+    }
+
+    struct TestTool;
+
+    #[async_trait::async_trait]
+    impl ares_tools::registry::Tool for TestTool {
+        fn name(&self) -> &str {
+            "builtin_search"
+        }
+
+        fn description(&self) -> &str {
+            "test built-in tool"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    fn empty_runtime_tool_registry() -> ares_tools::runtime_registry::RuntimeToolRegistry {
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test")
+            .expect("lazy pool never connects");
+        ares_tools::runtime_registry::RuntimeToolRegistry::with_interval(pool, 0)
+    }
+
+    #[tokio::test]
+    async fn validate_agent_config_tools_accepts_builtin_tools() {
+        let mut registry = ares_tools::registry::ToolRegistry::new();
+        registry.register(Arc::new(TestTool));
+        let runtime_registry = empty_runtime_tool_registry();
+        let config = serde_json::json!({"allowed_tools": ["builtin_search"]});
+
+        validate_agent_config_tools(&config, &registry, &runtime_registry, "tenant-a")
+            .expect("built-in allowed tool should validate");
+    }
+
+    #[tokio::test]
+    async fn validate_agent_config_tools_rejects_unknown_tools() {
+        let registry = ares_tools::registry::ToolRegistry::new();
+        let runtime_registry = empty_runtime_tool_registry();
+        let config = serde_json::json!({"allowed_tools": ["ghost"]});
+
+        let err = validate_agent_config_tools(&config, &registry, &runtime_registry, "tenant-a")
+            .expect_err("unknown tool should fail validation")
+            .to_string();
+        assert!(err.contains("ghost"));
+    }
+
+    #[tokio::test]
+    async fn validate_agent_config_tools_supports_legacy_tools_field() {
+        let mut registry = ares_tools::registry::ToolRegistry::new();
+        registry.register(Arc::new(TestTool));
+        let runtime_registry = empty_runtime_tool_registry();
+        let config = serde_json::json!({"tools": ["builtin_search"]});
+
+        validate_agent_config_tools(&config, &registry, &runtime_registry, "tenant-a")
+            .expect("legacy tools field should validate built-in tools");
     }
 
     #[test]

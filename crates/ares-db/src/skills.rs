@@ -51,7 +51,6 @@ pub struct Connector {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSkillRequest {
-    #[serde(default = "default_tenant_id")]
     pub tenant_id: String,
     pub name: String,
     pub display_name: String,
@@ -76,10 +75,6 @@ pub struct CreateConnectorRequest {
     pub endpoints: serde_json::Value,
     #[serde(default = "default_true")]
     pub enabled: bool,
-}
-
-fn default_tenant_id() -> String {
-    "default".to_string()
 }
 
 fn default_skill_type() -> String {
@@ -107,15 +102,11 @@ impl<'a> SkillStore<'a> {
 
     pub async fn list_skills(&self, tenant_id: Option<&str>) -> Result<Vec<Skill>> {
         let rows = if let Some(tid) = tenant_id {
-            sqlx::query(
-                "SELECT id, tenant_id, name, display_name, description, skill_type, steps, \
-                        input_schema, output_schema, tools, is_public, created_by, created_at, updated_at \
-                 FROM skills WHERE tenant_id = $1 ORDER BY name",
-            )
-            .bind(tid)
-            .fetch_all(self.pool)
-            .await
-            .map_err(sqlx_err)?
+            sqlx::query(list_skills_for_tenant_sql())
+                .bind(tid)
+                .fetch_all(self.pool)
+                .await
+                .map_err(sqlx_err)?
         } else {
             sqlx::query(
                 "SELECT id, tenant_id, name, display_name, description, skill_type, steps, \
@@ -189,15 +180,16 @@ impl<'a> SkillStore<'a> {
         validate_skill_request(req)?;
         let now = now_ts();
 
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "UPDATE skills SET \
                 tenant_id = $2, name = $3, display_name = $4, description = $5, \
                 skill_type = $6, steps = $7, input_schema = $8, output_schema = $9, \
                 tools = $10, is_public = $11, created_by = COALESCE($12, created_by), updated_at = $13 \
-             WHERE id = $1 \
+             {} \
              RETURNING id, tenant_id, name, display_name, description, skill_type, steps, \
                        input_schema, output_schema, tools, is_public, created_by, created_at, updated_at",
-        )
+            update_skill_where_clause_sql()
+        ))
         .bind(id)
         .bind(&req.tenant_id)
         .bind(&req.name)
@@ -221,6 +213,16 @@ impl<'a> SkillStore<'a> {
     pub async fn delete_skill(&self, id: &str) -> Result<u64> {
         let res = sqlx::query("DELETE FROM skills WHERE id = $1")
             .bind(id)
+            .execute(self.pool)
+            .await
+            .map_err(sqlx_err)?;
+        Ok(res.rows_affected())
+    }
+
+    pub async fn delete_skill_for_tenant(&self, tenant_id: &str, id: &str) -> Result<u64> {
+        let res = sqlx::query(delete_skill_for_tenant_sql())
+            .bind(id)
+            .bind(tenant_id)
             .execute(self.pool)
             .await
             .map_err(sqlx_err)?;
@@ -366,6 +368,20 @@ fn row_to_connector(row: &sqlx::postgres::PgRow) -> Result<Connector> {
     })
 }
 
+fn list_skills_for_tenant_sql() -> &'static str {
+    "SELECT id, tenant_id, name, display_name, description, skill_type, steps, \
+            input_schema, output_schema, tools, is_public, created_by, created_at, updated_at \
+     FROM skills WHERE tenant_id = $1 OR is_public = TRUE ORDER BY name"
+}
+
+fn update_skill_where_clause_sql() -> &'static str {
+    "WHERE id = $1 AND tenant_id = $2"
+}
+
+fn delete_skill_for_tenant_sql() -> &'static str {
+    "DELETE FROM skills WHERE id = $1 AND tenant_id = $2"
+}
+
 fn delete_connector_for_tenant_sql() -> &'static str {
     "DELETE FROM connectors WHERE id = $1 AND tenant_id = $2"
 }
@@ -381,6 +397,11 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
 }
 
 fn validate_skill_request(req: &CreateSkillRequest) -> Result<()> {
+    if req.tenant_id.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "skill tenant_id must not be empty".into(),
+        ));
+    }
     if req.name.is_empty() {
         return Err(AppError::InvalidInput(
             "skill name must not be empty".into(),
@@ -544,15 +565,36 @@ mod tests {
     }
 
     #[test]
-    fn create_skill_request_defaults_missing_tenant() {
-        let req: CreateSkillRequest = serde_json::from_value(serde_json::json!({
+    fn create_skill_request_requires_tenant() {
+        let err = serde_json::from_value::<CreateSkillRequest>(serde_json::json!({
             "name": "demo",
             "display_name": "Demo",
             "skill_type": "workflow",
             "steps": []
         }))
-        .expect("request should deserialize without tenant_id");
-        assert_eq!(req.tenant_id, "default");
+        .expect_err("tenant_id is required");
+        assert!(err.to_string().contains("tenant_id"));
+    }
+
+    #[test]
+    fn list_skills_for_tenant_sql_includes_owned_or_public_only() {
+        let sql = list_skills_for_tenant_sql();
+        assert!(sql.contains("tenant_id = $1"));
+        assert!(sql.contains("is_public = TRUE"));
+    }
+
+    #[test]
+    fn delete_skill_for_tenant_sql_is_tenant_scoped() {
+        let sql = delete_skill_for_tenant_sql();
+        assert!(sql.contains("id = $1"));
+        assert!(sql.contains("tenant_id = $2"));
+    }
+
+    #[test]
+    fn update_skill_sql_is_tenant_scoped() {
+        let sql = update_skill_where_clause_sql();
+        assert!(sql.contains("id = $1"));
+        assert!(sql.contains("tenant_id = $2"));
     }
 
     #[test]

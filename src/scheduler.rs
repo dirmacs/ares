@@ -189,6 +189,14 @@ fn skip_catchup_attempted_due_schedules(
         .collect()
 }
 
+fn scheduled_usage_source(is_catchup: bool) -> &'static str {
+    if is_catchup {
+        "catchup"
+    } else {
+        "scheduled"
+    }
+}
+
 async fn execute_scheduled_agent(
     sched: &AgentSchedule,
     app_state: &Arc<crate::AppState>,
@@ -268,10 +276,14 @@ async fn execute_scheduled_agent(
             if let Ok(val) = &skill_result {
                 let output_str = serde_json::to_string(val).unwrap_or_default();
                 let trigger = scheduled_pipeline_trigger(sched, &output_str);
-                let _ = crate::pipeline_engine::execute_pipeline(
+                let _ = crate::pipeline_engine::execute_pipeline_with_origin(
                     trigger.source_agent,
                     trigger.source_output,
                     trigger.tenant_id,
+                    Some(crate::pipeline_engine::PipelineOrigin::scheduled(
+                        sched.id.clone(),
+                        is_catchup,
+                    )),
                     app_state,
                 )
                 .await;
@@ -327,12 +339,14 @@ async fn execute_scheduled_agent(
             let usage_pool = pool.clone();
             let usage_tid = sched.tenant_id.clone();
             let usage_agent = sched.agent_name.clone();
+            let usage_source = scheduled_usage_source(is_catchup);
             tokio::spawn(async move {
                 let _ = sqlx::query(
-                    "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'scheduled', $3, $4, $5, $6, $7, $8, $9, $10)"
+                    "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
                 )
                 .bind(uuid::Uuid::new_v4().to_string())
                 .bind(usage_tid)
+                .bind(usage_source)
                 .bind(1i32)
                 .bind(0i64)
                 .bind(0i64)
@@ -522,9 +536,7 @@ async fn execute_scheduled_agent(
         .await;
     });
 
-    // Record usage event (fire-and-forget) - source='scheduled'
-    // SQL: INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at)
-    //      VALUES ($1, $2, 'scheduled', $3, $4, $5, $6, $7, $8, $9, $10)
+    // Record usage event (fire-and-forget) with scheduled/catchup source.
     let usage_pool = pool.clone();
     let usage_tid = sched.tenant_id.clone();
     let usage_model = if model_clone != "unknown" {
@@ -538,15 +550,17 @@ async fn execute_scheduled_agent(
         None
     };
     let usage_agent = sched.agent_name.clone();
+    let usage_source = scheduled_usage_source(is_catchup);
     let input_tok = input_tokens;
     let output_tok = output_tokens;
     let token_total = input_tokens + output_tokens;
     tokio::spawn(async move {
         let _ = sqlx::query(
-            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'scheduled', $3, $4, $5, $6, $7, $8, $9, $10)"
+            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(usage_tid)
+        .bind(usage_source)
         .bind(1i32) // request_count
         .bind(token_total)
         .bind(input_tok)
@@ -627,6 +641,12 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_usage_source_distinguishes_catchup() {
+        assert_eq!(scheduled_usage_source(false), "scheduled");
+        assert_eq!(scheduled_usage_source(true), "catchup");
+    }
+
+    #[test]
     fn scheduled_agent_success_prepares_downstream_pipeline_execution_and_billing() {
         let schedule = schedule("schedule-1");
         let source_output = r#"{"status":"success","result":"ready"}"#;
@@ -650,10 +670,12 @@ mod tests {
         ));
         assert_eq!(pipeline.source_agent, schedule.agent_name);
 
+        let origin = crate::pipeline_engine::PipelineOrigin::scheduled(schedule.id.clone(), false);
         let effects = crate::pipeline_engine::pipeline_target_run_effects(
             &pipeline,
             trigger.tenant_id,
             "target-run-1",
+            Some(&origin),
             Some("tenant-db"),
             Some("cfg-v1".to_string()),
             true,
@@ -669,6 +691,7 @@ mod tests {
             Some("pipeline-source-to-target")
         );
         assert_eq!(effects.metadata.session_id.as_deref(), Some("target-run-1"));
+        assert_eq!(effects.metadata.schedule_id.as_deref(), Some("schedule-1"));
         assert!(effects.metadata.eruka_context_hit);
         assert_eq!(effects.metadata.eruka_read_count, 1);
         assert_eq!(effects.usage.tenant_id, "tenant-a");

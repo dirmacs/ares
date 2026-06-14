@@ -188,6 +188,7 @@ impl SkillEngine {
                         super::resolve_model_tier(tenant_id, &model_tier, &self.pool, &config)
                             .await
                             .unwrap_or_else(|| ("default".to_string(), model_tier.clone()));
+                    ensure_tenant_model_allowed(&self.pool, tenant_id, &model_name).await?;
 
                     // Build messages and call LLM
                     let messages = vec![("user".to_string(), prompt.clone())];
@@ -330,6 +331,7 @@ impl SkillEngine {
                     super::resolve_model_tier(tenant_id, model_tier, &self.pool, &config)
                         .await
                         .unwrap_or_else(|| ("default".to_string(), model_tier.clone()));
+                ensure_tenant_model_allowed(&self.pool, tenant_id, &model_name).await?;
 
                 let messages = vec![("user".to_string(), prompt.clone())];
                 let registry = self.llm_factory.registry();
@@ -495,6 +497,22 @@ async fn ensure_tenant_tool_allowed(
     }
 }
 
+async fn ensure_tenant_model_allowed(
+    pool: &PgPool,
+    tenant_id: &str,
+    model_name: &str,
+) -> Result<(), String> {
+    let store = TenantAllowlistStore::new(pool);
+    match store.is_model_allowed(tenant_id, model_name).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "Model '{}' is not allowed for tenant '{}'",
+            model_name, tenant_id
+        )),
+        Err(e) => Err(format!("Failed to check model allowlist: {}", e)),
+    }
+}
+
 fn ready_then_steps<'a>(
     expression: &str,
     then_steps: &'a [SkillStep],
@@ -644,6 +662,35 @@ mod tests {
             .await
             .expect("enabled allowlist row should permit tool");
         let _ = store.deny_tool(&tenant_id, "calendar").await;
+    }
+
+    #[tokio::test]
+    async fn ensure_tenant_model_allowed_defaults_to_deny() {
+        let Some(pool) = try_test_pool().await else {
+            return;
+        };
+        let tenant_id = format!("tenant-{}", uuid::Uuid::new_v4());
+        let err = ensure_tenant_model_allowed(&pool, &tenant_id, "gpt-4o")
+            .await
+            .expect_err("missing model allowlist row should deny");
+        assert!(err.contains("gpt-4o"));
+    }
+
+    #[tokio::test]
+    async fn ensure_tenant_model_allowed_accepts_enabled_row() {
+        let Some(pool) = try_test_pool().await else {
+            return;
+        };
+        let tenant_id = format!("tenant-{}", uuid::Uuid::new_v4());
+        let store = TenantAllowlistStore::new(&pool);
+        store
+            .allow_model(&tenant_id, "gpt-4o")
+            .await
+            .expect("allow model");
+        ensure_tenant_model_allowed(&pool, &tenant_id, "gpt-4o")
+            .await
+            .expect("enabled allowlist row should permit model");
+        let _ = store.deny_model(&tenant_id, "gpt-4o").await;
     }
 
     #[test]

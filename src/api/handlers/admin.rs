@@ -2288,6 +2288,15 @@ mod tests {
         assert_eq!(json["created_at"], 1_700_000_000);
     }
 
+    #[tokio::test]
+    async fn runtime_tool_capabilities_use_storage_contract() {
+        let Json(capabilities) = runtime_tool_capabilities().await;
+        assert_eq!(
+            capabilities.tool_types,
+            vec!["http", "mcp", "script", "sql"]
+        );
+    }
+
     #[test]
     fn runtime_provider_response_redacts_direct_api_key() {
         let provider = ares_db::runtime_providers::RuntimeProvider {
@@ -3263,6 +3272,17 @@ pub async fn rollback_runtime_tool(
 use ares_db::runtime_providers::{CreateRuntimeProviderRequest, RuntimeProviderStore};
 
 const RUNTIME_PROVIDER_SECRET_REDACTION: &str = "********";
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeToolCapabilitiesResponse {
+    pub tool_types: Vec<&'static str>,
+}
+
+pub async fn runtime_tool_capabilities() -> Json<RuntimeToolCapabilitiesResponse> {
+    Json(RuntimeToolCapabilitiesResponse {
+        tool_types: vec!["http", "mcp", "script", "sql"],
+    })
+}
 
 #[derive(Debug, Serialize)]
 pub struct RuntimeProviderResponse {

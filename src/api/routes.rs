@@ -388,6 +388,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
                 .post(crate::api::handlers::admin::create_runtime_tool),
         )
         .route(
+            "/admin/runtime-tools/capabilities",
+            get(crate::api::handlers::admin::runtime_tool_capabilities),
+        )
+        .route(
             "/admin/runtime-tools/{id}",
             get(crate::api::handlers::admin::get_runtime_tool)
                 .put(crate::api::handlers::admin::update_runtime_tool)
@@ -1049,6 +1053,14 @@ mod tests {
             .delete("/admin/tenants/tenant-1/schedules/schedule-1")
             .await;
         assert_ne!(response.status_code(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_runtime_tool_capabilities_route() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server.get("/admin/runtime-tools/capabilities").await;
+        assert_ne!(response.status_code(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

@@ -114,6 +114,10 @@ pub async fn execute_triggered_agent(
             } else {
                 "failed"
             };
+            let (input_tokens, output_tokens) = skill_result
+                .as_ref()
+                .map(crate::skill_engine::skill_result_token_counts)
+                .unwrap_or((0, 0));
             let err_msg = skill_result.as_ref().err().cloned();
 
             let pool_clone = pool.clone();
@@ -128,8 +132,8 @@ pub async fn execute_triggered_agent(
                     &aname,
                     None,
                     status,
-                    0,
-                    0,
+                    input_tokens,
+                    output_tokens,
                     duration_ms as i64,
                     err_msg.as_deref(),
                     "skill",
@@ -143,6 +147,7 @@ pub async fn execute_triggered_agent(
             let usage_pool = pool.clone();
             let usage_tid = trigger.tenant_id.clone();
             let usage_agent = trigger.target_agent.clone();
+            let token_count = input_tokens + output_tokens;
             tokio::spawn(async move {
                 let _ = sqlx::query(
                     "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'trigger', $3, $4, $5, $6, $7, $8, $9, $10)"
@@ -150,9 +155,9 @@ pub async fn execute_triggered_agent(
                 .bind(uuid::Uuid::new_v4().to_string())
                 .bind(usage_tid)
                 .bind(1i32)
-                .bind(0i64)
-                .bind(0i64)
-                .bind(0i64)
+                .bind(token_count)
+                .bind(input_tokens)
+                .bind(output_tokens)
                 .bind(Some("skill".to_string()))
                 .bind(usage_agent)
                 .bind(Some("skill".to_string()))

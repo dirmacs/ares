@@ -313,6 +313,7 @@ dependencies = [
  "async-trait",
  "chromadb",
  "chrono",
+ "chrono-tz",
  "cron",
  "hex",
  "lance",

@@ -16,6 +16,39 @@ fn default_step_input() -> serde_json::Value {
     serde_json::Value::Null
 }
 
+pub(crate) fn skill_result_token_counts(result: &serde_json::Value) -> (i64, i64) {
+    fn walk(value: &serde_json::Value, input_tokens: &mut i64, output_tokens: &mut i64) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if let Some(usage) = object.get("usage").and_then(|usage| usage.as_object()) {
+                    *input_tokens += usage
+                        .get("prompt_tokens")
+                        .and_then(|value| value.as_i64())
+                        .unwrap_or(0);
+                    *output_tokens += usage
+                        .get("completion_tokens")
+                        .and_then(|value| value.as_i64())
+                        .unwrap_or(0);
+                }
+                for child in object.values() {
+                    walk(child, input_tokens, output_tokens);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, input_tokens, output_tokens);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut input_tokens = 0;
+    let mut output_tokens = 0;
+    walk(result, &mut input_tokens, &mut output_tokens);
+    (input_tokens, output_tokens)
+}
+
 fn validate_skill_call_depth(depth: usize) -> Result<(), String> {
     if depth > MAX_SKILL_CALL_DEPTH {
         return Err(format!(
@@ -202,10 +235,13 @@ impl SkillEngine {
                             .map_err(|e| format!("LLM client creation failed: {}", e))?,
                     };
 
+                    self.enforce_token_budget_before_llm_call(tenant_id).await?;
                     let response = client
                         .generate_with_history(&messages)
                         .await
                         .map_err(|e| format!("LLM generation failed: {}", e))?;
+                    self.record_llm_token_budget_usage(tenant_id, run_id, &model_name, &response)
+                        .await?;
 
                     let latency_ms = start.elapsed().as_millis() as i64;
 
@@ -344,10 +380,13 @@ impl SkillEngine {
                         .map_err(|e| format!("LLM client creation failed: {}", e))?,
                 };
 
+                self.enforce_token_budget_before_llm_call(tenant_id).await?;
                 let response = client
                     .generate_with_history(&messages)
                     .await
                     .map_err(|e| format!("LLM generation failed: {}", e))?;
+                self.record_llm_token_budget_usage(tenant_id, run_id, &model_name, &response)
+                    .await?;
 
                 let latency_ms = start.elapsed().as_millis() as i64;
                 let result = serde_json::json!({
@@ -401,6 +440,45 @@ impl SkillEngine {
             }
         }
         Ok(())
+    }
+
+    async fn enforce_token_budget_before_llm_call(&self, tenant_id: &str) -> Result<(), String> {
+        let store = ares_db::token_budgets::TokenBudgetStore::new(&self.pool);
+        let status = store
+            .check_budget(tenant_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        if status.would_exceed {
+            return Err(format!(
+                "Tenant {} token budget exceeded ({} / {})",
+                tenant_id, status.tokens_used, status.token_limit
+            ));
+        }
+        Ok(())
+    }
+
+    async fn record_llm_token_budget_usage(
+        &self,
+        tenant_id: &str,
+        run_id: &str,
+        model: &str,
+        response: &LLMResponse,
+    ) -> Result<(), String> {
+        let Some(usage) = response.usage.as_ref() else {
+            return Ok(());
+        };
+        let store = ares_db::token_budgets::TokenBudgetStore::new(&self.pool);
+        store
+            .record_usage(
+                tenant_id,
+                Some(run_id),
+                "skill",
+                model,
+                usage.prompt_tokens as i64,
+                usage.completion_tokens as i64,
+            )
+            .await
+            .map_err(|e| e.to_string())
     }
 
     async fn log_tool_call_result(
@@ -692,6 +770,23 @@ mod tests {
             .await
             .expect("enabled allowlist row should permit model");
         let _ = store.deny_model(&tenant_id, "gpt-4o").await;
+    }
+
+    #[test]
+    fn skill_result_token_counts_sums_nested_llm_usage() {
+        let result = serde_json::json!({
+            "step_0": {
+                "content": "top",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
+            },
+            "step_1": {
+                "nested": {
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+                }
+            }
+        });
+
+        assert_eq!(skill_result_token_counts(&result), (13, 6));
     }
 
     #[test]

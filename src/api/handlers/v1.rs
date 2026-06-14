@@ -766,6 +766,10 @@ pub async fn run_agent(
                 } else {
                     "failed"
                 };
+                let (input_tokens, output_tokens) = skill_result
+                    .as_ref()
+                    .map(crate::skill_engine::skill_result_token_counts)
+                    .unwrap_or((0, 0));
                 let err_msg = skill_result.as_ref().err().cloned();
                 let run_id_for_insert = run_id.clone();
                 tokio::spawn(async move {
@@ -776,8 +780,8 @@ pub async fn run_agent(
                         &aname,
                         None,
                         status,
-                        0,
-                        0,
+                        input_tokens,
+                        output_tokens,
                         dur,
                         err_msg.as_deref(),
                         "skill",
@@ -792,6 +796,9 @@ pub async fn run_agent(
             let response_agent_id = resolved_agent.agent_name.clone();
             let (response, input_tokens, output_tokens) = match skill_result {
                 Ok(context) => {
+                    let (input_tokens, output_tokens) =
+                        crate::skill_engine::skill_result_token_counts(&context);
+                    let total_tokens = (input_tokens + output_tokens).max(0) as u64;
                     let response = V1AgentRun {
                         id: run_id,
                         agent_id: response_agent_id.clone(),
@@ -802,9 +809,13 @@ pub async fn run_agent(
                         started_at: Utc::now(),
                         finished_at: Some(Utc::now()),
                         duration_ms: Some(duration_ms),
-                        tokens_used: Some(0),
+                        tokens_used: Some(total_tokens),
                     };
-                    (response, 0u64, 0u64)
+                    (
+                        response,
+                        input_tokens.max(0) as u64,
+                        output_tokens.max(0) as u64,
+                    )
                 }
                 Err(e) => {
                     let response = V1AgentRun {

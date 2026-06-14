@@ -251,6 +251,10 @@ async fn execute_target_agent(
         pool: pool.clone(),
     });
     resolved_agent.agent.set_observability(obs.clone());
+    resolved_agent.agent.set_runtime_tools(
+        app_state.runtime_tool_registry.clone(),
+        tenant_id.to_string(),
+    );
 
     let mut runtime_context = AgentRuntimeContext::new(
         tenant_id.to_string(),

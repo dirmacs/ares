@@ -1034,7 +1034,12 @@ mod tests {
         let qwen_vl = ModelCapabilities::for_model("qwen2.5-vl-72b");
         assert!(qwen_vl.supports_vision);
 
-        for unknown in ["gemini-1.5-pro", "claude", "deepseek-r1"] {
+        let deepseek = ModelCapabilities::for_model("azure/deepseek-r1");
+        assert!(deepseek.supports_reasoning);
+        assert!(deepseek.supports_streaming);
+        assert_eq!(deepseek.family.as_deref(), Some("deepseek"));
+
+        for unknown in ["gemini-1.5-pro", "claude"] {
             let caps = ModelCapabilities::for_model(unknown);
             assert_eq!(
                 caps,

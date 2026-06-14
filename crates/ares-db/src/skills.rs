@@ -142,6 +142,16 @@ impl<'a> SkillStore<'a> {
         row.map(|r| row_to_skill(&r)).transpose()
     }
 
+    pub async fn get_skill_for_tenant(&self, id: &str, tenant_id: &str) -> Result<Option<Skill>> {
+        let row = sqlx::query(get_skill_for_tenant_sql())
+            .bind(id)
+            .bind(tenant_id)
+            .fetch_optional(self.pool)
+            .await
+            .map_err(sqlx_err)?;
+        row.map(|r| row_to_skill(&r)).transpose()
+    }
+
     pub async fn create_skill(&self, req: &CreateSkillRequest) -> Result<Skill> {
         validate_skill_request(req)?;
         let now = now_ts();
@@ -346,6 +356,12 @@ fn row_to_connector(row: &sqlx::postgres::PgRow) -> Result<Connector> {
     })
 }
 
+fn get_skill_for_tenant_sql() -> &'static str {
+    "SELECT id, tenant_id, name, display_name, description, skill_type, steps, \
+            input_schema, output_schema, tools, is_public, created_by, created_at, updated_at \
+     FROM skills WHERE id = $1 AND (tenant_id = $2 OR is_public = TRUE)"
+}
+
 fn sqlx_err(e: sqlx::Error) -> AppError {
     AppError::Database(e.to_string())
 }
@@ -523,6 +539,14 @@ mod tests {
         }))
         .expect("request should deserialize without tenant_id");
         assert_eq!(req.tenant_id, "default");
+    }
+
+    #[test]
+    fn get_skill_for_tenant_sql_allows_owned_or_public_only() {
+        let sql = get_skill_for_tenant_sql();
+        assert!(sql.contains("id = $1"));
+        assert!(sql.contains("tenant_id = $2"));
+        assert!(sql.contains("is_public = TRUE"));
     }
 
     #[test]

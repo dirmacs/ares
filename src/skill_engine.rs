@@ -147,7 +147,7 @@ impl SkillEngine {
         // 1. Load the skill definition
         let skill_store = SkillStore::new(&self.pool);
         let skill = skill_store
-            .get_skill(skill_id)
+            .get_skill_for_tenant(skill_id, tenant_id)
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Skill not found".to_string())?;

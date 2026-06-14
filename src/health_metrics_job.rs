@@ -6,7 +6,7 @@
 
 use ares_db::run_history::{AgentHealthMetrics, ModelHealthMetrics, RunHistoryStore};
 use rust_decimal::Decimal;
-use sqlx::{postgres::PgRow, PgPool, Row};
+use sqlx::{PgPool, Row, postgres::PgRow};
 use std::time::Duration;
 use tokio::time::interval;
 use uuid::Uuid;
@@ -199,7 +199,7 @@ fn agent_health_sql() -> &'static str {
         COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p50_latency_ms, \
         COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p95_latency_ms, \
         COALESCE(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms), 0)::bigint AS p99_latency_ms, \
-        COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens \
+        COALESCE(SUM(input_tokens + output_tokens)::bigint, 0) AS total_tokens \
      FROM agent_runs \
      WHERE created_at >= $1 AND created_at <= $2 \
      GROUP BY tenant_id, agent_name"
@@ -216,7 +216,7 @@ fn model_health_sql() -> &'static str {
         COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p50_latency_ms, \
         COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p95_latency_ms, \
         COALESCE(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint AS p99_latency_ms, \
-        COALESCE(SUM(total_tokens), 0) AS total_tokens, \
+        COALESCE(SUM(total_tokens)::bigint, 0) AS total_tokens, \
         COALESCE(SUM(estimated_cost_usd), 0) AS total_cost_usd \
      FROM run_llm_calls \
      WHERE created_at >= $1 AND created_at <= $2 \
@@ -241,6 +241,7 @@ mod tests {
         assert!(sql.contains("FROM agent_runs"));
         assert!(sql.contains("created_at >= $1"));
         assert!(sql.contains("created_at <= $2"));
+        assert!(sql.contains("SUM(input_tokens + output_tokens)::bigint"));
         assert!(sql.contains("GROUP BY tenant_id, agent_name"));
     }
 
@@ -250,6 +251,7 @@ mod tests {
         assert!(sql.contains("FROM run_llm_calls"));
         assert!(sql.contains("created_at >= $1"));
         assert!(sql.contains("created_at <= $2"));
+        assert!(sql.contains("SUM(total_tokens)::bigint"));
         assert!(sql.contains("GROUP BY tenant_id, model"));
     }
 

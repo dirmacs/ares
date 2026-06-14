@@ -568,11 +568,11 @@ impl RuntimeToolRegistry {
 
     /// Spawn a background Tokio task that calls [`reload`] periodically.
     ///
-    /// Does nothing if `reload_interval_secs` is `0`.
-    pub fn start_background_reload(self: Arc<Self>) {
+    /// Returns `false` without spawning when `reload_interval_secs` is `0`.
+    pub fn start_background_reload(self: Arc<Self>) -> bool {
         let secs = self.reload_interval_secs;
         if secs == 0 {
-            return;
+            return false;
         }
 
         tokio::spawn(async move {
@@ -586,6 +586,7 @@ impl RuntimeToolRegistry {
                 }
             }
         });
+        true
     }
 
     /// Atomically replace the reload interval.
@@ -959,6 +960,24 @@ mod tests {
     // -------------------------------------------------------------------------
     // Hot-swap test
     // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn start_background_reload_reports_disabled_interval() {
+        let pool =
+            sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool never fails");
+        let reg = Arc::new(RuntimeToolRegistry::with_interval(pool, 0));
+
+        assert!(!reg.start_background_reload());
+    }
+
+    #[tokio::test]
+    async fn start_background_reload_reports_spawned_task() {
+        let pool =
+            sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool never fails");
+        let reg = Arc::new(RuntimeToolRegistry::with_interval(pool, 60));
+
+        assert!(reg.start_background_reload());
+    }
 
     #[tokio::test]
     async fn reload_swaps_atomically() {

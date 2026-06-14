@@ -51,6 +51,34 @@ impl PipelineOrigin {
     }
 }
 
+fn pipeline_active_run(
+    run_id: &str,
+    tenant_id: &str,
+    agent_name: &str,
+    pipeline_id: &str,
+    origin: Option<&PipelineOrigin>,
+    tool_name: Option<String>,
+) -> crate::active_runs::ActiveRun {
+    let now = chrono::Utc::now().timestamp();
+    crate::active_runs::ActiveRun {
+        run_id: run_id.to_string(),
+        tenant_id: tenant_id.to_string(),
+        agent_name: agent_name.to_string(),
+        started_at: now,
+        status: "running".to_string(),
+        current_step: 0,
+        total_steps: 0,
+        last_update: now,
+        tool_name,
+        model: None,
+        is_catchup: origin.map(|origin| origin.is_catchup).unwrap_or(false),
+        request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
+        pipeline_id: Some(pipeline_id.to_string()),
+        schedule_id: origin.and_then(|origin| origin.schedule_id.clone()),
+        trigger_id: origin.and_then(|origin| origin.trigger_id.clone()),
+    }
+}
+
 pub(crate) fn pipeline_target_run_effects(
     pipeline: &AgentPipeline,
     tenant_id: &str,
@@ -181,27 +209,19 @@ async fn execute_target_agent(
 
     let start = std::time::Instant::now();
     let run_id = uuid::Uuid::new_v4().to_string();
+    let origin_ref = origin;
 
     // Skill-based execution
     if let Some(config) = &resolved_agent.config {
         if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {
-            app_state.active_runs.start(crate::active_runs::ActiveRun {
-                run_id: run_id.clone(),
-                tenant_id: tenant_id.to_string(),
-                agent_name: pipeline.target_agent.clone(),
-                started_at: chrono::Utc::now().timestamp(),
-                status: "running".to_string(),
-                current_step: 0,
-                total_steps: 0,
-                last_update: chrono::Utc::now().timestamp(),
-                tool_name: Some(format!("skill:{}", skill_id)),
-                model: None,
-                is_catchup: origin.map(|origin| origin.is_catchup).unwrap_or(false),
-                request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
-                pipeline_id: Some(pipeline.id.clone()),
-                schedule_id: origin.and_then(|origin| origin.schedule_id.clone()),
-                trigger_id: origin.and_then(|origin| origin.trigger_id.clone()),
-            });
+            app_state.active_runs.start(pipeline_active_run(
+                &run_id,
+                tenant_id,
+                &pipeline.target_agent,
+                &pipeline.id,
+                origin_ref,
+                Some(format!("skill:{}", skill_id)),
+            ));
 
             let skill_result = app_state
                 .skill_engine
@@ -225,7 +245,7 @@ async fn execute_target_agent(
                 pipeline,
                 tenant_id,
                 &run_id,
-                origin,
+                origin_ref,
                 Some(resolved_agent.source.as_str()),
                 resolved_agent.config_version.clone(),
                 false,
@@ -329,23 +349,14 @@ async fn execute_target_agent(
         user_memory: None,
     };
 
-    app_state.active_runs.start(crate::active_runs::ActiveRun {
-        run_id: run_id.clone(),
-        tenant_id: tenant_id.to_string(),
-        agent_name: pipeline.target_agent.clone(),
-        started_at: chrono::Utc::now().timestamp(),
-        status: "running".to_string(),
-        current_step: 0,
-        total_steps: 0,
-        last_update: chrono::Utc::now().timestamp(),
-        tool_name: None,
-        model: None,
-        is_catchup: false,
-        request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
-        pipeline_id: Some(pipeline.id.clone()),
-        schedule_id: None,
-        trigger_id: None,
-    });
+    app_state.active_runs.start(pipeline_active_run(
+        &run_id,
+        tenant_id,
+        &pipeline.target_agent,
+        &pipeline.id,
+        origin_ref,
+        None,
+    ));
 
     let result = resolved_agent
         .agent
@@ -402,7 +413,7 @@ async fn execute_target_agent(
         pipeline,
         tenant_id,
         &run_id,
-        origin,
+        origin_ref,
         Some(resolved_agent.source.as_str()),
         resolved_agent.config_version.clone(),
         eruka_context_hit,
@@ -587,6 +598,44 @@ mod tests {
         assert_eq!(effects.metadata.pipeline_id.as_deref(), Some("pipeline-1"));
         assert_eq!(effects.metadata.schedule_id.as_deref(), Some("schedule-1"));
         assert_eq!(effects.metadata.trigger_id, None);
+    }
+
+    #[test]
+    fn pipeline_active_run_preserves_scheduled_origin() {
+        let origin = PipelineOrigin::scheduled("schedule-1".to_string(), true);
+        let run = pipeline_active_run(
+            "run-1",
+            "tenant-1",
+            "target",
+            "pipeline-1",
+            Some(&origin),
+            None,
+        );
+
+        assert!(run.is_catchup);
+        assert_eq!(run.request_source.as_deref(), Some("pipeline"));
+        assert_eq!(run.pipeline_id.as_deref(), Some("pipeline-1"));
+        assert_eq!(run.schedule_id.as_deref(), Some("schedule-1"));
+        assert_eq!(run.trigger_id, None);
+    }
+
+    #[test]
+    fn pipeline_active_run_preserves_trigger_origin() {
+        let origin = PipelineOrigin::trigger("trigger-1".to_string());
+        let run = pipeline_active_run(
+            "run-1",
+            "tenant-1",
+            "target",
+            "pipeline-1",
+            Some(&origin),
+            Some("skill:child".to_string()),
+        );
+
+        assert!(!run.is_catchup);
+        assert_eq!(run.pipeline_id.as_deref(), Some("pipeline-1"));
+        assert_eq!(run.schedule_id, None);
+        assert_eq!(run.trigger_id.as_deref(), Some("trigger-1"));
+        assert_eq!(run.tool_name.as_deref(), Some("skill:child"));
     }
 
     #[test]

@@ -324,6 +324,22 @@ impl<'a> ScheduleStore<'a> {
         rows.iter().map(row_to_missed_run_audit).collect()
     }
 
+    pub async fn list_missed_runs_for_tenant(
+        &self,
+        tenant_id: &str,
+        schedule_id: &str,
+        limit: i32,
+    ) -> Result<Vec<MissedRunAudit>> {
+        let rows = sqlx::query(list_missed_runs_for_tenant_sql())
+            .bind(tenant_id)
+            .bind(schedule_id)
+            .bind(limit)
+            .fetch_all(self.pool)
+            .await
+            .map_err(sqlx_err)?;
+        rows.iter().map(row_to_missed_run_audit).collect()
+    }
+
     /// Get enabled schedules whose `next_run_at` is older than the grace period.
     /// Used by the scheduler to detect missed runs.
     pub async fn get_overdue_for_catchup(&self) -> Result<Vec<AgentSchedule>> {
@@ -598,6 +614,16 @@ fn delete_schedule_for_tenant_sql() -> &'static str {
     "DELETE FROM agent_schedules WHERE id = $1 AND tenant_id = $2"
 }
 
+fn list_missed_runs_for_tenant_sql() -> &'static str {
+    "SELECT missed_runs.id, missed_runs.schedule_id, missed_runs.expected_at, \
+            missed_runs.detected_at, missed_runs.action_taken, missed_runs.created_at \
+     FROM missed_runs \
+     JOIN agent_schedules ON agent_schedules.id = missed_runs.schedule_id \
+     WHERE agent_schedules.tenant_id = $1 AND missed_runs.schedule_id = $2 \
+     ORDER BY missed_runs.detected_at DESC \
+     LIMIT $3"
+}
+
 fn validate_pipeline_request(req: &CreatePipelineRequest) -> Result<()> {
     if req.tenant_id.is_empty() {
         return Err(AppError::InvalidInput("tenant_id must not be empty".into()));
@@ -782,6 +808,14 @@ mod tests {
         let sql = delete_schedule_for_tenant_sql();
         assert!(sql.contains("id = $1"));
         assert!(sql.contains("tenant_id = $2"));
+    }
+
+    #[test]
+    fn list_missed_runs_for_tenant_sql_is_tenant_scoped() {
+        let sql = list_missed_runs_for_tenant_sql();
+        assert!(sql.contains("JOIN agent_schedules"));
+        assert!(sql.contains("agent_schedules.tenant_id = $1"));
+        assert!(sql.contains("missed_runs.schedule_id = $2"));
     }
 
     #[test]

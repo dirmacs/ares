@@ -567,6 +567,31 @@ pub async fn v1_chat(
     Ok(response)
 }
 
+async fn ensure_research_model_allowed(
+    state: &AppState,
+    tenant_id: &str,
+    model_name: &str,
+) -> Result<()> {
+    let allowlist_store =
+        crate::db::tenant_allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    research_model_allowlist_decision(
+        allowlist_store
+            .is_model_allowed(tenant_id, model_name)
+            .await?,
+        model_name,
+    )
+}
+
+fn research_model_allowlist_decision(is_allowed: bool, model_name: &str) -> Result<()> {
+    if is_allowed {
+        return Ok(());
+    }
+    Err(AppError::Auth(format!(
+        "Model '{}' is not allowed for this tenant",
+        model_name
+    )))
+}
+
 /// POST /v1/research — tenant-scoped research with provider-reported metering.
 pub async fn v1_research(
     State(state): State<AppState>,
@@ -613,6 +638,7 @@ pub async fn v1_research(
         Err(_) => state.llm_factory.create_default().await?,
     };
     let model_name = llm_client.model_name().to_string();
+    ensure_research_model_allowed(&state, &tc.tenant_id, &model_name).await?;
 
     let coordinator = ResearchCoordinator::new(llm_client, depth, max_iterations);
     let (findings, sources, usage) = coordinator.research_with_usage(&payload.query).await?;
@@ -1972,6 +1998,20 @@ mod tests {
     fn check_tenant_request_quota_allows_under_limit() {
         let tc = TenantContext::new("free".into(), TenantTier::Free);
         check_tenant_request_quota(&tc, 0, 0).expect("under quota");
+    }
+
+    #[test]
+    fn research_model_allowlist_decision_rejects_disallowed_model() {
+        let err = research_model_allowlist_decision(false, "gpt-test").unwrap_err();
+        match err {
+            AppError::Auth(msg) => assert!(msg.contains("gpt-test")),
+            other => panic!("expected Auth error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn research_model_allowlist_decision_allows_allowed_model() {
+        assert!(research_model_allowlist_decision(true, "gpt-test").is_ok());
     }
 
     #[test]

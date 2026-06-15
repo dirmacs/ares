@@ -198,7 +198,8 @@ impl SkillEngine {
                     let latency_ms = start.elapsed().as_millis() as i64;
 
                     // Store result in context
-                    context[&format!("step_{}", step_index)] = result.clone();
+                    context[&format!("step_{}", step_index)] =
+                        successful_step_context(result.clone());
 
                     // Log the completed tool call
                     self.log_tool_call_result(
@@ -250,7 +251,8 @@ impl SkillEngine {
                         "content": response.content,
                         "usage": response.usage,
                     });
-                    context[&format!("step_{}", step_index)] = result.clone();
+                    context[&format!("step_{}", step_index)] =
+                        successful_step_context(result.clone());
 
                     // Log
                     self.log_llm_call_result(
@@ -274,7 +276,7 @@ impl SkillEngine {
                         depth + 1,
                     ))
                     .await?;
-                    context[&format!("step_{}", step_index)] = result;
+                    context[&format!("step_{}", step_index)] = successful_step_context(result);
                 }
                 SkillStep::Condition {
                     expression,
@@ -346,7 +348,7 @@ impl SkillEngine {
                 };
 
                 let latency_ms = start.elapsed().as_millis() as i64;
-                context[&format!("step_{}", step_index)] = result.clone();
+                context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
 
                 self.log_tool_call_result(
                     run_id,
@@ -393,7 +395,7 @@ impl SkillEngine {
                     "content": response.content,
                     "usage": response.usage,
                 });
-                context[&format!("step_{}", step_index)] = result.clone();
+                context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
 
                 self.log_llm_call_result(
                     run_id,
@@ -416,7 +418,7 @@ impl SkillEngine {
                     depth + 1,
                 ))
                 .await?;
-                context[&format!("step_{}", step_index)] = result;
+                context[&format!("step_{}", step_index)] = successful_step_context(result);
             }
             SkillStep::Condition {
                 expression,
@@ -593,6 +595,21 @@ async fn ensure_tenant_model_allowed(
             model_name, tenant_id
         )),
         Err(e) => Err(format!("Failed to check model allowlist: {}", e)),
+    }
+}
+
+fn successful_step_context(result: serde_json::Value) -> serde_json::Value {
+    match result {
+        serde_json::Value::Object(mut fields) => {
+            fields.entry("status").or_insert_with(|| {
+                serde_json::Value::String(RUN_HISTORY_STATUS_SUCCESS.to_string())
+            });
+            serde_json::Value::Object(fields)
+        }
+        value => serde_json::json!({
+            "status": RUN_HISTORY_STATUS_SUCCESS,
+            "content": value,
+        }),
     }
 }
 
@@ -841,6 +858,32 @@ mod tests {
         };
         assert_eq!(skill_id, "child-skill");
         assert_eq!(input, &json!({"source": "nested-then"}));
+    }
+
+    #[test]
+    fn successful_step_context_adds_status_without_losing_content() {
+        let context = successful_step_context(json!({"content": "ready"}));
+        assert_eq!(context["status"], RUN_HISTORY_STATUS_SUCCESS);
+        assert_eq!(context["content"], "ready");
+    }
+
+    #[test]
+    fn successful_step_context_preserves_existing_status() {
+        let context = successful_step_context(json!({"status": "custom", "content": "ready"}));
+        assert_eq!(context["status"], "custom");
+        assert_eq!(context["content"], "ready");
+    }
+
+    #[test]
+    fn status_conditions_match_successful_step_context() {
+        let ready_steps = vec![SkillStep::SkillCall {
+            skill_id: "child-skill".to_string(),
+            input: json!({}),
+        }];
+        let context = json!({
+            "step_0": successful_step_context(json!({"content": "ready"}))
+        });
+        assert!(ready_then_steps("step_0.status == 'success'", &ready_steps, &context).is_some());
     }
 
     #[test]

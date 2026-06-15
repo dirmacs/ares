@@ -92,7 +92,15 @@ impl ActiveRuns {
             !is_terminal_status(&run.status)
                 || now.saturating_sub(run.last_update) <= TERMINAL_RUN_RETENTION_SECONDS
         });
-        runs.values().cloned().collect()
+        let mut snapshots: Vec<ActiveRun> = runs.values().cloned().collect();
+        snapshots.sort_by(|left, right| {
+            right
+                .started_at
+                .cmp(&left.started_at)
+                .then_with(|| left.agent_name.cmp(&right.agent_name))
+                .then_with(|| left.run_id.cmp(&right.run_id))
+        });
+        snapshots
     }
 }
 
@@ -158,6 +166,27 @@ mod tests {
 
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].run_id, "run-2");
+    }
+
+    #[test]
+    fn active_runs_list_is_deterministically_ordered() {
+        let registry = ActiveRuns::new();
+        registry.start(run("run-z", "running", 100));
+        let mut same_time_a = run("run-b", "running", 200);
+        same_time_a.agent_name = "beta".to_string();
+        registry.start(same_time_a);
+        let mut same_time_b = run("run-a", "running", 200);
+        same_time_b.agent_name = "alpha".to_string();
+        registry.start(same_time_b);
+
+        let runs = registry.list();
+
+        assert_eq!(
+            runs.iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-a", "run-b", "run-z"]
+        );
     }
 
     #[test]

@@ -561,24 +561,15 @@ impl<'a> RunHistoryStore<'a> {
         created_after: Option<i64>,
         created_before: Option<i64>,
     ) -> Result<Vec<RunCost>> {
-        let rows = sqlx::query(
-            "SELECT run_id, tenant_id, agent_name, total_llm_calls, total_tool_calls, \
-                    total_prompt_tokens, total_completion_tokens, total_estimated_cost_usd, \
-                    total_duration_ms, created_at \
-             FROM run_costs \
-             WHERE tenant_id = $1 \
-               AND ($4::BIGINT IS NULL OR created_at >= $4) \
-               AND ($5::BIGINT IS NULL OR created_at <= $5) \
-             ORDER BY created_at DESC LIMIT $2 OFFSET $3",
-        )
-        .bind(tenant_id)
-        .bind(limit)
-        .bind(offset)
-        .bind(created_after)
-        .bind(created_before)
-        .fetch_all(self.pool)
-        .await
-        .map_err(sqlx_err)?;
+        let rows = sqlx::query(list_run_costs_sql())
+            .bind(tenant_id)
+            .bind(limit)
+            .bind(offset)
+            .bind(created_after)
+            .bind(created_before)
+            .fetch_all(self.pool)
+            .await
+            .map_err(sqlx_err)?;
 
         rows.iter().map(row_to_run_cost).collect()
     }
@@ -974,6 +965,17 @@ fn row_to_tool_call(row: &sqlx::postgres::PgRow) -> Result<RunToolCall> {
     })
 }
 
+fn list_run_costs_sql() -> &'static str {
+    "SELECT run_id, tenant_id, agent_name, total_llm_calls, total_tool_calls, \
+            total_prompt_tokens, total_completion_tokens, total_estimated_cost_usd, \
+            total_duration_ms, created_at \
+     FROM run_costs \
+     WHERE tenant_id = $1 \
+       AND ($4::BIGINT IS NULL OR created_at >= $4) \
+       AND ($5::BIGINT IS NULL OR created_at <= $5) \
+     ORDER BY created_at DESC, run_id ASC LIMIT $2 OFFSET $3"
+}
+
 fn row_to_run_cost(row: &sqlx::postgres::PgRow) -> Result<RunCost> {
     Ok(RunCost {
         run_id: row.try_get("run_id").map_err(sqlx_err)?,
@@ -1274,6 +1276,11 @@ mod tests {
     fn validate_alert_type_rejects_invalid() {
         let err = validate_alert_type("unknown").unwrap_err();
         assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn list_run_costs_order_is_deterministic() {
+        assert!(list_run_costs_sql().contains("ORDER BY created_at DESC, run_id ASC"));
     }
 
     #[test]

@@ -1696,6 +1696,46 @@ mod tests {
     }
 
     #[test]
+    fn normalize_oauth_credential_request_forces_path_tenant_and_connector_provider() {
+        let mut req = ares_db::oauth_credentials::CreateOAuthCredentialRequest {
+            tenant_id: "body-tenant".to_string(),
+            provider: "wrong-provider".to_string(),
+            connector_type: "gmail".to_string(),
+            client_id: "client".to_string(),
+            client_secret: "secret".to_string(),
+            access_token: None,
+            refresh_token: None,
+            expires_at: None,
+            scope: None,
+        };
+
+        normalize_oauth_credential_request("path-tenant".to_string(), &mut req).unwrap();
+
+        assert_eq!(req.tenant_id, "path-tenant");
+        assert_eq!(req.provider, "google");
+    }
+
+    #[test]
+    fn normalize_oauth_credential_request_rejects_unknown_connector() {
+        let mut req = ares_db::oauth_credentials::CreateOAuthCredentialRequest {
+            tenant_id: "body-tenant".to_string(),
+            provider: "provider".to_string(),
+            connector_type: "unknown".to_string(),
+            client_id: "client".to_string(),
+            client_secret: "secret".to_string(),
+            access_token: None,
+            refresh_token: None,
+            expires_at: None,
+            scope: None,
+        };
+
+        assert!(matches!(
+            normalize_oauth_credential_request("path-tenant".to_string(), &mut req),
+            Err(AppError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
     fn oauth_provider_mapping_covers_google_calendar() {
         let provider = oauth_provider_config("google_calendar").unwrap();
         assert_eq!(provider.provider, "google");
@@ -4955,12 +4995,22 @@ pub async fn list_oauth_credentials(
     Ok(Json(credentials))
 }
 
+fn normalize_oauth_credential_request(
+    tenant_id: String,
+    req: &mut ares_db::oauth_credentials::CreateOAuthCredentialRequest,
+) -> Result<()> {
+    let provider = oauth_provider_config(&req.connector_type)?;
+    req.tenant_id = tenant_id;
+    req.provider = provider.provider.to_string();
+    Ok(())
+}
+
 pub async fn create_oauth_credential(
     State(state): State<AppState>,
     Path(tenant_id): Path<String>,
     Json(mut req): Json<ares_db::oauth_credentials::CreateOAuthCredentialRequest>,
 ) -> Result<Json<OAuthCredentialResponse>> {
-    req.tenant_id = tenant_id;
+    normalize_oauth_credential_request(tenant_id, &mut req)?;
     let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
     let credential = store.create(&req).await?;
 

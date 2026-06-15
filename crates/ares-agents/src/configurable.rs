@@ -67,6 +67,31 @@ pub struct ConfigurableAgent {
     runtime_tenant_id: Option<String>,
 }
 
+fn is_prebuilt_connector_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "google_calendar_list_events"
+            | "google_calendar_create_event"
+            | "google_calendar_delete_event"
+            | "google_calendar_get_free_busy"
+            | "gmail_send_email"
+            | "gmail_list_messages"
+            | "gmail_get_message"
+            | "hubspot_get_contact"
+            | "hubspot_create_contact"
+            | "hubspot_list_deals"
+            | "hubspot_create_deal"
+            | "linkedin_create_share"
+            | "linkedin_get_company_updates"
+            | "salesforce_soql_query"
+            | "salesforce_get_record"
+            | "salesforce_create_record"
+            | "slack_send_message"
+            | "slack_list_channels"
+            | "slack_upload_file"
+    )
+}
+
 impl ConfigurableAgent {
     /// Create a new configurable agent from TOML config
     ///
@@ -540,6 +565,49 @@ Handle employee info, policies, and benefits."#
         false
     }
 
+    fn tenant_scoped_builtin_args(
+        &self,
+        name: &str,
+        mut args: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        if !is_prebuilt_connector_tool(name) {
+            return Ok(args);
+        }
+        let Some(tenant_id) = self.connector_tenant_id() else {
+            return Err(AppError::InvalidInput(
+                "tenant_id is required for connector tool execution".to_string(),
+            ));
+        };
+        let serde_json::Value::Object(map) = &mut args else {
+            return Err(AppError::InvalidInput(
+                "connector tool arguments must be an object".to_string(),
+            ));
+        };
+        if let Some(provided) = map.get("tenant_id").and_then(|value| value.as_str()) {
+            if provided != tenant_id {
+                return Err(AppError::Auth(
+                    "connector tenant_id does not match executing tenant".to_string(),
+                ));
+            }
+        }
+        map.insert(
+            "tenant_id".to_string(),
+            serde_json::Value::String(tenant_id.to_string()),
+        );
+        Ok(args)
+    }
+
+    fn connector_tenant_id(&self) -> Option<&str> {
+        #[cfg(feature = "postgres")]
+        {
+            self.runtime_tenant_id.as_deref()
+        }
+        #[cfg(not(feature = "postgres"))]
+        {
+            None
+        }
+    }
+
     /// Execute a single tool call, routing to the correct registry.
     ///
     /// Built-in tools (in-process `ToolRegistry`) are tried first. If the tool
@@ -553,6 +621,7 @@ Handle employee info, policies, and benefits."#
     ) -> Result<serde_json::Value> {
         if let Some(reg) = &self.tool_registry {
             if reg.has_tool(name) {
+                let args = self.tenant_scoped_builtin_args(name, args)?;
                 return reg.execute(name, args).await;
             }
         }
@@ -1108,12 +1177,32 @@ mod tests {
         description: String,
     }
 
+    struct EchoArgsTool {
+        name: String,
+    }
+
     impl MockTool {
         fn new(name: &str) -> Self {
             Self {
                 name: name.to_string(),
                 description: format!("Mock tool: {}", name),
             }
+        }
+    }
+
+    #[async_trait]
+    impl ares_tools::registry::Tool for EchoArgsTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "Echoes arguments"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object"})
+        }
+        async fn execute(&self, args: serde_json::Value) -> Result<serde_json::Value> {
+            Ok(args)
         }
     }
 
@@ -1189,6 +1278,14 @@ mod tests {
     fn make_registry_with_tool(name: &str) -> Arc<ToolRegistry> {
         let mut reg = ToolRegistry::new();
         reg.register(Arc::new(MockTool::new(name)));
+        Arc::new(reg)
+    }
+
+    fn make_registry_with_echo_tool(name: &str) -> Arc<ToolRegistry> {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(EchoArgsTool {
+            name: name.to_string(),
+        }));
         Arc::new(reg)
     }
 
@@ -1802,6 +1899,66 @@ mod tests {
             !agent.can_use_tool("anything"),
             "empty allowed_tools → deny all"
         );
+    }
+
+    #[test]
+    fn prebuilt_connector_tool_detection_covers_registered_connectors() {
+        assert!(is_prebuilt_connector_tool("slack_send_message"));
+        assert!(is_prebuilt_connector_tool("google_calendar_list_events"));
+        assert!(is_prebuilt_connector_tool("salesforce_create_record"));
+        assert!(!is_prebuilt_connector_tool("calculator"));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn dispatch_prebuilt_connector_injects_runtime_tenant() {
+        let reg = make_registry_with_echo_tool("slack_send_message");
+        let mut agent = ConfigurableAgent::with_params(
+            "orchestrator",
+            AgentType::Orchestrator,
+            Box::new(MockLLM::new()),
+            "system".to_string(),
+            Some(reg),
+            Some(vec!["slack_send_message".to_string()]),
+            3,
+            false,
+        );
+        agent.runtime_tenant_id = Some("tenant-a".to_string());
+
+        let result = agent
+            .dispatch_tool("slack_send_message", serde_json::json!({"channel":"ops"}))
+            .await
+            .expect("connector dispatch");
+
+        assert_eq!(result["tenant_id"], "tenant-a");
+        assert_eq!(result["channel"], "ops");
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn dispatch_prebuilt_connector_rejects_cross_tenant_arg() {
+        let reg = make_registry_with_echo_tool("slack_send_message");
+        let mut agent = ConfigurableAgent::with_params(
+            "orchestrator",
+            AgentType::Orchestrator,
+            Box::new(MockLLM::new()),
+            "system".to_string(),
+            Some(reg),
+            Some(vec!["slack_send_message".to_string()]),
+            3,
+            false,
+        );
+        agent.runtime_tenant_id = Some("tenant-a".to_string());
+
+        let err = agent
+            .dispatch_tool(
+                "slack_send_message",
+                serde_json::json!({"tenant_id":"tenant-b","channel":"ops"}),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("does not match executing tenant"));
     }
 
     #[tokio::test]

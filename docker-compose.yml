@@ -1,47 +1,47 @@
-# A.R.E.S - Production Docker Compose
-# =============================================================================
-# This is the production configuration. For development, use docker-compose.dev.yml
-# 
-# Usage:
-#   docker compose up -d
-#   just docker-logs  (to view logs)
-# =============================================================================
+# A.R.E.S production container contract.
+#
+# This stack intentionally keeps Caddy and PostgreSQL host-native. Provide a
+# container-safe config at /etc/dirmacs/ares/ares.toml with:
+#   [server] host = "0.0.0.0", port = 3000
+#   [database] url = "postgres://..." or a host-gateway/native Postgres URL.
+# Secrets stay in /etc/dirmacs/ares.env and are never copied into the image.
 
 services:
   ares:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        FEATURES: openai,postgres,mcp
+        EXTRA_CARGO_ARGS: --no-default-features
+    image: dirmacs/ares:${ARES_IMAGE_TAG:-local}
     container_name: ares
-    ports:
-      - "3000:3000"
-    environment:
-      HOST: 0.0.0.0
-      PORT: 3000
-      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
-      QDRANT_URL: http://qdrant:6334
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET environment variable is required}
-      RUST_LOG: ${RUST_LOG:-info}
-    depends_on:
-      qdrant:
-        condition: service_healthy
-    volumes:
-      - ares_data:/app/data
     restart: unless-stopped
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: ares-qdrant
+    init: true
+    env_file:
+      - path: ${ARES_ENV_FILE:-/etc/dirmacs/ares.env}
+        required: false
+    environment:
+      ARES_CONFIG: /app/ares.toml
+      RUST_LOG: ${RUST_LOG:-info}
     ports:
-      - "6334:6334"
+      - "127.0.0.1:3000:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      - qdrant_data:/qdrant/storage
+      - /etc/dirmacs/ares/ares.toml:/app/ares.toml:ro
+      - /etc/dirmacs/ares/config:/app/config:ro
+      - ares_data:/app/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6334/healthz"]
-      interval: 10s
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
+      interval: 30s
       timeout: 5s
       retries: 3
-    restart: unless-stopped
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   ares_data:
-  qdrant_data:

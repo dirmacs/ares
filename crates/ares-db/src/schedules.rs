@@ -25,7 +25,9 @@ fn compute_next_run_after(
     after_utc: DateTime<Utc>,
 ) -> std::result::Result<i64, String> {
     let timezone = parse_timezone(tz)?;
-    let schedule: Schedule = cron
+    let normalized_cron = normalize_cron_expression(cron);
+    let schedule: Schedule = normalized_cron
+        .as_ref()
         .parse()
         .map_err(|e| format!("Invalid cron expression '{}': {}", cron, e))?;
     let after_local = after_utc.with_timezone(&timezone);
@@ -34,6 +36,14 @@ fn compute_next_run_after(
         .next()
         .ok_or_else(|| "No future occurrence found for cron expression".to_string())?;
     Ok(next.timestamp())
+}
+
+fn normalize_cron_expression(cron: &str) -> std::borrow::Cow<'_, str> {
+    let trimmed = cron.trim();
+    if trimmed.starts_with('@') || trimmed.split_whitespace().count() != 5 {
+        return std::borrow::Cow::Borrowed(cron);
+    }
+    std::borrow::Cow::Owned(format!("0 {trimmed}"))
 }
 
 fn parse_timezone(tz: &str) -> std::result::Result<Tz, String> {
@@ -800,6 +810,28 @@ mod tests {
         assert_ne!(utc_next, pacific_next);
         assert_eq!(utc_next, 1_720_083_600);
         assert_eq!(pacific_next, 1_720_022_400);
+    }
+
+    #[test]
+    fn compute_next_run_after_accepts_posix_five_field_daily_cron() {
+        let after = DateTime::from_timestamp(1_720_008_000, 0).expect("valid timestamp");
+        let posix = compute_next_run_after("0 9 * * *", "UTC", after).unwrap();
+        let cron_native = compute_next_run_after("0 0 9 * * * *", "UTC", after).unwrap();
+        assert_eq!(posix, cron_native);
+        assert_eq!(posix, 1_720_083_600);
+    }
+
+    #[test]
+    fn normalize_cron_expression_only_allocates_for_five_fields() {
+        assert!(matches!(
+            normalize_cron_expression("0 0 9 * * * *"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            normalize_cron_expression("@daily"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(normalize_cron_expression("0 9 * * *"), "0 0 9 * * *");
     }
 
     #[test]

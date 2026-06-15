@@ -894,7 +894,7 @@ impl<'a> RunHistoryStore<'a> {
             "SELECT id, tenant_id, agent_name, period_start, period_end, total_runs, \
                     successful_runs, failed_runs, avg_latency_ms, p50_latency_ms, p95_latency_ms, \
                     p99_latency_ms, total_tokens, total_cost_usd, error_rate_pct, created_at \
-             FROM agent_health_metrics WHERE tenant_id = $1 ORDER BY period_start DESC LIMIT $2 OFFSET $3",
+             FROM agent_health_metrics WHERE tenant_id = $1 ORDER BY period_start DESC, agent_name ASC LIMIT $2 OFFSET $3",
         )
         .bind(tenant_id)
         .bind(limit)
@@ -917,7 +917,7 @@ impl<'a> RunHistoryStore<'a> {
             "SELECT id, tenant_id, model, period_start, period_end, total_calls, \
                     successful_calls, failed_calls, avg_latency_ms, p50_latency_ms, p95_latency_ms, \
                     p99_latency_ms, total_tokens, total_cost_usd, error_rate_pct, created_at \
-             FROM model_health_metrics WHERE tenant_id = $1 ORDER BY period_start DESC LIMIT $2 OFFSET $3",
+             FROM model_health_metrics WHERE tenant_id = $1 ORDER BY period_start DESC, model ASC LIMIT $2 OFFSET $3",
         )
         .bind(tenant_id)
         .bind(limit)
@@ -1530,13 +1530,11 @@ mod tests {
             .await
             .expect("delete_tenant_budget");
         assert_eq!(deleted, 1);
-        assert!(
-            store
-                .get_tenant_budget(&tenant_id)
-                .await
-                .expect("get after delete")
-                .is_none()
-        );
+        assert!(store
+            .get_tenant_budget(&tenant_id)
+            .await
+            .expect("get after delete")
+            .is_none());
     }
 
     #[tokio::test]
@@ -1618,12 +1616,17 @@ mod tests {
         )
         .execute(&pool)
         .await;
+        let _ = sqlx::query(
+            "DELETE FROM model_health_metrics WHERE tenant_id LIKE 'integration-test-%'",
+        )
+        .execute(&pool)
+        .await;
 
         let now = chrono::Utc::now().timestamp();
         let record = AgentHealthMetrics {
             id: id.clone(),
             tenant_id: format!("integration-test-{}", uuid::Uuid::new_v4()),
-            agent_name: "integration-test-agent".into(),
+            agent_name: "agent-b".into(),
             period_start: now,
             period_end: now + 3600,
             total_runs: 100,
@@ -1655,16 +1658,95 @@ mod tests {
         assert!(fetched.is_some());
         assert_eq!(fetched.unwrap().total_runs, 100);
 
+        let mut agent_c = record.clone();
+        agent_c.id = format!("health-{}", uuid::Uuid::new_v4());
+        agent_c.agent_name = "agent-c".into();
+        store
+            .insert_health_metrics(&agent_c)
+            .await
+            .expect("insert agent-c health metrics");
+
+        let mut agent_a = record.clone();
+        agent_a.id = format!("health-{}", uuid::Uuid::new_v4());
+        agent_a.agent_name = "agent-a".into();
+        store
+            .insert_health_metrics(&agent_a)
+            .await
+            .expect("insert agent-a health metrics");
+
         // List
         let listed = store
             .list_health_metrics(&record.tenant_id, 10, 0)
             .await
             .expect("list_health_metrics");
         assert!(listed.iter().any(|h| h.id == id));
+        assert_eq!(
+            listed
+                .iter()
+                .map(|h| h.agent_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agent-a", "agent-b", "agent-c"]
+        );
+
+        let model_b = ModelHealthMetrics {
+            id: format!("model-health-{}", uuid::Uuid::new_v4()),
+            tenant_id: record.tenant_id.clone(),
+            model: "model-b".into(),
+            period_start: now,
+            period_end: now + 3600,
+            total_calls: 100,
+            successful_calls: 95,
+            failed_calls: 5,
+            avg_latency_ms: 350,
+            p50_latency_ms: 300,
+            p95_latency_ms: 800,
+            p99_latency_ms: 1200,
+            total_tokens: 50000,
+            total_cost_usd: dec!(0.500000),
+            error_rate_pct: dec!(5.00),
+            created_at: now,
+        };
+        store
+            .insert_model_health_metrics(&model_b)
+            .await
+            .expect("insert model-b health metrics");
+
+        let mut model_c = model_b.clone();
+        model_c.id = format!("model-health-{}", uuid::Uuid::new_v4());
+        model_c.model = "model-c".into();
+        store
+            .insert_model_health_metrics(&model_c)
+            .await
+            .expect("insert model-c health metrics");
+
+        let mut model_a = model_b.clone();
+        model_a.id = format!("model-health-{}", uuid::Uuid::new_v4());
+        model_a.model = "model-a".into();
+        store
+            .insert_model_health_metrics(&model_a)
+            .await
+            .expect("insert model-a health metrics");
+
+        let listed_models = store
+            .list_model_metrics(&record.tenant_id, 10, 0)
+            .await
+            .expect("list_model_metrics");
+        assert_eq!(
+            listed_models
+                .iter()
+                .map(|m| m.model.as_str())
+                .collect::<Vec<_>>(),
+            vec!["model-a", "model-b", "model-c"]
+        );
 
         // Cleanup
         let _ = sqlx::query(
             "DELETE FROM agent_health_metrics WHERE tenant_id LIKE 'integration-test-%'",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "DELETE FROM model_health_metrics WHERE tenant_id LIKE 'integration-test-%'",
         )
         .execute(&pool)
         .await;

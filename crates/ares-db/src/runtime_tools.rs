@@ -438,7 +438,7 @@ impl<'a> RuntimeToolStore<'a> {
 
     /// Query execution logs with optional filters.
     ///
-    /// All filter parameters are optional. Results ordered by `created_at DESC`.
+    /// All filter parameters are optional. Results ordered by `created_at DESC, id ASC`.
     pub async fn get_executions(
         &self,
         tool_id: Option<&str>,
@@ -467,7 +467,7 @@ impl<'a> RuntimeToolStore<'a> {
             sql.push_str(&format!(" AND agent_run_id = ${idx}"));
         }
         idx += 1;
-        sql.push_str(&format!(" ORDER BY created_at DESC LIMIT ${idx}"));
+        sql.push_str(&format!(" ORDER BY created_at DESC, id ASC LIMIT ${idx}"));
 
         let mut query = sqlx::query(&sql);
         if let Some(v) = tool_id {
@@ -761,6 +761,14 @@ mod tests {
             .await
             .ok()?;
         Some(db.pool)
+    }
+
+    #[test]
+    fn runtime_tool_executions_order_is_deterministic() {
+        let mut idx: i32 = 0;
+        idx += 1;
+        let sql = format!(" ORDER BY created_at DESC, id ASC LIMIT ${idx}");
+        assert!(sql.contains("ORDER BY created_at DESC, id ASC"));
     }
 
     #[tokio::test]

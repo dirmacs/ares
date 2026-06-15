@@ -294,7 +294,8 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         )
         .route(
             "/admin/agents/emergency-stop",
-            post(crate::api::handlers::admin::emergency_stop_handler),
+            get(crate::api::handlers::admin::get_emergency_stop_handler)
+                .post(crate::api::handlers::admin::emergency_stop_handler),
         )
         // Deployment automation
         .route("/admin/deploy", post(deploy::trigger_deploy))
@@ -1073,6 +1074,14 @@ mod tests {
             delete_response.status_code(),
             StatusCode::METHOD_NOT_ALLOWED
         );
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_emergency_stop_status_route() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server.get("/admin/agents/emergency-stop").await;
+        assert_ne!(response.status_code(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

@@ -352,7 +352,8 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         )
         .route(
             "/admin/tenants/{tenant_id}/triggers/{id}",
-            delete(crate::api::handlers::admin::delete_tenant_trigger),
+            put(crate::api::handlers::admin::update_tenant_trigger)
+                .delete(crate::api::handlers::admin::delete_tenant_trigger),
         )
         .route(
             "/admin/tenants/{tenant_id}/pipelines",
@@ -1038,6 +1039,27 @@ mod tests {
                 "source_agent": "agent-a",
                 "target_agent": "agent-b",
                 "condition": null,
+                "enabled": true
+            }))
+            .await;
+        assert_ne!(
+            response.status_code(),
+            axum::http::StatusCode::METHOD_NOT_ALLOWED
+        );
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_tenant_trigger_update_route() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server
+            .put("/admin/tenants/tenant-1/triggers/trigger-1")
+            .json(&serde_json::json!({
+                "tenant_id": "ignored-client-tenant",
+                "name": "Webhook",
+                "event_type": "webhook",
+                "event_config": {},
+                "target_agent": "agent-a",
                 "enabled": true
             }))
             .await;

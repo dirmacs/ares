@@ -57,6 +57,17 @@ fn default_stream_system_prompt() -> &'static str {
     "You are a helpful assistant."
 }
 
+pub(crate) fn emergency_stop_message() -> &'static str {
+    "All agents are currently under human review. Please try again later."
+}
+
+fn ensure_emergency_stop_inactive(active: &std::sync::atomic::AtomicBool) -> Result<()> {
+    if active.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(AppError::Unavailable(emergency_stop_message().to_string()));
+    }
+    Ok(())
+}
+
 /// Converts a resolved user agent record into runtime agent configuration.
 fn agent_config_from_user_agent(user_agent: &UserAgent) -> AgentConfig {
     AgentConfig {
@@ -191,6 +202,7 @@ pub async fn chat(
     Json(payload): Json<ChatRequest>,
 ) -> Result<Response> {
     validate_chat_request(&payload)?;
+    ensure_emergency_stop_inactive(&state.emergency_stop)?;
 
     // Get or create conversation
     let context_id = resolve_context_id(payload.context_id.as_ref());
@@ -486,7 +498,9 @@ pub async fn chat_stream(
 > {
     use axum::response::sse::{Event, Sse};
 
-    let validation_error = validate_chat_request(&payload).err();
+    let validation_error = validate_chat_request(&payload)
+        .and_then(|_| ensure_emergency_stop_inactive(&state.emergency_stop))
+        .err();
 
     // Get or create conversation
     let context_id = resolve_context_id(payload.context_id.as_ref());
@@ -902,6 +916,22 @@ mod tests {
     #[test]
     fn ensure_not_direct_router_allows_custom_agent() {
         assert!(ensure_not_direct_router(&AgentType::Custom("my-bot".into())).is_ok());
+    }
+
+    #[test]
+    fn ensure_emergency_stop_inactive_rejects_active_stop() {
+        let active = std::sync::atomic::AtomicBool::new(true);
+        let err = ensure_emergency_stop_inactive(&active).unwrap_err();
+        match err {
+            AppError::Unavailable(msg) => assert_eq!(msg, emergency_stop_message()),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ensure_emergency_stop_inactive_allows_clear_stop() {
+        let active = std::sync::atomic::AtomicBool::new(false);
+        assert!(ensure_emergency_stop_inactive(&active).is_ok());
     }
 
     #[test]

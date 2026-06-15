@@ -1963,6 +1963,14 @@ mod tests {
     }
 
     #[test]
+    fn emergency_stop_status_describes_global_agent_entrypoints() {
+        let status = emergency_stop_status(true);
+        assert!(status.emergency_stop);
+        assert!(status.message.contains("Agent execution entrypoints"));
+        assert!(!status.message.contains("/api/v1/chat"));
+    }
+
+    #[test]
     fn emergency_stop_request_deserializes_active_flag() {
         let req: EmergencyStopRequest = serde_json::from_str(r#"{"active":true}"#).unwrap();
         assert!(req.active);
@@ -2576,7 +2584,7 @@ fn emergency_stop_status(active: bool) -> EmergencyStopStatus {
     EmergencyStopStatus {
         emergency_stop: active,
         message: if active {
-            "All agents are now in emergency stop mode. /api/v1/chat requests will be rejected with 503."
+            "All agents are now in emergency stop mode. Agent execution entrypoints will be rejected with 503."
         } else {
             "Emergency stop cleared. Agents are operational."
         },
@@ -2597,7 +2605,7 @@ pub async fn get_emergency_stop_handler(
 
 /// POST /api/admin/agents/emergency-stop
 /// Enable or disable the global emergency stop.
-/// When active, ALL /api/v1/chat requests are rejected with 503.
+/// When active, agent execution entrypoints are rejected with 503.
 pub async fn emergency_stop_handler(
     State(state): State<AppState>,
     Json(payload): Json<EmergencyStopRequest>,

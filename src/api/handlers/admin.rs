@@ -1966,6 +1966,9 @@ mod tests {
     fn emergency_stop_request_deserializes_active_flag() {
         let req: EmergencyStopRequest = serde_json::from_str(r#"{"active":true}"#).unwrap();
         assert!(req.active);
+        let status = emergency_stop_status(true);
+        assert!(status.emergency_stop);
+        assert!(status.message.contains("emergency stop mode"));
     }
 
     #[test]
@@ -2563,13 +2566,42 @@ pub struct EmergencyStopRequest {
     pub active: bool,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct EmergencyStopStatus {
+    pub emergency_stop: bool,
+    pub message: &'static str,
+}
+
+fn emergency_stop_status(active: bool) -> EmergencyStopStatus {
+    EmergencyStopStatus {
+        emergency_stop: active,
+        message: if active {
+            "All agents are now in emergency stop mode. /api/v1/chat requests will be rejected with 503."
+        } else {
+            "Emergency stop cleared. Agents are operational."
+        },
+    }
+}
+
+/// GET /api/admin/agents/emergency-stop
+/// Return whether the global emergency stop is active.
+pub async fn get_emergency_stop_handler(
+    State(state): State<AppState>,
+) -> Result<Json<EmergencyStopStatus>> {
+    Ok(Json(emergency_stop_status(
+        state
+            .emergency_stop
+            .load(std::sync::atomic::Ordering::Relaxed),
+    )))
+}
+
 /// POST /api/admin/agents/emergency-stop
 /// Enable or disable the global emergency stop.
 /// When active, ALL /api/v1/chat requests are rejected with 503.
 pub async fn emergency_stop_handler(
     State(state): State<AppState>,
     Json(payload): Json<EmergencyStopRequest>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<EmergencyStopStatus>> {
     state
         .emergency_stop
         .store(payload.active, std::sync::atomic::Ordering::Relaxed);
@@ -2587,14 +2619,7 @@ pub async fn emergency_stop_handler(
             audit_log::log_admin_action(&pool, action, "platform", "all_agents", None, None).await;
     });
 
-    Ok(Json(serde_json::json!({
-        "emergency_stop": payload.active,
-        "message": if payload.active {
-            "All agents are now in emergency stop mode. /api/v1/chat requests will be rejected with 503."
-        } else {
-            "Emergency stop cleared. Agents are operational."
-        }
-    })))
+    Ok(Json(emergency_stop_status(payload.active)))
 }
 
 // =============================================================================

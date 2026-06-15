@@ -39,10 +39,22 @@ pub(crate) fn plan_research_run<'a>(
     config: &'a AresConfig,
     payload: &ResearchRequest,
 ) -> (u8, u8, &'a str) {
-    let (depth, max_iterations) =
-        resolve_research_limits(payload, config.get_workflow("research"));
+    let (depth, max_iterations) = resolve_research_limits(payload, config.get_workflow("research"));
     let model_name = orchestrator_model_name(config);
     (depth, max_iterations, model_name)
+}
+
+fn research_emergency_stop_message() -> &'static str {
+    "All agents are currently under human review. Please try again later."
+}
+
+fn ensure_research_emergency_stop_inactive(active: &std::sync::atomic::AtomicBool) -> Result<()> {
+    if active.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(crate::types::AppError::Unavailable(
+            research_emergency_stop_message().to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Builds the HTTP response body from coordinator output and elapsed time.
@@ -77,6 +89,7 @@ pub async fn deep_research(
     Json(payload): Json<ResearchRequest>,
 ) -> Result<Json<ResearchResponse>> {
     let start = Instant::now();
+    ensure_research_emergency_stop_inactive(&state.emergency_stop)?;
 
     let config = state.config_manager.config();
     let (depth, max_iterations, model_name) = plan_research_run(&config, &payload);
@@ -142,9 +155,7 @@ mod tests {
 
     fn config_with_research_workflow(workflow: WorkflowConfig) -> AresConfig {
         let mut config = minimal_ares_config(HashMap::new());
-        config
-            .workflows
-            .insert("research".to_string(), workflow);
+        config.workflows.insert("research".to_string(), workflow);
         config
     }
 
@@ -153,14 +164,14 @@ mod tests {
         agents.insert(
             "orchestrator".to_string(),
             AgentConfig {
-                            model: model.to_string(),
-                            system_prompt: None,
-                            tools: vec![],
-                            allowed_tools: None,
-                            max_tool_iterations: 5,
-                            parallel_tools: false,
-                            extra: HashMap::new(),
-                        },
+                model: model.to_string(),
+                system_prompt: None,
+                tools: vec![],
+                allowed_tools: None,
+                max_tool_iterations: 5,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
         );
         minimal_ares_config(agents)
     }
@@ -177,10 +188,7 @@ mod tests {
     fn resolve_research_limits_uses_workflow_defaults() {
         let payload = sample_request("topic");
         let workflow = sample_workflow();
-        assert_eq!(
-            resolve_research_limits(&payload, Some(&workflow)),
-            (4, 12)
-        );
+        assert_eq!(resolve_research_limits(&payload, Some(&workflow)), (4, 12));
     }
 
     #[test]
@@ -263,10 +271,7 @@ mod tests {
             ..sample_workflow()
         };
         let payload = sample_request("topic");
-        assert_eq!(
-            resolve_research_limits(&payload, Some(&workflow)),
-            (0, 0)
-        );
+        assert_eq!(resolve_research_limits(&payload, Some(&workflow)), (0, 0));
     }
 
     #[test]
@@ -287,14 +292,14 @@ mod tests {
         agents.insert(
             "researcher".to_string(),
             AgentConfig {
-                            model: "other-model".to_string(),
-                            system_prompt: None,
-                            tools: vec![],
-                            allowed_tools: None,
-                            max_tool_iterations: 1,
-                            parallel_tools: false,
-                            extra: HashMap::new(),
-                        },
+                model: "other-model".to_string(),
+                system_prompt: None,
+                tools: vec![],
+                allowed_tools: None,
+                max_tool_iterations: 1,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
         );
         let config = minimal_ares_config(agents);
         assert_eq!(orchestrator_model_name(&config), "powerful");
@@ -306,14 +311,14 @@ mod tests {
         agents.insert(
             "Orchestrator".to_string(),
             AgentConfig {
-                            model: "wrong-case".to_string(),
-                            system_prompt: None,
-                            tools: vec![],
-                            allowed_tools: None,
-                            max_tool_iterations: 1,
-                            parallel_tools: false,
-                            extra: HashMap::new(),
-                        },
+                model: "wrong-case".to_string(),
+                system_prompt: None,
+                tools: vec![],
+                allowed_tools: None,
+                max_tool_iterations: 1,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
         );
         let config = minimal_ares_config(agents);
         assert_eq!(orchestrator_model_name(&config), "powerful");
@@ -352,10 +357,7 @@ mod tests {
             depth: Some(2),
             max_iterations: Some(8),
         };
-        assert_eq!(
-            plan_research_run(&config, &payload),
-            (2, 8, "gpt-research")
-        );
+        assert_eq!(plan_research_run(&config, &payload), (2, 8, "gpt-research"));
     }
 
     #[test]
@@ -366,12 +368,27 @@ mod tests {
     }
 
     #[test]
+    fn ensure_research_emergency_stop_inactive_rejects_active_stop() {
+        let active = std::sync::atomic::AtomicBool::new(true);
+        let err = ensure_research_emergency_stop_inactive(&active).unwrap_err();
+        match err {
+            crate::types::AppError::Unavailable(msg) => {
+                assert_eq!(msg, research_emergency_stop_message())
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ensure_research_emergency_stop_inactive_allows_clear_stop() {
+        let active = std::sync::atomic::AtomicBool::new(false);
+        assert!(ensure_research_emergency_stop_inactive(&active).is_ok());
+    }
+
+    #[test]
     fn finalize_research_response_maps_duration_to_millis() {
-        let response = finalize_research_response(
-            "done".to_string(),
-            vec![],
-            Duration::from_millis(1500),
-        );
+        let response =
+            finalize_research_response("done".to_string(), vec![], Duration::from_millis(1500));
         assert_eq!(response.findings, "done");
         assert!(response.sources.is_empty());
         assert_eq!(response.duration_ms, 1500);
@@ -379,11 +396,8 @@ mod tests {
 
     #[test]
     fn finalize_research_response_truncates_sub_millisecond_duration() {
-        let response = finalize_research_response(
-            "fast".to_string(),
-            vec![],
-            Duration::from_nanos(999_999),
-        );
+        let response =
+            finalize_research_response("fast".to_string(), vec![], Duration::from_nanos(999_999));
         assert_eq!(response.duration_ms, 0);
     }
 
@@ -394,8 +408,7 @@ mod tests {
             url: None,
             relevance_score: 0.5,
         }];
-        let response =
-            finalize_research_response("x".into(), sources.clone(), Duration::ZERO);
+        let response = finalize_research_response("x".into(), sources.clone(), Duration::ZERO);
         assert_eq!(response.sources.len(), 1);
         assert_eq!(response.sources[0].title, "Doc");
         assert!(response.sources[0].url.is_none());
@@ -475,20 +488,17 @@ mod tests {
 
     #[test]
     fn research_request_deserializes_with_overrides() {
-        let req: ResearchRequest = serde_json::from_str(
-            r#"{"query":"ai safety","depth":3,"max_iterations":7}"#,
-        )
-        .unwrap();
+        let req: ResearchRequest =
+            serde_json::from_str(r#"{"query":"ai safety","depth":3,"max_iterations":7}"#).unwrap();
         assert_eq!(req.depth, Some(3));
         assert_eq!(req.max_iterations, Some(7));
     }
 
     #[test]
     fn research_request_deserializes_explicit_null_overrides() {
-        let req: ResearchRequest = serde_json::from_str(
-            r#"{"query":"topic","depth":null,"max_iterations":null}"#,
-        )
-        .unwrap();
+        let req: ResearchRequest =
+            serde_json::from_str(r#"{"query":"topic","depth":null,"max_iterations":null}"#)
+                .unwrap();
         assert!(req.depth.is_none());
         assert!(req.max_iterations.is_none());
     }

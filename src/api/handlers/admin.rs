@@ -1914,6 +1914,14 @@ mod tests {
     }
 
     #[test]
+    fn tenant_trigger_update_handler_audits_update_action() {
+        let source = include_str!("admin.rs");
+        assert!(source.contains("pub async fn update_tenant_trigger"));
+        assert!(source.contains("trigger_update"));
+        assert!(source.contains("trigger {id} not found for tenant {tenant_id}"));
+    }
+
+    #[test]
     fn create_tenant_request_roundtrip() {
         let req = CreateTenantRequest {
             name: "Acme".into(),
@@ -5203,6 +5211,38 @@ pub async fn create_tenant_trigger(
         let _ = audit_log::log_admin_action(
             &pool,
             "trigger_create",
+            "event_trigger",
+            &tr_name,
+            Some(&t_id),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(trigger))
+}
+
+pub async fn update_tenant_trigger(
+    State(state): State<AppState>,
+    Path((tenant_id, id)): Path<(String, String)>,
+    Json(mut req): Json<db_schedules::CreateTriggerRequest>,
+) -> Result<Json<db_schedules::EventTrigger>> {
+    req.tenant_id = tenant_id.clone();
+    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let trigger = store
+        .update_trigger(&tenant_id, &id, &req)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("trigger {id} not found for tenant {tenant_id}"))
+        })?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = trigger.tenant_id.clone();
+    let tr_name = trigger.name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "trigger_update",
             "event_trigger",
             &tr_name,
             Some(&t_id),

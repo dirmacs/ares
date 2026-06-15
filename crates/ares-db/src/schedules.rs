@@ -115,7 +115,7 @@ pub struct CreateScheduleRequest {
     pub grace_period_seconds: i32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CreateTriggerRequest {
     pub tenant_id: String,
     pub name: String,
@@ -419,15 +419,7 @@ impl<'a> EventTriggerStore<'a> {
     }
 
     pub async fn create_trigger(&self, req: &CreateTriggerRequest) -> Result<EventTrigger> {
-        if req.name.is_empty() {
-            return Err(AppError::InvalidInput("name must not be empty".into()));
-        }
-        if req.event_type.is_empty() {
-            return Err(AppError::InvalidInput(
-                "event_type must not be empty".into(),
-            ));
-        }
-        validate_event_type(&req.event_type)?;
+        validate_trigger_request(req)?;
         let now = now_ts();
         let id = uuid::Uuid::new_v4().to_string();
 
@@ -450,6 +442,32 @@ impl<'a> EventTriggerStore<'a> {
         .map_err(sqlx_err)?;
 
         row_to_trigger(&row)
+    }
+
+    pub async fn update_trigger(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        req: &CreateTriggerRequest,
+    ) -> Result<Option<EventTrigger>> {
+        let mut req = req.clone();
+        req.tenant_id = tenant_id.to_string();
+        validate_trigger_request(&req)?;
+        let now = now_ts();
+        let row = sqlx::query(update_trigger_sql())
+            .bind(tenant_id)
+            .bind(id)
+            .bind(&req.name)
+            .bind(&req.event_type)
+            .bind(&req.event_config)
+            .bind(&req.target_agent)
+            .bind(req.enabled)
+            .bind(now)
+            .fetch_optional(self.pool)
+            .await
+            .map_err(sqlx_err)?;
+
+        row.map(|row| row_to_trigger(&row)).transpose()
     }
 
     pub async fn delete_trigger(&self, id: &str) -> Result<u64> {
@@ -678,6 +696,13 @@ fn update_pipeline_sql() -> &'static str {
      RETURNING id, tenant_id, source_agent, target_agent, condition, enabled, created_at, updated_at"
 }
 
+fn update_trigger_sql() -> &'static str {
+    "UPDATE event_triggers SET \
+        name = $3, event_type = $4, event_config = $5, target_agent = $6, enabled = $7, updated_at = $8 \
+     WHERE tenant_id = $1 AND id = $2 \
+     RETURNING id, tenant_id, name, event_type, event_config, target_agent, enabled, created_at, updated_at"
+}
+
 fn row_to_schedule(row: &sqlx::postgres::PgRow) -> Result<AgentSchedule> {
     Ok(AgentSchedule {
         id: row.try_get("id").map_err(sqlx_err)?,
@@ -734,6 +759,26 @@ fn row_to_missed_run_audit(row: &sqlx::postgres::PgRow) -> Result<MissedRunAudit
 
 fn sqlx_err(e: sqlx::Error) -> AppError {
     AppError::Database(e.to_string())
+}
+
+fn validate_trigger_request(req: &CreateTriggerRequest) -> Result<()> {
+    if req.tenant_id.trim().is_empty() {
+        return Err(AppError::InvalidInput("tenant_id must not be empty".into()));
+    }
+    if req.name.trim().is_empty() {
+        return Err(AppError::InvalidInput("name must not be empty".into()));
+    }
+    if req.event_type.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "event_type must not be empty".into(),
+        ));
+    }
+    if req.target_agent.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "target_agent must not be empty".into(),
+        ));
+    }
+    validate_event_type(&req.event_type)
 }
 
 fn validate_schedule_request(req: &CreateScheduleRequest) -> Result<()> {
@@ -856,6 +901,19 @@ mod tests {
     }
 
     #[test]
+    fn update_trigger_sql_is_tenant_scoped_and_updates_fields() {
+        let sql = update_trigger_sql();
+        assert!(sql.contains("tenant_id = $1"));
+        assert!(sql.contains("id = $2"));
+        assert!(sql.contains("name = $3"));
+        assert!(sql.contains("event_type = $4"));
+        assert!(sql.contains("event_config = $5"));
+        assert!(sql.contains("target_agent = $6"));
+        assert!(sql.contains("enabled = $7"));
+        assert!(sql.contains("updated_at = $8"));
+    }
+
+    #[test]
     fn update_schedule_sql_is_tenant_scoped() {
         let sql = update_schedule_where_clause_sql();
         assert!(sql.contains("id = $1"));
@@ -897,6 +955,31 @@ mod tests {
         let sql = insert_missed_run_audit_sql();
         assert!(sql.contains("ON CONFLICT (schedule_id, expected_at) DO NOTHING"));
         assert!(!sql.contains("WHERE NOT EXISTS"));
+    }
+
+    #[test]
+    fn validate_trigger_request_requires_scope_name_type_and_target() {
+        let mut req = CreateTriggerRequest {
+            tenant_id: "tenant-1".to_string(),
+            name: "Webhook".to_string(),
+            event_type: "webhook".to_string(),
+            event_config: serde_json::json!({"path": "/hook"}),
+            target_agent: "agent-a".to_string(),
+            enabled: true,
+        };
+        assert!(validate_trigger_request(&req).is_ok());
+
+        req.tenant_id.clear();
+        assert!(validate_trigger_request(&req).is_err());
+        req.tenant_id = "tenant-1".to_string();
+        req.name = "  ".to_string();
+        assert!(validate_trigger_request(&req).is_err());
+        req.name = "Webhook".to_string();
+        req.event_type = "unknown".to_string();
+        assert!(validate_trigger_request(&req).is_err());
+        req.event_type = "webhook".to_string();
+        req.target_agent.clear();
+        assert!(validate_trigger_request(&req).is_err());
     }
 
     #[test]

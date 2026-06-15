@@ -46,7 +46,9 @@ pub async fn execute_triggered_agent(
     use crate::agents::context_provider::AgentRuntimeContext;
     use crate::agents::tenant_agent;
     use crate::agents::Agent;
-    use crate::observability::RunObservability;
+    use crate::observability::{
+        run_cost_aggregation_request, spawn_run_cost_aggregation, RunObservability,
+    };
 
     let pool = app_state.tenant_db.pool();
 
@@ -143,6 +145,16 @@ pub async fn execute_triggered_agent(
                 )
                 .await;
             });
+
+            spawn_run_cost_aggregation(
+                pool.clone(),
+                run_cost_aggregation_request(
+                    &run_id,
+                    &trigger.tenant_id,
+                    &trigger.target_agent,
+                    duration_ms as i64,
+                ),
+            );
 
             let usage_pool = pool.clone();
             let usage_tid = trigger.tenant_id.clone();

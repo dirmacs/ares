@@ -270,16 +270,11 @@ impl<'a> ScheduleStore<'a> {
     /// Return all enabled schedules whose `next_run_at` is in the past (or never set).
     pub async fn get_due_schedules(&self) -> Result<Vec<AgentSchedule>> {
         let now = now_ts();
-        let rows = sqlx::query(
-            "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
-                    last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
-             FROM agent_schedules \
-             WHERE enabled = TRUE AND (next_run_at IS NULL OR next_run_at <= $1)",
-        )
-        .bind(now)
-        .fetch_all(self.pool)
-        .await
-        .map_err(sqlx_err)?;
+        let rows = sqlx::query(get_due_schedules_sql())
+            .bind(now)
+            .fetch_all(self.pool)
+            .await
+            .map_err(sqlx_err)?;
         rows.iter().map(row_to_schedule).collect()
     }
 
@@ -632,6 +627,14 @@ impl<'a> PipelineStore<'a> {
 // Row mappers
 // =============================================================================
 
+fn get_due_schedules_sql() -> &'static str {
+    "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
+            last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
+     FROM agent_schedules \
+     WHERE enabled = TRUE AND (next_run_at IS NULL OR next_run_at <= $1) \
+     ORDER BY next_run_at ASC NULLS FIRST, tenant_id ASC, agent_name ASC, id ASC"
+}
+
 fn list_missed_runs_sql() -> &'static str {
     "SELECT id, schedule_id, expected_at, detected_at, action_taken, created_at \
      FROM missed_runs \
@@ -937,6 +940,14 @@ mod tests {
         assert!(sql.contains("missed_runs.schedule_id = $2"));
         assert!(sql.contains(
             "ORDER BY missed_runs.detected_at DESC, missed_runs.expected_at DESC, missed_runs.id ASC"
+        ));
+    }
+
+    #[test]
+    fn due_schedule_list_order_is_deterministic() {
+        let sql = get_due_schedules_sql();
+        assert!(sql.contains(
+            "ORDER BY next_run_at ASC NULLS FIRST, tenant_id ASC, agent_name ASC, id ASC"
         ));
     }
 

@@ -473,7 +473,7 @@ impl ProviderRegistry {
             return Some(Self::azure_model_config(model_id));
         }
         // 4. catalog lookup – synthesize a ModelConfig on the fly
-        if let Some(ref catalog) = self.catalog {
+        if let Some(catalog) = &self.catalog {
             let snapshot = catalog.snapshot();
             if snapshot.iter().any(|e| e.id == name) {
                 return Some(ModelConfig {
@@ -514,7 +514,7 @@ impl ProviderRegistry {
                 names.push(name);
             }
         }
-        if let Some(ref catalog) = self.catalog {
+        if let Some(catalog) = &self.catalog {
             for entry in catalog.snapshot() {
                 names.push(entry.id.clone());
             }
@@ -573,7 +573,7 @@ impl ProviderRegistry {
         }
 
         // 4. Try catalog lookup
-        if let Some(ref catalog) = self.catalog {
+        if let Some(catalog) = &self.catalog {
             let snapshot = catalog.snapshot();
             if snapshot.iter().any(|e| e.id == model_name) {
                 let nvidia_cfg = self.nvidia_config_from_providers();
@@ -708,7 +708,7 @@ impl ProviderRegistry {
         }
 
         // If it's in the catalog, use the catalog id directly
-        if let Some(ref catalog) = self.catalog {
+        if let Some(catalog) = &self.catalog {
             let snapshot = catalog.snapshot();
             if snapshot.iter().any(|e| e.id == model_name) {
                 let mut caps = ModelCapabilities::for_model(model_name);
@@ -765,7 +765,7 @@ impl ProviderRegistry {
         }
 
         // Catalog models
-        if let Some(ref catalog) = self.catalog {
+        if let Some(catalog) = &self.catalog {
             for entry in catalog.snapshot() {
                 let caps = self.get_model_capabilities(&entry.id).unwrap_or_else(|| {
                     let mut c = ModelCapabilities::for_model(&entry.id);
@@ -851,6 +851,7 @@ impl ProviderRegistry {
 
         // Legacy explicit models
         for (name, config) in &self.models {
+            let capabilities = ModelCapabilities::for_model(&config.model);
             models.push(ModelInfo {
                 name: name.clone(),
                 provider: config.provider.clone(),
@@ -858,12 +859,15 @@ impl ProviderRegistry {
                 owned_by: config.provider.clone(),
                 quality_score: 75,
                 is_chat: true,
+                supports_reasoning: capabilities.supports_reasoning,
+                supports_streaming: capabilities.supports_streaming,
             });
         }
 
         if let Some(ProviderConfig::Bedrock { default_model, .. }) = self.get_provider("bedrock") {
             let name = format!("bedrock/{default_model}");
             if !default_model.is_empty() && !models.iter().any(|model| model.name == name) {
+                let capabilities = ModelCapabilities::for_model(&default_model);
                 models.push(ModelInfo {
                     name,
                     provider: "bedrock".to_string(),
@@ -871,6 +875,8 @@ impl ProviderRegistry {
                     owned_by: "aws-bedrock".to_string(),
                     quality_score: 85,
                     is_chat: true,
+                    supports_reasoning: capabilities.supports_reasoning,
+                    supports_streaming: capabilities.supports_streaming,
                 });
             }
         }
@@ -878,6 +884,7 @@ impl ProviderRegistry {
         if let Some(ProviderConfig::Azure { default_model, .. }) = self.get_provider("azure") {
             let name = format!("azure/{default_model}");
             if !default_model.is_empty() && !models.iter().any(|model| model.name == name) {
+                let capabilities = ModelCapabilities::for_model(&default_model);
                 models.push(ModelInfo {
                     name,
                     provider: "azure".to_string(),
@@ -885,15 +892,20 @@ impl ProviderRegistry {
                     owned_by: "azure-foundry".to_string(),
                     quality_score: 80,
                     is_chat: true,
+                    supports_reasoning: capabilities.supports_reasoning,
+                    supports_streaming: capabilities.supports_streaming,
                 });
             }
         }
 
         // Catalog entries
-        if let Some(ref catalog) = self.catalog {
+        if let Some(catalog) = &self.catalog {
             let snapshot = catalog.snapshot();
             if !snapshot.is_empty() {
                 for entry in snapshot {
+                    let capabilities = self
+                        .get_model_capabilities(&entry.id)
+                        .unwrap_or_else(|| ModelCapabilities::for_model(&entry.id));
                     models.push(ModelInfo {
                         name: entry.id.clone(),
                         provider: "nvidia".to_string(),
@@ -901,10 +913,13 @@ impl ProviderRegistry {
                         owned_by: entry.owned_by.clone(),
                         quality_score: entry.quality_score,
                         is_chat: true,
+                        supports_reasoning: capabilities.supports_reasoning,
+                        supports_streaming: capabilities.supports_streaming,
                     });
                 }
-            } else if let Some(ref default) = self.default_model {
+            } else if let Some(default) = &self.default_model {
                 // Fallback when catalog is empty: expose the default model so the UI is never blank
+                let capabilities = ModelCapabilities::for_model(default);
                 models.push(ModelInfo {
                     name: default.clone(),
                     provider: "nvidia".to_string(),
@@ -912,10 +927,13 @@ impl ProviderRegistry {
                     owned_by: "unknown".to_string(),
                     quality_score: 75,
                     is_chat: true,
+                    supports_reasoning: capabilities.supports_reasoning,
+                    supports_streaming: capabilities.supports_streaming,
                 });
             }
-        } else if let Some(ref default) = self.default_model {
+        } else if let Some(default) = &self.default_model {
             // No catalog at all – still expose the default model
+            let capabilities = ModelCapabilities::for_model(default);
             models.push(ModelInfo {
                 name: default.clone(),
                 provider: "nvidia".to_string(),
@@ -923,6 +941,8 @@ impl ProviderRegistry {
                 owned_by: "unknown".to_string(),
                 quality_score: 75,
                 is_chat: true,
+                supports_reasoning: capabilities.supports_reasoning,
+                supports_streaming: capabilities.supports_streaming,
             });
         }
 
@@ -1092,6 +1112,10 @@ pub struct ModelInfo {
     pub quality_score: u8,
     #[serde(default)]
     pub is_chat: bool,
+    #[serde(default)]
+    pub supports_reasoning: bool,
+    #[serde(default)]
+    pub supports_streaming: bool,
 }
 
 impl Default for ProviderRegistry {
@@ -1632,9 +1656,12 @@ mod tests {
         let models = registry.list_models();
 
         assert_eq!(models.len(), 3);
-        assert!(models
+        let fast = models
             .iter()
-            .any(|m| m.name == "fast-local" && m.provider == "nvidia"));
+            .find(|m| m.name == "fast-local" && m.provider == "nvidia")
+            .expect("fast model");
+        assert!(fast.supports_reasoning);
+        assert!(fast.supports_streaming);
     }
 
     #[test]

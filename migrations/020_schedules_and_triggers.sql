@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS agent_schedules (
     id              TEXT    PRIMARY KEY DEFAULT gen_random_uuid()::text,
     tenant_id       TEXT    NOT NULL,
     agent_name      TEXT    NOT NULL,
-    cron_expression TEXT    NOT NULL,  -- e.g. '0 9 * * *' for daily at 9am
+    cron_expression TEXT NOT NULL, -- accepts POSIX 5-field or cron-native seconds form; e.g. '0 9 * * *' or '0 0 9 * * *' for daily at 9am
     timezone        TEXT    NOT NULL DEFAULT 'UTC',
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     last_run_at     BIGINT,

@@ -71,19 +71,27 @@ fn has_admin_role(claims: &AdminClaims) -> bool {
     false
 }
 
-fn admin_token_from_request(req: &axum::extract::Request) -> Option<&str> {
-    req.headers()
+fn admin_token_from_request(req: &axum::extract::Request) -> Option<String> {
+    if let Some(token) = req
+        .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .or_else(|| {
-            req.uri().query().and_then(|query| {
-                query.split('&').find_map(|param| {
-                    let (key, value) = param.split_once('=')?;
-                    (key == "token" && !value.is_empty()).then_some(value)
-                })
-            })
+        .filter(|value| !value.is_empty())
+    {
+        return Some(token.to_string());
+    }
+
+    req.uri().query().and_then(|query| {
+        query.split('&').find_map(|param| {
+            let (key, value) = param.split_once('=')?;
+            if key == "token" && !value.is_empty() {
+                percent_decode_component(value).ok()
+            } else {
+                None
+            }
         })
+    })
 }
 
 pub async fn admin_middleware(req: axum::extract::Request, next: Next) -> Response {
@@ -1842,6 +1850,31 @@ mod tests {
             role: role.into(),
             resource_id: None,
         }
+    }
+
+    #[test]
+    fn admin_token_from_request_decodes_query_token() {
+        let req = axum::extract::Request::builder()
+            .uri("/api/admin/runs/live?token=header%2Bpayload%2Fsig%3D")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            admin_token_from_request(&req).as_deref(),
+            Some("header+payload/sig=")
+        );
+    }
+
+    #[test]
+    fn admin_token_from_request_prefers_authorization_header() {
+        let req = axum::extract::Request::builder()
+            .uri("/api/admin/runs/live?token=query-token")
+            .header("authorization", "Bearer header-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            admin_token_from_request(&req).as_deref(),
+            Some("header-token")
+        );
     }
 
     #[test]

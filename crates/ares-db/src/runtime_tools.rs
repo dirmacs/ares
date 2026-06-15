@@ -97,6 +97,8 @@ pub struct UpdateRuntimeToolRequest {
     pub execution_config: Option<serde_json::Value>,
     pub enabled: Option<bool>,
     pub is_public: Option<bool>,
+    pub created_by: Option<Option<String>>,
+    pub tenant_id: Option<Option<String>>,
 }
 
 fn default_true() -> bool {
@@ -198,6 +200,7 @@ impl<'a> RuntimeToolStore<'a> {
                 "execution_config must not be null".into(),
             ));
         }
+        validate_runtime_tool_scope(req.enabled, req.is_public, req.tenant_id.as_deref())?;
 
         let id = uuid::Uuid::new_v4().to_string();
 
@@ -233,17 +236,18 @@ impl<'a> RuntimeToolStore<'a> {
     /// This method automatically snapshots the **previous** state into
     /// `runtime_tool_versions` (with the old version number) before bumping
     /// the version on the main row.
-    pub async fn update(
-        &self,
-        id: &str,
-        req: &UpdateRuntimeToolRequest,
-    ) -> Result<RuntimeTool> {
+    pub async fn update(&self, id: &str, req: &UpdateRuntimeToolRequest) -> Result<RuntimeTool> {
+        validate_runtime_tool_update_scope_preflight(req)?;
+
         let existing = self
             .get_by_id(id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("runtime tool {id} not found")))?;
 
-        let display_name = req.display_name.clone().unwrap_or_else(|| existing.display_name.clone());
+        let display_name = req
+            .display_name
+            .clone()
+            .unwrap_or_else(|| existing.display_name.clone());
         let description = req
             .description
             .clone()
@@ -258,13 +262,18 @@ impl<'a> RuntimeToolStore<'a> {
             .unwrap_or_else(|| existing.execution_config.clone());
         let enabled = req.enabled.unwrap_or(existing.enabled);
         let is_public = req.is_public.unwrap_or(existing.is_public);
+        let created_by = req
+            .created_by
+            .clone()
+            .unwrap_or_else(|| existing.created_by.clone());
+        let tenant_id = req
+            .tenant_id
+            .clone()
+            .unwrap_or_else(|| existing.tenant_id.clone());
+        validate_runtime_tool_scope(enabled, is_public, tenant_id.as_deref())?;
         let new_version = existing.version + 1;
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(sqlx_err)?;
+        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
 
         // Snapshot current state into versions table.
         sqlx::query(
@@ -286,9 +295,9 @@ impl<'a> RuntimeToolStore<'a> {
         let row = sqlx::query(
             "UPDATE runtime_tools SET \
                 display_name = $1, description = $2, parameters_schema = $3, \
-                execution_config = $4, enabled = $5, is_public = $6, version = $7, \
-                updated_at = NOW() \
-             WHERE id = $8::uuid \
+                execution_config = $4, enabled = $5, is_public = $6, created_by = $7, \
+                tenant_id = $8, version = $9, updated_at = NOW() \
+             WHERE id = $10::uuid \
              RETURNING id::text AS id, name, display_name, description, tool_type, parameters_schema, \
                        execution_config, enabled, version, is_public, created_by, tenant_id, \
                        created_at, updated_at",
@@ -299,6 +308,8 @@ impl<'a> RuntimeToolStore<'a> {
         .bind(&execution_config)
         .bind(enabled)
         .bind(is_public)
+        .bind(&created_by)
+        .bind(&tenant_id)
         .bind(new_version)
         .bind(id)
         .fetch_one(&mut *tx)
@@ -553,6 +564,32 @@ fn validate_status(s: &str) -> Result<()> {
     }
 }
 
+pub fn validate_runtime_tool_scope(
+    enabled: bool,
+    is_public: bool,
+    tenant_id: Option<&str>,
+) -> Result<()> {
+    if enabled && !is_public && tenant_id.is_none_or(|id| id.trim().is_empty()) {
+        return Err(AppError::InvalidInput(
+            "enabled private runtime tools require tenant_id".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_runtime_tool_update_scope_preflight(req: &UpdateRuntimeToolRequest) -> Result<()> {
+    if req.enabled == Some(true) && req.is_public == Some(false) {
+        validate_runtime_tool_scope(
+            true,
+            false,
+            req.tenant_id
+                .as_ref()
+                .and_then(|tenant_id| tenant_id.as_deref()),
+        )?;
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -668,6 +705,36 @@ mod tests {
         assert!(matches!(err, AppError::InvalidInput(_)));
     }
 
+    #[test]
+    fn validate_runtime_tool_scope_rejects_enabled_private_without_tenant() {
+        for tenant_id in [None, Some(""), Some("   ")] {
+            let err = validate_runtime_tool_scope(true, false, tenant_id).unwrap_err();
+            assert!(matches!(err, AppError::InvalidInput(_)));
+            assert!(err
+                .to_string()
+                .contains("enabled private runtime tools require tenant_id"));
+        }
+    }
+
+    #[test]
+    fn validate_runtime_tool_scope_allows_public_or_disabled_without_tenant() {
+        assert!(validate_runtime_tool_scope(true, true, None).is_ok());
+        assert!(validate_runtime_tool_scope(false, false, None).is_ok());
+        assert!(validate_runtime_tool_scope(true, false, Some("tenant-a")).is_ok());
+    }
+
+    #[test]
+    fn validate_runtime_tool_update_scope_preflight_rejects_explicit_unreachable_scope() {
+        let req = UpdateRuntimeToolRequest {
+            enabled: Some(true),
+            is_public: Some(false),
+            tenant_id: Some(Some("   ".to_string())),
+            ..Default::default()
+        };
+        let err = validate_runtime_tool_update_scope_preflight(&req).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
     // -------------------------------------------------------------------------
     // Integration tests (require a live Postgres instance)
     // -------------------------------------------------------------------------
@@ -689,7 +756,10 @@ mod tests {
         let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
             .await
             .ok()?;
-        sqlx::migrate!("../../migrations").run(&db.pool).await.ok()?;
+        sqlx::migrate!("../../migrations")
+            .run(&db.pool)
+            .await
+            .ok()?;
         Some(db.pool)
     }
 
@@ -716,8 +786,8 @@ mod tests {
             execution_config: serde_json::json!({"method": "GET", "url": "https://example.com"}),
             enabled: true,
             is_public: false,
-            created_by: None,
-            tenant_id: None,
+            created_by: Some("integration-tenant".into()),
+            tenant_id: Some("integration-tenant".into()),
         };
         let tool = store.create(&req).await.expect("create tool");
         assert_eq!(tool.name, "integration-test-http");
@@ -745,7 +815,10 @@ mod tests {
         assert_eq!(updated.version, 2);
 
         // Versions
-        let versions = store.get_versions(&tool.id, 10).await.expect("get_versions");
+        let versions = store
+            .get_versions(&tool.id, 10)
+            .await
+            .expect("get_versions");
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].version, 1);
 
@@ -777,7 +850,11 @@ mod tests {
         // Delete
         let deleted = store.delete(&tool.id).await.expect("delete");
         assert_eq!(deleted, 1);
-        assert!(store.get_by_id(&tool.id).await.expect("get_by_id after delete").is_none());
+        assert!(store
+            .get_by_id(&tool.id)
+            .await
+            .expect("get_by_id after delete")
+            .is_none());
     }
 
     #[tokio::test]
@@ -831,13 +908,19 @@ mod tests {
             .expect("create public");
 
         // tenant_a should see both their own tool and the public tool
-        let a_tools = store.get_by_tenant(&tenant_a).await.expect("get_by_tenant a");
+        let a_tools = store
+            .get_by_tenant(&tenant_a)
+            .await
+            .expect("get_by_tenant a");
         assert!(a_tools.iter().any(|t| t.id == private.id));
         assert!(a_tools.iter().any(|t| t.id == public.id));
 
         // tenant_b should see both (their own public + no private from a since a is not b)
         // Actually tenant_b sees public (their own) but not private (owned by a)
-        let b_tools = store.get_by_tenant(&tenant_b).await.expect("get_by_tenant b");
+        let b_tools = store
+            .get_by_tenant(&tenant_b)
+            .await
+            .expect("get_by_tenant b");
         assert!(b_tools.iter().any(|t| t.id == public.id));
         assert!(!b_tools.iter().any(|t| t.id == private.id));
 

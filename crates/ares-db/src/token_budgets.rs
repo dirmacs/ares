@@ -285,20 +285,12 @@ impl<'a> TokenBudgetStore<'a> {
 
     /// List recent token usage entries for a tenant.
     pub async fn list_usage(&self, tenant_id: &str, limit: i64) -> Result<Vec<TokenUsageEntry>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT id, tenant_id, run_id, agent_name, model, input_tokens, output_tokens, total_tokens, created_at
-            FROM token_usage_log
-            WHERE tenant_id = $1
-            ORDER BY created_at DESC
-            LIMIT $2
-            "#,
-        )
-        .bind(tenant_id)
-        .bind(limit)
-        .fetch_all(self.pool)
-        .await
-        .map_err(sqlx_err)?;
+        let rows = sqlx::query(list_usage_sql())
+            .bind(tenant_id)
+            .bind(limit)
+            .fetch_all(self.pool)
+            .await
+            .map_err(sqlx_err)?;
 
         Ok(rows.iter().map(row_to_usage).collect())
     }
@@ -364,6 +356,16 @@ fn row_to_budget(row: &sqlx::postgres::PgRow) -> TokenBudget {
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
+}
+
+fn list_usage_sql() -> &'static str {
+    r#"
+    SELECT id, tenant_id, run_id, agent_name, model, input_tokens, output_tokens, total_tokens, created_at
+    FROM token_usage_log
+    WHERE tenant_id = $1
+    ORDER BY created_at DESC, id ASC
+    LIMIT $2
+    "#
 }
 
 fn row_to_usage(row: &sqlx::postgres::PgRow) -> TokenUsageEntry {
@@ -463,6 +465,11 @@ mod tests {
         let json = serde_json::to_string(&original).expect("serialize");
         let back: TokenBudget = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, original);
+    }
+
+    #[test]
+    fn token_usage_list_order_is_deterministic() {
+        assert!(list_usage_sql().contains("ORDER BY created_at DESC, id ASC"));
     }
 
     #[test]

@@ -176,38 +176,47 @@ All RAG collections are automatically scoped per-user to prevent data leakage:
 - Users can only access their own collections
 - Collection names in API responses are unscoped (user-facing)
 
-## eHB Knowledge Base Integration
+## CLI Ingestion and Search
 
-### Ingesting eHB Documents
-
-The eHB knowledge base at `/opt/ehb` can be ingested using the provided Python script:
+Use the generic Rust CLI for local document ingestion. The CLI has no built-in corpus paths or collection names; provide deployment-specific values explicitly or from your own wrapper outside the OSS repository.
 
 ```bash
-# Make script executable
-chmod +x /opt/ares/scripts/ingest_ehb_kb.py
-
-# Run ingestion
-python3 /opt/ares/scripts/ingest_ehb_kb.py \
+# Preview the documents that would be ingested
+ares-server rag ingest-dir \
   --host http://localhost:3000 \
-  --user admin \
-  --password <password> \
-  --collection ehb_knowledge_base \
-  --chunking-strategy word
+  --token "$ARES_TOKEN" \
+  --collection docs \
+  --docs-path ./docs \
+  --tag documentation \
+  --dry-run
 
-# Search the knowledge base
-python3 /opt/ares/scripts/ingest_ehb_kb.py \
-  --search "mental health assessment guidelines"
+# Ingest supported UTF-8 text documents (.md, .txt, .json, .jsonl)
+ares-server rag ingest-dir \
+  --host http://localhost:3000 \
+  --token "$ARES_TOKEN" \
+  --collection docs \
+  --docs-path ./docs \
+  --chunking-strategy word \
+  --tag documentation
+
+# Or let the CLI obtain a bearer token through /api/auth/login
+ares-server rag ingest-dir \
+  --host http://localhost:3000 \
+  --user user@example.com \
+  --password "$ARES_PASSWORD" \
+  --collection docs \
+  --docs-path ./docs
+
+# Search the collection
+ares-server rag search \
+  --host http://localhost:3000 \
+  --token "$ARES_TOKEN" \
+  --collection docs \
+  --query "deployment guide" \
+  --top-k 5
 ```
 
-### Expected Document Count
-
-The eHB directory contains approximately 70 markdown documents covering:
-- AI Integration guidelines
-- General assessment tests
-- Service descriptions
-- Architecture documentation
-- Deployment guides
-- API integration docs
+Managed deployments should keep site-specific defaults in their private wrapper repository and pass them to `ares-server rag ingest-dir`; do not add private paths, customer names, or secrets to this OSS repository.
 
 ### Context Injection Pattern
 

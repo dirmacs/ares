@@ -526,6 +526,10 @@ impl SkillEngine {
     ) -> Result<(), String> {
         let store = RunHistoryStore::new(&self.pool);
         let usage = response.usage.unwrap_or_default();
+        let estimated_cost_usd = crate::observability::estimated_cost_usd(
+            usage.prompt_tokens as i64,
+            usage.completion_tokens as i64,
+        );
         let req = LogLlmCallRequest {
             id: uuid::Uuid::new_v4().to_string(),
             run_id: run_id.to_string(),
@@ -537,7 +541,7 @@ impl SkillEngine {
             prompt_tokens: usage.prompt_tokens as i64,
             completion_tokens: usage.completion_tokens as i64,
             total_tokens: usage.total_tokens as i64,
-            estimated_cost_usd: rust_decimal::Decimal::ZERO,
+            estimated_cost_usd,
             latency_ms: latency_ms,
             status: RUN_HISTORY_STATUS_SUCCESS.to_string(),
             error_message: None,
@@ -770,6 +774,15 @@ mod tests {
             .await
             .expect("enabled allowlist row should permit model");
         let _ = store.deny_model(&tenant_id, "gpt-4o").await;
+    }
+
+    #[test]
+    fn skill_llm_cost_estimate_uses_token_counts() {
+        assert!(crate::observability::estimated_cost_usd(10, 5) > rust_decimal::Decimal::ZERO);
+        assert_eq!(
+            crate::observability::estimated_cost_usd(0, 0),
+            rust_decimal::Decimal::ZERO
+        );
     }
 
     #[test]

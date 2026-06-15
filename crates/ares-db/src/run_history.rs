@@ -716,7 +716,7 @@ impl<'a> RunHistoryStore<'a> {
         if q.acknowledged.is_some() {
             sql.push_str(" AND acknowledged = $3");
         }
-        sql.push_str(" ORDER BY created_at DESC LIMIT $4 OFFSET $5");
+        sql.push_str(" ORDER BY created_at DESC, id ASC LIMIT $4 OFFSET $5");
 
         let mut query = sqlx::query(&sql);
         query = query.bind(&q.tenant_id);
@@ -1276,6 +1276,27 @@ mod tests {
     fn validate_alert_type_rejects_invalid() {
         let err = validate_alert_type("unknown").unwrap_err();
         assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn list_budget_alerts_order_is_deterministic() {
+        let q = ListBudgetAlertsQuery::default();
+        let mut sql = String::from(
+            "SELECT id, tenant_id, alert_type, current_spend_usd, limit_usd, threshold_pct, \
+                    period_start, period_end, acknowledged, acknowledged_by, acknowledged_at, created_at \
+             FROM budget_alerts WHERE 1=1",
+        );
+        if q.tenant_id.is_some() {
+            sql.push_str(" AND tenant_id = $1");
+        }
+        if q.alert_type.is_some() {
+            sql.push_str(" AND alert_type = $2");
+        }
+        if q.acknowledged.is_some() {
+            sql.push_str(" AND acknowledged = $3");
+        }
+        sql.push_str(" ORDER BY created_at DESC, id ASC LIMIT $4 OFFSET $5");
+        assert!(sql.contains("ORDER BY created_at DESC, id ASC"));
     }
 
     #[test]

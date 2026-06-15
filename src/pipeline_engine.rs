@@ -193,7 +193,9 @@ async fn execute_target_agent(
     use crate::agents::context_provider::AgentRuntimeContext;
     use crate::agents::tenant_agent;
     use crate::agents::Agent;
-    use crate::observability::RunObservability;
+    use crate::observability::{
+        run_cost_aggregation_request, spawn_run_cost_aggregation, RunObservability,
+    };
 
     let pool = app_state.tenant_db.pool();
 
@@ -290,6 +292,16 @@ async fn execute_target_agent(
                 )
                 .await;
             });
+
+            spawn_run_cost_aggregation(
+                pool.clone(),
+                run_cost_aggregation_request(
+                    &run_id,
+                    tenant_id,
+                    &pipeline.target_agent,
+                    duration_ms as i64,
+                ),
+            );
 
             let usage_pool = pool.clone();
             tokio::spawn(async move {

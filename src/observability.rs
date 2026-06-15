@@ -20,6 +20,40 @@ pub(crate) fn estimated_cost_usd(prompt_tokens: i64, completion_tokens: i64) -> 
     Decimal::new(total * 2, 6)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RunCostAggregationRequest {
+    pub(crate) run_id: String,
+    pub(crate) tenant_id: String,
+    pub(crate) agent_name: String,
+    pub(crate) duration_ms: i64,
+}
+
+pub(crate) fn run_cost_aggregation_request(
+    run_id: &str,
+    tenant_id: &str,
+    agent_name: &str,
+    duration_ms: i64,
+) -> RunCostAggregationRequest {
+    RunCostAggregationRequest {
+        run_id: run_id.to_string(),
+        tenant_id: tenant_id.to_string(),
+        agent_name: agent_name.to_string(),
+        duration_ms,
+    }
+}
+
+pub(crate) fn spawn_run_cost_aggregation(pool: PgPool, request: RunCostAggregationRequest) {
+    let obs = RunObservability {
+        run_id: request.run_id,
+        tenant_id: request.tenant_id,
+        agent_name: request.agent_name,
+        pool,
+    };
+    tokio::spawn(async move {
+        obs.aggregate_run_cost(request.duration_ms).await;
+    });
+}
+
 /// Concrete observability sink that writes to PostgreSQL run history tables.
 pub struct RunObservability {
     /// Unique run identifier.
@@ -89,6 +123,20 @@ impl ObservabilitySink for RunObservability {
         if let Err(e) = store.insert_tool_call(&req).await {
             tracing::warn!(error = %e, run_id = %self.run_id, "Failed to log tool call");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_cost_aggregation_request_preserves_run_identity() {
+        let req = run_cost_aggregation_request("run-1", "tenant-a", "agent-a", 42);
+        assert_eq!(req.run_id, "run-1");
+        assert_eq!(req.tenant_id, "tenant-a");
+        assert_eq!(req.agent_name, "agent-a");
+        assert_eq!(req.duration_ms, 42);
     }
 }
 

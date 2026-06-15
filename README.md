@@ -824,7 +824,25 @@ curl http://localhost:3000/api/admin/services/ares/logs \
 
 ### RAG (Retrieval Augmented Generation)
 
-A.R.E.S includes a comprehensive RAG system with a pure-Rust vector store. Requires the `ares-vector` feature.
+A.R.E.S includes a comprehensive RAG system with a pure-Rust vector store. Requires the `ares-vector` feature. For local files, use the generic Rust CLI and pass every deployment-specific path or collection explicitly:
+
+```bash
+ares-server rag ingest-dir \
+  --host http://localhost:3000 \
+  --token "$ARES_TOKEN" \
+  --collection docs \
+  --docs-path ./docs \
+  --chunking-strategy word \
+  --tag documentation
+
+
+ares-server rag search \
+  --host http://localhost:3000 \
+  --token "$ARES_TOKEN" \
+  --collection docs \
+  --query "What is the architecture?" \
+  --top-k 5
+```
 
 #### Ingest Documents
 
@@ -835,7 +853,9 @@ curl -X POST http://localhost:3000/api/rag/ingest \
   -d '{
     "collection": "docs",
     "content": "Your document content here...",
-    "metadata": {"source": "manual", "category": "technical"},
+    "title": "Manual note",
+    "source": "manual",
+    "tags": ["technical"],
     "chunking_strategy": "word"
   }'
 ```
@@ -850,7 +870,7 @@ curl -X POST http://localhost:3000/api/rag/search \
     "collection": "docs",
     "query": "What is the architecture?",
     "strategy": "hybrid",
-    "top_k": 5,
+    "limit": 5,
     "rerank": true
   }'
 ```

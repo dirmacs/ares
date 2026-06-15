@@ -336,18 +336,12 @@ impl<'a> ScheduleStore<'a> {
         schedule_id: &str,
         limit: i32,
     ) -> Result<Vec<MissedRunAudit>> {
-        let rows = sqlx::query(
-            "SELECT id, schedule_id, expected_at, detected_at, action_taken, created_at \
-             FROM missed_runs \
-             WHERE schedule_id = $1 \
-             ORDER BY detected_at DESC \
-             LIMIT $2",
-        )
-        .bind(schedule_id)
-        .bind(limit)
-        .fetch_all(self.pool)
-        .await
-        .map_err(sqlx_err)?;
+        let rows = sqlx::query(list_missed_runs_sql())
+            .bind(schedule_id)
+            .bind(limit)
+            .fetch_all(self.pool)
+            .await
+            .map_err(sqlx_err)?;
         rows.iter().map(row_to_missed_run_audit).collect()
     }
 
@@ -638,6 +632,14 @@ impl<'a> PipelineStore<'a> {
 // Row mappers
 // =============================================================================
 
+fn list_missed_runs_sql() -> &'static str {
+    "SELECT id, schedule_id, expected_at, detected_at, action_taken, created_at \
+     FROM missed_runs \
+     WHERE schedule_id = $1 \
+     ORDER BY detected_at DESC, expected_at DESC, id ASC \
+     LIMIT $2"
+}
+
 fn insert_missed_run_audit_sql() -> &'static str {
     "INSERT INTO missed_runs \
         (id, schedule_id, expected_at, detected_at, action_taken, created_at) \
@@ -668,7 +670,7 @@ fn list_missed_runs_for_tenant_sql() -> &'static str {
      FROM missed_runs \
      JOIN agent_schedules ON agent_schedules.id = missed_runs.schedule_id \
      WHERE agent_schedules.tenant_id = $1 AND missed_runs.schedule_id = $2 \
-     ORDER BY missed_runs.detected_at DESC \
+     ORDER BY missed_runs.detected_at DESC, missed_runs.expected_at DESC, missed_runs.id ASC \
      LIMIT $3"
 }
 
@@ -933,6 +935,15 @@ mod tests {
         assert!(sql.contains("JOIN agent_schedules"));
         assert!(sql.contains("agent_schedules.tenant_id = $1"));
         assert!(sql.contains("missed_runs.schedule_id = $2"));
+        assert!(sql.contains(
+            "ORDER BY missed_runs.detected_at DESC, missed_runs.expected_at DESC, missed_runs.id ASC"
+        ));
+    }
+
+    #[test]
+    fn missed_run_audit_list_order_is_deterministic() {
+        let sql = list_missed_runs_sql();
+        assert!(sql.contains("ORDER BY detected_at DESC, expected_at DESC, id ASC"));
     }
 
     #[test]

@@ -3485,6 +3485,11 @@ fn redact_runtime_provider_headers(
     Some(headers)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RuntimeProviderScopeQuery {
+    pub tenant_id: Option<String>,
+}
+
 async fn preserve_redacted_runtime_provider_secret(
     store: &RuntimeProviderStore<'_>,
     req: &mut CreateRuntimeProviderRequest,
@@ -3493,7 +3498,10 @@ async fn preserve_redacted_runtime_provider_secret(
         return Ok(());
     }
 
-    let Some(existing) = store.get(&req.name).await? else {
+    let Some(existing) = store
+        .get_scoped(req.tenant_id.as_deref(), &req.name)
+        .await?
+    else {
         return Err(AppError::InvalidInput(
             "runtime provider api_key is redacted but no existing provider secret was found".into(),
         ));
@@ -3577,10 +3585,11 @@ pub async fn list_runtime_providers(
 pub async fn get_runtime_provider(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    Query(query): Query<RuntimeProviderScopeQuery>,
 ) -> Result<Json<RuntimeProviderResponse>> {
     let store = RuntimeProviderStore::new(state.tenant_db.pool());
     let provider = store
-        .get(&name)
+        .get_scoped(query.tenant_id.as_deref(), &name)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("runtime provider {name} not found")))?;
     tracing::info!("Retrieved runtime provider {}", name);
@@ -3604,9 +3613,12 @@ pub async fn upsert_runtime_provider(
 pub async fn delete_runtime_provider(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    Query(query): Query<RuntimeProviderScopeQuery>,
 ) -> Result<StatusCode> {
     let store = RuntimeProviderStore::new(state.tenant_db.pool());
-    let rows = store.delete(&name).await?;
+    let rows = store
+        .delete_scoped(query.tenant_id.as_deref(), &name)
+        .await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(
             "runtime provider {name} not found"

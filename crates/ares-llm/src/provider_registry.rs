@@ -76,7 +76,7 @@ pub struct ProviderRegistry {
     /// Default model name to use when none specified.
     default_model: Option<String>,
     /// Runtime providers loaded from the DB (hot-swapped).
-    runtime_providers: Arc<ArcSwap<HashMap<String, RuntimeProviderEntry>>>,
+    runtime_providers: Arc<ArcSwap<HashMap<String, Vec<RuntimeProviderEntry>>>>,
 }
 
 impl ProviderRegistry {
@@ -144,7 +144,7 @@ impl ProviderRegistry {
         let mut map = HashMap::new();
         for (entry, name) in providers.into_iter().zip(names.into_iter()) {
             if entry.enabled {
-                map.insert(name, entry);
+                map.entry(name).or_insert_with(Vec::new).push(entry);
             }
         }
         self.runtime_providers.store(Arc::new(map));
@@ -212,12 +212,19 @@ impl ProviderRegistry {
         tenant_id: Option<&str>,
     ) -> Option<RuntimeProviderEntry> {
         let runtime = self.runtime_providers.load();
-        let entry = runtime.get(name)?;
-        match (entry.tenant_id.as_deref(), tenant_id) {
-            (None, _) => Some(entry.clone()),
-            (Some(owner), Some(requester)) if owner == requester => Some(entry.clone()),
-            _ => None,
+        let entries = runtime.get(name)?;
+        if let Some(requester) = tenant_id {
+            if let Some(entry) = entries
+                .iter()
+                .find(|entry| entry.tenant_id.as_deref() == Some(requester))
+            {
+                return Some(entry.clone());
+            }
         }
+        entries
+            .iter()
+            .find(|entry| entry.tenant_id.is_none())
+            .cloned()
     }
 
     /// Synthesize a legacy [`ProviderConfig`] from a runtime provider entry.
@@ -491,8 +498,8 @@ impl ProviderRegistry {
     pub fn provider_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.providers.keys().cloned().collect();
         let runtime = self.runtime_providers.load();
-        for (name, entry) in runtime.iter() {
-            if entry.tenant_id.is_none() && !names.contains(name) {
+        for (name, entries) in runtime.iter() {
+            if entries.iter().any(|entry| entry.tenant_id.is_none()) && !names.contains(name) {
                 names.push(name.clone());
             }
         }
@@ -1583,6 +1590,60 @@ mod tests {
         assert_eq!(
             registry.provider_names(),
             vec!["global-runtime".to_string()]
+        );
+    }
+
+    #[test]
+    fn runtime_provider_lookup_prefers_tenant_override_same_name() {
+        let registry = ProviderRegistry::new();
+        let global = RuntimeProviderEntry {
+            tenant_id: None,
+            display_name: "Global Shared".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://global.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("global-model".to_string()),
+            headers: HashMap::new(),
+            api_key: Some("global-key".to_string()),
+            enabled: true,
+        };
+        let tenant = RuntimeProviderEntry {
+            tenant_id: Some("tenant-a".to_string()),
+            display_name: "Tenant Shared".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://tenant.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("tenant-model".to_string()),
+            headers: HashMap::new(),
+            api_key: Some("tenant-key".to_string()),
+            enabled: true,
+        };
+        registry.reload_runtime_providers(
+            vec![global, tenant],
+            vec!["shared-runtime".to_string(), "shared-runtime".to_string()],
+        );
+
+        assert!(registry.has_provider("shared-runtime"));
+        assert!(registry.has_provider_for_tenant("shared-runtime", Some("tenant-a")));
+        assert!(registry.has_provider_for_tenant("shared-runtime", Some("tenant-b")));
+
+        let tenant_provider = registry
+            .get_provider_for_tenant("shared-runtime", Some("tenant-a"))
+            .expect("tenant provider");
+        let global_provider = registry
+            .get_provider_for_tenant("shared-runtime", Some("tenant-b"))
+            .expect("global fallback provider");
+        assert_eq!(
+            ProviderRegistry::provider_default_model(&tenant_provider),
+            "tenant-model"
+        );
+        assert_eq!(
+            ProviderRegistry::provider_default_model(&global_provider),
+            "global-model"
+        );
+        assert_eq!(
+            registry.provider_names(),
+            vec!["shared-runtime".to_string()]
         );
     }
 

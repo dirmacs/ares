@@ -78,7 +78,7 @@ impl<'a> RuntimeProviderStore<'a> {
                        response_transform, enabled, created_at, updated_at
                 FROM runtime_providers
                 WHERE tenant_id = $1
-                ORDER BY name
+                ORDER BY name, tenant_id NULLS FIRST
                 "#,
             )
             .bind(tid)
@@ -92,7 +92,7 @@ impl<'a> RuntimeProviderStore<'a> {
                        response_transform, enabled, created_at, updated_at
                 FROM runtime_providers
                 WHERE tenant_id IS NULL
-                ORDER BY name
+                ORDER BY name, tenant_id NULLS FIRST
                 "#,
             )
             .fetch_all(self.pool)
@@ -113,7 +113,7 @@ impl<'a> RuntimeProviderStore<'a> {
                    auth_type, default_model, headers, request_transform,
                    response_transform, enabled, created_at, updated_at
             FROM runtime_providers
-            ORDER BY name
+            ORDER BY name, tenant_id NULLS FIRST
             "#,
         )
         .fetch_all(self.pool)
@@ -123,17 +123,28 @@ impl<'a> RuntimeProviderStore<'a> {
         rows.iter().map(row_to_runtime_provider).collect()
     }
 
-    /// Get a single runtime provider by its unique name.
+    /// Get a single fleet-wide runtime provider by name.
     pub async fn get(&self, name: &str) -> Result<Option<RuntimeProvider>> {
+        self.get_scoped(None, name).await
+    }
+
+    /// Get a single runtime provider by its tenant scope and name.
+    pub async fn get_scoped(
+        &self,
+        tenant_id: Option<&str>,
+        name: &str,
+    ) -> Result<Option<RuntimeProvider>> {
         let row = sqlx::query(
             r#"
             SELECT id, tenant_id, name, display_name, provider_type, api_base,
                    auth_type, default_model, headers, request_transform,
                    response_transform, enabled, created_at, updated_at
             FROM runtime_providers
-            WHERE name = $1
+            WHERE name = $2
+              AND (($1::TEXT IS NULL AND tenant_id IS NULL) OR tenant_id = $1)
             "#,
         )
+        .bind(tenant_id)
         .bind(name)
         .fetch_optional(self.pool)
         .await
@@ -145,7 +156,7 @@ impl<'a> RuntimeProviderStore<'a> {
         }
     }
 
-    /// Upsert a runtime provider. If a row with the same `name` exists, update it.
+    /// Upsert a runtime provider. Scope identity is `(tenant_id, name)`.
     pub async fn upsert(&self, req: &CreateRuntimeProviderRequest) -> Result<RuntimeProvider> {
         validate_provider_type(&req.provider_type)?;
         validate_auth_type(&req.auth_type)?;
@@ -155,29 +166,39 @@ impl<'a> RuntimeProviderStore<'a> {
 
         let row = sqlx::query(
             r#"
-            INSERT INTO runtime_providers (
-                id, tenant_id, name, display_name, provider_type, api_base,
-                auth_type, default_model, headers, request_transform,
-                response_transform, enabled, created_at, updated_at
-            ) VALUES (
-                gen_random_uuid()::text, $1, $2, $3, $4, $5,
-                $6, $7, $8, $9, $10, $11, $12, $12
+            WITH updated AS (
+                UPDATE runtime_providers SET
+                    display_name = $3,
+                    provider_type = $4,
+                    api_base = $5,
+                    auth_type = $6,
+                    default_model = $7,
+                    headers = $8,
+                    request_transform = $9,
+                    response_transform = $10,
+                    enabled = $11,
+                    updated_at = $12
+                WHERE name = $2
+                  AND (($1::TEXT IS NULL AND tenant_id IS NULL) OR tenant_id = $1)
+                RETURNING id, tenant_id, name, display_name, provider_type, api_base,
+                          auth_type, default_model, headers, request_transform,
+                          response_transform, enabled, created_at, updated_at
+            ), inserted AS (
+                INSERT INTO runtime_providers (
+                    id, tenant_id, name, display_name, provider_type, api_base,
+                    auth_type, default_model, headers, request_transform,
+                    response_transform, enabled, created_at, updated_at
+                )
+                SELECT gen_random_uuid()::text, $1, $2, $3, $4, $5,
+                       $6, $7, $8, $9, $10, $11, $12, $12
+                WHERE NOT EXISTS (SELECT 1 FROM updated)
+                RETURNING id, tenant_id, name, display_name, provider_type, api_base,
+                          auth_type, default_model, headers, request_transform,
+                          response_transform, enabled, created_at, updated_at
             )
-            ON CONFLICT (name) DO UPDATE SET
-                tenant_id = EXCLUDED.tenant_id,
-                display_name = EXCLUDED.display_name,
-                provider_type = EXCLUDED.provider_type,
-                api_base = EXCLUDED.api_base,
-                auth_type = EXCLUDED.auth_type,
-                default_model = EXCLUDED.default_model,
-                headers = EXCLUDED.headers,
-                request_transform = EXCLUDED.request_transform,
-                response_transform = EXCLUDED.response_transform,
-                enabled = EXCLUDED.enabled,
-                updated_at = EXCLUDED.updated_at
-            RETURNING id, tenant_id, name, display_name, provider_type, api_base,
-                      auth_type, default_model, headers, request_transform,
-                      response_transform, enabled, created_at, updated_at
+            SELECT * FROM updated
+            UNION ALL
+            SELECT * FROM inserted
             "#,
         )
         .bind(&req.tenant_id)
@@ -199,9 +220,17 @@ impl<'a> RuntimeProviderStore<'a> {
         row_to_runtime_provider(&row)
     }
 
-    /// Hard-delete a runtime provider by name. Returns the number of rows affected.
+    /// Hard-delete a fleet-wide runtime provider by name. Returns the number of rows affected.
     pub async fn delete(&self, name: &str) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM runtime_providers WHERE name = $1")
+        self.delete_scoped(None, name).await
+    }
+
+    /// Hard-delete a runtime provider by tenant scope and name.
+    pub async fn delete_scoped(&self, tenant_id: Option<&str>, name: &str) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM runtime_providers WHERE name = $2 AND (($1::TEXT IS NULL AND tenant_id IS NULL) OR tenant_id = $1)",
+        )
+            .bind(tenant_id)
             .bind(name)
             .execute(self.pool)
             .await
@@ -322,6 +351,119 @@ mod tests {
         assert!(after_delete.is_none());
     }
 
+    fn provider_req(
+        name: &str,
+        tenant_id: Option<&str>,
+        display_name: &str,
+        api_base: &str,
+    ) -> CreateRuntimeProviderRequest {
+        CreateRuntimeProviderRequest {
+            tenant_id: tenant_id.map(str::to_string),
+            name: name.to_string(),
+            display_name: display_name.to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: api_base.to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("model".to_string()),
+            headers: None,
+            request_transform: None,
+            response_transform: None,
+            enabled: Some(true),
+        }
+    }
+
+    async fn ensure_scoped_runtime_provider_index(pool: &PgPool) {
+        sqlx::query("DROP INDEX IF EXISTS idx_runtime_providers_name")
+            .execute(pool)
+            .await
+            .expect("drop old runtime provider index");
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_providers_scope_name ON runtime_providers (COALESCE(tenant_id, ''), name)",
+        )
+        .execute(pool)
+        .await
+        .expect("create scoped runtime provider index");
+    }
+
+    #[tokio::test]
+    async fn scoped_identity_allows_global_and_tenant_same_name() {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/ares".to_string());
+        let Ok(pool) = PgPool::connect(&database_url).await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
+        ensure_scoped_runtime_provider_index(&pool).await;
+        let store = RuntimeProviderStore::new(&pool);
+        let name = "test_shared_provider_scope";
+        let _ = store.delete_scoped(None, name).await;
+        let _ = store.delete_scoped(Some("tenant-a"), name).await;
+
+        let global = provider_req(name, None, "Global Shared", "https://global.example.com");
+        let tenant = provider_req(
+            name,
+            Some("tenant-a"),
+            "Tenant Shared",
+            "https://tenant.example.com",
+        );
+
+        let global_row = store.upsert(&global).await.expect("global upsert");
+        let tenant_row = store.upsert(&tenant).await.expect("tenant upsert");
+        assert_ne!(global_row.id, tenant_row.id);
+        assert_eq!(global_row.tenant_id, None);
+        assert_eq!(tenant_row.tenant_id.as_deref(), Some("tenant-a"));
+
+        let global_fetched = store
+            .get_scoped(None, name)
+            .await
+            .expect("global fetch")
+            .expect("global row");
+        let tenant_fetched = store
+            .get_scoped(Some("tenant-a"), name)
+            .await
+            .expect("tenant fetch")
+            .expect("tenant row");
+        assert_eq!(global_fetched.display_name, "Global Shared");
+        assert_eq!(tenant_fetched.display_name, "Tenant Shared");
+        assert!(store
+            .get_scoped(Some("tenant-b"), name)
+            .await
+            .expect("tenant-b fetch")
+            .is_none());
+
+        let updated_tenant = provider_req(
+            name,
+            Some("tenant-a"),
+            "Tenant Updated",
+            "https://tenant-updated.example.com",
+        );
+        store.upsert(&updated_tenant).await.expect("tenant update");
+        let global_after = store
+            .get_scoped(None, name)
+            .await
+            .expect("global refetch")
+            .expect("global row after tenant update");
+        let tenant_after = store
+            .get_scoped(Some("tenant-a"), name)
+            .await
+            .expect("tenant refetch")
+            .expect("tenant row after update");
+        assert_eq!(global_after.api_base, "https://global.example.com");
+        assert_eq!(tenant_after.display_name, "Tenant Updated");
+
+        assert_eq!(
+            store.delete_scoped(Some("tenant-a"), name).await.unwrap(),
+            1
+        );
+        assert!(store
+            .get_scoped(Some("tenant-a"), name)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store.get_scoped(None, name).await.unwrap().is_some());
+        assert_eq!(store.delete_scoped(None, name).await.unwrap(), 1);
+    }
+
     #[tokio::test]
     async fn list_all_includes_global_and_tenant_scoped_providers() {
         let pool = create_test_pool().await;
@@ -329,32 +471,18 @@ mod tests {
         let _ = store.delete("test_global_provider").await;
         let _ = store.delete("test_tenant_provider").await;
 
-        let global = CreateRuntimeProviderRequest {
-            tenant_id: None,
-            name: "test_global_provider".to_string(),
-            display_name: "Global Provider".to_string(),
-            provider_type: "openai-compatible".to_string(),
-            api_base: "https://global.example.com".to_string(),
-            auth_type: "api_key".to_string(),
-            default_model: Some("global-model".to_string()),
-            headers: None,
-            request_transform: None,
-            response_transform: None,
-            enabled: Some(true),
-        };
-        let tenant = CreateRuntimeProviderRequest {
-            tenant_id: Some("tenant-a".to_string()),
-            name: "test_tenant_provider".to_string(),
-            display_name: "Tenant Provider".to_string(),
-            provider_type: "openai-compatible".to_string(),
-            api_base: "https://tenant.example.com".to_string(),
-            auth_type: "api_key".to_string(),
-            default_model: Some("tenant-model".to_string()),
-            headers: None,
-            request_transform: None,
-            response_transform: None,
-            enabled: Some(true),
-        };
+        let global = provider_req(
+            "test_global_provider",
+            None,
+            "Global Provider",
+            "https://global.example.com",
+        );
+        let tenant = provider_req(
+            "test_tenant_provider",
+            Some("tenant-a"),
+            "Tenant Provider",
+            "https://tenant.example.com",
+        );
 
         store.upsert(&global).await.expect("global upsert");
         store.upsert(&tenant).await.expect("tenant upsert");

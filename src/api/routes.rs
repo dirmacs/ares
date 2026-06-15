@@ -450,6 +450,22 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             get(crate::api::handlers::admin::list_run_costs),
         )
         .route(
+            "/admin/tenants/{tenant_id}/billing/summary",
+            get(crate::api::handlers::admin::get_tenant_billing_summary),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/billing/line-items",
+            get(crate::api::handlers::admin::get_tenant_billing_line_items),
+        )
+        .route(
+            "/admin/billing/model-rates",
+            get(crate::api::handlers::admin::list_billing_model_rates),
+        )
+        .route(
+            "/admin/billing/unit-rates",
+            get(crate::api::handlers::admin::list_billing_unit_rates),
+        )
+        .route(
             "/admin/run-history/budgets/{tenant_id}",
             get(crate::api::handlers::admin::get_tenant_budget)
                 .put(crate::api::handlers::admin::set_tenant_budget)
@@ -1163,6 +1179,22 @@ mod tests {
             .await;
         assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
         response.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_billing_routes() {
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        for path in [
+            "/admin/tenants/tenant-1/billing/summary?month=2026-06",
+            "/admin/tenants/tenant-1/billing/line-items?month=2026-06",
+            "/admin/billing/model-rates",
+            "/admin/billing/unit-rates",
+        ] {
+            let response = server.get(path).await;
+            assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
+            response.assert_status_unauthorized();
+        }
     }
 
     #[tokio::test]

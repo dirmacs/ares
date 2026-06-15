@@ -33,6 +33,7 @@ use axum::{
     response::{Redirect, Response},
     Json,
 };
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -1528,6 +1529,21 @@ mod tests {
         billing
     }
 
+    fn run_cost(run_id: &str, created_at: i64) -> RunCost {
+        RunCost {
+            run_id: run_id.to_string(),
+            tenant_id: "tenant-1".to_string(),
+            agent_name: "agent-a".to_string(),
+            total_llm_calls: 2,
+            total_tool_calls: 1,
+            total_prompt_tokens: 100,
+            total_completion_tokens: 50,
+            total_estimated_cost_usd: rust_decimal::Decimal::new(125, 2),
+            total_duration_ms: 250,
+            created_at,
+        }
+    }
+
     struct TestTool;
 
     #[async_trait::async_trait]
@@ -1714,6 +1730,53 @@ mod tests {
             created_at: 1_700_000_000,
             updated_at: 1_700_000_001,
         }
+    }
+
+    #[test]
+    fn billing_month_bounds_accepts_valid_month() {
+        let (month, start, end) = billing_month_bounds("2026-06").expect("valid month");
+        assert_eq!(month, "2026-06");
+        assert_eq!(start, 1_780_272_000);
+        assert_eq!(end, 1_782_863_999);
+    }
+
+    #[test]
+    fn billing_summary_sums_run_costs() {
+        let costs = vec![
+            run_cost("run-b", 1_780_272_010),
+            run_cost("run-a", 1_780_272_000),
+        ];
+        let summary = billing_summary_from_run_costs(
+            "tenant-1",
+            "2026-06".to_string(),
+            1_780_272_000,
+            1_782_863_999,
+            &costs,
+        );
+        assert_eq!(summary.total_input_tokens, 200);
+        assert_eq!(summary.total_output_tokens, 100);
+        assert_eq!(summary.raw_cost_usd, 2.5);
+        assert_eq!(summary.billable_cost_usd, 2.5);
+        assert_eq!(summary.line_item_count, 2);
+    }
+
+    #[test]
+    fn billing_line_item_maps_run_cost_without_unit_fields() {
+        let item = billing_line_item_from_run_cost(&run_cost("run-1", 1_780_272_000));
+        assert_eq!(item.source_type, "agent_run");
+        assert_eq!(item.source_id.as_deref(), Some("run-1"));
+        assert_eq!(item.input_tokens, 100);
+        assert_eq!(item.output_tokens, 50);
+        assert_eq!(item.raw_cost_usd, 1.25);
+        assert_eq!(item.unit_quantity, 0.0);
+    }
+
+    #[test]
+    fn model_rates_are_sorted() {
+        let rates = model_rate_responses(&billing());
+        assert_eq!(rates.len(), 1);
+        assert_eq!(rates[0].model_id, "gpt-test");
+        assert_eq!(rates[0].input_usd_per_million, 5.0);
     }
 
     #[test]
@@ -3749,6 +3812,80 @@ use crate::db::run_history::{
 use crate::db::token_budgets::{BudgetStatus, TokenBudget, TokenBudgetStore, TokenUsageEntry};
 
 #[derive(Debug, Deserialize)]
+pub struct BillingMonthQuery {
+    pub month: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BillingSummaryResponse {
+    pub tenant_id: String,
+    pub month: String,
+    pub period_start: i64,
+    pub period_end: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub raw_cost_usd: f64,
+    pub multiplier: f64,
+    pub billable_cost_usd: f64,
+    pub currency: String,
+    pub status: String,
+    pub invoice_id: Option<String>,
+    pub line_item_count: i64,
+    pub unit_line_item_count: i64,
+    pub total_unit_quantity: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BillingLineItemsResponse {
+    pub tenant_id: String,
+    pub month: String,
+    pub items: Vec<BillingLineItemResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BillingLineItemResponse {
+    pub source_type: String,
+    pub source_id: Option<String>,
+    pub run_id: String,
+    pub agent_name: Option<String>,
+    pub model_id: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub input_usd_per_million: Option<f64>,
+    pub output_usd_per_million: Option<f64>,
+    pub input_cost_usd: f64,
+    pub output_cost_usd: f64,
+    pub unit_type: Option<String>,
+    pub unit_sku: Option<String>,
+    pub unit_quantity: f64,
+    pub unit_usd_per_unit: Option<f64>,
+    pub unit_cost_usd: f64,
+    pub raw_cost_usd: f64,
+    pub multiplier: f64,
+    pub billable_cost_usd: f64,
+    pub run_created_at: Option<i64>,
+    pub billed_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelRateResponse {
+    pub model_id: String,
+    pub input_usd_per_million: f64,
+    pub output_usd_per_million: f64,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnitRateResponse {
+    pub sku: String,
+    pub unit_type: String,
+    pub provider: String,
+    pub unit_name: String,
+    pub usd_per_unit: f64,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ListRunCostsQuery {
     pub tenant_id: String,
     #[serde(default = "default_list_limit")]
@@ -3795,6 +3932,123 @@ fn default_list_limit() -> i32 {
 
 fn default_list_limit_i64() -> i64 {
     50
+}
+
+fn billing_month_bounds(month: &str) -> Result<(String, i64, i64)> {
+    let (year, month_num) = month
+        .split_once('-')
+        .ok_or_else(|| AppError::InvalidInput("month must use YYYY-MM format".to_string()))?;
+    let year: i32 = year
+        .parse()
+        .map_err(|_| AppError::InvalidInput("month year must be numeric".to_string()))?;
+    let month_num: u32 = month_num
+        .parse()
+        .map_err(|_| AppError::InvalidInput("month value must be numeric".to_string()))?;
+    let start_date = chrono::NaiveDate::from_ymd_opt(year, month_num, 1).ok_or_else(|| {
+        AppError::InvalidInput("month must be a valid calendar month".to_string())
+    })?;
+    let (next_year, next_month) = if month_num == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month_num + 1)
+    };
+    let next_date = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1).ok_or_else(|| {
+        AppError::InvalidInput("month must be a valid calendar month".to_string())
+    })?;
+    let period_start = start_date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is valid")
+        .and_utc()
+        .timestamp();
+    let period_end = next_date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is valid")
+        .and_utc()
+        .timestamp()
+        - 1;
+    Ok((
+        format!("{year:04}-{month_num:02}"),
+        period_start,
+        period_end,
+    ))
+}
+
+fn decimal_to_f64(value: rust_decimal::Decimal) -> f64 {
+    value.to_f64().unwrap_or(0.0)
+}
+
+fn billing_line_item_from_run_cost(cost: &RunCost) -> BillingLineItemResponse {
+    let raw_cost_usd = decimal_to_f64(cost.total_estimated_cost_usd);
+    BillingLineItemResponse {
+        source_type: "agent_run".to_string(),
+        source_id: Some(cost.run_id.clone()),
+        run_id: cost.run_id.clone(),
+        agent_name: Some(cost.agent_name.clone()),
+        model_id: "aggregate".to_string(),
+        input_tokens: cost.total_prompt_tokens,
+        output_tokens: cost.total_completion_tokens,
+        input_usd_per_million: None,
+        output_usd_per_million: None,
+        input_cost_usd: 0.0,
+        output_cost_usd: raw_cost_usd,
+        unit_type: None,
+        unit_sku: None,
+        unit_quantity: 0.0,
+        unit_usd_per_unit: None,
+        unit_cost_usd: 0.0,
+        raw_cost_usd,
+        multiplier: 1.0,
+        billable_cost_usd: raw_cost_usd,
+        run_created_at: Some(cost.created_at),
+        billed_at: cost.created_at,
+    }
+}
+
+fn billing_summary_from_run_costs(
+    tenant_id: &str,
+    month: String,
+    period_start: i64,
+    period_end: i64,
+    costs: &[RunCost],
+) -> BillingSummaryResponse {
+    let total_input_tokens = costs.iter().map(|cost| cost.total_prompt_tokens).sum();
+    let total_output_tokens = costs.iter().map(|cost| cost.total_completion_tokens).sum();
+    let raw_cost_usd: f64 = costs
+        .iter()
+        .map(|cost| decimal_to_f64(cost.total_estimated_cost_usd))
+        .sum();
+    BillingSummaryResponse {
+        tenant_id: tenant_id.to_string(),
+        month,
+        period_start,
+        period_end,
+        total_input_tokens,
+        total_output_tokens,
+        raw_cost_usd,
+        multiplier: 1.0,
+        billable_cost_usd: raw_cost_usd,
+        currency: "USD".to_string(),
+        status: "unbilled".to_string(),
+        invoice_id: None,
+        line_item_count: costs.len() as i64,
+        unit_line_item_count: 0,
+        total_unit_quantity: 0.0,
+    }
+}
+
+fn model_rate_responses(config: &BillingConfig) -> Vec<ModelRateResponse> {
+    let mut rates: Vec<ModelRateResponse> = config
+        .model_pricing
+        .values()
+        .map(|pricing| ModelRateResponse {
+            model_id: pricing.model.clone(),
+            input_usd_per_million: pricing.input_usd_per_million_tokens.unwrap_or(0.0),
+            output_usd_per_million: pricing.output_usd_per_million_tokens.unwrap_or(0.0),
+            description: Some(format!("{} / {}", pricing.provider, pricing.model)),
+        })
+        .collect();
+    rates.sort_by(|left, right| left.model_id.cmp(&right.model_id));
+    rates
 }
 
 /// List LLM calls with optional filtering.
@@ -3894,6 +4148,60 @@ pub async fn list_run_costs(
         )
         .await?;
     Ok(Json(costs))
+}
+
+/// Get tenant billing summary for a calendar month.
+pub async fn get_tenant_billing_summary(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<BillingMonthQuery>,
+) -> Result<Json<BillingSummaryResponse>> {
+    let (month, period_start, period_end) = billing_month_bounds(&q.month)?;
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let costs = store
+        .list_run_costs(&tenant_id, 10_000, 0, Some(period_start), Some(period_end))
+        .await?;
+    Ok(Json(billing_summary_from_run_costs(
+        &tenant_id,
+        month,
+        period_start,
+        period_end,
+        &costs,
+    )))
+}
+
+/// Get tenant billing line items for a calendar month.
+pub async fn get_tenant_billing_line_items(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<BillingMonthQuery>,
+) -> Result<Json<BillingLineItemsResponse>> {
+    let (month, period_start, period_end) = billing_month_bounds(&q.month)?;
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let items = store
+        .list_run_costs(&tenant_id, 10_000, 0, Some(period_start), Some(period_end))
+        .await?
+        .iter()
+        .map(billing_line_item_from_run_cost)
+        .collect();
+    Ok(Json(BillingLineItemsResponse {
+        tenant_id,
+        month,
+        items,
+    }))
+}
+
+/// List configured model billing rates.
+pub async fn list_billing_model_rates(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ModelRateResponse>>> {
+    let config = state.config_manager.config();
+    Ok(Json(model_rate_responses(&config.billing)))
+}
+
+/// List configured unit billing rates.
+pub async fn list_billing_unit_rates() -> Json<Vec<UnitRateResponse>> {
+    Json(Vec::new())
 }
 
 /// Get a tenant budget.

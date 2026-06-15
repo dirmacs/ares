@@ -59,7 +59,8 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .route("/chat", post(crate::api::handlers::chat::chat))
         .route(
             "/chat/stream",
-            post(crate::api::handlers::chat::chat_stream),
+            post(crate::api::handlers::chat::chat_stream)
+                .get(crate::api::handlers::chat::chat_stream_get),
         )
         .route(
             "/research",

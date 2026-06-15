@@ -355,7 +355,7 @@ impl<'a> RunHistoryStore<'a> {
         if q.status.is_some() {
             sql.push_str(" AND status = $6");
         }
-        sql.push_str(" ORDER BY created_at DESC LIMIT $7 OFFSET $8");
+        sql.push_str(" ORDER BY created_at DESC, id ASC LIMIT $7 OFFSET $8");
 
         let mut query = sqlx::query(&sql);
         query = query.bind(&q.run_id);
@@ -377,7 +377,7 @@ impl<'a> RunHistoryStore<'a> {
             "SELECT id, run_id, tenant_id, agent_name, step_index, provider, model, \
                     prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, \
                     latency_ms, status, error_message, request_payload, response_payload, created_at \
-             FROM run_llm_calls WHERE run_id = $1 ORDER BY step_index ASC",
+             FROM run_llm_calls WHERE run_id = $1 ORDER BY step_index ASC, id ASC",
         )
         .bind(run_id)
         .fetch_all(self.pool)
@@ -464,7 +464,7 @@ impl<'a> RunHistoryStore<'a> {
         if q.status.is_some() {
             sql.push_str(" AND status = $6");
         }
-        sql.push_str(" ORDER BY created_at DESC LIMIT $7 OFFSET $8");
+        sql.push_str(" ORDER BY created_at DESC, id ASC LIMIT $7 OFFSET $8");
 
         let mut query = sqlx::query(&sql);
         query = query.bind(&q.run_id);
@@ -485,7 +485,7 @@ impl<'a> RunHistoryStore<'a> {
         let rows = sqlx::query(
             "SELECT id, run_id, tenant_id, agent_name, step_index, tool_name, tool_type, \
                     arguments, result, latency_ms, status, error_message, created_at \
-             FROM run_tool_calls WHERE run_id = $1 ORDER BY step_index ASC",
+             FROM run_tool_calls WHERE run_id = $1 ORDER BY step_index ASC, id ASC",
         )
         .bind(run_id)
         .fetch_all(self.pool)
@@ -1276,6 +1276,46 @@ mod tests {
     fn validate_alert_type_rejects_invalid() {
         let err = validate_alert_type("unknown").unwrap_err();
         assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn list_tool_calls_order_is_deterministic() {
+        let mut sql = String::from(
+            "SELECT id, run_id, tenant_id, agent_name, step_index, tool_name, tool_type, \
+                    arguments, result, latency_ms, status, error_message, created_at \
+             FROM run_tool_calls WHERE 1=1",
+        );
+        sql.push_str(" ORDER BY created_at DESC, id ASC LIMIT $7 OFFSET $8");
+        assert!(sql.contains("ORDER BY created_at DESC, id ASC"));
+    }
+
+    #[test]
+    fn tool_calls_for_run_order_by_step_then_id() {
+        let sql = "SELECT id, run_id, tenant_id, agent_name, step_index, tool_name, tool_type, \
+                    arguments, result, latency_ms, status, error_message, created_at \
+             FROM run_tool_calls WHERE run_id = $1 ORDER BY step_index ASC, id ASC";
+        assert!(sql.contains("ORDER BY step_index ASC, id ASC"));
+    }
+
+    #[test]
+    fn list_llm_calls_order_is_deterministic() {
+        let mut sql = String::from(
+            "SELECT id, run_id, tenant_id, agent_name, step_index, provider, model, \
+                    prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, \
+                    latency_ms, status, error_message, request_payload, response_payload, created_at \
+             FROM run_llm_calls WHERE 1=1",
+        );
+        sql.push_str(" ORDER BY created_at DESC, id ASC LIMIT $7 OFFSET $8");
+        assert!(sql.contains("ORDER BY created_at DESC, id ASC"));
+    }
+
+    #[test]
+    fn llm_calls_for_run_order_by_step_then_id() {
+        let sql = "SELECT id, run_id, tenant_id, agent_name, step_index, provider, model, \
+                    prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, \
+                    latency_ms, status, error_message, request_payload, response_payload, created_at \
+             FROM run_llm_calls WHERE run_id = $1 ORDER BY step_index ASC, id ASC";
+        assert!(sql.contains("ORDER BY step_index ASC, id ASC"));
     }
 
     #[test]

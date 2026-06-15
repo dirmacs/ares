@@ -1695,6 +1695,40 @@ mod tests {
         assert!(!active.is_catchup);
     }
 
+    fn oauth_credential_fixture() -> ares_db::oauth_credentials::OAuthCredential {
+        let encrypted = ares_config::fleet_secrets::EncryptedPayload {
+            ciphertext: vec![1, 2, 3],
+            nonce: vec![4, 5, 6],
+        };
+        ares_db::oauth_credentials::OAuthCredential {
+            id: "oauth-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            provider: "google".to_string(),
+            connector_type: "gmail".to_string(),
+            client_id: "client-id".to_string(),
+            client_secret: encrypted.clone(),
+            access_token: Some(encrypted.clone()),
+            refresh_token: None,
+            expires_at: Some(1_700_000_000),
+            scope: Some("email".to_string()),
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_001,
+        }
+    }
+
+    #[test]
+    fn oauth_credential_response_redacts_sensitive_payloads() {
+        let response = OAuthCredentialResponse::from(oauth_credential_fixture());
+        let value = serde_json::to_value(response).expect("serialize oauth response");
+        let obj = value.as_object().expect("oauth response object");
+
+        assert!(!obj.contains_key("client_secret"));
+        assert!(!obj.contains_key("access_token"));
+        assert!(!obj.contains_key("refresh_token"));
+        assert_eq!(value["has_access_token"], true);
+        assert_eq!(value["has_refresh_token"], false);
+    }
+
     #[test]
     fn normalize_oauth_credential_request_forces_path_tenant_and_connector_provider() {
         let mut req = ares_db::oauth_credentials::CreateOAuthCredentialRequest {
@@ -4467,44 +4501,18 @@ pub async fn delete_tenant_connector(
 }
 
 #[derive(Debug, Serialize)]
-pub struct AdminEncryptedPayload {
-    pub ciphertext: String,
-    pub nonce: String,
-}
-
-#[derive(Debug, Serialize)]
 pub struct OAuthCredentialResponse {
     pub id: String,
     pub tenant_id: String,
     pub provider: String,
     pub connector_type: String,
     pub client_id: String,
-    pub client_secret: AdminEncryptedPayload,
-    pub access_token: Option<AdminEncryptedPayload>,
-    pub refresh_token: Option<AdminEncryptedPayload>,
+    pub has_access_token: bool,
+    pub has_refresh_token: bool,
     pub expires_at: Option<i64>,
     pub scope: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
-}
-
-fn encrypted_payload_response(
-    payload: ares_config::fleet_secrets::EncryptedPayload,
-) -> AdminEncryptedPayload {
-    AdminEncryptedPayload {
-        ciphertext: bytes_to_hex(&payload.ciphertext),
-        nonce: bytes_to_hex(&payload.nonce),
-    }
 }
 
 impl From<ares_db::oauth_credentials::OAuthCredential> for OAuthCredentialResponse {
@@ -4515,9 +4523,8 @@ impl From<ares_db::oauth_credentials::OAuthCredential> for OAuthCredentialRespon
             provider: value.provider,
             connector_type: value.connector_type,
             client_id: value.client_id,
-            client_secret: encrypted_payload_response(value.client_secret),
-            access_token: value.access_token.map(encrypted_payload_response),
-            refresh_token: value.refresh_token.map(encrypted_payload_response),
+            has_access_token: value.access_token.is_some(),
+            has_refresh_token: value.refresh_token.is_some(),
             expires_at: value.expires_at,
             scope: value.scope,
             created_at: value.created_at,
@@ -4667,6 +4674,16 @@ fn safe_callback_redirect_uri(value: &str) -> String {
 fn oauth_state_signing_key() -> Result<String> {
     std::env::var("FLEET_SECRETS_KEY")
         .map_err(|_| AppError::Configuration("FLEET_SECRETS_KEY not set".into()))
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {

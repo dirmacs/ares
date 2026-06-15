@@ -133,10 +133,9 @@ impl Tool for SalesforceSoqlQuery {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "query": {"type": "string", "description": "SOQL query string"}
             },
-            "required": ["tenant_id", "query"]
+            "required": ["query"]
         })
     }
 
@@ -196,11 +195,10 @@ impl Tool for SalesforceGetRecord {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "object": {"type": "string", "description": "SObject type (e.g. Account, Contact)"},
                 "id": {"type": "string", "description": "Record ID"}
             },
-            "required": ["tenant_id", "object", "id"]
+            "required": ["object", "id"]
         })
     }
 
@@ -262,11 +260,10 @@ impl Tool for SalesforceCreateRecord {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "object": {"type": "string", "description": "SObject type (e.g. Account, Contact)"},
                 "fields": {"type": "object", "description": "Record fields"}
             },
-            "required": ["tenant_id", "object", "fields"]
+            "required": ["object", "fields"]
         })
     }
 

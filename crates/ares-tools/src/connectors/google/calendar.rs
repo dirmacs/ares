@@ -113,12 +113,11 @@ impl Tool for GoogleCalendarListEvents {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "calendar_id": {"type": "string", "description": "Calendar ID (use 'primary' for default)"},
                 "time_min": {"type": "string", "description": "RFC3339 timestamp for lower bound (optional)"},
                 "time_max": {"type": "string", "description": "RFC3339 timestamp for upper bound (optional)"}
             },
-            "required": ["tenant_id", "calendar_id"]
+            "required": ["calendar_id"]
         })
     }
 
@@ -193,14 +192,13 @@ impl Tool for GoogleCalendarCreateEvent {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "calendar_id": {"type": "string", "description": "Calendar ID (use 'primary' for default)"},
                 "summary": {"type": "string", "description": "Event title"},
                 "description": {"type": "string", "description": "Event description (optional)"},
                 "start": {"type": "string", "description": "Start time RFC3339 or date"},
                 "end": {"type": "string", "description": "End time RFC3339 or date"}
             },
-            "required": ["tenant_id", "calendar_id", "summary", "start", "end"]
+            "required": ["calendar_id", "summary", "start", "end"]
         })
     }
 
@@ -281,11 +279,10 @@ impl Tool for GoogleCalendarDeleteEvent {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "calendar_id": {"type": "string", "description": "Calendar ID (use 'primary' for default)"},
                 "event_id": {"type": "string", "description": "Event ID to delete"}
             },
-            "required": ["tenant_id", "calendar_id", "event_id"]
+            "required": ["calendar_id", "event_id"]
         })
     }
 
@@ -381,12 +378,11 @@ impl Tool for GoogleCalendarGetFreeBusy {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "calendar_ids": {"type": "array", "items": {"type": "string"}, "description": "List of calendar IDs"},
                 "time_min": {"type": "string", "description": "RFC3339 start time"},
                 "time_max": {"type": "string", "description": "RFC3339 end time"}
             },
-            "required": ["tenant_id", "calendar_ids", "time_min", "time_max"]
+            "required": ["calendar_ids", "time_min", "time_max"]
         })
     }
 

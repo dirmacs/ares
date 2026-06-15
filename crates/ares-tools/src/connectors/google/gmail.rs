@@ -99,12 +99,11 @@ impl Tool for GmailSendEmail {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "to": {"type": "string", "description": "Recipient email address"},
                 "subject": {"type": "string", "description": "Email subject"},
                 "body": {"type": "string", "description": "Plain text body"}
             },
-            "required": ["tenant_id", "to", "subject", "body"]
+            "required": ["to", "subject", "body"]
         })
     }
 
@@ -181,11 +180,10 @@ impl Tool for GmailListMessages {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "query": {"type": "string", "description": "Gmail search query (optional)"},
                 "max_results": {"type": "integer", "description": "Maximum results (default 10)"}
             },
-            "required": ["tenant_id"]
+            "required": []
         })
     }
 
@@ -246,10 +244,9 @@ impl Tool for GmailGetMessage {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "message_id": {"type": "string", "description": "Gmail message ID"}
             },
-            "required": ["tenant_id", "message_id"]
+            "required": ["message_id"]
         })
     }
 

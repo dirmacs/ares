@@ -3029,7 +3029,8 @@ fn resolve_env_key(pc: &ProviderConfig) -> Option<String> {
 // =============================================================================
 
 use ares_db::runtime_tools::{
-    CreateRuntimeToolRequest, RuntimeToolStore, UpdateRuntimeToolRequest,
+    validate_runtime_tool_update_scope_preflight, CreateRuntimeToolRequest, RuntimeToolStore,
+    UpdateRuntimeToolRequest,
 };
 
 fn validate_runtime_tool_execution_config(
@@ -3117,6 +3118,7 @@ pub async fn update_runtime_tool(
     Path(id): Path<String>,
     Json(req): Json<UpdateRuntimeToolRequest>,
 ) -> Result<Json<serde_json::Value>> {
+    validate_runtime_tool_update_scope_preflight(&req)?;
     let store = RuntimeToolStore::new(state.tenant_db.pool());
     if let Some(execution_config) = &req.execution_config {
         let existing = store
@@ -3326,6 +3328,8 @@ pub async fn rollback_runtime_tool(
         execution_config: Some(target.execution_config),
         enabled: None,
         is_public: None,
+        created_by: None,
+        tenant_id: None,
     };
 
     let updated = store.update(&id, &update_req).await?;

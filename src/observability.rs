@@ -8,13 +8,13 @@ use ares_db::run_history::{
     BudgetAlert, LogLlmCallRequest, LogToolCallRequest, RunCost, RunHistoryStore,
 };
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
-use rust_decimal::Decimal;
 use chrono::Datelike;
+use rust_decimal::Decimal;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 /// Rough blended cost estimate: $0.002 per 1K tokens.
-fn estimated_cost_usd(prompt_tokens: i64, completion_tokens: i64) -> Decimal {
+pub(crate) fn estimated_cost_usd(prompt_tokens: i64, completion_tokens: i64) -> Decimal {
     let total = prompt_tokens + completion_tokens;
     // $0.002 / 1K tokens  =>  total * 2 / 1_000_000
     Decimal::new(total * 2, 6)

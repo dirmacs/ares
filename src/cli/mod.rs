@@ -5,6 +5,7 @@
 
 pub mod init;
 pub mod output;
+pub mod rag;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -101,6 +102,10 @@ pub enum Commands {
     /// Manage agents
     #[command(subcommand)]
     Agent(AgentCommands),
+
+    /// Ingest and search RAG collections through the ARES API
+    #[command(subcommand)]
+    Rag(rag::RagCommands),
 }
 
 /// Agent management subcommands

@@ -288,7 +288,6 @@ impl ProviderRegistry {
         )
     }
 
-    #[cfg(feature = "postgres")]
     fn provider_default_model(config: &ProviderConfig) -> &str {
         match config {
             ProviderConfig::OpenAI { default_model, .. }

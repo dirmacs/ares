@@ -87,7 +87,7 @@ pub fn build_list_agent_runs(filter: &AgentRunListFilter, limit: i64, offset: i6
     let limit_slot = bind_idx;
     let offset_slot = bind_idx + 1;
     sql.push_str(&format!(
-        " ORDER BY created_at DESC LIMIT ${limit_slot} OFFSET ${offset_slot}"
+        " ORDER BY created_at DESC, id ASC LIMIT ${limit_slot} OFFSET ${offset_slot}"
     ));
     sql
 }
@@ -379,13 +379,13 @@ pub async fn list_agent_runs(
         format!(
             "{LIST_AGENT_RUNS_SELECT}
              FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2
-             ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+             ORDER BY created_at DESC, id ASC LIMIT $3 OFFSET $4"
         )
     } else {
         format!(
             "{LIST_AGENT_RUNS_SELECT}
              FROM agent_runs WHERE tenant_id = $1
-             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+             ORDER BY created_at DESC, id ASC LIMIT $2 OFFSET $3"
         )
     };
 
@@ -819,9 +819,9 @@ mod tests {
     }
 
     #[test]
-    fn build_list_agent_runs_orders_by_created_at_desc() {
+    fn build_list_agent_runs_orders_deterministically() {
         assert!(build_list_agent_runs(&AgentRunListFilter::new("t"), 1, 0)
-            .contains("ORDER BY created_at DESC"));
+            .contains("ORDER BY created_at DESC, id ASC"));
     }
 
     #[test]

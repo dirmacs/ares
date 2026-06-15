@@ -170,15 +170,11 @@ impl<'a> ScheduleStore<'a> {
     }
 
     pub async fn list_schedules(&self, tenant_id: &str) -> Result<Vec<AgentSchedule>> {
-        let rows = sqlx::query(
-            "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
-                    last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
-             FROM agent_schedules WHERE tenant_id = $1 ORDER BY agent_name",
-        )
-        .bind(tenant_id)
-        .fetch_all(self.pool)
-        .await
-        .map_err(sqlx_err)?;
+        let rows = sqlx::query(list_schedules_sql())
+            .bind(tenant_id)
+            .fetch_all(self.pool)
+            .await
+            .map_err(sqlx_err)?;
         rows.iter().map(row_to_schedule).collect()
     }
 
@@ -360,23 +356,11 @@ impl<'a> ScheduleStore<'a> {
     /// Used by the scheduler to detect missed runs.
     pub async fn get_overdue_for_catchup(&self) -> Result<Vec<AgentSchedule>> {
         let now = now_ts();
-        let rows = sqlx::query(
-            "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
-                    last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
-             FROM agent_schedules \
-             WHERE enabled = TRUE AND next_run_at IS NOT NULL AND \
-                   next_run_at + grace_period_seconds < $1 AND \
-                   NOT EXISTS ( \
-                       SELECT 1 FROM missed_runs \
-                       WHERE missed_runs.schedule_id = agent_schedules.id AND \
-                             missed_runs.expected_at = agent_schedules.next_run_at \
-                   ) \
-             ORDER BY next_run_at ASC",
-        )
-        .bind(now)
-        .fetch_all(self.pool)
-        .await
-        .map_err(sqlx_err)?;
+        let rows = sqlx::query(get_overdue_for_catchup_sql())
+            .bind(now)
+            .fetch_all(self.pool)
+            .await
+            .map_err(sqlx_err)?;
         rows.iter().map(row_to_schedule).collect()
     }
 }
@@ -627,12 +611,34 @@ impl<'a> PipelineStore<'a> {
 // Row mappers
 // =============================================================================
 
+fn list_schedules_sql() -> &'static str {
+    "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
+            last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
+     FROM agent_schedules \
+     WHERE tenant_id = $1 \
+     ORDER BY agent_name ASC, id ASC"
+}
+
 fn get_due_schedules_sql() -> &'static str {
     "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
             last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
      FROM agent_schedules \
      WHERE enabled = TRUE AND (next_run_at IS NULL OR next_run_at <= $1) \
      ORDER BY next_run_at ASC NULLS FIRST, tenant_id ASC, agent_name ASC, id ASC"
+}
+
+fn get_overdue_for_catchup_sql() -> &'static str {
+    "SELECT id, tenant_id, agent_name, cron_expression, timezone, enabled, \
+            last_run_at, next_run_at, grace_period_seconds, created_at, updated_at \
+     FROM agent_schedules \
+     WHERE enabled = TRUE AND next_run_at IS NOT NULL AND \
+           next_run_at + grace_period_seconds < $1 AND \
+           NOT EXISTS ( \
+               SELECT 1 FROM missed_runs \
+               WHERE missed_runs.schedule_id = agent_schedules.id AND \
+                     missed_runs.expected_at = agent_schedules.next_run_at \
+           ) \
+     ORDER BY next_run_at ASC, tenant_id ASC, agent_name ASC, id ASC"
 }
 
 fn list_missed_runs_sql() -> &'static str {
@@ -944,11 +950,24 @@ mod tests {
     }
 
     #[test]
+    fn tenant_schedule_list_order_is_deterministic() {
+        let sql = list_schedules_sql();
+        assert!(sql.contains("WHERE tenant_id = $1"));
+        assert!(sql.contains("ORDER BY agent_name ASC, id ASC"));
+    }
+
+    #[test]
     fn due_schedule_list_order_is_deterministic() {
         let sql = get_due_schedules_sql();
         assert!(sql.contains(
             "ORDER BY next_run_at ASC NULLS FIRST, tenant_id ASC, agent_name ASC, id ASC"
         ));
+    }
+
+    #[test]
+    fn overdue_catchup_schedule_list_order_is_deterministic() {
+        let sql = get_overdue_for_catchup_sql();
+        assert!(sql.contains("ORDER BY next_run_at ASC, tenant_id ASC, agent_name ASC, id ASC"));
     }
 
     #[test]

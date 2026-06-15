@@ -1,7 +1,7 @@
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
 use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, Row};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const INSERT_ADMIN_AUDIT_LOG_SQL: &str = "\
@@ -10,7 +10,7 @@ INSERT INTO admin_audit_log (id, action, resource_type, resource_id, details, ad
 
 const LIST_ADMIN_AUDIT_LOG_SQL: &str = "\
 SELECT id, action, resource_type, resource_id, details, admin_ip, created_at
- FROM admin_audit_log ORDER BY created_at DESC LIMIT $1 OFFSET $2";
+ FROM admin_audit_log ORDER BY created_at DESC, id ASC LIMIT $1 OFFSET $2";
 
 fn now_ts() -> i64 {
     SystemTime::now()
@@ -121,14 +121,20 @@ mod tests {
     #[test]
     fn now_ts_returns_positive_value() {
         let ts = now_ts();
-        assert!(ts > 0, "now_ts should return a positive timestamp, got {ts}");
+        assert!(
+            ts > 0,
+            "now_ts should return a positive timestamp, got {ts}"
+        );
     }
 
     #[test]
     fn now_ts_returns_reasonable_epoch() {
         let ts = now_ts();
         assert!(ts > 1_577_836_800, "timestamp {ts} predates 2020");
-        assert!(ts < 4_000_000_000, "timestamp {ts} is unreasonably far in future");
+        assert!(
+            ts < 4_000_000_000,
+            "timestamp {ts} is unreasonably far in future"
+        );
     }
 
     #[test]
@@ -225,10 +231,7 @@ mod tests {
 
     #[test]
     fn audit_log_entries_vec_serde_roundtrip_multiple() {
-        let entries = vec![
-            sample_entry_none_optionals(),
-            sample_entry_some_optionals(),
-        ];
+        let entries = vec![sample_entry_none_optionals(), sample_entry_some_optionals()];
         let json = serde_json::to_string(&entries).unwrap();
         let restored: Vec<AuditLogEntry> = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.len(), 2);
@@ -352,8 +355,8 @@ mod tests {
     }
 
     #[test]
-    fn list_sql_orders_by_created_at_desc() {
-        assert!(LIST_ADMIN_AUDIT_LOG_SQL.contains("ORDER BY created_at DESC"));
+    fn list_sql_orders_deterministically() {
+        assert!(LIST_ADMIN_AUDIT_LOG_SQL.contains("ORDER BY created_at DESC, id ASC"));
     }
 
     #[test]

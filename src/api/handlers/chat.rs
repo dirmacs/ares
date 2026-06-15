@@ -7,13 +7,17 @@ use crate::{
     memory::estimate_tokens,
     observability::RunObservability,
     types::{
-        AgentContext, AgentType, AppError, ChatRequest, ChatResponse, MessageRole, Result,
+        AgentContext, AgentType, AppError, ChatRequest, ChatResponse, Claims, MessageRole, Result,
         UserMemory,
     },
     utils::toml_config::AgentConfig,
     AppState,
 };
-use axum::{extract::State, response::Response, Extension, Json};
+use axum::{
+    extract::{Query, State},
+    response::Response,
+    Extension, Json,
+};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -474,6 +478,28 @@ pub struct StreamEvent {
     pub error: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ChatStreamQuery {
+    pub message: String,
+    #[serde(default)]
+    pub agent_type: Option<AgentType>,
+    #[serde(default)]
+    pub context_id: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+}
+
+impl From<ChatStreamQuery> for ChatRequest {
+    fn from(query: ChatStreamQuery) -> Self {
+        Self {
+            message: query.message,
+            agent_type: query.agent_type,
+            context_id: query.context_id,
+            workspace_id: query.workspace_id,
+        }
+    }
+}
+
 /// Stream a chat response using Server-Sent Events
 #[utoipa::path(
     post,
@@ -491,6 +517,48 @@ pub async fn chat_stream(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
     Json(payload): Json<ChatRequest>,
+) -> axum::response::Sse<
+    impl futures::Stream<
+        Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
+    >,
+> {
+    chat_stream_response(state, claims, payload)
+}
+
+/// Stream a chat response using EventSource-compatible query parameters.
+#[utoipa::path(
+    get,
+    path = "/api/chat/stream",
+    params(
+        ("message" = String, Query, description = "Message to send to the agent"),
+        ("agent_type" = Option<AgentType>, Query, description = "Optional agent type"),
+        ("context_id" = Option<String>, Query, description = "Optional conversation context ID"),
+        ("workspace_id" = Option<String>, Query, description = "Optional Eruka workspace ID")
+    ),
+    responses(
+        (status = 200, description = "Streaming chat response"),
+        (status = 400, description = "Invalid input"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "chat",
+    security(("bearer" = []))
+)]
+pub async fn chat_stream_get(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Query(query): Query<ChatStreamQuery>,
+) -> axum::response::Sse<
+    impl futures::Stream<
+        Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
+    >,
+> {
+    chat_stream_response(state, claims, query.into())
+}
+
+fn chat_stream_response(
+    state: AppState,
+    claims: Claims,
+    payload: ChatRequest,
 ) -> axum::response::Sse<
     impl futures::Stream<
         Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
@@ -1092,6 +1160,22 @@ mod tests {
         assert_eq!(back.agent_type, Some(AgentType::Sales));
         assert_eq!(back.context_id.as_deref(), Some("ctx-1"));
         assert_eq!(back.workspace_id.as_deref(), Some("ws-9"));
+    }
+
+    #[test]
+    fn chat_stream_query_maps_to_chat_request() {
+        let req: ChatRequest = ChatStreamQuery {
+            message: "hello".into(),
+            agent_type: Some(AgentType::Product),
+            context_id: Some("ctx-1".into()),
+            workspace_id: Some("ws-1".into()),
+        }
+        .into();
+
+        assert_eq!(req.message, "hello");
+        assert_eq!(req.agent_type, Some(AgentType::Product));
+        assert_eq!(req.context_id.as_deref(), Some("ctx-1"));
+        assert_eq!(req.workspace_id.as_deref(), Some("ws-1"));
     }
 
     #[test]

@@ -122,10 +122,9 @@ impl Tool for HubSpotGetContact {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "email": {"type": "string", "description": "Contact email address"}
             },
-            "required": ["tenant_id", "email"]
+            "required": ["email"]
         })
     }
 
@@ -196,10 +195,9 @@ impl Tool for HubSpotCreateContact {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "properties": {"type": "object", "description": "Contact properties (e.g. email, firstname, lastname)"}
             },
-            "required": ["tenant_id", "properties"]
+            "required": ["properties"]
         })
     }
 
@@ -261,10 +259,9 @@ impl Tool for HubSpotListDeals {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "pipeline": {"type": "string", "description": "Pipeline name or ID (optional)"}
             },
-            "required": ["tenant_id"]
+            "required": []
         })
     }
 
@@ -328,10 +325,9 @@ impl Tool for HubSpotCreateDeal {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "properties": {"type": "object", "description": "Deal properties (e.g. dealname, amount, pipeline)"}
             },
-            "required": ["tenant_id", "properties"]
+            "required": ["properties"]
         })
     }
 

@@ -139,11 +139,10 @@ impl Tool for SlackSendMessage {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "channel": {"type": "string", "description": "Channel ID or name"},
                 "text": {"type": "string", "description": "Message text"}
             },
-            "required": ["tenant_id", "channel", "text"]
+            "required": ["channel", "text"]
         })
     }
 
@@ -192,9 +191,8 @@ impl Tool for SlackListChannels {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"}
             },
-            "required": ["tenant_id"]
+            "required": []
         })
     }
 
@@ -240,12 +238,11 @@ impl Tool for SlackUploadFile {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "channel": {"type": "string", "description": "Channel ID or name"},
                 "content": {"type": "string", "description": "File content (base64-encoded or plain text)"},
                 "filename": {"type": "string", "description": "Filename"}
             },
-            "required": ["tenant_id", "channel", "content", "filename"]
+            "required": ["channel", "content", "filename"]
         })
     }
 

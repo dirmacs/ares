@@ -119,11 +119,10 @@ impl Tool for LinkedInCreateShare {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "text": {"type": "string", "description": "Post text content"},
                 "visibility": {"type": "string", "description": "Visibility: 'PUBLIC' or 'CONNECTIONS' (default PUBLIC)"}
             },
-            "required": ["tenant_id", "text"]
+            "required": ["text"]
         })
     }
 
@@ -195,10 +194,9 @@ impl Tool for LinkedInGetCompanyUpdates {
         json!({
             "type": "object",
             "properties": {
-                "tenant_id": {"type": "string", "description": "Tenant identifier"},
                 "company_id": {"type": "string", "description": "LinkedIn company ID (numeric)"}
             },
-            "required": ["tenant_id", "company_id"]
+            "required": ["company_id"]
         })
     }
 

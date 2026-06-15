@@ -4,7 +4,7 @@
 //! tables (migration 024).
 
 use ares_types::types::{AppError, Result};
-use chrono::{Datelike, TimeZone, Utc};
+use chrono::{Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 
@@ -142,6 +142,13 @@ impl<'a> TokenBudgetStore<'a> {
                 (id, tenant_id, period, token_limit, tokens_used, period_start, period_end, alert_threshold, created_at, updated_at)
             VALUES ($1, $2, $3, $4, 0, $5, $6, 80, $7, $7)
             ON CONFLICT (tenant_id) DO UPDATE SET
+                tokens_used = CASE
+                    WHEN tenant_token_budgets.period = EXCLUDED.period
+                         AND tenant_token_budgets.period_start = EXCLUDED.period_start
+                         AND tenant_token_budgets.period_end = EXCLUDED.period_end
+                    THEN tenant_token_budgets.tokens_used
+                    ELSE 0
+                END,
                 period = EXCLUDED.period,
                 token_limit = EXCLUDED.token_limit,
                 period_start = EXCLUDED.period_start,
@@ -517,6 +524,30 @@ mod tests {
         assert!(validate_period("yearly").is_err());
     }
 
+    fn test_db_url() -> String {
+        if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
+            return url;
+        }
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            if url.contains("/ares") && !url.contains("ares_test") {
+                return url.replace("/ares", "/ares_test");
+            }
+            return url;
+        }
+        "postgres://postgres:postgres@localhost:5432/ares_test".into()
+    }
+
+    async fn try_test_pool() -> Option<PgPool> {
+        let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
+            .await
+            .ok()?;
+        sqlx::migrate!("../../migrations")
+            .run(&db.pool)
+            .await
+            .ok()?;
+        Some(db.pool)
+    }
+
     #[test]
     fn compute_period_bounds_produces_valid_ranges() {
         let now = Utc::now();
@@ -537,5 +568,48 @@ mod tests {
         assert!(end_dt > start_dt);
         assert_eq!(start_dt.day(), 1);
         assert_eq!(end_dt.day(), 1);
+    }
+
+    #[tokio::test]
+    async fn integration_set_budget_resets_usage_when_period_changes() {
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
+        let store = TokenBudgetStore::new(&pool);
+        let tenant_id = format!("integration-token-budget-{}", uuid::Uuid::new_v4());
+
+        let monthly = store
+            .set_budget(&tenant_id, 1_000, "monthly")
+            .await
+            .expect("set monthly budget");
+        assert_eq!(monthly.tokens_used, 0);
+
+        store
+            .record_usage(&tenant_id, Some("run-1"), "agent", "model", 30, 20)
+            .await
+            .expect("record usage");
+
+        let same_period = store
+            .set_budget(&tenant_id, 2_000, "monthly")
+            .await
+            .expect("update same period budget");
+        assert_eq!(same_period.tokens_used, 50);
+
+        let daily = store
+            .set_budget(&tenant_id, 100, "daily")
+            .await
+            .expect("change budget period");
+        assert_eq!(daily.period, "daily");
+        assert_eq!(daily.tokens_used, 0);
+
+        let _ = sqlx::query("DELETE FROM token_usage_log WHERE tenant_id = $1")
+            .bind(&tenant_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM tenant_token_budgets WHERE tenant_id = $1")
+            .bind(&tenant_id)
+            .execute(&pool)
+            .await;
     }
 }

@@ -24,8 +24,10 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 |--------------------|--------|----------|----------|-------------------------------------------------------------------------|
 | `collection`        | string | Yes      | --       | Name of the collection to ingest into. Created automatically if it doesn't exist. |
 | `content`           | string | Yes      | --       | The text content to ingest.                                             |
-| `metadata`          | object | No       | `{}`     | Arbitrary key-value metadata attached to the document.                  |
-| `chunking_strategy` | string | No       | `"word"` | How to split the content into chunks. Options: `"word"`, `"sentence"`, `"paragraph"`. |
+| `title`             | string | No       | `null`   | Optional display title for the document.                                |
+| `source`            | string | No       | `null`   | Optional source URL or path.                                             |
+| `tags`              | array  | No       | `[]`     | Optional tags attached to the document.                                  |
+| `chunking_strategy` | string | No       | `null`   | How to split the content. Options include `"word"`, `"semantic"`, and `"character"`. |
 
 ### Response
 
@@ -60,36 +62,23 @@ curl -X POST http://localhost:3000/api/rag/ingest \
   -d '{
     "collection": "product-docs",
     "content": "ARES is a multi-agent AI platform that orchestrates specialized agents to handle complex queries. It supports multiple LLM providers including Groq, Anthropic, and NVIDIA...",
-    "metadata": {
-      "source": "documentation",
-      "version": "2.0",
-      "author": "engineering"
-    },
-    "chunking_strategy": "paragraph"
+    "title": "Product docs overview",
+    "source": "docs/product.md",
+    "tags": ["documentation"],
+    "chunking_strategy": "word"
   }'
 ```
 
-#### Python
+#### Rust CLI
 
-```python
-import requests
-
-response = requests.post(
-    "http://localhost:3000/api/rag/ingest",
-    headers={
-        "Content-Type": "application/json",
-        "Authorization": "Bearer eyJhbGciOi..."
-    },
-    json={
-        "collection": "product-docs",
-        "content": "ARES is a multi-agent AI platform...",
-        "metadata": {"source": "documentation", "version": "2.0"},
-        "chunking_strategy": "paragraph"
-    }
-)
-
-result = response.json()
-print(f"Created {result['chunks_created']} chunks in '{result['collection']}'")
+```bash
+ares-server rag ingest-dir \
+  --host http://localhost:3000 \
+  --token "$ARES_TOKEN" \
+  --collection product-docs \
+  --docs-path ./docs \
+  --chunking-strategy word \
+  --tag documentation
 ```
 
 #### JavaScript
@@ -104,8 +93,10 @@ const response = await fetch("http://localhost:3000/api/rag/ingest", {
   body: JSON.stringify({
     collection: "product-docs",
     content: "ARES is a multi-agent AI platform...",
-    metadata: { source: "documentation", version: "2.0" },
-    chunking_strategy: "paragraph"
+    title: "Product docs overview",
+    source: "docs/product.md",
+    tags: ["documentation"],
+    chunking_strategy: "word"
   })
 });
 
@@ -133,8 +124,8 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 |-------------|---------|----------|--------------|------------------------------------------------------------|
 | `collection` | string  | Yes      | --           | Collection to search.                                      |
 | `query`      | string  | Yes      | --           | The search query.                                          |
-| `strategy`   | string  | No       | `"hybrid"`   | Retrieval strategy (see below).                            |
-| `top_k`      | integer | No       | 5            | Maximum number of results to return.                       |
+| `strategy`   | string  | No       | `null`       | Retrieval strategy (see below).                            |
+| `limit`      | integer | No       | 10           | Maximum number of results to return.                       |
 | `rerank`     | boolean | No       | `false`      | Whether to rerank results for improved relevance ordering. |
 
 ### Search strategies
@@ -162,34 +153,21 @@ curl -X POST http://localhost:3000/api/rag/search \
     "collection": "product-docs",
     "query": "how does agent routing work",
     "strategy": "hybrid",
-    "top_k": 5,
+    "limit": 5,
     "rerank": true
   }'
 ```
 
-#### Python
+#### Rust CLI
 
-```python
-import requests
-
-response = requests.post(
-    "http://localhost:3000/api/rag/search",
-    headers={
-        "Content-Type": "application/json",
-        "Authorization": "Bearer eyJhbGciOi..."
-    },
-    json={
-        "collection": "product-docs",
-        "query": "how does agent routing work",
-        "strategy": "hybrid",
-        "top_k": 5,
-        "rerank": True
-    }
-)
-
-results = response.json()
-for result in results:
-    print(result)
+```bash
+ares-server rag search \
+  --host http://localhost:3000 \
+  --token "$ARES_TOKEN" \
+  --collection product-docs \
+  --query "how does agent routing work" \
+  --strategy hybrid \
+  --top-k 5
 ```
 
 #### JavaScript
@@ -205,13 +183,13 @@ const response = await fetch("http://localhost:3000/api/rag/search", {
     collection: "product-docs",
     query: "how does agent routing work",
     strategy: "hybrid",
-    top_k: 5,
+    limit: 5,
     rerank: true
   })
 });
 
 const results = await response.json();
-results.forEach(result => console.log(result));
+results.results.forEach(result => console.log(result));
 ```
 
 ---

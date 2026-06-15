@@ -22,7 +22,7 @@ use ares::mcp::McpRegistry;
 use ares::{
     api,
     auth::jwt::AuthService,
-    cli::{init, output::Output, AgentCommands, Cli, Commands},
+    cli::{init, output::Output, rag, AgentCommands, Cli, Commands},
     db::PostgresClient,
     utils::toml_config::AresConfig,
     AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
@@ -110,6 +110,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Some(Commands::Agent(agent_cmd)) => {
             handle_agent_command(&cli.config, agent_cmd, &output)?;
+            return Ok(());
+        }
+
+        Some(Commands::Rag(rag_cmd)) => {
+            rag::run(rag_cmd).await?;
             return Ok(());
         }
 

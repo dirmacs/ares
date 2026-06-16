@@ -1072,9 +1072,9 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
 
 fn validate_tool_type(t: &str) -> Result<()> {
     match t {
-        "http" | "script" | "sql" | "mcp" => Ok(()),
+        "http" | "script" | "sql" | "mcp" | "skill_step" => Ok(()),
         _ => Err(AppError::InvalidInput(format!(
-            "Invalid tool_type '{t}'. Must be one of: http, script, sql, mcp"
+            "Invalid tool_type '{t}'. Must be one of: http, script, sql, mcp, skill_step"
         ))),
     }
 }
@@ -1254,7 +1254,7 @@ mod tests {
 
     #[test]
     fn validate_tool_type_accepts_valid() {
-        for t in ["http", "script", "sql", "mcp"] {
+        for t in ["http", "script", "sql", "mcp", "skill_step"] {
             assert!(validate_tool_type(t).is_ok());
         }
     }

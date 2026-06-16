@@ -1,3 +1,4 @@
+use crate::AppState;
 use crate::agents::context_provider::AgentRuntimeContext;
 use crate::agents::tenant_agent;
 use crate::db::agent_feedback;
@@ -8,13 +9,13 @@ use crate::db::audit_log;
 use crate::db::schedules as db_schedules;
 use crate::db::skills as db_skills;
 use crate::db::tenant_agents::{
-    clone_templates_for_tenant, create_tenant_agent as db_create_tenant_agent,
-    delete_tenant_agent as db_delete_tenant_agent, get_tenant_agent as db_get_tenant_agent,
-    list_agent_templates, list_all_tenant_agents, list_tenant_agent_versions,
-    list_tenant_agents as db_list_tenant_agents, record_tenant_agent_version,
-    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent, AgentTemplate,
-    AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest, TenantAgent,
-    UpdateTenantAgentRequest,
+    AgentTemplate, AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest,
+    TenantAgent, UpdateTenantAgentRequest, clone_templates_for_tenant,
+    create_tenant_agent as db_create_tenant_agent, delete_tenant_agent as db_delete_tenant_agent,
+    get_tenant_agent as db_get_tenant_agent, list_agent_templates, list_all_tenant_agents,
+    list_tenant_agent_versions, list_tenant_agents as db_list_tenant_agents,
+    record_tenant_agent_version, rollback_tenant_agent_version,
+    update_tenant_agent as db_update_tenant_agent,
 };
 use crate::db::tenant_allowlist as allowlist;
 use crate::db::tenant_model_tiers as db_tiers;
@@ -24,14 +25,13 @@ use crate::memory::estimate_tokens;
 use crate::models::{Tenant, TenantTier};
 use crate::types::{AgentContext, AppError, Result};
 use crate::utils::toml_config::BillingConfig;
-use crate::AppState;
 use ares_config::toml_config::ProviderConfig;
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::{Redirect, Response},
-    Json,
 };
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
@@ -2813,7 +2813,7 @@ pub async fn emergency_stop_handler(
 // =============================================================================
 
 use crate::db::fleet_provider_secrets as fps;
-use ares_config::fleet_secrets::{decrypt_api_key, last_n_visible, MasterKey};
+use ares_config::fleet_secrets::{MasterKey, decrypt_api_key, last_n_visible};
 
 /// List every fleet provider override currently stored in the DB.
 ///
@@ -3215,8 +3215,8 @@ fn resolve_env_key(pc: &ProviderConfig) -> Option<String> {
 // =============================================================================
 
 use ares_db::runtime_tools::{
-    validate_runtime_tool_update_scope_preflight, CreateRuntimeToolRequest, RuntimeToolStore,
-    UpdateRuntimeToolRequest,
+    CreateRuntimeToolRequest, RuntimeToolStore, UpdateRuntimeToolRequest,
+    validate_runtime_tool_update_scope_preflight,
 };
 
 fn validate_runtime_tool_execution_config(
@@ -4622,6 +4622,25 @@ pub async fn run_skill(
         .active_runs
         .start(admin_skill_active_run(&run_id, &tenant_id, &skill_id));
 
+    let metadata = admin_skill_run_metadata(&run_id);
+    agent_runs::insert_agent_run_with_id_and_metadata(
+        state.tenant_db.pool(),
+        &run_id,
+        &tenant_id,
+        &agent_name,
+        None,
+        "running",
+        0,
+        0,
+        0,
+        None,
+        "skill",
+        "skill",
+        false,
+        Some(&metadata),
+    )
+    .await?;
+
     let obs = Arc::new(crate::observability::RunObservability {
         run_id: run_id.clone(),
         tenant_id: tenant_id.clone(),
@@ -4647,35 +4666,26 @@ pub async fn run_skill(
         .map(crate::skill_engine::skill_result_token_counts)
         .unwrap_or((0, 0));
     let error_message = result.as_ref().err().cloned();
-    let metadata = admin_skill_run_metadata(&run_id);
+
+    sqlx::query(
+        "UPDATE agent_runs
+         SET status = $2, input_tokens = $3, output_tokens = $4,
+             duration_ms = $5, error = $6
+         WHERE id = $1",
+    )
+    .bind(&run_id)
+    .bind(status)
+    .bind(input_tokens)
+    .bind(output_tokens)
+    .bind(duration_ms)
+    .bind(error_message.as_deref())
+    .execute(state.tenant_db.pool())
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
 
     let obs_for_spawn = obs.clone();
     tokio::spawn(async move {
         obs_for_spawn.aggregate_run_cost(duration_ms).await;
-    });
-
-    let pool = state.tenant_db.pool().clone();
-    let run_id_for_insert = run_id.clone();
-    let tenant_id_for_insert = tenant_id.clone();
-    let agent_name_for_insert = agent_name.clone();
-    tokio::spawn(async move {
-        let _ = agent_runs::insert_agent_run_with_id_and_metadata(
-            &pool,
-            &run_id_for_insert,
-            &tenant_id_for_insert,
-            &agent_name_for_insert,
-            None,
-            status,
-            input_tokens,
-            output_tokens,
-            duration_ms,
-            error_message.as_deref(),
-            "skill",
-            "skill",
-            false,
-            Some(&metadata),
-        )
-        .await;
     });
 
     match result {

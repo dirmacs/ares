@@ -470,6 +470,41 @@ async fn execute_scheduled_agent(
         user_memory: None,
     };
 
+    let metadata = AgentRunMetadata {
+        workspace_id: None,
+        session_id: Some(run_id.clone()),
+        request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
+        product: None,
+        agent_config_source: Some(resolved_agent.source.as_str().to_string()),
+        agent_config_version: resolved_agent.config_version.clone(),
+        eruka_binding_id: None,
+        eruka_context_hit,
+        eruka_read_count: if eruka_context_hit { 1 } else { 0 },
+        eruka_write_count: 0,
+        pipeline_id: None,
+        schedule_id: Some(sched.id.clone()),
+        trigger_id: None,
+    };
+
+    agent_runs::insert_agent_run_with_id_and_metadata(
+        pool,
+        &run_id,
+        &sched.tenant_id,
+        &sched.agent_name,
+        None,
+        "running",
+        0,
+        0,
+        0,
+        None,
+        "unknown",
+        "unknown",
+        false,
+        Some(&metadata),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
     app_state.active_runs.start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),
         tenant_id: sched.tenant_id.clone(),
@@ -557,51 +592,27 @@ async fn execute_scheduled_agent(
         }
     }
 
-    // Record agent run (fire-and-forget)
-    let metadata = AgentRunMetadata {
-        workspace_id: None,
-        session_id: Some(run_id.clone()),
-        request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
-        product: None,
-        agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-        agent_config_version: resolved_agent.config_version.clone(),
-        eruka_binding_id: None,
-        eruka_context_hit,
-        eruka_read_count: if eruka_context_hit { 1 } else { 0 },
-        eruka_write_count: 0,
-        pipeline_id: None,
-        schedule_id: Some(sched.id.clone()),
-        trigger_id: None,
-    };
+    sqlx::query(
+        "UPDATE agent_runs
+         SET status = $2, input_tokens = $3, output_tokens = $4,
+             duration_ms = $5, error = $6, model_name = $7, provider_name = $8
+         WHERE id = $1",
+    )
+    .bind(&run_id)
+    .bind(status)
+    .bind(input_tokens)
+    .bind(output_tokens)
+    .bind(duration_ms as i64)
+    .bind(error_msg.as_deref())
+    .bind(&model_name)
+    .bind(&provider_name)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
-    let _has_error = error_msg.is_some();
-    let pool_clone = pool.clone();
-    let tid = sched.tenant_id.clone();
-    let aname = sched.agent_name.clone();
-    let err_clone = error_msg.clone();
-    let run_id_for_insert = run_id.clone();
-    // Clone model/provider for usage event recording (both spawns need them)
+    // Clone model/provider for usage event recording.
     let model_clone = model_name.clone();
     let provider_clone = provider_name.clone();
-    tokio::spawn(async move {
-        let _ = agent_runs::insert_agent_run_with_id_and_metadata(
-            &pool_clone,
-            &run_id_for_insert,
-            &tid,
-            &aname,
-            None,
-            status,
-            input_tokens,
-            output_tokens,
-            duration_ms as i64,
-            err_clone.as_deref(),
-            &model_name,
-            &provider_name,
-            false,
-            Some(&metadata),
-        )
-        .await;
-    });
 
     // Record usage event (fire-and-forget) with scheduled/catchup source.
     let usage_pool = pool.clone();

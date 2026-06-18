@@ -250,6 +250,33 @@ pub async fn execute_triggered_agent(
         user_memory: None,
     };
 
+    let metadata = triggered_agent_run_metadata(
+        trigger,
+        &run_id,
+        resolved_agent.source.as_str(),
+        resolved_agent.config_version.clone(),
+        eruka_context_hit,
+    );
+
+    agent_runs::insert_agent_run_with_id_and_metadata(
+        pool,
+        &run_id,
+        &trigger.tenant_id,
+        &trigger.target_agent,
+        None,
+        "running",
+        0,
+        0,
+        0,
+        None,
+        "unknown",
+        "unknown",
+        false,
+        Some(&metadata),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
     app_state.active_runs.start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),
         tenant_id: trigger.tenant_id.clone(),
@@ -330,41 +357,27 @@ pub async fn execute_triggered_agent(
         }
     }
 
-    let metadata = triggered_agent_run_metadata(
-        trigger,
-        &run_id,
-        resolved_agent.source.as_str(),
-        resolved_agent.config_version.clone(),
-        eruka_context_hit,
-    );
+    sqlx::query(
+        "UPDATE agent_runs
+         SET status = $2, input_tokens = $3, output_tokens = $4,
+             duration_ms = $5, error = $6, model_name = $7, provider_name = $8
+         WHERE id = $1",
+    )
+    .bind(&run_id)
+    .bind(status)
+    .bind(input_tokens)
+    .bind(output_tokens)
+    .bind(duration_ms as i64)
+    .bind(error_msg.as_deref())
+    .bind(&model_name)
+    .bind(&provider_name)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
-    let pool_clone = pool.clone();
-    let tid = trigger.tenant_id.clone();
-    let aname = trigger.target_agent.clone();
-    let err_clone = error_msg.clone();
-    let run_id_for_insert = run_id.clone();
-    // Clone model/provider for usage event recording (both spawns need them)
+    // Clone model/provider for usage event recording.
     let model_clone = model_name.clone();
     let provider_clone = provider_name.clone();
-    tokio::spawn(async move {
-        let _ = agent_runs::insert_agent_run_with_id_and_metadata(
-            &pool_clone,
-            &run_id_for_insert,
-            &tid,
-            &aname,
-            None,
-            status,
-            input_tokens,
-            output_tokens,
-            duration_ms as i64,
-            err_clone.as_deref(),
-            &model_name,
-            &provider_name,
-            false,
-            Some(&metadata),
-        )
-        .await;
-    });
 
     // Record usage event (fire-and-forget) - source='trigger'
     // SQL: INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at)

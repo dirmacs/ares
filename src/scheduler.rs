@@ -4,7 +4,7 @@
 //! is in the past, runs them, and updates `last_run_at` / `next_run_at`.
 
 use ares_db::agent_runs::{self, AgentRunMetadata};
-use ares_db::schedules::{compute_next_run, AgentSchedule, MissedRunAudit, ScheduleStore};
+use ares_db::schedules::{AgentSchedule, MissedRunAudit, ScheduleStore, compute_next_run};
 use ares_types::types::AgentContext;
 use sqlx::PgPool;
 use std::collections::HashSet;
@@ -222,11 +222,7 @@ fn catchup_audit_action_failed() -> &'static str {
 }
 
 fn scheduled_usage_source(is_catchup: bool) -> &'static str {
-    if is_catchup {
-        "catchup"
-    } else {
-        "scheduled"
-    }
+    if is_catchup { "catchup" } else { "scheduled" }
 }
 
 async fn execute_scheduled_agent(
@@ -234,16 +230,181 @@ async fn execute_scheduled_agent(
     app_state: &Arc<crate::AppState>,
     is_catchup: bool,
 ) -> Result<(), String> {
+    use crate::agents::Agent;
     use crate::agents::context_provider::AgentRuntimeContext;
     use crate::agents::tenant_agent;
-    use crate::agents::Agent;
     use crate::observability::{
-        run_cost_aggregation_request, spawn_run_cost_aggregation, RunObservability,
+        RunObservability, run_cost_aggregation_request, spawn_run_cost_aggregation,
     };
 
     let pool = app_state.tenant_db.pool();
 
-    // 1. Resolve agent
+    let tenant_agent_record =
+        crate::db::tenant_agents::get_tenant_agent(pool, &sched.tenant_id, &sched.agent_name)
+            .await
+            .map_err(|e| format!("Agent lookup failed: {}", e))?;
+
+    let start = std::time::Instant::now();
+    let run_id = uuid::Uuid::new_v4().to_string();
+
+    // 1. Skill-based agent execution.  This must bypass LLM provider
+    // resolution: a scheduled skill agent may have no model-tier mapping, and
+    // skill steps need the agent_runs row before run_tool_calls can satisfy
+    // their run_id foreign key.
+    if let Some(skill_id) = tenant_agent_record
+        .config
+        .get("skill_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let metadata = AgentRunMetadata {
+            workspace_id: None,
+            session_id: Some(run_id.clone()),
+            request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
+            product: None,
+            agent_config_source: Some("tenant_db".to_string()),
+            agent_config_version: None,
+            eruka_binding_id: None,
+            eruka_context_hit: false,
+            eruka_read_count: 0,
+            eruka_write_count: 0,
+            pipeline_id: None,
+            schedule_id: Some(sched.id.clone()),
+            trigger_id: None,
+        };
+
+        agent_runs::insert_agent_run_with_id_and_metadata(
+            pool,
+            &run_id,
+            &sched.tenant_id,
+            &sched.agent_name,
+            None,
+            "running",
+            0,
+            0,
+            0,
+            None,
+            "skill",
+            "skill",
+            false,
+            Some(&metadata),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        app_state.active_runs.start(crate::active_runs::ActiveRun {
+            run_id: run_id.clone(),
+            tenant_id: sched.tenant_id.clone(),
+            agent_name: sched.agent_name.clone(),
+            started_at: chrono::Utc::now().timestamp(),
+            status: "running".to_string(),
+            current_step: 0,
+            total_steps: 0,
+            last_update: chrono::Utc::now().timestamp(),
+            tool_name: Some(format!("skill:{skill_id}")),
+            model: None,
+            is_catchup,
+            request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
+            pipeline_id: None,
+            schedule_id: Some(sched.id.clone()),
+            trigger_id: None,
+        });
+
+        let skill_result = app_state
+            .skill_engine
+            .execute_skill(
+                skill_id,
+                &sched.tenant_id,
+                serde_json::json!({"message": "scheduled run"}),
+                &run_id,
+            )
+            .await;
+
+        let duration_ms = start.elapsed().as_millis() as i64;
+        let active_status = if skill_result.is_ok() {
+            "completed"
+        } else {
+            "error"
+        };
+        app_state.active_runs.finish(&run_id, active_status);
+
+        let status = if skill_result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        };
+        let (input_tokens, output_tokens) = skill_result
+            .as_ref()
+            .map(crate::skill_engine::skill_result_token_counts)
+            .unwrap_or((0, 0));
+        let error_message = skill_result.as_ref().err().cloned();
+
+        sqlx::query(
+            "UPDATE agent_runs
+             SET status = $2, input_tokens = $3, output_tokens = $4,
+                 duration_ms = $5, error = $6
+             WHERE id = $1",
+        )
+        .bind(&run_id)
+        .bind(status)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(duration_ms)
+        .bind(error_message.as_deref())
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        if let Ok(val) = &skill_result {
+            let output_str = serde_json::to_string(val).unwrap_or_default();
+            let trigger = scheduled_pipeline_trigger(sched, &output_str);
+            let _ = crate::pipeline_engine::execute_pipeline_with_origin(
+                trigger.source_agent,
+                trigger.source_output,
+                trigger.tenant_id,
+                Some(crate::pipeline_engine::PipelineOrigin::scheduled(
+                    sched.id.clone(),
+                    is_catchup,
+                )),
+                app_state,
+            )
+            .await;
+        }
+
+        spawn_run_cost_aggregation(
+            pool.clone(),
+            run_cost_aggregation_request(&run_id, &sched.tenant_id, &sched.agent_name, duration_ms),
+        );
+
+        let usage_pool = pool.clone();
+        let usage_tid = sched.tenant_id.clone();
+        let usage_agent = sched.agent_name.clone();
+        let usage_source = scheduled_usage_source(is_catchup);
+        let token_count = input_tokens + output_tokens;
+        tokio::spawn(async move {
+            let _ = sqlx::query(
+                "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(usage_tid)
+            .bind(usage_source)
+            .bind(1i32)
+            .bind(token_count)
+            .bind(input_tokens)
+            .bind(output_tokens)
+            .bind(Some("skill".to_string()))
+            .bind(usage_agent)
+            .bind(Some("skill".to_string()))
+            .bind(chrono::Utc::now().timestamp())
+            .execute(&usage_pool)
+            .await;
+        });
+
+        return skill_result.map(|_| ()).map_err(|e| e);
+    }
+
+    // 2. Resolve and execute regular LLM-backed agents.
     let mut resolved_agent = match tenant_agent::resolve_agent_for_tenant(
         pool,
         &app_state.agent_registry,
@@ -264,153 +425,6 @@ async fn execute_scheduled_agent(
             return Err(format!("Agent resolution failed: {}", e));
         }
     };
-
-    let start = std::time::Instant::now();
-    let run_id = uuid::Uuid::new_v4().to_string();
-
-    // 2. Skill-based agent execution
-    if let Some(config) = &resolved_agent.config {
-        if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {
-            app_state.active_runs.start(crate::active_runs::ActiveRun {
-                run_id: run_id.clone(),
-                tenant_id: sched.tenant_id.clone(),
-                agent_name: sched.agent_name.clone(),
-                started_at: chrono::Utc::now().timestamp(),
-                status: "running".to_string(),
-                current_step: 0,
-                total_steps: 0,
-                last_update: chrono::Utc::now().timestamp(),
-                tool_name: Some(format!("skill:{}", skill_id)),
-                model: None,
-                is_catchup,
-                request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
-                pipeline_id: None,
-                schedule_id: Some(sched.id.clone()),
-                trigger_id: None,
-            });
-
-            let skill_result = app_state
-                .skill_engine
-                .execute_skill(
-                    skill_id,
-                    &sched.tenant_id,
-                    serde_json::json!({"message": "scheduled run"}),
-                    &run_id,
-                )
-                .await;
-
-            let duration_ms = start.elapsed().as_millis() as u64;
-            let skill_status = if skill_result.is_ok() {
-                "completed"
-            } else {
-                "error"
-            };
-            app_state.active_runs.finish(&run_id, skill_status);
-
-            if let Ok(val) = &skill_result {
-                let output_str = serde_json::to_string(val).unwrap_or_default();
-                let trigger = scheduled_pipeline_trigger(sched, &output_str);
-                let _ = crate::pipeline_engine::execute_pipeline_with_origin(
-                    trigger.source_agent,
-                    trigger.source_output,
-                    trigger.tenant_id,
-                    Some(crate::pipeline_engine::PipelineOrigin::scheduled(
-                        sched.id.clone(),
-                        is_catchup,
-                    )),
-                    app_state,
-                )
-                .await;
-            }
-
-            // Record agent run
-            let metadata = AgentRunMetadata {
-                workspace_id: None,
-                session_id: Some(run_id.clone()),
-                request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
-                product: None,
-                agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-                agent_config_version: resolved_agent.config_version.clone(),
-                eruka_binding_id: None,
-                eruka_context_hit: false,
-                eruka_read_count: 0,
-                eruka_write_count: 0,
-                pipeline_id: None,
-                schedule_id: Some(sched.id.clone()),
-                trigger_id: None,
-            };
-            let status = if skill_result.is_ok() {
-                "completed"
-            } else {
-                "failed"
-            };
-            let (input_tokens, output_tokens) = skill_result
-                .as_ref()
-                .map(crate::skill_engine::skill_result_token_counts)
-                .unwrap_or((0, 0));
-            let err_msg = skill_result.as_ref().err().cloned();
-
-            let pool_clone = pool.clone();
-            let tid = sched.tenant_id.clone();
-            let aname = sched.agent_name.clone();
-            let run_id_for_insert = run_id.clone();
-            tokio::spawn(async move {
-                let _ = agent_runs::insert_agent_run_with_id_and_metadata(
-                    &pool_clone,
-                    &run_id_for_insert,
-                    &tid,
-                    &aname,
-                    None,
-                    status,
-                    input_tokens,
-                    output_tokens,
-                    duration_ms as i64,
-                    err_msg.as_deref(),
-                    "skill",
-                    "skill",
-                    false,
-                    Some(&metadata),
-                )
-                .await;
-            });
-
-            spawn_run_cost_aggregation(
-                pool.clone(),
-                run_cost_aggregation_request(
-                    &run_id,
-                    &sched.tenant_id,
-                    &sched.agent_name,
-                    duration_ms as i64,
-                ),
-            );
-
-            let usage_pool = pool.clone();
-            let usage_tid = sched.tenant_id.clone();
-            let usage_agent = sched.agent_name.clone();
-            let usage_source = scheduled_usage_source(is_catchup);
-            let token_count = input_tokens + output_tokens;
-            tokio::spawn(async move {
-                let _ = sqlx::query(
-                    "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
-                )
-                .bind(uuid::Uuid::new_v4().to_string())
-                .bind(usage_tid)
-                .bind(usage_source)
-                .bind(1i32)
-                .bind(token_count)
-                .bind(input_tokens)
-                .bind(output_tokens)
-                .bind(Some("skill".to_string()))
-                .bind(usage_agent)
-                .bind(Some("skill".to_string()))
-                .bind(chrono::Utc::now().timestamp())
-                .execute(&usage_pool)
-                .await;
-            });
-
-            return skill_result.map(|_| ()).map_err(|e| e);
-        }
-    }
 
     // 3. Regular agent execution
     let obs = Arc::new(RunObservability {

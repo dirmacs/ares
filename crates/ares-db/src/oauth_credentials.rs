@@ -6,7 +6,7 @@
 //! The store handles encryption/decryption internally; callers work with
 //! plaintext strings in requests and `EncryptedPayload` structs in responses.
 
-use ares_config::fleet_secrets::{encrypt_api_key, EncryptedPayload, MasterKey};
+use ares_config::fleet_secrets::{EncryptedPayload, MasterKey, encrypt_api_key};
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
@@ -383,6 +383,10 @@ mod tests {
     use super::*;
     use ares_config::fleet_secrets::decrypt_api_key;
     use sqlx::PgPool;
+    use std::sync::LazyLock;
+    use tokio::sync::Mutex;
+
+    static OAUTH_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     async fn create_test_pool() -> PgPool {
         let database_url = std::env::var("DATABASE_URL")
@@ -401,6 +405,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_oauth_credential_crud() {
+        let _env_guard = OAUTH_ENV_LOCK.lock().await;
         let pool = create_test_pool().await;
         let store = OAuthCredentialStore::new(&pool);
         ensure_master_key();
@@ -512,6 +517,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_oauth_credential_without_optional_tokens() {
+        let _env_guard = OAUTH_ENV_LOCK.lock().await;
         let pool = create_test_pool().await;
         let store = OAuthCredentialStore::new(&pool);
         ensure_master_key();
@@ -542,6 +548,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_oauth_credential_missing_master_key() {
+        let _env_guard = OAUTH_ENV_LOCK.lock().await;
         let pool = create_test_pool().await;
         let store = OAuthCredentialStore::new(&pool);
 

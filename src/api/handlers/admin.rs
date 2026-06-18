@@ -12,10 +12,9 @@ use crate::db::tenant_agents::{
     AgentTemplate, AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest,
     TenantAgent, UpdateTenantAgentRequest, clone_templates_for_tenant,
     create_tenant_agent as db_create_tenant_agent, delete_tenant_agent as db_delete_tenant_agent,
-    get_tenant_agent as db_get_tenant_agent, list_agent_templates, list_all_tenant_agents,
-    list_tenant_agent_versions, list_tenant_agents as db_list_tenant_agents,
-    record_tenant_agent_version, rollback_tenant_agent_version,
-    update_tenant_agent as db_update_tenant_agent,
+    get_tenant_agent as db_get_tenant_agent, list_agent_templates, list_tenant_agent_versions,
+    list_tenant_agents as db_list_tenant_agents, record_tenant_agent_version,
+    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent,
 };
 use crate::db::tenant_allowlist as allowlist;
 use crate::db::tenant_model_tiers as db_tiers;
@@ -623,10 +622,8 @@ pub struct UpdateAgentRequest {
 
 pub async fn list_agents(
     State(state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<TenantAgent>>> {
-    let tenant_id = params.get("tenant_id").map(|s| s.as_str());
-    let agents = list_all_tenant_agents(state.tenant_db.pool(), tenant_id).await?;
+) -> Result<Json<Vec<agent_runs::AllAgentsEntry>>> {
+    let agents = agent_runs::list_all_agents(state.tenant_db.pool()).await?;
     Ok(Json(agents))
 }
 

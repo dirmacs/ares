@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="navy sidebar-visible" dir="ltr">
+<html lang="en" class="navy" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -7,7 +7,7 @@
 
 
         <!-- Custom HTML head -->
-
+        
         <meta name="description" content="A.R.E.S — Agentic Retrieval Enhanced Server. Multi-provider LLM platform with tool calling, RAG, and multi-tenant enterprise support.">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
@@ -30,17 +30,15 @@
 
         <!-- Custom theme stylesheets -->
 
-
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
         <!-- Provide site root to javascript -->
         <script>
             var path_to_root = "../";
             var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
         </script>
-        <!-- Start loading toc.js asap -->
-        <script src="../toc.js"></script>
-    </head>
-    <body>
-    <div id="body-container">
+
         <!-- Work around some values being stored in localStorage wrapped in quotes -->
         <script>
             try {
@@ -62,16 +60,19 @@
             var theme;
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
-            const html = document.documentElement;
+            var html = document.querySelector('html');
             html.classList.remove('navy')
             html.classList.add(theme);
-            html.classList.add("js");
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
         </script>
 
         <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
 
         <!-- Hide / unhide sidebar before it is displayed -->
         <script>
+            var body = document.querySelector('body');
             var sidebar = null;
             var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
             if (document.body.clientWidth >= 1080) {
@@ -81,25 +82,45 @@
                 sidebar = 'hidden';
             }
             sidebar_toggle.checked = sidebar === 'visible';
-            html.classList.remove('sidebar-visible');
-            html.classList.add("sidebar-" + sidebar);
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
         </script>
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
-            <!-- populated by js -->
-            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
-            <noscript>
-                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
-            </noscript>
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="../getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart</a></li><li class="chapter-item expanded "><a href="../getting-started/authentication.html"><strong aria-hidden="true">2.</strong> Authentication</a></li><li class="chapter-item expanded "><a href="../getting-started/models.html"><strong aria-hidden="true">3.</strong> Models & Providers</a></li><li class="chapter-item expanded affix "><li class="part-title">API Reference</li><li class="chapter-item expanded "><a href="../api/chat.html"><strong aria-hidden="true">4.</strong> Chat</a></li><li class="chapter-item expanded "><a href="../api/agents.html"><strong aria-hidden="true">5.</strong> Agents</a></li><li class="chapter-item expanded "><a href="../api/tools.html"><strong aria-hidden="true">6.</strong> Tools</a></li><li class="chapter-item expanded "><a href="../api/skills.html"><strong aria-hidden="true">7.</strong> Skills</a></li><li class="chapter-item expanded "><a href="../api/mcp.html"><strong aria-hidden="true">8.</strong> MCP Integration</a></li><li class="chapter-item expanded "><a href="../api/memory.html"><strong aria-hidden="true">9.</strong> Memory</a></li><li class="chapter-item expanded "><a href="../api/rag.html" class="active"><strong aria-hidden="true">10.</strong> RAG</a></li><li class="chapter-item expanded "><a href="../api/workflows.html"><strong aria-hidden="true">11.</strong> Workflows</a></li><li class="chapter-item expanded "><a href="../api/research.html"><strong aria-hidden="true">12.</strong> Research</a></li><li class="chapter-item expanded "><a href="../api/streaming.html"><strong aria-hidden="true">13.</strong> Streaming</a></li><li class="chapter-item expanded affix "><li class="part-title">Enterprise</li><li class="chapter-item expanded "><a href="../enterprise/v1-api.html"><strong aria-hidden="true">14.</strong> V1 Client API</a></li><li class="chapter-item expanded "><a href="../enterprise/admin-api.html"><strong aria-hidden="true">15.</strong> Admin API</a></li><li class="chapter-item expanded "><a href="../enterprise/deploy-api.html"><strong aria-hidden="true">16.</strong> Deployment API</a></li><li class="chapter-item expanded "><a href="../enterprise/multi-tenant.html"><strong aria-hidden="true">17.</strong> Multi-Tenant Setup</a></li><li class="chapter-item expanded affix "><li class="part-title">Platform</li><li class="chapter-item expanded "><a href="../platform/rate-limits.html"><strong aria-hidden="true">18.</strong> Rate Limits & Quotas</a></li><li class="chapter-item expanded "><a href="../platform/safety.html"><strong aria-hidden="true">19.</strong> Loop Detection & Safety</a></li><li class="chapter-item expanded "><a href="../platform/errors.html"><strong aria-hidden="true">20.</strong> Error Handling</a></li><li class="chapter-item expanded "><a href="../platform/self-hosting.html"><strong aria-hidden="true">21.</strong> Self-Hosting</a></li><li class="chapter-item expanded affix "><li class="part-title">Extending ARES</li><li class="chapter-item expanded "><a href="../extending/context-provider.html"><strong aria-hidden="true">22.</strong> ContextProvider Trait</a></li><li class="chapter-item expanded "><a href="../extending/base-router.html"><strong aria-hidden="true">23.</strong> Building on base_router()</a></li><li class="chapter-item expanded affix "><li class="part-title">Guides</li><li class="chapter-item expanded "><a href="../guides/chat-agent.html"><strong aria-hidden="true">24.</strong> Build a Chat Agent</a></li><li class="chapter-item expanded "><a href="../guides/tool-calling.html"><strong aria-hidden="true">25.</strong> Tool Calling</a></li><li class="chapter-item expanded affix "><li class="part-title">Resources</li><li class="chapter-item expanded "><a href="../changelog.html"><strong aria-hidden="true">26.</strong> Changelog</a></li></ol>
+            </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
             </div>
         </nav>
 
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
         <div id="page-wrapper" class="page-wrapper">
 
             <div class="page">
-                <div id="menu-bar-hover-placeholder"></div>
+                                <div id="menu-bar-hover-placeholder"></div>
                 <div id="menu-bar" class="menu-bar sticky">
                     <div class="left-buttons">
                         <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
@@ -174,8 +195,10 @@
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>collection</code></td><td>string</td><td>Yes</td><td>--</td><td>Name of the collection to ingest into. Created automatically if it doesn't exist.</td></tr>
 <tr><td><code>content</code></td><td>string</td><td>Yes</td><td>--</td><td>The text content to ingest.</td></tr>
-<tr><td><code>metadata</code></td><td>object</td><td>No</td><td><code>{}</code></td><td>Arbitrary key-value metadata attached to the document.</td></tr>
-<tr><td><code>chunking_strategy</code></td><td>string</td><td>No</td><td><code>"word"</code></td><td>How to split the content into chunks. Options: <code>"word"</code>, <code>"sentence"</code>, <code>"paragraph"</code>.</td></tr>
+<tr><td><code>title</code></td><td>string</td><td>No</td><td><code>null</code></td><td>Optional display title for the document.</td></tr>
+<tr><td><code>source</code></td><td>string</td><td>No</td><td><code>null</code></td><td>Optional source URL or path.</td></tr>
+<tr><td><code>tags</code></td><td>array</td><td>No</td><td><code>[]</code></td><td>Optional tags attached to the document.</td></tr>
+<tr><td><code>chunking_strategy</code></td><td>string</td><td>No</td><td><code>null</code></td><td>How to split the content. Options include <code>"word"</code>, <code>"semantic"</code>, and <code>"character"</code>.</td></tr>
 </tbody></table>
 </div>
 <h3 id="response"><a class="header" href="#response">Response</a></h3>
@@ -205,33 +228,20 @@
   -d '{
     "collection": "product-docs",
     "content": "ARES is a multi-agent AI platform that orchestrates specialized agents to handle complex queries. It supports multiple LLM providers including Groq, Anthropic, and NVIDIA...",
-    "metadata": {
-      "source": "documentation",
-      "version": "2.0",
-      "author": "engineering"
-    },
-    "chunking_strategy": "paragraph"
+    "title": "Product docs overview",
+    "source": "docs/product.md",
+    "tags": ["documentation"],
+    "chunking_strategy": "word"
   }'
 </code></pre>
-<h4 id="python"><a class="header" href="#python">Python</a></h4>
-<pre><code class="language-python">import requests
-
-response = requests.post(
-    "http://localhost:3000/api/rag/ingest",
-    headers={
-        "Content-Type": "application/json",
-        "Authorization": "Bearer eyJhbGciOi..."
-    },
-    json={
-        "collection": "product-docs",
-        "content": "ARES is a multi-agent AI platform...",
-        "metadata": {"source": "documentation", "version": "2.0"},
-        "chunking_strategy": "paragraph"
-    }
-)
-
-result = response.json()
-print(f"Created {result['chunks_created']} chunks in '{result['collection']}'")
+<h4 id="rust-cli"><a class="header" href="#rust-cli">Rust CLI</a></h4>
+<pre><code class="language-bash">ares-server rag ingest-dir \
+  --host http://localhost:3000 \
+  --token "$ARES_TOKEN" \
+  --collection product-docs \
+  --docs-path ./docs \
+  --chunking-strategy word \
+  --tag documentation
 </code></pre>
 <h4 id="javascript"><a class="header" href="#javascript">JavaScript</a></h4>
 <pre><code class="language-javascript">const response = await fetch("http://localhost:3000/api/rag/ingest", {
@@ -243,8 +253,10 @@ print(f"Created {result['chunks_created']} chunks in '{result['collection']}'")
   body: JSON.stringify({
     collection: "product-docs",
     content: "ARES is a multi-agent AI platform...",
-    metadata: { source: "documentation", version: "2.0" },
-    chunking_strategy: "paragraph"
+    title: "Product docs overview",
+    source: "docs/product.md",
+    tags: ["documentation"],
+    chunking_strategy: "word"
   })
 });
 
@@ -262,8 +274,8 @@ console.log(`Created ${result.chunks_created} chunks in '${result.collection}'`)
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>collection</code></td><td>string</td><td>Yes</td><td>--</td><td>Collection to search.</td></tr>
 <tr><td><code>query</code></td><td>string</td><td>Yes</td><td>--</td><td>The search query.</td></tr>
-<tr><td><code>strategy</code></td><td>string</td><td>No</td><td><code>"hybrid"</code></td><td>Retrieval strategy (see below).</td></tr>
-<tr><td><code>top_k</code></td><td>integer</td><td>No</td><td>5</td><td>Maximum number of results to return.</td></tr>
+<tr><td><code>strategy</code></td><td>string</td><td>No</td><td><code>null</code></td><td>Retrieval strategy (see below).</td></tr>
+<tr><td><code>limit</code></td><td>integer</td><td>No</td><td>10</td><td>Maximum number of results to return.</td></tr>
 <tr><td><code>rerank</code></td><td>boolean</td><td>No</td><td><code>false</code></td><td>Whether to rerank results for improved relevance ordering.</td></tr>
 </tbody></table>
 </div>
@@ -286,31 +298,18 @@ console.log(`Created ${result.chunks_created} chunks in '${result.collection}'`)
     "collection": "product-docs",
     "query": "how does agent routing work",
     "strategy": "hybrid",
-    "top_k": 5,
+    "limit": 5,
     "rerank": true
   }'
 </code></pre>
-<h4 id="python-1"><a class="header" href="#python-1">Python</a></h4>
-<pre><code class="language-python">import requests
-
-response = requests.post(
-    "http://localhost:3000/api/rag/search",
-    headers={
-        "Content-Type": "application/json",
-        "Authorization": "Bearer eyJhbGciOi..."
-    },
-    json={
-        "collection": "product-docs",
-        "query": "how does agent routing work",
-        "strategy": "hybrid",
-        "top_k": 5,
-        "rerank": True
-    }
-)
-
-results = response.json()
-for result in results:
-    print(result)
+<h4 id="rust-cli-1"><a class="header" href="#rust-cli-1">Rust CLI</a></h4>
+<pre><code class="language-bash">ares-server rag search \
+  --host http://localhost:3000 \
+  --token "$ARES_TOKEN" \
+  --collection product-docs \
+  --query "how does agent routing work" \
+  --strategy hybrid \
+  --top-k 5
 </code></pre>
 <h4 id="javascript-1"><a class="header" href="#javascript-1">JavaScript</a></h4>
 <pre><code class="language-javascript">const response = await fetch("http://localhost:3000/api/rag/search", {
@@ -323,13 +322,13 @@ for result in results:
     collection: "product-docs",
     query: "how does agent routing work",
     strategy: "hybrid",
-    top_k: 5,
+    limit: 5,
     rerank: true
   })
 });
 
 const results = await response.json();
-results.forEach(result =&gt; console.log(result));
+results.results.forEach(result =&gt; console.log(result));
 </code></pre>
 <hr />
 <h2 id="list-collections"><a class="header" href="#list-collections">List collections</a></h2>

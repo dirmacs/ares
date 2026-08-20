@@ -50,8 +50,10 @@ impl Service for ModelOverride {}
 /// - `Closed` / `HalfOpen` → `true` (service advertises healthy, fibers stay Active)
 /// - `Open { until }` → `false` until cooldown expires (fibers deactivate, guarded withdrawal per Thm 63)
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum Breaker {
     /// Normal operation.
+    #[default]
     Closed,
     /// Provider is failing; do not use until `until`.
     Open { until: DateTime<Utc> },
@@ -127,11 +129,6 @@ impl Breaker {
     }
 }
 
-impl Default for Breaker {
-    fn default() -> Self {
-        Breaker::Closed
-    }
-}
 
 /// Unified LLM service composing provider registry, catalog, and pool.
 ///

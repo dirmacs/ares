@@ -5,44 +5,14 @@ use super::*;
 
 
 use crate::AppState;
-use crate::agents::context_provider::AgentRuntimeContext;
-use crate::agents::tenant_agent;
-use crate::db::agent_feedback;
-use crate::db::agent_runs;
-use crate::db::agent_versions;
-use crate::db::alerts as db_alerts;
-use crate::db::audit_log;
-use crate::db::schedules as db_schedules;
-use crate::db::skills as db_skills;
-use crate::db::tenant_agents::{
-    AgentTemplate, AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest,
-    TenantAgent, UpdateTenantAgentRequest, clone_templates_for_tenant,
-    create_tenant_agent as db_create_tenant_agent, delete_tenant_agent as db_delete_tenant_agent,
-    get_tenant_agent as db_get_tenant_agent, list_agent_templates, list_tenant_agent_versions,
-    list_tenant_agents as db_list_tenant_agents, record_tenant_agent_version,
-    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent,
-};
-use crate::db::tenant_allowlist as allowlist;
-use crate::db::tenant_model_tiers as db_tiers;
-use crate::db::tenants::UsageSummary;
 use crate::llm::provider_registry::{ModelInfo, RuntimeProviderEntry};
-use crate::memory::estimate_tokens;
-use crate::models::{Tenant, TenantTier};
-use crate::types::{AgentContext, AppError, Result};
-use crate::utils::toml_config::BillingConfig;
-use ares_config::toml_config::ProviderConfig;
+use crate::types::{AppError, Result};
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
-    middleware::Next,
-    response::{Redirect, Response},
+    http::StatusCode,
 };
-use rust_decimal::prelude::ToPrimitive;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::sync::Arc;
+use sha2::Digest;
 
 pub async fn list_models_handler(State(state): State<AppState>) -> Result<Json<Vec<ModelInfo>>> {
     Ok(Json(state.provider_registry.list_models()))
@@ -137,7 +107,7 @@ pub async fn delete_runtime_provider(
 }
 
 pub fn routes() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post, put};
+    use axum::routing::{delete, get, post};
     axum::Router::new()
         .route("/providers/list_models_handler", get(list_models_handler))
         .route("/providers/list_runtime_providers", get(list_runtime_providers))

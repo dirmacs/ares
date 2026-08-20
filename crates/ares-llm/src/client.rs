@@ -576,6 +576,7 @@ impl Provider {
     }
 
     /// Create a provider from TOML configuration with model parameters
+    #[allow(unused_variables)]
     pub fn from_config_with_params(
         provider_config: &ProviderConfig,
         model_override: Option<&str>,

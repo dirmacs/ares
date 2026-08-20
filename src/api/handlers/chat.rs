@@ -413,7 +413,7 @@ async fn execute_agent(
         }
         Err(e) => {
             state.active_runs.finish(&run_id, "error");
-            return Err(e.into());
+            return Err(e);
         }
     };
     let duration_ms = start.elapsed().as_millis() as i64;

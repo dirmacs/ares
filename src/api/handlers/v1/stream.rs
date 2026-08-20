@@ -3,31 +3,19 @@
 
 use super::*;
 
-use crate::agents::context_provider::AgentRuntimeContext;
 use crate::agents::tenant_agent;
 use crate::db::agent_runs;
 use crate::db::run_history::{LogToolCallRequest, RunHistoryStore};
-use crate::db::tenant_agents::{self, TenantAgent};
-use crate::memory::estimate_tokens;
-use crate::models::{TenantContext, TenantTier};
-use crate::observability::RunObservability;
-use crate::research::coordinator::ResearchCoordinator;
-use crate::types::{
-    AgentContext, AgentType, AppError, ChatRequest, ChatResponse, ResearchRequest,
-    ResearchResponse, Result,
-};
+use crate::models::TenantContext;
+use crate::types::Result;
 use crate::AppState;
 use ares_agents::Agent;
 use ares_types::types::ToolDefinition;
 use axum::{
     extract::{Extension, Path, Query, State},
-    http::{HeaderName, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
     Json,
 };
-use chrono::{DateTime, Datelike, TimeZone, Utc};
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use chrono::{TimeZone, Utc};
 
 /// POST /v1/agents/{name}/sandbox-run — dry-run an agent with sandbox=true
 pub async fn sandbox_run_agent(
@@ -300,8 +288,8 @@ pub async fn semantic_search(
 }
 
 pub fn routes() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post, put};
-    let mut router = axum::Router::new()
+    use axum::routing::{get, post};
+    let router = axum::Router::new()
         .route("/v1/stream/sandbox_run_agent", post(sandbox_run_agent))
         .route("/v1/stream/list_agent_logs", get(list_agent_logs))
     ;

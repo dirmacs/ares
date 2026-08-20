@@ -5,44 +5,14 @@ use super::*;
 
 
 use crate::AppState;
-use crate::agents::context_provider::AgentRuntimeContext;
-use crate::agents::tenant_agent;
-use crate::db::agent_feedback;
-use crate::db::agent_runs;
-use crate::db::agent_versions;
-use crate::db::alerts as db_alerts;
 use crate::db::audit_log;
-use crate::db::schedules as db_schedules;
-use crate::db::skills as db_skills;
-use crate::db::tenant_agents::{
-    AgentTemplate, AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest,
-    TenantAgent, UpdateTenantAgentRequest, clone_templates_for_tenant,
-    create_tenant_agent as db_create_tenant_agent, delete_tenant_agent as db_delete_tenant_agent,
-    get_tenant_agent as db_get_tenant_agent, list_agent_templates, list_tenant_agent_versions,
-    list_tenant_agents as db_list_tenant_agents, record_tenant_agent_version,
-    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent,
-};
-use crate::db::tenant_allowlist as allowlist;
-use crate::db::tenant_model_tiers as db_tiers;
-use crate::db::tenants::UsageSummary;
-use crate::llm::provider_registry::{ModelInfo, RuntimeProviderEntry};
-use crate::memory::estimate_tokens;
-use crate::models::{Tenant, TenantTier};
-use crate::types::{AgentContext, AppError, Result};
-use crate::utils::toml_config::BillingConfig;
-use ares_config::toml_config::ProviderConfig;
+use crate::db::tenant_agents::clone_templates_for_tenant;
+use crate::types::{AppError, Result};
 use axum::{
     Json,
-    extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
-    middleware::Next,
-    response::{Redirect, Response},
+    extract::{Path, State},
 };
-use rust_decimal::prelude::ToPrimitive;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::sync::Arc;
+use sha2::Digest;
 
 pub async fn create_tenant(
     State(state): State<AppState>,
@@ -219,7 +189,7 @@ pub async fn provision_client(
 }
 
 pub fn routes() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post, put};
+    use axum::routing::{get, post, put};
     axum::Router::new()
         .route("/tenants/create_tenant", post(create_tenant))
         .route("/tenants/list_tenants", get(list_tenants))

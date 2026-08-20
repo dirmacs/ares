@@ -145,7 +145,7 @@ impl ProviderRegistry {
         names: Vec<String>,
     ) {
         let mut map = HashMap::new();
-        for (entry, name) in providers.into_iter().zip(names.into_iter()) {
+        for (entry, name) in providers.into_iter().zip(names) {
             if entry.enabled {
                 map.entry(name).or_insert_with(Vec::new).push(entry);
             }
@@ -265,6 +265,7 @@ impl ProviderRegistry {
         }
     }
 
+    #[allow(dead_code)]
     fn runtime_api_key(provider_name: &str, entry: &RuntimeProviderEntry) -> Result<String> {
         entry
             .api_key
@@ -291,6 +292,7 @@ impl ProviderRegistry {
         )
     }
 
+    #[allow(dead_code)]
     fn provider_default_model(config: &ProviderConfig) -> &str {
         match config {
             ProviderConfig::OpenAI { default_model, .. }
@@ -355,6 +357,7 @@ impl ProviderRegistry {
         }
     }
 
+    #[allow(dead_code)]
     fn runtime_bedrock_region(provider_name: &str, entry: &RuntimeProviderEntry) -> Result<String> {
         entry
             .headers
@@ -376,6 +379,7 @@ impl ProviderRegistry {
             })
     }
 
+    #[allow(unused_variables)]
     fn provider_from_runtime_entry_with_params(
         provider_name: &str,
         entry: &RuntimeProviderEntry,
@@ -621,7 +625,7 @@ impl ProviderRegistry {
             ))
         })?;
 
-        let provider = Provider::from_config(&provider_config, None)?;
+        let provider = Provider::from_config(provider_config, None)?;
         provider.create_client().await
     }
 
@@ -1236,6 +1240,7 @@ pub fn reflect_notify_stub(ctx: &Arc<ares_cordis_core::Context>) {
 /// `dependents: RwLock<HashMap<TypeId, Vec<FiberId>>>` and BFS-walks
 /// dependent fibers to trigger `Fiber::refresh`.  This stub keeps the type
 /// shape while deferring the BFS implementation to Phase 3 wiring.
+#[allow(dead_code)]
 pub struct ReflectService {
     notifiers: RwLock<HashMap<TypeId, watch::Sender<()>>>,
     dependents: RwLock<HashMap<TypeId, Vec<ares_cordis_core::FiberId>>>,

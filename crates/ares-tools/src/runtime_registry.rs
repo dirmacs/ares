@@ -373,10 +373,7 @@ impl RuntimeToolRegistry {
                 _ => unreachable!("validated runtime tool type"),
             });
 
-        match result {
-            Ok(tool) => Some(tool),
-            Err(_e) => None,
-        }
+        result.ok()
     }
 
     fn materialise_http(row: &RuntimeTool) -> Result<Arc<dyn Tool>> {
@@ -496,20 +493,6 @@ impl RuntimeToolRegistry {
             }
         }
         Some(row.tool_type)
-    }
-
-    /// Execute a tool by name with tenant verification.
-    #[deprecated(note = "use ToolService::resolve")]
-    pub async fn execute_for_tenant(
-        &self,
-        name: &str,
-        args: Value,
-        tenant_id: Option<&str>,
-    ) -> Result<Value> {
-        let tool = self.get_for_tenant(name, tenant_id).ok_or_else(|| {
-            AppError::NotFound(format!("Runtime tool not found or not accessible: {name}"))
-        })?;
-        tool.execute(args).await
     }
 
     /// Get definitions for all enabled tools (fleet-wide).
@@ -998,21 +981,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_for_tenant_respects_access() {
+    async fn runtime_tenant_isolation_respects_access() {
         let reg = make_registry_with_tools();
 
-        // tenant-a can execute private_a
-        let result = reg
-            .execute_for_tenant("private_a", json!({}), Some("tenant-a"))
-            .await;
+        // tenant-a can execute private_a via ToolService precedence (runtime get_for_tenant)
+        let tool = reg
+            .get_for_tenant("private_a", Some("tenant-a"))
+            .expect("tenant-a should see private_a");
+        let result = tool.execute(json!({})).await;
         assert!(result.is_ok());
 
-        // tenant-b cannot
-        let err = reg
-            .execute_for_tenant("private_a", json!({}), Some("tenant-b"))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AppError::NotFound(_)));
+        // tenant-b cannot — ToolService precedence would fall through to fleet/static and not find private_a
+        assert!(reg.get_for_tenant("private_a", Some("tenant-b")).is_none());
     }
 
     // -------------------------------------------------------------------------

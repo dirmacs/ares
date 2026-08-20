@@ -3,6 +3,7 @@
 pub mod calculator;
 pub mod http_tool;
 pub mod registry;
+pub mod tool_service;
 pub mod script_tool;
 
 #[cfg(any(feature = "postgres", test))]
@@ -23,7 +24,9 @@ pub mod mcp_bridge;
 #[cfg(any(feature = "postgres", test))]
 pub mod connectors;
 
+pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
 pub use registry::{Tool, ToolRegistry};
+pub use tool_service::{ToolService, UnifiedToolService, TenantId};
 
 #[cfg(test)]
 mod tests {

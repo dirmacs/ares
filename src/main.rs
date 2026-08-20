@@ -297,6 +297,20 @@ async fn run_server(
     config_path: &std::path::Path,
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Cordis shim: prove `Context::new_root()` compiles; full migration will replace 17 steps below.
+    let _root_ctx = ares_cordis_core::Context::new_root();
+
+    // TODO cordis: replace with root_ctx.plugin calls (5-8 lines instead of 17 steps):
+    // let root_ctx = Context::new_root();
+    // root_ctx.plugin(NvidiaCatalogCache::new(nvidia_cfg.clone()), Default::default()).await;
+    // root_ctx.plugin(ProviderRegistry::from_config(&config).with_catalog(catalog), Default::default()).await;
+    // root_ctx.plugin(ToolRegistry::with_config(&config), Default::default()).await;
+    // root_ctx.plugin(AgentRegistry::with_dynamic_config(&config, provider_registry, tool_registry, dynamic_config), Default::default()).await;
+    // root_ctx.plugin(RuntimeToolRegistry::new(pool.clone()), Default::default()).await;
+    // root_ctx.plugin(SkillEngine::new(pool, tool_registry, runtime_tool_registry, llm_factory, config_manager), Default::default()).await;
+    // let _ = root_ctx.plugin(HealthMetricsJob, Default::default()).await;
+    // let app = ares::build_router(root_ctx.clone());
+
     // Load .env file for secrets (JWT_SECRET, API_KEY, etc.)
     dotenvy::dotenv().ok();
 

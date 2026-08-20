@@ -26,8 +26,11 @@ use arc_swap::ArcSwap;
 use ares_config::nvidia_catalog::{NvidiaCatalogCache, NvidiaConfig};
 use ares_config::toml_config::{AresConfig, ModelConfig, ProviderConfig};
 use ares_types::types::{AppError, Result};
+use parking_lot::RwLock;
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 /// Runtime provider entry, synthesized from the DB `runtime_providers` table.
 #[derive(Debug, Clone)]
@@ -1187,6 +1190,43 @@ impl ConfigBasedLLMFactory {
     /// Set the default model name
     pub fn set_default_model(&mut self, model_name: &str) {
         self.default_model = model_name.to_string();
+    }
+}
+
+// TODO cordis Phase3: replace start_background_reload 60s poll with Fiber::refresh via ReflectService::notify(TypeId::of::<ProviderRegistry>())
+
+// Cordis Phase 3 stub — proves Context + Loader integration compiles; background poll stays until Fiber::refresh wiring lands.
+pub fn reflect_notify_stub(ctx: &Arc<ares_cordis_core::Context>) {
+    let _ = ctx.get::<ares_cordis_core::loader::Loader>();
+    let _ = TypeId::of::<ProviderRegistry>();
+}
+
+/// Minimal `ReflectService` stub proving `notify(TypeId)` fan-out compiles.
+///
+/// Full `ReflectService` (per `docs/cordis-mapping.md` §7) tracks
+/// `notifiers: RwLock<HashMap<TypeId, watch::Sender<()>>>` and
+/// `dependents: RwLock<HashMap<TypeId, Vec<FiberId>>>` and BFS-walks
+/// dependent fibers to trigger `Fiber::refresh`.  This stub keeps the type
+/// shape while deferring the BFS implementation to Phase 3 wiring.
+pub struct ReflectService {
+    notifiers: RwLock<HashMap<TypeId, watch::Sender<()>>>,
+    dependents: RwLock<HashMap<TypeId, Vec<ares_cordis_core::FiberId>>>,
+}
+
+impl ReflectService {
+    pub fn new() -> Self {
+        Self {
+            notifiers: RwLock::new(HashMap::new()),
+            dependents: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn notify(&self, _tid: TypeId) {}
+}
+
+impl Default for ReflectService {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

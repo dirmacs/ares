@@ -20,6 +20,7 @@ ares-config = { workspace = true }
 ares-llm = { workspace = true, features = ["ollama"] }
 ares-tools = { workspace = true }
 ares-db = { workspace = true, optional = true }
+ares-cordis-core = { path = "../ares-cordis-core" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }

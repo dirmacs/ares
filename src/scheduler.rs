@@ -6,11 +6,26 @@
 use ares_db::agent_runs::{self, AgentRunMetadata};
 use ares_db::schedules::{AgentSchedule, MissedRunAudit, ScheduleStore, compute_next_run};
 use ares_types::types::AgentContext;
+use ares_cordis_core::Service;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
+
+// TODO cordis Phase4: SchedulerService { tick_ms:60_000, db, agent_execution: Arc<AgentExecutionService> }
+/// Cordis service stub for the scheduler — owns the 60s tick loop, catch-up
+/// pass, cron evaluation, and `agent_schedules`/`missed_runs` DB access.
+pub struct SchedulerService;
+
+impl Service for SchedulerService {}
+
+/// Cron evaluation hook — returns the next run time for a cron expression.
+/// Stub that compiles; real implementation will parse cron and compute next.
+pub fn next_run_at(_cron: &str) -> DateTime<Utc> {
+    Utc::now()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ScheduledPipelineTrigger<'a> {

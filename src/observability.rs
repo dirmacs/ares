@@ -10,7 +10,10 @@ use ares_db::run_history::{
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use chrono::Datelike;
 use rust_decimal::Decimal;
+#[cfg(feature = "postgres")]
 use sqlx::PgPool;
+#[cfg(not(feature = "postgres"))]
+type PgPool = ();
 use uuid::Uuid;
 
 /// Rough blended cost estimate: $0.002 per 1K tokens.
@@ -140,6 +143,7 @@ mod tests {
     }
 }
 
+#[cfg(feature = "postgres")]
 impl RunObservability {
     /// Check whether the tenant's budget would be exceeded by the estimated cost.
     /// This is informational only — the LLM call has already been made.

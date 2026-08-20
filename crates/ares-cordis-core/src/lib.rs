@@ -11,6 +11,9 @@ use std::sync::{Arc, Weak};
 
 use thiserror::Error;
 
+pub mod loader;
+pub use loader::{Entry, EntryTree, Loader};
+
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
@@ -80,6 +83,9 @@ impl Drop for EffectGuard {
     }
 }
 
+pub type ServiceInitFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Box<dyn Disposable>>, CordisError>> + Send + 'a>>;
+
 // ---------------------------------------------------------------------------
 // Service trait
 // ---------------------------------------------------------------------------
@@ -89,11 +95,8 @@ pub trait Service: Send + Sync + 'static {
         std::any::type_name::<Self>()
     }
 
-    fn init(
-        &self,
-        _ctx: &Arc<Context>,
-    ) -> impl Future<Output = Result<Option<Box<dyn Disposable>>, CordisError>> + Send {
-        async move { Ok(None) }
+    fn init(&self, _ctx: &Arc<Context>) -> ServiceInitFuture<'_> {
+        Box::pin(async move { Ok(None) })
     }
 
     fn check(&self) -> bool {

@@ -4,10 +4,16 @@
 //! field_change) with full observability, skill support, and pipeline
 //! propagation.
 
+use ares_cordis_core::Service;
 use ares_db::agent_runs::{self, AgentRunMetadata};
 use ares_db::schedules::EventTrigger;
 use ares_types::types::AgentContext;
 use std::sync::Arc;
+
+/// Cordis service stub for triggers — owns webhook/document-upload/field-change dispatch.
+pub struct TriggerService;
+
+impl Service for TriggerService {}
 
 fn triggered_agent_run_metadata(
     trigger: &EventTrigger,

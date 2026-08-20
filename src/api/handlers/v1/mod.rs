@@ -10,3 +10,7 @@ pub mod agents;
 pub use chat::routes as chat_routes;
 pub use stream::routes as stream_routes;
 pub use agents::routes as agents_routes;
+
+// cordis Phase6: shim dummy
+#[allow(dead_code)]
+pub async fn _v1_mod_dummy() {}

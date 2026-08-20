@@ -321,6 +321,7 @@ version = "0.7.3"
 dependencies = [
  "anyhow",
  "ares-config",
+ "ares-cordis-core",
  "ares-types",
  "ares-vector",
  "async-trait",
@@ -383,6 +384,7 @@ dependencies = [
 name = "ares-mcp"
 version = "0.7.3"
 dependencies = [
+ "ares-cordis-core",
  "ares-db",
  "ares-types",
  "async-trait",

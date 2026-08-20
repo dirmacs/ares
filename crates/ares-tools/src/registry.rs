@@ -288,6 +288,7 @@ mod tests {
             billing: BillingConfig {
                 model_pricing: HashMap::new(),
             },
+            skills: None,
             config: DynamicConfigPaths::default(),
         }
     }

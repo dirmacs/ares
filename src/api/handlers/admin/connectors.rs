@@ -518,10 +518,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/connectors/delete_oauth_credential", delete(delete_oauth_credential))
 }
 
-// TODO: ctx.plugin(AdminConnectorsRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminConnectorsService;
-// impl Service for AdminConnectorsService {
-//     fn name(&self) -> &'static str { "admin_connectors" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminConnectorsService;
+impl Service for AdminConnectorsService {}

@@ -146,10 +146,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/health/delete_tenant_model_tier", delete(delete_tenant_model_tier))
 }
 
-// TODO: ctx.plugin(AdminHealthRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminHealthService;
-// impl Service for AdminHealthService {
-//     fn name(&self) -> &'static str { "admin_health" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminHealthService;
+impl Service for AdminHealthService {}

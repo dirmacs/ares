@@ -591,10 +591,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/agents/emergency_stop_handler", post(emergency_stop_handler))
 }
 
-// TODO: ctx.plugin(AdminAgentsRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminAgentsService;
-// impl Service for AdminAgentsService {
-//     fn name(&self) -> &'static str { "admin_agents" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminAgentsService;
+impl Service for AdminAgentsService {}

@@ -184,10 +184,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/triggers/delete_tenant_trigger", delete(delete_tenant_trigger))
 }
 
-// TODO: ctx.plugin(AdminTriggersRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminTriggersService;
-// impl Service for AdminTriggersService {
-//     fn name(&self) -> &'static str { "admin_triggers" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminTriggersService;
+impl Service for AdminTriggersService {}

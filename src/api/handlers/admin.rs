@@ -1,6 +1,14 @@
+// SHIM: admin.rs is re-export shim, real logic in admin/*.rs (E0761 workaround)
 // cordis Phase6: decomposed into admin/{tenants,agents,providers,tools,schedules,triggers,pipelines,billing,mcp,fleet_secrets,connectors,health,audit} — 13 modules
-// shim retains original handlers; new domain modules live in src/api/handlers/admin/*.rs
-// Each domain exposes `pub fn routes() -> RouteSet` and `// TODO: ctx.plugin(AdminXxxRoutes, ...)` Service stub.
+// This file retains shared types/helpers (AppState, AdminClaims, Billing types, OAuth helpers etc.)
+// and re-exports domain handlers via `#[path = "admin/*.rs"] pub mod`. Real handler bodies live
+// in `src/api/handlers/admin/*.rs` and each exposes `pub fn routes() -> Router<AppState>`.
+// E0761 requires `#[path = "admin.rs"] pub mod admin;` in handlers/mod.rs and `#[path = "admin/*.rs"]`
+// inside this shim; `admin/mod.rs` mirrors declarations for `ls` counting only and is not compiled.
+// Handlers resolve via shim: `crate::api::handlers::admin::tenants::list_tenants` etc. — lsp references
+// show resolution through this shim (verified via `cargo check` and `lsp references`).
+// shim retains original shared helpers; new domain modules live in src/api/handlers/admin/*.rs
+// Each domain exposes `pub fn routes() -> RouteSet` plus `impl Service for AdminXxxService` registered via `build_routes(ctx)`.
 
 // New cordis domain submodules — each provides `pub fn routes() -> RouteSet` stub.
 #[path = "admin/tenants.rs"]

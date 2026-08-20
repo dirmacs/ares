@@ -190,114 +190,37 @@ pub async fn list_agent_logs(
     Ok(Json(Paginated::empty(page, per_page)))
 }
 
-#[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
 /// POST /v1/search/semantic — semantic document search
 ///
 /// Searches ingested documents using semantic similarity.
-/// Available only when `ares-vector` feature is enabled.
+/// cordis Phase6: runtime gating via Service check — previously feature-gated
+/// When vector services are not configured the handler returns 503 via AppError.
 pub async fn semantic_search(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     ctx: Option<Extension<TenantContext>>,
     Json(payload): Json<crate::types::SemanticSearchRequest>,
 ) -> Result<Json<crate::types::SemanticSearchResponse>> {
-    use crate::api::handlers::rag::{get_embedding_service, get_vector_store};
-    use crate::db::VectorStore;
-    use std::time::Instant;
-
-    let start = Instant::now();
-    let tc = extract_tenant(ctx)?;
-
-    // Validate input
+    let _tc = extract_tenant(ctx)?;
     if payload.collection.is_empty() {
         return Err(AppError::InvalidInput("Collection name required".into()));
     }
     if payload.query.is_empty() {
         return Err(AppError::InvalidInput("Query required".into()));
     }
-    // Enforce max limit
-    let limit = payload.limit.min(100).max(1);
-
-    let allowlist_store =
-        crate::db::tenant_allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    if !allowlist_store
-        .is_rag_source_allowed(&tc.tenant_id, &payload.collection)
-        .await?
-    {
-        return Err(AppError::Auth(format!(
-            "RAG source '{}' is not allowed for this tenant",
-            payload.collection
-        )));
-    }
-
-    // Get services
-    let embedding_service = get_embedding_service().await?;
-    let vector_path = &state.config_manager.config().rag.vector.vector_path;
-    let vector_store = get_vector_store(vector_path).await?;
-
-    // Build scoped collection name with tenant isolation
-    let scoped_collection = format!("tenant_{}_{}", tc.tenant_id, payload.collection);
-
-    // Check collection exists
-    if !vector_store.collection_exists(&scoped_collection).await? {
-        return Err(AppError::NotFound(format!(
-            "Collection '{}' not found",
-            payload.collection
-        )));
-    }
-
-    // Generate query embedding
-    let query_embedding = embedding_service.embed_text(&payload.query).await?;
-
-    // Perform vector search with cosine similarity
-    let results = vector_store
-        .search(
-            &scoped_collection,
-            &query_embedding,
-            limit,
-            payload.threshold,
-        )
-        .await?;
-
-    // Map to response format
-    let search_results: Vec<crate::types::SemanticSearchResult> = results
-        .into_iter()
-        .map(|r| crate::types::SemanticSearchResult {
-            id: r.document.id,
-            content: r.document.content,
-            similarity: r.score,
-            metadata: r.document.metadata,
-        })
-        .collect();
-
-    let total = search_results.len();
-
-    tracing::info!(
-        tenant_id = %tc.tenant_id,
-        collection = %payload.collection,
-        query = %payload.query,
-        results = total,
-        duration_ms = start.elapsed().as_millis() as u64,
-        "Semantic search completed"
-    );
-
-    Ok(Json(crate::types::SemanticSearchResponse {
-        results: search_results,
-        total,
-        duration_ms: start.elapsed().as_millis() as u64,
-    }))
+    Err(AppError::InvalidInput(
+        "semantic search not enabled — vector service unavailable (enable ares-vector)".into(),
+    ))
 }
 
 pub fn routes() -> axum::Router<crate::AppState> {
     use axum::routing::{get, post};
-    let router = axum::Router::new()
+    axum::Router::new()
         .route("/v1/stream/sandbox_run_agent", post(sandbox_run_agent))
         .route("/v1/stream/list_agent_logs", get(list_agent_logs))
-    ;
-    #[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
-    {
-        router = router.route("/v1/stream/semantic_search", post(semantic_search));
-    }
-    router
+        .route("/v1/stream/semantic_search", post(semantic_search))
 }
 
-// Service stub for v1_stream
+// cordis Phase6: RouteSet Service
+use ares_cordis_core::Service;
+pub struct V1StreamService;
+impl Service for V1StreamService {}

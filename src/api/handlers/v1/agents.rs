@@ -698,4 +698,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/v1/agents/delete_tenant_data", delete(delete_tenant_data))
 }
 
-// Service stub for v1_agents
+// cordis Phase6: RouteSet Service
+use ares_cordis_core::Service;
+pub struct V1AgentsService;
+impl Service for V1AgentsService {}

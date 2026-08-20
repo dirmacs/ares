@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 use parking_lot::{Mutex, RwLock};
+use serde::{de::DeserializeOwned, Serialize};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::future::Future;
@@ -490,6 +491,100 @@ pub fn compute_epoch(inject: &HashMap<TypeId, Symbol>) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// RegistryService & Plugin (Phase 2, Step 10)
+// ---------------------------------------------------------------------------
+
+pub trait Plugin: Send + Sync + 'static {
+    type Config: Serialize + DeserializeOwned + Send + Sync + 'static;
+    type Provides: Service;
+    fn apply(
+        &self,
+        ctx: &Arc<Context>,
+        config: Self::Config,
+    ) -> Result<Box<dyn Disposable>, CordisError>;
+}
+
+pub struct RegistryService {
+    fibers: RwLock<HashMap<FiberId, Arc<Fiber>>>,
+    // single-source discipline: TypeId -> FiberId (isolate realm simplified to global; Phase 3 will add isolate map)
+    provided: RwLock<HashMap<TypeId, FiberId>>,
+    next_id: Mutex<FiberId>,
+}
+
+impl RegistryService {
+    pub fn new() -> Self {
+        Self {
+            fibers: RwLock::new(HashMap::new()),
+            provided: RwLock::new(HashMap::new()),
+            next_id: Mutex::new(1),
+        }
+    }
+
+    /// Register a plugin, enforce single-source discipline.
+    /// Returns FiberId or Err(Configuration("duplicate provider for <TypeId>"))
+    pub fn plugin<P: Plugin>(
+        &self,
+        ctx: &Arc<Context>,
+        plugin: P,
+        config: P::Config,
+    ) -> Result<FiberId, CordisError> {
+        let tid = TypeId::of::<P::Provides>();
+        {
+            let provided = self.provided.read();
+            if provided.contains_key(&tid) {
+                return Err(CordisError::Configuration(format!(
+                    "duplicate provider for {:?}",
+                    tid
+                )));
+            }
+        }
+        let disposable = plugin.apply(ctx, config)?;
+        let mut id_guard = self.next_id.lock();
+        let fid = *id_guard;
+        *id_guard += 1;
+        drop(id_guard);
+
+        let fiber = Arc::new(Fiber::new());
+        // push the plugin's disposable onto fiber's acc so dispose reverts it
+        let undo: Box<dyn FnOnce() + Send> = Box::new(move || {
+            disposable.dispose();
+        });
+        fiber.push_undo(undo);
+        self.fibers.write().insert(fid, fiber);
+        self.provided.write().insert(tid, fid);
+        Ok(fid)
+    }
+
+    pub fn get_fiber(&self, id: FiberId) -> Option<Arc<Fiber>> {
+        self.fibers.read().get(&id).cloned()
+    }
+
+    pub fn remove(&self, id: FiberId) -> Option<Arc<Fiber>> {
+        let fiber = self.fibers.write().remove(&id)?;
+        // remove provided entry
+        let mut provided = self.provided.write();
+        provided.retain(|_, v| *v != id);
+        Some(fiber)
+    }
+}
+
+impl Default for RegistryService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Service for RegistryService {}
+
+// Inventory/linkme static registration placeholder (preferred for production).
+// Real static registration would use `inventory::submit!` or `linkme::distributed_slice`
+// to collect `fn(&Arc<Context>) -> Result<FiberId, CordisError>` at compile time.
+// This spike stubs it — Phase 3 Loader will drive declarative reconciliation.
+// Behind `#[cfg(feature = "hmr")]`, `libloading` would `dlopen` a `.so` and call `Plugin::apply`
+// via an `extern "C"` entry point; if ABI fragility blocks, fallback is file-watch + full fiber reload
+// (see docs/cordis-mapping.md §11 — 90% value without dynamic code).
+
+// ---------------------------------------------------------------------------
 // Tests — the two theorems that must hold before Phase 2
 // ---------------------------------------------------------------------------
 
@@ -628,5 +723,46 @@ mod tests {
             fiber.state(),
             FiberState::Inactive { .. } | FiberState::Active { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn registry_single_source_discipline() {
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+
+        struct FooPlugin;
+        impl Plugin for FooPlugin {
+            type Config = ();
+            type Provides = FooService;
+            fn apply(
+                &self,
+                ctx: &Arc<Context>,
+                _cfg: Self::Config,
+            ) -> Result<Box<dyn Disposable>, CordisError> {
+                ctx.provide(FooService(1));
+                Ok(Box::new(|| {}) as Box<dyn Disposable>)
+            }
+        }
+
+        struct FooPlugin2;
+        impl Plugin for FooPlugin2 {
+            type Config = ();
+            type Provides = FooService;
+            fn apply(
+                &self,
+                ctx: &Arc<Context>,
+                _cfg: Self::Config,
+            ) -> Result<Box<dyn Disposable>, CordisError> {
+                ctx.provide(FooService(2));
+                Ok(Box::new(|| {}) as Box<dyn Disposable>)
+            }
+        }
+
+        let fid1 = registry.plugin(&ctx, FooPlugin, ()).expect("first plugin ok");
+        assert!(registry.get_fiber(fid1).is_some());
+        let err = registry.plugin(&ctx, FooPlugin2, ()).expect_err("duplicate should fail");
+        assert!(err.to_string().contains("duplicate provider"));
+        // original still present
+        assert!(registry.get_fiber(fid1).is_some());
     }
 }

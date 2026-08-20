@@ -398,6 +398,13 @@ Handle employee info, policies, and benefits."#
         self.runtime_tenant_id = Some(tenant_id);
     }
 
+    #[cfg(not(feature = "postgres"))]
+    /// Stub when `postgres` feature is disabled — no-op, keeps handler bodies compiling without `#[cfg]`.
+    /// Cordis P1: `PostgresService::check()` (i.e. `cfg!(feature = "postgres")`) is the runtime gate;
+    /// this method exists in both builds so `if cfg!(feature = "postgres") { agent.set_runtime_tools(...) }` compiles.
+    /// Uses `Arc<()>` to avoid depending on `RuntimeToolRegistry` which is `#[cfg(any(postgres, test))]` in `ares-tools`.
+    pub fn set_runtime_tools(&mut self, _registry: Arc<()>, _tenant_id: String) {}
+
     /// Pre-flight check: reject the call if the tenant has already exhausted
     /// their token budget.
     #[cfg(feature = "postgres")]

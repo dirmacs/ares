@@ -149,6 +149,20 @@ pub use qdrant::QdrantVectorStore;
 #[cfg(feature = "postgres")]
 pub use tenants::{TenantDb, UsageSummary};
 
+/// Cordis Service for postgres availability — runtime check replaces `#[cfg(feature = "postgres")]` in handlers.
+///
+/// `check()` returns `cfg!(feature = "postgres")` so both `cargo check --no-default-features` and
+/// `cargo check --features postgres` compile; handlers branch via `PostgresService::check()` or `cfg!`.
+pub struct PostgresService;
+impl ares_cordis_core::Service for PostgresService {
+    fn name(&self) -> &'static str {
+        "postgres"
+    }
+    fn check(&self) -> bool {
+        cfg!(feature = "postgres")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CollectionInfo, CollectionStats};

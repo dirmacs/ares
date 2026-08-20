@@ -42,6 +42,15 @@
 //! let results = vector_store.search("docs", query_embedding, 10).await?;
 //! ```
 
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::redundant_closure)]
+#![allow(unused_imports)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::option_as_ref_deref)]
+#![allow(clippy::map_flatten)]
+#![allow(clippy::for_kv_map)]
+
 // Vector store abstraction layer
 pub mod vectorstore;
 

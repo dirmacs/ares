@@ -165,7 +165,7 @@ impl<'a> SkillStore<'a> {
         .bind(&req.steps)
         .bind(&req.input_schema)
         .bind(&req.output_schema)
-        .bind(&req.tools.as_ref().map(|v| v.as_slice()))
+        .bind(req.tools.as_deref())
         .bind(req.is_public)
         .bind(&req.created_by)
         .bind(now)
@@ -199,7 +199,7 @@ impl<'a> SkillStore<'a> {
         .bind(&req.steps)
         .bind(&req.input_schema)
         .bind(&req.output_schema)
-        .bind(&req.tools.as_ref().map(|v| v.as_slice()))
+        .bind(req.tools.as_deref())
         .bind(req.is_public)
         .bind(&req.created_by)
         .bind(now)
@@ -479,6 +479,7 @@ fn validate_service_type(t: &str) -> Result<()> {
 /// Seeds four pre-built skills. Idempotent — uses ON CONFLICT DO NOTHING.
 pub async fn seed_default_skills(pool: &PgPool) -> Result<()> {
     let now = now_ts();
+    #[allow(clippy::type_complexity)]
     let skills: Vec<(&str, &str, &str, &str, serde_json::Value, Option<Vec<&str>>)> = vec![
         (
             "web_research",
@@ -542,7 +543,7 @@ pub async fn seed_default_skills(pool: &PgPool) -> Result<()> {
         .bind(description)
         .bind(skill_type)
         .bind(&steps)
-        .bind(tools.as_ref().map(|v| v.as_slice()))
+        .bind(tools.as_deref())
         .bind(now)
         .execute(pool)
         .await

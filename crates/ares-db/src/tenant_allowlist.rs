@@ -70,7 +70,7 @@ impl<'a> TenantAllowlistStore<'a> {
         .await
         .map_err(sqlx_err)?;
 
-        Ok(rows.iter().map(|r| row_to_tool(r)).collect())
+        Ok(rows.iter().map(row_to_tool).collect())
     }
 
     pub async fn allow_tool(
@@ -141,7 +141,7 @@ impl<'a> TenantAllowlistStore<'a> {
         .await
         .map_err(sqlx_err)?;
 
-        Ok(rows.iter().map(|r| row_to_model(r)).collect())
+        Ok(rows.iter().map(row_to_model).collect())
     }
 
     pub async fn allow_model(
@@ -212,7 +212,7 @@ impl<'a> TenantAllowlistStore<'a> {
         .await
         .map_err(sqlx_err)?;
 
-        Ok(rows.iter().map(|r| row_to_rag(r)).collect())
+        Ok(rows.iter().map(row_to_rag).collect())
     }
 
     pub async fn allow_rag_source(

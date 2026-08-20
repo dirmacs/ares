@@ -4,6 +4,7 @@
 //! context, gaps, and completeness from MCP-compatible servers.
 
 use crate::registry::{Tool, ToolRegistry};
+#[cfg(test)]
 use ares_config::toml_config::ToolConfig;
 use ares_mcp::client::{McpClient, McpServerConfig};
 use ares_types::types::ToolDefinition;

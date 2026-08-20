@@ -661,7 +661,7 @@ pub struct RagRerankingConfig {
     pub rerank_weight: f32,
 }
 /// RAG Configuration Wrapper
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RagConfig {
     /// Vector store configuration for vector embeddings and retrieval
@@ -795,17 +795,6 @@ fn default_reranker_model() -> String {
 
 fn default_rerank_weight() -> f32 {
     0.6
-}
-
-impl Default for RagConfig {
-    fn default() -> Self {
-        Self {
-            vector: RAGVectorConfig::default(),
-            chunking: RagChunkingConfig::default(),
-            search: RagSearchConfig::default(),
-            rerank: RagRerankingConfig::default(),
-        }
-    }
 }
 
 // ============= Billing Configuration =============
@@ -1075,7 +1064,7 @@ impl AresConfig {
         }
 
         // Validate provider env vars
-        for (_name, provider) in &self.providers {
+        for provider in self.providers.values() {
             match provider {
                 ProviderConfig::OpenAI { api_key_env, .. } => {
                     self.validate_env_var(api_key_env)?;
@@ -1353,6 +1342,7 @@ impl AresConfig {
     /// Returns an error if:
     /// - The environment variable is not set
     /// - The secret is shorter than 32 characters (256 bits)
+    ///
     /// Get names of configured MCP clients (from mcps directory .toon files).
     /// Used by validation to allow MCP bridge tool names in agent configs.
     pub fn mcp_client_names(&self) -> Vec<String> {

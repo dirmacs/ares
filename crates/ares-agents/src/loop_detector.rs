@@ -255,7 +255,7 @@ pub fn should_halt(state: &LoopState, config: &LoopConfig) -> bool {
 fn action_for_repeats(config: &LoopConfig, repeats: usize) -> LoopAction {
     if repeats >= config.repeat_threshold * 2 {
         LoopAction::HaltAgent
-    } else if repeats >= config.repeat_threshold + 1 {
+    } else if repeats > config.repeat_threshold {
         LoopAction::ForceAlternative
     } else {
         LoopAction::InjectWarning

@@ -232,7 +232,7 @@ impl ModelCapabilities {
         }
 
         // OpenAI reasoning models
-        if is_openai_reasoning_model(&model_lower) {
+        if is_openai_reasoning_model(model_lower) {
             let is_gpt5 = model_lower
                 .rsplit(['/', ':'])
                 .next()

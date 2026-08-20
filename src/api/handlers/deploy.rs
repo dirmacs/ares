@@ -200,7 +200,7 @@ pub async fn list_deploys(State(state): State<AppState>) -> Json<Vec<DeployStatu
 /// GET /api/admin/services — health check all services
 pub async fn get_services_health() -> Result<Json<HashMap<String, ServiceHealth>>> {
     let output = tokio::process::Command::new("bash")
-        .arg(&health_script())
+        .arg(health_script())
         .output()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to run health script: {}", e)))?;

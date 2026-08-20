@@ -223,6 +223,7 @@ pub struct AgentRunMetadata {
     pub trigger_id: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_agent_run(
     pool: &PgPool,
     tenant_id: &str,
@@ -255,6 +256,7 @@ pub async fn insert_agent_run(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_agent_run_with_metadata(
     pool: &PgPool,
     tenant_id: &str,
@@ -290,6 +292,7 @@ pub async fn insert_agent_run_with_metadata(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_agent_run_with_id_and_metadata(
     pool: &PgPool,
     id: &str,

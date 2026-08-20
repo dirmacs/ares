@@ -205,7 +205,7 @@ pub async fn execute_triggered_agent(
             .await;
         }
 
-        return skill_result.map(|_| ()).map_err(|e| e);
+        return skill_result.map(|_| ());
     }
 
     let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(

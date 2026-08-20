@@ -24,6 +24,7 @@ pub type TenantId = String;
 /// Carries the minimal fields needed to execute any agent via the single
 /// `AgentExecutionService::execute` entry-point.
 #[derive(Clone)]
+#[derive(Default)]
 pub struct AgentRequest {
     /// Agent name to execute.
     pub agent_name: String,
@@ -54,17 +55,6 @@ impl std::fmt::Debug for AgentRequest {
     }
 }
 
-impl Default for AgentRequest {
-    fn default() -> Self {
-        Self {
-            agent_name: String::new(),
-            tenant: None,
-            message: String::new(),
-            history: Vec::new(),
-            ctx_provider: None,
-        }
-    }
-}
 
 /// Unified agent execution service — the single place handling:
 ///

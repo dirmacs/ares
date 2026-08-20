@@ -116,10 +116,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/providers/delete_runtime_provider", delete(delete_runtime_provider))
 }
 
-// TODO: ctx.plugin(AdminProvidersRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminProvidersService;
-// impl Service for AdminProvidersService {
-//     fn name(&self) -> &'static str { "admin_providers" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminProvidersService;
+impl Service for AdminProvidersService {}

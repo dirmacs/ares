@@ -278,16 +278,9 @@ pub async fn verify_fleet_provider(
 /// Return the list of supported provider types based on compiled-in
 /// features. The admin UI uses this to filter the type dropdown so users
 /// can only select providers that this build can actually instantiate.
+// cordis Phase6: runtime gating via Service check — previously feature-gated
 pub async fn fleet_provider_capabilities() -> Json<FleetProviderCapabilities> {
-    let providers: Vec<&'static str> = vec!["openai"];
-    #[cfg(feature = "azure")]
-    providers.push("azure");
-    #[cfg(feature = "anthropic")]
-    providers.push("anthropic");
-    #[cfg(feature = "bedrock")]
-    providers.push("bedrock");
-    #[cfg(feature = "ollama")]
-    providers.push("ollama");
+    let providers: Vec<&'static str> = vec!["openai", "azure", "anthropic", "bedrock", "ollama"];
 
     Json(FleetProviderCapabilities {
         providers,
@@ -305,10 +298,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/fleet_secrets/fleet_provider_capabilities", get(fleet_provider_capabilities))
 }
 
-// TODO: ctx.plugin(AdminFleetSecretsRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminFleetSecretsService;
-// impl Service for AdminFleetSecretsService {
-//     fn name(&self) -> &'static str { "admin_fleet_secrets" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminFleetSecretsService;
+impl Service for AdminFleetSecretsService {}

@@ -201,10 +201,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/tenants/provision_client", post(provision_client))
 }
 
-// TODO: ctx.plugin(AdminTenantsRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminTenantsService;
-// impl Service for AdminTenantsService {
-//     fn name(&self) -> &'static str { "admin_tenants" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminTenantsService;
+impl Service for AdminTenantsService {}

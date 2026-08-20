@@ -309,10 +309,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/billing/acknowledge_budget_alert", post(acknowledge_budget_alert))
 }
 
-// TODO: ctx.plugin(AdminBillingRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminBillingService;
-// impl Service for AdminBillingService {
-//     fn name(&self) -> &'static str { "admin_billing" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminBillingService;
+impl Service for AdminBillingService {}

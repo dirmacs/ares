@@ -203,6 +203,7 @@ pub struct OllamaModelCapabilities {
 }
 
 /// Map HTTP status codes and bodies from Ollama to `AppError`.
+#[allow(dead_code)]
 pub(crate) fn map_ollama_http_status(
     status: u16,
     body: &str,
@@ -222,6 +223,7 @@ pub(crate) fn map_ollama_http_status(
 }
 
 /// Parse a `Retry-After` header value (seconds).
+#[allow(dead_code)]
 pub(crate) fn parse_retry_after(header: &str) -> Option<u64> {
     let trimmed = header.trim();
     if trimmed.is_empty() {
@@ -273,7 +275,7 @@ fn parse_num_ctx_parameter(text: &str) -> Option<u32> {
     for line in text.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("num_ctx") {
-            let num_str = rest.trim().split_whitespace().next().unwrap_or(rest.trim());
+            let num_str = rest.split_whitespace().next().unwrap_or(rest.trim());
             if let Ok(n) = num_str.parse::<u32>() {
                 return Some(n);
             }

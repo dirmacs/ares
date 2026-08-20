@@ -162,6 +162,8 @@ impl ToolRegistry {
             ))),
         }
     }
+
+    // removed: unified via UnifiedToolService; call ctx.get::<dyn ToolService>().resolve
 }
 
 impl Default for ToolRegistry {
@@ -286,6 +288,7 @@ mod tests {
             billing: BillingConfig {
                 model_pricing: HashMap::new(),
             },
+            skills: None,
             config: DynamicConfigPaths::default(),
         }
     }

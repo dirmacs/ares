@@ -8,7 +8,7 @@ use crate::{trigger_engine, AppState};
 use ares_types::types::AppError;
 use axum::{
     extract::State,
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use serde::Deserialize;

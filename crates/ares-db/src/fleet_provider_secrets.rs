@@ -174,7 +174,7 @@ impl<'a> FleetProviderSecretsStore<'a> {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let fallback_json = fallback_providers.map(|v| serde_json::to_value(v).ok()).flatten();
+        let fallback_json = fallback_providers.and_then(|v| serde_json::to_value(v).ok());
 
         sqlx::query(
             "INSERT INTO fleet_provider_secrets \

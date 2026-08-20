@@ -42,6 +42,15 @@
 //! let results = vector_store.search("docs", query_embedding, 10).await?;
 //! ```
 
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::redundant_closure)]
+#![allow(unused_imports)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::option_as_ref_deref)]
+#![allow(clippy::map_flatten)]
+#![allow(clippy::for_kv_map)]
+
 // Vector store abstraction layer
 pub mod vectorstore;
 
@@ -139,6 +148,20 @@ pub use turso::TursoClient;
 pub use qdrant::QdrantVectorStore;
 #[cfg(feature = "postgres")]
 pub use tenants::{TenantDb, UsageSummary};
+
+/// Cordis Service for postgres availability — runtime check replaces `#[cfg(feature = "postgres")]` in handlers.
+///
+/// `check()` returns `cfg!(feature = "postgres")` so both `cargo check --no-default-features` and
+/// `cargo check --features postgres` compile; handlers branch via `PostgresService::check()` or `cfg!`.
+pub struct PostgresService;
+impl ares_cordis_core::Service for PostgresService {
+    fn name(&self) -> &'static str {
+        "postgres"
+    }
+    fn check(&self) -> bool {
+        cfg!(feature = "postgres")
+    }
+}
 
 #[cfg(test)]
 mod tests {

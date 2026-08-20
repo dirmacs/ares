@@ -79,6 +79,8 @@ pub mod observability;
 pub mod pool;
 /// Registry for managing multiple LLM provider instances.
 pub mod provider_registry;
+/// Unified LLM service (Cordis Phase 5).
+pub mod llm_service;
 
 #[cfg(feature = "openai")]
 pub mod openai;
@@ -102,6 +104,7 @@ pub use coordinator::{
 pub use observability::{LlmCallRecord, ObservabilitySink};
 pub use pool::{ClientPool, ClientPoolBuilder, PoolConfig, PoolStats, PooledClientGuard};
 pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
+pub use llm_service::{Breaker, LlmService, ModelOverride};
 
 // Re-export NVIDIA catalog types from ares-config so callers can construct caches.
 pub use ares_config::nvidia_catalog::{CatalogEntry, NvidiaCatalogCache, NvidiaConfig};

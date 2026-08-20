@@ -135,6 +135,7 @@ pub fn checkpoint_key(agent_id: &str, run_id: &str) -> String {
 }
 
 /// Build a new in-memory checkpoint for the given agent run and step.
+#[allow(clippy::too_many_arguments)]
 pub fn create_checkpoint(
     agent_id: &str,
     run_id: &str,
@@ -151,6 +152,7 @@ pub fn create_checkpoint(
 }
 
 /// Like [`create_checkpoint`] but attaches an optional TTL.
+#[allow(clippy::too_many_arguments)]
 pub fn create_checkpoint_with_ttl(
     agent_id: &str,
     run_id: &str,
@@ -235,7 +237,7 @@ impl CheckpointManager {
         let filename = checkpoint_step_filename(&checkpoint.session_id, checkpoint.step);
         let path = self.checkpoint_dir.join(&filename);
         let bytes = serialize_state(checkpoint)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         std::fs::write(&path, bytes)?;
 
         // Also update the "latest" symlink/pointer

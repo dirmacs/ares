@@ -134,7 +134,7 @@ pub const BASE_RETRY_DELAY_MS: u64 = 1000;
 
 /// Execute a reqwest request with automatic retry on 429.
 pub async fn execute_with_retry(
-    client: &reqwest::Client,
+    _client: &reqwest::Client,
     request: reqwest::RequestBuilder,
     provider: &str,
 ) -> std::result::Result<reqwest::Response, ConnectorError> {

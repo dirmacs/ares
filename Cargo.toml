@@ -4,7 +4,7 @@ members = [
     ".", "crates/ares-vector", "crates/ares-types", "crates/ares-config",
     "crates/ares-rag", "crates/ares-tools", "crates/ares-llm",
     "crates/ares-db", "crates/ares-mcp", "crates/ares-agents",
-    "crates/ares-auth", "crates/ares-memory",
+    "crates/ares-auth", "crates/ares-memory", "crates/ares-cordis-core",
 ]
 exclude = ["ui"]
 resolver = "2"

@@ -1,0 +1,20 @@
+[package]
+name = "ares-cordis-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "Cordis primitives for A.R.E.S — Context, Fiber, Effect, Events (spike leaf crate, zero ARES deps)"
+
+[dependencies]
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

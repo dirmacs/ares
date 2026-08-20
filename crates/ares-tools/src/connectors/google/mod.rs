@@ -5,7 +5,7 @@ use crate::connectors::{
 };
 use ares_config::fleet_secrets::MasterKey;
 use ares_types::types::Result;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sqlx::PgPool;
 
 pub mod calendar;

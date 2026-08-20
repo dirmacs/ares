@@ -1,6 +1,5 @@
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use std::time::{SystemTime, UNIX_EPOCH};
 

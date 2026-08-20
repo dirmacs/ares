@@ -61,11 +61,14 @@ pub struct ConfigurableAgent {
     tool_registry: Option<Arc<ToolRegistry>>,
     /// Unified tool service (Cordis DI). Keep alongside `tool_registry` for one
     /// commit to keep `cargo check` green. Next migration: consumers will use
-    /// `ctx.get::<UnifiedToolService>()` (see `ares_tools::ToolService` and
-    /// `ares_cordis_core::Context::get`) instead of passing `Arc<ToolRegistry>`.
-    /// `dyn ToolService` is not dyn-compatible due to `Service::init` (impl Future),
-    /// so we store the concrete `UnifiedToolService` to keep `cargo check` green.
-    tool_service: Option<Arc<ares_tools::UnifiedToolService>>,
+    /// `ctx.get::<dyn ToolService>()` / `ctx.get::<UnifiedToolService>()` (see
+    /// `ares_tools::ToolService` and `ares_cordis_core::Context::get`) instead of
+    /// passing `Arc<ToolRegistry>`. `ToolService` is dyn-compatible (`Service`
+    /// is implemented for `dyn ToolService` with `Pin<Box<dyn Future>>`); we
+    /// store `Arc<dyn ToolService>` (re-exported via `crate::execution::ToolService`)
+    /// so `inject_tool_service` can accept both concrete `UnifiedToolService`
+    /// and trait objects. Both paths are kept for one commit.
+    tool_service: Option<Arc<dyn ToolService>>,
     /// Optional whitelist of tool names this agent is allowed to use.
     /// `None` means no tools are permitted.
     allowed_tools: Option<Vec<String>>,
@@ -302,18 +305,29 @@ Handle employee info, policies, and benefits."#
     /// Inject unified `ToolService` (Cordis DI shim).
     ///
     /// Stored alongside `tool_registry` for one commit to keep `cargo check`
-    /// green. Next migration: handlers will `ctx.get::<UnifiedToolService>()`
-    /// (via `ares_cordis_core::Context::provide` / `Context::get`) instead of
-    /// constructing `Arc<ToolRegistry>` directly. See `ares_tools::ToolService`.
-    pub fn inject_tool_service(&mut self, svc: Arc<ares_tools::UnifiedToolService>) {
+    /// green. Next migration: handlers will `ctx.get::<dyn ToolService>()` or
+    /// `ctx.get::<UnifiedToolService>()` (via `ares_cordis_core::Context::provide`
+    /// / `Context::get`) instead of constructing `Arc<ToolRegistry>` directly.
+    /// See `ares_tools::ToolService` (re-exported as `crate::execution::ToolService`).
+    /// Accepts `Arc<dyn ToolService>`; callers with a concrete
+    /// `UnifiedToolService` can coerce via `svc as Arc<dyn ToolService>`.
+    pub fn inject_tool_service(&mut self, svc: Arc<dyn ToolService>) {
         self.tool_service = Some(svc);
+    }
+
+    /// Inject a concrete `UnifiedToolService` (deprecated shim kept for one
+    /// commit so existing `Arc<UnifiedToolService>` call sites still compile).
+    /// Prefer `inject_tool_service` with `Arc<dyn ToolService>`.
+    #[deprecated(note = "use inject_tool_service with Arc<dyn ToolService>")]
+    pub fn inject_unified_tool_service(&mut self, svc: Arc<ares_tools::UnifiedToolService>) {
+        self.tool_service = Some(svc as Arc<dyn ToolService>);
     }
 
     /// Get the unified tool service (if injected via `inject_tool_service`).
     ///
-    /// Future path: `ctx.get::<UnifiedToolService>().unwrap()` will replace this
-    /// accessor. Keep both fields for one commit.
-    pub fn tool_service(&self) -> Option<&Arc<ares_tools::UnifiedToolService>> {
+    /// Future path: `ctx.get::<dyn ToolService>()` / `ctx.get::<UnifiedToolService>()`
+    /// will replace this accessor. Keep both fields for one commit.
+    pub fn tool_service(&self) -> Option<&Arc<dyn ToolService>> {
         self.tool_service.as_ref()
     }
 
@@ -585,6 +599,30 @@ Handle employee info, policies, and benefits."#
             }
         }
 
+        // Cordis Phase 5: also merge tools visible via unified `ToolService`
+        // (precedence: tenant runtime → fleet runtime → MCP bridge → static).
+        // Keep the existing `tool_registry` / `runtime_tool_registry` paths for
+        // one commit alongside the new `ToolService` path so `cargo check`
+        // stays green while handlers migrate to `ctx.get::<dyn ToolService>()`.
+        if let (Some(svc), Some(allowed)) = (&self.tool_service, &self.allowed_tools) {
+            let tid = {
+                #[cfg(feature = "postgres")]
+                {
+                    self.runtime_tenant_id.clone()
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    None::<String>
+                }
+            };
+            let existing: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
+            for def in svc.list(tid) {
+                if allowed.iter().any(|a| a == &def.name) && !existing.contains(&def.name) {
+                    defs.push(def);
+                }
+            }
+        }
+
         defs
     }
 
@@ -611,6 +649,25 @@ Handle employee info, policies, and benefits."#
         #[cfg(feature = "postgres")]
         if let (Some(rt), Some(tid)) = (&self.runtime_tool_registry, &self.runtime_tenant_id) {
             if rt.get_for_tenant(tool_name, Some(tid)).is_some() {
+                return true;
+            }
+        }
+        // Unified `ToolService` probe — keeps both `runtime_tool_registry`
+        // and `ctx.get::<dyn ToolService>().resolve(name, tenant)` paths for
+        // one commit so existing `execute_for_tenant` shim still works while
+        // new code migrates to `ToolService::resolve`.
+        if let Some(svc) = &self.tool_service {
+            let tid = {
+                #[cfg(feature = "postgres")]
+                {
+                    self.runtime_tenant_id.clone()
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    None::<String>
+                }
+            };
+            if svc.resolve(tool_name, tid).is_some() {
                 return true;
             }
         }
@@ -663,9 +720,11 @@ Handle employee info, policies, and benefits."#
     /// Execute a single tool call, routing to the correct registry.
     ///
     /// Built-in tools (in-process `ToolRegistry`) are tried first. If the tool
-    /// is not built-in, it is dispatched to the tenant-scoped runtime registry
-    /// (`execute_for_tenant`), so DB-defined http/mcp/sql/script tools work and
-    /// stay isolated to the agent's tenant.
+    /// is not built-in, it is dispatched via the unified `ToolService`
+    /// (`resolve` + `execute`) when available, otherwise via the tenant-scoped
+    /// runtime registry (`execute_for_tenant`) — the latter is kept as a
+    /// deprecated shim for one commit so both paths compile while handlers
+    /// migrate to `ctx.get::<dyn ToolService>().resolve(name, tenant)`.
     async fn dispatch_tool(
         &self,
         name: &str,
@@ -676,6 +735,28 @@ Handle employee info, policies, and benefits."#
                 let args = self.tenant_scoped_builtin_args(name, args)?;
                 return reg.execute(name, args).await;
             }
+        }
+        // Prefer unified `ToolService` (tenant runtime → fleet → MCP → static).
+        // Keep both `tool_service.resolve` and `runtime_tool_registry.execute_for_tenant`
+        // for one commit — do not break `cargo check` while `RealToolService` keeps
+        // the deprecated `execute_for_tenant` shim in `runtime_registry.rs`.
+        if let Some(svc) = &self.tool_service {
+            let tid = {
+                #[cfg(feature = "postgres")]
+                {
+                    self.runtime_tenant_id.clone()
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    None::<String>
+                }
+            };
+            if let Some(tool) = svc.resolve(name, tid.clone()) {
+                let args = self.tenant_scoped_builtin_args(name, args)?;
+                return tool.execute(args).await;
+            }
+            // Also try the deprecated `execute_for_tenant` shape via ToolService if needed:
+            // keep fallback to runtime registry below so both compile.
         }
         #[cfg(feature = "postgres")]
         if let (Some(rt), Some(tid)) = (&self.runtime_tool_registry, &self.runtime_tenant_id) {

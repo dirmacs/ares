@@ -30,6 +30,21 @@ pub mod health;
 #[path = "admin/audit.rs"]
 pub mod audit;
 
+// cordis Phase6: bodies moved to admin/*, shim retained for one release
+#[allow(deprecated)] pub use self::tenants::*;
+#[allow(deprecated)] pub use self::agents::*;
+#[allow(deprecated)] pub use self::providers::*;
+#[allow(deprecated)] pub use self::tools::*;
+#[allow(deprecated)] pub use self::schedules::*;
+#[allow(deprecated)] pub use self::triggers::*;
+#[allow(deprecated)] pub use self::pipelines::*;
+#[allow(deprecated)] pub use self::billing::*;
+#[allow(deprecated)] pub use self::mcp::*;
+#[allow(deprecated)] pub use self::fleet_secrets::*;
+#[allow(deprecated)] pub use self::connectors::*;
+#[allow(deprecated)] pub use self::health::*;
+#[allow(deprecated)] pub use self::audit::*;
+
 use crate::AppState;
 use crate::agents::context_provider::AgentRuntimeContext;
 use crate::agents::tenant_agent;
@@ -89,7 +104,7 @@ struct RoleEntry {
 }
 
 /// Check if JWT claims have admin or super_admin role in any of: "admin", "ares", "eruka".
-fn has_admin_role(claims: &AdminClaims) -> bool {
+pub(crate) fn has_admin_role(claims: &AdminClaims) -> bool {
     for product in ["admin", "ares", "eruka"] {
         if let Some(entries) = claims.roles.get(product) {
             if entries
@@ -103,7 +118,7 @@ fn has_admin_role(claims: &AdminClaims) -> bool {
     false
 }
 
-fn admin_token_from_request(req: &axum::extract::Request) -> Option<String> {
+pub(crate) fn admin_token_from_request(req: &axum::extract::Request) -> Option<String> {
     if let Some(token) = req
         .headers()
         .get("authorization")
@@ -247,7 +262,7 @@ impl From<UsageSummary> for UsageResponse {
 const INVALID_TIER_MSG: &str = "Invalid tier. Must be: free, dev, pro, or enterprise";
 
 /// Validates a tier string from admin request payloads.
-fn parse_tenant_tier(tier: &str) -> Result<TenantTier> {
+pub(crate) fn parse_tenant_tier(tier: &str) -> Result<TenantTier> {
     TenantTier::from_str(tier).ok_or_else(|| AppError::InvalidInput(INVALID_TIER_MSG.to_string()))
 }
 
@@ -255,7 +270,7 @@ fn parse_tenant_tier(tier: &str) -> Result<TenantTier> {
 /// by this tenant: either an enabled built-in tool or a tenant-visible runtime
 /// tool. Checks `allowed_tools` first, then falls back to the legacy `tools`
 /// field.
-fn validate_agent_config_tools(
+pub(crate) fn validate_agent_config_tools(
     config: &serde_json::Value,
     tool_registry: &ares_tools::registry::ToolRegistry,
     runtime_tool_registry: &ares_tools::runtime_registry::RuntimeToolRegistry,
@@ -294,7 +309,7 @@ fn validate_agent_config_tools(
     Ok(())
 }
 
-fn parse_agent_config_tool_names(field: &str, value: &serde_json::Value) -> Result<Vec<String>> {
+pub(crate) fn parse_agent_config_tool_names(field: &str, value: &serde_json::Value) -> Result<Vec<String>> {
     match value {
         serde_json::Value::Array(values) => values
             .iter()
@@ -313,128 +328,12 @@ fn parse_agent_config_tool_names(field: &str, value: &serde_json::Value) -> Resu
     }
 }
 
-pub async fn create_tenant(
-    State(state): State<AppState>,
-    Json(payload): Json<CreateTenantRequest>,
-) -> Result<Json<TenantResponse>> {
-    let tier = parse_tenant_tier(&payload.tier)?;
 
-    let tenant = state.tenant_db.create_tenant(payload.name, tier).await?;
 
-    let pool = state.tenant_db.pool().clone();
-    let tid = tenant.id.clone();
-    tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "create_tenant", "tenant", &tid, None, None).await;
-    });
 
-    Ok(Json(TenantResponse::from(tenant)))
-}
 
-pub async fn list_tenants(State(state): State<AppState>) -> Result<Json<Vec<TenantResponse>>> {
-    let tenants = state.tenant_db.list_tenants().await?;
-    let response: Vec<TenantResponse> = tenants.into_iter().map(|t| t.into()).collect();
 
-    Ok(Json(response))
-}
 
-pub async fn get_tenant(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<TenantResponse>> {
-    let tenant = state
-        .tenant_db
-        .get_tenant(&tenant_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Tenant not found".to_string()))?;
-
-    Ok(Json(TenantResponse::from(tenant)))
-}
-
-pub async fn create_api_key(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Json(payload): Json<CreateApiKeyRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let (api_key, raw_key) = state
-        .tenant_db
-        .create_api_key(&tenant_id, payload.name)
-        .await?;
-
-    let pool = state.tenant_db.pool().clone();
-    let kid = api_key.id.clone();
-    tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "create_api_key", "api_key", &kid, None, None).await;
-    });
-
-    Ok(Json(serde_json::json!({
-        "api_key": api_key,
-        "raw_key": raw_key,
-        "warning": "Store this raw key securely. You will not be able to retrieve it again."
-    })))
-}
-
-pub async fn list_api_keys(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<Vec<ApiKeyResponse>>> {
-    let keys = state.tenant_db.list_api_keys(&tenant_id).await?;
-    let response: Vec<ApiKeyResponse> = keys.into_iter().map(|k| k.into()).collect();
-
-    Ok(Json(response))
-}
-
-pub async fn get_tenant_usage(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<UsageResponse>> {
-    let _ = state
-        .tenant_db
-        .get_tenant(&tenant_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Tenant not found".to_string()))?;
-
-    let usage = state.tenant_db.get_usage_summary(&tenant_id).await?;
-
-    Ok(Json(UsageResponse::from(usage)))
-}
-
-pub async fn update_tenant_quota(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Json(payload): Json<UpdateQuotaRequest>,
-) -> Result<Json<TenantResponse>> {
-    let tier = parse_tenant_tier(&payload.tier)?;
-
-    state
-        .tenant_db
-        .update_tenant_quota(&tenant_id, tier)
-        .await?;
-
-    let tenant = state
-        .tenant_db
-        .get_tenant(&tenant_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Tenant not found".to_string()))?;
-
-    let pool = state.tenant_db.pool().clone();
-    let tid = tenant_id.clone();
-    let details = format!("{{\"new_tier\":\"{}\"}}", payload.tier);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "update_quota",
-            "tenant",
-            &tid,
-            Some(&details),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(TenantResponse::from(tenant)))
-}
 
 // =============================================================================
 // Provision Client
@@ -460,175 +359,16 @@ pub struct ProvisionClientResponse {
     pub agents_created: Vec<String>,
 }
 
-pub async fn provision_client(
-    State(state): State<AppState>,
-    Json(req): Json<ProvisionClientRequest>,
-) -> Result<Json<ProvisionClientResponse>> {
-    let tier = parse_tenant_tier(&req.tier)?;
-
-    // product_type is used only to select which agent templates to clone into tenant_agents.
-    // It does NOT create product-specific DB tables — client domain data lives in the client's own backend.
-    let product_type = req.product_type.to_lowercase();
-
-    let tenant = state.tenant_db.create_tenant(req.name, tier).await?;
-
-    let agents =
-        clone_templates_for_tenant(state.tenant_db.pool(), &tenant.id, &product_type).await?;
-
-    let (api_key, raw_key) = state
-        .tenant_db
-        .create_api_key(&tenant.id, req.api_key_name)
-        .await?;
-
-    let pool = state.tenant_db.pool().clone();
-    let tid = tenant.id.clone();
-    let details = format!(
-        "{{\"product_type\":\"{}\",\"tier\":\"{}\"}}",
-        product_type,
-        tenant.tier.as_str()
-    );
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "provision_client",
-            "tenant",
-            &tid,
-            Some(&details),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(ProvisionClientResponse {
-        tenant_id: tenant.id,
-        tenant_name: tenant.name,
-        tier: tenant.tier.as_str().to_string(),
-        product_type,
-        api_key_id: api_key.id,
-        api_key_prefix: api_key.key_prefix,
-        raw_api_key: raw_key,
-        agents_created: agents.into_iter().map(|a| a.agent_name).collect(),
-    }))
-}
 
 // =============================================================================
 // Tenant Agent CRUD
 // =============================================================================
 
-pub async fn list_tenant_agents_handler(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<Vec<TenantAgent>>> {
-    let agents = db_list_tenant_agents(state.tenant_db.pool(), &tenant_id).await?;
-    Ok(Json(agents))
-}
 
-pub async fn create_tenant_agent_handler(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Json(req): Json<CreateTenantAgentRequest>,
-) -> Result<Json<TenantAgent>> {
-    validate_agent_config_tools(
-        &req.config,
-        &state.tool_registry,
-        &state.runtime_tool_registry,
-        &tenant_id,
-    )?;
 
-    let agent = db_create_tenant_agent(state.tenant_db.pool(), &tenant_id, req).await?;
 
-    let pool = state.tenant_db.pool().clone();
-    let aid = agent.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "create_agent", "agent", &aid, None, None).await;
-    });
 
-    Ok(Json(agent))
-}
 
-pub async fn update_tenant_agent_handler(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-    Json(req): Json<UpdateTenantAgentRequest>,
-) -> Result<Json<TenantAgent>> {
-    if let Some(cfg) = &req.config {
-        validate_agent_config_tools(
-            cfg,
-            &state.tool_registry,
-            &state.runtime_tool_registry,
-            &tenant_id,
-        )?;
-    }
-
-    let agent =
-        db_update_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name, req).await?;
-
-    let pool = state.tenant_db.pool().clone();
-    let aid = agent.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "update_agent", "agent", &aid, None, None).await;
-    });
-
-    Ok(Json(agent))
-}
-
-pub async fn delete_tenant_agent_handler(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-) -> Result<StatusCode> {
-    db_delete_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
-
-    let pool = state.tenant_db.pool().clone();
-    let resource_id = format!("{}:{}", tenant_id, agent_name);
-    tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "delete_agent", "agent", &resource_id, None, None)
-                .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn list_tenant_agent_versions_handler(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
-    let agent = db_get_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
-    let mut records =
-        list_tenant_agent_versions(state.tenant_db.pool(), &tenant_id, &agent_name, 50).await?;
-    if records.is_empty() {
-        record_tenant_agent_version(state.tenant_db.pool(), &agent, "admin_seed").await?;
-        records =
-            list_tenant_agent_versions(state.tenant_db.pool(), &tenant_id, &agent_name, 50).await?;
-    }
-    Ok(Json(records))
-}
-
-pub async fn rollback_tenant_agent_version_handler(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
-) -> Result<Json<TenantAgent>> {
-    let agent =
-        rollback_tenant_agent_version(state.tenant_db.pool(), &tenant_id, &agent_name, &version)
-            .await?;
-
-    let pool = state.tenant_db.pool().clone();
-    let resource_id = format!("{}:{}", tenant_id, agent_name);
-    let details = format!("Rolled back tenant agent to version {}", version);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "tenant_agent_rollback",
-            "agent",
-            &resource_id,
-            Some(&details),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(agent))
-}
 
 // =============================================================================
 // Cross-tenant Agent CRUD (admin-facing)
@@ -652,204 +392,18 @@ pub struct UpdateAgentRequest {
     pub enabled: Option<bool>,
 }
 
-pub async fn list_agents(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<agent_runs::AllAgentsEntry>>> {
-    let agents = agent_runs::list_all_agents(state.tenant_db.pool()).await?;
-    Ok(Json(agents))
-}
 
-pub async fn get_agent(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-) -> Result<Json<TenantAgent>> {
-    let agent = db_get_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
-    Ok(Json(agent))
-}
 
-pub async fn create_agent(
-    State(state): State<AppState>,
-    Json(req): Json<CreateAgentRequest>,
-) -> Result<Json<TenantAgent>> {
-    let config = if let Some(tpl_id) = &req.template_id {
-        let store = AgentTemplateStore::new(state.tenant_db.pool().clone());
-        let tpl = store
-            .get_template(tpl_id)
-            .await?
-            .ok_or_else(|| AppError::InvalidInput(format!("Template '{}' not found", tpl_id)))?;
-        tpl.config
-    } else {
-        req.config
-    };
 
-    validate_agent_config_tools(
-        &config,
-        &state.tool_registry,
-        &state.runtime_tool_registry,
-        &req.tenant_id,
-    )?;
 
-    let db_req = CreateTenantAgentRequest {
-        agent_name: req.agent_name,
-        display_name: req.display_name,
-        description: req.description,
-        config,
-    };
 
-    let agent = db_create_tenant_agent(state.tenant_db.pool(), &req.tenant_id, db_req).await?;
 
-    let pool = state.tenant_db.pool().clone();
-    let aid = agent.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "create_agent", "agent", &aid, None, None).await;
-    });
-
-    Ok(Json(agent))
-}
-
-pub async fn update_agent(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-    Json(req): Json<UpdateAgentRequest>,
-) -> Result<Json<TenantAgent>> {
-    if let Some(cfg) = &req.config {
-        validate_agent_config_tools(
-            cfg,
-            &state.tool_registry,
-            &state.runtime_tool_registry,
-            &tenant_id,
-        )?;
-    }
-
-    let db_req = UpdateTenantAgentRequest {
-        display_name: req.display_name,
-        description: req.description,
-        config: req.config,
-        enabled: req.enabled,
-    };
-    let agent =
-        db_update_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name, db_req).await?;
-
-    let pool = state.tenant_db.pool().clone();
-    let aid = agent.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "update_agent", "agent", &aid, None, None).await;
-    });
-
-    Ok(Json(agent))
-}
-
-pub async fn delete_agent(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-) -> Result<StatusCode> {
-    db_delete_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
-
-    let pool = state.tenant_db.pool().clone();
-    let resource_id = format!("{}:{}", tenant_id, agent_name);
-    tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "delete_agent", "agent", &resource_id, None, None)
-                .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn get_agent_versions(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
-    let agent = db_get_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
-    let mut records =
-        list_tenant_agent_versions(state.tenant_db.pool(), &tenant_id, &agent_name, 50).await?;
-    if records.is_empty() {
-        record_tenant_agent_version(state.tenant_db.pool(), &agent, "admin_seed").await?;
-        records =
-            list_tenant_agent_versions(state.tenant_db.pool(), &tenant_id, &agent_name, 50).await?;
-    }
-    Ok(Json(records))
-}
-
-pub async fn rollback_agent(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
-) -> Result<Json<TenantAgent>> {
-    let agent =
-        rollback_tenant_agent_version(state.tenant_db.pool(), &tenant_id, &agent_name, &version)
-            .await?;
-
-    let pool = state.tenant_db.pool().clone();
-    let resource_id = format!("{}:{}", tenant_id, agent_name);
-    let details = format!("Rolled back agent to version {}", version);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "agent_rollback",
-            "agent",
-            &resource_id,
-            Some(&details),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(agent))
-}
 
 // =============================================================================
 // Agent Template CRUD (admin-facing)
 // =============================================================================
 
-pub async fn create_agent_template_handler(
-    State(state): State<AppState>,
-    Json(req): Json<CreateTemplateRequest>,
-) -> Result<Json<AgentTemplate>> {
-    let store = AgentTemplateStore::new(state.tenant_db.pool().clone());
-    let tpl = store.create_template(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
-    let tid = tpl.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "create_agent_template",
-            "agent_template",
-            &tid,
-            None,
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(tpl))
-}
-
-pub async fn delete_agent_template_handler(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<StatusCode> {
-    let store = AgentTemplateStore::new(state.tenant_db.pool().clone());
-    let deleted = store.delete_template(&id).await?;
-    if deleted == 0 {
-        return Err(AppError::NotFound(format!("Template '{}' not found", id)));
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "delete_agent_template",
-            "agent_template",
-            &id,
-            None,
-            None,
-        )
-        .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
 
 #[derive(Debug, Deserialize)]
 pub struct TestTenantAgentRequest {
@@ -876,196 +430,12 @@ pub struct TestTenantAgentResponse {
     pub eruka_context_injected: bool,
 }
 
-pub async fn test_tenant_agent_handler(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-    Json(req): Json<TestTenantAgentRequest>,
-) -> Result<Json<TestTenantAgentResponse>> {
-    if state
-        .emergency_stop
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        return Err(AppError::Unavailable(
-            "All agents are currently under human review. Please try again later.".to_string(),
-        ));
-    }
-
-    let message = req.message.trim();
-    if message.is_empty() {
-        return Err(AppError::InvalidInput(
-            "Test Agent requires a non-empty message".to_string(),
-        ));
-    }
-
-    db_get_tenant_agent(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
-    let agent_config = tenant_agent::agent_config_from_json(&req.config)?;
-    let mut draft_agent = state
-        .agent_registry
-        .create_agent_from_config_with_fallbacks(
-            &agent_name,
-            &agent_config,
-            &tenant_id,
-            state.tenant_db.pool(),
-            &state.fleet_secrets,
-        )
-        .await?;
-
-    // Attach observability
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let obs = Arc::new(crate::observability::RunObservability {
-        run_id: run_id.clone(),
-        tenant_id: tenant_id.clone(),
-        agent_name: agent_name.clone(),
-        pool: state.tenant_db.pool().clone(),
-    });
-    draft_agent.set_observability(obs.clone());
-    draft_agent.set_runtime_tools(state.runtime_tool_registry.clone(), tenant_id.clone());
-    draft_agent.set_run_id(run_id.clone());
-
-    state.active_runs.start(crate::active_runs::ActiveRun {
-        run_id: run_id.clone(),
-        tenant_id: tenant_id.clone(),
-        agent_name: agent_name.clone(),
-        started_at: chrono::Utc::now().timestamp(),
-        status: "running".to_string(),
-        current_step: 0,
-        total_steps: 0,
-        last_update: chrono::Utc::now().timestamp(),
-        tool_name: None,
-        model: None,
-        is_catchup: false,
-        request_source: Some("admin_test_agent".to_string()),
-        pipeline_id: None,
-        schedule_id: None,
-        trigger_id: None,
-    });
-
-    let agent_context = AgentContext {
-        user_id: tenant_id.clone(),
-        session_id: format!("admin-test-{}", uuid::Uuid::new_v4()),
-        conversation_history: vec![],
-        user_memory: None,
-    };
-
-    let mut runtime_context =
-        AgentRuntimeContext::new(tenant_id.clone(), agent_name.clone(), "admin_test_agent");
-    runtime_context.workspace_id = req
-        .workspace_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string());
-    runtime_context.session_id = Some(agent_context.session_id.clone());
-
-    let eruka_context = if req.use_eruka_context {
-        state
-            .context_provider
-            .get_context_for_run(&runtime_context)
-            .await
-    } else {
-        None
-    };
-    let eruka_context_injected = eruka_context.is_some();
-    let effective_message = if let Some(ctx) = eruka_context {
-        format!("{}\n\n---\nUser message: {}", ctx, message)
-    } else {
-        message.to_string()
-    };
-
-    let start = std::time::Instant::now();
-    use crate::agents::Agent;
-    let result = draft_agent
-        .execute(&effective_message, &agent_context)
-        .await;
-    let duration_ms = start.elapsed().as_millis() as u64;
-
-    // Aggregate run costs (fire-and-forget)
-    let dur_i64 = duration_ms as i64;
-    let obs_for_spawn = obs.clone();
-    tokio::spawn(async move {
-        obs_for_spawn.aggregate_run_cost(dur_i64).await;
-    });
-
-    let config_version = req
-        .config
-        .get("version")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| format!("draft:{}", value))
-        .unwrap_or_else(|| "draft".to_string());
-
-    match result {
-        Ok(response) => {
-            state.active_runs.finish(&run_id, "completed");
-            let (input_tokens, output_tokens) = if let Some(ref usage) = response.usage {
-                (usage.prompt_tokens as u64, usage.completion_tokens as u64)
-            } else {
-                (
-                    estimate_tokens(&effective_message) as u64,
-                    estimate_tokens(&response.content) as u64,
-                )
-            };
-            let model_name = response
-                .metadata
-                .as_ref()
-                .map(|metadata| metadata.model_name.clone());
-            let provider_name = response
-                .metadata
-                .as_ref()
-                .map(|metadata| metadata.provider_name.clone());
-
-            Ok(Json(TestTenantAgentResponse {
-                status: "completed".to_string(),
-                response: Some(response.content),
-                error: None,
-                input_tokens,
-                output_tokens,
-                duration_ms,
-                model_name,
-                provider_name,
-                config_source: "draft".to_string(),
-                config_version,
-                workspace_id: runtime_context.workspace_id,
-                eruka_context_injected,
-            }))
-        }
-        Err(error) => {
-            state.active_runs.finish(&run_id, "error");
-            Ok(Json(TestTenantAgentResponse {
-                status: "failed".to_string(),
-                response: None,
-                error: Some(error.to_string()),
-                input_tokens: estimate_tokens(&effective_message) as u64,
-                output_tokens: 0,
-                duration_ms,
-                model_name: None,
-                provider_name: None,
-                config_source: "draft".to_string(),
-                config_version,
-                workspace_id: runtime_context.workspace_id,
-                eruka_context_injected,
-            }))
-        }
-    }
-}
 
 // =============================================================================
 // Templates and Models
 // =============================================================================
 
-pub async fn list_agent_templates_handler(
-    State(state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<AgentTemplate>>> {
-    let product_type = params.get("product_type").map(|s| s.as_str());
-    let templates = list_agent_templates(state.tenant_db.pool(), product_type).await?;
-    Ok(Json(templates))
-}
 
-pub async fn list_models_handler(State(state): State<AppState>) -> Result<Json<Vec<ModelInfo>>> {
-    Ok(Json(state.provider_registry.list_models()))
-}
 
 // =============================================================================
 // Alerts
@@ -1078,46 +448,12 @@ pub struct AlertsQuery {
     pub limit: Option<i64>,
 }
 
-pub async fn list_alerts(
-    State(state): State<AppState>,
-    Query(q): Query<AlertsQuery>,
-) -> Result<Json<Vec<db_alerts::Alert>>> {
-    let limit = q.limit.unwrap_or(50).min(200);
-    let alerts = db_alerts::list_alerts(
-        state.tenant_db.pool(),
-        q.severity.as_deref(),
-        q.resolved,
-        limit,
-    )
-    .await?;
-    Ok(Json(alerts))
-}
 
 #[derive(Debug, Deserialize)]
 pub struct ResolveAlertRequest {
     pub resolved_by: Option<String>,
 }
 
-pub async fn resolve_alert(
-    State(state): State<AppState>,
-    Path(alert_id): Path<String>,
-    Json(payload): Json<ResolveAlertRequest>,
-) -> Result<StatusCode> {
-    db_alerts::resolve_alert(
-        state.tenant_db.pool(),
-        &alert_id,
-        payload.resolved_by.as_deref(),
-    )
-    .await?;
-
-    let pool = state.tenant_db.pool().clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "resolve_alert", "alert", &alert_id, None, None)
-            .await;
-    });
-
-    Ok(StatusCode::OK)
-}
 
 // =============================================================================
 // Audit Log
@@ -1129,15 +465,6 @@ pub struct AuditLogQuery {
     pub offset: Option<i64>,
 }
 
-pub async fn list_audit_log(
-    State(state): State<AppState>,
-    Query(q): Query<AuditLogQuery>,
-) -> Result<Json<Vec<audit_log::AuditLogEntry>>> {
-    let limit = q.limit.unwrap_or(50).min(200);
-    let offset = q.offset.unwrap_or(0);
-    let entries = audit_log::list_audit_log(state.tenant_db.pool(), limit, offset).await?;
-    Ok(Json(entries))
-}
 
 // =============================================================================
 // Daily Usage
@@ -1155,45 +482,6 @@ pub struct DailyUsageEntry {
     pub tokens: i64,
 }
 
-pub async fn get_daily_usage(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Query(q): Query<DailyUsageQuery>,
-) -> Result<Json<Vec<DailyUsageEntry>>> {
-    let days = q.days.unwrap_or(30).min(90);
-    let now_ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-    let start_ts = now_ts - (days * 86400);
-
-    let rows = sqlx::query(
-        "SELECT
-            (created_at / 86400) * 86400 as day_ts,
-            COUNT(*) as requests,
-            COALESCE(SUM(input_tokens + output_tokens)::bigint, 0) as tokens
-         FROM agent_runs
-         WHERE tenant_id = $1 AND created_at >= $2
-         GROUP BY day_ts ORDER BY day_ts",
-    )
-    .bind(&tenant_id)
-    .bind(start_ts)
-    .fetch_all(state.tenant_db.pool())
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
-
-    use sqlx::Row;
-    let entries: Vec<DailyUsageEntry> = rows
-        .iter()
-        .map(|row| DailyUsageEntry {
-            date: row.get("day_ts"),
-            requests: row.get("requests"),
-            tokens: row.get("tokens"),
-        })
-        .collect();
-
-    Ok(Json(entries))
-}
 
 // =============================================================================
 // Agent Runs (Admin view)
@@ -1266,89 +554,10 @@ impl AgentRunResponse {
     }
 }
 
-pub async fn list_agent_runs_handler(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-    Query(q): Query<AgentRunsQuery>,
-) -> Result<Json<Vec<AgentRunResponse>>> {
-    let limit = q.limit.unwrap_or(50).min(200);
-    let offset = q.offset.unwrap_or(0);
-    let runs = agent_runs::list_agent_runs(
-        state.tenant_db.pool(),
-        &tenant_id,
-        Some(&agent_name),
-        limit,
-        offset,
-    )
-    .await?;
-    let config = state.config_manager.config();
-    let response = runs
-        .into_iter()
-        .map(|run| AgentRunResponse::from_run(run, &config.billing))
-        .collect();
-    Ok(Json(response))
-}
 
-pub async fn create_agent_run_feedback_handler(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name, run_id)): Path<(String, String, String)>,
-    Json(payload): Json<CreateAgentRunFeedbackRequest>,
-) -> Result<Json<agent_feedback::AgentRunFeedback>> {
-    let feedback = agent_feedback::insert_agent_run_feedback(
-        state.tenant_db.pool(),
-        agent_feedback::NewAgentRunFeedback {
-            tenant_id: tenant_id.clone(),
-            agent_name: agent_name.clone(),
-            run_id: Some(run_id.clone()),
-            feedback_type: payload.feedback_type,
-            score: payload.score,
-            flags: payload.flags,
-            notes: payload.notes,
-            reviewer: payload.reviewer,
-        },
-    )
-    .await?;
 
-    let feedback_id = feedback.id.clone();
-    let pool = state.tenant_db.pool().clone();
-    tokio::spawn(async move {
-        let details = serde_json::json!({
-            "agent_name": agent_name,
-            "run_id": run_id,
-            "feedback_id": feedback_id,
-        })
-        .to_string();
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "agent_run_feedback",
-            "agent_run",
-            &tenant_id,
-            Some(&details),
-            None,
-        )
-        .await;
-    });
 
-    Ok(Json(feedback))
-}
-
-pub async fn get_agent_feedback_summary_handler(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-    Query(q): Query<AgentFeedbackSummaryQuery>,
-) -> Result<Json<agent_feedback::AgentFeedbackSummary>> {
-    let days = q.days.unwrap_or(30).clamp(1, 366);
-    let summary = agent_feedback::get_agent_feedback_summary(
-        state.tenant_db.pool(),
-        &tenant_id,
-        &agent_name,
-        days,
-    )
-    .await?;
-    Ok(Json(summary))
-}
-
-fn estimate_run_cost(billing: &BillingConfig, run: &agent_runs::AgentRun) -> CostEstimateResponse {
+pub(crate) fn estimate_run_cost(billing: &BillingConfig, run: &agent_runs::AgentRun) -> CostEstimateResponse {
     let Some(pricing) = billing.pricing_for(&run.provider_name, &run.model_name) else {
         return CostEstimateResponse::unknown();
     };
@@ -1373,7 +582,7 @@ fn estimate_run_cost(billing: &BillingConfig, run: &agent_runs::AgentRun) -> Cos
     }
 }
 
-fn tokens_to_cost(tokens: i64, usd_per_million_tokens: f64) -> f64 {
+pub(crate) fn tokens_to_cost(tokens: i64, usd_per_million_tokens: f64) -> f64 {
     (tokens.max(0) as f64 / 1_000_000.0) * usd_per_million_tokens
 }
 
@@ -1396,107 +605,14 @@ pub struct AllowRagSourceRequest {
     pub rag_source: String,
 }
 
-pub async fn list_tenant_allowed_tools(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<Vec<allowlist::TenantToolAllowlistItem>>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    let items = store.list_tools(&tenant_id).await?;
-    Ok(Json(items))
-}
 
-pub async fn add_tenant_allowed_tool(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Json(req): Json<AllowToolRequest>,
-) -> Result<Json<allowlist::TenantToolAllowlistItem>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    let item = store.allow_tool(&tenant_id, &req.tool_name).await?;
-    Ok(Json(item))
-}
 
-pub async fn delete_tenant_allowed_tool(
-    State(state): State<AppState>,
-    Path((tenant_id, tool_name)): Path<(String, String)>,
-) -> Result<StatusCode> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    let rows = store.deny_tool(&tenant_id, &tool_name).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!(
-            "tool {} not found for tenant {}",
-            tool_name, tenant_id
-        )));
-    }
-    Ok(StatusCode::NO_CONTENT)
-}
 
-pub async fn list_tenant_allowed_models(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<Vec<allowlist::TenantModelAllowlistItem>>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    let items = store.list_models(&tenant_id).await?;
-    Ok(Json(items))
-}
 
-pub async fn add_tenant_allowed_model(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Json(req): Json<AllowModelRequest>,
-) -> Result<Json<allowlist::TenantModelAllowlistItem>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    let item = store.allow_model(&tenant_id, &req.model_id).await?;
-    Ok(Json(item))
-}
 
-pub async fn delete_tenant_allowed_model(
-    State(state): State<AppState>,
-    Path((tenant_id, model_id)): Path<(String, String)>,
-) -> Result<StatusCode> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    let rows = store.deny_model(&tenant_id, &model_id).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!(
-            "model {} not found for tenant {}",
-            model_id, tenant_id
-        )));
-    }
-    Ok(StatusCode::NO_CONTENT)
-}
 
-pub async fn list_tenant_allowed_rag_sources(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<Vec<allowlist::TenantRagAllowlistItem>>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    let items = store.list_rag_sources(&tenant_id).await?;
-    Ok(Json(items))
-}
 
-pub async fn add_tenant_allowed_rag_source(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Json(req): Json<AllowRagSourceRequest>,
-) -> Result<Json<allowlist::TenantRagAllowlistItem>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    let item = store.allow_rag_source(&tenant_id, &req.rag_source).await?;
-    Ok(Json(item))
-}
 
-pub async fn delete_tenant_allowed_rag_source(
-    State(state): State<AppState>,
-    Path((tenant_id, rag_source)): Path<(String, String)>,
-) -> Result<StatusCode> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
-    let rows = store.deny_rag_source(&tenant_id, &rag_source).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!(
-            "rag source {} not found for tenant {}",
-            rag_source, tenant_id
-        )));
-    }
-    Ok(StatusCode::NO_CONTENT)
-}
 
 #[cfg(test)]
 mod tests {
@@ -2668,42 +1784,21 @@ mod tests {
     }
 }
 
-pub async fn get_agent_stats_handler(
-    State(state): State<AppState>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-) -> Result<Json<agent_runs::AgentRunStats>> {
-    let stats =
-        agent_runs::get_agent_run_stats(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
-    Ok(Json(stats))
-}
 
 // =============================================================================
 // Cross-tenant agents list
 // =============================================================================
 
-pub async fn list_all_agents_handler(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<agent_runs::AllAgentsEntry>>> {
-    let agents = agent_runs::list_all_agents(state.tenant_db.pool()).await?;
-    Ok(Json(agents))
-}
 
 // =============================================================================
 // Platform Stats
 // =============================================================================
 
-pub async fn get_platform_stats(
-    State(state): State<AppState>,
-) -> Result<Json<agent_runs::PlatformStats>> {
-    let stats = agent_runs::get_platform_stats(state.tenant_db.pool()).await?;
-    Ok(Json(stats))
-}
 
 // =============================================================================
 // Agent Versioning — Rollback + Kill Switch (Sprint 12)
 // =============================================================================
 
-/// GET /api/admin/agents/{agent_id}/versions
 /// List all recorded versions for a TOON agent (most recent first).
 pub async fn list_agent_versions_handler(
     State(state): State<AppState>,
@@ -2716,7 +1811,6 @@ pub async fn list_agent_versions_handler(
     Ok(Json(records))
 }
 
-/// POST /api/admin/agents/{agent_id}/rollback/{version}
 /// Restore a TOON agent to a specific previously-recorded version.
 /// Hot-swaps the in-memory config; writes a new "rollback" row to agent_config_versions.
 pub async fn rollback_agent_handler(
@@ -2787,7 +1881,7 @@ pub struct EmergencyStopStatus {
     pub message: &'static str,
 }
 
-fn emergency_stop_status(active: bool) -> EmergencyStopStatus {
+pub(crate) fn emergency_stop_status(active: bool) -> EmergencyStopStatus {
     EmergencyStopStatus {
         emergency_stop: active,
         message: if active {
@@ -2798,44 +1892,7 @@ fn emergency_stop_status(active: bool) -> EmergencyStopStatus {
     }
 }
 
-/// GET /api/admin/agents/emergency-stop
-/// Return whether the global emergency stop is active.
-pub async fn get_emergency_stop_handler(
-    State(state): State<AppState>,
-) -> Result<Json<EmergencyStopStatus>> {
-    Ok(Json(emergency_stop_status(
-        state
-            .emergency_stop
-            .load(std::sync::atomic::Ordering::Relaxed),
-    )))
-}
 
-/// POST /api/admin/agents/emergency-stop
-/// Enable or disable the global emergency stop.
-/// When active, agent execution entrypoints are rejected with 503.
-pub async fn emergency_stop_handler(
-    State(state): State<AppState>,
-    Json(payload): Json<EmergencyStopRequest>,
-) -> Result<Json<EmergencyStopStatus>> {
-    state
-        .emergency_stop
-        .store(payload.active, std::sync::atomic::Ordering::Relaxed);
-
-    let action = if payload.active {
-        "emergency_stop_enabled"
-    } else {
-        "emergency_stop_disabled"
-    };
-    tracing::warn!(active = payload.active, "Emergency stop toggled");
-
-    let pool = state.tenant_db.pool().clone();
-    tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, action, "platform", "all_agents", None, None).await;
-    });
-
-    Ok(Json(emergency_stop_status(payload.active)))
-}
 
 // =============================================================================
 // Fleet Provider Secrets (encrypted at rest, hot-swap in memory)
@@ -2844,21 +1901,6 @@ pub async fn emergency_stop_handler(
 use crate::db::fleet_provider_secrets as fps;
 use ares_config::fleet_secrets::{MasterKey, decrypt_api_key, last_n_visible};
 
-/// List every fleet provider override currently stored in the DB.
-///
-/// Response shape:
-/// ```json
-/// [
-///   {
-///     "name": "nvidia",
-///     "provider_type": "nvidia",
-///     "has_api_key": true,
-///     "api_key_last4": "…XYZW",
-///     "api_base": "https://integrate.api.nvidia.com/v1",
-///     "default_model": null,
-///     "updated_at": 1717690000,
-///     "updated_by": "admin@x.com"
-///   }
 /// ]
 /// ```
 pub async fn list_fleet_providers(
@@ -2910,133 +1952,7 @@ pub struct FleetProviderUpsertRequest {
     pub fallback_providers: Option<Vec<String>>,
 }
 
-/// Upsert a fleet provider override. Encrypts the new key (if any), writes
-/// to the DB, and atomically swaps the in-memory map so all readers (the
-/// catalog refresh path, the LLM factory) see the new value on their next
-/// load.
-pub async fn upsert_fleet_provider(
-    State(state): State<AppState>,
-    Path(provider_name): Path<String>,
-    Json(req): Json<FleetProviderUpsertRequest>,
-) -> Result<Json<serde_json::Value>> {
-    if provider_name.is_empty() {
-        return Err(AppError::InvalidInput(
-            "provider_name must not be empty".into(),
-        ));
-    }
-    if req.api_key.is_none()
-        && req.api_base.is_none()
-        && req.default_model.is_none()
-        && req.fallback_providers.is_none()
-    {
-        return Err(AppError::InvalidInput(
-            "At least one of api_key, api_base, default_model, fallback_providers must be provided"
-                .into(),
-        ));
-    }
 
-    let store = fps::FleetProviderSecretsStore::new(state.tenant_db.pool());
-    let master = MasterKey::from_env();
-    if req.api_key.is_some() && master.is_none() {
-        return Err(AppError::Configuration(
-            "FLEET_SECRETS_KEY is not set; cannot store new API keys. \
-             Configure /etc/dirmacs/fleet-secrets.env and reload ares.service."
-                .into(),
-        ));
-    }
-
-    let updated_by = "admin";
-    let fallback_slice = req.fallback_providers.as_deref();
-    let stored = store
-        .upsert(
-            &provider_name,
-            req.api_key.as_deref(),
-            req.api_base.as_deref(),
-            req.default_model.as_deref(),
-            fallback_slice,
-            master.as_ref(),
-            updated_by,
-        )
-        .await?;
-
-    // Reload + atomically swap the in-memory map. The store gives us the
-    // encrypted form; we need the decrypted form for the in-memory cache.
-    let map = store.load_all(master.as_ref()).await?;
-    state.fleet_secrets.store(map);
-
-    // Audit log — redact the raw key, only emit the boolean + last-4.
-    let details = serde_json::json!({
-        "api_key_set": stored.has_api_key,
-        "api_key_last4": req.api_key.as_deref().and_then(|k| last_n_visible(k, 4)),
-        "api_base_set": stored.api_base.is_some(),
-        "default_model_set": stored.default_model.is_some(),
-        "fallback_providers": stored.fallback_providers,
-    })
-    .to_string();
-    let pool = state.tenant_db.pool().clone();
-    let name = provider_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "fleet_provider_upsert",
-            "fleet_provider",
-            &name,
-            Some(&details),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(serde_json::json!({
-        "name": provider_name,
-        "has_api_key": stored.has_api_key,
-        "api_base": stored.api_base,
-        "default_model": stored.default_model,
-        "fallback_providers": stored.fallback_providers,
-        "updated_at": stored.updated_at,
-        "updated_by": stored.updated_by,
-    })))
-}
-
-/// Hard-delete a fleet provider override. Gone from the DB and from the
-/// in-memory cache. Re-add via the UI to bring it back.
-pub async fn delete_fleet_provider(
-    State(state): State<AppState>,
-    Path(provider_name): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    let store = fps::FleetProviderSecretsStore::new(state.tenant_db.pool());
-    let affected = store.delete(&provider_name).await?;
-    if affected == 0 {
-        return Err(AppError::NotFound(format!(
-            "Fleet provider '{}' not found",
-            provider_name
-        )));
-    }
-
-    // Reload + atomically swap the in-memory map.
-    let master = MasterKey::from_env();
-    let map = store.load_all(master.as_ref()).await?;
-    state.fleet_secrets.store(map);
-
-    let pool = state.tenant_db.pool().clone();
-    let name = provider_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "fleet_provider_delete",
-            "fleet_provider",
-            &name,
-            None,
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(serde_json::json!({
-        "name": provider_name,
-        "deleted": true
-    })))
-}
 
 #[derive(Debug, Serialize)]
 pub struct FleetProviderVerifyResponse {
@@ -3048,143 +1964,6 @@ pub struct FleetProviderVerifyResponse {
     pub error: Option<String>,
 }
 
-/// Verify a stored provider's API key by calling its model listing endpoint.
-/// For OpenAI-compatible providers we call `<api_base>/models` with the
-/// stored key. For Anthropic/Ollama (when those features are enabled) the
-/// call shape is different — the UI surfaces a clear error in that case
-/// and tells the operator to test via the provider's own dashboard.
-pub async fn verify_fleet_provider(
-    State(state): State<AppState>,
-    Path(provider_name): Path<String>,
-) -> Result<Json<FleetProviderVerifyResponse>> {
-    let start = std::time::Instant::now();
-
-    // Look up the in-memory override (decrypted).
-    let entry = state.fleet_secrets.get(&provider_name);
-    let override_ = entry.clone();
-
-    // Fall back to the registry's ProviderConfig for the base URL when the
-    // admin hasn't set an override.
-    let provider_config = state.provider_registry.get_provider(&provider_name);
-
-    let (api_base, api_key) = match (override_, provider_config.as_ref()) {
-        (Some(o), _) => {
-            let key = o.api_key.clone();
-            let base = o
-                .api_base
-                .clone()
-                .or_else(|| provider_config.as_ref().and_then(|pc| default_api_base(pc)));
-            (base, key)
-        }
-        (None, Some(pc)) => (default_api_base(pc), resolve_env_key(pc)),
-        (None, None) => (None, None),
-    };
-
-    let api_key = match api_key {
-        Some(k) if !k.is_empty() => k,
-        _ => {
-            return Ok(Json(FleetProviderVerifyResponse {
-                name: provider_name,
-                ok: false,
-                latency_ms: start.elapsed().as_millis() as u64,
-                model_count: 0,
-                models: vec![],
-                error: Some(
-                    "No API key configured for this provider. Set one in the Fleet Providers card."
-                        .into(),
-                ),
-            }));
-        }
-    };
-
-    let api_base = match api_base {
-        Some(b) if !b.is_empty() => b,
-        _ => {
-            return Ok(Json(FleetProviderVerifyResponse {
-                name: provider_name,
-                ok: false,
-                latency_ms: start.elapsed().as_millis() as u64,
-                model_count: 0,
-                models: vec![],
-                error: Some("No API base URL configured for this provider.".into()),
-            }));
-        }
-    };
-
-    let models_url = format!("{}/models", api_base.trim_end_matches('/'));
-    let client = reqwest::Client::new();
-    let resp = match client
-        .get(&models_url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("api-key", &api_key)
-        .header("Accept", "application/json")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            return Ok(Json(FleetProviderVerifyResponse {
-                name: provider_name,
-                ok: false,
-                latency_ms: start.elapsed().as_millis() as u64,
-                model_count: 0,
-                models: vec![],
-                error: Some(format!("HTTP request failed: {e}")),
-            }));
-        }
-    };
-
-    let status = resp.status();
-    let latency_ms = start.elapsed().as_millis() as u64;
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Ok(Json(FleetProviderVerifyResponse {
-            name: provider_name,
-            ok: false,
-            latency_ms,
-            model_count: 0,
-            models: vec![],
-            error: Some(format!("HTTP {} — {}", status.as_u16(), body)),
-        }));
-    }
-
-    let parsed: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(e) => {
-            return Ok(Json(FleetProviderVerifyResponse {
-                name: provider_name,
-                ok: false,
-                latency_ms,
-                model_count: 0,
-                models: vec![],
-                error: Some(format!("JSON parse failed: {e}")),
-            }));
-        }
-    };
-
-    // OpenAI-compatible providers return `{"data": [{"id": "..."}]}`.
-    // Pull ids out of `data[*].id`. If `data` is missing, return empty list.
-    let models: Vec<String> = parsed
-        .get("data")
-        .and_then(|d| d.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| item.get("id").and_then(|v| v.as_str()).map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let model_count = models.len();
-
-    Ok(Json(FleetProviderVerifyResponse {
-        name: provider_name,
-        ok: true,
-        latency_ms,
-        model_count,
-        models,
-        error: None,
-    }))
-}
 
 #[derive(Debug, Serialize)]
 pub struct FleetProviderCapabilities {
@@ -3194,27 +1973,8 @@ pub struct FleetProviderCapabilities {
     pub encryption_enabled: bool,
 }
 
-/// Return the list of supported provider types based on compiled-in
-/// features. The admin UI uses this to filter the type dropdown so users
-/// can only select providers that this build can actually instantiate.
-pub async fn fleet_provider_capabilities() -> Json<FleetProviderCapabilities> {
-    let mut providers: Vec<&'static str> = vec!["openai"];
-    #[cfg(feature = "azure")]
-    providers.push("azure");
-    #[cfg(feature = "anthropic")]
-    providers.push("anthropic");
-    #[cfg(feature = "bedrock")]
-    providers.push("bedrock");
-    #[cfg(feature = "ollama")]
-    providers.push("ollama");
 
-    Json(FleetProviderCapabilities {
-        providers,
-        encryption_enabled: MasterKey::from_env().is_some(),
-    })
-}
-
-fn default_api_base(pc: &ProviderConfig) -> Option<String> {
+pub(crate) fn default_api_base(pc: &ProviderConfig) -> Option<String> {
     match pc {
         ProviderConfig::OpenAI { api_base, .. } => Some(api_base.clone()),
         ProviderConfig::Azure { base_url_env, .. } => std::env::var(base_url_env).ok(),
@@ -3227,7 +1987,7 @@ fn default_api_base(pc: &ProviderConfig) -> Option<String> {
     }
 }
 
-fn resolve_env_key(pc: &ProviderConfig) -> Option<String> {
+pub(crate) fn resolve_env_key(pc: &ProviderConfig) -> Option<String> {
     let var = match pc {
         ProviderConfig::OpenAI { api_key_env, .. } => api_key_env,
         ProviderConfig::Azure { api_key_env, .. } => api_key_env,
@@ -3248,7 +2008,7 @@ use ares_db::runtime_tools::{
     validate_runtime_tool_update_scope_preflight,
 };
 
-fn validate_runtime_tool_execution_config(
+pub(crate) fn validate_runtime_tool_execution_config(
     tool_type: &str,
     execution_config: &serde_json::Value,
 ) -> Result<()> {
@@ -3259,153 +2019,10 @@ fn validate_runtime_tool_execution_config(
     .map_err(|e| AppError::InvalidInput(format!("invalid execution_config: {e}")))
 }
 
-/// List every runtime tool currently stored in the DB.
-pub async fn list_runtime_tools(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<ares_db::runtime_tools::RuntimeTool>>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
-    let tools = store.get_all().await?;
-    Ok(Json(tools))
-}
 
-/// Get a single runtime tool by its UUID.
-pub async fn get_runtime_tool(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<ares_db::runtime_tools::RuntimeTool>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
-    let tool = store
-        .get_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("runtime tool {id} not found")))?;
-    Ok(Json(tool))
-}
 
-/// Create a new runtime tool. After a successful DB insert the in-memory
-/// [`RuntimeToolRegistry`] is reloaded so agents see the tool immediately.
-pub async fn create_runtime_tool(
-    State(state): State<AppState>,
-    Json(req): Json<CreateRuntimeToolRequest>,
-) -> Result<Json<serde_json::Value>> {
-    validate_runtime_tool_execution_config(&req.tool_type, &req.execution_config)?;
 
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
-    let tool = store.create(&req).await?;
 
-    if let Err(e) = state.runtime_tool_registry.reload().await {
-        tracing::warn!("Failed to hot-reload runtime tools after create: {}", e);
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let tool_id = tool.id.clone();
-    let tool_name = tool.name.clone();
-    let tool_type = tool.tool_type.clone();
-    tokio::spawn(async move {
-        let details = serde_json::json!({
-            "name": tool_name,
-            "tool_type": tool_type,
-            "enabled": tool.enabled,
-        })
-        .to_string();
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "runtime_tool_create",
-            "runtime_tool",
-            &tool_id,
-            Some(&details),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(serde_json::json!({
-        "id": tool.id,
-        "name": tool.name,
-        "version": tool.version,
-        "created_at": tool.created_at,
-    })))
-}
-
-/// Update a runtime tool. The DB row is patched and the change is automatically
-/// snapshotted into `runtime_tool_versions` before the registry is reloaded.
-pub async fn update_runtime_tool(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(req): Json<UpdateRuntimeToolRequest>,
-) -> Result<Json<serde_json::Value>> {
-    validate_runtime_tool_update_scope_preflight(&req)?;
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
-    if let Some(execution_config) = &req.execution_config {
-        let existing = store
-            .get_by_id(&id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("runtime tool {id} not found")))?;
-        validate_runtime_tool_execution_config(&existing.tool_type, execution_config)?;
-    }
-    let tool = store.update(&id, &req).await?;
-
-    if let Err(e) = state.runtime_tool_registry.reload().await {
-        tracing::warn!("Failed to hot-reload runtime tools after update: {}", e);
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let tool_id = id.clone();
-    let new_version = tool.version;
-    tokio::spawn(async move {
-        let details = serde_json::json!({ "version": new_version }).to_string();
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "runtime_tool_update",
-            "runtime_tool",
-            &tool_id,
-            Some(&details),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(serde_json::json!({
-        "id": tool.id,
-        "name": tool.name,
-        "version": tool.version,
-        "updated_at": tool.updated_at,
-    })))
-}
-
-/// Hard-delete a runtime tool (cascades to versions & executions).
-pub async fn delete_runtime_tool(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
-    let affected = store.delete(&id).await?;
-    if affected == 0 {
-        return Err(AppError::NotFound(format!("runtime tool {id} not found")));
-    }
-
-    if let Err(e) = state.runtime_tool_registry.reload().await {
-        tracing::warn!("Failed to hot-reload runtime tools after delete: {}", e);
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let tool_id = id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "runtime_tool_delete",
-            "runtime_tool",
-            &tool_id,
-            None,
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(serde_json::json!({
-        "id": id,
-        "deleted": true,
-    })))
-}
 
 #[derive(Debug, Deserialize)]
 pub struct TestRuntimeToolRequest {
@@ -3421,166 +2038,8 @@ pub struct TestRuntimeToolResponse {
     pub latency_ms: u64,
 }
 
-/// Execute a runtime tool with sample input and record the result.
-pub async fn test_runtime_tool(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(req): Json<TestRuntimeToolRequest>,
-) -> Result<Json<TestRuntimeToolResponse>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
-    let tool = store
-        .get_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("runtime tool {id} not found")))?;
 
-    let start = std::time::Instant::now();
 
-    // If the registry doesn't yet contain this tool (e.g. first test after
-    // creation), force a reload before executing.
-    if state.runtime_tool_registry.get(&tool.name).is_none() {
-        if let Err(e) = state.runtime_tool_registry.reload().await {
-            tracing::warn!("Failed to reload runtime tools before test: {}", e);
-        }
-    }
-
-    let result = state
-        .runtime_tool_registry
-        .execute(&tool.name, req.input_args.clone())
-        .await;
-    let latency_ms = start.elapsed().as_millis() as u64;
-
-    let (ok, output, error) = match result {
-        Ok(v) => (true, Some(v), None),
-        Err(e) => (false, None, Some(e.to_string())),
-    };
-
-    let log_result = store
-        .log_execution(
-            &id,
-            None, // tenant_id
-            None, // agent_run_id
-            &req.input_args,
-            output.as_ref(),
-            if ok { "success" } else { "error" },
-            error.as_deref(),
-            latency_ms as i64,
-        )
-        .await;
-
-    if let Err(e) = log_result {
-        tracing::warn!("Failed to log runtime tool test execution: {}", e);
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let tool_id = id.clone();
-    tokio::spawn(async move {
-        let details = serde_json::json!({
-            "ok": ok,
-            "latency_ms": latency_ms,
-        })
-        .to_string();
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "runtime_tool_test",
-            "runtime_tool",
-            &tool_id,
-            Some(&details),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(TestRuntimeToolResponse {
-        ok,
-        output,
-        error,
-        latency_ms,
-    }))
-}
-
-/// Return the version history for a runtime tool.
-pub async fn list_runtime_tool_versions(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Vec<ares_db::runtime_tools::RuntimeToolVersion>>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
-    // Verify the tool exists before returning versions.
-    let _ = store
-        .get_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("runtime tool {id} not found")))?;
-
-    let versions = store.get_versions(&id, 100).await?;
-    Ok(Json(versions))
-}
-
-/// Rollback a runtime tool to a previous version.
-///
-/// The target version's `parameters_schema` and `execution_config` (and
-/// `description`) are applied via the normal `update` path, which
-/// automatically snapshots the current state as a new version entry.
-pub async fn rollback_runtime_tool(
-    State(state): State<AppState>,
-    Path((id, version)): Path<(String, i32)>,
-) -> Result<Json<serde_json::Value>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
-
-    let _ = store
-        .get_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("runtime tool {id} not found")))?;
-
-    let versions = store.get_versions(&id, 1000).await?;
-    let target = versions
-        .into_iter()
-        .find(|v| v.version == version)
-        .ok_or_else(|| AppError::NotFound(format!("version {version} not found for tool {id}")))?;
-
-    let update_req = UpdateRuntimeToolRequest {
-        display_name: None,
-        description: target.description,
-        parameters_schema: Some(target.parameters_schema),
-        execution_config: Some(target.execution_config),
-        enabled: None,
-        is_public: None,
-        created_by: None,
-        tenant_id: None,
-    };
-
-    let updated = store.update(&id, &update_req).await?;
-
-    if let Err(e) = state.runtime_tool_registry.reload().await {
-        tracing::warn!("Failed to hot-reload runtime tools after rollback: {}", e);
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let tool_id = id.clone();
-    let new_version = updated.version;
-    tokio::spawn(async move {
-        let details = serde_json::json!({
-            "rolled_back_to": version,
-            "new_version": new_version,
-        })
-        .to_string();
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "runtime_tool_rollback",
-            "runtime_tool",
-            &tool_id,
-            Some(&details),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(serde_json::json!({
-        "id": updated.id,
-        "name": updated.name,
-        "version": updated.version,
-        "rolled_back_to": version,
-        "updated_at": updated.updated_at,
-    })))
-}
 
 // =============================================================================
 // Runtime Providers
@@ -3595,11 +2054,6 @@ pub struct RuntimeToolCapabilitiesResponse {
     pub tool_types: Vec<&'static str>,
 }
 
-pub async fn runtime_tool_capabilities() -> Json<RuntimeToolCapabilitiesResponse> {
-    Json(RuntimeToolCapabilitiesResponse {
-        tool_types: vec!["http", "mcp", "script", "sql"],
-    })
-}
 
 #[derive(Debug, Serialize)]
 pub struct RuntimeProviderResponse {
@@ -3640,36 +2094,8 @@ impl From<ares_db::runtime_providers::RuntimeProvider> for RuntimeProviderRespon
     }
 }
 
-pub async fn reload_runtime_provider_registry(state: &AppState) -> Result<()> {
-    let store = RuntimeProviderStore::new(state.tenant_db.pool());
-    let providers = store.list_all().await?;
-    let mut entries = Vec::with_capacity(providers.len());
-    let mut names = Vec::with_capacity(providers.len());
 
-    for provider in providers {
-        let (headers, api_key) = runtime_provider_entry_headers_and_key(provider.headers.as_ref());
-
-        names.push(provider.name);
-        entries.push(RuntimeProviderEntry {
-            tenant_id: provider.tenant_id,
-            display_name: provider.display_name,
-            provider_type: provider.provider_type,
-            api_base: provider.api_base,
-            auth_type: provider.auth_type,
-            default_model: provider.default_model,
-            headers,
-            api_key,
-            enabled: provider.enabled,
-        });
-    }
-
-    state
-        .provider_registry
-        .reload_runtime_providers(entries, names);
-    Ok(())
-}
-
-fn redact_runtime_provider_headers(
+pub(crate) fn redact_runtime_provider_headers(
     headers: Option<serde_json::Value>,
 ) -> Option<serde_json::Value> {
     let mut headers = headers?;
@@ -3689,7 +2115,7 @@ pub struct RuntimeProviderScopeQuery {
     pub tenant_id: Option<String>,
 }
 
-async fn preserve_redacted_runtime_provider_secret(
+pub(crate) async fn preserve_redacted_runtime_provider_secret(
     store: &RuntimeProviderStore<'_>,
     req: &mut CreateRuntimeProviderRequest,
 ) -> Result<()> {
@@ -3727,12 +2153,12 @@ async fn preserve_redacted_runtime_provider_secret(
     Ok(())
 }
 
-fn runtime_provider_headers_have_redacted_api_key(headers: Option<&serde_json::Value>) -> bool {
+pub(crate) fn runtime_provider_headers_have_redacted_api_key(headers: Option<&serde_json::Value>) -> bool {
     runtime_provider_header_value(headers, "api_key").as_deref()
         == Some(RUNTIME_PROVIDER_SECRET_REDACTION)
 }
 
-fn runtime_provider_header_value(headers: Option<&serde_json::Value>, key: &str) -> Option<String> {
+pub(crate) fn runtime_provider_header_value(headers: Option<&serde_json::Value>, key: &str) -> Option<String> {
     headers
         .and_then(|headers| headers.as_object())
         .and_then(|headers| headers.get(key))
@@ -3741,7 +2167,7 @@ fn runtime_provider_header_value(headers: Option<&serde_json::Value>, key: &str)
         .filter(|value| !value.is_empty())
 }
 
-fn runtime_provider_entry_headers_and_key(
+pub(crate) fn runtime_provider_entry_headers_and_key(
     headers: Option<&serde_json::Value>,
 ) -> (HashMap<String, String>, Option<String>) {
     let mut headers = headers
@@ -3759,7 +2185,7 @@ fn runtime_provider_entry_headers_and_key(
     (headers, api_key)
 }
 
-fn runtime_provider_api_key(headers: &mut HashMap<String, String>) -> Option<String> {
+pub(crate) fn runtime_provider_api_key(headers: &mut HashMap<String, String>) -> Option<String> {
     if let Some(env_name) = headers.remove("api_key_env") {
         return std::env::var(env_name)
             .ok()
@@ -3769,64 +2195,9 @@ fn runtime_provider_api_key(headers: &mut HashMap<String, String>) -> Option<Str
     headers.remove("api_key").filter(|value| !value.is_empty())
 }
 
-/// List all runtime providers (global / tenant-scoped).
-pub async fn list_runtime_providers(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<RuntimeProviderResponse>>> {
-    let store = RuntimeProviderStore::new(state.tenant_db.pool());
-    let providers = store.list_all().await?;
-    let response: Vec<RuntimeProviderResponse> = providers.into_iter().map(|p| p.into()).collect();
-    tracing::info!("Listed {} runtime providers", response.len());
-    Ok(Json(response))
-}
 
-/// Get a single runtime provider by name.
-pub async fn get_runtime_provider(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    Query(query): Query<RuntimeProviderScopeQuery>,
-) -> Result<Json<RuntimeProviderResponse>> {
-    let store = RuntimeProviderStore::new(state.tenant_db.pool());
-    let provider = store
-        .get_scoped(query.tenant_id.as_deref(), &name)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("runtime provider {name} not found")))?;
-    tracing::info!("Retrieved runtime provider {}", name);
-    Ok(Json(provider.into()))
-}
 
-/// Create or update a runtime provider.
-pub async fn upsert_runtime_provider(
-    State(state): State<AppState>,
-    Json(mut req): Json<CreateRuntimeProviderRequest>,
-) -> Result<Json<RuntimeProviderResponse>> {
-    let store = RuntimeProviderStore::new(state.tenant_db.pool());
-    preserve_redacted_runtime_provider_secret(&store, &mut req).await?;
-    let provider = store.upsert(&req).await?;
-    reload_runtime_provider_registry(&state).await?;
-    tracing::info!("Upserted runtime provider {}", provider.name);
-    Ok(Json(provider.into()))
-}
 
-/// Hard-delete a runtime provider by name.
-pub async fn delete_runtime_provider(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    Query(query): Query<RuntimeProviderScopeQuery>,
-) -> Result<StatusCode> {
-    let store = RuntimeProviderStore::new(state.tenant_db.pool());
-    let rows = store
-        .delete_scoped(query.tenant_id.as_deref(), &name)
-        .await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!(
-            "runtime provider {name} not found"
-        )));
-    }
-    reload_runtime_provider_registry(&state).await?;
-    tracing::info!("Deleted runtime provider {}", name);
-    Ok(StatusCode::NO_CONTENT)
-}
 
 // =============================================================================
 // Run History
@@ -3955,15 +2326,15 @@ pub struct ListTokenUsageQuery {
     pub limit: i64,
 }
 
-fn default_list_limit() -> i32 {
+pub(crate) fn default_list_limit() -> i32 {
     50
 }
 
-fn default_list_limit_i64() -> i64 {
+pub(crate) fn default_list_limit_i64() -> i64 {
     50
 }
 
-fn billing_month_bounds(month: &str) -> Result<(String, i64, i64)> {
+pub(crate) fn billing_month_bounds(month: &str) -> Result<(String, i64, i64)> {
     let (year, month_num) = month
         .split_once('-')
         .ok_or_else(|| AppError::InvalidInput("month must use YYYY-MM format".to_string()))?;
@@ -4002,11 +2373,11 @@ fn billing_month_bounds(month: &str) -> Result<(String, i64, i64)> {
     ))
 }
 
-fn decimal_to_f64(value: rust_decimal::Decimal) -> f64 {
+pub(crate) fn decimal_to_f64(value: rust_decimal::Decimal) -> f64 {
     value.to_f64().unwrap_or(0.0)
 }
 
-fn billing_line_item_from_run_cost(cost: &RunCost) -> BillingLineItemResponse {
+pub(crate) fn billing_line_item_from_run_cost(cost: &RunCost) -> BillingLineItemResponse {
     let raw_cost_usd = decimal_to_f64(cost.total_estimated_cost_usd);
     BillingLineItemResponse {
         source_type: "agent_run".to_string(),
@@ -4033,7 +2404,7 @@ fn billing_line_item_from_run_cost(cost: &RunCost) -> BillingLineItemResponse {
     }
 }
 
-fn billing_summary_from_run_costs(
+pub(crate) fn billing_summary_from_run_costs(
     tenant_id: &str,
     month: String,
     period_start: i64,
@@ -4065,7 +2436,7 @@ fn billing_summary_from_run_costs(
     }
 }
 
-fn model_rate_responses(config: &BillingConfig) -> Vec<ModelRateResponse> {
+pub(crate) fn model_rate_responses(config: &BillingConfig) -> Vec<ModelRateResponse> {
     let mut rates: Vec<ModelRateResponse> = config
         .model_pricing
         .values()
@@ -4080,497 +2451,49 @@ fn model_rate_responses(config: &BillingConfig) -> Vec<ModelRateResponse> {
     rates
 }
 
-/// List LLM calls with optional filtering.
-pub async fn list_llm_calls(
-    State(state): State<AppState>,
-    Query(q): Query<ListLlmCallsQuery>,
-) -> Result<Json<Vec<RunLlmCall>>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let calls = store.list_llm_calls(&q).await?;
-    Ok(Json(calls))
-}
 
-/// Get a single LLM call by id.
-pub async fn get_llm_call(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<RunLlmCall>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let call = store
-        .get_llm_call(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("llm call {id} not found")))?;
-    Ok(Json(call))
-}
 
-/// Insert a new LLM call record.
-pub async fn insert_llm_call(
-    State(state): State<AppState>,
-    Json(req): Json<LogLlmCallRequest>,
-) -> Result<Json<RunLlmCall>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let call = store.insert_llm_call(&req).await?;
-    Ok(Json(call))
-}
 
-/// List tool calls with optional filtering.
-pub async fn list_tool_calls(
-    State(state): State<AppState>,
-    Query(q): Query<ListToolCallsQuery>,
-) -> Result<Json<Vec<RunToolCall>>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let calls = store.list_tool_calls(&q).await?;
-    Ok(Json(calls))
-}
 
-/// Get a single tool call by id.
-pub async fn get_tool_call(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<RunToolCall>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let call = store
-        .get_tool_call(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("tool call {id} not found")))?;
-    Ok(Json(call))
-}
 
-/// Insert a new tool call record.
-pub async fn insert_tool_call(
-    State(state): State<AppState>,
-    Json(req): Json<LogToolCallRequest>,
-) -> Result<Json<RunToolCall>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let call = store.insert_tool_call(&req).await?;
-    Ok(Json(call))
-}
 
-/// Get a run cost by run_id.
-pub async fn get_run_cost(
-    State(state): State<AppState>,
-    Path(run_id): Path<String>,
-) -> Result<Json<RunCost>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let cost = store
-        .get_run_cost(&run_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("run cost {run_id} not found")))?;
-    Ok(Json(cost))
-}
 
-/// List run costs for a tenant.
-pub async fn list_run_costs(
-    State(state): State<AppState>,
-    Query(q): Query<ListRunCostsQuery>,
-) -> Result<Json<Vec<RunCost>>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let limit = q.limit.clamp(1, 10_000);
-    let offset = q.offset.max(0);
-    let costs = store
-        .list_run_costs(
-            &q.tenant_id,
-            limit,
-            offset,
-            q.created_after,
-            q.created_before,
-        )
-        .await?;
-    Ok(Json(costs))
-}
 
-/// Get tenant billing summary for a calendar month.
-pub async fn get_tenant_billing_summary(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Query(q): Query<BillingMonthQuery>,
-) -> Result<Json<BillingSummaryResponse>> {
-    let (month, period_start, period_end) = billing_month_bounds(&q.month)?;
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let costs = store
-        .list_run_costs(&tenant_id, 10_000, 0, Some(period_start), Some(period_end))
-        .await?;
-    Ok(Json(billing_summary_from_run_costs(
-        &tenant_id,
-        month,
-        period_start,
-        period_end,
-        &costs,
-    )))
-}
 
-/// Get tenant billing line items for a calendar month.
-pub async fn get_tenant_billing_line_items(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Query(q): Query<BillingMonthQuery>,
-) -> Result<Json<BillingLineItemsResponse>> {
-    let (month, period_start, period_end) = billing_month_bounds(&q.month)?;
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let items = store
-        .list_run_costs(&tenant_id, 10_000, 0, Some(period_start), Some(period_end))
-        .await?
-        .iter()
-        .map(billing_line_item_from_run_cost)
-        .collect();
-    Ok(Json(BillingLineItemsResponse {
-        tenant_id,
-        month,
-        items,
-    }))
-}
 
-/// List configured model billing rates.
-pub async fn list_billing_model_rates(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<ModelRateResponse>>> {
-    let config = state.config_manager.config();
-    Ok(Json(model_rate_responses(&config.billing)))
-}
 
-/// List configured unit billing rates.
-pub async fn list_billing_unit_rates() -> Json<Vec<UnitRateResponse>> {
-    Json(Vec::new())
-}
 
-/// Get a tenant budget.
-pub async fn get_tenant_budget(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<TenantBudget>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let budget = store
-        .get_tenant_budget(&tenant_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("tenant budget {tenant_id} not found")))?;
-    Ok(Json(budget))
-}
 
-/// Set (upsert) a tenant budget.
-pub async fn set_tenant_budget(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Json(mut req): Json<SetTenantBudgetRequest>,
-) -> Result<Json<TenantBudget>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    req.tenant_id = tenant_id;
-    let budget = store.set_tenant_budget(&req).await?;
-    Ok(Json(budget))
-}
 
-/// Delete a tenant budget.
-pub async fn delete_tenant_budget(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let rows = store.delete_tenant_budget(&tenant_id).await?;
-    Ok(Json(
-        serde_json::json!({ "deleted": rows > 0, "tenant_id": tenant_id }),
-    ))
-}
 
-/// Get the enforced token budget for a tenant.
-pub async fn get_token_budget(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<TokenBudget>> {
-    let store = TokenBudgetStore::new(state.tenant_db.pool());
-    let budget = store
-        .get_budget(&tenant_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("token budget {tenant_id} not found")))?;
-    Ok(Json(budget))
-}
 
-/// Set the enforced token budget for a tenant.
-pub async fn set_token_budget(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Json(req): Json<SetTokenBudgetRequest>,
-) -> Result<Json<TokenBudget>> {
-    let store = TokenBudgetStore::new(state.tenant_db.pool());
-    let budget = store
-        .set_budget(&tenant_id, req.token_limit, &req.period)
-        .await?;
-    Ok(Json(budget))
-}
 
-/// Get enforced token budget status for a tenant.
-pub async fn get_token_budget_status(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<BudgetStatus>> {
-    let store = TokenBudgetStore::new(state.tenant_db.pool());
-    let status = store.check_budget(&tenant_id).await?;
-    Ok(Json(status))
-}
 
-/// Reset the current enforced token-budget period for a tenant.
-pub async fn reset_token_budget_period(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<BudgetStatus>> {
-    let store = TokenBudgetStore::new(state.tenant_db.pool());
-    store.reset_period(&tenant_id).await?;
-    let status = store.check_budget(&tenant_id).await?;
-    Ok(Json(status))
-}
 
-/// List recent enforced token-usage entries for a tenant.
-pub async fn list_token_usage(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Query(q): Query<ListTokenUsageQuery>,
-) -> Result<Json<Vec<TokenUsageEntry>>> {
-    let store = TokenBudgetStore::new(state.tenant_db.pool());
-    let usage = store
-        .list_usage(&tenant_id, q.limit.clamp(1, 10_000))
-        .await?;
-    Ok(Json(usage))
-}
 
-/// List budget alerts with optional filtering.
-pub async fn list_budget_alerts(
-    State(state): State<AppState>,
-    Query(q): Query<ListBudgetAlertsQuery>,
-) -> Result<Json<Vec<BudgetAlert>>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let alerts = store.list_budget_alerts(&q).await?;
-    Ok(Json(alerts))
-}
 
-/// Acknowledge a budget alert.
-pub async fn acknowledge_budget_alert(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(req): Json<AcknowledgeBudgetAlertRequest>,
-) -> Result<Json<BudgetAlert>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let alert = store.acknowledge_budget_alert(&id, &req).await?;
-    Ok(Json(alert))
-}
 
-/// List health metrics for a tenant.
-pub async fn list_health_metrics(
-    State(state): State<AppState>,
-    Query(q): Query<ListHealthMetricsQuery>,
-) -> Result<Json<Vec<AgentHealthMetrics>>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let metrics = store
-        .list_health_metrics(&q.tenant_id, q.limit, q.offset)
-        .await?;
-    Ok(Json(metrics))
-}
 
-/// List model health metrics for a tenant, grouped by (tenant_id, model).
-pub async fn list_model_metrics(
-    State(state): State<AppState>,
-    Query(q): Query<ListModelMetricsQuery>,
-) -> Result<Json<Vec<ModelHealthMetrics>>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let metrics = store
-        .list_model_metrics(&q.tenant_id, q.limit, q.offset)
-        .await?;
-    Ok(Json(metrics))
-}
 
-/// Insert agent health metrics.
-pub async fn insert_health_metrics(
-    State(state): State<AppState>,
-    Json(req): Json<AgentHealthMetrics>,
-) -> Result<Json<AgentHealthMetrics>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
-    let metrics = store.insert_health_metrics(&req).await?;
-    Ok(Json(metrics))
-}
 
 // =============================================================================
 // Tenant Model Tiers (per-tenant abstract tier -> concrete provider/model)
 // =============================================================================
 
-pub async fn list_tenant_model_tiers(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<Vec<db_tiers::TenantModelTier>>> {
-    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
-    let tiers = store.list_for_tenant(&tenant_id).await?;
-    Ok(Json(tiers))
-}
 
-pub async fn get_tenant_model_tier(
-    State(state): State<AppState>,
-    Path((tenant_id, tier_name)): Path<(String, String)>,
-) -> Result<Json<db_tiers::TenantModelTier>> {
-    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
-    let tier = store.get(&tenant_id, &tier_name).await?.ok_or_else(|| {
-        AppError::NotFound(format!("tier {tier_name} not found for tenant {tenant_id}"))
-    })?;
-    Ok(Json(tier))
-}
 
-pub async fn set_tenant_model_tier(
-    State(state): State<AppState>,
-    Path((tenant_id, tier_name)): Path<(String, String)>,
-    Json(req): Json<db_tiers::SetTenantModelTierRequest>,
-) -> Result<Json<db_tiers::TenantModelTier>> {
-    if !state
-        .provider_registry
-        .has_provider_for_tenant(&req.provider_name, Some(&tenant_id))
-    {
-        return Err(AppError::InvalidInput(format!(
-            "Provider '{}' not found in configuration",
-            req.provider_name
-        )));
-    }
 
-    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
-    let tier = store.set(&tenant_id, &tier_name, &req).await?;
-
-    let pool = state.tenant_db.pool().clone();
-    let t_id = tenant_id.clone();
-    let t_name = tier_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "tenant_model_tier_set",
-            "tenant_model_tier",
-            &format!("{t_id}/{t_name}"),
-            None,
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(tier))
-}
-
-pub async fn delete_tenant_model_tier(
-    State(state): State<AppState>,
-    Path((tenant_id, tier_name)): Path<(String, String)>,
-) -> Result<StatusCode> {
-    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
-    let rows = store.delete(&tenant_id, &tier_name).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!(
-            "tier {tier_name} not found for tenant {tenant_id}"
-        )));
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let t_id = tenant_id.clone();
-    let t_name = tier_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "tenant_model_tier_delete",
-            "tenant_model_tier",
-            &format!("{t_id}/{t_name}"),
-            None,
-            None,
-        )
-        .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
 
 // =============================================================================
 // Skills
 // =============================================================================
 
-pub async fn list_skills(
-    State(state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<db_skills::Skill>>> {
-    let tenant_id = required_skill_tenant_id(&params)?.to_string();
-    let store = db_skills::SkillStore::new(state.tenant_db.pool());
-    let skills = store.list_skills(Some(&tenant_id)).await?;
-    Ok(Json(skills))
-}
 
-pub async fn get_skill(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<db_skills::Skill>> {
-    let tenant_id = required_skill_tenant_id(&params)?.to_string();
-    let store = db_skills::SkillStore::new(state.tenant_db.pool());
-    let skill = store
-        .get_skill_for_tenant(&id, &tenant_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("skill {id} not found")))?;
-    Ok(Json(skill))
-}
 
-pub async fn create_skill(
-    State(state): State<AppState>,
-    Json(req): Json<db_skills::CreateSkillRequest>,
-) -> Result<Json<db_skills::Skill>> {
-    let store = db_skills::SkillStore::new(state.tenant_db.pool());
-    let skill = store.create_skill(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
-    let t_id = skill.tenant_id.clone();
-    let s_name = skill.name.clone();
-    tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "skill_create", "skill", &s_name, Some(&t_id), None)
-                .await;
-    });
 
-    Ok(Json(skill))
-}
 
-pub async fn update_skill(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(req): Json<db_skills::CreateSkillRequest>,
-) -> Result<Json<db_skills::Skill>> {
-    normalized_skill_tenant_id(&req.tenant_id)?;
-    let store = db_skills::SkillStore::new(state.tenant_db.pool());
-    let skill = store
-        .update_skill(&id, &req)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("skill {id} not found")))?;
-
-    let pool = state.tenant_db.pool().clone();
-    let t_id = skill.tenant_id.clone();
-    let s_name = skill.name.clone();
-    tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "skill_update", "skill", &s_name, Some(&t_id), None)
-                .await;
-    });
-
-    Ok(Json(skill))
-}
-
-pub async fn delete_skill(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<StatusCode> {
-    let tenant_id = required_skill_tenant_id(&params)?.to_string();
-    let store = db_skills::SkillStore::new(state.tenant_db.pool());
-    let rows = store.delete_skill_for_tenant(&tenant_id, &id).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!("skill {id} not found")));
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let sid = id.clone();
-    let t_id = tenant_id.clone();
-    tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "skill_delete", "skill", &sid, Some(&t_id), None)
-                .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-fn required_skill_tenant_id(params: &HashMap<String, String>) -> Result<&str> {
+pub(crate) fn required_skill_tenant_id(params: &HashMap<String, String>) -> Result<&str> {
     params
         .get("tenant_id")
         .map(String::as_str)
@@ -4578,7 +2501,7 @@ fn required_skill_tenant_id(params: &HashMap<String, String>) -> Result<&str> {
         .and_then(normalized_skill_tenant_id)
 }
 
-fn normalized_skill_tenant_id(tenant_id: &str) -> Result<&str> {
+pub(crate) fn normalized_skill_tenant_id(tenant_id: &str) -> Result<&str> {
     let trimmed = tenant_id.trim();
     if trimmed.is_empty() {
         Err(AppError::InvalidInput("tenant_id must not be empty".into()))
@@ -4597,15 +2520,15 @@ pub struct RunSkillRequest {
 const ADMIN_SKILL_RUN_SOURCE: &str = "admin_skill_run";
 const ADMIN_SKILL_CONFIG_SOURCE: &str = "admin_skill";
 
-fn normalized_run_skill_tenant_id(tenant_id: &str) -> Result<&str> {
+pub(crate) fn normalized_run_skill_tenant_id(tenant_id: &str) -> Result<&str> {
     normalized_skill_tenant_id(tenant_id)
 }
 
-fn admin_skill_agent_name(skill_id: &str) -> String {
+pub(crate) fn admin_skill_agent_name(skill_id: &str) -> String {
     format!("skill:{skill_id}")
 }
 
-fn admin_skill_run_metadata(run_id: &str) -> agent_runs::AgentRunMetadata {
+pub(crate) fn admin_skill_run_metadata(run_id: &str) -> agent_runs::AgentRunMetadata {
     agent_runs::AgentRunMetadata {
         session_id: Some(run_id.to_string()),
         request_source: Some(ADMIN_SKILL_RUN_SOURCE.to_string()),
@@ -4614,7 +2537,7 @@ fn admin_skill_run_metadata(run_id: &str) -> agent_runs::AgentRunMetadata {
     }
 }
 
-fn admin_skill_active_run(
+pub(crate) fn admin_skill_active_run(
     run_id: &str,
     tenant_id: &str,
     skill_id: &str,
@@ -4639,213 +2562,15 @@ fn admin_skill_active_run(
     }
 }
 
-pub async fn run_skill(
-    State(state): State<AppState>,
-    Json(req): Json<RunSkillRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let tenant_id = normalized_run_skill_tenant_id(&req.tenant_id)?.to_string();
-    let skill_id = req.skill_id;
-    let agent_name = admin_skill_agent_name(&skill_id);
-    state
-        .active_runs
-        .start(admin_skill_active_run(&run_id, &tenant_id, &skill_id));
-
-    let metadata = admin_skill_run_metadata(&run_id);
-    agent_runs::insert_agent_run_with_id_and_metadata(
-        state.tenant_db.pool(),
-        &run_id,
-        &tenant_id,
-        &agent_name,
-        None,
-        "running",
-        0,
-        0,
-        0,
-        None,
-        "skill",
-        "skill",
-        false,
-        Some(&metadata),
-    )
-    .await?;
-
-    let obs = Arc::new(crate::observability::RunObservability {
-        run_id: run_id.clone(),
-        tenant_id: tenant_id.clone(),
-        agent_name: agent_name.clone(),
-        pool: state.tenant_db.pool().clone(),
-    });
-    let start = std::time::Instant::now();
-    let result = state
-        .skill_engine
-        .execute_skill(&skill_id, &tenant_id, req.input, &run_id)
-        .await;
-    let duration_ms = start.elapsed().as_millis() as i64;
-    let status = if result.is_ok() {
-        "completed"
-    } else {
-        "failed"
-    };
-    let active_status = if result.is_ok() { "completed" } else { "error" };
-    state.active_runs.finish(&run_id, active_status);
-
-    let (input_tokens, output_tokens) = result
-        .as_ref()
-        .map(crate::skill_engine::skill_result_token_counts)
-        .unwrap_or((0, 0));
-    let error_message = result.as_ref().err().cloned();
-
-    sqlx::query(
-        "UPDATE agent_runs
-         SET status = $2, input_tokens = $3, output_tokens = $4,
-             duration_ms = $5, error = $6
-         WHERE id = $1",
-    )
-    .bind(&run_id)
-    .bind(status)
-    .bind(input_tokens)
-    .bind(output_tokens)
-    .bind(duration_ms)
-    .bind(error_message.as_deref())
-    .execute(state.tenant_db.pool())
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
-
-    let obs_for_spawn = obs.clone();
-    tokio::spawn(async move {
-        obs_for_spawn.aggregate_run_cost(duration_ms).await;
-    });
-
-    match result {
-        Ok(result) => Ok(Json(result)),
-        Err(e) => Err(AppError::InvalidInput(e)),
-    }
-}
 
 // =============================================================================
 // Connectors
 // =============================================================================
 
-pub async fn list_connectors(
-    State(state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<db_skills::Connector>>> {
-    let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
-    if tenant_id.is_empty() {
-        return Err(AppError::InvalidInput(
-            "tenant_id query param is required".into(),
-        ));
-    }
-    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
-    let connectors = store.list_connectors(tenant_id).await?;
-    Ok(Json(connectors))
-}
 
-pub async fn create_connector(
-    State(state): State<AppState>,
-    Json(req): Json<db_skills::CreateConnectorRequest>,
-) -> Result<Json<db_skills::Connector>> {
-    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
-    let connector = store.create_connector(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
-    let t_id = connector.tenant_id.clone();
-    let c_name = connector.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "connector_create",
-            "connector",
-            &c_name,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
 
-    Ok(Json(connector))
-}
 
-pub async fn update_connector(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(req): Json<db_skills::CreateConnectorRequest>,
-) -> Result<Json<db_skills::Connector>> {
-    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
-    let connector = store
-        .update_connector(&id, &req)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("connector {id} not found")))?;
-
-    let pool = state.tenant_db.pool().clone();
-    let t_id = connector.tenant_id.clone();
-    let c_name = connector.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "connector_update",
-            "connector",
-            &c_name,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(connector))
-}
-
-pub async fn delete_connector(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<StatusCode> {
-    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
-    let rows = store.delete_connector(&id).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!("connector {id} not found")));
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let cid = id.clone();
-    tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "connector_delete", "connector", &cid, None, None)
-                .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn delete_tenant_connector(
-    State(state): State<AppState>,
-    Path((tenant_id, id)): Path<(String, String)>,
-) -> Result<StatusCode> {
-    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
-    let rows = store.delete_connector_for_tenant(&tenant_id, &id).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!(
-            "connector {id} not found for tenant {tenant_id}"
-        )));
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let cid = id.clone();
-    let t_id = tenant_id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "connector_delete",
-            "connector",
-            &cid,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
 
 #[derive(Debug, Serialize)]
 pub struct OAuthCredentialResponse {
@@ -4908,7 +2633,7 @@ struct OAuthState {
     redirect_uri: String,
 }
 
-fn oauth_provider_config(connector_type: &str) -> Result<OAuthProviderConfig> {
+pub(crate) fn oauth_provider_config(connector_type: &str) -> Result<OAuthProviderConfig> {
     match connector_type.trim() {
         "google_calendar" => Ok(OAuthProviderConfig {
             provider: "google",
@@ -4952,7 +2677,7 @@ fn oauth_provider_config(connector_type: &str) -> Result<OAuthProviderConfig> {
     }
 }
 
-fn percent_encode_component(value: &str) -> String {
+pub(crate) fn percent_encode_component(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -4970,7 +2695,7 @@ fn percent_encode_component(value: &str) -> String {
     out
 }
 
-fn hex_value(byte: u8) -> Option<u8> {
+pub(crate) fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
         b'a'..=b'f' => Some(byte - b'a' + 10),
@@ -4979,7 +2704,7 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn percent_decode_component(value: &str) -> Result<String> {
+pub(crate) fn percent_decode_component(value: &str) -> Result<String> {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -5009,7 +2734,7 @@ fn percent_decode_component(value: &str) -> Result<String> {
     String::from_utf8(out).map_err(|_| AppError::InvalidInput("malformed OAuth state".into()))
 }
 
-fn safe_callback_redirect_uri(value: &str) -> String {
+pub(crate) fn safe_callback_redirect_uri(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.starts_with('/') && !trimmed.starts_with("//") && !trimmed.contains("\\") {
         trimmed.to_string()
@@ -5018,12 +2743,12 @@ fn safe_callback_redirect_uri(value: &str) -> String {
     }
 }
 
-fn oauth_state_signing_key() -> Result<String> {
+pub(crate) fn oauth_state_signing_key() -> Result<String> {
     std::env::var("FLEET_SECRETS_KEY")
         .map_err(|_| AppError::Configuration("FLEET_SECRETS_KEY not set".into()))
 }
 
-fn bytes_to_hex(bytes: &[u8]) -> String {
+pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for &byte in bytes {
@@ -5033,7 +2758,7 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
     out
 }
 
-fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
+pub(crate) fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
     const BLOCK_SIZE: usize = 64;
     let mut key_block = [0_u8; BLOCK_SIZE];
 
@@ -5062,7 +2787,7 @@ fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
     bytes_to_hex(&outer.finalize())
 }
 
-fn encode_oauth_state_payload(state: &OAuthState) -> String {
+pub(crate) fn encode_oauth_state_payload(state: &OAuthState) -> String {
     format!(
         "tenant_id={}&connector_type={}&redirect_uri={}",
         percent_encode_component(&state.tenant_id),
@@ -5071,14 +2796,14 @@ fn encode_oauth_state_payload(state: &OAuthState) -> String {
     )
 }
 
-fn encode_oauth_state(state: &OAuthState) -> Result<String> {
+pub(crate) fn encode_oauth_state(state: &OAuthState) -> Result<String> {
     let payload = encode_oauth_state_payload(state);
     let signing_key = oauth_state_signing_key()?;
     let signature = hmac_sha256_hex(signing_key.as_bytes(), payload.as_bytes());
     Ok(format!("{payload}&signature={signature}"))
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
     }
@@ -5090,7 +2815,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     diff == 0
 }
 
-fn decode_oauth_state(value: &str) -> Result<OAuthState> {
+pub(crate) fn decode_oauth_state(value: &str) -> Result<OAuthState> {
     let (payload, signature) = value
         .rsplit_once("&signature=")
         .ok_or_else(|| AppError::InvalidInput("invalid OAuth state".into()))?;
@@ -5103,7 +2828,7 @@ fn decode_oauth_state(value: &str) -> Result<OAuthState> {
     decode_oauth_state_payload(payload)
 }
 
-fn decode_oauth_state_payload(value: &str) -> Result<OAuthState> {
+pub(crate) fn decode_oauth_state_payload(value: &str) -> Result<OAuthState> {
     let mut tenant_id = None;
     let mut connector_type = None;
     let mut redirect_uri = None;
@@ -5138,7 +2863,7 @@ fn decode_oauth_state_payload(value: &str) -> Result<OAuthState> {
     })
 }
 
-fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
         .and_then(|value| value.to_str().ok())
@@ -5148,7 +2873,7 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn oauth_callback_url(headers: &HeaderMap) -> String {
+pub(crate) fn oauth_callback_url(headers: &HeaderMap) -> String {
     let proto = header_value(headers, "x-forwarded-proto").unwrap_or_else(|| "https".to_string());
     let host = header_value(headers, "x-forwarded-host")
         .or_else(|| header_value(headers, "host"))
@@ -5156,7 +2881,7 @@ fn oauth_callback_url(headers: &HeaderMap) -> String {
     format!("{proto}://{host}/api/oauth/callback")
 }
 
-fn build_authorize_url(
+pub(crate) fn build_authorize_url(
     provider: OAuthProviderConfig,
     client_id: &str,
     callback_url: &str,
@@ -5172,7 +2897,7 @@ fn build_authorize_url(
     ))
 }
 
-fn build_token_form<'a>(
+pub(crate) fn build_token_form<'a>(
     code: &'a str,
     client_id: &'a str,
     client_secret: &'a str,
@@ -5187,7 +2912,7 @@ fn build_token_form<'a>(
     ]
 }
 
-fn oauth_stored_scope(
+pub(crate) fn oauth_stored_scope(
     default_scope: &str,
     token_scope: Option<&str>,
     instance_url: Option<&str>,
@@ -5207,7 +2932,7 @@ fn oauth_stored_scope(
     scope
 }
 
-fn safe_oauth_instance_url(value: &str) -> Option<&str> {
+pub(crate) fn safe_oauth_instance_url(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     if (trimmed.starts_with("https://") || trimmed.starts_with("http://"))
         && !trimmed.contains(char::is_whitespace)
@@ -5231,135 +2956,10 @@ struct OAuthTokenResponse {
     instance_url: Option<String>,
 }
 
-pub async fn oauth_authorize(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<OAuthAuthorizeQuery>,
-) -> Result<Redirect> {
-    if query.tenant_id.trim().is_empty() || query.connector_type.trim().is_empty() {
-        return Err(AppError::InvalidInput(
-            "tenant_id and connector_type are required".into(),
-        ));
-    }
 
-    let provider = oauth_provider_config(&query.connector_type)?;
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
-    let credential = store
-        .get(&query.tenant_id, provider.provider, &query.connector_type)
-        .await?
-        .ok_or_else(|| {
-            AppError::NotFound(format!(
-                "OAuth credential for tenant {} connector {} not found",
-                query.tenant_id, query.connector_type
-            ))
-        })?;
 
-    let oauth_state = OAuthState {
-        tenant_id: query.tenant_id,
-        connector_type: query.connector_type,
-        redirect_uri: safe_callback_redirect_uri(&query.redirect_uri),
-    };
-    let auth_url = build_authorize_url(
-        provider,
-        &credential.client_id,
-        &oauth_callback_url(&headers),
-        &oauth_state,
-    )?;
 
-    Ok(Redirect::temporary(&auth_url))
-}
-
-pub async fn oauth_callback(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<OAuthCallbackQuery>,
-) -> Result<Redirect> {
-    if query.code.trim().is_empty() {
-        return Err(AppError::InvalidInput("OAuth code is required".into()));
-    }
-
-    let oauth_state = decode_oauth_state(&query.state)?;
-    let provider = oauth_provider_config(&oauth_state.connector_type)?;
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
-    let credential = store
-        .get(
-            &oauth_state.tenant_id,
-            provider.provider,
-            &oauth_state.connector_type,
-        )
-        .await?
-        .ok_or_else(|| {
-            AppError::NotFound(format!(
-                "OAuth credential for tenant {} connector {} not found",
-                oauth_state.tenant_id, oauth_state.connector_type
-            ))
-        })?;
-
-    let master = MasterKey::from_env()
-        .ok_or_else(|| AppError::Configuration("FLEET_SECRETS_KEY not set".into()))?;
-    let client_secret = decrypt_api_key(&credential.client_secret, &master)
-        .map_err(|e| AppError::Configuration(format!("decrypt failed: {e}")))?;
-    let callback_url = oauth_callback_url(&headers);
-    let form = build_token_form(
-        &query.code,
-        &credential.client_id,
-        &client_secret,
-        &callback_url,
-    );
-
-    let response = reqwest::Client::new()
-        .post(provider.token_url)
-        .form(&form)
-        .send()
-        .await
-        .map_err(|e| AppError::External(format!("OAuth token request failed: {e}")))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(AppError::External(format!(
-            "OAuth token exchange failed with {status}: {body}"
-        )));
-    }
-
-    let token: OAuthTokenResponse = response
-        .json()
-        .await
-        .map_err(|e| AppError::External(format!("OAuth token response parse failed: {e}")))?;
-    let expires_at = chrono::Utc::now().timestamp() + token.expires_in.unwrap_or(3600).max(0);
-    let stored_scope = oauth_stored_scope(
-        provider.scope,
-        token.scope.as_deref(),
-        token.instance_url.as_deref(),
-    );
-    store
-        .update_tokens_and_scope(
-            &credential.id,
-            &token.access_token,
-            token.refresh_token.as_deref(),
-            expires_at,
-            Some(&stored_scope),
-        )
-        .await?;
-
-    Ok(Redirect::temporary(&oauth_state.redirect_uri))
-}
-
-pub async fn list_oauth_credentials(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<Vec<OAuthCredentialResponse>>> {
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
-    let credentials = store
-        .list_by_tenant(&tenant_id)
-        .await?
-        .into_iter()
-        .map(OAuthCredentialResponse::from)
-        .collect();
-    Ok(Json(credentials))
-}
-
-fn normalize_oauth_credential_request(
+pub(crate) fn normalize_oauth_credential_request(
     tenant_id: String,
     req: &mut ares_db::oauth_credentials::CreateOAuthCredentialRequest,
 ) -> Result<()> {
@@ -5369,522 +2969,48 @@ fn normalize_oauth_credential_request(
     Ok(())
 }
 
-pub async fn create_oauth_credential(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Json(mut req): Json<ares_db::oauth_credentials::CreateOAuthCredentialRequest>,
-) -> Result<Json<OAuthCredentialResponse>> {
-    normalize_oauth_credential_request(tenant_id, &mut req)?;
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
-    let credential = store.create(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
-    let cred_id = credential.id.clone();
-    let t_id = credential.tenant_id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "oauth_credential_create",
-            "oauth_credential",
-            &cred_id,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(credential.into()))
-}
-
-pub async fn delete_oauth_credential(
-    State(state): State<AppState>,
-    Path((tenant_id, id)): Path<(String, String)>,
-) -> Result<StatusCode> {
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
-    let rows = store.delete_for_tenant(&tenant_id, &id).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!(
-            "oauth credential {id} not found for tenant {tenant_id}"
-        )));
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "oauth_credential_delete",
-            "oauth_credential",
-            &id,
-            Some(&tenant_id),
-            None,
-        )
-        .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
 
 // =============================================================================
 // Agent Schedules
 // =============================================================================
 
-pub async fn list_schedules(
-    State(state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<db_schedules::AgentSchedule>>> {
-    let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
-    if tenant_id.is_empty() {
-        return Err(AppError::InvalidInput(
-            "tenant_id query param is required".into(),
-        ));
-    }
-    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
-    let schedules = store.list_schedules(tenant_id).await?;
-    Ok(Json(schedules))
-}
 
-pub async fn list_schedule_missed_runs(
-    State(state): State<AppState>,
-    Path((tenant_id, schedule_id)): Path<(String, String)>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<db_schedules::MissedRunAudit>>> {
-    let limit = params
-        .get("limit")
-        .and_then(|value| value.parse::<i32>().ok())
-        .unwrap_or(10)
-        .clamp(1, 100);
-    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
-    let audits = store
-        .list_missed_runs_for_tenant(&tenant_id, &schedule_id, limit)
-        .await?;
-    Ok(Json(audits))
-}
 
-pub async fn create_schedule(
-    State(state): State<AppState>,
-    Json(req): Json<db_schedules::CreateScheduleRequest>,
-) -> Result<Json<db_schedules::AgentSchedule>> {
-    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
-    let schedule = store.create_schedule(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
-    let t_id = schedule.tenant_id.clone();
-    let a_name = schedule.agent_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "schedule_create",
-            "agent_schedule",
-            &a_name,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
 
-    Ok(Json(schedule))
-}
 
-pub async fn update_schedule(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(req): Json<db_schedules::CreateScheduleRequest>,
-) -> Result<Json<db_schedules::AgentSchedule>> {
-    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
-    let schedule = store
-        .update_schedule(&id, &req)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("schedule {id} not found")))?;
 
-    let pool = state.tenant_db.pool().clone();
-    let t_id = schedule.tenant_id.clone();
-    let a_name = schedule.agent_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "schedule_update",
-            "agent_schedule",
-            &a_name,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(schedule))
-}
-
-pub async fn delete_schedule(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<StatusCode> {
-    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
-    let rows = store.delete_schedule(&id).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!("schedule {id} not found")));
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let sid = id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "schedule_delete",
-            "agent_schedule",
-            &sid,
-            None,
-            None,
-        )
-        .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn update_tenant_schedule(
-    State(state): State<AppState>,
-    Path((tenant_id, id)): Path<(String, String)>,
-    Json(mut req): Json<db_schedules::CreateScheduleRequest>,
-) -> Result<Json<db_schedules::AgentSchedule>> {
-    req.tenant_id = tenant_id.clone();
-    update_schedule(State(state), Path(id), Json(req)).await
-}
-
-pub async fn delete_tenant_schedule(
-    State(state): State<AppState>,
-    Path((tenant_id, id)): Path<(String, String)>,
-) -> Result<StatusCode> {
-    let store = db_schedules::ScheduleStore::new(state.tenant_db.pool());
-    let rows = store.delete_schedule_for_tenant(&tenant_id, &id).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!(
-            "schedule {id} not found for tenant {tenant_id}"
-        )));
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    let sid = id.clone();
-    let t_id = tenant_id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "schedule_delete",
-            "agent_schedule",
-            &sid,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
 
 // =============================================================================
 // Event Triggers
 // =============================================================================
 
-pub async fn list_triggers(
-    State(state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<db_schedules::EventTrigger>>> {
-    let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
-    if tenant_id.is_empty() {
-        return Err(AppError::InvalidInput(
-            "tenant_id query param is required".into(),
-        ));
-    }
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
-    let triggers = store.list_triggers(tenant_id).await?;
-    Ok(Json(triggers))
-}
 
-pub async fn create_trigger(
-    State(state): State<AppState>,
-    Json(req): Json<db_schedules::CreateTriggerRequest>,
-) -> Result<Json<db_schedules::EventTrigger>> {
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
-    let trigger = store.create_trigger(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
-    let t_id = trigger.tenant_id.clone();
-    let tr_name = trigger.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "trigger_create",
-            "event_trigger",
-            &tr_name,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
 
-    Ok(Json(trigger))
-}
 
-pub async fn delete_trigger(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<StatusCode> {
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
-    let rows = store.delete_trigger(&id).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!("trigger {id} not found")));
-    }
 
-    let pool = state.tenant_db.pool().clone();
-    let tid = id.clone();
-    tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "trigger_delete", "event_trigger", &tid, None, None)
-                .await;
-    });
 
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn list_tenant_triggers(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<Vec<db_schedules::EventTrigger>>> {
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
-    let triggers = store.list_triggers(&tenant_id).await?;
-    Ok(Json(triggers))
-}
-
-pub async fn create_tenant_trigger(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Json(mut req): Json<db_schedules::CreateTriggerRequest>,
-) -> Result<Json<db_schedules::EventTrigger>> {
-    req.tenant_id = tenant_id;
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
-    let trigger = store.create_trigger(&req).await?;
-
-    let pool = state.tenant_db.pool().clone();
-    let t_id = trigger.tenant_id.clone();
-    let tr_name = trigger.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "trigger_create",
-            "event_trigger",
-            &tr_name,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(trigger))
-}
-
-pub async fn update_tenant_trigger(
-    State(state): State<AppState>,
-    Path((tenant_id, id)): Path<(String, String)>,
-    Json(mut req): Json<db_schedules::CreateTriggerRequest>,
-) -> Result<Json<db_schedules::EventTrigger>> {
-    req.tenant_id = tenant_id.clone();
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
-    let trigger = store
-        .update_trigger(&tenant_id, &id, &req)
-        .await?
-        .ok_or_else(|| {
-            AppError::NotFound(format!("trigger {id} not found for tenant {tenant_id}"))
-        })?;
-
-    let pool = state.tenant_db.pool().clone();
-    let t_id = trigger.tenant_id.clone();
-    let tr_name = trigger.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "trigger_update",
-            "event_trigger",
-            &tr_name,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(trigger))
-}
-
-pub async fn delete_tenant_trigger(
-    State(state): State<AppState>,
-    Path((tenant_id, id)): Path<(String, String)>,
-) -> Result<StatusCode> {
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
-    let rows = store.delete_trigger_for_tenant(&tenant_id, &id).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!(
-            "trigger {id} not found for tenant {tenant_id}"
-        )));
-    }
-
-    let pool = state.tenant_db.pool().clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "trigger_delete",
-            "event_trigger",
-            &id,
-            Some(&tenant_id),
-            None,
-        )
-        .await;
-    });
-
-    Ok(StatusCode::NO_CONTENT)
-}
 
 // =============================================================================
 // Agent Pipelines
 // =============================================================================
 
-pub async fn list_pipelines(
-    State(state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<db_schedules::AgentPipeline>>> {
-    let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
-    if tenant_id.is_empty() {
-        return Err(AppError::InvalidInput(
-            "tenant_id query param is required".into(),
-        ));
-    }
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
-    let pipelines = store.list_pipelines(tenant_id).await?;
-    Ok(Json(pipelines))
-}
 
-pub async fn create_pipeline(
-    State(state): State<AppState>,
-    Json(req): Json<db_schedules::CreatePipelineRequest>,
-) -> Result<Json<db_schedules::AgentPipeline>> {
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
-    let pipeline = store.create_pipeline(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
-    let t_id = pipeline.tenant_id.clone();
-    let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "pipeline_create",
-            "agent_pipeline",
-            &link,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
 
-    Ok(Json(pipeline))
-}
 
-pub async fn list_tenant_pipelines(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-) -> Result<Json<Vec<db_schedules::AgentPipeline>>> {
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
-    let pipelines = store.list_pipelines(&tenant_id).await?;
-    Ok(Json(pipelines))
-}
 
-pub async fn create_tenant_pipeline(
-    State(state): State<AppState>,
-    Path(tenant_id): Path<String>,
-    Json(mut req): Json<db_schedules::CreatePipelineRequest>,
-) -> Result<Json<db_schedules::AgentPipeline>> {
-    req.tenant_id = tenant_id;
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
-    let pipeline = store.create_pipeline(&req).await?;
-    let pool = state.tenant_db.pool().clone();
-    let t_id = pipeline.tenant_id.clone();
-    let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "pipeline_create",
-            "agent_pipeline",
-            &link,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
-    Ok(Json(pipeline))
-}
-
-pub async fn update_tenant_pipeline(
-    State(state): State<AppState>,
-    Path((tenant_id, id)): Path<(String, String)>,
-    Json(req): Json<db_schedules::CreatePipelineRequest>,
-) -> Result<Json<db_schedules::AgentPipeline>> {
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
-    let pipeline = store
-        .update_pipeline(&tenant_id, &id, &req)
-        .await?
-        .ok_or_else(|| {
-            AppError::NotFound(format!("pipeline {id} not found for tenant {tenant_id}"))
-        })?;
-
-    let pool = state.tenant_db.pool().clone();
-    let t_id = pipeline.tenant_id.clone();
-    let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "pipeline_update",
-            "agent_pipeline",
-            &link,
-            Some(&t_id),
-            None,
-        )
-        .await;
-    });
-
-    Ok(Json(pipeline))
-}
-
-pub async fn delete_tenant_pipeline(
-    State(state): State<AppState>,
-    Path((tenant_id, id)): Path<(String, String)>,
-) -> Result<StatusCode> {
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
-    let rows = store.delete_pipeline_for_tenant(&tenant_id, &id).await?;
-    if rows == 0 {
-        return Err(AppError::NotFound(format!(
-            "pipeline {id} not found for tenant {tenant_id}"
-        )));
-    }
-    let pool = state.tenant_db.pool().clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "pipeline_delete",
-            "agent_pipeline",
-            &id,
-            Some(&tenant_id),
-            None,
-        )
-        .await;
-    });
-    Ok(StatusCode::NO_CONTENT)
-}
 
 // =============================================================================
 // Webhook Receiver (public — no admin middleware)
 // =============================================================================
 
-fn webhook_trigger_matches(trigger: &db_schedules::EventTrigger) -> bool {
+pub(crate) fn webhook_trigger_matches(trigger: &db_schedules::EventTrigger) -> bool {
     trigger.event_type == "webhook"
 }
 
-/// POST /api/webhooks/{trigger_id}
 ///
 /// Public webhook endpoint that receives events and triggers the
 /// associated agent when the trigger is enabled.
@@ -5941,38 +3067,3 @@ pub async fn receive_webhook(
 // =============================================================================
 // Live Runs SSE
 // =============================================================================
-
-/// GET /api/admin/runs/live — SSE stream of active agent runs
-pub async fn stream_active_runs(
-    State(state): State<AppState>,
-) -> axum::response::Sse<
-    impl futures::Stream<
-        Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
-    >,
-> {
-    use axum::response::sse::{Event, KeepAlive, Sse};
-    use std::time::Duration;
-    use tokio::time::interval;
-
-    let active_runs = Arc::clone(&state.active_runs);
-    let stream = futures::stream::unfold(interval(Duration::from_secs(2)), move |mut interval| {
-        let active_runs = Arc::clone(&active_runs);
-        async move {
-            interval.tick().await;
-            let runs = active_runs.list();
-            let data = serde_json::json!({
-                "timestamp": chrono::Utc::now().timestamp(),
-                "runs": runs,
-                "count": runs.len(),
-            });
-            let event = Ok(Event::default().data(data.to_string()));
-            Some((event, interval))
-        }
-    });
-
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(30))
-            .text("keep-alive"),
-    )
-}

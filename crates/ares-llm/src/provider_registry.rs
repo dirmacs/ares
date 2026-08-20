@@ -958,6 +958,34 @@ impl ProviderRegistry {
         models
     }
 
+    /// Capability-aware fallback chain for `LlmService`.
+    ///
+    /// Tries `create_client_for_requirements` for the given `requirements` if
+    /// `Some`, then falls back to `create_default_client`. This reuses the
+    /// existing `find_best_model` → `create_client_for_model` chain and the
+    /// coordinator's fallback semantics without requiring a database.
+    pub async fn resolve_with_capability_fallback(
+        &self,
+        requirements: Option<CapabilityRequirements>,
+    ) -> Result<Box<dyn crate::client::LLMClient>> {
+        if let Some(req) = requirements {
+            if let Ok(client) = self.create_client_for_requirements(&req).await {
+                return Ok(client);
+            }
+        }
+        self.create_default_client().await
+    }
+
+    /// Alias satisfying the `LlmService` spec's `resolve_with_fallback` name
+    /// when the postgres-gated tier resolver is not active.
+    #[cfg(not(feature = "postgres"))]
+    pub async fn resolve_with_fallback(
+        &self,
+        requirements: Option<CapabilityRequirements>,
+    ) -> Result<Box<dyn crate::client::LLMClient>> {
+        self.resolve_with_capability_fallback(requirements).await
+    }
+
     // ============================================================
     // Helpers
     // ============================================================

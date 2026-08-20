@@ -1,16 +1,178 @@
-//! Admin health domain — cordis Phase6 stub.
-//! Decomposed from `admin.rs` (190KB/5946 lines). Real handlers remain in shim
-//! `src/api/handlers/admin.rs` for one commit; this module will own the domain.
+//! Admin health domain — cordis Phase6
+//! Bodies moved from `admin.rs` (190KB/5946 lines).
 
-use axum::Router;
+use super::*;
 
-/// Route set for this domain.
-pub type RouteSet = Router;
 
-/// Stub routes for `health` domain.
-// TODO: ctx.plugin(AdminHealthRoutes, ...) — register via RegistryService
-pub fn routes() -> RouteSet {
-    Router::new()
+use crate::AppState;
+use crate::agents::context_provider::AgentRuntimeContext;
+use crate::agents::tenant_agent;
+use crate::db::agent_feedback;
+use crate::db::agent_runs;
+use crate::db::agent_versions;
+use crate::db::alerts as db_alerts;
+use crate::db::audit_log;
+use crate::db::schedules as db_schedules;
+use crate::db::skills as db_skills;
+use crate::db::tenant_agents::{
+    AgentTemplate, AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest,
+    TenantAgent, UpdateTenantAgentRequest, clone_templates_for_tenant,
+    create_tenant_agent as db_create_tenant_agent, delete_tenant_agent as db_delete_tenant_agent,
+    get_tenant_agent as db_get_tenant_agent, list_agent_templates, list_tenant_agent_versions,
+    list_tenant_agents as db_list_tenant_agents, record_tenant_agent_version,
+    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent,
+};
+use crate::db::tenant_allowlist as allowlist;
+use crate::db::tenant_model_tiers as db_tiers;
+use crate::db::tenants::UsageSummary;
+use crate::llm::provider_registry::{ModelInfo, RuntimeProviderEntry};
+use crate::memory::estimate_tokens;
+use crate::models::{Tenant, TenantTier};
+use crate::types::{AgentContext, AppError, Result};
+use crate::utils::toml_config::BillingConfig;
+use ares_config::toml_config::ProviderConfig;
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
+    middleware::Next,
+    response::{Redirect, Response},
+};
+use rust_decimal::prelude::ToPrimitive;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+pub async fn list_health_metrics(
+    State(state): State<AppState>,
+    Query(q): Query<ListHealthMetricsQuery>,
+) -> Result<Json<Vec<AgentHealthMetrics>>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let metrics = store
+        .list_health_metrics(&q.tenant_id, q.limit, q.offset)
+        .await?;
+    Ok(Json(metrics))
+}
+
+/// List model health metrics for a tenant, grouped by (tenant_id, model).
+pub async fn list_model_metrics(
+    State(state): State<AppState>,
+    Query(q): Query<ListModelMetricsQuery>,
+) -> Result<Json<Vec<ModelHealthMetrics>>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let metrics = store
+        .list_model_metrics(&q.tenant_id, q.limit, q.offset)
+        .await?;
+    Ok(Json(metrics))
+}
+
+/// Insert agent health metrics.
+pub async fn insert_health_metrics(
+    State(state): State<AppState>,
+    Json(req): Json<AgentHealthMetrics>,
+) -> Result<Json<AgentHealthMetrics>> {
+    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let metrics = store.insert_health_metrics(&req).await?;
+    Ok(Json(metrics))
+}
+
+pub async fn list_tenant_model_tiers(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<Vec<db_tiers::TenantModelTier>>> {
+    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let tiers = store.list_for_tenant(&tenant_id).await?;
+    Ok(Json(tiers))
+}
+
+pub async fn get_tenant_model_tier(
+    State(state): State<AppState>,
+    Path((tenant_id, tier_name)): Path<(String, String)>,
+) -> Result<Json<db_tiers::TenantModelTier>> {
+    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let tier = store.get(&tenant_id, &tier_name).await?.ok_or_else(|| {
+        AppError::NotFound(format!("tier {tier_name} not found for tenant {tenant_id}"))
+    })?;
+    Ok(Json(tier))
+}
+
+pub async fn set_tenant_model_tier(
+    State(state): State<AppState>,
+    Path((tenant_id, tier_name)): Path<(String, String)>,
+    Json(req): Json<db_tiers::SetTenantModelTierRequest>,
+) -> Result<Json<db_tiers::TenantModelTier>> {
+    if !state
+        .provider_registry
+        .has_provider_for_tenant(&req.provider_name, Some(&tenant_id))
+    {
+        return Err(AppError::InvalidInput(format!(
+            "Provider '{}' not found in configuration",
+            req.provider_name
+        )));
+    }
+
+    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let tier = store.set(&tenant_id, &tier_name, &req).await?;
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = tenant_id.clone();
+    let t_name = tier_name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "tenant_model_tier_set",
+            "tenant_model_tier",
+            &format!("{t_id}/{t_name}"),
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(tier))
+}
+
+pub async fn delete_tenant_model_tier(
+    State(state): State<AppState>,
+    Path((tenant_id, tier_name)): Path<(String, String)>,
+) -> Result<StatusCode> {
+    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let rows = store.delete(&tenant_id, &tier_name).await?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!(
+            "tier {tier_name} not found for tenant {tenant_id}"
+        )));
+    }
+
+    let pool = state.tenant_db.pool().clone();
+    let t_id = tenant_id.clone();
+    let t_name = tier_name.clone();
+    tokio::spawn(async move {
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "tenant_model_tier_delete",
+            "tenant_model_tier",
+            &format!("{t_id}/{t_name}"),
+            None,
+            None,
+        )
+        .await;
+    });
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub fn routes() -> axum::Router<crate::AppState> {
+    use axum::routing::{delete, get, post, put};
+    axum::Router::new()
+        .route("/health/list_health_metrics", get(list_health_metrics))
+        .route("/health/list_model_metrics", get(list_model_metrics))
+        .route("/health/insert_health_metrics", post(insert_health_metrics))
+        .route("/health/list_tenant_model_tiers", get(list_tenant_model_tiers))
+        .route("/health/get_tenant_model_tier", get(get_tenant_model_tier))
+        .route("/health/set_tenant_model_tier", put(set_tenant_model_tier))
+        .route("/health/delete_tenant_model_tier", delete(delete_tenant_model_tier))
 }
 
 // TODO: ctx.plugin(AdminHealthRoutes, ...) — Service impl stub

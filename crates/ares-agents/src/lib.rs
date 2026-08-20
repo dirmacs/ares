@@ -51,7 +51,7 @@ pub mod research;
 pub mod resolver;
 pub mod external_context;
 pub mod execution;
-pub use execution::AgentExecutionService;
+pub use execution::{AgentExecutionService, AgentRequest};
 
 use ares_llm::client::TokenUsage;
 use ares_types::types::{AgentContext, AgentType, Result};

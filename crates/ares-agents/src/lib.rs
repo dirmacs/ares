@@ -50,6 +50,8 @@ pub mod research;
 #[cfg(feature = "postgres")]
 pub mod resolver;
 pub mod external_context;
+pub mod execution;
+pub use execution::AgentExecutionService;
 
 use ares_llm::client::TokenUsage;
 use ares_types::types::{AgentContext, AgentType, Result};
@@ -59,8 +61,11 @@ use async_trait::async_trait;
 pub use configurable::ConfigurableAgent;
 pub use context_provider::{ContextProvider, NoOpContextProvider};
 pub use registry::{AgentRegistry, AgentRegistryBuilder};
+#[cfg(feature = "postgres")]
+pub use resolver::{AgentResolverService, AgentSource, TenantId};
 
 /// Response from agent execution, including content and optional token usage
+#[derive(Debug, Clone, Default)]
 pub struct AgentResponse {
     /// The generated text response
     pub content: String,
@@ -71,6 +76,7 @@ pub struct AgentResponse {
 }
 
 /// Metadata about the execution of an agent
+#[derive(Debug, Clone, Default)]
 pub struct ExecutionMetadata {
     /// The name of the model used
     pub model_name: String,

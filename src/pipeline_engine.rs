@@ -1,9 +1,16 @@
 //! Inter-agent pipeline execution engine.
 
+use ares_cordis_core::Service;
 use ares_db::agent_runs::{self, AgentRunMetadata};
 use ares_db::schedules::{AgentPipeline, PipelineStore};
 use ares_types::types::AgentContext;
 use std::sync::Arc;
+
+/// Cordis service stub for pipeline — owns `agent_pipelines` lookup and
+/// conditional evaluation.
+pub struct PipelineService;
+
+impl Service for PipelineService {}
 
 pub(crate) const PIPELINE_REQUEST_SOURCE: &str = "pipeline";
 

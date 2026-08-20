@@ -1,3 +1,5 @@
+// cordis Phase6: decomposed into v1/{chat,stream,agents} — 3 modules
+// shim retains original handlers; new domain modules live in src/api/handlers/v1/*.rs
 //! V1 API handlers — tenant-scoped endpoints authenticated via API key.
 //!
 //! These endpoints are called by enterprise-portal and other client apps
@@ -29,6 +31,14 @@ use axum::{
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+// cordis Phase6: decomposed v1 submodules — each provides `pub fn routes() -> RouteSet` stub.
+#[path = "v1/chat.rs"]
+pub mod chat;
+#[path = "v1/stream.rs"]
+pub mod stream;
+#[path = "v1/agents.rs"]
+pub mod agents;
 
 // =============================================================================
 // Response types — designed to match enterprise-portal's expected types

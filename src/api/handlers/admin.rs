@@ -1,3 +1,35 @@
+// cordis Phase6: decomposed into admin/{tenants,agents,providers,tools,schedules,triggers,pipelines,billing,mcp,fleet_secrets,connectors,health,audit} — 13 modules
+// shim retains original handlers; new domain modules live in src/api/handlers/admin/*.rs
+// Each domain exposes `pub fn routes() -> RouteSet` and `// TODO: ctx.plugin(AdminXxxRoutes, ...)` Service stub.
+
+// New cordis domain submodules — each provides `pub fn routes() -> RouteSet` stub.
+#[path = "admin/tenants.rs"]
+pub mod tenants;
+#[path = "admin/agents.rs"]
+pub mod agents;
+#[path = "admin/providers.rs"]
+pub mod providers;
+#[path = "admin/tools.rs"]
+pub mod tools;
+#[path = "admin/schedules.rs"]
+pub mod schedules;
+#[path = "admin/triggers.rs"]
+pub mod triggers;
+#[path = "admin/pipelines.rs"]
+pub mod pipelines;
+#[path = "admin/billing.rs"]
+pub mod billing;
+#[path = "admin/mcp.rs"]
+pub mod mcp;
+#[path = "admin/fleet_secrets.rs"]
+pub mod fleet_secrets;
+#[path = "admin/connectors.rs"]
+pub mod connectors;
+#[path = "admin/health.rs"]
+pub mod health;
+#[path = "admin/audit.rs"]
+pub mod audit;
+
 use crate::AppState;
 use crate::agents::context_provider::AgentRuntimeContext;
 use crate::agents::tenant_agent;

@@ -20,6 +20,7 @@ ares-config = { workspace = true }
 base64 = "0.22"
 urlencoding = "2.1"
 ares-db = { workspace = true, optional = true }
+ares-cordis-core = { workspace = true }
 arc-swap = "1.7.1"
 ares-mcp = { workspace = true, optional = true }
 async-trait = { workspace = true }

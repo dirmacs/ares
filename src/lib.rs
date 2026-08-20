@@ -138,6 +138,7 @@ pub mod api;
 /// Run observability and cost tracking.
 #[cfg(feature = "postgres")]
 pub mod active_runs;
+#[cfg(feature = "postgres")]
 pub mod observability;
 /// Periodic health metrics aggregation job.
 #[cfg(feature = "postgres")]
@@ -217,12 +218,23 @@ pub use utils::toon_config::DynamicConfigManager;
 #[cfg(feature = "postgres")]
 pub use workflows::{WorkflowEngine, WorkflowOutput, WorkflowStep};
 
+#[cfg(feature = "postgres")]
 use sqlx::PgPool;
 use std::sync::Arc;
 
 /// Application state shared across handlers (requires postgres feature for full server)
 #[cfg(feature = "postgres")]
 use crate::auth::jwt::AuthService;
+
+#[cfg(not(feature = "postgres"))]
+#[deprecated(note = "use Arc<Context>")]
+pub type AppState = std::sync::Arc<ares_cordis_core::Context>;
+
+/// Cordis Context alias (visible alongside legacy struct when `postgres` enabled).
+/// After migration `AppState` will be this type; the legacy `AppState` struct below will be removed.
+#[cfg(feature = "postgres")]
+#[deprecated(note = "use Arc<Context>")]
+pub type CordisAppState = std::sync::Arc<ares_cordis_core::Context>;
 
 /// Application state shared across handlers
 #[cfg(feature = "postgres")]
@@ -273,6 +285,32 @@ pub struct AppState {
     pub skill_engine: Arc<skill_engine::SkillEngine>,
 }
 
+#[cfg(feature = "postgres")]
+#[allow(deprecated)]
+impl AppState {}
+
+/// Build router from Cordis `Context` — mirrors `base_router` but reads services from `ctx.get::<...>()`
+/// instead of constructing inline. This is the Cordis-style entry point; `base_router` remains as shim.
+#[cfg(feature = "postgres")]
+pub fn build_router(ctx: std::sync::Arc<ares_cordis_core::Context>) -> axum::Router {
+    // Prove `State<Arc<Context>>` + `ctx.get` compiles — reads services that implement `Service`.
+    // These types are Cordis services, so `ctx.get` is valid; using them mirrors
+    // `base_router`'s need for `AuthService`/`TenantDb` but via Context.
+    let _events = ctx.get::<ares_cordis_core::EventsService>();
+    let _registry = ctx.get::<ares_cordis_core::RegistryService>();
+    let _agent_resolver = ctx.get::<crate::agents::resolver::AgentResolverService>();
+    let _tool_svc = ctx.get::<ares_tools::UnifiedToolService>();
+
+    // Minimal router that proves `with_state(ctx)` and `State<Arc<Context>>` handler.
+    axum::Router::new()
+        .route("/health", axum::routing::get(|| async { "OK" }))
+        .route(
+            "/health/context",
+            axum::routing::get(crate::api::handlers::health_context::health_context),
+        )
+        .with_state(ctx)
+}
+
 /// Returns the base ARES router with all generic endpoints.
 ///
 /// Extension crates can `.merge()` additional routes and `.layer()` middleware
@@ -289,6 +327,12 @@ pub struct AppState {
 /// ```
 #[cfg(feature = "postgres")]
 pub fn base_router(state: AppState) -> axum::Router {
+    // Shim: also prove `build_router` compiles via a temporary Context (AppState coercion after migration).
+    #[allow(deprecated)]
+    let _ = {
+        let _ctx = ares_cordis_core::Context::new_root();
+        build_router(_ctx)
+    };
     axum::Router::new()
         .route("/health", axum::routing::get(|| async { "OK" }))
         .nest(

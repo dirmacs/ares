@@ -10,9 +10,29 @@ use ares_llm::coordinator::ConversationMessage;
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use ares_llm::{LLMClient, LLMResponse};
 use ares_tools::registry::ToolRegistry;
+use ares_tools::ToolService;
 use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
 use async_trait::async_trait;
 use std::sync::Arc;
+
+// cordis Phase6: runtime postgres availability via Service::check() — replaces compile-time #[cfg(feature="postgres")] branching
+// Previously: `#[cfg(feature = "postgres")] token_budget_pool: Option<PgPool>`
+// Now: always-present field guarded by `ctx.get::<PostgresService>().is_some()` / `PostgresService::check()`
+// Handler example: `if ctx.get::<PostgresService>().is_some() { /* use token_budget_pool */ } else { /* fallback */ }`
+// TODO: if ctx.get::<PostgresService>().is_some() { use db } else { fallback }
+use ares_cordis_core::Service;
+
+/// Postgres availability as a Cordis Service — runtime check, not compile-time cfg.
+///
+/// `check()` returns `cfg!(feature = "postgres")` so callers can branch at runtime:
+/// `if ctx.get::<PostgresService>().is_some_and(|s| s.check()) { /* postgres path */ }`
+/// or `if ctx.get::<PostgresService>().is_some() { use db } else { fallback }`.
+pub struct PostgresService;
+impl Service for PostgresService {
+    fn check(&self) -> bool {
+        cfg!(feature = "postgres")
+    }
+}
 
 struct ProviderLlm {
     provider_name: String,
@@ -39,6 +59,13 @@ pub struct ConfigurableAgent {
     system_prompt: String,
     /// Tools available to this agent
     tool_registry: Option<Arc<ToolRegistry>>,
+    /// Unified tool service (Cordis DI). Keep alongside `tool_registry` for one
+    /// commit to keep `cargo check` green. Next migration: consumers will use
+    /// `ctx.get::<UnifiedToolService>()` (see `ares_tools::ToolService` and
+    /// `ares_cordis_core::Context::get`) instead of passing `Arc<ToolRegistry>`.
+    /// `dyn ToolService` is not dyn-compatible due to `Service::init` (impl Future),
+    /// so we store the concrete `UnifiedToolService` to keep `cargo check` green.
+    tool_service: Option<Arc<ares_tools::UnifiedToolService>>,
     /// Optional whitelist of tool names this agent is allowed to use.
     /// `None` means no tools are permitted.
     allowed_tools: Option<Vec<String>>,
@@ -140,6 +167,7 @@ impl ConfigurableAgent {
             provider_name,
             system_prompt,
             tool_registry,
+            tool_service: None,
             allowed_tools,
             max_tool_iterations: config.max_tool_iterations,
             parallel_tools: config.parallel_tools,
@@ -175,6 +203,7 @@ impl ConfigurableAgent {
             provider_name: "unknown".to_string(),
             system_prompt,
             tool_registry,
+            tool_service: None,
             allowed_tools,
             max_tool_iterations,
             parallel_tools,
@@ -253,6 +282,11 @@ Handle employee info, policies, and benefits."#
         if self.tool_registry.is_some() {
             return true;
         }
+        // Cordis shim: unified service also counts as tools available.
+        // Future: `ctx.get::<dyn ToolService>().is_some()` will be the check.
+        if self.tool_service.is_some() {
+            return true;
+        }
         #[cfg(feature = "postgres")]
         if self.runtime_tool_registry.is_some() && self.runtime_tenant_id.is_some() {
             return true;
@@ -263,6 +297,24 @@ Handle employee info, policies, and benefits."#
     /// Get the tool registry (if any)
     pub fn tool_registry(&self) -> Option<&Arc<ToolRegistry>> {
         self.tool_registry.as_ref()
+    }
+
+    /// Inject unified `ToolService` (Cordis DI shim).
+    ///
+    /// Stored alongside `tool_registry` for one commit to keep `cargo check`
+    /// green. Next migration: handlers will `ctx.get::<UnifiedToolService>()`
+    /// (via `ares_cordis_core::Context::provide` / `Context::get`) instead of
+    /// constructing `Arc<ToolRegistry>` directly. See `ares_tools::ToolService`.
+    pub fn inject_tool_service(&mut self, svc: Arc<ares_tools::UnifiedToolService>) {
+        self.tool_service = Some(svc);
+    }
+
+    /// Get the unified tool service (if injected via `inject_tool_service`).
+    ///
+    /// Future path: `ctx.get::<UnifiedToolService>().unwrap()` will replace this
+    /// accessor. Keep both fields for one commit.
+    pub fn tool_service(&self) -> Option<&Arc<ares_tools::UnifiedToolService>> {
+        self.tool_service.as_ref()
     }
 
     /// Get the list of allowed tool names for this agent.

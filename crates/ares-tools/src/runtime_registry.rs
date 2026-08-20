@@ -17,6 +17,8 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::time::interval;
+// cordis Phase 3 imports for reflect stub (kept minimal to prove compilation)
+use std::any::TypeId as CordisTypeId;
 
 use ares_db::runtime_tools::{RuntimeTool, RuntimeToolStore};
 use ares_types::types::{AppError, Result, ToolDefinition};
@@ -601,6 +603,8 @@ impl RuntimeToolRegistry {
     // Background reload
     // -------------------------------------------------------------------------
 
+    // TODO cordis Phase3: replace start_background_reload 60s poll with Fiber::refresh via ReflectService::notify(TypeId::of::<RuntimeToolRegistry>())
+
     /// Spawn a background Tokio task that calls [`reload`] periodically.
     ///
     /// Returns `false` without spawning when `reload_interval_secs` is `0`.
@@ -638,6 +642,12 @@ impl RuntimeToolRegistry {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+// Cordis Phase 3 stub — proves Context + Loader integration compiles; background poll stays until Fiber::refresh wiring lands.
+pub fn reflect_notify_stub(ctx: &Arc<ares_cordis_core::Context>) {
+    let _ = ctx.get::<ares_cordis_core::loader::Loader>();
+    let _ = CordisTypeId::of::<RuntimeToolRegistry>();
 }
 
 // =============================================================================

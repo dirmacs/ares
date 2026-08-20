@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use crate::api::handlers::deploy;
 use crate::api::handlers::loops;
+use ares_cordis_core::Context;
 
 /// Creates the main API router with all routes configured.
 ///
@@ -659,6 +660,31 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .merge(protected_routes)
         .merge(admin_routes)
         .nest("/v1", v1_routes)
+}
+
+// cordis Phase6: Context-driven router that merges RouteSets via Service discovery.
+// Keep `create_router` as shim for one commit; new code should call `build_routes`.
+/// Build router from a Cordis `Context` by merging `RouteSet`s discovered via `ctx.get::<...>()`.
+///
+/// Each admin domain (`admin::tenants`, `admin::agents`, …) and each `v1::{chat,stream,agents}`
+/// exposes `pub fn routes() -> Router`. In the final cutover this function will
+/// `ctx.get::<AdminTenantsService>()` etc. and merge their routers.
+///
+/// Stub currently returns `Router::new()` — wiring will be added when RegistryService
+/// is integrated (Phase 2 step 10).
+pub fn build_routes(ctx: &Arc<Context>) -> Router<Arc<Context>> {
+    // Example cordis discovery pattern (stub):
+    // let _ = ctx.get::<crate::api::handlers::admin::tenants::AdminTenantsService>();
+    // let _ = ctx.get::<crate::api::handlers::admin::agents::AdminAgentsService>();
+    // Merge RouteSets:
+    // let mut router = Router::new();
+    // if let Some(svc) = ctx.get::<AdminTenantsService>() { if svc.check() { router = router.merge(crate::api::handlers::admin::tenants::routes()); } }
+    // ... repeat for each domain ...
+    // router
+
+    // Keep unused variable warning clean while stubbed:
+    let _ = ctx;
+    Router::new()
 }
 
 /// Joins a route prefix and suffix into a single path (for nested routers).

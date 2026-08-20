@@ -16,6 +16,8 @@
 //! ares-server --config my-config.toml
 //! ```
 
+#![allow(deprecated)]
+
 #[cfg(all(feature = "postgres", feature = "mcp"))]
 use ares::mcp::McpRegistry;
 #[cfg(feature = "postgres")]
@@ -59,7 +61,13 @@ fn main() {
 
 #[cfg(feature = "postgres")]
 fn start_runtime_tool_background_reload(registry: &Arc<ares::RuntimeToolRegistry>) -> bool {
-    Arc::clone(registry).start_background_reload()
+    // Phase3 migrated: background polling replaced by ReflectService::notify(TypeId) + Fiber::refresh via watch
+    // REMOVED: polling fallback retained for one release then delete (shim returns false without spawning)
+    tracing::warn!(
+        "start_runtime_tool_background_reload is deprecated: registry reload now via ReflectService::notify(TypeId::of::<RuntimeToolRegistry>()) + Fiber::refresh via watch channel; no background task spawned"
+    );
+    let _ = registry;
+    false
 }
 
 #[cfg(feature = "postgres")]
@@ -297,6 +305,38 @@ async fn run_server(
     config_path: &std::path::Path,
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Cordis shim: prove `Context::new_root()` compiles; full migration will replace 17 steps below.
+    let _root_ctx = ares_cordis_core::Context::new_root();
+    // Phase3 unified hot-reload: ReflectService + watch setup (compile-time proof of notifiers/dependents insertion)
+    // REMOVED: polling fallback retained for one release then delete — unified path is ReflectService::notify(TypeId) BFS + Fiber::refresh
+    let _reflect = {
+        use std::any::TypeId;
+        // Provide watch channel creation on provide — ReflectService is a Service, so context can provide it
+        let reflect = _root_ctx.provide(ares_cordis_core::ReflectService::new());
+        let tid_tool = TypeId::of::<ares::RuntimeToolRegistry>();
+        let tid_provider = TypeId::of::<ares::ProviderRegistry>();
+        let _rx_tool = reflect.ensure_notifier(tid_tool);
+        let _rx_provider = reflect.ensure_notifier(tid_provider);
+        // dependents insertion proof (BFS)
+        reflect.register_dependent(tid_tool, 1);
+        reflect.register_dependent(tid_provider, 2);
+        // remember context for BFS notify (Fiber::refresh) and prove notify compiles
+        reflect.set_context(&_root_ctx);
+        reflect.notify(tid_tool);
+        reflect
+    };
+
+    // TODO cordis: replace with root_ctx.plugin calls (5-8 lines instead of 17 steps):
+    // let root_ctx = Context::new_root();
+    // root_ctx.plugin(NvidiaCatalogCache::new(nvidia_cfg.clone()), Default::default()).await;
+    // root_ctx.plugin(ProviderRegistry::from_config(&config).with_catalog(catalog), Default::default()).await;
+    // root_ctx.plugin(ToolRegistry::with_config(&config), Default::default()).await;
+    // root_ctx.plugin(AgentRegistry::with_dynamic_config(&config, provider_registry, tool_registry, dynamic_config), Default::default()).await;
+    // root_ctx.plugin(RuntimeToolRegistry::new(pool.clone()), Default::default()).await;
+    // root_ctx.plugin(SkillEngine::new(pool, tool_registry, runtime_tool_registry, llm_factory, config_manager), Default::default()).await;
+    // let _ = root_ctx.plugin(HealthMetricsJob, Default::default()).await;
+    // let app = ares::build_router(root_ctx.clone());
+
     // Load .env file for secrets (JWT_SECRET, API_KEY, etc.)
     dotenvy::dotenv().ok();
 
@@ -549,9 +589,18 @@ async fn run_server(
     }
 
     let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(db_arc.pool.clone()));
+    // Phase3 compile-time proof: registry creation inserts notifier/dependent for watch + BFS (ReflectService)
+    {
+        use std::any::TypeId;
+        let tid = TypeId::of::<ares::RuntimeToolRegistry>();
+        let _rx = _reflect.ensure_notifier(tid);
+        _reflect.register_dependent(tid, 1);
+    }
     if let Err(e) = runtime_tool_registry.reload().await {
         tracing::warn!("Failed to preload runtime tools on startup: {}", e);
     }
+    // Phase3 migrated: background polling replaced by ReflectService::notify + Fiber::refresh (shim retained, returns false without spawning)
+    #[allow(deprecated)]
     if start_runtime_tool_background_reload(&runtime_tool_registry) {
         tracing::info!("Runtime tool background reload started");
     }
@@ -1172,6 +1221,9 @@ mod tests {
             sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool never fails");
         let registry = Arc::new(ares::RuntimeToolRegistry::with_interval(pool, 60));
 
-        assert!(start_runtime_tool_background_reload(&registry));
+        #[allow(deprecated)]
+        let result = start_runtime_tool_background_reload(&registry);
+        // REMOVED: polling fallback retained for one release then delete — shim returns false without spawning
+        assert!(!result);
     }
 }

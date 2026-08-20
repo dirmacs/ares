@@ -12,11 +12,13 @@
 //! ares-server = { version = "0.7", features = ["skills"] }
 //! ```
 
-#[cfg(feature = "skills")]
 pub mod loader {
+    #[cfg(feature = "skills")]
     use std::path::PathBuf;
+    #[cfg(feature = "skills")]
     use thulp_skill_files::{LoadedSkill, SkillLoader, SkillLoaderConfig};
 
+    #[cfg(feature = "skills")]
     /// Load all skills from the configured directories.
     ///
     /// Scans project, personal, and plugin directories for SKILL.md files
@@ -43,6 +45,13 @@ pub mod loader {
         }
     }
 
+    #[cfg(not(feature = "skills"))]
+    /// Stub when `skills` feature is disabled — returns empty.
+    pub fn load_skills(_config: &SkillsConfig) -> Vec<LoadedSkill> {
+        Vec::new()
+    }
+
+    #[cfg(feature = "skills")]
     /// List skill names and descriptions (lightweight, no full content).
     pub fn list_skills(config: &SkillsConfig) -> Vec<SkillSummary> {
         load_skills(config)
@@ -59,23 +68,36 @@ pub mod loader {
             .collect()
     }
 
+    #[cfg(not(feature = "skills"))]
+    /// Stub — always empty when `skills` feature is disabled.
+    pub fn list_skills(_config: &SkillsConfig) -> Vec<SkillSummary> {
+        Vec::new()
+    }
+
+    #[cfg(feature = "skills")]
     /// Get a single skill by name.
     pub fn get_skill(config: &SkillsConfig, name: &str) -> Option<LoadedSkill> {
         load_skills(config).into_iter().find(|s| s.qualified_name() == name)
+    }
+
+    #[cfg(not(feature = "skills"))]
+    /// Stub — always None when `skills` feature is disabled.
+    pub fn get_skill(_config: &SkillsConfig, _name: &str) -> Option<LoadedSkill> {
+        None
     }
 
     /// Skills configuration — where to look for SKILL.md files.
     #[derive(Debug, Clone, Default, serde::Deserialize)]
     pub struct SkillsConfig {
         /// Project skills directory (e.g., ./.claude/skills/).
-        pub project_dir: Option<PathBuf>,
+        pub project_dir: Option<std::path::PathBuf>,
         /// Personal skills directory (e.g., ~/.claude/skills/).
-        pub personal_dir: Option<PathBuf>,
+        pub personal_dir: Option<std::path::PathBuf>,
         /// Enterprise skills directory.
-        pub enterprise_dir: Option<PathBuf>,
+        pub enterprise_dir: Option<std::path::PathBuf>,
         /// Plugin directories to scan.
         #[serde(default)]
-        pub plugin_dirs: Vec<PathBuf>,
+        pub plugin_dirs: Vec<std::path::PathBuf>,
     }
 
     /// Lightweight skill summary for list endpoints.
@@ -86,10 +108,66 @@ pub mod loader {
         pub scope: String,
         pub path: String,
     }
+
+    #[cfg(feature = "skills")]
+    pub use thulp_skill_files::LoadedSkill;
+
+    #[cfg(not(feature = "skills"))]
+    /// Stub LoadedSkill when `skills` feature is disabled — minimal shape for handlers to compile.
+    #[derive(Debug, Clone)]
+    pub struct LoadedSkill {
+        pub file: SkillFile,
+        pub scope: SkillScope,
+    }
+
+    #[cfg(not(feature = "skills"))]
+    impl LoadedSkill {
+        pub fn qualified_name(&self) -> String {
+            String::new()
+        }
+    }
+
+    #[cfg(not(feature = "skills"))]
+    #[derive(Debug, Clone)]
+    pub struct SkillFile {
+        pub frontmatter: Frontmatter,
+        pub path: std::path::PathBuf,
+        pub content: String,
+    }
+
+    #[cfg(not(feature = "skills"))]
+    #[derive(Debug, Clone, Default)]
+    pub struct Frontmatter {
+        pub description: Option<String>,
+    }
+
+    #[cfg(not(feature = "skills"))]
+    #[derive(Debug, Clone, Default)]
+    pub struct SkillScope(pub String);
+
+    #[cfg(not(feature = "skills"))]
+    impl std::fmt::Display for SkillScope {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
 }
 
-#[cfg(feature = "skills")]
 pub use loader::*;
+
+/// Cordis Service for skills — runtime check replaces `#[cfg(feature = "skills")]` in handlers.
+///
+/// `check()` returns `cfg!(feature = "skills")` so handlers can branch at runtime:
+/// `if SkillsService.check() { /* skills path */ }` or via `ctx.get::<SkillsService>()`.
+pub struct SkillsService;
+impl ares_cordis_core::Service for SkillsService {
+    fn name(&self) -> &'static str {
+        "skills"
+    }
+    fn check(&self) -> bool {
+        cfg!(feature = "skills")
+    }
+}
 
 #[cfg(all(test, feature = "skills"))]
 mod tests {

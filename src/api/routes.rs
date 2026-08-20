@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use crate::api::handlers::deploy;
 use crate::api::handlers::loops;
+use ares_cordis_core::Context;
 
 /// Creates the main API router with all routes configured.
 ///
@@ -659,6 +660,59 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .merge(protected_routes)
         .merge(admin_routes)
         .nest("/v1", v1_routes)
+}
+
+// cordis Phase6: Context-driven router that merges RouteSets via Service discovery.
+// Keep `create_router` as shim for one commit; new code should call `build_routes`.
+/// Build router from a Cordis `Context` by merging `RouteSet`s discovered via `ctx.get::<...>()`.
+///
+/// Each admin domain (`admin::tenants`, `admin::agents`, …) and each `v1::{chat,stream,agents}`
+/// exposes `pub fn routes() -> Router`. In the final cutover this function will
+/// `ctx.get::<AdminTenantsService>()` etc. and merge their routers.
+///
+/// Mirrors `create_router` admin + v1 route sets but via `ctx` (future: `ctx.get::<...>().check()`).
+#[cfg(feature = "postgres")]
+pub fn build_routes(ctx: &Arc<Context>) -> Router<AppState> {
+    let _ = ctx;
+    Router::new()
+        .merge(crate::api::handlers::admin::tenants::routes())
+        .merge(crate::api::handlers::admin::agents::routes())
+        .merge(crate::api::handlers::admin::providers::routes())
+        .merge(crate::api::handlers::admin::tools::routes())
+        .merge(crate::api::handlers::admin::schedules::routes())
+        .merge(crate::api::handlers::admin::triggers::routes())
+        .merge(crate::api::handlers::admin::pipelines::routes())
+        .merge(crate::api::handlers::admin::billing::routes())
+        .merge(crate::api::handlers::admin::mcp::routes())
+        .merge(crate::api::handlers::admin::fleet_secrets::routes())
+        .merge(crate::api::handlers::admin::connectors::routes())
+        .merge(crate::api::handlers::admin::health::routes())
+        .merge(crate::api::handlers::admin::audit::routes())
+        .merge(crate::api::handlers::v1::chat::routes())
+        .merge(crate::api::handlers::v1::stream::routes())
+        .merge(crate::api::handlers::v1::agents::routes())
+}
+
+#[cfg(not(feature = "postgres"))]
+pub fn build_routes(ctx: &Arc<Context>) -> Router<Arc<Context>> {
+    let _ = ctx;
+    Router::new()
+        .merge(crate::api::handlers::admin::tenants::routes())
+        .merge(crate::api::handlers::admin::agents::routes())
+        .merge(crate::api::handlers::admin::providers::routes())
+        .merge(crate::api::handlers::admin::tools::routes())
+        .merge(crate::api::handlers::admin::schedules::routes())
+        .merge(crate::api::handlers::admin::triggers::routes())
+        .merge(crate::api::handlers::admin::pipelines::routes())
+        .merge(crate::api::handlers::admin::billing::routes())
+        .merge(crate::api::handlers::admin::mcp::routes())
+        .merge(crate::api::handlers::admin::fleet_secrets::routes())
+        .merge(crate::api::handlers::admin::connectors::routes())
+        .merge(crate::api::handlers::admin::health::routes())
+        .merge(crate::api::handlers::admin::audit::routes())
+        .merge(crate::api::handlers::v1::chat::routes())
+        .merge(crate::api::handlers::v1::stream::routes())
+        .merge(crate::api::handlers::v1::agents::routes())
 }
 
 /// Joins a route prefix and suffix into a single path (for nested routers).

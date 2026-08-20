@@ -45,3 +45,17 @@ pub use registry::{
     builtin_ares_tools, extension_dispatch, get_tool, list_tools, register_tool, McpRegistry,
     RegistryError, ToolRegistered, ToolRegistry, ToolUnregistered,
 };
+
+/// Cordis Service for MCP availability — runtime check replaces `#[cfg(feature = "mcp")]` in handlers.
+///
+/// `check()` returns `cfg!(feature = "mcp")` so both builds compile; handlers branch via
+/// `McpService::check()` or `ctx.get::<McpService>().check()`. Keep Cargo.toml `mcp` feature for dep selection only.
+pub struct McpService;
+impl ares_cordis_core::Service for McpService {
+    fn name(&self) -> &'static str {
+        "mcp"
+    }
+    fn check(&self) -> bool {
+        cfg!(feature = "mcp")
+    }
+}

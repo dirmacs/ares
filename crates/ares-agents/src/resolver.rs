@@ -70,6 +70,113 @@ pub fn resolve_from_candidates(
     Err(AppError::NotFound(format!("Agent '{agent_name}' not found")))
 }
 
+/// Tenant identifier for per-tenant scoping (`ctx.isolate` label).
+pub type TenantId = String;
+
+use std::future::Future;
+use std::sync::Arc;
+
+use ares_cordis_core::{CordisError, Service};
+use ares_db::TenantDb;
+
+use crate::registry::AgentRegistry;
+use crate::Agent;
+
+/// Unified agent resolver — single place that resolves agents with ordered
+/// precedence `tenant_db tenant_agents → community public → system AgentRegistry`.
+///
+/// Handlers obtain via `ctx.get::<AgentResolverService>()` and call `resolve`.
+/// Per-tenant isolation: `ctx.isolate::<AgentResolverService>("tenant:acme")`.
+/// Per-request model pinning (via `LlmService`) can be layered with
+/// `ctx.intercept(ModelOverride { ... })`.
+pub struct AgentResolverService {
+    /// Tenant DB handle for `tenant_agents` and `public` lookups.
+    pub tenant_db: Arc<TenantDb>,
+    /// System registry (TOML/TOON) fallback.
+    pub agent_registry: Arc<AgentRegistry>,
+}
+
+impl AgentResolverService {
+    /// Create a new resolver service.
+    pub fn new(tenant_db: Arc<TenantDb>, agent_registry: Arc<AgentRegistry>) -> Self {
+        Self {
+            tenant_db,
+            agent_registry,
+        }
+    }
+
+    /// Resolve an agent by name with optional tenant scoping.
+    ///
+    /// Ordered precedence:
+    /// 1. `tenant_db` `tenant_agents` (tenant-owned)
+    /// 2. `community public` (shared)
+    /// 3. `system AgentRegistry` (TOML/TOON)
+    ///
+    /// Reuses existing `resolve_agent_for_tenant` logic:
+    /// // TODO: delegate to `ares_db::tenant_agents::resolve_agent_config` + `resolver::resolve_from_candidates`
+    /// // and then `agent_registry.create_agent` or tenant-specific ConfigurableAgent.
+    pub fn resolve(
+        &self,
+        name: &str,
+        tenant: Option<TenantId>,
+    ) -> std::result::Result<Arc<dyn Agent>, AppError> {
+        // Stub: check system registry presence and synthesize a ConfigurableAgent.
+        // Full implementation will:
+        // 1) if let Some(tid) = tenant.as_deref() {
+        //        if let Ok(row) = /* tenant_agents::get_tenant_agent(pool, tid, name).await */ {
+        //            return Ok(Arc::new(ConfigurableAgent::from_tenant_row(...)));
+        //        }
+        //        if let Some(public) = /* public agent lookup */ { return Ok(public); }
+        //    }
+        // 2) if let Ok(agent) = self.agent_registry.create_agent(name).await { return Ok(Arc::new(agent)); }
+        // For now, verify system registry has the agent and return a placeholder error
+        // that keeps `cargo check` green without async DB I/O.
+        if self.agent_registry.has_agent(name) {
+            // TODO: materialise Arc<dyn Agent> via `agent_registry.create_agent(name).await`
+            // Cannot await in sync stub; caller should use async variant in future phase.
+            return Err(AppError::Configuration(format!(
+                "Agent '{name}' found in system registry but sync stub cannot materialise without async (tenant={:?})",
+                tenant
+            )));
+        }
+        // Also check tenant scope placeholder
+        if let Some(tid) = tenant {
+            // TODO: reuse existing `resolve_agent_for_tenant` / `resolve_from_candidates` with DB fetch
+            let _ = tid;
+        }
+        Err(AppError::NotFound(format!("Agent '{name}' not found")))
+    }
+
+    /// Async variant used when DB access is required.
+    pub async fn resolve_async(
+        &self,
+        _name: &str,
+        _tenant: Option<TenantId>,
+    ) -> std::result::Result<Arc<dyn Agent>, AppError> {
+        // TODO: async implementation that queries `tenant_db.pool()` for tenant_agents
+        Err(AppError::NotFound("async resolver stub".into()))
+    }
+}
+
+impl Service for AgentResolverService {
+    fn name(&self) -> &'static str {
+        "AgentResolverService"
+    }
+
+    fn init(
+        &self,
+        _ctx: &Arc<ares_cordis_core::Context>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = std::result::Result<Option<Box<dyn ares_cordis_core::Disposable>>, CordisError>> + Send + '_>> {
+        Box::pin(async move { Ok(None) })
+    }
+
+    fn check(&self) -> bool {
+        // Active when both sources are present; if DB unavailable, dependent
+        // fibers should deactivate (guarded withdrawal).
+        true
+    }
+}
+
 /// Resolve an agent for a user using the 3-tier hierarchy.
 pub async fn resolve_agent(
     db: &dyn DatabaseClient,

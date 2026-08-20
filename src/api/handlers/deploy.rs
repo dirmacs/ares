@@ -200,7 +200,7 @@ pub async fn list_deploys(State(state): State<AppState>) -> Json<Vec<DeployStatu
 /// GET /api/admin/services — health check all services
 pub async fn get_services_health() -> Result<Json<HashMap<String, ServiceHealth>>> {
     let output = tokio::process::Command::new("bash")
-        .arg(&health_script())
+        .arg(health_script())
         .output()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to run health script: {}", e)))?;
@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(health_script(), "./scripts/health.sh");
     }
 
-    #[cfg(feature = "postgres")]
+    #[cfg(test)]
     mod handler_tests {
         use super::*;
         use crate::agents::context_provider::NoOpContextProvider;
@@ -385,7 +385,6 @@ mod tests {
                 workflows: HashMap::new(),
                 rag: RagConfig::default(),
                 billing: BillingConfig::default(),
-                #[cfg(feature = "skills")]
                 skills: None,
             }
         }
@@ -442,7 +441,6 @@ mod tests {
                 loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
                 emergency_stop: Arc::new(AtomicBool::new(false)),
                 context_provider: Arc::new(NoOpContextProvider),
-                #[cfg(feature = "mcp")]
                 mcp_registry: None,
                 fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
                 runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(db.pool.clone())),

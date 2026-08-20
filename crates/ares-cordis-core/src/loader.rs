@@ -2,9 +2,14 @@
 //!
 //! `Loader` reconciles a desired [`EntryTree`] against the current tree and
 //! emits per-entry [`LoaderAction`]s.  This replaces the ad-hoc `notify` + `ArcSwap`
-//! hot-reload scattered across `AresConfigManager`, `DynamicConfigManager`,
+//! hot-reload previously scattered across `AresConfigManager`, `DynamicConfigManager`,
 //! `RuntimeToolRegistry::start_background_reload`, `ProviderRegistry`, and
 //! `NvidiaCatalogCache` (see `docs/cordis-mapping.md` §11).
+//! The unified hot-reload path is now `ReflectService::notify(TypeId)` which
+//! BFS-walks `dependents: RwLock<HashMap<TypeId, Vec<FiberId>>>` and triggers
+//! `Fiber::refresh` via `watch` channels (`notifiers: RwLock<HashMap<TypeId, watch::Sender<()>>>`)
+//! — polling via `RuntimeToolRegistry::start_background_reload` 60s `interval` is deprecated:
+//! `// REMOVED: polling fallback retained for one release then delete` (see `ReflectService` in `ares-cordis-core`).
 //!
 //! Persistence is to `config/entries.json` (JSON) or, when the `toon` feature
 //! is enabled, `config/cordis-entries.toon` via `toon-format 0.4.1`.  It never

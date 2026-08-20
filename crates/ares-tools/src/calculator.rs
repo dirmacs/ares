@@ -1,6 +1,8 @@
 use crate::registry::Tool;
+use ares_cordis_core::Service;
 use ares_types::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Calculator tool for basic arithmetic operations.
@@ -45,6 +47,109 @@ impl Tool for Calculator {
         };
 
         Ok(json!({ "result": result }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cordis Service wrapper — Phase 2 DI migration
+// ---------------------------------------------------------------------------
+
+/// Empty config for `CalculatorService`. `Default` suffices; `Serialize`/
+/// `Deserialize` required for `Plugin::Config` (`RegistryService::plugin`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CalculatorConfig;
+
+/// `CalculatorService` wraps `Calculator` for Cordis DI.
+///
+/// `Service` impl is the feature-gate boundary (no new `#[cfg]`). `Tool` impl
+/// reuses verbatim logic from `Calculator` so behavior is unchanged.
+pub struct CalculatorService;
+
+impl CalculatorService {
+    /// Create with default config.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Create from explicit config (currently empty — kept for `Plugin` compat).
+    pub fn with_config(_config: CalculatorConfig) -> Self {
+        Self
+    }
+}
+
+impl Default for CalculatorService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Service for CalculatorService {
+    fn name(&self) -> &'static str {
+        "calculator"
+    }
+}
+
+#[async_trait]
+impl Tool for CalculatorService {
+    fn name(&self) -> &str {
+        "calculator"
+    }
+
+    fn description(&self) -> &str {
+        "Perform basic arithmetic operations"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["add", "subtract", "multiply", "divide"]
+                },
+                "a": { "type": "number" },
+                "b": { "type": "number" }
+            },
+            "required": ["operation", "a", "b"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let op = args["operation"].as_str().unwrap_or("add");
+        let a = args["a"].as_f64().unwrap_or(0.0);
+        let b = args["b"].as_f64().unwrap_or(0.0);
+
+        let result = match op {
+            "add" => a + b,
+            "subtract" => a - b,
+            "multiply" => a * b,
+            "divide" => a / b,
+            _ => 0.0,
+        };
+
+        Ok(json!({ "result": result }))
+    }
+}
+
+impl crate::tool_service::ToolService for CalculatorService {
+    fn resolve(
+        &self,
+        name: &str,
+        _tenant: Option<String>,
+    ) -> Option<std::sync::Arc<dyn crate::registry::Tool>> {
+        if name == "calculator" {
+            Some(std::sync::Arc::new(CalculatorService))
+        } else {
+            None
+        }
+    }
+
+    fn list(&self, _tenant: Option<String>) -> Vec<ares_types::types::ToolDefinition> {
+        vec![ares_types::types::ToolDefinition {
+            name: "calculator".to_string(),
+            description: "Perform basic arithmetic operations".to_string(),
+            parameters: self.parameters_schema(),
+        }]
     }
 }
 

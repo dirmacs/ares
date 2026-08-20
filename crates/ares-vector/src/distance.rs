@@ -340,6 +340,7 @@ fn manhattan_distance(a: &[f32], b: &[f32]) -> f32 {
 // Scalar reference implementations (for equivalence tests)
 // ============================================================================
 
+#[cfg(test)]
 #[inline]
 fn cosine_similarity_scalar(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
@@ -349,6 +350,7 @@ fn cosine_similarity_scalar(a: &[f32], b: &[f32]) -> f32 {
     if denom == 0.0 { 0.0 } else { dot / denom }
 }
 
+#[cfg(test)]
 #[inline]
 fn l2_distance_scalar(a: &[f32], b: &[f32]) -> f32 {
     let sum: f32 = a
@@ -365,6 +367,7 @@ fn l2_distance_scalar(a: &[f32], b: &[f32]) -> f32 {
     sum.sqrt()
 }
 
+#[cfg(test)]
 #[inline]
 fn dot_product_scalar(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()

@@ -240,6 +240,7 @@ name = "ares-agents"
 version = "0.7.3"
 dependencies = [
  "ares-config",
+ "ares-cordis-core",
  "ares-db",
  "ares-llm",
  "ares-memory",
@@ -303,11 +304,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ares-cordis-core"
+version = "0.7.3"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ares-db"
 version = "0.7.3"
 dependencies = [
  "anyhow",
  "ares-config",
+ "ares-cordis-core",
  "ares-types",
  "ares-vector",
  "async-trait",
@@ -342,12 +356,14 @@ version = "0.7.3"
 dependencies = [
  "arc-swap",
  "ares-config",
+ "ares-cordis-core",
  "ares-db",
  "ares-tools",
  "ares-types",
  "async-openai",
  "async-stream",
  "async-trait",
+ "chrono",
  "claude-sdk",
  "futures",
  "llama-cpp-2",
@@ -368,6 +384,7 @@ dependencies = [
 name = "ares-mcp"
 version = "0.7.3"
 dependencies = [
+ "ares-cordis-core",
  "ares-db",
  "ares-types",
  "async-trait",
@@ -428,6 +445,7 @@ dependencies = [
  "ares-agents",
  "ares-auth",
  "ares-config",
+ "ares-cordis-core",
  "ares-db",
  "ares-llm",
  "ares-mcp",
@@ -497,6 +515,7 @@ version = "0.7.3"
 dependencies = [
  "arc-swap",
  "ares-config",
+ "ares-cordis-core",
  "ares-db",
  "ares-mcp",
  "ares-types",

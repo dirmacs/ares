@@ -10,9 +10,29 @@ use ares_llm::coordinator::ConversationMessage;
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use ares_llm::{LLMClient, LLMResponse};
 use ares_tools::registry::ToolRegistry;
+use ares_tools::ToolService;
 use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
 use async_trait::async_trait;
 use std::sync::Arc;
+
+// cordis Phase6: runtime postgres availability via Service::check() — replaces compile-time #[cfg(feature="postgres")] branching
+// Previously: `#[cfg(feature = "postgres")] token_budget_pool: Option<PgPool>`
+// Now: always-present field guarded by `ctx.get::<PostgresService>().is_some()` / `PostgresService::check()`
+// Handler example: `if ctx.get::<PostgresService>().is_some() { /* use token_budget_pool */ } else { /* fallback */ }`
+// TODO: if ctx.get::<PostgresService>().is_some() { use db } else { fallback }
+use ares_cordis_core::Service;
+
+/// Postgres availability as a Cordis Service — runtime check, not compile-time cfg.
+///
+/// `check()` returns `cfg!(feature = "postgres")` so callers can branch at runtime:
+/// `if ctx.get::<PostgresService>().is_some_and(|s| s.check()) { /* postgres path */ }`
+/// or `if ctx.get::<PostgresService>().is_some() { use db } else { fallback }`.
+pub struct PostgresService;
+impl Service for PostgresService {
+    fn check(&self) -> bool {
+        cfg!(feature = "postgres")
+    }
+}
 
 struct ProviderLlm {
     provider_name: String,
@@ -39,6 +59,16 @@ pub struct ConfigurableAgent {
     system_prompt: String,
     /// Tools available to this agent
     tool_registry: Option<Arc<ToolRegistry>>,
+    /// Unified tool service (Cordis DI). Keep alongside `tool_registry` for one
+    /// commit to keep `cargo check` green. Next migration: consumers will use
+    /// `ctx.get::<dyn ToolService>()` / `ctx.get::<UnifiedToolService>()` (see
+    /// `ares_tools::ToolService` and `ares_cordis_core::Context::get`) instead of
+    /// passing `Arc<ToolRegistry>`. `ToolService` is dyn-compatible (`Service`
+    /// is implemented for `dyn ToolService` with `Pin<Box<dyn Future>>`); we
+    /// store `Arc<dyn ToolService>` (re-exported via `crate::execution::ToolService`)
+    /// so `inject_tool_service` can accept both concrete `UnifiedToolService`
+    /// and trait objects. Both paths are kept for one commit.
+    tool_service: Option<Arc<dyn ToolService>>,
     /// Optional whitelist of tool names this agent is allowed to use.
     /// `None` means no tools are permitted.
     allowed_tools: Option<Vec<String>>,
@@ -140,6 +170,7 @@ impl ConfigurableAgent {
             provider_name,
             system_prompt,
             tool_registry,
+            tool_service: None,
             allowed_tools,
             max_tool_iterations: config.max_tool_iterations,
             parallel_tools: config.parallel_tools,
@@ -175,6 +206,7 @@ impl ConfigurableAgent {
             provider_name: "unknown".to_string(),
             system_prompt,
             tool_registry,
+            tool_service: None,
             allowed_tools,
             max_tool_iterations,
             parallel_tools,
@@ -253,6 +285,11 @@ Handle employee info, policies, and benefits."#
         if self.tool_registry.is_some() {
             return true;
         }
+        // Cordis shim: unified service also counts as tools available.
+        // Future: `ctx.get::<dyn ToolService>().is_some()` will be the check.
+        if self.tool_service.is_some() {
+            return true;
+        }
         #[cfg(feature = "postgres")]
         if self.runtime_tool_registry.is_some() && self.runtime_tenant_id.is_some() {
             return true;
@@ -263,6 +300,35 @@ Handle employee info, policies, and benefits."#
     /// Get the tool registry (if any)
     pub fn tool_registry(&self) -> Option<&Arc<ToolRegistry>> {
         self.tool_registry.as_ref()
+    }
+
+    /// Inject unified `ToolService` (Cordis DI shim).
+    ///
+    /// Stored alongside `tool_registry` for one commit to keep `cargo check`
+    /// green. Next migration: handlers will `ctx.get::<dyn ToolService>()` or
+    /// `ctx.get::<UnifiedToolService>()` (via `ares_cordis_core::Context::provide`
+    /// / `Context::get`) instead of constructing `Arc<ToolRegistry>` directly.
+    /// See `ares_tools::ToolService` (re-exported as `crate::execution::ToolService`).
+    /// Accepts `Arc<dyn ToolService>`; callers with a concrete
+    /// `UnifiedToolService` can coerce via `svc as Arc<dyn ToolService>`.
+    pub fn inject_tool_service(&mut self, svc: Arc<dyn ToolService>) {
+        self.tool_service = Some(svc);
+    }
+
+    /// Inject a concrete `UnifiedToolService` (deprecated shim kept for one
+    /// commit so existing `Arc<UnifiedToolService>` call sites still compile).
+    /// Prefer `inject_tool_service` with `Arc<dyn ToolService>`.
+    #[deprecated(note = "use inject_tool_service with Arc<dyn ToolService>")]
+    pub fn inject_unified_tool_service(&mut self, svc: Arc<ares_tools::UnifiedToolService>) {
+        self.tool_service = Some(svc as Arc<dyn ToolService>);
+    }
+
+    /// Get the unified tool service (if injected via `inject_tool_service`).
+    ///
+    /// Future path: `ctx.get::<dyn ToolService>()` / `ctx.get::<UnifiedToolService>()`
+    /// will replace this accessor. Keep both fields for one commit.
+    pub fn tool_service(&self) -> Option<&Arc<dyn ToolService>> {
+        self.tool_service.as_ref()
     }
 
     /// Get the list of allowed tool names for this agent.
@@ -331,6 +397,13 @@ Handle employee info, policies, and benefits."#
         self.runtime_tool_registry = Some(registry);
         self.runtime_tenant_id = Some(tenant_id);
     }
+
+    #[cfg(not(feature = "postgres"))]
+    /// Stub when `postgres` feature is disabled — no-op, keeps handler bodies compiling without `#[cfg]`.
+    /// Cordis P1: `PostgresService::check()` (i.e. `cfg!(feature = "postgres")`) is the runtime gate;
+    /// this method exists in both builds so `if cfg!(feature = "postgres") { agent.set_runtime_tools(...) }` compiles.
+    /// Uses `Arc<()>` to avoid depending on `RuntimeToolRegistry` which is `#[cfg(any(postgres, test))]` in `ares-tools`.
+    pub fn set_runtime_tools(&mut self, _registry: Arc<()>, _tenant_id: String) {}
 
     /// Pre-flight check: reject the call if the tenant has already exhausted
     /// their token budget.
@@ -533,6 +606,30 @@ Handle employee info, policies, and benefits."#
             }
         }
 
+        // Cordis Phase 5: also merge tools visible via unified `ToolService`
+        // (precedence: tenant runtime → fleet runtime → MCP bridge → static).
+        // Keep the existing `tool_registry` / `runtime_tool_registry` paths for
+        // one commit alongside the new `ToolService` path so `cargo check`
+        // stays green while handlers migrate to `ctx.get::<dyn ToolService>()`.
+        if let (Some(svc), Some(allowed)) = (&self.tool_service, &self.allowed_tools) {
+            let tid = {
+                #[cfg(feature = "postgres")]
+                {
+                    self.runtime_tenant_id.clone()
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    None::<String>
+                }
+            };
+            let existing: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
+            for def in svc.list(tid) {
+                if allowed.iter().any(|a| a == &def.name) && !existing.contains(&def.name) {
+                    defs.push(def);
+                }
+            }
+        }
+
         defs
     }
 
@@ -559,6 +656,25 @@ Handle employee info, policies, and benefits."#
         #[cfg(feature = "postgres")]
         if let (Some(rt), Some(tid)) = (&self.runtime_tool_registry, &self.runtime_tenant_id) {
             if rt.get_for_tenant(tool_name, Some(tid)).is_some() {
+                return true;
+            }
+        }
+        // Unified `ToolService` probe — keeps both `runtime_tool_registry`
+        // and `ctx.get::<dyn ToolService>().resolve(name, tenant)` paths for
+        // one commit so existing `get_for_tenant` shim still works while
+        // new code migrates to `ToolService::resolve`.
+        if let Some(svc) = &self.tool_service {
+            let tid = {
+                #[cfg(feature = "postgres")]
+                {
+                    self.runtime_tenant_id.clone()
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    None::<String>
+                }
+            };
+            if svc.resolve(tool_name, tid).is_some() {
                 return true;
             }
         }
@@ -611,9 +727,11 @@ Handle employee info, policies, and benefits."#
     /// Execute a single tool call, routing to the correct registry.
     ///
     /// Built-in tools (in-process `ToolRegistry`) are tried first. If the tool
-    /// is not built-in, it is dispatched to the tenant-scoped runtime registry
-    /// (`execute_for_tenant`), so DB-defined http/mcp/sql/script tools work and
-    /// stay isolated to the agent's tenant.
+    /// is not built-in, it is dispatched via the unified `ToolService`
+    /// (`resolve` + `execute`) when available, otherwise via the tenant-scoped
+    /// runtime registry (`get_for_tenant`) — the latter is kept as a
+    /// deprecated shim for one commit so both paths compile while handlers
+    /// migrate to `ctx.get::<dyn ToolService>().resolve(name, tenant)`.
     async fn dispatch_tool(
         &self,
         name: &str,
@@ -625,9 +743,33 @@ Handle employee info, policies, and benefits."#
                 return reg.execute(name, args).await;
             }
         }
+        // Prefer unified `ToolService` (tenant runtime → fleet → MCP → static).
+        // Keep both `tool_service.resolve` and `runtime_tool_registry.get_for_tenant`
+        // for one commit — do not break `cargo check` while `RealToolService` keeps
+        // the deprecated `get_for_tenant` shim in `runtime_registry.rs`.
+        if let Some(svc) = &self.tool_service {
+            let tid = {
+                #[cfg(feature = "postgres")]
+                {
+                    self.runtime_tenant_id.clone()
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    None::<String>
+                }
+            };
+            if let Some(tool) = svc.resolve(name, tid.clone()) {
+                let args = self.tenant_scoped_builtin_args(name, args)?;
+                return tool.execute(args).await;
+            }
+            // Also try the deprecated `get_for_tenant` shape via ToolService if needed:
+            // keep fallback to runtime registry below so both compile.
+        }
         #[cfg(feature = "postgres")]
         if let (Some(rt), Some(tid)) = (&self.runtime_tool_registry, &self.runtime_tenant_id) {
-            return rt.execute_for_tenant(name, args, Some(tid)).await;
+            if let Some(tool) = rt.get_for_tenant(name, Some(tid)) {
+                return tool.execute(args).await;
+            }
         }
         Err(AppError::NotFound(format!("Tool not found: {name}")))
     }

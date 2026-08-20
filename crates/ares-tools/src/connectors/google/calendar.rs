@@ -1,7 +1,7 @@
 //! Google Calendar connector tools.
 
-use crate::connectors::google::{GoogleClient, GoogleError};
-use crate::connectors::{require_tenant_id, ConnectorError};
+use crate::connectors::google::GoogleClient;
+use crate::connectors::require_tenant_id;
 use crate::registry::Tool;
 use ares_types::types::{AppError, Result};
 use async_trait::async_trait;

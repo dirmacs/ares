@@ -499,6 +499,7 @@ impl RuntimeToolRegistry {
     }
 
     /// Execute a tool by name with tenant verification.
+    #[deprecated(note = "use ToolService::resolve")]
     pub async fn execute_for_tenant(
         &self,
         name: &str,

@@ -162,6 +162,8 @@ impl ToolRegistry {
             ))),
         }
     }
+
+    // removed: unified via UnifiedToolService; call ctx.get::<dyn ToolService>().resolve
 }
 
 impl Default for ToolRegistry {

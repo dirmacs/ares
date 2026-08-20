@@ -26,11 +26,11 @@ use arc_swap::ArcSwap;
 use ares_config::nvidia_catalog::{NvidiaCatalogCache, NvidiaConfig};
 use ares_config::toml_config::{AresConfig, ModelConfig, ProviderConfig};
 use ares_types::types::{AppError, Result};
-use parking_lot::RwLock;
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::watch;
+// Phase 3 unified hot-reload: re-export ReflectService from core (single source)
+pub use ares_cordis_core::ReflectService;
 
 /// Runtime provider entry, synthesized from the DB `runtime_providers` table.
 #[derive(Debug, Clone)]
@@ -1225,42 +1225,21 @@ impl ConfigBasedLLMFactory {
     }
 }
 
-// TODO cordis Phase3: replace start_background_reload 60s poll with Fiber::refresh via ReflectService::notify(TypeId::of::<ProviderRegistry>())
+// REMOVED: polling fallback retained for one release then delete. Unified hot-reload now via ReflectService::notify(TypeId::of::<ProviderRegistry>()) BFS walks dependents and calls Fiber::refresh via watch channel.
 
-// Cordis Phase 3 stub — proves Context + Loader integration compiles; background poll stays until Fiber::refresh wiring lands.
+/// Phase 3 unified hot-reload demo — watch channel creation on provide.
+/// Compile-time proof that notifiers/dependents insertion compiles via ReflectService.
 pub fn reflect_notify_stub(ctx: &Arc<ares_cordis_core::Context>) {
+    // Prove Loader integration still compiles
     let _ = ctx.get::<ares_cordis_core::loader::Loader>();
-    let _ = TypeId::of::<ProviderRegistry>();
-}
-
-/// Minimal `ReflectService` stub proving `notify(TypeId)` fan-out compiles.
-///
-/// Full `ReflectService` (per `docs/cordis-mapping.md` §7) tracks
-/// `notifiers: RwLock<HashMap<TypeId, watch::Sender<()>>>` and
-/// `dependents: RwLock<HashMap<TypeId, Vec<FiberId>>>` and BFS-walks
-/// dependent fibers to trigger `Fiber::refresh`.  This stub keeps the type
-/// shape while deferring the BFS implementation to Phase 3 wiring.
-#[allow(dead_code)]
-pub struct ReflectService {
-    notifiers: RwLock<HashMap<TypeId, watch::Sender<()>>>,
-    dependents: RwLock<HashMap<TypeId, Vec<ares_cordis_core::FiberId>>>,
-}
-
-impl ReflectService {
-    pub fn new() -> Self {
-        Self {
-            notifiers: RwLock::new(HashMap::new()),
-            dependents: RwLock::new(HashMap::new()),
-        }
+    let tid = TypeId::of::<ProviderRegistry>();
+    // Prove ReflectService watch channel creation on provide + dependents insertion + BFS notify compiles
+    if let Some(reflect) = ctx.get::<ReflectService>() {
+        let _rx = reflect.ensure_notifier(tid);
+        reflect.register_dependent(tid, 43);
+        reflect.notify(tid);
     }
-
-    pub fn notify(&self, _tid: TypeId) {}
-}
-
-impl Default for ReflectService {
-    fn default() -> Self {
-        Self::new()
-    }
+    let _ = tid;
 }
 
 #[cfg(test)]

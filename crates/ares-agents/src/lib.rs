@@ -8,6 +8,9 @@
 //! - **Router** - Routes requests to appropriate specialized agents
 //! - **Orchestrator** - Coordinates multi-step agent workflows
 //!
+#![allow(dead_code)]
+#![allow(unused_variables)]
+
 //! ## Architecture
 //!
 //! All agents are now created dynamically via `ConfigurableAgent`, which reads

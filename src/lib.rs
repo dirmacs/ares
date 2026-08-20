@@ -148,6 +148,7 @@
 #![allow(private_interfaces)]
 #![allow(dead_code)]
 #![allow(ambiguous_glob_reexports)]
+#![allow(deprecated)]
 
 /// AI agent orchestration and management.
 pub mod agents { pub use ares_agents::*; }

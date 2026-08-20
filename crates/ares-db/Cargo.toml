@@ -20,6 +20,7 @@ pgvector = ["postgres"]
 [dependencies]
 ares-types = { workspace = true }
 ares-config = { workspace = true }
+ares-cordis-core = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

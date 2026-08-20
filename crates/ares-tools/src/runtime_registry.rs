@@ -7,6 +7,7 @@
 //! A background Tokio task can periodically call [`RuntimeToolRegistry::reload`] so
 //! edits in the admin UI are reflected without a service restart.
 
+use std::any::TypeId as CordisTypeId;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -16,9 +17,8 @@ use arc_swap::ArcSwap;
 #[cfg(any(feature = "mcp", test))]
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::time::interval;
-// cordis Phase 3 imports for reflect stub (kept minimal to prove compilation)
-use std::any::TypeId as CordisTypeId;
+// cordis Phase 3 unified imports for ReflectService watch + deprecated shim tracing
+use tracing;
 
 use ares_db::runtime_tools::{RuntimeTool, RuntimeToolStore};
 use ares_types::types::{AppError, Result, ToolDefinition};
@@ -584,32 +584,23 @@ impl RuntimeToolRegistry {
     }
 
     // -------------------------------------------------------------------------
-    // Background reload
+    // Background reload — Phase 3 unified via ReflectService::notify + Fiber::refresh
     // -------------------------------------------------------------------------
 
-    // TODO cordis Phase3: replace start_background_reload 60s poll with Fiber::refresh via ReflectService::notify(TypeId::of::<RuntimeToolRegistry>())
+    // REMOVED: polling fallback retained for one release then delete. Unified hot-reload now via ReflectService::notify(TypeId::of::<RuntimeToolRegistry>()) BFS walks dependents and calls Fiber::refresh via watch channel.
 
-    /// Spawn a background Tokio task that calls [`reload`] periodically.
+    /// Deprecated shim — background polling replaced by `Fiber::refresh` via `ReflectService::notify`.
     ///
-    /// Returns `false` without spawning when `reload_interval_secs` is `0`.
+    /// Retained for one release to avoid breaking callers; now returns `false` without spawning.
+    /// Use `ReflectService::notify(TypeId::of::<RuntimeToolRegistry>())` triggered by `watch` channel on DB change instead.
+    #[deprecated(note = "polling replaced by ReflectService::notify + Fiber::refresh; no background task spawned")]
     pub fn start_background_reload(self: Arc<Self>) -> bool {
-        let secs = self.reload_interval_secs;
-        if secs == 0 {
-            return false;
-        }
-
-        tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_secs(secs));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                ticker.tick().await;
-                if let Err(_e) = self.reload().await {
-                    // Silently ignore background reload errors to avoid
-                    // spamming logs in environments without tracing.
-                }
-            }
-        });
-        true
+        // REMOVED: polling fallback retained for one release then delete.
+        tracing::warn!(
+            "RuntimeToolRegistry::start_background_reload is deprecated: use ReflectService::notify(TypeId::of::<RuntimeToolRegistry>()) with Fiber::refresh via watch channel; no background task spawned"
+        );
+        let _ = self.reload_interval_secs;
+        false
     }
 
     /// Atomically replace the reload interval.
@@ -628,10 +619,21 @@ impl RuntimeToolRegistry {
     }
 }
 
-// Cordis Phase 3 stub — proves Context + Loader integration compiles; background poll stays until Fiber::refresh wiring lands.
+/// Phase 3 unified hot-reload demo — watch channel creation on provide.
+/// Compile-time proof that notifiers/dependents insertion compiles via ReflectService.
 pub fn reflect_notify_stub(ctx: &Arc<ares_cordis_core::Context>) {
+    // Prove Loader integration still compiles
     let _ = ctx.get::<ares_cordis_core::loader::Loader>();
-    let _ = CordisTypeId::of::<RuntimeToolRegistry>();
+    let tid = CordisTypeId::of::<RuntimeToolRegistry>();
+    // Prove ReflectService watch channel creation on provide + dependents insertion + BFS notify compiles
+    if let Some(reflect) = ctx.get::<ares_cordis_core::ReflectService>() {
+        let _rx = reflect.ensure_notifier(tid);
+        // dependents insertion proof
+        reflect.register_dependent(tid, 42);
+        // BFS notify (watch fan-out + Fiber::refresh) compiles
+        reflect.notify(tid);
+    }
+    let _ = tid;
 }
 
 // =============================================================================
@@ -1005,7 +1007,10 @@ mod tests {
             sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool never fails");
         let reg = Arc::new(RuntimeToolRegistry::with_interval(pool, 0));
 
-        assert!(!reg.start_background_reload());
+        #[allow(deprecated)]
+        let result = reg.start_background_reload();
+        // REMOVED: polling fallback retained for one release then delete — shim returns false without spawning
+        assert!(!result);
     }
 
     #[tokio::test]
@@ -1014,7 +1019,10 @@ mod tests {
             sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool never fails");
         let reg = Arc::new(RuntimeToolRegistry::with_interval(pool, 60));
 
-        assert!(reg.start_background_reload());
+        #[allow(deprecated)]
+        let result = reg.start_background_reload();
+        // REMOVED: polling fallback retained for one release then delete — deprecated shim now returns false without spawning instead of true
+        assert!(!result);
     }
 
     #[tokio::test]

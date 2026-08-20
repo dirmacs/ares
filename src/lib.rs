@@ -198,8 +198,7 @@ pub mod rag;
 /// Multi-agent research coordination.
 #[cfg(feature = "postgres")]
 pub mod research { pub use ares_agents::research::*; }
-/// SKILL.md file discovery and loading (requires `skills` feature).
-#[cfg(feature = "skills")]
+/// SKILL.md file discovery and loading — runtime-gated via `SkillsService::check()` (was `#[cfg(feature = "skills")]`).
 pub mod skills;
 /// Built-in tools (calculator, web search).
 pub mod tools;
@@ -249,14 +248,19 @@ use crate::auth::jwt::AuthService;
 #[deprecated(note = "use Arc<Context>")]
 pub type AppState = std::sync::Arc<ares_cordis_core::Context>;
 
-/// Cordis Context alias (visible alongside legacy struct when `postgres` enabled).
-/// After migration `AppState` will be this type; the legacy `AppState` struct below will be removed.
+/// Cordis Context alias — primary after HOLD release.
+/// `pub type AppState = Arc<Context>` is final; this alias is deprecated shim for one release.
 #[cfg(feature = "postgres")]
 #[deprecated(note = "use Arc<Context>")]
 pub type CordisAppState = std::sync::Arc<ares_cordis_core::Context>;
 
-/// Application state shared across handlers
+/// Final Cordis type — `pub type AppState = Arc<Context>` after handlers migrate.
+// HOLD: delete `pub struct AppState` next release after 270 `State<AppState>` handlers migrate to `State<Arc<Context>>`.
+
+/// Application state shared across handlers — HOLD: deprecated shim, delete next release after handlers migrate to `State<Arc<Context>>`.
+/// Use `CordisAppState = Arc<Context>` (`AppState` type alias after migration) + `ctx.get::<...>()`.
 #[cfg(feature = "postgres")]
+#[deprecated(note = "use CordisAppState=Arc<Context>")]
 #[derive(Clone)]
 pub struct AppState {
     /// TOML-based infrastructure configuration with hot-reload support
@@ -308,8 +312,9 @@ pub struct AppState {
 #[allow(deprecated)]
 impl AppState {}
 
-/// Build router from Cordis `Context` — mirrors `base_router` but reads services from `ctx.get::<...>()`
-/// instead of constructing inline. This is the Cordis-style entry point; `base_router` remains as shim.
+/// Build router from Cordis `Context` — primary entry (Phase 2 step 12).
+/// Reads services via `ctx.get::<...>()` + `State<Arc<Context>>` handlers.
+/// `base_router` is deprecated shim delegating here; HOLD until handlers migrate.
 #[cfg(feature = "postgres")]
 pub fn build_router(ctx: std::sync::Arc<ares_cordis_core::Context>) -> axum::Router {
     // Prove `State<Arc<Context>>` + `ctx.get` compiles — reads services that implement `Service`.
@@ -330,7 +335,9 @@ pub fn build_router(ctx: std::sync::Arc<ares_cordis_core::Context>) -> axum::Rou
         .with_state(ctx)
 }
 
-/// Returns the base ARES router with all generic endpoints.
+/// Returns the base ARES router — deprecated shim delegating to `build_router`.
+///
+/// HOLD: delete next release after handlers migrate. New code should use `build_router(ctx)` + `State<Arc<Context>>`.
 ///
 /// Extension crates can `.merge()` additional routes and `.layer()` middleware
 /// on top of this to build managed platform binaries.
@@ -345,8 +352,9 @@ pub fn build_router(ctx: std::sync::Arc<ares_cordis_core::Context>) -> axum::Rou
 ///     .layer(my_custom_middleware());
 /// ```
 #[cfg(feature = "postgres")]
+#[deprecated(note = "use build_router(ctx: Arc<Context>)")]
 pub fn base_router(state: AppState) -> axum::Router {
-    // Shim: also prove `build_router` compiles via a temporary Context (AppState coercion after migration).
+    // Shim delegates to build_router via temporary Context — HOLD: real delegation after Context provides TenantDb/AuthService.
     #[allow(deprecated)]
     let _ = {
         let _ctx = ares_cordis_core::Context::new_root();

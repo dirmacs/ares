@@ -6,31 +6,23 @@
 //! using `Authorization: Bearer ares_xxx`. The `api_key_auth_middleware`
 //! injects `TenantContext` into request extensions before these handlers run.
 
-use crate::agents::context_provider::AgentRuntimeContext;
-use crate::agents::tenant_agent;
 use crate::db::agent_runs;
-use crate::db::run_history::{LogToolCallRequest, RunHistoryStore};
-use crate::db::tenant_agents::{self, TenantAgent};
+use crate::db::tenant_agents::TenantAgent;
 use crate::memory::estimate_tokens;
 use crate::models::{TenantContext, TenantTier};
-use crate::observability::RunObservability;
-use crate::research::coordinator::ResearchCoordinator;
 use crate::types::{
-    AgentContext, AgentType, AppError, ChatRequest, ChatResponse, ResearchRequest,
-    ResearchResponse, Result,
+    AppError, Result,
 };
 use crate::AppState;
 use ares_agents::Agent;
-use ares_types::types::ToolDefinition;
 use axum::{
-    extract::{Extension, Path, Query, State},
-    http::{HeaderName, HeaderValue, StatusCode},
+    extract::Extension,
+    http::{HeaderName, HeaderValue},
     response::{IntoResponse, Response},
     Json,
 };
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 // cordis Phase6: decomposed v1 submodules — each provides `pub fn routes() -> RouteSet` stub.
 #[path = "v1/chat.rs"]

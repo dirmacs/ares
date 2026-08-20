@@ -255,7 +255,7 @@ async fn execute_target_agent(
                 .map(crate::skill_engine::skill_result_token_counts)
                 .unwrap_or((0, 0));
             let effects = pipeline_target_run_effects(
-                &pipeline,
+                pipeline,
                 tenant_id,
                 &run_id,
                 origin_ref,
@@ -330,7 +330,7 @@ async fn execute_target_agent(
                 .await;
             });
 
-            return skill_result.map(|_| ()).map_err(|e| e);
+            return skill_result.map(|_| ());
         }
     }
 

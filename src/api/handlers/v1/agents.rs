@@ -6,27 +6,21 @@ use super::*;
 use crate::agents::context_provider::AgentRuntimeContext;
 use crate::agents::tenant_agent;
 use crate::db::agent_runs;
-use crate::db::run_history::{LogToolCallRequest, RunHistoryStore};
-use crate::db::tenant_agents::{self, TenantAgent};
-use crate::memory::estimate_tokens;
-use crate::models::{TenantContext, TenantTier};
+use crate::db::tenant_agents::{self};
+use crate::models::TenantContext;
 use crate::observability::RunObservability;
-use crate::research::coordinator::ResearchCoordinator;
 use crate::types::{
-    AgentContext, AgentType, AppError, ChatRequest, ChatResponse, ResearchRequest,
-    ResearchResponse, Result,
+    AgentContext, Result,
 };
 use crate::AppState;
 use ares_agents::Agent;
-use ares_types::types::ToolDefinition;
 use axum::{
     extract::{Extension, Path, Query, State},
-    http::{HeaderName, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    http::StatusCode,
+    response::Response,
     Json,
 };
-use chrono::{DateTime, Datelike, TimeZone, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{TimeZone, Utc};
 use std::sync::Arc;
 
 /// GET /v1/agents — list all agents for this tenant
@@ -592,7 +586,7 @@ pub async fn list_api_keys(
             prefix: k.key_prefix,
             created_at: ts_to_dt(k.created_at),
             last_used: None,
-            expires_at: k.expires_at.map(|e| ts_to_dt(e)),
+            expires_at: k.expires_at.map(ts_to_dt),
         })
         .collect();
 
@@ -618,7 +612,7 @@ pub async fn create_api_key(
             prefix: api_key.key_prefix,
             created_at: ts_to_dt(api_key.created_at),
             last_used: None,
-            expires_at: api_key.expires_at.map(|e| ts_to_dt(e)),
+            expires_at: api_key.expires_at.map(ts_to_dt),
         },
         secret: raw_key,
     }))
@@ -691,7 +685,7 @@ pub async fn delete_tenant_data(
 }
 
 pub fn routes() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post, put};
+    use axum::routing::{delete, get, post};
     axum::Router::new()
         .route("/v1/agents/list_agents", get(list_agents))
         .route("/v1/agents/get_agent", get(get_agent))

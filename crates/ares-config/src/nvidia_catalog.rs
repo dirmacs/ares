@@ -199,7 +199,7 @@ impl NvidiaCatalogCache {
             .collect();
 
         // Stable sort by quality score descending
-        entries.sort_by(|a, b| b.quality_score.cmp(&a.quality_score));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.quality_score));
 
         let count = entries.len();
         self.inner.store(Arc::new(entries));

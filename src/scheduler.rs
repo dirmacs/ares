@@ -416,7 +416,7 @@ async fn execute_scheduled_agent(
             .await;
         });
 
-        return skill_result.map(|_| ()).map_err(|e| e);
+        return skill_result.map(|_| ());
     }
 
     // 2. Resolve and execute regular LLM-backed agents.

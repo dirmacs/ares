@@ -167,32 +167,23 @@ impl SkillEngine {
                     ensure_tenant_tool_allowed(&self.pool, tenant_id, &tool_name).await?;
                     let start = std::time::Instant::now();
 
-                    // Try runtime registry first; fall back to static registry only when
-                    // no tenant-visible runtime tool exists. Runtime execution failures
-                    // must surface instead of silently invoking a different built-in tool
-                    // with the same name.
-                    let result = match self
-                        .runtime_tool_registry
-                        .execute_for_tenant(&tool_name, args.clone(), Some(tenant_id))
-                        .await
+                    // Try runtime registry first via ToolService precedence; fall back to static
+                    // registry only when no tenant-visible runtime tool exists. Runtime
+                    // execution failures must surface instead of silently invoking a
+                    // different built-in tool with the same name.
+                    let result = if let Some(tool) =
+                        self.runtime_tool_registry.get_for_tenant(&tool_name, Some(tenant_id))
                     {
-                        Ok(rt) => rt,
-                        Err(err) if runtime_tool_error_allows_static_fallback(&err) => {
-                            if let Some(tool) = self.tool_registry.get(&tool_name) {
-                                let tool = Arc::clone(tool);
-                                tool.execute(args.clone())
-                                    .await
-                                    .map_err(|e| format!("Tool execution error: {}", e))?
-                            } else {
-                                return Err(format!("Tool {} not found", tool_name));
-                            }
-                        }
-                        Err(err) => {
-                            return Err(format!(
-                                "Runtime tool {} execution error: {}",
-                                tool_name, err
-                            ));
-                        }
+                        tool.execute(args.clone())
+                            .await
+                            .map_err(|e| format!("Runtime tool {} execution error: {}", tool_name, e))?
+                    } else if let Some(tool) = self.tool_registry.get(&tool_name) {
+                        let tool = Arc::clone(tool);
+                        tool.execute(args.clone())
+                            .await
+                            .map_err(|e| format!("Tool execution error: {}", e))?
+                    } else {
+                        return Err(format!("Tool {} not found", tool_name));
                     };
 
                     let latency_ms = start.elapsed().as_millis() as i64;
@@ -323,28 +314,19 @@ impl SkillEngine {
                 ensure_tenant_tool_allowed(&self.pool, tenant_id, tool_name).await?;
                 let start = std::time::Instant::now();
 
-                let result = match self
-                    .runtime_tool_registry
-                    .execute_for_tenant(tool_name, args.clone(), Some(tenant_id))
-                    .await
+                let result = if let Some(tool) =
+                    self.runtime_tool_registry.get_for_tenant(tool_name, Some(tenant_id))
                 {
-                    Ok(rt) => rt,
-                    Err(err) if runtime_tool_error_allows_static_fallback(&err) => {
-                        if let Some(tool) = self.tool_registry.get(tool_name) {
-                            let tool = Arc::clone(tool);
-                            tool.execute(args.clone())
-                                .await
-                                .map_err(|e| format!("Tool execution error: {}", e))?
-                        } else {
-                            return Err(format!("Tool {} not found", tool_name));
-                        }
-                    }
-                    Err(err) => {
-                        return Err(format!(
-                            "Runtime tool {} execution error: {}",
-                            tool_name, err
-                        ));
-                    }
+                    tool.execute(args.clone())
+                        .await
+                        .map_err(|e| format!("Runtime tool {} execution error: {}", tool_name, e))?
+                } else if let Some(tool) = self.tool_registry.get(tool_name) {
+                    let tool = Arc::clone(tool);
+                    tool.execute(args.clone())
+                        .await
+                        .map_err(|e| format!("Tool execution error: {}", e))?
+                } else {
+                    return Err(format!("Tool {} not found", tool_name));
                 };
 
                 let latency_ms = start.elapsed().as_millis() as i64;
@@ -544,7 +526,7 @@ impl SkillEngine {
             completion_tokens: usage.completion_tokens as i64,
             total_tokens: usage.total_tokens as i64,
             estimated_cost_usd,
-            latency_ms: latency_ms,
+            latency_ms,
             status: RUN_HISTORY_STATUS_SUCCESS.to_string(),
             error_message: None,
             request_payload: None,

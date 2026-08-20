@@ -10,6 +10,7 @@ pub enum TenantTier {
 }
 
 impl TenantTier {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "free" => Some(TenantTier::Free),
@@ -27,6 +28,13 @@ impl TenantTier {
             TenantTier::Pro => "pro",
             TenantTier::Enterprise => "enterprise",
         }
+    }
+}
+
+impl std::str::FromStr for TenantTier {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        TenantTier::from_str(s).ok_or_else(|| format!("unknown tenant tier: {}", s))
     }
 }
 

@@ -6,11 +6,7 @@ use super::*;
 use crate::agents::context_provider::AgentRuntimeContext;
 use crate::agents::tenant_agent;
 use crate::db::agent_runs;
-use crate::db::run_history::{LogToolCallRequest, RunHistoryStore};
-use crate::db::tenant_agents::{self, TenantAgent};
-use crate::memory::estimate_tokens;
-use crate::models::{TenantContext, TenantTier};
-use crate::observability::RunObservability;
+use crate::models::TenantContext;
 use crate::research::coordinator::ResearchCoordinator;
 use crate::types::{
     AgentContext, AgentType, AppError, ChatRequest, ChatResponse, ResearchRequest,
@@ -18,16 +14,11 @@ use crate::types::{
 };
 use crate::AppState;
 use ares_agents::Agent;
-use ares_types::types::ToolDefinition;
 use axum::{
-    extract::{Extension, Path, Query, State},
-    http::{HeaderName, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    extract::{Extension, State},
+    response::Response,
     Json,
 };
-use chrono::{DateTime, Datelike, TimeZone, Utc};
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 /// POST /v1/chat — tenant-scoped chat (API key auth, no conversation history)
 pub async fn v1_chat(
@@ -301,7 +292,7 @@ pub async fn v1_research(
 }
 
 pub fn routes() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post, put};
+    use axum::routing::post;
     axum::Router::new()
         .route("/v1/chat/v1_chat", post(v1_chat))
         .route("/v1/chat/v1_research", post(v1_research))

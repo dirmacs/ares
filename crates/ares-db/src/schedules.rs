@@ -183,7 +183,7 @@ impl<'a> ScheduleStore<'a> {
         let now = now_ts();
         let id = uuid::Uuid::new_v4().to_string();
         let next_run_at = compute_next_run(&req.cron_expression, &req.timezone)
-            .map_err(|e| AppError::InvalidInput(e))?;
+            .map_err(AppError::InvalidInput)?;
 
         let row = sqlx::query(
             "INSERT INTO agent_schedules \
@@ -217,7 +217,7 @@ impl<'a> ScheduleStore<'a> {
         validate_schedule_request(req)?;
         let now = now_ts();
         let next_run_at = compute_next_run(&req.cron_expression, &req.timezone)
-            .map_err(|e| AppError::InvalidInput(e))?;
+            .map_err(AppError::InvalidInput)?;
 
         let row = sqlx::query(&format!(
             "UPDATE agent_schedules SET \

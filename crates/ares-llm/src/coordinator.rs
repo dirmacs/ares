@@ -590,6 +590,7 @@ pub struct ToolCoordinator {
     client: Box<dyn LLMClient>,
     /// Ordered fallback chain: `(provider_name, client)` pairs tried when
     /// the primary fails with a retryable error.
+    #[allow(dead_code)]
     fallback_chain: Vec<(String, Box<dyn LLMClient>)>,
     registry: Arc<ToolRegistry>,
     config: ToolCallingConfig,
@@ -752,7 +753,7 @@ impl ToolCoordinator {
             let tool_latency = tool_start.elapsed().as_millis() as i64;
 
             // Record tool calls and add results to message history
-            for (_idx, record) in tool_results.into_iter().enumerate() {
+            for record in tool_results.into_iter() {
                 // Log the tool call
                 if let Some(obs) = &self.observability {
                     let status = if record.success {

@@ -654,7 +654,7 @@ Handle employee info, policies, and benefits."#
         }
         // Unified `ToolService` probe — keeps both `runtime_tool_registry`
         // and `ctx.get::<dyn ToolService>().resolve(name, tenant)` paths for
-        // one commit so existing `execute_for_tenant` shim still works while
+        // one commit so existing `get_for_tenant` shim still works while
         // new code migrates to `ToolService::resolve`.
         if let Some(svc) = &self.tool_service {
             let tid = {
@@ -722,7 +722,7 @@ Handle employee info, policies, and benefits."#
     /// Built-in tools (in-process `ToolRegistry`) are tried first. If the tool
     /// is not built-in, it is dispatched via the unified `ToolService`
     /// (`resolve` + `execute`) when available, otherwise via the tenant-scoped
-    /// runtime registry (`execute_for_tenant`) — the latter is kept as a
+    /// runtime registry (`get_for_tenant`) — the latter is kept as a
     /// deprecated shim for one commit so both paths compile while handlers
     /// migrate to `ctx.get::<dyn ToolService>().resolve(name, tenant)`.
     async fn dispatch_tool(
@@ -737,9 +737,9 @@ Handle employee info, policies, and benefits."#
             }
         }
         // Prefer unified `ToolService` (tenant runtime → fleet → MCP → static).
-        // Keep both `tool_service.resolve` and `runtime_tool_registry.execute_for_tenant`
+        // Keep both `tool_service.resolve` and `runtime_tool_registry.get_for_tenant`
         // for one commit — do not break `cargo check` while `RealToolService` keeps
-        // the deprecated `execute_for_tenant` shim in `runtime_registry.rs`.
+        // the deprecated `get_for_tenant` shim in `runtime_registry.rs`.
         if let Some(svc) = &self.tool_service {
             let tid = {
                 #[cfg(feature = "postgres")]
@@ -755,12 +755,14 @@ Handle employee info, policies, and benefits."#
                 let args = self.tenant_scoped_builtin_args(name, args)?;
                 return tool.execute(args).await;
             }
-            // Also try the deprecated `execute_for_tenant` shape via ToolService if needed:
+            // Also try the deprecated `get_for_tenant` shape via ToolService if needed:
             // keep fallback to runtime registry below so both compile.
         }
         #[cfg(feature = "postgres")]
         if let (Some(rt), Some(tid)) = (&self.runtime_tool_registry, &self.runtime_tenant_id) {
-            return rt.execute_for_tenant(name, args, Some(tid)).await;
+            if let Some(tool) = rt.get_for_tenant(name, Some(tid)) {
+                return tool.execute(args).await;
+            }
         }
         Err(AppError::NotFound(format!("Tool not found: {name}")))
     }

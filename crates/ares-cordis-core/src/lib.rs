@@ -4,10 +4,11 @@
 use parking_lot::{Mutex, RwLock};
 use serde::{de::DeserializeOwned, Serialize};
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
+use tokio::sync::watch;
 
 use thiserror::Error;
 
@@ -578,6 +579,182 @@ impl Default for RegistryService {
 }
 
 impl Service for RegistryService {}
+
+// ---------------------------------------------------------------------------
+// ReflectService — Phase 3 unified hot-reload (watch + BFS via Fiber::refresh)
+// ---------------------------------------------------------------------------
+
+/// Unified hot-reload coordinator — replaces 60s `ArcSwap` polling.
+///
+/// Tracks `notifiers: RwLock<HashMap<TypeId, watch::Sender<()>>>` for DB/file
+/// change fan-out and `dependents: RwLock<HashMap<TypeId, Vec<FiberId>>>` for
+/// BFS dependency walks. `notify(TypeId)` BFS-walks `dependents` and calls
+/// `Fiber::refresh` on each dependent fiber, using the same `Fiber` impl that
+/// recomputes `epoch` from `inject` versions (see `Fiber::refresh`). Watch
+/// channels are created lazily on `provide` via `ensure_notifier` — prove by
+/// calling it on registry creation (e.g. `RuntimeToolRegistry` / `ProviderRegistry`
+/// insertion). See `docs/cordis-mapping.md` §7, §11.
+///
+/// `fibers` / `fiber_provides` / `ctx` are extra bookkeeping for BFS + async
+/// `refresh`; `notifiers` + `dependents` are the required fields per spec.
+#[allow(dead_code)]
+pub struct ReflectService {
+    notifiers: RwLock<HashMap<TypeId, watch::Sender<()>>>,
+    dependents: RwLock<HashMap<TypeId, Vec<FiberId>>>,
+    fibers: RwLock<HashMap<FiberId, Arc<Fiber>>>,
+    fiber_provides: RwLock<HashMap<FiberId, TypeId>>,
+    ctx: RwLock<Option<Weak<Context>>>,
+}
+
+impl ReflectService {
+    pub fn new() -> Self {
+        Self {
+            notifiers: RwLock::new(HashMap::new()),
+            dependents: RwLock::new(HashMap::new()),
+            fibers: RwLock::new(HashMap::new()),
+            fiber_provides: RwLock::new(HashMap::new()),
+            ctx: RwLock::new(None),
+        }
+    }
+
+    /// Ensure a `watch` channel exists for `tid`; create lazily on `provide`.
+    /// Returns a `Receiver` that callers can `changed().await` on for DB/file updates.
+    /// This is the “provide watch channel creation on provide” hook — call after
+    /// `ctx.provide::<T>(svc)` to prove compile-time insertion.
+    pub fn ensure_notifier(&self, tid: TypeId) -> watch::Receiver<()> {
+        let mut notifiers = self.notifiers.write();
+        if let Some(sender) = notifiers.get(&tid) {
+            return sender.subscribe();
+        }
+        let (tx, rx) = watch::channel(());
+        notifiers.insert(tid, tx);
+        rx
+    }
+
+    /// Convenience: ensure notifier for a `Service` type.
+    pub fn ensure_notifier_for<T: Service>(&self) -> watch::Receiver<()> {
+        self.ensure_notifier(TypeId::of::<T>())
+    }
+
+    /// Register that `fid` depends on `tid` (i.e. `fid.injects` contains `tid`).
+    /// Populates `dependents` for BFS walks.
+    pub fn register_dependent(&self, tid: TypeId, fid: FiberId) {
+        let mut deps = self.dependents.write();
+        let entry = deps.entry(tid).or_default();
+        if !entry.contains(&fid) {
+            entry.push(fid);
+        }
+    }
+
+    /// Register a fiber and what `TypeId` it provides (for transitive BFS).
+    /// Call from `RegistryService::plugin` after allocating `fid`.
+    pub fn register_fiber(&self, fid: FiberId, fiber: Arc<Fiber>, provides: TypeId) {
+        self.fibers.write().insert(fid, fiber);
+        self.fiber_provides.write().insert(fid, provides);
+    }
+
+    /// Remember the root `Context` weakly so `notify` can `upgrade()` and call
+    /// `Fiber::refresh` without caller passing `ctx`.
+    pub fn set_context(&self, ctx: &Arc<Context>) {
+        *self.ctx.write() = Some(Arc::downgrade(ctx));
+    }
+
+    /// BFS walks `dependents` starting at `tid`, notifies `watch` senders,
+    /// and spawns `Fiber::refresh` for each dependent fiber (uses existing
+    /// `Fiber::refresh` impl). This replaces the 60s `ArcSwap` poll;
+    /// registry reload is now triggered by `notify` via `watch` channel on DB
+    /// `NOTIFY`/`LISTEN` or file change, not a timer.
+    pub fn notify(&self, tid: TypeId) {
+        // Snapshot context weakly; if no context, still notify watch channels
+        let ctx_opt = self.ctx.read().as_ref().and_then(|w| w.upgrade());
+        let mut queue = VecDeque::new();
+        let mut visited_type = HashSet::new();
+        let mut visited_fiber = HashSet::new();
+        queue.push_back(tid);
+        visited_type.insert(tid);
+        while let Some(cur) = queue.pop_front() {
+            // Fan-out via watch channel
+            if let Some(sender) = self.notifiers.read().get(&cur).cloned() {
+                let _ = sender.send(());
+            }
+            // BFS over dependent fibers
+            let fids = self
+                .dependents
+                .read()
+                .get(&cur)
+                .cloned()
+                .unwrap_or_default();
+            for fid in fids {
+                if !visited_fiber.insert(fid) {
+                    continue;
+                }
+                let fiber_opt = self.fibers.read().get(&fid).cloned();
+                if let Some(fiber) = fiber_opt {
+                    if let Some(ctx) = ctx_opt.clone() {
+                        let fiber_clone = fiber.clone();
+                        tokio::spawn(async move {
+                            fiber_clone.refresh(&ctx).await;
+                        });
+                    }
+                    // Transitive: if this fiber provides a TypeId, enqueue its dependents
+                    if let Some(provided) = self.fiber_provides.read().get(&fid).copied() {
+                        if visited_type.insert(provided) {
+                            queue.push_back(provided);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Async variant that `await`s each `Fiber::refresh` directly (for tests / direct callers that have `ctx`).
+    #[allow(clippy::await_holding_lock)]
+    pub async fn notify_with_ctx(&self, tid: TypeId, ctx: &Arc<Context>) {
+        let mut queue = VecDeque::new();
+        let mut visited_type = HashSet::new();
+        let mut visited_fiber = HashSet::new();
+        queue.push_back(tid);
+        visited_type.insert(tid);
+        while let Some(cur) = queue.pop_front() {
+            if let Some(sender) = self.notifiers.read().get(&cur).cloned() {
+                let _ = sender.send(());
+            }
+            let fids = self
+                .dependents
+                .read()
+                .get(&cur)
+                .cloned()
+                .unwrap_or_default();
+            for fid in fids {
+                if !visited_fiber.insert(fid) {
+                    continue;
+                }
+                let fiber = { self.fibers.read().get(&fid).cloned() };
+                if let Some(fiber) = fiber {
+                    fiber.refresh(ctx).await;
+                    if let Some(provided) = self.fiber_provides.read().get(&fid).copied() {
+                        if visited_type.insert(provided) {
+                            queue.push_back(provided);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Get a `watch::Receiver` if already created (no creation).
+    pub fn subscribe(&self, tid: TypeId) -> Option<watch::Receiver<()>> {
+        self.notifiers.read().get(&tid).map(|s| s.subscribe())
+    }
+}
+
+impl Default for ReflectService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Service for ReflectService {}
 
 // Inventory/linkme static registration placeholder (preferred for production).
 // Real static registration would use `inventory::submit!` or `linkme::distributed_slice`

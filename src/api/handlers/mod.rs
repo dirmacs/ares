@@ -27,8 +27,7 @@ pub mod loops;
 pub mod rag;
 /// Research coordination handlers.
 pub mod research;
-/// Skills discovery handlers (requires `skills` feature).
-#[cfg(feature = "skills")]
+/// Skills discovery handlers — runtime-gated via SkillsService check (was feature-gated).
 pub mod skills;
 /// User-created agent management handlers.
 pub mod user_agents;
@@ -38,6 +37,6 @@ pub mod user_agents;
 pub mod v1;
 /// Workflow execution handlers.
 pub mod workflows;
-/// Cordis health_context handler — `State<Arc<Context>>` proof (shim phase).
-#[cfg(feature = "postgres")]
+/// Cordis health_context handler — State with Context proof (shim phase).
+/// Runtime-gated via PostgresService check (was feature-gated).
 pub mod health_context;

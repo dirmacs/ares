@@ -179,10 +179,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/schedules/delete_tenant_schedule", delete(delete_tenant_schedule))
 }
 
-// TODO: ctx.plugin(AdminSchedulesRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminSchedulesService;
-// impl Service for AdminSchedulesService {
-//     fn name(&self) -> &'static str { "admin_schedules" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminSchedulesService;
+impl Service for AdminSchedulesService {}

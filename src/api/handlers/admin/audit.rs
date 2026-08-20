@@ -375,10 +375,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/audit/stream_active_runs", get(stream_active_runs))
 }
 
-// TODO: ctx.plugin(AdminAuditRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminAuditService;
-// impl Service for AdminAuditService {
-//     fn name(&self) -> &'static str { "admin_audit" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminAuditService;
+impl Service for AdminAuditService {}

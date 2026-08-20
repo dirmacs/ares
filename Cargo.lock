@@ -303,6 +303,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ares-cordis-core"
+version = "0.7.3"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ares-db"
 version = "0.7.3"
 dependencies = [

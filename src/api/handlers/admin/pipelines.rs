@@ -157,10 +157,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/pipelines/delete_tenant_pipeline", delete(delete_tenant_pipeline))
 }
 
-// TODO: ctx.plugin(AdminPipelinesRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminPipelinesService;
-// impl Service for AdminPipelinesService {
-//     fn name(&self) -> &'static str { "admin_pipelines" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminPipelinesService;
+impl Service for AdminPipelinesService {}

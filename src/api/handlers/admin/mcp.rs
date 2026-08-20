@@ -19,10 +19,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/mcp/runtime_tool_capabilities", get(runtime_tool_capabilities))
 }
 
-// TODO: ctx.plugin(AdminMcpRoutes, ...) — Service impl stub
-// use ares_cordis_core::Service;
-// pub struct AdminMcpService;
-// impl Service for AdminMcpService {
-//     fn name(&self) -> &'static str { "admin_mcp" }
-//     fn check(&self) -> bool { true }
-// }
+// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ares_cordis_core::Service;
+pub struct AdminMcpService;
+impl Service for AdminMcpService {}

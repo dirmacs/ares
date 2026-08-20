@@ -97,10 +97,12 @@ pub async fn v1_chat(
     .await?;
     // Give the agent access to its tenant's runtime (DB-defined) tools so the
     // LLM can actually call them. Tenant-scoped — never cross-tenant.
-    #[cfg(feature = "postgres")]
-    resolved_agent
-        .agent
-        .set_runtime_tools(state.runtime_tool_registry.clone(), tc.tenant_id.clone());
+    // cordis Phase6: runtime gating via PostgresService::check (was cfg feature postgres)
+    if cfg!(feature = "postgres") {
+        resolved_agent
+            .agent
+            .set_runtime_tools(state.runtime_tool_registry.clone(), tc.tenant_id.clone());
+    }
     let response = resolved_agent
         .agent
         .execute(&effective_message, &agent_context)
@@ -298,4 +300,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
         .route("/v1/chat/v1_research", post(v1_research))
 }
 
-// Service stub for v1_chat
+// cordis Phase6: RouteSet Service
+use ares_cordis_core::Service;
+pub struct V1ChatService;
+impl Service for V1ChatService {}

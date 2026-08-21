@@ -4,7 +4,7 @@
 //! It replaces the hardcoded agent implementations with a flexible,
 //! configuration-driven approach.
 
-#![allow(deprecated)]
+#![allow(deprecated, reason = "deprecated AgentRegistry shims retained for one-release migration; internal use until loader cutover")]
 
 use crate::{Agent, AgentResponse, ExecutionMetadata};
 use ares_config::toml_config::AgentConfig;
@@ -141,6 +141,30 @@ impl ConfigurableAgent {
         Self::new_with_provider(name, config, llm, tool_registry, config.model.clone())
     }
 
+    /// Shared helper that resolves the common `agent_type`, `system_prompt`,
+    /// and `allowed_tools` derived from `AgentConfig`. Extracted to eliminate
+    /// the 93% near-duplicate bodies between `new_with_provider` and
+    /// `new_with_provider_and_tool_service` reported by rust-doctor.
+    fn resolve_common_fields(
+        name: &str,
+        config: &AgentConfig,
+    ) -> (AgentType, String, Option<Vec<String>>) {
+        let agent_type = Self::name_to_type(name);
+        let system_prompt = config
+            .system_prompt
+            .clone()
+            .unwrap_or_else(|| Self::default_system_prompt(name));
+        // Use allowed_tools if present; otherwise fall back to legacy tools field.
+        let allowed_tools = config.allowed_tools.clone().or_else(|| {
+            if config.tools.is_empty() {
+                None
+            } else {
+                Some(config.tools.clone())
+            }
+        });
+        (agent_type, system_prompt, allowed_tools)
+    }
+
     /// Create a new configurable agent with explicit provider metadata
     ///
     /// Deprecated shim. Prefer `new_with_provider_and_tool_service`.
@@ -152,20 +176,8 @@ impl ConfigurableAgent {
         tool_registry: Option<Arc<ToolRegistry>>,
         provider_name: String,
     ) -> Self {
-        let agent_type = Self::name_to_type(name);
-        let system_prompt = config
-            .system_prompt
-            .clone()
-            .unwrap_or_else(|| Self::default_system_prompt(name));
-
-        // Use allowed_tools if present; otherwise fall back to legacy tools field.
-        let allowed_tools = config.allowed_tools.clone().or_else(|| {
-            if config.tools.is_empty() {
-                None
-            } else {
-                Some(config.tools.clone())
-            }
-        });
+        let (agent_type, system_prompt, allowed_tools) =
+            Self::resolve_common_fields(name, config);
 
         Self {
             name: name.to_string(),
@@ -256,18 +268,8 @@ impl ConfigurableAgent {
         tool_service: Option<Arc<dyn ToolService>>,
         provider_name: String,
     ) -> Self {
-        let agent_type = Self::name_to_type(name);
-        let system_prompt = config
-            .system_prompt
-            .clone()
-            .unwrap_or_else(|| Self::default_system_prompt(name));
-        let allowed_tools = config.allowed_tools.clone().or_else(|| {
-            if config.tools.is_empty() {
-                None
-            } else {
-                Some(config.tools.clone())
-            }
-        });
+        let (agent_type, system_prompt, allowed_tools) =
+            Self::resolve_common_fields(name, config);
         Self {
             name: name.to_string(),
             agent_type,

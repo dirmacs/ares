@@ -427,7 +427,6 @@ mod tests {
             workflows,
             rag: RagConfig::default(),
             billing: crate::utils::toml_config::BillingConfig::default(),
-            #[cfg(feature = "skills")]
             skills: None,
         }
     }

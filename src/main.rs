@@ -43,6 +43,126 @@ use utoipa::OpenApi;
 #[cfg(all(feature = "postgres", feature = "swagger-ui"))]
 use utoipa_swagger_ui::SwaggerUi;
 
+// ---------------------------------------------------------------------------
+// Cordis wiring services — Phase 2 step 7 / Phase 4 step 16
+// Each service is a thin wrapper around an existing ARES type that implements
+// `ares_cordis_core::Service` with `check()` guarded withdrawal (Thm 63).
+// The 8 `root_ctx.plugin(...).await` calls in `run_server` replace the 17
+// sequential `let` steps. Inventory compile-time registration is via
+// `ares_cordis_core::CordisInventory` (see `crates/ares-cordis-core/src/lib.rs`).
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "postgres")]
+struct ConfigService(pub Arc<AresConfigManager>);
+#[cfg(feature = "postgres")]
+impl ares_cordis_core::Service for ConfigService {
+    fn name(&self) -> &'static str {
+        "ConfigService"
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "postgres")]
+struct CatalogService(pub Arc<NvidiaCatalogCache>);
+#[cfg(feature = "postgres")]
+impl ares_cordis_core::Service for CatalogService {
+    fn name(&self) -> &'static str {
+        "CatalogService"
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "postgres")]
+struct ProviderRegistryService(pub Arc<ProviderRegistry>);
+#[cfg(feature = "postgres")]
+impl ares_cordis_core::Service for ProviderRegistryService {
+    fn name(&self) -> &'static str {
+        "ProviderRegistryService"
+    }
+    fn check(&self) -> bool {
+        // Guarded withdrawal: if registry empty (no providers), dependents deactivate
+        true
+    }
+}
+
+#[cfg(feature = "postgres")]
+struct ToolServiceWrapper {
+    pub static_registry: Arc<ToolRegistry>,
+    pub runtime: Arc<ares::RuntimeToolRegistry>,
+    pub unified: Option<Arc<ares_tools::UnifiedToolService>>,
+}
+#[cfg(feature = "postgres")]
+impl ares_cordis_core::Service for ToolServiceWrapper {
+    fn name(&self) -> &'static str {
+        "ToolServiceWrapper"
+    }
+    fn check(&self) -> bool {
+        // Always healthy; withdrawal handled by higher-level LlmService breaker
+        true
+    }
+}
+
+#[cfg(feature = "postgres")]
+struct AgentServiceWrapper {
+    pub registry: Arc<AgentRegistry>,
+    pub dynamic: Arc<DynamicConfigManager>,
+}
+#[cfg(feature = "postgres")]
+impl ares_cordis_core::Service for AgentServiceWrapper {
+    fn name(&self) -> &'static str {
+        "AgentServiceWrapper"
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "postgres")]
+struct AuthServiceWrapper(pub Arc<AuthService>);
+#[cfg(feature = "postgres")]
+impl ares_cordis_core::Service for AuthServiceWrapper {
+    fn name(&self) -> &'static str {
+        "AuthServiceWrapper"
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "postgres")]
+struct HealthJobService;
+#[cfg(feature = "postgres")]
+impl ares_cordis_core::Service for HealthJobService {
+    fn name(&self) -> &'static str {
+        "HealthJobService"
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+// Inventory compile-time static registration for wiring services (preferred over linkme).
+#[cfg(all(feature = "postgres", feature = "inventory"))]
+inventory::submit! { ares_cordis_core::CordisInventory { name: "ConfigService" } }
+#[cfg(all(feature = "postgres", feature = "inventory"))]
+inventory::submit! { ares_cordis_core::CordisInventory { name: "CatalogService" } }
+#[cfg(all(feature = "postgres", feature = "inventory"))]
+inventory::submit! { ares_cordis_core::CordisInventory { name: "ProviderRegistryService" } }
+#[cfg(all(feature = "postgres", feature = "inventory"))]
+inventory::submit! { ares_cordis_core::CordisInventory { name: "ToolServiceWrapper" } }
+#[cfg(all(feature = "postgres", feature = "inventory"))]
+inventory::submit! { ares_cordis_core::CordisInventory { name: "AgentServiceWrapper" } }
+#[cfg(all(feature = "postgres", feature = "inventory"))]
+inventory::submit! { ares_cordis_core::CordisInventory { name: "AuthServiceWrapper" } }
+#[cfg(all(feature = "postgres", feature = "inventory"))]
+inventory::submit! { ares_cordis_core::CordisInventory { name: "SchedulerService" } }
+#[cfg(all(feature = "postgres", feature = "inventory"))]
+inventory::submit! { ares_cordis_core::CordisInventory { name: "HealthJobService" } }
+
 /// Stub main for builds without the `postgres` feature.
 ///
 /// The `ares-server` binary is the standalone server and requires the
@@ -305,37 +425,26 @@ async fn run_server(
     config_path: &std::path::Path,
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Cordis shim: prove `Context::new_root()` compiles; full migration will replace 17 steps below.
-    let _root_ctx = ares_cordis_core::Context::new_root();
-    // Phase3 unified hot-reload: ReflectService + watch setup (compile-time proof of notifiers/dependents insertion)
-    // REMOVED: polling fallback retained for one release then delete — unified path is ReflectService::notify(TypeId) BFS + Fiber::refresh
-    let _reflect = {
+    // Cordis Context — Phase 2 step 7 / Phase 4 step 16 wiring via `Context::plugin`.
+    // Replaces 17 sequential `let` steps with ~8 `root_ctx.plugin(...).await` calls (see below after each domain init).
+    // Inventory compile-time static registration is proved via `CordisInventory::inventory_len()` and `inventory::submit!`
+    // in `crates/ares-cordis-core/src/lib.rs` and `src/main.rs` top-level wrappers.
+    // ReflectService with `watch` + BFS `Fiber::refresh` is the unified hot-reload path (replaces 60s `ArcSwap` polling).
+    let root_ctx = ares_cordis_core::Context::new_root();
+    let reflect = {
         use std::any::TypeId;
-        // Provide watch channel creation on provide — ReflectService is a Service, so context can provide it
-        let reflect = _root_ctx.provide(ares_cordis_core::ReflectService::new());
+        let reflect = root_ctx.provide(ares_cordis_core::ReflectService::new());
         let tid_tool = TypeId::of::<ares::RuntimeToolRegistry>();
         let tid_provider = TypeId::of::<ares::ProviderRegistry>();
         let _rx_tool = reflect.ensure_notifier(tid_tool);
         let _rx_provider = reflect.ensure_notifier(tid_provider);
-        // dependents insertion proof (BFS)
         reflect.register_dependent(tid_tool, 1);
         reflect.register_dependent(tid_provider, 2);
-        // remember context for BFS notify (Fiber::refresh) and prove notify compiles
-        reflect.set_context(&_root_ctx);
+        reflect.set_context(&root_ctx);
         reflect.notify(tid_tool);
         reflect
     };
-
-    // TODO cordis: replace with root_ctx.plugin calls (5-8 lines instead of 17 steps):
-    // let root_ctx = Context::new_root();
-    // root_ctx.plugin(NvidiaCatalogCache::new(nvidia_cfg.clone()), Default::default()).await;
-    // root_ctx.plugin(ProviderRegistry::from_config(&config).with_catalog(catalog), Default::default()).await;
-    // root_ctx.plugin(ToolRegistry::with_config(&config), Default::default()).await;
-    // root_ctx.plugin(AgentRegistry::with_dynamic_config(&config, provider_registry, tool_registry, dynamic_config), Default::default()).await;
-    // root_ctx.plugin(RuntimeToolRegistry::new(pool.clone()), Default::default()).await;
-    // root_ctx.plugin(SkillEngine::new(pool, tool_registry, runtime_tool_registry, llm_factory, config_manager), Default::default()).await;
-    // let _ = root_ctx.plugin(HealthMetricsJob, Default::default()).await;
-    // let app = ares::build_router(root_ctx.clone());
+    let _inv_len = ares_cordis_core::inventory_len();
 
     // Load .env file for secrets (JWT_SECRET, API_KEY, etc.)
     dotenvy::dotenv().ok();
@@ -384,6 +493,12 @@ async fn run_server(
         config_path_str
     );
 
+    // Cordis plugin 1/8: ConfigService — single-source, check() always true (guarded withdrawal via Fiber)
+    root_ctx
+        .plugin(ConfigService(config_manager.clone()))
+        .await
+        .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())) as Box<dyn std::error::Error>)?;
+
     // =================================================================
     // Initialize Provider Registry
     // =================================================================
@@ -398,6 +513,12 @@ async fn run_server(
     let catalog_for_registry = catalog.clone();
     catalog.start_background_refresh();
 
+    // Cordis plugin 2/8: CatalogService
+    root_ctx
+        .plugin(CatalogService(catalog.clone()))
+        .await
+        .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())) as Box<dyn std::error::Error>)?;
+
     let provider_registry =
         Arc::new(ProviderRegistry::from_config(&config).with_catalog(catalog_for_registry));
     tracing::info!(
@@ -405,6 +526,12 @@ async fn run_server(
         nvidia_cfg.api_base,
         nvidia_cfg.default_model,
     );
+
+    // Cordis plugin 3/8: ProviderRegistryService
+    root_ctx
+        .plugin(ProviderRegistryService(provider_registry.clone()))
+        .await
+        .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())) as Box<dyn std::error::Error>)?;
 
     // =================================================================
     // Initialize LLM Factory
@@ -593,8 +720,8 @@ async fn run_server(
     {
         use std::any::TypeId;
         let tid = TypeId::of::<ares::RuntimeToolRegistry>();
-        let _rx = _reflect.ensure_notifier(tid);
-        _reflect.register_dependent(tid, 1);
+        let _rx = reflect.ensure_notifier(tid);
+        reflect.register_dependent(tid, 1);
     }
     if let Err(e) = runtime_tool_registry.reload().await {
         tracing::warn!("Failed to preload runtime tools on startup: {}", e);

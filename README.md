@@ -661,6 +661,8 @@ let app = build_router(root_ctx);
 
 Inventory static registration (`inventory::submit!{CordisInventory{name:"ConfigService"}}` etc., `linkme` fallback) preferred over `libloading` dev HMR.
 
+> **Wiring command:** `root_ctx.plugin(ConfigService).plugin(CatalogService).plugin(ProviderRegistryService).plugin(AuthServiceWrapper).plugin(AgentServiceWrapper).plugin(ToolServiceWrapper).plugin(SchedulerService).plugin(HealthJobService)`
+
 #### Unified ToolService precedence
 
 Single `ToolService: Service` composing `static HashMap<String, Arc<dyn Tool>>` + `RuntimeToolRegistry` (`ArcSwap<HashMap>` + DB) + `McpRegistry` bridge, precedence `tenant runtime → fleet runtime → MCP bridge → static`.

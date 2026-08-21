@@ -363,11 +363,10 @@ async fn execute_agent(
             history: context.conversation_history.clone(),
             ctx_provider: None,
         };
-        let resp = exec_svc.execute_agent(&req, ctx).await?;
-        let source = "system"; // AgentExecutionService handles resolution internally
+        let exec_result = exec_svc.execute_agent(&req, ctx).await?;
         return Ok((
-            chat_response_from_agent_output(agent_type, source, &context.session_id, resp.content),
-            resp.usage.map(|u| crate::llm::client::TokenUsage {
+            chat_response_from_agent_output(agent_type, exec_result.source.as_str(), &context.session_id, exec_result.response.content),
+            exec_result.response.usage.map(|u| crate::llm::client::TokenUsage {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,

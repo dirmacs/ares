@@ -1,6 +1,6 @@
 # Workflows
 
-Workflows are multi-agent orchestration pipelines. A workflow defines an entry point agent (typically a router) that analyzes the incoming query and delegates to specialist agents in sequence. The result is a coordinated, multi-step response that leverages the strengths of different agents.
+Workflows are multi-agent orchestration pipelines. A workflow defines an entry point agent (typically a router) that analyzes the incoming query and delegates to specialist agents in sequence. The result is a coordinated, multi-step response that uses the strengths of different agents.
 
 **How workflows operate:**
 
@@ -53,16 +53,16 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 
 ### Path parameters
 
-| Parameter       | Type   | Description                     |
+| Parameter | Type | Description |
 |----------------|--------|---------------------------------|
 | `workflow_name` | string | Name of the workflow to execute |
 
 ### Request body
 
-| Parameter | Type   | Required | Description                                           |
+| Parameter | Type | Required | Description |
 |-----------|--------|----------|-------------------------------------------------------|
-| `query`   | string | Yes      | The input query or task for the workflow.              |
-| `context`  | object | No       | Additional context passed to agents during execution. |
+| `query` | string | Yes | The input query or task for the workflow. |
+| `context` | object | No | Additional context passed to agents during execution. |
 
 ### Response
 
@@ -88,12 +88,12 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 }
 ```
 
-| Field            | Type     | Description                                                  |
+| Field | Type | Description |
 |-----------------|----------|--------------------------------------------------------------|
-| `final_response` | string   | The synthesized response from the workflow.                  |
-| `steps_executed` | integer  | Total number of agent steps in the execution.                |
-| `agents_used`    | string[] | Ordered list of agents that participated.                    |
-| `reasoning_path` | array    | Step-by-step trace of each agent's reasoning and actions.    |
+| `final_response` | string | The synthesized response from the workflow. |
+| `steps_executed` | integer | Total number of agent steps in the execution. |
+| `agents_used` | string[] | Ordered list of agents that participated. |
+| `reasoning_path` | array | Step-by-step trace of each agent's reasoning and actions. |
 
 ### Examples
 

@@ -167,5 +167,5 @@ curl -X POST http://localhost:3000/v1/chat \
 
 ## Next steps
 
-- **[Authentication](authentication.md)** — Learn about API keys, JWT tokens, and admin authentication.
-- **[Models & Providers](models.md)** — Understand which models are available and how to choose the right one.
+- **[Authentication](authentication.md)**, learn about API keys, JWT tokens, and admin authentication.
+- **[Models & Providers](models.md)**, understand which models are available and how to choose the right one.

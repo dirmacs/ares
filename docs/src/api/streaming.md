@@ -34,7 +34,7 @@ data:  question is
 data:  as follows...
 ```
 
-Each `data:` line represents one chunk of the response. Concatenate all chunks in order to reconstruct the complete response. The server closes the connection when generation is complete.
+Each `data:` line represents one chunk of the response. Concatenate all chunks to reconstruct the complete response. The server closes the connection when generation is complete.
 
 ---
 

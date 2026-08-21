@@ -4,6 +4,7 @@
 //! This file exists for `ls src/api/handlers/admin/*.rs` counting and documents target split.
 //! It mirrors the `pub mod` declarations in `admin.rs` for tooling completeness.
 
+pub mod shared;
 pub mod tenants;
 pub mod agents;
 pub mod providers;
@@ -17,6 +18,8 @@ pub mod fleet_secrets;
 pub mod connectors;
 pub mod health;
 pub mod audit;
+
+pub use shared::*;
 
 // Re-export RouteSet stubs for convenience
 pub use tenants::routes as tenants_routes;

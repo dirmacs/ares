@@ -36,6 +36,8 @@ use axum::{routing::get, Router};
 #[cfg(feature = "postgres")]
 use std::sync::Arc;
 #[cfg(feature = "postgres")]
+use ares_cordis_core::Context;
+#[cfg(feature = "postgres")]
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 #[cfg(feature = "postgres")]
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -766,27 +768,33 @@ async fn run_server(
         .await
         .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
 
-    let state = AppState {
-        config_manager: Arc::clone(&config_manager),
-        db: db_arc.clone(),
-        tenant_db,
-        llm_factory,
-        provider_registry,
-        agent_registry,
-        tool_registry,
-        auth_service: auth_service.clone(),
-        dynamic_config,
-        #[cfg(feature = "mcp")]
-        mcp_registry,
-        deploy_registry: ares::api::handlers::deploy::new_deploy_registry(),
-        loop_registry: ares::api::handlers::loops::LoopRegistry::new(),
-        emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        context_provider: Arc::new(ares::agents::NoOpContextProvider),
-        fleet_secrets,
-        runtime_tool_registry,
-        active_runs: Arc::new(ares::active_runs::ActiveRuns::new()),
-        skill_engine,
-    };
+    // Provide AppState fields as Cordis services — replaces `let state = AppState { ... }`
+    root_ctx.provide(ares::context_services::ConfigManagerService(Arc::clone(&config_manager)));
+    root_ctx.provide(ares::context_services::DynamicConfigService(dynamic_config.clone()));
+    root_ctx.provide(ares::context_services::DbService(db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>));
+    root_ctx.provide(ares::context_services::TenantDbService(tenant_db.clone()));
+    root_ctx.provide(ares::context_services::LlmFactoryService(llm_factory.clone()));
+    root_ctx.provide(ares::context_services::ProviderRegistryService(provider_registry.clone()));
+    root_ctx.provide(ares::context_services::AgentRegistryService(agent_registry.clone()));
+    root_ctx.provide(ares::context_services::ToolRegistryService(tool_registry.clone()));
+    root_ctx.provide(ares::context_services::AuthServiceWrapper(auth_service.clone()));
+    #[cfg(feature = "mcp")]
+    root_ctx.provide(ares::context_services::McpRegistryService(mcp_registry.clone()));
+    let deploy_registry = ares::api::handlers::deploy::new_deploy_registry();
+    root_ctx.provide(ares::context_services::DeployRegistryService(deploy_registry.clone()));
+    let loop_registry = ares::api::handlers::loops::LoopRegistry::new();
+    root_ctx.provide(ares::context_services::LoopRegistryService(loop_registry.clone()));
+    let emergency_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    root_ctx.provide(ares::context_services::EmergencyStopService(emergency_stop.clone()));
+    let context_provider: Arc<dyn ares::agents::context_provider::ContextProvider> =
+        Arc::new(ares::agents::NoOpContextProvider);
+    root_ctx.provide(ares::context_services::ContextProviderService(context_provider.clone()));
+    root_ctx.provide(ares::context_services::FleetSecretsService(fleet_secrets.clone()));
+    root_ctx.provide(ares::context_services::RuntimeToolRegistryService(runtime_tool_registry.clone()));
+    let active_runs = Arc::new(ares::active_runs::ActiveRuns::new());
+    root_ctx.provide(ares::context_services::ActiveRunsService(active_runs.clone()));
+    root_ctx.provide(ares::context_services::SkillEngineService(skill_engine.clone()));
+    let state: AppState = root_ctx.clone();
 
     if let Err(e) = api::handlers::admin::reload_runtime_provider_registry(&state).await {
         tracing::warn!("Failed to preload runtime providers on startup: {}", e);
@@ -795,7 +803,7 @@ async fn run_server(
     // =================================================================
     // Health Metrics Aggregation Job
     // =================================================================
-    ares::health_metrics_job::spawn(state.tenant_db.pool().clone());
+    ares::health_metrics_job::spawn(state.get::<ares::context_services::TenantDbService>().expect("not provided").0.pool().clone());
 
     // =================================================================
     // Background Scheduler (Agent Schedules) — Cordis Service (Phase 4)
@@ -824,10 +832,10 @@ async fn run_server(
     // Agent Config Versioning (Sprint 11)
     // =================================================================
     {
-        let pool = state.tenant_db.pool().clone();
+        let pool = state.get::<ares::context_services::TenantDbService>().expect("not provided").0.pool().clone();
 
         // Startup snapshot: record all currently loaded agent configs
-        let startup_agents = state.dynamic_config.agents();
+        let startup_agents = state.get::<ares::context_services::DynamicConfigService>().expect("not provided").0.agents();
         if !startup_agents.is_empty() {
             if let Err(e) =
                 ares::db::agent_versions::record_agent_versions(&pool, &startup_agents, "startup")
@@ -846,7 +854,7 @@ async fn run_server(
         let (version_tx, mut version_rx) = tokio::sync::mpsc::unbounded_channel::<
             Vec<ares::utils::toon_config::ToonAgentConfig>,
         >();
-        state.dynamic_config.set_version_tx(version_tx);
+        state.get::<ares::context_services::DynamicConfigService>().expect("not provided").0.set_version_tx(version_tx);
 
         tokio::spawn(async move {
             while let Some(agents) = version_rx.recv().await {
@@ -984,7 +992,7 @@ async fn run_server(
     )]
     struct ApiDoc;
 
-    // Cordis final router — Phase 2 step 12: `build_router(root_ctx.clone())` is final builder (HOLD shim `base_router` delegates here)
+    // Cordis final router — Phase 2 step 12: `build_router(root_ctx.clone())` is final builder
     let app = ares::build_router(root_ctx.clone());
     let _ = &app; // suppress unused while legacy AppState router still serves traffic (HOLD shim)
 
@@ -1002,7 +1010,7 @@ async fn run_server(
         // API routes
         .nest(
             "/api",
-            api::routes::create_router(state.auth_service.clone(), state.tenant_db.clone()),
+            api::routes::create_router(state.get::<ares::context_services::AuthServiceWrapper>().expect("not provided").0.clone(), state.get::<ares::context_services::TenantDbService>().expect("not provided").0.clone()),
         );
 
     // Proprietary routes are registered by ares-dirmacs, not here.
@@ -1224,7 +1232,7 @@ async fn health_check() -> &'static str {
 /// Detailed health check endpoint with component status
 #[cfg(feature = "postgres")]
 async fn health_check_detailed(
-    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::State(state): axum::extract::State<Arc<Context>>,
 ) -> axum::Json<serde_json::Value> {
     use std::time::Instant;
 
@@ -1232,14 +1240,13 @@ async fn health_check_detailed(
 
     // Check database connectivity
     let db_status = serde_json::json!({ "status": "healthy" });
-    /* let db_status = match state.db.operation_conn().await {
+    /* let db_status = match state.get::<ares::context_services::DbService>().expect("not provided").0.operation_conn().await {
         Ok(_) => serde_json::json!({ "status": "healthy" }),
         Err(e) => serde_json::json!({ "status": "unhealthy", "error": e.to_string() }),
     }; */
 
     // Get provider info
-    let providers: Vec<String> = state
-        .config_manager
+    let providers: Vec<String> = state.get::<ares::context_services::ConfigManagerService>().expect("not provided").0
         .config()
         .providers
         .keys()
@@ -1247,8 +1254,7 @@ async fn health_check_detailed(
         .collect();
 
     // Get agent info
-    let agents: Vec<String> = state
-        .config_manager
+    let agents: Vec<String> = state.get::<ares::context_services::ConfigManagerService>().expect("not provided").0
         .config()
         .agents
         .keys()
@@ -1281,9 +1287,9 @@ async fn health_check_detailed(
 /// Configuration info endpoint (non-sensitive info only)
 #[cfg(feature = "postgres")]
 async fn config_info(
-    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::State(state): axum::extract::State<Arc<Context>>,
 ) -> axum::Json<serde_json::Value> {
-    let config = state.config_manager.config();
+    let config = state.get::<ares::context_services::ConfigManagerService>().expect("not provided").0.config();
     axum::Json(serde_json::json!({
         "server": {
             "host": config.server.host,
@@ -1314,7 +1320,7 @@ mod ui {
     };
     use rust_embed::Embed;
 
-    use crate::AppState;
+    use ares::AppState;
 
     #[derive(Embed)]
     #[folder = "ui/dist/"]

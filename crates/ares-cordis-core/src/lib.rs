@@ -506,7 +506,7 @@ pub trait Plugin: Send + Sync + 'static {
     type Provides: Service;
     fn apply(
         &self,
-        ctx: &Context,
+        ctx: &Arc<Context>,
         config: Self::Config,
     ) -> Result<Box<dyn Disposable>, CordisError>;
 }
@@ -531,7 +531,7 @@ impl RegistryService {
     /// Returns FiberId or Err(Configuration("duplicate provider for <TypeId>"))
     pub fn plugin<P: Plugin>(
         &self,
-        ctx: &Context,
+        ctx: &Arc<Context>,
         plugin: P,
         config: P::Config,
     ) -> Result<FiberId, CordisError> {

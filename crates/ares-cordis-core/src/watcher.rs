@@ -225,4 +225,93 @@ mod tests {
         let msg2 = "Configuration hot-reloaded successfully via Cordis watch";
         assert!(msg2.contains(msg1));
     }
+
+    /// E2E hot-reload proof: file-watch → ReflectService::notify → Fiber::refresh → epoch change.
+    ///
+    /// Verifies the full chain described in Phase 7 §24.6: a filesystem mutation
+    /// in a watched dir is picked up by `notify` (`RecommendedWatcher`), debounced
+    /// and forwarded to `ReflectService::notify(TypeId)` which BFS-walks dependents
+    /// and triggers `Fiber::refresh` (epoch recomputed). The observable proof is
+    /// that the `watch::Receiver` for the `TypeId` fires and the dependent fiber
+    /// epoch changes after the provider is re-provided (simulating TOON re-read).
+    #[tokio::test]
+    async fn e2e_file_watch_triggers_reflect_notify_and_epoch() {
+        // a. root Context
+        let ctx = Context::new_root();
+        // b. provide ReflectService
+        let reflect = ctx.provide(ReflectService::new());
+        // c. register notifier + dependent fiber for a test TypeId
+        #[derive(Debug)]
+        struct E2ESvc(i32);
+        impl Service for E2ESvc {}
+
+        let fiber = Arc::new(Fiber::new());
+        fiber.declare_inject::<E2ESvc>();
+        let fid = 777u64;
+        reflect.register_fiber(fid, fiber.clone(), TypeId::of::<E2ESvc>());
+        reflect.register_dependent(TypeId::of::<E2ESvc>(), fid);
+        let mut rx = reflect.ensure_notifier(TypeId::of::<E2ESvc>());
+
+        // Provide initial version so fiber becomes Active and epoch is set
+        ctx.provide(E2ESvc(1));
+        fiber.refresh(&ctx).await;
+        assert!(matches!(fiber.state(), FiberState::Active { .. }));
+        let epoch_before = fiber.epoch();
+
+        // d. watch_cordis_entries with a temp dir
+        let dir = tempfile::tempdir().unwrap();
+        let agents_dir = dir.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        let entries_file = dir.path().join("entries.json");
+        std::fs::write(&entries_file, "{}").unwrap();
+        let watched_file = agents_dir.join("test.toon");
+        std::fs::write(&watched_file, "v1").unwrap();
+
+        let _handle = watch_cordis_entries(
+            ctx.clone(),
+            reflect.clone(),
+            agents_dir.clone(),
+            entries_file.clone(),
+            TypeId::of::<E2ESvc>(),
+        )
+        .expect("watcher creation should succeed");
+
+        // Let watcher start
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Mark the initial value as seen so `changed()` only fires on new notify
+        // (watch starts with one value; has_changed is false until send)
+        // `rx.changed()` would return immediately if we don't do this after provision,
+        // but we have not sent yet, so we just ensure we haven't missed.
+
+        // e. write a file to the temp dir
+        std::fs::write(&watched_file, "v2").unwrap();
+
+        // f. wait ~1s for notify crate to pick it up (debounce 500ms + 100ms settle)
+        let notified = tokio::time::timeout(Duration::from_secs(3), rx.changed())
+            .await
+            .is_ok();
+
+        // g. assert fiber epoch changed OR watch channel received signal
+        // Watch channel is the primary proof that file-watch → ReflectService::notify fired.
+        // To also prove epoch path, re-provide with new version and refresh.
+        if notified {
+            // Simulate TOON re-read changing provider version after file change
+            ctx.provide(E2ESvc(2));
+            fiber.refresh(&ctx).await;
+            let epoch_after = fiber.epoch();
+            // At least one of the two signals must indicate hot-reload propagated
+            assert!(
+                notified || epoch_before != epoch_after,
+                "either watch channel fired or epoch changed"
+            );
+            assert_ne!(epoch_before, epoch_after, "epoch should change after provider version bump");
+        } else {
+            // Fallback: if notify debounce missed (flaky FS), still prove via direct notify
+            // but the watcher channel should have fired on most runs.
+            panic!("E2E hot-reload: watch channel did not receive signal within 3s — file-watch → ReflectService::notify chain broken");
+        }
+
+        // Keep handle alive until assertion done
+        drop(_handle);
+    }
 }

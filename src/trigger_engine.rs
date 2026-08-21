@@ -79,7 +79,7 @@ pub async fn execute_triggered_agent(
     {
         let metadata = triggered_agent_run_metadata(trigger, &run_id, "tenant_db", None, false);
         agent_runs::insert_agent_run_with_id_and_metadata(
-            pool,
+            &pool,
             &run_id,
             &trigger.tenant_id,
             &trigger.target_agent,
@@ -263,7 +263,7 @@ pub async fn execute_triggered_agent(
     );
 
     agent_runs::insert_agent_run_with_id_and_metadata(
-        pool,
+            &pool,
         &run_id,
         &trigger.tenant_id,
         &trigger.target_agent,

@@ -21,7 +21,8 @@ pub async fn list_models_handler(State(ctx): State<Arc<Context>>) -> Result<Json
 }
 
 pub async fn reload_runtime_provider_registry(ctx: &AppState) -> Result<()> {
-    let store = RuntimeProviderStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = RuntimeProviderStore::new(&__pool_1);
     let providers = store.list_all().await?;
     let mut entries = Vec::with_capacity(providers.len());
     let mut names = Vec::with_capacity(providers.len());
@@ -52,7 +53,8 @@ pub async fn reload_runtime_provider_registry(ctx: &AppState) -> Result<()> {
 pub async fn list_runtime_providers(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<RuntimeProviderResponse>>> {
-    let store = RuntimeProviderStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = RuntimeProviderStore::new(&__pool_2);
     let providers = store.list_all().await?;
     let response: Vec<RuntimeProviderResponse> = providers.into_iter().map(|p| p.into()).collect();
     tracing::info!("Listed {} runtime providers", response.len());
@@ -65,7 +67,8 @@ pub async fn get_runtime_provider(
     Path(name): Path<String>,
     Query(query): Query<RuntimeProviderScopeQuery>,
 ) -> Result<Json<RuntimeProviderResponse>> {
-    let store = RuntimeProviderStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_3 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = RuntimeProviderStore::new(&__pool_3);
     let provider = store
         .get_scoped(query.tenant_id.as_deref(), &name)
         .await?
@@ -79,7 +82,8 @@ pub async fn upsert_runtime_provider(
     State(ctx): State<Arc<Context>>,
     Json(mut req): Json<CreateRuntimeProviderRequest>,
 ) -> Result<Json<RuntimeProviderResponse>> {
-    let store = RuntimeProviderStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_4 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = RuntimeProviderStore::new(&__pool_4);
     preserve_redacted_runtime_provider_secret(&store, &mut req).await?;
     let provider = store.upsert(&req).await?;
     reload_runtime_provider_registry(&ctx).await?;
@@ -93,7 +97,8 @@ pub async fn delete_runtime_provider(
     Path(name): Path<String>,
     Query(query): Query<RuntimeProviderScopeQuery>,
 ) -> Result<StatusCode> {
-    let store = RuntimeProviderStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_5 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = RuntimeProviderStore::new(&__pool_5);
     let rows = store
         .delete_scoped(query.tenant_id.as_deref(), &name)
         .await?;

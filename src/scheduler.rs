@@ -587,7 +587,7 @@ async fn execute_scheduled_agent(
         };
 
         agent_runs::insert_agent_run_with_id_and_metadata(
-            pool,
+            &pool,
             &run_id,
             &sched.tenant_id,
             &sched.agent_name,
@@ -796,7 +796,7 @@ async fn execute_scheduled_agent(
     };
 
     agent_runs::insert_agent_run_with_id_and_metadata(
-        pool,
+            &pool,
         &run_id,
         &sched.tenant_id,
         &sched.agent_name,

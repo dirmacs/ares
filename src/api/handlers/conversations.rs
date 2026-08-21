@@ -3,7 +3,6 @@
 //! This module provides CRUD operations for user conversations.
 
 use std::sync::Arc;
-use crate::AppState;
 use ares_cordis_core::Context;
 
 use crate::{

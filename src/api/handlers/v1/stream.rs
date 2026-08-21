@@ -130,9 +130,9 @@ pub async fn sandbox_run_agent(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SandboxToolTraceSpec {
-    name: String,
-    tool_type: String,
+pub(crate) struct SandboxToolTraceSpec {
+    pub(crate) name: String,
+    pub(crate) tool_type: String,
 }
 
 fn sandbox_tool_trace_specs(
@@ -151,7 +151,7 @@ fn sandbox_tool_trace_specs(
         .collect()
 }
 
-fn sandbox_tool_call_requests(
+pub(crate) fn sandbox_tool_call_requests(
     run_id: &str,
     tenant_id: &str,
     agent_name: &str,

@@ -37,7 +37,7 @@ pub use shared::*;
 
 /// Extended JWT claims that include Eruka's roles map.
 #[derive(Debug, Deserialize)]
-struct AdminClaims {
+pub(crate) struct AdminClaims {
     pub sub: String,
     pub email: String,
     pub exp: usize,
@@ -47,7 +47,7 @@ struct AdminClaims {
 }
 
 #[derive(Debug, Deserialize)]
-struct RoleEntry {
+pub(crate) struct RoleEntry {
     pub role: String,
     #[allow(dead_code)]
     pub resource_id: Option<String>,
@@ -109,14 +109,6 @@ fn admin_percent_decode(value: &str) -> Result<String> {
         i += 1;
     }
     String::from_utf8(out).map_err(|e| AppError::InvalidInput(format!("invalid utf8: {e}")))
-}
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
 }
 
 pub async fn admin_middleware(req: axum::extract::Request, next: Next) -> Response {

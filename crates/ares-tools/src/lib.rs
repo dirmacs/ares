@@ -1,5 +1,6 @@
 //! Built-in agent tools for A.R.E.S.
 
+pub mod tools;
 pub mod calculator;
 pub mod http_tool;
 pub mod registry;

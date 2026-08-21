@@ -80,6 +80,11 @@ pub use loader::{Entry, EntryTree, Loader};
 pub mod watcher;
 pub mod hmr;
 
+#[cfg(feature = "rhai")]
+pub mod rhai_service;
+#[cfg(feature = "rhai")]
+pub use rhai_service::{RhaiPlugin, RhaiService, RhaiServiceConfig};
+
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------

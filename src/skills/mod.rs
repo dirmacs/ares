@@ -385,6 +385,7 @@ impl SkillsService {
         {
             let _ = (skill_id, &input, ctx, &self.execution);
             // Without postgres, skill store unavailable — return context echo for correctness of cargo check both.
+            #[allow(clippy::needless_return)]
             return Ok(serde_json::json!({"input": input, "skill_id": skill_id, "status":"ok"}));
         }
 
@@ -504,7 +505,7 @@ impl SkillsService {
                                     Ok(c) => c,
                                     Err(_) => registry.create_client_for_provider(&provider_name).await.map_err(|e| format!("LLM client creation failed: {}", e))?,
                                 };
-                                client.generate_with_history(&vec![("user".to_string(), prompt.clone())]).await.map_err(|e| format!("LLM generation failed: {}", e))?
+                                client.generate_with_history(&[("user".to_string(), prompt.clone())]).await.map_err(|e| format!("LLM generation failed: {}", e))?
                             } else {
                                 return Err("LLM service not available via Context".to_string());
                             }
@@ -514,7 +515,7 @@ impl SkillsService {
                                 Ok(c) => c,
                                 Err(_) => registry.create_client_for_provider(&provider_name).await.map_err(|e| format!("LLM client creation failed: {}", e))?,
                             };
-                            client.generate_with_history(&vec![("user".to_string(), prompt.clone())]).await.map_err(|e| format!("LLM generation failed: {}", e))?
+                            client.generate_with_history(&[("user".to_string(), prompt.clone())]).await.map_err(|e| format!("LLM generation failed: {}", e))?
                         } else {
                             return Err("LLM service not available via Context".to_string());
                         };
@@ -629,7 +630,7 @@ impl SkillsService {
                         Ok(c) => c,
                         Err(_) => registry.create_client_for_provider(&provider_name).await.map_err(|e| format!("LLM client creation failed: {}", e))?,
                     };
-                    client.generate_with_history(&vec![("user".to_string(), prompt.clone())]).await.map_err(|e| format!("LLM generation failed: {}", e))?
+                    client.generate_with_history(&[("user".to_string(), prompt.clone())]).await.map_err(|e| format!("LLM generation failed: {}", e))?
                 } else {
                     return Err("LLM service not available".to_string());
                 };

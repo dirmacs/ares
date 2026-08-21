@@ -3,6 +3,8 @@
 
 
 
+use std::sync::Arc;
+use ares_cordis_core::Context;
 use crate::AppState;
 use crate::db::audit_log;
 use crate::db::schedules as db_schedules;
@@ -16,7 +18,7 @@ use sha2::Digest;
 use std::collections::HashMap;
 
 pub async fn list_pipelines(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<db_schedules::AgentPipeline>>> {
     let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
@@ -25,19 +27,19 @@ pub async fn list_pipelines(
             "tenant_id query param is required".into(),
         ));
     }
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let pipelines = store.list_pipelines(tenant_id).await?;
     Ok(Json(pipelines))
 }
 
 pub async fn create_pipeline(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(req): Json<db_schedules::CreatePipelineRequest>,
 ) -> Result<Json<db_schedules::AgentPipeline>> {
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let pipeline = store.create_pipeline(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = pipeline.tenant_id.clone();
     let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
     tokio::spawn(async move {
@@ -56,23 +58,23 @@ pub async fn create_pipeline(
 }
 
 pub async fn list_tenant_pipelines(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<db_schedules::AgentPipeline>>> {
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let pipelines = store.list_pipelines(&tenant_id).await?;
     Ok(Json(pipelines))
 }
 
 pub async fn create_tenant_pipeline(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
     Json(mut req): Json<db_schedules::CreatePipelineRequest>,
 ) -> Result<Json<db_schedules::AgentPipeline>> {
     req.tenant_id = tenant_id;
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let pipeline = store.create_pipeline(&req).await?;
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = pipeline.tenant_id.clone();
     let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
     tokio::spawn(async move {
@@ -90,11 +92,11 @@ pub async fn create_tenant_pipeline(
 }
 
 pub async fn update_tenant_pipeline(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
     Json(req): Json<db_schedules::CreatePipelineRequest>,
 ) -> Result<Json<db_schedules::AgentPipeline>> {
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let pipeline = store
         .update_pipeline(&tenant_id, &id, &req)
         .await?
@@ -102,7 +104,7 @@ pub async fn update_tenant_pipeline(
             AppError::NotFound(format!("pipeline {id} not found for tenant {tenant_id}"))
         })?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = pipeline.tenant_id.clone();
     let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
     tokio::spawn(async move {
@@ -121,17 +123,17 @@ pub async fn update_tenant_pipeline(
 }
 
 pub async fn delete_tenant_pipeline(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let store = db_schedules::PipelineStore::new(state.tenant_db.pool());
+    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let rows = store.delete_pipeline_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(
             "pipeline {id} not found for tenant {tenant_id}"
         )));
     }
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
             &pool,

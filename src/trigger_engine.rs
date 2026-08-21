@@ -9,6 +9,7 @@ use ares_db::agent_runs::{self, AgentRunMetadata};
 use ares_db::schedules::EventTrigger;
 use ares_types::types::AgentContext;
 use std::sync::Arc;
+use crate::AppState;
 
 /// Cordis service stub for triggers — owns webhook/document-upload/field-change dispatch.
 pub struct TriggerService;
@@ -47,7 +48,7 @@ fn triggered_agent_run_metadata(
 pub async fn execute_triggered_agent(
     trigger: &EventTrigger,
     event_message: &str,
-    app_state: &Arc<crate::AppState>,
+    app_state: &AppState,
 ) -> Result<(), String> {
     use crate::agents::Agent;
     use crate::agents::context_provider::AgentRuntimeContext;
@@ -56,10 +57,10 @@ pub async fn execute_triggered_agent(
         RunObservability, run_cost_aggregation_request, spawn_run_cost_aggregation,
     };
 
-    let pool = app_state.tenant_db.pool();
+    let pool = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
 
     let tenant_agent_record =
-        crate::db::tenant_agents::get_tenant_agent(pool, &trigger.tenant_id, &trigger.target_agent)
+        crate::db::tenant_agents::get_tenant_agent(&pool, &trigger.tenant_id, &trigger.target_agent)
             .await
             .map_err(|e| format!("Agent lookup failed: {}", e))?;
 
@@ -96,7 +97,7 @@ pub async fn execute_triggered_agent(
         .await
         .map_err(|e| e.to_string())?;
 
-        app_state.active_runs.start(crate::active_runs::ActiveRun {
+        app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
             run_id: run_id.clone(),
             tenant_id: trigger.tenant_id.clone(),
             agent_name: trigger.target_agent.clone(),
@@ -114,8 +115,7 @@ pub async fn execute_triggered_agent(
             trigger_id: Some(trigger.id.clone()),
         });
 
-        let skill_result = app_state
-            .skill_engine
+        let skill_result = app_state.get::<crate::context_services::SkillEngineService>().expect("not provided").0
             .execute_skill(
                 skill_id,
                 &trigger.tenant_id,
@@ -130,7 +130,7 @@ pub async fn execute_triggered_agent(
         } else {
             "error"
         };
-        app_state.active_runs.finish(&run_id, active_status);
+        app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, active_status);
 
         let status = if skill_result.is_ok() {
             "completed"
@@ -155,7 +155,7 @@ pub async fn execute_triggered_agent(
         .bind(output_tokens)
         .bind(duration_ms)
         .bind(error_message.as_deref())
-        .execute(pool)
+        .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -208,12 +208,11 @@ pub async fn execute_triggered_agent(
         return skill_result.map(|_| ());
     }
 
-    let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
-        pool,
-        &app_state.agent_registry,
+    let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(&pool,
+        &app_state.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,
         &trigger.tenant_id,
         &trigger.target_agent,
-        &app_state.fleet_secrets,
+        &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
     .await
     .map_err(|e| format!("Agent resolution failed: {}", e))?;
@@ -227,7 +226,7 @@ pub async fn execute_triggered_agent(
     });
     resolved_agent.agent.set_observability(obs.clone());
     resolved_agent.agent.set_runtime_tools(
-        app_state.runtime_tool_registry.clone(),
+        app_state.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(),
         trigger.tenant_id.clone(),
     );
 
@@ -238,8 +237,7 @@ pub async fn execute_triggered_agent(
     );
     runtime_context.session_id = Some(run_id.clone());
 
-    let eruka_context = app_state
-        .context_provider
+    let eruka_context = app_state.get::<crate::context_services::ContextProviderService>().expect("not provided").0
         .get_context_for_run(&runtime_context)
         .await;
     let eruka_context_hit = eruka_context.is_some();
@@ -283,7 +281,7 @@ pub async fn execute_triggered_agent(
     .await
     .map_err(|e| e.to_string())?;
 
-    app_state.active_runs.start(crate::active_runs::ActiveRun {
+    app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),
         tenant_id: trigger.tenant_id.clone(),
         agent_name: trigger.target_agent.clone(),
@@ -336,10 +334,9 @@ pub async fn execute_triggered_agent(
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
-            app_state
-                .active_runs
+            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0
                 .update_model(&run_id, Some(&model_name));
-            app_state.active_runs.finish(&run_id, "completed");
+            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "completed");
 
             let _ = crate::pipeline_engine::execute_pipeline_with_origin(
                 &trigger.target_agent,
@@ -359,7 +356,7 @@ pub async fn execute_triggered_agent(
             output_tokens = 0;
             model_name = "unknown".to_string();
             provider_name = "unknown".to_string();
-            app_state.active_runs.finish(&run_id, "error");
+            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
         }
     }
 
@@ -377,7 +374,7 @@ pub async fn execute_triggered_agent(
     .bind(error_msg.as_deref())
     .bind(&model_name)
     .bind(&provider_name)
-    .execute(pool)
+    .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
 

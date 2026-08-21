@@ -1,6 +1,8 @@
 //! Admin tenants domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
+use std::sync::Arc;
+use ares_cordis_core::Context;
 use super::*;
 
 
@@ -15,14 +17,14 @@ use axum::{
 use sha2::Digest;
 
 pub async fn create_tenant(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(payload): Json<CreateTenantRequest>,
 ) -> Result<Json<TenantResponse>> {
     let tier = parse_tenant_tier(&payload.tier)?;
 
-    let tenant = state.tenant_db.create_tenant(payload.name, tier).await?;
+    let tenant = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.create_tenant(payload.name, tier).await?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let tid = tenant.id.clone();
     tokio::spawn(async move {
         let _ =
@@ -32,19 +34,18 @@ pub async fn create_tenant(
     Ok(Json(TenantResponse::from(tenant)))
 }
 
-pub async fn list_tenants(State(state): State<AppState>) -> Result<Json<Vec<TenantResponse>>> {
-    let tenants = state.tenant_db.list_tenants().await?;
+pub async fn list_tenants(State(ctx): State<Arc<Context>>) -> Result<Json<Vec<TenantResponse>>> {
+    let tenants = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.list_tenants().await?;
     let response: Vec<TenantResponse> = tenants.into_iter().map(|t| t.into()).collect();
 
     Ok(Json(response))
 }
 
 pub async fn get_tenant(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<TenantResponse>> {
-    let tenant = state
-        .tenant_db
+    let tenant = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
         .get_tenant(&tenant_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Tenant not found".to_string()))?;
@@ -53,16 +54,15 @@ pub async fn get_tenant(
 }
 
 pub async fn create_api_key(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let (api_key, raw_key) = state
-        .tenant_db
+    let (api_key, raw_key) = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
         .create_api_key(&tenant_id, payload.name)
         .await?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let kid = api_key.id.clone();
     tokio::spawn(async move {
         let _ =
@@ -77,49 +77,46 @@ pub async fn create_api_key(
 }
 
 pub async fn list_api_keys(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<ApiKeyResponse>>> {
-    let keys = state.tenant_db.list_api_keys(&tenant_id).await?;
+    let keys = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.list_api_keys(&tenant_id).await?;
     let response: Vec<ApiKeyResponse> = keys.into_iter().map(|k| k.into()).collect();
 
     Ok(Json(response))
 }
 
 pub async fn get_tenant_usage(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<UsageResponse>> {
-    let _ = state
-        .tenant_db
+    let _ = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
         .get_tenant(&tenant_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Tenant not found".to_string()))?;
 
-    let usage = state.tenant_db.get_usage_summary(&tenant_id).await?;
+    let usage = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.get_usage_summary(&tenant_id).await?;
 
     Ok(Json(UsageResponse::from(usage)))
 }
 
 pub async fn update_tenant_quota(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
     Json(payload): Json<UpdateQuotaRequest>,
 ) -> Result<Json<TenantResponse>> {
     let tier = parse_tenant_tier(&payload.tier)?;
 
-    state
-        .tenant_db
+    ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
         .update_tenant_quota(&tenant_id, tier)
         .await?;
 
-    let tenant = state
-        .tenant_db
+    let tenant = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
         .get_tenant(&tenant_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Tenant not found".to_string()))?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let tid = tenant_id.clone();
     let details = format!("{{\"new_tier\":\"{}\"}}", payload.tier);
     tokio::spawn(async move {
@@ -138,7 +135,7 @@ pub async fn update_tenant_quota(
 }
 
 pub async fn provision_client(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(req): Json<ProvisionClientRequest>,
 ) -> Result<Json<ProvisionClientResponse>> {
     let tier = parse_tenant_tier(&req.tier)?;
@@ -147,17 +144,16 @@ pub async fn provision_client(
     // It does NOT create product-specific DB tables — client domain data lives in the client's own backend.
     let product_type = req.product_type.to_lowercase();
 
-    let tenant = state.tenant_db.create_tenant(req.name, tier).await?;
+    let tenant = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.create_tenant(req.name, tier).await?;
 
     let agents =
-        clone_templates_for_tenant(state.tenant_db.pool(), &tenant.id, &product_type).await?;
+        clone_templates_for_tenant(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant.id, &product_type).await?;
 
-    let (api_key, raw_key) = state
-        .tenant_db
+    let (api_key, raw_key) = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
         .create_api_key(&tenant.id, req.api_key_name)
         .await?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let tid = tenant.id.clone();
     let details = format!(
         "{{\"product_type\":\"{}\",\"tier\":\"{}\"}}",

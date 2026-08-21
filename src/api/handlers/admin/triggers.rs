@@ -3,6 +3,8 @@
 
 
 
+use std::sync::Arc;
+use ares_cordis_core::Context;
 use crate::AppState;
 use crate::db::audit_log;
 use crate::db::schedules as db_schedules;
@@ -16,7 +18,7 @@ use sha2::Digest;
 use std::collections::HashMap;
 
 pub async fn list_triggers(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<db_schedules::EventTrigger>>> {
     let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
@@ -25,19 +27,19 @@ pub async fn list_triggers(
             "tenant_id query param is required".into(),
         ));
     }
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let store = db_schedules::EventTriggerStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let triggers = store.list_triggers(tenant_id).await?;
     Ok(Json(triggers))
 }
 
 pub async fn create_trigger(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(req): Json<db_schedules::CreateTriggerRequest>,
 ) -> Result<Json<db_schedules::EventTrigger>> {
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let store = db_schedules::EventTriggerStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let trigger = store.create_trigger(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = trigger.tenant_id.clone();
     let tr_name = trigger.name.clone();
     tokio::spawn(async move {
@@ -56,16 +58,16 @@ pub async fn create_trigger(
 }
 
 pub async fn delete_trigger(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let store = db_schedules::EventTriggerStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let rows = store.delete_trigger(&id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!("trigger {id} not found")));
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let tid = id.clone();
     tokio::spawn(async move {
         let _ =
@@ -77,24 +79,24 @@ pub async fn delete_trigger(
 }
 
 pub async fn list_tenant_triggers(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<db_schedules::EventTrigger>>> {
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let store = db_schedules::EventTriggerStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let triggers = store.list_triggers(&tenant_id).await?;
     Ok(Json(triggers))
 }
 
 pub async fn create_tenant_trigger(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
     Json(mut req): Json<db_schedules::CreateTriggerRequest>,
 ) -> Result<Json<db_schedules::EventTrigger>> {
     req.tenant_id = tenant_id;
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let store = db_schedules::EventTriggerStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let trigger = store.create_trigger(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = trigger.tenant_id.clone();
     let tr_name = trigger.name.clone();
     tokio::spawn(async move {
@@ -113,12 +115,12 @@ pub async fn create_tenant_trigger(
 }
 
 pub async fn update_tenant_trigger(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
     Json(mut req): Json<db_schedules::CreateTriggerRequest>,
 ) -> Result<Json<db_schedules::EventTrigger>> {
     req.tenant_id = tenant_id.clone();
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let store = db_schedules::EventTriggerStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let trigger = store
         .update_trigger(&tenant_id, &id, &req)
         .await?
@@ -126,7 +128,7 @@ pub async fn update_tenant_trigger(
             AppError::NotFound(format!("trigger {id} not found for tenant {tenant_id}"))
         })?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = trigger.tenant_id.clone();
     let tr_name = trigger.name.clone();
     tokio::spawn(async move {
@@ -145,10 +147,10 @@ pub async fn update_tenant_trigger(
 }
 
 pub async fn delete_tenant_trigger(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let store = db_schedules::EventTriggerStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let rows = store.delete_trigger_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(
@@ -156,7 +158,7 @@ pub async fn delete_tenant_trigger(
         )));
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
             &pool,

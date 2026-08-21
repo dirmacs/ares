@@ -17,6 +17,7 @@
 //! ```
 
 #![allow(deprecated)]
+#![allow(dead_code)]
 
 #[cfg(all(feature = "postgres", feature = "mcp"))]
 use ares::mcp::McpRegistry;
@@ -497,7 +498,7 @@ async fn run_server(
     root_ctx
         .plugin(ConfigService(config_manager.clone()))
         .await
-        .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())) as Box<dyn std::error::Error>)?;
+        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
 
     // =================================================================
     // Initialize Provider Registry
@@ -511,13 +512,13 @@ async fn run_server(
     }
     // Clone the Arc before consuming one in the background refresh task.
     let catalog_for_registry = catalog.clone();
-    catalog.start_background_refresh();
+    catalog.clone().start_background_refresh();
 
     // Cordis plugin 2/8: CatalogService
     root_ctx
         .plugin(CatalogService(catalog.clone()))
         .await
-        .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())) as Box<dyn std::error::Error>)?;
+        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
 
     let provider_registry =
         Arc::new(ProviderRegistry::from_config(&config).with_catalog(catalog_for_registry));
@@ -531,7 +532,7 @@ async fn run_server(
     root_ctx
         .plugin(ProviderRegistryService(provider_registry.clone()))
         .await
-        .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())) as Box<dyn std::error::Error>)?;
+        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
 
     // =================================================================
     // Initialize LLM Factory
@@ -572,12 +573,18 @@ async fn run_server(
     let jwt_secret = config
         .jwt_secret()
         .expect("JWT_SECRET environment variable must be set");
-    let auth_service = AuthService::new(
+    let auth_service = Arc::new(AuthService::new(
         jwt_secret,
         config.auth.jwt_access_expiry,
         config.auth.jwt_refresh_expiry,
-    );
+    ));
     tracing::info!("Auth service initialized");
+
+    // Cordis plugin 4/8: AuthServiceWrapper
+    root_ctx
+        .plugin(AuthServiceWrapper(auth_service.clone()))
+        .await
+        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
 
     // =================================================================
     // Initialize Tool Registry
@@ -673,6 +680,15 @@ async fn run_server(
         agent_registry.agent_names().len()
     );
 
+    // Cordis plugin 5/8: AgentServiceWrapper
+    root_ctx
+        .plugin(AgentServiceWrapper {
+            registry: agent_registry.clone(),
+            dynamic: dynamic_config.clone(),
+        })
+        .await
+        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
+
     // =================================================================
     // Initialize MCP Registry (Eruka, etc.)
     // =================================================================
@@ -740,6 +756,16 @@ async fn run_server(
         Arc::clone(&config_manager),
     ));
 
+    // Cordis plugin 6/8: ToolServiceWrapper — static + runtime + unified
+    root_ctx
+        .plugin(ToolServiceWrapper {
+            static_registry: tool_registry.clone(),
+            runtime: runtime_tool_registry.clone(),
+            unified: None,
+        })
+        .await
+        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
+
     let state = AppState {
         config_manager: Arc::clone(&config_manager),
         db: db_arc.clone(),
@@ -748,7 +774,7 @@ async fn run_server(
         provider_registry,
         agent_registry,
         tool_registry,
-        auth_service: Arc::new(auth_service),
+        auth_service: auth_service.clone(),
         dynamic_config,
         #[cfg(feature = "mcp")]
         mcp_registry,
@@ -774,34 +800,25 @@ async fn run_server(
     // =================================================================
     // Background Scheduler (Agent Schedules) — Cordis Service (Phase 4)
     // =================================================================
+    // Cordis plugin 7/8: SchedulerService owns tick_ms 60_000, db, agent_execution, with next_run_at(cron) impl
     {
-        // SchedulerService owns tick_ms 60_000, db, agent_execution, catch-up + cron
         let execution = Arc::new(ares_agents::execution::AgentExecutionService::new());
-        let scheduler = ares::scheduler::SchedulerService::new(
-            db_arc.clone(),
-            execution,
-            60_000,
-        );
-        // Cordis wiring: provide via _root_ctx and init tick loop (select! tick + watch)
-        let sched = _root_ctx.provide(scheduler);
-        // Ensure ReflectService watch notifier for DB NOTIFY / polling fallback
-        {
-            use std::any::TypeId;
-            if let Some(reflect) = _root_ctx.get::<ares_cordis_core::ReflectService>() {
-                let _rx = reflect.ensure_notifier_for::<ares::scheduler::SchedulerService>();
-                reflect.register_dependent(TypeId::of::<ares::scheduler::SchedulerService>(), 1);
-                reflect.set_context(&_root_ctx);
-                let _ = reflect.subscribe(TypeId::of::<ares::scheduler::SchedulerService>());
-            }
-        }
-        if let Err(e) = ares_cordis_core::Service::init(&*sched, &_root_ctx).await {
-            tracing::warn!("SchedulerService init failed: {}", e);
-        } else {
-            tracing::info!("SchedulerService spawned (tick_ms=60_000, watch + catch-up owned)");
-        }
-        // Legacy shim: start_scheduler is now owned by Service; not spawned here
-        // tokio::spawn(ares::scheduler::start_scheduler(pool, state)) retained as deprecated
+        root_ctx
+            .plugin(ares::scheduler::SchedulerService::new(
+                db_arc.clone(),
+                execution,
+                60_000,
+            ))
+            .await
+            .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
+        tracing::info!("SchedulerService plugin registered (tick_ms=60_000, watch + catch-up owned)");
     }
+
+    // Cordis plugin 8/8: HealthJobService
+    root_ctx
+        .plugin(HealthJobService)
+        .await
+        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
 
     // =================================================================
     // Agent Config Versioning (Sprint 11)
@@ -967,8 +984,12 @@ async fn run_server(
     )]
     struct ApiDoc;
 
+    // Cordis final router — Phase 2 step 12: `build_router(root_ctx.clone())` is final builder (HOLD shim `base_router` delegates here)
+    let app = ares::build_router(root_ctx.clone());
+    let _ = &app; // suppress unused while legacy AppState router still serves traffic (HOLD shim)
+
     // =================================================================
-    // Build Router
+    // Build Router (legacy AppState — HOLD shim)
     // =================================================================
     #[allow(unused_mut)]
     let mut app = Router::new()

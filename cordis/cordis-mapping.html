@@ -1,0 +1,631 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Mapping — Γ^∞ → Rust - ARES Documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="A.R.E.S — Agentic Retrieval Enhanced Server. Multi-provider LLM platform with tool calling, RAG, and multi-tenant enterprise support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="../getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart</a></li><li class="chapter-item expanded "><a href="../getting-started/authentication.html"><strong aria-hidden="true">2.</strong> Authentication</a></li><li class="chapter-item expanded "><a href="../getting-started/models.html"><strong aria-hidden="true">3.</strong> Models & Providers</a></li><li class="chapter-item expanded affix "><li class="part-title">API Reference</li><li class="chapter-item expanded "><a href="../api/chat.html"><strong aria-hidden="true">4.</strong> Chat</a></li><li class="chapter-item expanded "><a href="../api/agents.html"><strong aria-hidden="true">5.</strong> Agents</a></li><li class="chapter-item expanded "><a href="../api/tools.html"><strong aria-hidden="true">6.</strong> Tools</a></li><li class="chapter-item expanded "><a href="../api/skills.html"><strong aria-hidden="true">7.</strong> Skills</a></li><li class="chapter-item expanded "><a href="../api/mcp.html"><strong aria-hidden="true">8.</strong> MCP Integration</a></li><li class="chapter-item expanded "><a href="../api/memory.html"><strong aria-hidden="true">9.</strong> Memory</a></li><li class="chapter-item expanded "><a href="../api/rag.html"><strong aria-hidden="true">10.</strong> RAG</a></li><li class="chapter-item expanded "><a href="../api/workflows.html"><strong aria-hidden="true">11.</strong> Workflows</a></li><li class="chapter-item expanded "><a href="../api/research.html"><strong aria-hidden="true">12.</strong> Research</a></li><li class="chapter-item expanded "><a href="../api/streaming.html"><strong aria-hidden="true">13.</strong> Streaming</a></li><li class="chapter-item expanded affix "><li class="part-title">Enterprise</li><li class="chapter-item expanded "><a href="../enterprise/v1-api.html"><strong aria-hidden="true">14.</strong> V1 Client API</a></li><li class="chapter-item expanded "><a href="../enterprise/admin-api.html"><strong aria-hidden="true">15.</strong> Admin API</a></li><li class="chapter-item expanded "><a href="../enterprise/deploy-api.html"><strong aria-hidden="true">16.</strong> Deployment API</a></li><li class="chapter-item expanded "><a href="../enterprise/multi-tenant.html"><strong aria-hidden="true">17.</strong> Multi-Tenant Setup</a></li><li class="chapter-item expanded affix "><li class="part-title">Platform</li><li class="chapter-item expanded "><a href="../platform/architecture.html"><strong aria-hidden="true">18.</strong> Architecture (Cordis)</a></li><li class="chapter-item expanded "><a href="../platform/rate-limits.html"><strong aria-hidden="true">19.</strong> Rate Limits & Quotas</a></li><li class="chapter-item expanded "><a href="../platform/safety.html"><strong aria-hidden="true">20.</strong> Loop Detection & Safety</a></li><li class="chapter-item expanded "><a href="../platform/errors.html"><strong aria-hidden="true">21.</strong> Error Handling</a></li><li class="chapter-item expanded "><a href="../platform/self-hosting.html"><strong aria-hidden="true">22.</strong> Self-Hosting</a></li><li class="chapter-item expanded affix "><li class="part-title">Cordis Redesign (0.8.0)</li><li class="chapter-item expanded "><a href="../cordis/cordis-mapping.html" class="active"><strong aria-hidden="true">23.</strong> Mapping — Γ^∞ → Rust</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-remedies.html"><strong aria-hidden="true">24.</strong> Remedies — P0-P10</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-capabilities.html"><strong aria-hidden="true">25.</strong> Capabilities — Preservation Checklist</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-baseline.html"><strong aria-hidden="true">26.</strong> Baseline — Gates</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-yagni.html"><strong aria-hidden="true">27.</strong> YAGNI Ladder</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-redesign.html"><strong aria-hidden="true">28.</strong> Handoff — Architecture</a></li><li class="chapter-item expanded affix "><li class="part-title">Extending ARES</li><li class="chapter-item expanded "><a href="../extending/context-provider.html"><strong aria-hidden="true">29.</strong> ContextProvider Trait</a></li><li class="chapter-item expanded "><a href="../extending/base-router.html"><strong aria-hidden="true">30.</strong> Building on base_router()</a></li><li class="chapter-item expanded affix "><li class="part-title">Guides</li><li class="chapter-item expanded "><a href="../guides/chat-agent.html"><strong aria-hidden="true">31.</strong> Build a Chat Agent</a></li><li class="chapter-item expanded "><a href="../guides/tool-calling.html"><strong aria-hidden="true">32.</strong> Tool Calling</a></li><li class="chapter-item expanded affix "><li class="part-title">Resources</li><li class="chapter-item expanded "><a href="../changelog.html"><strong aria-hidden="true">33.</strong> Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/cordis/cordis-mapping.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="cordis--rust-mapping-phase-0-step-5"><a class="header" href="#cordis--rust-mapping-phase-0-step-5">Cordis → Rust Mapping (Phase 0, Step 5)</a></h1>
+<p><strong>Source:</strong> DeepSeek Cordis paper ("A Programming Paradigm for Spatiotemporal Composability", Aug 2026, <code>cordiverse/cordis</code> + <code>cordiverse/paper</code>) and DeepSeek Harness (<code>deepseek-ai/deepseek-harness</code>, TS, ~60 packages, 12 layers).
+<strong>Target:</strong> ARES <code>/opt/ares</code> (dirmacs/ares v0.7.3, 11 crates + <code>ares-server</code> root, Rust 1.91, Tokio/Axum).
+<strong>This doc is strategy only</strong> — no code changes. Spike crate <code>crates/ares-cordis-core</code> (Phase 1) must prove the theorems before adoption.</p>
+<hr />
+<h2 id="1-core-equation"><a class="header" href="#1-core-equation">1. Core Equation</a></h2>
+<p>Cordis: <code>Γ^∞ = μΓ. Γ × (Γ → Γ) × Σ</code> — unified context that lifts effect systems (revertible mutations) and coeffect systems (typed dependency declarations) to runtime.</p>
+<p>Rust mapping:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct Context {
+    // Γ — value environment (store)
+    store: RwLock&lt;HashMap&lt;TypeId, Arc&lt;dyn Any + Send + Sync&gt;&gt;&gt;, // Σ impl, see §3
+    // Isolate table: TypeId → Symbol (scoped identity)
+    isolate: RwLock&lt;HashMap&lt;TypeId, Symbol&gt;&gt;,
+    // Intercept table: TypeId → override (prototype-chain)
+    intercept: RwLock&lt;HashMap&lt;TypeId, Arc&lt;dyn Any + Send + Sync&gt;&gt;&gt;,
+    // Fiber that owns this context's lifecycle
+    fiber: Arc&lt;Fiber&gt;,
+    // Parent for hierarchical lookup (prototype chain)
+    parent: Option&lt;Arc&lt;Context&gt;&gt;,
+    // Root for epoch-computation reachability
+    root: Weak&lt;Context&gt;,
+}
+<span class="boring">}</span></code></pre></pre>
+<ul>
+<li><code>Context::new_root() -&gt; Arc&lt;Context&gt;</code> creates <code>Fiber::Inactive</code>.</li>
+<li><code>Context::extend(&amp;self) -&gt; Arc&lt;Context&gt;</code> creates child with <code>parent = Some(self)</code> (lexical scope / request scope).</li>
+<li><code>Context::provide::&lt;T: Service&gt;(&amp;self, svc: T)</code> inserts <code>TypeId::of::&lt;T&gt;() → Arc&lt;T&gt;</code> into <code>store</code>; witnessed by effect.</li>
+<li><code>Context::get::&lt;T: Service&gt;(&amp;self) -&gt; Option&lt;Arc&lt;T&gt;&gt;</code> walks <code>store</code> → <code>intercept</code> → <code>parent.store</code> (coeFFECT lookup).</li>
+<li><code>Context::isolate::&lt;T&gt;(&amp;self, label: &amp;str) -&gt; Arc&lt;Context&gt;</code> creates child whose <code>isolate[TypeId::of::&lt;T&gt;()] = Symbol(label)</code>.</li>
+<li><code>Context::intercept::&lt;T&gt;(&amp;self, override: T) -&gt; Arc&lt;Context&gt;</code> creates child whose <code>intercept[TypeId::of::&lt;T&gt;()] = override</code>.</li>
+</ul>
+<p>No <code>unsafe</code>. No <code>libloading</code> in spike (stubbed); YAGNI HMR deferred behind <code>#[cfg(feature = "hmr")]</code>.</p>
+<hr />
+<h2 id="2-witnessed-effects--temporal-composability"><a class="header" href="#2-witnessed-effects--temporal-composability">2. Witnessed Effects — Temporal Composability</a></h2>
+<p>Cordis witnessed effect function: <code>(Γ → Γ) × (Γ → Γ)</code> pair (do + undo) with LIFO accumulator for revertible mutations. Guarantees: if fiber disposes, all effects it applied are reverted in reverse order.</p>
+<p>Rust:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub trait Disposable: Send + 'static {
+    fn dispose(self: Box&lt;Self&gt;);
+}
+
+pub struct EffectGuard {
+    // LIFO accumulator — Box&lt;dyn FnOnce() + Send&gt;
+    acc: Vec&lt;Box&lt;dyn FnOnce() + Send&gt;&gt;,
+}
+
+impl Drop for EffectGuard {
+    fn drop(&amp;mut self) {
+        while let Some(undo) = self.acc.pop() { undo(); } // reverse order
+    }
+}
+
+pub trait Effect: Send + Sync + 'static {
+    fn apply(&amp;self, ctx: &amp;Context) -&gt; Box&lt;dyn Disposable&gt;;
+}
+
+// Helper on Context — mirrors Cordis Context::effect
+impl Context {
+    pub fn effect&lt;E: Effect&gt;(&amp;self, eff: E) -&gt; Box&lt;dyn Disposable&gt; {
+        let guard = eff.apply(self);
+        self.fiber.accumulator.lock().push({
+            let ptr = /* capture undo closure */;
+            Box::new(move || { /* undo */ })
+        });
+        guard
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p><strong>Spike verification (Phase 1, §8):</strong> temporal composability test</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[tokio::test]
+async fn temporal_composability() {
+    let ctx = Context::new_root();
+    let fiber = ctx.plugin(FooService::new(), FooConfig::default()).await;
+    ctx.provide(BarService(42));
+    assert_eq!(ctx.get::&lt;BarService&gt;().unwrap().0, 42);
+    fiber.dispose().await;
+    assert!(ctx.get::&lt;BarService&gt;().is_none());
+    assert_eq!(ctx.snapshot(), pre_plugin_snapshot);
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Must hold before Phase 2.</p>
+<hr />
+<h2 id="3-coeffect-table-Σ--spatial-composability"><a class="header" href="#3-coeffect-table-Σ--spatial-composability">3. Coeffect Table Σ — Spatial Composability</a></h2>
+<p>Cordis Σ is a <code>TypeId</code>-keyed table of dependency declarations (<code>inject = ["foo"]</code>). Fiber recomputes epoch from dependency UIDs; if epoch unchanged, no reload.</p>
+<p>Rust <code>anymap</code>/<code>typemap</code> equivalent (hand-rolled to avoid extra dep in spike):</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct CoeffectTable {
+    // TypeId → (TypeId, Symbol, UID)
+    injects: HashMap&lt;TypeId, (Symbol, String)&gt;, // String = epoch fragment ":uid"
+}
+
+impl CoeffectTable {
+    pub fn declare&lt;T: Service&gt;(&amp;mut self, label: Symbol) {
+        self.injects.insert(TypeId::of::&lt;T&gt;(), (label, uid_for::&lt;T&gt;(label)));
+    }
+    pub fn epoch(&amp;self) -&gt; String {
+        // Monoid over concatenation, per Cordis: ":uid1:uid2:..."
+        let mut frags: Vec&lt;_&gt; = self.injects.values().map(|(_, uid)| uid).cloned().collect();
+        frags.sort();
+        frags.join(":")
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<ul>
+<li><code>aranymap</code> crate is not needed; <code>HashMap&lt;TypeId, Box&lt;dyn Any + Send + Sync&gt;&gt;</code> with <code>TypeId::of::&lt;T&gt;()</code> suffices.</li>
+<li><code>Symbol</code> is <code>Arc&lt;str&gt;</code> or <code>&amp;'static str</code> for <code>isolate</code> labels (e.g., <code>tenant:abc</code>).</li>
+<li>Handlers currently take <code>State&lt;AppState&gt;</code> (17–22 fields, <code>src/lib.rs:230</code>). New handlers: <code>State&lt;Arc&lt;Context&gt;&gt;</code> + <code>ctx.get::&lt;T&gt;()</code> where <code>T</code> is declared as <code>inject</code>. Example:
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Before (P0 god-struct):
+async fn chat(State(state): State&lt;AppState&gt;, ...) -&gt; Response
+
+// After (decomposed Context):
+async fn chat(State(ctx): State&lt;Arc&lt;Context&gt;&gt;, ...) -&gt; Response {
+    let exec = ctx.get::&lt;dyn AgentExecutionService&gt;().expect("no execution service");
+    exec.execute(req, &amp;ctx).await
+}
+<span class="boring">}</span></code></pre></pre>
+</li>
+</ul>
+<p><strong>Spike verification:</strong> spatial composability</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[tokio::test]
+async fn spatial_composability() {
+    let ctx = Context::new_root();
+    let consumer = ConsumerService::new(inject: vec![TypeId::of::&lt;FooService&gt;()]);
+    let fid = ctx.plugin(consumer, Config::default()).await;
+    assert_eq!(ctx.fiber_state(fid), FiberState::Inactive); // dep missing
+    ctx.provide(FooService);
+    assert_eq!(ctx.fiber_state(fid), FiberState::Active); // auto-reload
+    ctx.provide(FooService::v2()); // re-provide
+    assert_eq!(ctx.fiber_epoch(fid).prev, ":foo_v1");
+    assert_eq!(ctx.fiber_epoch(fid).current, ":foo_v2"); // reload triggered
+}
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="4-isolate--intercept"><a class="header" href="#4-isolate--intercept">4. Isolate &amp; Intercept</a></h2>
+<h3 id="isolate-spatial-scoping"><a class="header" href="#isolate-spatial-scoping">Isolate (spatial scoping)</a></h3>
+<p>Cordis <code>isolate("name", label)</code> creates realm where <code>provide</code>/<code>inject</code> are scoped.</p>
+<p>Rust:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl Context {
+    pub fn isolate&lt;T: Service&gt;(&amp;self, label: impl Into&lt;Symbol&gt;) -&gt; Arc&lt;Context&gt; {
+        let child = self.extend();
+        child.isolate.write().insert(TypeId::of::&lt;T&gt;(), label.into());
+        child
+    }
+}
+
+// Usage: per-tenant tool isolation (P10, Phase 3)
+let tenant_ctx = root_ctx.isolate::&lt;dyn ToolService&gt;("tenant:acme");
+tenant_ctx.provide(TenantToolService::new(tenant_id));
+// tenant_ctx.get::&lt;dyn ToolService&gt;() returns tenant-scoped service
+// root_ctx.get::&lt;dyn ToolService&gt;() still returns fleet service
+<span class="boring">}</span></code></pre></pre>
+<h3 id="intercept-prototype-chain-override"><a class="header" href="#intercept-prototype-chain-override">Intercept (prototype-chain override)</a></h3>
+<p>Cordis <code>intercept("key", config)</code> overrides a coeffect without mutating the provider.</p>
+<p>Rust:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl Context {
+    pub fn intercept&lt;T: Service&gt;(&amp;self, override_val: T) -&gt; Arc&lt;Context&gt; {
+        let child = self.extend();
+        child.intercept.write().insert(TypeId::of::&lt;T&gt;(), Arc::new(override_val) as Arc&lt;dyn Any + Send + Sync&gt;);
+        child
+    }
+}
+
+// Usage: per-request model pinning (P10, Phase 5)
+let req_ctx = root_ctx.intercept(ModelOverride { model: "gpt-4o-mini".into() });
+let llm = req_ctx.get::&lt;dyn LlmService&gt;().unwrap(); // sees override via prototype walk
+<span class="boring">}</span></code></pre></pre>
+<p>Lookup order (must walk): <code>intercept → store → parent.intercept → parent.store → ... → root</code>.</p>
+<hr />
+<h2 id="5-fiber-lifecycle-with-inertial-lock"><a class="header" href="#5-fiber-lifecycle-with-inertial-lock">5. Fiber Lifecycle (with Inertial Lock)</a></h2>
+<p>Cordis Fiber states: <code>Inactive → Reloading → Active → Unloading</code> plus <code>Inertia</code> lock to serialize transitions (Thm 63 — guarded withdrawal: provider does not withdraw until dependents deactivate).</p>
+<p>Rust:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum FiberState {
+    Inactive { error: Option&lt;AppError&gt; },
+    Reloading { iter: Box&lt;dyn EffectIterator&gt;, acc: EffectAcc, committed: CommittedView },
+    Active { acc: EffectAcc, committed: CommittedView },
+    Unloading { acc: EffectAcc, committed: CommittedView, outcome: Option&lt;AppError&gt; },
+}
+
+pub struct Fiber {
+    state: RwLock&lt;FiberState&gt;,
+    inertia: Arc&lt;tokio::sync::Mutex&lt;()&gt;&gt;, // serialize transitions
+    acc: Mutex&lt;EffectAcc&gt;, // Vec&lt;Box&lt;dyn FnOnce() + Send&gt;&gt;
+    epoch: RwLock&lt;String&gt;, // computed epoch
+    injects: CoeffectTable,
+    committed: CommittedView, // snapshot for rollback
+}
+
+impl Fiber {
+    pub async fn refresh(&amp;self) {
+        let _guard = self.inertia.lock().await; // Thm 63
+        let new_epoch = compute_epoch(&amp;self.injects);
+        if *self.epoch.read() == new_epoch { return; } // no change
+        self.reload().await;
+    }
+
+    async fn reload(&amp;self) { /* iterate effects, recompute, commit or rollback */ }
+    async fn dispose(self: Arc&lt;Self&gt;) { /* LIFO undo, state → Inactive */ }
+}
+<span class="boring">}</span></code></pre></pre>
+<ul>
+<li><code>EffectIter</code> is <code>Box&lt;dyn Iterator&lt;Item = Box&lt;dyn Effect&gt;&gt; + Send&gt;</code> — each <code>Service::init</code> yields effects.</li>
+<li><code>CommittedView</code> is <code>HashMap&lt;TypeId, Arc&lt;dyn Any&gt;&gt;</code> snapshot taken at <code>Active</code> entry; used for rollback on failure.</li>
+<li><code>notify</code> (see §7) triggers <code>Fiber::refresh()</code> via BFS over dependent fibers.</li>
+</ul>
+<p>File placement: <code>crates/ares-cordis-core/src/fiber.rs</code> (spike) → later <code>crates/ares-context/src/fiber.rs</code>.</p>
+<hr />
+<h2 id="6-epoch--hash-of-dependency-uids"><a class="header" href="#6-epoch--hash-of-dependency-uids">6. Epoch — Hash of Dependency UIDs</a></h2>
+<p>Cordis epoch is monoid <code>":uid1:uid2:..."</code> (concatenation). Fiber skips reload if epoch unchanged.</p>
+<p>Rust:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn compute_epoch(injects: &amp;CoeffectTable) -&gt; String {
+    // Monoid over concatenation per paper §4.3
+    let mut frags: Vec&lt;String&gt; = injects.uids_sorted();
+    if frags.is_empty() { return ":".into(); }
+    format!(":{}", frags.join(":"))
+}
+
+// uid_for&lt;T&gt; = format!("{}:{}", std::any::type_name::&lt;T&gt;(), label)
+// Example: epoch = ":ares_llm::LlmService:tenant_acme:ares_tools::ToolService:tenant_acme"
+<span class="boring">}</span></code></pre></pre>
+<ul>
+<li>Epoch is String, not hash — paper uses concatenation for debuggability; if perf matters, switch to <code>sha2</code> hash later.</li>
+<li><code>Fiber::refresh</code> compares <code>self.epoch.read()</code> vs <code>compute_epoch(&amp;self.injects)</code>; logs diff via <code>tracing::debug!</code>.</li>
+</ul>
+<hr />
+<h2 id="7-notify--reactive-recomputation-tokiosyncwatch"><a class="header" href="#7-notify--reactive-recomputation-tokiosyncwatch">7. Notify — Reactive Recomputation (tokio::sync::watch)</a></h2>
+<p>Cordis <code>notify</code> is fan-out to dependent fibers. In TS Harness it's <code>EventEmitter</code>; in Rust it's <code>tokio::sync::watch</code>.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct ReflectService {
+    // TypeId of changed service → watch channel sender
+    notifiers: RwLock&lt;HashMap&lt;TypeId, watch::Sender&lt;()&gt;&gt;&gt;,
+    // dependency graph: provider TypeId → [dependent FiberId]
+    dependents: RwLock&lt;HashMap&lt;TypeId, Vec&lt;FiberId&gt;&gt;&gt;,
+}
+
+impl ReflectService {
+    pub fn notify(&amp;self, changed: TypeId) {
+        // BFS walk dependents
+        let deps = self.dependents.read().get(&amp;changed).cloned().unwrap_or_default();
+        for fid in deps {
+            if let Some(sender) = self.notifiers.read().get(&amp;changed) {
+                let _ = sender.send(()); // fan-out, ignore closed receivers
+            }
+            // also trigger Fiber::refresh via task
+            tokio::spawn({
+                let fiber = self.fiber_for(fid);
+                async move { fiber.refresh().await }
+            });
+        }
+    }
+}
+
+// DB-backed source example (replaces 60s poll in runtime_registry.rs etc.):
+// On Postgres NOTIFY (or polling fallback every 60s if no NOTIFY), call:
+// ctx.get::&lt;ReflectService&gt;().unwrap().notify(TypeId::of::&lt;RuntimeToolService&gt;());
+<span class="boring">}</span></code></pre></pre>
+<p>Replaces: <code>RuntimeToolRegistry::start_background_reload</code> (60s poll, <code>crates/ares-tools/src/runtime_registry.rs</code>), <code>ProviderRegistry</code> poll (<code>crates/ares-llm/src/provider_registry.rs</code>), <code>NvidiaCatalogCache::start_background_refresh</code> (<code>crates/ares-config/src/nvidia_catalog.rs</code>).</p>
+<hr />
+<h2 id="8-events--5-dispatch-modes"><a class="header" href="#8-events--5-dispatch-modes">8. Events — 5 Dispatch Modes</a></h2>
+<p>Cordis Events: <code>emit</code> / <code>parallel</code> / <code>serial</code> / <code>bail</code> / <code>waterfall</code> typed bus.</p>
+<p>Rust:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[derive(Clone, Copy, Debug)]
+pub enum Dispatch {
+    Emit,      // fire-and-forget, no return, no error propagation
+    Parallel,  // tokio::JoinSet, collect all, fail-open (one handler error doesn't cancel others)
+    Serial,    // sequential, fail-open
+    Bail,      // sequential, fail-fast (first error aborts)
+    Waterfall, // sequential, each handler receives previous handler's output (chained)
+}
+
+pub struct EventsService {
+    handlers: RwLock&lt;HashMap&lt;EventId, Vec&lt;Handler&gt;&gt;&gt;, // Handler = Box&lt;dyn Fn(Value) -&gt; Future&lt;Output=Result&lt;Value&gt;&gt; + Send&gt;
+    bus: broadcast::Sender&lt;EventEnvelope&gt;, // tokio::sync::broadcast for cross-task fan-out
+}
+
+impl EventsService {
+    pub fn on(&amp;self, event: EventId, handler: Handler) -&gt; Box&lt;dyn Disposable&gt; {
+        self.handlers.write().entry(event).or_default().push(handler);
+        // return Disposable that removes handler on dispose (LIFO undo)
+        Box::new(RemoveHandler { event, idx: len - 1 })
+    }
+
+    pub async fn dispatch(&amp;self, event: EventId, payload: Value, mode: Dispatch) -&gt; Result&lt;Value&gt; {
+        match mode {
+            Dispatch::Emit =&gt; { self.bus.send(envelope(payload)); Ok(Value::Null) }
+            Dispatch::Parallel =&gt; { /* JoinSet */ }
+            Dispatch::Serial =&gt; { /* loop */ }
+            Dispatch::Bail =&gt; { /* loop with bail */ }
+            Dispatch::Waterfall =&gt; { /* chain payload through handlers */ }
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Mapping from TS Harness (12 layers, ~60 packages) — in Rust, one crate suffices; do not replicate layering ceremony. <code>EventsService</code> is a <code>Service</code> itself (<code>ctx.provide(EventsService::new())</code>), so any fiber can <code>ctx.get::&lt;EventsService&gt;().unwrap().on(...)</code>.</p>
+<hr />
+<h2 id="9-loader--config-reconciliation-declarative"><a class="header" href="#9-loader--config-reconciliation-declarative">9. Loader &amp; Config Reconciliation (Declarative)</a></h2>
+<p>Cordis Loader: <code>Entry { id, plugin, config, disabled, isolate, intercept }</code> + <code>EntryTree(Vec&lt;Entry&gt;)</code> persisted to <code>config/entries.json</code> (or <code>config/cordis-entries.toon</code> via <code>toon-format 0.4.1</code>). <code>Loader::reconcile(current, desired)</code> diffs incrementally.</p>
+<p>Rust (Phase 3, <code>crates/ares-context/src/loader.rs</code> or <code>crates/ares-config</code>):</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[derive(Serialize, Deserialize, Clone)]
+pub struct Entry {
+    pub id: String,               // fiber id, e.g. "tool:calculator"
+    pub plugin: PluginId,         // e.g. "ares_tools::CalculatorService"
+    pub config: serde_json::Value,// Plugin::Config serialized
+    pub disabled: bool,
+    pub isolate: Option&lt;String&gt;,  // e.g. Some("tenant:acme")
+    pub intercept: HashMap&lt;String, Value&gt;,
+}
+pub struct EntryTree(pub Vec&lt;Entry&gt;);
+
+impl Loader {
+    pub fn reconcile(&amp;self, current: &amp;EntryTree, desired: &amp;EntryTree) {
+        // per-field dispatch (paper §5):
+        // id/plugin change → rebuild fiber (dispose + new)
+        // config change → fiber.update(new_config)
+        // disabled toggle → fiber.retire() / fiber.begin()
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Persistence: <code>config/entries.json</code> (or <code>config/cordis-entries.toon</code>) separate from <code>ares.toml</code> symlink (<code>/opt/ares-config/ares.toml</code>) — do not conflict (see Assumptions in plan). Reuse <code>toon-format</code> serialization.</p>
+<hr />
+<h2 id="10-plugin--registryservice"><a class="header" href="#10-plugin--registryservice">10. Plugin &amp; RegistryService</a></h2>
+<p>Cordis plugins are <code>FnOnce(&amp;Context, Config) -&gt; Result&lt;Disposable&gt;</code> or struct with <code>apply</code>. Registry enforces single-source discipline.</p>
+<p>Rust (Phase 2, <code>crates/ares-cordis-core/src/registry.rs</code>):</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub trait Plugin: Send + Sync + 'static {
+    type Config: Serialize + DeserializeOwned + Send + Sync;
+    fn apply(&amp;self, ctx: &amp;Context, config: Self::Config) -&gt; Result&lt;Box&lt;dyn Disposable&gt;&gt;;
+}
+
+pub struct RegistryService {
+    fibers: RwLock&lt;HashMap&lt;FiberId, Arc&lt;Fiber&gt;&gt;&gt;,
+}
+
+impl RegistryService {
+    pub fn plugin&lt;P: Plugin&gt;(&amp;self, plugin: P, config: P::Config) -&gt; Result&lt;FiberId&gt; {
+        // check duplicate provider: no two fibers may provide same TypeId in same isolate realm
+        // if violation: return Err(AppError::Configuration("duplicate provider for TypeId"))
+        // else: create Fiber, store, return FiberId
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Static registration (preferred production): <code>inventory</code>/<code>linkme</code> (compile-time plugin set) — real surface is <code>RegistryService::plugin</code> (single-source discipline); <code>inventory::submit!</code> / <code>linkme::distributed_slice</code> of <code>fn(&amp;Arc&lt;Context&gt;) -&gt; Result&lt;FiberId, CordisError&gt;</code> is the future shortcut once crate count stabilizes (see <code>crates/ares-cordis-core/src/lib.rs</code> HMR section and <code>Wiring</code> task). Dynamic HMR (dev only, behind <code>#[cfg(feature = "hmr")]</code> <strong>off by default</strong>): <code>libloading</code> path that <code>dlopen</code>s <code>.so</code> and calls <code>Plugin::apply</code> via <code>extern "C"</code>; if <code>libloading</code> ABI fragility blocks (Rust <code>1.91</code> toolchain coupling, <code>unsafe</code> soundness), fall back to file-watch + full fiber reload (re-read config/TOON) — 90% of value per plan, see <code>watcher</code> fallback below.</p>
+<h3 id="hmr-yagni-decision-plan-assumptions-contingencies"><a class="header" href="#hmr-yagni-decision-plan-assumptions-contingencies">HMR YAGNI decision (plan Assumptions §Contingencies)</a></h3>
+<p><strong>Decision: DEFER <code>libloading</code> HMR, keep file-watch + <code>Fiber::reload</code> as production path.</strong></p>
+<ul>
+<li>Rationale: <code>libloading::Library::new</code> + <code>Symbol&lt;extern "C"&gt;</code> requires <code>unsafe</code>, a stable <code>repr(C)</code> ABI boundary, and the <code>.so</code> to be built with the exact same Rust toolchain (<code>1.91</code>). ABI drift across patches, <code>rust-doctor</code> soundness flags, and <code>Box::leak</code> ownership hazards make <code>libloading</code> too brittle for a generic runtime. As plan contingency states: "If <code>libloading</code> HMR proves too complex for Rust (dynamic library ABI fragility, <code>unsafe</code> surface), fall back to file-watch + full fiber reload without dynamic code swapping … <code>file watcher still triggers Fiber::reload()</code> by re-reading config/TOON, which already covers 90% of self-evolution value. Dynamic code HMR can be deferred to a later phase behind <code>#[cfg(feature = "hmr")]</code> without blocking the core redesign."</li>
+<li>Fallback implemented: <code>crates/ares-cordis-core/src/watcher.rs</code> (<code>watch_many</code> / <code>watch_cordis_entries</code>) uses <code>notify::RecommendedWatcher</code> (debounced <code>500 ms</code> + <code>100 ms</code> settle, same as <code>AresConfigManager::start_watching</code>) to watch <code>config/agents/*.toon</code> (recursive) and <code>config/entries.json</code> (or <code>config/cordis-entries.toon</code> parent dir). On <code>Modify</code>/<code>Create</code> it calls <code>ReflectService::notify(tid)</code> which BFS-walks <code>dependents</code> and spawns <code>Fiber::refresh</code> (epoch recompute via <code>compute_epoch</code>). No restart, no <code>libloading</code>. Logs <code>Configuration hot-reloaded successfully via Cordis watch</code> (generalizes <code>AresConfigManager</code>'s <code>Configuration hot-reloaded successfully</code> which is already proven on random-port E2E <code>39476</code>/<code>39120</code> — see <code>docs/cordis-redesign.md</code> §9/9b).</li>
+<li>Stub preserved: <code>crates/ares-cordis-core/src/hmr.rs</code> is <code>#[cfg(feature = "hmr")]</code> (Cargo feature <code>hmr = ["dep:libloading"]</code>, off by default). It shows <code>libloading::Library::new</code> + <code>get::&lt;HmrEntryFn&gt;</code> + owned <code>HmrLibrary</code> holder (RAII, no <code>Box::leak</code>) calling <code>cordis_plugin_apply</code> (<code>extern "C"</code>). Enable with <code>cargo build --features hmr</code> and a <code>.so</code> built with the same toolchain. Not invoked by <code>src/main.rs</code> or <code>ReflectService</code> — <code>watcher</code> is the production path.</li>
+<li><code>Cargo.toml</code>: <code>[features] hmr = ["dep:libloading"]</code> (<code>libloading 0.8</code> optional, <code>notify 8.2.0</code> always for <code>watcher</code>), <code>default = []</code>.</li>
+</ul>
+<hr />
+<h2 id="11-what-is-explicitly-not-ported-in-spike-updated"><a class="header" href="#11-what-is-explicitly-not-ported-in-spike-updated">11. What Is Explicitly Not Ported in Spike (updated)</a></h2>
+<p>Per YAGNI (Phase 1, §8) + HMR deferral above:</p>
+<ul>
+<li>❌ <code>libloading</code> HMR <strong>DEFERRED</strong> — file-watch fallback <code>crates/ares-cordis-core/src/watcher.rs</code> (<code>notify</code> → <code>ReflectService::notify</code> → <code>Fiber::reload</code> via epoch) covers 90% value without dynamic code. Dynamic code swap remains as <code>crates/ares-cordis-core/src/hmr.rs</code> stub behind <code>#[cfg(feature = "hmr")]</code> (off by default, <code>libloading 0.8</code> optional). See HMR decision above and <code>lib.rs</code> HMR section.</li>
+<li>❌ WASM — deferred.</li>
+<li>❌ Visual layer package (~60 TS packages, 12 layers) — in Rust, one crate; do not replicate ceremony.</li>
+<li>❌ <code>ares.toml</code> symlink handling — keep <code>AresConfigManager::start_watching()</code> as-is for Phase 2; Loader is additive. <code>watcher</code> generalizes it to Cordis entries/TOON without touching <code>ares.toml</code> symlink (<code>/opt/ares-config/ares.toml</code>).</li>
+</ul>
+<hr />
+<h2 id="12-critical-anchors-reread-before-phases-245"><a class="header" href="#12-critical-anchors-reread-before-phases-245">12. Critical Anchors (Reread Before Phases 2/4/5)</a></h2>
+<ul>
+<li><code>/opt/ares/src/main.rs</code> <code>run_server</code> (lines 296–889, 17 steps) → becomes <code>root_ctx.plugin(...).plugin(...).await</code> (5–8 lines). Every registry/pool/cache must migrate to a <code>Service</code>.</li>
+<li><code>/opt/ares/src/lib.rs</code> <code>AppState</code> (230–274, 17–22 fields) + <code>base_router()</code> → <code>Arc&lt;Context&gt;</code>, <code>build_router(ctx: Arc&lt;Context&gt;)</code>.</li>
+<li><code>/opt/ares/crates/ares-tools/src/runtime_registry.rs</code> <code>start_background_reload</code> (60s poll, <code>ArcSwap</code>) → epoch-driven <code>notify</code>.</li>
+<li><code>/opt/ares/crates/ares-llm/src/provider_registry.rs</code> <code>ArcSwap&lt;HashMap&gt;</code> + <code>NvidiaCatalogCache</code> → <code>LlmService</code> with circuit breaker.</li>
+<li><code>/opt/ares/src/api/handlers/admin.rs</code> 190 KB, 5,946 lines — split by domain in Phase 6.</li>
+</ul>
+<hr />
+<h2 id="13-consequences--alternatives"><a class="header" href="#13-consequences--alternatives">13. Consequences &amp; Alternatives</a></h2>
+<ul>
+<li>If <code>async fn in trait</code> causes <code>dyn</code> issues, use <code>async_trait</code> only for that trait and document why (Rust 1.91 floor, 1.75+ stable for <code>async fn in trait</code>, but <code>dyn Service</code> may need <code>async_trait</code> — prefer <code>impl Future</code> return).</li>
+<li>If <code>TypeId</code> + <code>HashMap</code> proves too coarse (downcasting ergonomics), evaluate <code>anymap</code>/<code>typemap</code> crates — but hand-rolled <code>HashMap&lt;TypeId, Box&lt;dyn Any&gt;&gt;</code> is sufficient for spike.</li>
+<li>If epoch String concatenation bloats logs, switch to <code>sha2</code> digest and keep <code>:uid1:uid2</code> only in <code>tracing::debug!</code>.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../platform/self-hosting.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../cordis/cordis-remedies.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../platform/self-hosting.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../cordis/cordis-remedies.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

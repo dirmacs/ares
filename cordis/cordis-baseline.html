@@ -1,0 +1,367 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Baseline — Gates - ARES Documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="A.R.E.S — Agentic Retrieval Enhanced Server. Multi-provider LLM platform with tool calling, RAG, and multi-tenant enterprise support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="../getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart</a></li><li class="chapter-item expanded "><a href="../getting-started/authentication.html"><strong aria-hidden="true">2.</strong> Authentication</a></li><li class="chapter-item expanded "><a href="../getting-started/models.html"><strong aria-hidden="true">3.</strong> Models & Providers</a></li><li class="chapter-item expanded affix "><li class="part-title">API Reference</li><li class="chapter-item expanded "><a href="../api/chat.html"><strong aria-hidden="true">4.</strong> Chat</a></li><li class="chapter-item expanded "><a href="../api/agents.html"><strong aria-hidden="true">5.</strong> Agents</a></li><li class="chapter-item expanded "><a href="../api/tools.html"><strong aria-hidden="true">6.</strong> Tools</a></li><li class="chapter-item expanded "><a href="../api/skills.html"><strong aria-hidden="true">7.</strong> Skills</a></li><li class="chapter-item expanded "><a href="../api/mcp.html"><strong aria-hidden="true">8.</strong> MCP Integration</a></li><li class="chapter-item expanded "><a href="../api/memory.html"><strong aria-hidden="true">9.</strong> Memory</a></li><li class="chapter-item expanded "><a href="../api/rag.html"><strong aria-hidden="true">10.</strong> RAG</a></li><li class="chapter-item expanded "><a href="../api/workflows.html"><strong aria-hidden="true">11.</strong> Workflows</a></li><li class="chapter-item expanded "><a href="../api/research.html"><strong aria-hidden="true">12.</strong> Research</a></li><li class="chapter-item expanded "><a href="../api/streaming.html"><strong aria-hidden="true">13.</strong> Streaming</a></li><li class="chapter-item expanded affix "><li class="part-title">Enterprise</li><li class="chapter-item expanded "><a href="../enterprise/v1-api.html"><strong aria-hidden="true">14.</strong> V1 Client API</a></li><li class="chapter-item expanded "><a href="../enterprise/admin-api.html"><strong aria-hidden="true">15.</strong> Admin API</a></li><li class="chapter-item expanded "><a href="../enterprise/deploy-api.html"><strong aria-hidden="true">16.</strong> Deployment API</a></li><li class="chapter-item expanded "><a href="../enterprise/multi-tenant.html"><strong aria-hidden="true">17.</strong> Multi-Tenant Setup</a></li><li class="chapter-item expanded affix "><li class="part-title">Platform</li><li class="chapter-item expanded "><a href="../platform/architecture.html"><strong aria-hidden="true">18.</strong> Architecture (Cordis)</a></li><li class="chapter-item expanded "><a href="../platform/rate-limits.html"><strong aria-hidden="true">19.</strong> Rate Limits & Quotas</a></li><li class="chapter-item expanded "><a href="../platform/safety.html"><strong aria-hidden="true">20.</strong> Loop Detection & Safety</a></li><li class="chapter-item expanded "><a href="../platform/errors.html"><strong aria-hidden="true">21.</strong> Error Handling</a></li><li class="chapter-item expanded "><a href="../platform/self-hosting.html"><strong aria-hidden="true">22.</strong> Self-Hosting</a></li><li class="chapter-item expanded affix "><li class="part-title">Cordis Redesign (0.8.0)</li><li class="chapter-item expanded "><a href="../cordis/cordis-mapping.html"><strong aria-hidden="true">23.</strong> Mapping — Γ^∞ → Rust</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-remedies.html"><strong aria-hidden="true">24.</strong> Remedies — P0-P10</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-capabilities.html"><strong aria-hidden="true">25.</strong> Capabilities — Preservation Checklist</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-baseline.html" class="active"><strong aria-hidden="true">26.</strong> Baseline — Gates</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-yagni.html"><strong aria-hidden="true">27.</strong> YAGNI Ladder</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-redesign.html"><strong aria-hidden="true">28.</strong> Handoff — Architecture</a></li><li class="chapter-item expanded affix "><li class="part-title">Extending ARES</li><li class="chapter-item expanded "><a href="../extending/context-provider.html"><strong aria-hidden="true">29.</strong> ContextProvider Trait</a></li><li class="chapter-item expanded "><a href="../extending/base-router.html"><strong aria-hidden="true">30.</strong> Building on base_router()</a></li><li class="chapter-item expanded affix "><li class="part-title">Guides</li><li class="chapter-item expanded "><a href="../guides/chat-agent.html"><strong aria-hidden="true">31.</strong> Build a Chat Agent</a></li><li class="chapter-item expanded "><a href="../guides/tool-calling.html"><strong aria-hidden="true">32.</strong> Tool Calling</a></li><li class="chapter-item expanded affix "><li class="part-title">Resources</li><li class="chapter-item expanded "><a href="../changelog.html"><strong aria-hidden="true">33.</strong> Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/cordis/cordis-baseline.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="cordis-redesign--baseline-gates-phase--1-steps-12"><a class="header" href="#cordis-redesign--baseline-gates-phase--1-steps-12">Cordis Redesign — Baseline Gates (Phase -1, Steps 1–2)</a></h1>
+<p><strong>Branch:</strong> <code>cordis-redesign</code> forked from <code>main</code> at <code>e4f3bcca2397f25b237246faef0d10bbceb234de</code>
+<strong>Date:</strong> 2026-08-20
+<strong>Toolchain:</strong> rustc 1.95.0, cargo 1.95.0, clippy 0.1.95</p>
+<h2 id="step-1--rust-doctor-baseline"><a class="header" href="#step-1--rust-doctor-baseline">Step 1 — rust-doctor Baseline</a></h2>
+<p><strong>Command:</strong> <code>npx rust-doctor@latest . --json</code> from <code>/opt/ares</code> (no <code>rust-doctor.toml</code>, defaults)</p>
+<div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+<tr><td><code>audit.score.value</code></td><td>86</td></tr>
+<tr><td><code>audit.score.label</code></td><td>Great</td></tr>
+<tr><td><code>audit.score.model</code></td><td>core-v2</td></tr>
+<tr><td><code>audit.score.authoritative</code></td><td>false</td></tr>
+<tr><td><code>worst_tier</code></td><td>P2</td></tr>
+<tr><td><code>applied_ceiling</code></td><td>null</td></tr>
+<tr><td><code>projected_after_top_three</code></td><td>null</td></tr>
+<tr><td><code>projected_rule_ids</code></td><td>[]</td></tr>
+<tr><td><code>gate.blocking</code></td><td>error</td></tr>
+<tr><td><code>gate.status</code></td><td>passed</td></tr>
+<tr><td><code>gate.blocking_diagnostics</code></td><td>0</td></tr>
+<tr><td><code>status</code></td><td>complete</td></tr>
+<tr><td><code>complete</code></td><td>true</td></tr>
+</tbody></table>
+</div>
+<h3 id="per-dimension-sub-scores"><a class="header" href="#per-dimension-sub-scores">Per-Dimension Sub-Scores</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Dimension</th><th>Score</th></tr></thead><tbody>
+<tr><td>security (×2)</td><td>100</td></tr>
+<tr><td>reliability (×1.5)</td><td>75</td></tr>
+<tr><td>maintainability</td><td>72</td></tr>
+<tr><td>performance</td><td>99</td></tr>
+<tr><td>dependencies</td><td>75</td></tr>
+</tbody></table>
+</div>
+<h3 id="category-breakdown-auditcategories"><a class="header" href="#category-breakdown-auditcategories">Category Breakdown (audit.categories)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Category</th><th>warnings</th><th>distinct</th></tr></thead><tbody>
+<tr><td>Bugs</td><td>225</td><td>225</td></tr>
+<tr><td>Performance</td><td>1</td><td>1</td></tr>
+<tr><td>Dependencies</td><td>51</td><td>51</td></tr>
+<tr><td>Maintainability</td><td>1683</td><td>717</td></tr>
+<tr><td>Other</td><td>543</td><td>543</td></tr>
+<tr><td><strong>Total diagnostics</strong></td><td>2503</td><td>—</td></tr>
+</tbody></table>
+</div>
+<h3 id="tier-distribution-mapped-via-policy-rules"><a class="header" href="#tier-distribution-mapped-via-policy-rules">Tier Distribution (mapped via policy rules)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Tier</th><th>Count</th></tr></thead><tbody>
+<tr><td>P0</td><td>0</td></tr>
+<tr><td>P1</td><td>0</td></tr>
+<tr><td>P2</td><td>53</td></tr>
+<tr><td>P3</td><td>941</td></tr>
+<tr><td>unknown (missing_docs, dead_code, etc.)</td><td>543</td></tr>
+</tbody></table>
+</div>
+<p>No P0/P1 means ceiling not applied — <code>applied_ceiling=null</code>. This is the ceiling to raise.</p>
+<p><strong>Top P2 diagnostics</strong> are all <code>rust_doctor::cargo::duplicate_major_versions</code> (http-body, http, hyper, toml, thiserror, etc.) — dependency duplication, not logic bugs. No <code>disabled_tls_verification</code>, <code>hardcoded_credential</code>, <code>unpinned_git_dependency</code>, <code>arc_with_non_send_sync</code> etc.</p>
+<p><strong>Source files:</strong> 143</p>
+<hr />
+<h2 id="step-2--buildtest-baseline-on-main--e4f3bcc"><a class="header" href="#step-2--buildtest-baseline-on-main--e4f3bcc">Step 2 — Build/Test Baseline (on <code>main</code> @ e4f3bcc)</a></h2>
+<h3 id="cargo-check---no-default-features---features-openaipostgresmcp"><a class="header" href="#cargo-check---no-default-features---features-openaipostgresmcp"><code>cargo check --no-default-features --features openai,postgres,mcp</code></a></h3>
+<p><strong>Result: PASSED</strong></p>
+<ul>
+<li>Finished <code>dev</code> profile in 30.02s</li>
+<li>528 warnings (missing_docs for <code>src/cli/rag.rs</code>, <code>src/middleware/*</code>, <code>src/skill_engine.rs</code> etc.) — not errors</li>
+<li><code>cargo fix --lib -p ares-server</code> suggests 2 auto-fixes</li>
+</ul>
+<p>Note: <code>ares-vector</code> excluded per <code>CLAUDE.md</code> build gate (<code>cargo build --release --no-default-features --features openai,postgres,mcp</code>). The workspace builds with this feature set.</p>
+<h3 id="cargo-clippy-----d-warnings"><a class="header" href="#cargo-clippy-----d-warnings"><code>cargo clippy -- -D warnings</code></a></h3>
+<p><strong>Result: FAILED — 4 errors</strong></p>
+<pre><code>error: function `cosine_similarity_scalar` is never used --&gt; crates/ares-vector/src/distance.rs:344:4
+error: function `l2_distance_scalar` is never used --&gt; crates/ares-vector/src/distance.rs:353:4
+error: function `dot_product_scalar` is never used --&gt; crates/ares-vector/src/distance.rs:369:4
+  = note: `-D dead-code` implied by `-D warnings`
+
+error: method `from_str` can be confused for the standard trait method `std::str::FromStr::from_str`
+  --&gt; crates/ares-types/src/models/tenant.rs:13:5
+  = help: consider implementing the trait `std::str::FromStr`
+  = note: `-D clippy::should-implement-trait` implied by `-D warnings`
+</code></pre>
+<p>So <code>cargo clippy -- -D warnings</code> is red on main — verification matrix will require fixing <code>dead_code</code> (add <code>#[allow]</code> or remove) and <code>should_implement_trait</code>.</p>
+<h3 id="cargo-test-default-features-ares-server-lib--crates"><a class="header" href="#cargo-test-default-features-ares-server-lib--crates"><code>cargo test</code> (default features, <code>ares-server</code> lib + crates)</a></h3>
+<p><strong>Result: 521 passed, 21 failed, 0 ignored</strong></p>
+<p>Failures grouped:</p>
+<ol>
+<li>
+<p><strong>DB auth failures (10 tests)</strong> — <code>Failed to connect to ares_test. Ensure it exists and migrations are applied.: Database("Failed to connect to Postgres: error returned from database: password authentication failed for user \"dirmacs\"")</code></p>
+<ul>
+<li><code>middleware::api_key_auth::tests::*</code> (8 tests: daily_quota, daily_usage_db_error, invalid_api_key_rejected, invalid_auth_header_bytes, monthly_quota_exceeded, monthly_usage_db_error, valid_api_key_passes, verify_api_key_db_error)</li>
+<li><code>workflows::engine::tests::*</code> (6 tests: available_workflows, execute_workflow_orchestrator_single_step, router_invalid_route_uses_fallback, router_routes_to_product, unknown_name, get_workflow_config, workflow_engine_creation) — all panic at <code>src/workflows/engine.rs:327:14</code> with same DB auth error</li>
+<li>Indicates test env lacks <code>DATABASE_URL</code> or <code>ares_test</code> DB role — not code regression</li>
+</ul>
+</li>
+<li>
+<p><strong>Env lock poisoned (2 tests)</strong>:</p>
+<ul>
+<li><code>api::handlers::document_upload::tests::verify_webhook_secret_empty_env_allows_all</code> — <code>env lock poisoned: PoisonError</code></li>
+<li><code>api::handlers::document_upload::tests::verify_webhook_secret_rejects_mismatch</code> — same</li>
+<li>Caused by first <code>verify_webhook_secret_accepts_match</code> failure poisoning the shared env lock, cascading.</li>
+</ul>
+</li>
+<li>
+<p><strong>Webhook secret logic (1 test)</strong>:</p>
+<ul>
+<li><code>api::handlers::document_upload::tests::verify_webhook_secret_accepts_match</code> — <code>assertion failed: verify_webhook_secret(&amp;headers).is_ok()</code></li>
+</ul>
+</li>
+<li>
+<p><strong>CLI init template (3 tests)</strong>:</p>
+<ul>
+<li><code>cli::init::tests::test_generate_ares_toml_both</code> — <code>assertion failed: content.contains("[providers.ollama-local]")</code></li>
+<li><code>test_generate_ares_toml_ollama</code> — same</li>
+<li><code>test_generate_ares_toml_openai</code> — <code>assertion failed: content.contains("[providers.openai]")</code></li>
+<li>These expect Ollama/OpenAI templates that were removed in the NVIDIA-only migration (37f6c6e) — tests stale.</li>
+</ul>
+</li>
+<li>
+<p><strong>Coverage:</strong> Many subsystems green: scheduler, skill_engine, pipeline_engine, trigger_engine, observability, middleware usage, rag, tools all <code>ok</code>.</p>
+</li>
+</ol>
+<h3 id="cargo-test---doc"><a class="header" href="#cargo-test---doc"><code>cargo test --doc</code></a></h3>
+<p><strong>Result: 0 passed, 0 failed, 10 ignored</strong></p>
+<ul>
+<li>528 warnings (same missing_docs)</li>
+<li>All 10 doc-tests are <code>ignored</code> (annotated with <code>ignore</code> in lib.rs line 24,46,59 etc.)</li>
+<li>No doc-test failures — but also no doc-test coverage.</li>
+</ul>
+<h3 id="summary"><a class="header" href="#summary">Summary</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Gate</th><th>Result</th></tr></thead><tbody>
+<tr><td>cargo check (openai,postgres,mcp)</td><td>✅ passes</td></tr>
+<tr><td>cargo check --no-default-features</td><td>not yet run — required in Phase 7 (proves cfg cleanup)</td></tr>
+<tr><td>cargo clippy -D warnings</td><td>❌ 4 errors</td></tr>
+<tr><td>cargo test</td><td>⚠️ 521/542 (21 DB/env/template failures)</td></tr>
+<tr><td>cargo test --doc</td><td>✅ 0/0/10 ignored</td></tr>
+<tr><td>cargo miri test</td><td>not run — Phase 7 only, leaf crates</td></tr>
+<tr><td>rust-doctor</td><td>✅ 86/Great/P2/passed, 0 blocking</td></tr>
+</tbody></table>
+</div>
+<p><strong>Action for redesign:</strong> Fix clippy dead_code + should_implement_trait before Phase 7 gate; fix or remove stale cli::init provider template tests; fix webhook secret env isolation; ensure test DB available for CI.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../cordis/cordis-capabilities.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../cordis/cordis-yagni.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../cordis/cordis-capabilities.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../cordis/cordis-yagni.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

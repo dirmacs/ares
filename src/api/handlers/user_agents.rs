@@ -1,4 +1,3 @@
-use crate::AppState;
 use crate::{
     db::postgres::UserAgent,
     types::{AppError, Result},

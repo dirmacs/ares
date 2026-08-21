@@ -34,7 +34,8 @@ pub async fn list_tenant_agents_handler(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<TenantAgent>>> {
-    let agents = db_list_tenant_agents(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id).await?;
+    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agents = db_list_tenant_agents(&__pool_1, &tenant_id).await?;
     Ok(Json(agents))
 }
 
@@ -50,7 +51,8 @@ pub async fn create_tenant_agent_handler(
         &tenant_id,
     )?;
 
-    let agent = db_create_tenant_agent(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, req).await?;
+    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agent = db_create_tenant_agent(&__pool_2, &tenant_id, req).await?;
 
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let aid = agent.id.clone();
@@ -75,8 +77,8 @@ pub async fn update_tenant_agent_handler(
         )?;
     }
 
-    let agent =
-        db_update_tenant_agent(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name, req).await?;
+    let __pool_3 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agent = db_update_tenant_agent(&__pool_3, &tenant_id, &agent_name, req).await?;
 
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let aid = agent.id.clone();
@@ -91,7 +93,8 @@ pub async fn delete_tenant_agent_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    db_delete_tenant_agent(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name).await?;
+    let __pool_4 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    db_delete_tenant_agent(&__pool_4, &tenant_id, &agent_name).await?;
 
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
@@ -108,13 +111,15 @@ pub async fn list_tenant_agent_versions_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
-    let agent = db_get_tenant_agent(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name).await?;
-    let mut records =
-        list_tenant_agent_versions(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name, 50).await?;
+    let __pool_5 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agent = db_get_tenant_agent(&__pool_5, &tenant_id, &agent_name).await?;
+    let __pool_6 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let mut records = list_tenant_agent_versions(&__pool_6, &tenant_id, &agent_name, 50).await?;
     if records.is_empty() {
-        record_tenant_agent_version(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &agent, "admin_seed").await?;
-        records =
-            list_tenant_agent_versions(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name, 50).await?;
+        let __pool_7 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+        record_tenant_agent_version(&__pool_7, &agent, "admin_seed").await?;
+        let __pool_8 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+        records = list_tenant_agent_versions(&__pool_8, &tenant_id, &agent_name, 50).await?;
     }
     Ok(Json(records))
 }
@@ -123,8 +128,8 @@ pub async fn rollback_tenant_agent_version_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
 ) -> Result<Json<TenantAgent>> {
-    let agent =
-        rollback_tenant_agent_version(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name, &version)
+    let __pool_9 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agent = rollback_tenant_agent_version(&__pool_9, &tenant_id, &agent_name, &version)
             .await?;
 
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
@@ -148,7 +153,8 @@ pub async fn rollback_tenant_agent_version_handler(
 pub async fn list_agents(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<agent_runs::AllAgentsEntry>>> {
-    let agents = agent_runs::list_all_agents(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone()).await?;
+    let __pool_10 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agents = agent_runs::list_all_agents(&__pool_10).await?;
     Ok(Json(agents))
 }
 
@@ -156,7 +162,8 @@ pub async fn get_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<Json<TenantAgent>> {
-    let agent = db_get_tenant_agent(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name).await?;
+    let __pool_11 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agent = db_get_tenant_agent(&__pool_11, &tenant_id, &agent_name).await?;
     Ok(Json(agent))
 }
 
@@ -165,7 +172,8 @@ pub async fn create_agent(
     Json(req): Json<CreateAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
     let config = if let Some(tpl_id) = &req.template_id {
-        let store = AgentTemplateStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+        let __pool_12 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+        let store = AgentTemplateStore::new(__pool_12);
         let tpl = store
             .get_template(tpl_id)
             .await?
@@ -189,7 +197,8 @@ pub async fn create_agent(
         config,
     };
 
-    let agent = db_create_tenant_agent(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &req.tenant_id, db_req).await?;
+    let __pool_13 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agent = db_create_tenant_agent(&__pool_13, &req.tenant_id, db_req).await?;
 
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let aid = agent.id.clone();
@@ -220,8 +229,8 @@ pub async fn update_agent(
         config: req.config,
         enabled: req.enabled,
     };
-    let agent =
-        db_update_tenant_agent(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name, db_req).await?;
+    let __pool_14 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agent = db_update_tenant_agent(&__pool_14, &tenant_id, &agent_name, db_req).await?;
 
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let aid = agent.id.clone();
@@ -236,7 +245,8 @@ pub async fn delete_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    db_delete_tenant_agent(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name).await?;
+    let __pool_15 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    db_delete_tenant_agent(&__pool_15, &tenant_id, &agent_name).await?;
 
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
@@ -253,13 +263,15 @@ pub async fn get_agent_versions(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
-    let agent = db_get_tenant_agent(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name).await?;
-    let mut records =
-        list_tenant_agent_versions(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name, 50).await?;
+    let __pool_16 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agent = db_get_tenant_agent(&__pool_16, &tenant_id, &agent_name).await?;
+    let __pool_17 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let mut records = list_tenant_agent_versions(&__pool_17, &tenant_id, &agent_name, 50).await?;
     if records.is_empty() {
-        record_tenant_agent_version(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &agent, "admin_seed").await?;
-        records =
-            list_tenant_agent_versions(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name, 50).await?;
+        let __pool_18 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+        record_tenant_agent_version(&__pool_18, &agent, "admin_seed").await?;
+        let __pool_19 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+        records = list_tenant_agent_versions(&__pool_19, &tenant_id, &agent_name, 50).await?;
     }
     Ok(Json(records))
 }
@@ -268,8 +280,8 @@ pub async fn rollback_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
 ) -> Result<Json<TenantAgent>> {
-    let agent =
-        rollback_tenant_agent_version(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name, &version)
+    let __pool_20 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agent = rollback_tenant_agent_version(&__pool_20, &tenant_id, &agent_name, &version)
             .await?;
 
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
@@ -294,7 +306,8 @@ pub async fn create_agent_template_handler(
     State(ctx): State<Arc<Context>>,
     Json(req): Json<CreateTemplateRequest>,
 ) -> Result<Json<AgentTemplate>> {
-    let store = AgentTemplateStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_21 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = AgentTemplateStore::new(__pool_21);
     let tpl = store.create_template(&req).await?;
 
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
@@ -318,7 +331,8 @@ pub async fn delete_agent_template_handler(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let store = AgentTemplateStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_22 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = AgentTemplateStore::new(__pool_22);
     let deleted = store.delete_template(&id).await?;
     if deleted == 0 {
         return Err(AppError::NotFound(format!("Template '{}' not found", id)));
@@ -360,24 +374,28 @@ pub async fn test_tenant_agent_handler(
         ));
     }
 
-    db_get_tenant_agent(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tenant_id, &agent_name).await?;
+    let __pool_23 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    db_get_tenant_agent(&__pool_23, &tenant_id, &agent_name).await?;
     let agent_config = tenant_agent::agent_config_from_json(&req.config)?;
+    let __pool_24 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let mut draft_agent = ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0
         .create_agent_from_config_with_fallbacks(
             &agent_name,
             &agent_config,
-            &tenant_id, &ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+            &tenant_id,
+            &__pool_24,
             &ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
         )
         .await?;
 
     // Attach observability
     let run_id = uuid::Uuid::new_v4().to_string();
+    let __pool_25 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let obs = Arc::new(crate::observability::RunObservability {
         run_id: run_id.clone(),
         tenant_id: tenant_id.clone(),
         agent_name: agent_name.clone(),
-        pool: ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+        pool: __pool_25,
     });
     draft_agent.set_observability(obs.clone());
     draft_agent.set_runtime_tools(ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), tenant_id.clone());
@@ -515,7 +533,8 @@ pub async fn list_agent_templates_handler(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<AgentTemplate>>> {
     let product_type = params.get("product_type").map(|s| s.as_str());
-    let templates = list_agent_templates(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), product_type).await?;
+    let __pool_26 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let templates = list_agent_templates(&__pool_26, product_type).await?;
     Ok(Json(templates))
 }
 

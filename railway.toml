@@ -6,7 +6,7 @@
     "startCommand": "./target/release/ares-server",
     "nixpacksJson": {
       "rust": {
-        "version": "1.91"
+        "version": "1.98"
       }
     }
   },

@@ -549,6 +549,36 @@ async fn execute_scheduled_agent(
         RunObservability, run_cost_aggregation_request, spawn_run_cost_aggregation,
     };
 
+    // Phase 4 §15: prefer AgentExecutionService for unified execution
+    if let Some(exec_svc) = app_state.get::<ares_agents::execution::AgentExecutionService>() {
+        let req = ares_agents::execution::AgentRequest {
+            agent_name: sched.agent_name.clone(),
+            tenant: Some(sched.tenant_id.clone()),
+            message: String::new(),
+            history: Vec::new(),
+            ctx_provider: None,
+        };
+        match exec_svc.execute_agent(&req, app_state).await {
+            Ok(_result) => {
+                tracing::info!(
+                    agent = %sched.agent_name,
+                    tenant = %sched.tenant_id,
+                    source = %_result.source.as_str(),
+                    "scheduled agent executed via AgentExecutionService"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::debug!(
+                    agent = %sched.agent_name,
+                    error = %e,
+                    "AgentExecutionService fallback to legacy scheduler path"
+                );
+                // Fall through to legacy path
+            }
+        }
+    }
+
     let pool = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
 
     let tenant_agent_record =

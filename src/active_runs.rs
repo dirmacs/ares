@@ -203,3 +203,33 @@ mod tests {
         assert!(runs[0].is_catchup);
     }
 }
+
+impl ares_agents::execution::RunTracker for ActiveRuns {
+    fn start_run(&self, run_id: &str, tenant_id: &str, agent_name: &str, source: Option<&str>) {
+        self.start(ActiveRun {
+            run_id: run_id.to_string(),
+            tenant_id: tenant_id.to_string(),
+            agent_name: agent_name.to_string(),
+            started_at: chrono::Utc::now().timestamp(),
+            status: "running".to_string(),
+            current_step: 0,
+            total_steps: 0,
+            last_update: chrono::Utc::now().timestamp(),
+            tool_name: None,
+            model: None,
+            is_catchup: false,
+            request_source: source.map(|s| s.to_string()),
+            pipeline_id: None,
+            schedule_id: None,
+            trigger_id: None,
+        });
+    }
+
+    fn update_run(&self, run_id: &str, status: &str, step: i32) {
+        self.update(run_id, status, step);
+    }
+
+    fn finish_run(&self, run_id: &str, status: &str) {
+        self.finish(run_id, status);
+    }
+}

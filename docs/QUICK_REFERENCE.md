@@ -1,8 +1,8 @@
-# A.R.E.S Quick Reference Card
+# A.R.E.S quick reference card
 
 Fast reference for common development tasks and commands.
 
-## 🚀 Quick Start
+## Quick start
 
 ```bash
 # Option 1: Install from crates.io
@@ -22,7 +22,7 @@ just setup
 just run
 ```
 
-## 🖥️ CLI Commands
+## CLI commands
 
 ```bash
 # Initialize a new project
@@ -55,7 +55,7 @@ ares-server init --help                   # Show init options
 ares-server --version                     # Show version
 ```
 
-## 📋 Just Commands (Recommended)
+## Just commands (recommended)
 
 Run `just --list` for all available commands. Here are the most common:
 
@@ -119,7 +119,7 @@ just status             # Environment status
 just --list             # All commands
 ```
 
-## 🔧 Build Commands (Cargo)
+## Build commands (cargo)
 
 ```bash
 # Default build (ollama + local-db)
@@ -152,7 +152,7 @@ cargo build --release --features "ollama"
 cargo build --no-default-features
 ```
 
-## 🧪 Testing
+## Testing
 
 ```bash
 # Run all tests
@@ -183,7 +183,7 @@ OLLAMA_LIVE_TESTS=1 cargo test -- --ignored
 just test-all
 ```
 
-## 🌐 API Tests (Hurl)
+## API tests (hurl)
 
 ```bash
 # Run all hurl tests
@@ -202,7 +202,7 @@ just hurl-research
 just hurl-file hurl/cases/00_health.hurl
 ```
 
-## 🐳 Docker Commands
+## Docker commands
 
 ```bash
 # Start all services (development)
@@ -234,7 +234,7 @@ docker compose -f docker-compose.dev.yml build --no-cache
 # Or: just docker-rebuild
 ```
 
-## 🤖 Ollama Commands
+## Ollama commands
 
 ```bash
 # Check if Ollama is running
@@ -262,7 +262,7 @@ ollama rm ministral-3:3b
 ollama show ministral-3:3b
 ```
 
-## 📦 GGUF Model Setup
+## GGUF model setup
 
 ```bash
 # 1. Create models directory
@@ -279,7 +279,7 @@ echo "LLAMACPP_MODEL_PATH=./models/Llama-3.2-3B-Instruct-Q4_K_M.gguf" >> .env
 cargo run --features llamacpp
 ```
 
-## � Configuration (TOML + TOON)
+##  configuration (TOML + TOON)
 
 A.R.E.S uses a hybrid configuration system:
 
@@ -288,24 +288,24 @@ A.R.E.S uses a hybrid configuration system:
 | **TOML** | `ares.toml` | Infrastructure (server, auth, database, providers) |
 | **TOON** | `config/*.toon` | Behavioral (agents, models, tools, workflows) |
 
-### Directory Structure
+### Directory structure
 
 ```
 ares/
-├── ares.toml                    # Infrastructure config
-├── config/
-│   ├── agents/                  # Agent definitions (.toon)
-│   │   ├── router.toon
-│   │   └── orchestrator.toon
-│   ├── models/                  # Model configs (.toon)
-│   │   ├── fast.toon
-│   │   └── balanced.toon
-│   ├── tools/                   # Tool configs (.toon)
-│   ├── workflows/               # Workflow definitions (.toon)
-│   └── mcps/                    # MCP server configs (.toon)
+ ares.toml                    # Infrastructure config
+ config/
+    agents/                  # Agent definitions (.toon)
+       router.toon
+       orchestrator.toon
+    models/                  # Model configs (.toon)
+       fast.toon
+       balanced.toon
+    tools/                   # Tool configs (.toon)
+    workflows/               # Workflow definitions (.toon)
+    mcps/                    # MCP server configs (.toon)
 ```
 
-### TOON Format Quick Reference
+### TOON format quick reference
 
 ```toon
 # Agent example
@@ -329,7 +329,7 @@ max_tokens: 1024
 - Newlines in strings: Use `\n` (not YAML `|`)
 - Booleans: `true` / `false`
 
-## �🔑 Environment Setup
+## Environment setup
 
 ```bash
 # Using just (recommended)
@@ -346,7 +346,7 @@ echo "API_KEY=$(openssl rand -hex 16)" >> .env
 nano .env
 ```
 
-### Essential Variables
+### Essential variables
 
 ```bash
 # Server
@@ -374,7 +374,7 @@ JWT_SECRET=<32+ chars>
 API_KEY=<your-key>
 ```
 
-## 🔍 Code Quality
+## Code quality
 
 ```bash
 # Format code
@@ -415,7 +415,7 @@ cargo audit
 cargo outdated
 ```
 
-## 📊 Diagnostics
+## Diagnostics
 
 ```bash
 # Check compilation without building
@@ -443,14 +443,14 @@ just status
 just verify
 ```
 
-## 🌐 API Endpoints
+## API endpoints
 
-### Health Check
+### Health check
 ```bash
 curl http://localhost:3000/health
 ```
 
-### Register User
+### Register user
 ```bash
 curl -X POST http://localhost:3000/api/auth/register \
   -H "Content-Type: application/json" \
@@ -488,9 +488,9 @@ cargo build --features "full"
 
 Then access at: `http://localhost:3000/swagger-ui/`
 
-## 📝 Feature Flags
+## Feature flags
 
-### LLM Providers
+### LLM providers
 - `ollama` (default) - Local Ollama inference
 - `openai` - OpenAI API
 - `anthropic` - Anthropic Claude API
@@ -507,9 +507,9 @@ Then access at: `http://localhost:3000/swagger-ui/`
 ### Embeddings
 - `local-embeddings` - Local embedding models via ort (ONNX Runtime)
 
-> ⚠️ **Windows MSVC:** The `local-embeddings` feature does NOT work on Windows with the MSVC toolchain due to ort-sys linker errors. Use WSL2 or the GNU toolchain instead.
+> **Windows MSVC:** The `local-embeddings` feature does NOT work on Windows with the MSVC toolchain due to ort-sys linker errors. Use WSL2 or the GNU toolchain instead.
 
-### UI & Documentation
+### UI & documentation
 - `ui` - Embedded Leptos web UI served from backend
 - `swagger-ui` - Interactive Swagger UI API documentation at `/swagger-ui/`
 
@@ -526,9 +526,9 @@ Then access at: `http://localhost:3000/swagger-ui/`
 
 > **Note:** `local-embeddings` was removed from `full` and `full-ui` bundles in v0.4.0 due to Windows MSVC compatibility issues. Use `full-local-embeddings` or `full-ui-local-embeddings` on Linux/macOS if you need local embedding support.
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
-### Port Already in Use
+### Port already in use
 ```bash
 # Find process using port 3000
 lsof -i :3000          # Linux/Mac
@@ -539,7 +539,7 @@ kill -9 <PID>          # Linux/Mac
 taskkill /PID <PID> /F # Windows
 ```
 
-### Ollama Not Running
+### Ollama not running
 ```bash
 # Check status
 curl http://localhost:11434/api/tags
@@ -551,7 +551,7 @@ ollama serve
 docker compose -f docker-compose.dev.yml up ollama
 ```
 
-### Model Not Found (LlamaCpp)
+### Model not found (LlamaCpp)
 ```bash
 # Verify file exists
 ls -lh models/*.gguf
@@ -563,7 +563,7 @@ cat .env | grep LLAMACPP_MODEL_PATH
 file models/*.gguf  # Should show "GGUF model file"
 ```
 
-### Compilation Errors
+### Compilation errors
 ```bash
 # Clean build
 cargo clean
@@ -577,7 +577,7 @@ rustc --version
 rustup update
 ```
 
-### Tests Failing
+### Tests failing
 ```bash
 # Run single test with output
 cargo test test_name -- --nocapture
@@ -589,17 +589,17 @@ cargo insta review
 cargo test -- --test-threads=1
 ```
 
-## 📚 Documentation Links
+## Documentation links
 
-- **Main README**: `README.md`
-- **GGUF Guide**: `docs/GGUF_USAGE.md`
-- **Contributing**: `CONTRIBUTING.md`
-- **Project Status**: `docs/PROJECT_STATUS.md`
-- **API Docs**: Run `cargo doc --open`
+- Main README: `README.md`
+- GGUF Guide: `docs/GGUF_USAGE.md`
+- Contributing: `CONTRIBUTING.md`
+- Project Status: `docs/PROJECT_STATUS.md`
+- API Docs: Run `cargo doc --open`
 
-## 🎯 Common Workflows
+## Common workflows
 
-### Add a New Tool
+### Add a new tool
 ```bash
 # 1. Create tool file
 touch src/tools/my_tool.rs
@@ -619,7 +619,7 @@ touch src/tools/my_tool/tests.rs
 cargo test my_tool
 ```
 
-### Add a New Agent
+### Add a new agent
 ```bash
 # 1. Create agent file
 touch src/agents/my_agent.rs
@@ -637,7 +637,7 @@ touch src/agents/my_agent.rs
 cargo test my_agent
 ```
 
-### Switch LLM Provider
+### Switch LLM provider
 
 **To Ollama:**
 ```bash
@@ -677,7 +677,7 @@ ANTHROPIC_MODEL=claude-sonnet-4-20250514
 cargo run --features anthropic
 ```
 
-## 🔐 Security Checklist
+## Security checklist
 
 - [ ] JWT_SECRET is 32+ characters
 - [ ] API_KEY is unique and secure
@@ -688,9 +688,9 @@ cargo run --features anthropic
 - [ ] Input validation on all endpoints
 - [ ] Regular `cargo audit` runs
 
-## 📈 Performance Tips
+## Performance tips
 
-### CPU Optimization
+### CPU optimization
 ```bash
 # Set threads for LlamaCpp
 LLAMACPP_N_THREADS=8  # Match CPU cores
@@ -699,7 +699,7 @@ LLAMACPP_N_THREADS=8  # Match CPU cores
 LLAMACPP_N_CTX=2048
 ```
 
-### GPU Acceleration
+### GPU acceleration
 ```bash
 # NVIDIA CUDA
 cargo build --features llamacpp-cuda
@@ -711,12 +711,12 @@ cargo build --features llamacpp-metal
 nvidia-smi  # NVIDIA
 ```
 
-### Model Selection
+### Model selection
 - Fast: 1B-3B models with Q4_K_M
 - Balanced: 7B with Q4_K_M or Q5_K_M
 - Quality: 13B+ with Q6_K or Q8_0
 
-## 🎉 Quick Wins
+## Quick wins
 
 ```bash
 # Get running in 2 commands (if installed via cargo)
@@ -739,21 +739,21 @@ cargo run --features ui
 open http://localhost:3000/
 ```
 
-## 💡 Pro Tips
+## Pro tips
 
-1. **Use `ares-server init`**: Fastest way to get started
-2. **Use feature flags wisely**: Don't build with `full` unless needed
-3. **Cache Ollama models**: They download once and persist
-4. **Use Q4_K_M quantization**: Best quality/size ratio
-5. **Monitor RAM usage**: Large models can consume 8GB+
-6. **Enable GPU when available**: 5-10x speed boost
-7. **Use docker-compose.dev.yml**: Easiest local setup
-8. **Check CI before pushing**: Run `cargo clippy` and `cargo test`
-9. **Build with `--features ui`**: Get a web interface bundled in
-10. **Build with `--features swagger-ui`**: Get interactive API docs at `/swagger-ui/`
-11. **Default build is lighter**: Core server doesn't include swagger-ui by default for faster builds
+1. Use `ares-server init`: Fastest way to get started
+2. Use feature flags wisely: Don't build with `full` unless needed
+3. Cache Ollama models: They download once and persist
+4. Use Q4_K_M quantization: Best quality/size ratio
+5. Monitor RAM usage: Large models can consume 8GB+
+6. Enable GPU when available: 5-10x speed boost
+7. Use docker-compose.dev.yml: Easiest local setup
+8. Check CI before pushing: Run `cargo clippy` and `cargo test`
+9. Build with `--features ui`: Get a web interface bundled in
+10. Build with `--features swagger-ui`: Get interactive API docs at `/swagger-ui/`
+11. Default build is lighter: Core server doesn't include swagger-ui by default for faster builds
 
-## 🆘 Getting Help
+##  getting help
 
 1. Run `ares-server --help` for CLI options
 2. Run `ares-server init --help` for init options
@@ -764,8 +764,8 @@ open http://localhost:3000/
 
 ---
 
-**Quick Links:**
-- 📖 [Full Documentation](../README.md)
-- 🐛 [Issue Tracker](https://github.com/dirmacs/ares/issues)
-- 💬 [Discussions](https://github.com/dirmacs/ares/discussions)
-- 🚀 [Latest Release](https://github.com/dirmacs/ares/releases)
+Quick Links:
+-  [Full Documentation](../README.md)
+-  [Issue Tracker](https://github.com/dirmacs/ares/issues)
+-  [Discussions](https://github.com/dirmacs/ares/discussions)
+- [Latest Release](https://github.com/dirmacs/ares/releases)

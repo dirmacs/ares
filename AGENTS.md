@@ -1,4 +1,4 @@
-# AGENTS.md — AI Agent Guidelines for ARES
+# Agents.md, AI agent guidelines for ARES
 
 ## What is ARES?
 
@@ -6,12 +6,12 @@ ARES is the agentic chatbot server at the core of the Dirmacs platform. It orche
 
 ## Architecture Context
 
-- **Multi-tenant**: Tenants have API keys, usage quotas, and isolated agent configurations
-- **Provider-agnostic**: LLM calls go through an abstraction layer (`src/llm/client.rs`) — Ollama, OpenAI, Anthropic, and LlamaCpp are interchangeable
-- **Feature-gated**: Heavy optional features (MCP, specific vector stores, UI embedding) are behind Cargo feature flags. Always check which features are enabled before touching gated code
-- **Config-driven**: Agents, models, tools, and workflows are defined in TOML/TOON config files and hot-reloaded. The server reads `ares.toml` at startup
+- Multi-tenant: Tenants have API keys, usage quotas, and isolated agent configurations
+- Provider-agnostic: LLM calls go through an abstraction layer (`src/llm/client.rs`), Ollama, OpenAI, Anthropic, and LlamaCpp are interchangeable
+- Feature-gated: Heavy optional features (MCP, specific vector stores, UI embedding) are behind Cargo feature flags. Always check which features are enabled before touching gated code
+- Config-driven: Agents, models, tools, and workflows are defined in TOML/TOON config files and hot-reloaded. The server reads `ares.toml` at startup
 
-## Common Tasks
+## Common tasks
 
 ### Adding a new API endpoint
 1. Add handler in `src/api/handlers/` (new file or extend existing)
@@ -31,18 +31,18 @@ ARES is the agentic chatbot server at the core of the Dirmacs platform. It orche
 3. Register in tool registry
 
 ### Working with the database
-- All queries in `src/db/` use raw SQL with `sqlx::query().bind()` — no ORM, no query macros
+- All queries in `src/db/` use raw SQL with `sqlx::query().bind()`, no ORM, no query macros
 - New tables need a migration file in `migrations/` (numbered sequentially)
 - `SUM()` and other aggregate functions must cast results to explicit types (`::BIGINT`, `::TEXT`, etc.)
 
-## Key Decisions
+## Key decisions
 
-- **PostgreSQL over SQLite**: Migrated from Turso/libsql to PostgreSQL for pgvector support, concurrent access, and production reliability. All Docker/deployment configs now reference `DATABASE_URL` (not `TURSO_URL`)
-- **TOON over TOML for agents**: Agent configs use TOON format for simpler, line-oriented definitions that are easier to hot-reload
-- **Embedded vector DB as default**: `ares-vector` (pure Rust HNSW) is the default vector store — no external dependencies needed. Qdrant, pgvector, etc. are optional
-- **Axum 0.8**: Uses `{param}` path syntax (not `:param`)
+- PostgreSQL over SQLite: Migrated from Turso/libsql to PostgreSQL for pgvector support, concurrent access, and production reliability. All Docker/deployment configs now reference `DATABASE_URL` (not `TURSO_URL`)
+- TOON over TOML for agents: Agent configs use TOON format for simpler, line-oriented definitions that are easier to hot-reload
+- Embedded vector DB as default: `ares-vector` (pure Rust HNSW) is the default vector store, no external dependencies needed. Qdrant, pgvector, etc. are optional
+- Axum 0.8: Uses `{param}` path syntax (not `:param`)
 
-## Production Environment
+## Production environment
 
 - Deployed on Contabo VPS behind Caddy reverse proxy (auto-TLS)
 - Systemd service: `ares.service`

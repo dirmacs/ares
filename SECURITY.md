@@ -1,4 +1,4 @@
-# Security Policy
+# Security policy
 
 ## Reporting a vulnerability
 
@@ -25,7 +25,7 @@ not supported.
 ares runs `cargo audit` in CI and tracks GitHub Dependabot alerts
 on every dependency. When a dependency advisory is unreachable in
 our code paths, we dismiss the alert with a documented rationale
-rather than forcing a noisy bump — but we record the reasoning in
+rather than forcing a noisy bump, but we record the reasoning in
 this file so downstream consumers can audit our decisions.
 
 ### Advisories reachable in ares (action required)
@@ -34,21 +34,21 @@ The following advisories fire on crates in our dependency graph and
 the vulnerable code path is reachable or cannot be cheaply proven
 unreachable. They are tracked as open work:
 
-- **`rsa 0.9.10`** — RUSTSEC-2023-0071 (Marvin timing attack).
-  Pulled transitively via the RSA-PSS verification path inside
-  `jsonwebtoken`, and via cloud-storage signing in `sqlx-mysql` and
-  `lancedb`. ares signs its own JWTs with HS256 (no RSA), never
-  instantiates `sqlx-mysql`, and only uses `lancedb` over the local
-  filesystem — so a timing oracle is not practically mountable
-  against ares. We will adopt the fix as soon as RustCrypto ships
-  a patched release. **Status:** upstream fix pending.
+- **`rsa 0.9.10`**, RUSTSEC-2023-0071 (Marvin timing attack).
+Pulled transitively via the RSA-PSS verification path inside
+ `jsonwebtoken`, and via cloud-storage signing in `sqlx-mysql` and
+ `lancedb`. ares signs its own JWTs with HS256 (no RSA), never
+instantiates `sqlx-mysql`, and only uses `lancedb` over the local
+filesystem, so a timing oracle is not practically mountable
+against ares. We will adopt the fix as soon as RustCrypto ships
+a patched release. **Status:** upstream fix pending.
 
-- **`rustls-webpki 0.102.8`** — RUSTSEC-2026-0049 (CRL bypass).
-  Reachable via `libsql → tonic 0.11 → rustls 0.22 → rustls-webpki
+- **`rustls-webpki 0.102.8`**, RUSTSEC-2026-0049 (CRL bypass).
+Reachable via `libsql → tonic 0.11 → rustls 0.22 → rustls-webpki
   0.102`. The fix requires `libsql` to upgrade to `tonic 0.12`
-  (which carries `rustls 0.23` / `rustls-webpki 0.103`). We have
-  filed an upstream request on `tursodatabase/libsql`. **Status:**
-  waiting on upstream libsql.
+ (which carries `rustls 0.23` / `rustls-webpki 0.103`). We have
+filed an upstream request on `tursodatabase/libsql`. **Status:**
+waiting on upstream libsql.
 
 ### Advisories dismissed as unreachable
 
@@ -56,7 +56,7 @@ The following Dependabot alerts have been dismissed because the
 vulnerable code is verifiably not compiled or not called in ares.
 Each dismissal is backed by a reachability check described below.
 
-#### `jsonwebtoken 9.3.1` — CVE-2026-25537 (`exp` / `nbf` bypass)
+#### `jsonwebtoken 9.3.1`, CVE-2026-25537 (`exp` / `nbf` bypass)
 
 **Decision:** dismissed as `tolerable_risk`.
 
@@ -69,7 +69,7 @@ help: there are similar package ID specifications:
   jsonwebtoken@10.3.0
 ```
 
-`jsonwebtoken 9.3.1` is a lockfile orphan — it is present in
+`jsonwebtoken 9.3.1` is a lockfile orphan, it is present in
 `Cargo.lock` from an earlier resolution but is **not in the active
 compile graph**. Every path that imports `jsonwebtoken` today
 resolves to the patched `10.3.0`:
@@ -93,7 +93,7 @@ be skipped during validation. ares's `Claims` struct declares
 The bypass path is closed regardless of which `jsonwebtoken`
 version loads.
 
-#### `lru 0.16.3` — RUSTSEC-2026-0002 (`IterMut` use-after-free)
+#### `lru 0.16.3`, RUSTSEC-2026-0002 (`IterMut` use-after-free)
 
 **Decision:** dismissed as `tolerable_risk`.
 
@@ -105,7 +105,7 @@ lru v0.16.3
 └── ares-server v0.7.5
 ```
 
-`lru 0.16.3` is already the patched version — `0.16.3` carries
+`lru 0.16.3` is already the patched version, `0.16.3` carries
 the fix for the `IterMut` UAF. The alert fires on the older
 advisory ID even though the installed version is safe.
 
@@ -137,7 +137,7 @@ rg -n "LruCache::|\.iter_mut\(\)" src/
 ```
 
 Run these before reopening a dismissed alert. If any of the
-invariants above changes — e.g. a new dep pulls `jsonwebtoken 9.x`
+invariants above changes, e.g. a new dep pulls `jsonwebtoken 9.x`
 into the active graph, or ares adds an `nbf` claim, or starts
-using `LruCache::iter_mut` — the dismissal becomes invalid and
+using `LruCache::iter_mut`, the dismissal becomes invalid and
 the alert should be re-triaged.

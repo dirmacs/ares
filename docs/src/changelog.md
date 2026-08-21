@@ -4,16 +4,16 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
-## 0.8.0 — 2026-08-21
+## 0.8.0, 2026-08-21
 
-**Cordis redesign — Context/Fiber/Service/Loader + handler migration.**
+**Cordis redesign, Context/Fiber/Service/Loader + handler migration.**
 
 Ground-up Rust redesign that adopts Cordis ideas (Γ^∞ = μΓ. Γ × (Γ→Γ) × Σ) for modularity, safe runtime reconfiguration, and tech-debt removal, while preserving all capabilities (multi-provider LLM, tool calling, RAG, MCP client+server, multi-tenant auth, scheduler/pipeline/trigger/skill/workflow engines, hot-reload).
 
 ### Added
 
 - **Cordis core** (`crates/ares-cordis-core` leaf, zero ARES deps): `Context{store+isolate+intercept+fiber+parent+root}`, witnessed effects LIFO `Disposable` + `EffectGuard`, `TypeId`-keyed coherent table, Fiber states `Inactive/Reloading/Active/Unloading` + inertia `Mutex` + epoch `:uid` watch fan-out, Events 5 modes `Emit/Parallel/Serial/Bail/Waterfall` (`broadcast`+`JoinSet`/`tower::Service`), Loader `EntryTree` reconcile (`RebuildFiber/UpdateConfig/Retire/Begin`), `ReflectService` `notify` BFS + `watch` fan-out, file-watch HMR `watch_many` 500 ms debounce (90% value, `libloading` deferred behind `hmr`).
-- **Service wiring**: 8 `root_ctx.plugin(...).await` calls replace 17 sequential `run_server` steps — `ConfigService` → `CatalogService` → `ProviderRegistryService` → `AuthServiceWrapper` → `AgentServiceWrapper` → `ToolServiceWrapper` → `SchedulerService` (60 000 ms tick + catch-up) → `HealthJobService` (inventory health loop) — plus `PipelineService`/`TriggerService`/`SkillsService`/`WorkflowService` (downstream-triggered, inject `AgentExecutionService`). Command: `root_ctx.plugin(ConfigService).plugin(CatalogService).plugin(ProviderRegistryService).plugin(AuthServiceWrapper).plugin(AgentServiceWrapper).plugin(ToolServiceWrapper).plugin(SchedulerService).plugin(HealthJobService)`.
+- **Service wiring**: 8 `root_ctx.plugin(...).await` calls replace 17 sequential `run_server` steps, `ConfigService` → `CatalogService` → `ProviderRegistryService` → `AuthServiceWrapper` → `AgentServiceWrapper` → `ToolServiceWrapper` → `SchedulerService` (60 000 ms tick + catch-up) → `HealthJobService` (inventory health loop), plus `PipelineService`/`TriggerService`/`SkillsService`/`WorkflowService` (downstream-triggered, inject `AgentExecutionService`). Command: `root_ctx.plugin(ConfigService).plugin(CatalogService).plugin(ProviderRegistryService).plugin(AuthServiceWrapper).plugin(AgentServiceWrapper).plugin(ToolServiceWrapper).plugin(SchedulerService).plugin(HealthJobService)`.
 - **Unified services**: `ToolService` precedence `tenant runtime → fleet runtime → MCP bridge → static` with `ctx.isolate`; `LlmService` breaker `Closed/Open/HalfOpen` (5/30 s) + `ModelOverride` via `ctx.intercept`; `AgentResolverService` ordered `tenant DB → community → system` with `ctx.isolate`; single `AgentExecutionService` for all 5 call sites; `SchedulerService` real tick via `cron` crate + `NOTIFY/LISTEN`.
 - **Handler migration**: 177 handlers `State<AppState> → State<Arc<Context>>` + `ctx.get::<Service>()`, `AppState` struct deleted (`src/lib.rs` → `pub type AppState = Arc<Context>` alias), `admin.rs` 3059→165 thin shards (15 files `admin/*`), `v1.rs` 1074→161 thin shards (5 files), `cfg(feature)` 0 in handlers via `Service::check()`.
 
@@ -45,15 +45,15 @@ This release transforms ARES from a single-provider system into a full multi-pro
 
 ### Added
 
-- **Multi-provider LLM routing** — Support for 4 providers (Groq, Anthropic, NVIDIA DeepSeek, Ollama) and 11 models through a unified API.
-- **Model tier system** — `fast`, `balanced`, `powerful`, `deepseek`, and `local` tiers with automatic provider routing.
-- **Tenant agent system** — Agents stored in the database per tenant. Template-based provisioning with full CRUD via admin API.
-- **Agent templates** — Seed templates applied automatically on startup. New tenants receive a default agent set.
-- **Usage metering** — `usage_events` table, `monthly_usage_cache`, and `daily_rate_limits` for tracking tokens, requests, and costs per tenant.
-- **API key authentication** — `Authorization: Bearer ares_xxx` on `/v1/*` routes with tenant scoping.
-- **Kasino enterprise agents** — 4 specialized agent templates (`kasino-classifier`, `kasino-risk`, `kasino-transaction`, `kasino-report`) for the first enterprise client.
-- **Kasino API routes** — Both JWT-protected (`/api/kasino/*`) and API-key (`/v1/kasino/*`) endpoints.
-- **Admin provisioning API** — Atomic tenant creation: schema + agents + API key in a single operation.
+- **Multi-provider LLM routing**, Support for 4 providers (Groq, Anthropic, NVIDIA DeepSeek, Ollama) and 11 models through a unified API.
+- **Model tier system**, `fast`, `balanced`, `powerful`, `deepseek`, and `local` tiers with automatic provider routing.
+- **Tenant agent system**, Agents stored in the database per tenant. Template-based provisioning with full CRUD via admin API.
+- **Agent templates**, Seed templates applied automatically on startup. New tenants receive a default agent set.
+- **Usage metering**, `usage_events` table, `monthly_usage_cache`, and `daily_rate_limits` for tracking tokens, requests, and costs per tenant.
+- **API key authentication**, `Authorization: Bearer ares_xxx` on `/v1/*` routes with tenant scoping.
+- **Kasino enterprise agents**, 4 specialized agent templates (`kasino-classifier`, `kasino-risk`, `kasino-transaction`, `kasino-report`) for the first enterprise client.
+- **Kasino API routes**, Both JWT-protected (`/api/kasino/*`) and API-key (`/v1/kasino/*`) endpoints.
+- **Admin provisioning API**, Atomic tenant creation: schema + agents + API key in a single operation.
 
 ### Changed
 
@@ -73,9 +73,9 @@ This release transforms ARES from a single-provider system into a full multi-pro
 
 ### Added
 
-- **Server-Sent Events streaming** — `POST /v1/chat/stream` endpoint for real-time, token-by-token responses.
-- **Stream handler** — Unified streaming across all providers with consistent SSE format.
-- **Context continuation** — `context_id` parameter for maintaining conversation history across requests.
+- **Server-Sent Events streaming**, `POST /v1/chat/stream` endpoint for real-time, token-by-token responses.
+- **Stream handler**, Unified streaming across all providers with consistent SSE format.
+- **Context continuation**, `context_id` parameter for maintaining conversation history across requests.
 
 ### Changed
 
@@ -89,9 +89,9 @@ This release transforms ARES from a single-provider system into a full multi-pro
 
 ### Added
 
-- **Tool calling framework** — Define tools per agent. ARES manages the tool-call loop, execution, and response assembly.
-- **RAG pipeline** — Retrieval-augmented generation with pluggable document stores.
-- **Workflow engine** — Chain multiple agents into multi-step workflows with deterministic execution.
+- **Tool calling framework**, Define tools per agent. ARES manages the tool-call loop, execution, and response assembly.
+- **RAG pipeline**, Retrieval-augmented generation with pluggable document stores.
+- **Workflow engine**, Chain multiple agents into multi-step workflows with deterministic execution.
 
 ### Changed
 
@@ -105,10 +105,10 @@ This release transforms ARES from a single-provider system into a full multi-pro
 
 ### Added
 
-- **User registration and login** — `POST /api/auth/register`, `POST /api/auth/login`.
-- **JWT token lifecycle** — 15-minute access tokens, refresh token rotation, logout/invalidation.
-- **Role-based access** — User roles with permission checks on protected routes.
-- **Admin authentication** — `X-Admin-Secret` header for internal administration endpoints.
+- **User registration and login**, `POST /api/auth/register`, `POST /api/auth/login`.
+- **JWT token lifecycle**, 15-minute access tokens, refresh token rotation, logout/invalidation.
+- **Role-based access**, User roles with permission checks on protected routes.
+- **Admin authentication**, `X-Admin-Secret` header for internal administration endpoints.
 
 ### Changed
 
@@ -123,10 +123,10 @@ This release transforms ARES from a single-provider system into a full multi-pro
 
 ### Added
 
-- **PostgreSQL integration** — Full migration from in-memory storage to PostgreSQL with `sqlx`.
-- **Auto-migration** — `sqlx::migrate!()` runs on startup. No manual SQL required.
-- **Tenant schema** — `tenants`, `tenant_agents`, and `api_keys` tables with foreign key relationships.
-- **Tenant tiers** — Free, Dev, Pro, and Enterprise tiers with configurable limits.
+- **PostgreSQL integration**, Full migration from in-memory storage to PostgreSQL with `sqlx`.
+- **Auto-migration**, `sqlx::migrate!()` runs on startup. No manual SQL required.
+- **Tenant schema**, `tenants`, `tenant_agents`, and `api_keys` tables with foreign key relationships.
+- **Tenant tiers**, Free, Dev, Pro, and Enterprise tiers with configurable limits.
 
 ### Changed
 

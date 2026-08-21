@@ -1,6 +1,6 @@
 # Research
 
-The Research API performs deep, multi-step research on a topic using parallel sub-agents. Unlike a single chat request, a research query spawns multiple agents that independently explore facets of the question, synthesize findings, and produce a comprehensive result with source attribution.
+The Research API performs deep, multi-step research on a topic using parallel sub-agents. Unlike a single chat request, a research query spawns multiple agents that independently explore facets of the question, synthesize findings, and produce a thorough result with source attribution.
 
 ---
 
@@ -18,11 +18,11 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 
 ### Request body
 
-| Parameter        | Type    | Required | Default | Description                                                             |
+| Parameter | Type | Required | Default | Description |
 |-----------------|---------|----------|---------|-------------------------------------------------------------------------|
-| `query`          | string  | Yes      | --      | The research question or topic.                                         |
-| `depth`          | integer | No       | 3       | How many levels deep the research goes. Higher values explore sub-topics more thoroughly. |
-| `max_iterations` | integer | No       | 5       | Maximum total agent calls. Acts as a cost/time ceiling.                 |
+| `query` | string | Yes |, | The research question or topic. |
+| `depth` | integer | No | 3 | How many levels deep the research goes. Higher values explore sub-topics more thoroughly. |
+| `max_iterations` | integer | No | 5 | Maximum total agent calls. Acts as a cost/time ceiling. |
 
 **Understanding `depth`:** At depth 1, the research agent answers the query directly. At depth 2, it identifies sub-questions, spawns agents to answer each, then synthesizes. At depth 3+, sub-agents can spawn their own sub-agents, creating a tree of investigation.
 
@@ -42,11 +42,11 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 }
 ```
 
-| Field         | Type     | Description                                             |
+| Field | Type | Description |
 |--------------|----------|---------------------------------------------------------|
-| `findings`    | string   | The synthesized research output, typically in Markdown. |
-| `sources`     | string[] | References and sources discovered during research.      |
-| `duration_ms` | integer  | Total time taken for the research in milliseconds.      |
+| `findings` | string | The synthesized research output, typically in Markdown. |
+| `sources` | string[] | References and sources discovered during research. |
+| `duration_ms` | integer | Total time taken for the research in milliseconds. |
 
 ### Examples
 
@@ -113,11 +113,11 @@ console.log(`Sources: ${result.sources.join(", ")}`);
 
 ## Tuning research parameters
 
-| Scenario                          | Recommended `depth` | Recommended `max_iterations` |
+| Scenario | Recommended `depth` | Recommended `max_iterations` |
 |----------------------------------|---------------------|------------------------------|
-| Quick factual lookup             | 1                   | 2                            |
-| Standard research question       | 2                   | 5                            |
-| Deep competitive analysis        | 3                   | 10                           |
-| Exhaustive literature review     | 4+                  | 15+                          |
+| Quick factual lookup | 1 | 2 |
+| Standard research question | 2 | 5 |
+| Deep competitive analysis | 3 | 10 |
+| Exhaustive literature review | 4+ | 15+ |
 
-Higher depth and iteration values produce more comprehensive results but take longer and consume more API quota. For most use cases, the defaults (`depth: 3`, `max_iterations: 5`) provide a good balance of thoroughness and speed.
+Higher depth and iteration values produce more thorough results but take longer and consume more API quota. For most use cases, the defaults (`depth: 3`, `max_iterations: 5`) provide a good balance of thoroughness and speed.

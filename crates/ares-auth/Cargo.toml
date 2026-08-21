@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = true
-description = "JWT authentication and password hashing for A.R.E.S"
+description = "JWT authentication and password hashing for ARES"
 
 [dependencies]
 ares-types = { workspace = true }

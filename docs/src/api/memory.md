@@ -9,9 +9,9 @@ ARES provides conversation memory and user context management for maintaining st
 - User memory formatting (facts, preferences) for system prompts
 - Integration with Eruka for persistent cross-session context
 
-## Core Functions
+## Core functions
 
-### History Management
+### History management
 
 ```rust
 use ares::memory::{truncate_history, truncate_history_to_tokens};
@@ -23,7 +23,7 @@ let recent = truncate_history(&messages, 10);
 let within_budget = truncate_history_to_tokens(&messages, 4096);
 ```
 
-### Context Building
+### Context building
 
 ```rust
 use ares::memory::{build_context, format_memory_for_prompt};
@@ -55,7 +55,7 @@ let prefs = filter_preferences_by_category(&preferences, "communication");
 | `MAX_FACTS_IN_PROMPT` | 20 | Max facts injected into system prompt |
 | `MAX_PREFERENCES_IN_PROMPT` | 10 | Max preferences injected |
 
-## Token Estimation
+## Token estimation
 
 ```rust
 use ares::memory::estimate_tokens;
@@ -64,11 +64,11 @@ let tokens = estimate_tokens("Hello, how are you?");
 // Rough estimate: ~5 tokens (word count * 1.3)
 ```
 
-## Eruka Integration
+## Eruka integration
 
 When ARES is paired with Eruka (via the `ContextProvider` trait), the memory flow becomes:
 
 1. On session start, `ContextProvider::get_context()` fetches user state from Eruka
 2. Facts and preferences are formatted and injected into the agent system prompt
 3. After exchanges, agent signals (emotional state, topics, preferences) are written back to Eruka
-4. Next session starts with updated context — agents remember users across conversations
+4. Next session starts with updated context, agents remember users across conversations

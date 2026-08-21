@@ -1,10 +1,10 @@
-# Guide: Tool Calling
+# Guide: tool calling
 
 ARES supports tool calling (also known as function calling), allowing agents to use external tools during a conversation. When an agent needs to perform a calculation, search the web, or interact with an external system, it requests a tool call. ARES executes the tool and feeds the result back to the agent, which then incorporates it into its response.
 
 ---
 
-## How It Works
+## How it works
 
 Tool calling in ARES follows a multi-turn loop managed by the ToolCoordinator:
 
@@ -28,11 +28,11 @@ Agent (LLM) generates response
         Agent generates next response (may call more tools or return final text)
 ```
 
-This loop continues until the agent produces a final text response or the maximum iteration limit is reached. The entire process is transparent to the caller — you send a chat message and receive a complete response.
+This loop continues until the agent produces a final text response or the maximum iteration limit is reached. The entire process is transparent to the caller, you send a chat message and receive a complete response.
 
 ---
 
-## Built-in Tools
+## Built-in tools
 
 ARES ships with two built-in tools:
 
@@ -93,9 +93,9 @@ Searches the web and returns relevant results.
 
 ---
 
-## Configuring Tool Access
+## Configuring tool access
 
-### Per-Agent Tool Filtering
+### Per-Agent tool filtering
 
 Each agent specifies which tools it can use. An agent without tools configured cannot make tool calls, even if the underlying model supports them.
 
@@ -145,10 +145,10 @@ curl -X POST http://localhost:3000/api/admin/tenants/{id}/agents \
 
 The ToolCoordinator is the internal component that manages the tool calling loop. It handles:
 
-- **Multi-turn orchestration** — Sending tool results back to the model and processing follow-up tool calls
-- **Parallel execution** — When the model requests multiple tools in a single turn, they execute concurrently
-- **Timeout enforcement** — Individual tool calls are bounded by a configurable timeout
-- **Iteration limits** — Prevents infinite tool-calling loops
+- **Multi-turn orchestration**, Sending tool results back to the model and processing follow-up tool calls
+- **Parallel execution**, When the model requests multiple tools in a single turn, they execute concurrently
+- **Timeout enforcement**, Individual tool calls are bounded by a configurable timeout
+- **Iteration limits**, Prevents infinite tool-calling loops
 
 ### Configuration
 
@@ -164,7 +164,7 @@ If an agent hits the iteration limit, ARES instructs the model to produce a fina
 
 ---
 
-## Provider Compatibility
+## Provider compatibility
 
 Tool calling requires model support. Not all providers and models support function calling:
 
@@ -179,7 +179,7 @@ If you assign tools to an agent using a model that does not support tool calling
 
 ---
 
-## Example: Conversation with Tool Calls
+## Example: conversation with tool calls
 
 Here is what happens internally when a user asks a question that requires tool use.
 
@@ -201,7 +201,7 @@ curl -X POST http://localhost:3000/v1/chat \
 
 1. ARES sends the message to the LLM with the calculator tool definition
 2. The LLM responds with a tool call:
-   ```json
+ ```json
    {
      "tool_calls": [{
        "name": "calculator",
@@ -227,7 +227,7 @@ The tool-calling steps are invisible to the caller. You send a question and rece
 
 ---
 
-## Example: Multiple Tool Calls in One Turn
+## Example: multiple tool calls in one turn
 
 Models can request multiple tools simultaneously. For example, a research agent asked to "Compare the population of Tokyo and New York" might request two web searches in parallel:
 
@@ -244,32 +244,32 @@ With `parallel_execution` enabled (the default), both searches execute concurren
 
 ---
 
-## Example: Multi-Turn Tool Usage
+## Example: Multi-Turn tool usage
 
 Some questions require multiple rounds of tool use. For example:
 
 **User:** "What is 15% of the GDP of France?"
 
-**Turn 1 — Agent calls web_search:**
+**Turn 1, Agent calls web_search:**
 ```json
 {"name": "web_search", "arguments": {"query": "France GDP 2026 USD"}}
 ```
 Result: France's GDP is approximately $3.1 trillion.
 
-**Turn 2 — Agent calls calculator:**
+**Turn 2, Agent calls calculator:**
 ```json
 {"name": "calculator", "arguments": {"expression": "3100000000000 * 0.15"}}
 ```
 Result: 465,000,000,000
 
-**Turn 3 — Agent produces final response:**
+**Turn 3, Agent produces final response:**
 "15% of France's GDP (approximately $3.1 trillion) is **$465 billion**."
 
 Each round counts toward the `max_iterations` limit.
 
 ---
 
-## Error Handling
+## Error handling
 
 If a tool call fails (timeout, invalid input, etc.), ARES returns an error result to the model:
 

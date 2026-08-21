@@ -1,4 +1,4 @@
-# Chat & Conversations
+# Chat & conversations
 
 Send messages to ARES agents and manage multi-turn conversations.
 
@@ -18,11 +18,11 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 
 ### Request body
 
-| Parameter    | Type   | Required | Description                                                                 |
+| Parameter | Type | Required | Description |
 |-------------|--------|----------|-----------------------------------------------------------------------------|
-| `message`    | string | Yes      | The user's message or prompt.                                               |
-| `agent_type` | string | No       | Which agent handles the request (e.g., `"product"`, `"research"`, `"router"`). Defaults to the router agent. |
-| `context_id` | string | No       | Conversation context ID. Pass this value back on subsequent requests to continue a multi-turn conversation. |
+| `message` | string | Yes | The user's message or prompt. |
+| `agent_type` | string | No | Which agent handles the request (e.g., `"product"`, `"research"`, `"router"`). Defaults to the router agent. |
+| `context_id` | string | No | Conversation context ID. Pass this value back on subsequent requests to continue a multi-turn conversation. |
 
 ### Response
 
@@ -35,12 +35,12 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 }
 ```
 
-| Field        | Type        | Description                                                        |
+| Field | Type | Description |
 |-------------|-------------|--------------------------------------------------------------------|
-| `response`   | string      | The agent's response text.                                         |
-| `agent`      | string      | The agent that handled the request.                                |
-| `context_id` | string      | Context identifier. Pass this back to continue the conversation.   |
-| `sources`    | array\|null | Source references, if the agent performed retrieval. Otherwise `null`. |
+| `response` | string | The agent's response text. |
+| `agent` | string | The agent that handled the request. |
+| `context_id` | string | Context identifier. Pass this back to continue the conversation. |
+| `sources` | array\|null | Source references, if the agent performed retrieval. Otherwise `null`. |
 
 ### Examples
 
@@ -258,9 +258,9 @@ Returns a single conversation along with its full message history.
 
 **Authentication:** JWT required.
 
-| Parameter | Type   | In   | Description         |
+| Parameter | Type | In | Description |
 |-----------|--------|------|---------------------|
-| `id`      | string | path | The conversation ID |
+| `id` | string | path | The conversation ID |
 
 ```bash
 curl http://localhost:3000/api/conversations/conv_abc123 \

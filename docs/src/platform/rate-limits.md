@@ -1,10 +1,10 @@
-# Rate Limits and Quotas
+# Rate limits and quotas
 
 ARES enforces two independent layers of rate limiting to protect the platform and ensure fair resource allocation across tenants.
 
 ---
 
-## Layer 1: IP-Based Rate Limiting
+## Layer 1: IP-Based rate limiting
 
 Every incoming request is subject to per-IP rate limiting via [tower_governor](https://docs.rs/tower_governor). This layer protects against abuse, brute-force attacks, and accidental request floods regardless of authentication status.
 
@@ -14,9 +14,9 @@ If you hit the IP rate limit, you will receive a `429 Too Many Requests` respons
 
 ---
 
-## Layer 2: Tenant Quotas
+## Layer 2: tenant quotas
 
-Authenticated requests to `/v1/*` are additionally subject to tenant-level quotas based on the tenant's tier. These quotas reset at the beginning of each calendar month.
+Authenticated requests to `/v1/*` are also subject to tenant-level quotas based on the tenant's tier. These quotas reset at the beginning of each calendar month.
 
 | Tier | Monthly Requests | Monthly Tokens | Daily Rate Limit |
 |---|---|---|---|
@@ -25,24 +25,24 @@ Authenticated requests to `/v1/*` are additionally subject to tenant-level quota
 | **Pro** | 100,000 | 10,000,000 | 10,000/day |
 | **Enterprise** | Unlimited | Unlimited | Unlimited |
 
-### What Counts as a Request
+### What counts as a request
 
 Each API call to a metered endpoint counts as one request:
 
-- `POST /v1/agents/{name}/run` — 1 request
-- `POST /v1/chat` — 1 request
-- `POST /v1/chat/stream` — 1 request
-- `GET /v1/agents` — 1 request
+- `POST /v1/agents/{name}/run`, 1 request
+- `POST /v1/chat`, 1 request
+- `POST /v1/chat/stream`, 1 request
+- `GET /v1/agents`, 1 request
 
 Read-only endpoints like `GET /v1/usage` and `GET /v1/api-keys` are metered but count toward the request total.
 
-### What Counts as Tokens
+### What counts as tokens
 
 Token usage is tracked per request based on the combined input and output token count from the LLM provider. Both the prompt tokens and completion tokens are summed.
 
 ---
 
-## Response Headers
+## Response headers
 
 When you make a request to a metered endpoint, ARES includes rate limit information in the response headers:
 
@@ -64,7 +64,7 @@ X-Quota-Tokens-Remaining: 8241037
 
 ---
 
-## Exceeding Limits
+## Exceeding limits
 
 When you exceed either rate limit layer, ARES returns:
 
@@ -88,7 +88,7 @@ The error message indicates which limit was hit:
 
 ---
 
-## Checking Your Usage
+## Checking your usage
 
 You can proactively monitor your consumption to avoid hitting limits:
 
@@ -118,7 +118,7 @@ Compare `total_runs` against `quota_runs` and `total_tokens` against `quota_toke
 
 ---
 
-## Best Practices
+## Best practices
 
 1. **Monitor usage proactively.** Poll `GET /v1/usage` periodically rather than waiting for 429 errors.
 

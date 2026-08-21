@@ -152,7 +152,7 @@ curl -X POST http://localhost:3000/api/auth/logout \
   }'
 ```
 
-### Token management in Python
+### Token management in python
 
 ```python
 import requests
@@ -249,7 +249,7 @@ class AresClient {
 
 ---
 
-## Admin Secret authentication
+## Admin secret authentication
 
 The admin secret provides full access to ARES administration endpoints. It is intended for internal tools and the Dirmacs Admin dashboard only.
 

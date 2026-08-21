@@ -20,14 +20,14 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 
 ### Request body
 
-| Parameter           | Type   | Required | Default  | Description                                                             |
+| Parameter | Type | Required | Default | Description |
 |--------------------|--------|----------|----------|-------------------------------------------------------------------------|
-| `collection`        | string | Yes      | --       | Name of the collection to ingest into. Created automatically if it doesn't exist. |
-| `content`           | string | Yes      | --       | The text content to ingest.                                             |
-| `title`             | string | No       | `null`   | Optional display title for the document.                                |
-| `source`            | string | No       | `null`   | Optional source URL or path.                                             |
-| `tags`              | array  | No       | `[]`     | Optional tags attached to the document.                                  |
-| `chunking_strategy` | string | No       | `null`   | How to split the content. Options include `"word"`, `"semantic"`, and `"character"`. |
+| `collection` | string | Yes |, | Name of the collection to ingest into. Created automatically if it doesn't exist. |
+| `content` | string | Yes |, | The text content to ingest. |
+| `title` | string | No | `null` | Optional display title for the document. |
+| `source` | string | No | `null` | Optional source URL or path. |
+| `tags` | array | No | `[]` | Optional tags attached to the document. |
+| `chunking_strategy` | string | No | `null` | How to split the content. Options include `"word"`, `"semantic"`, and `"character"`. |
 
 ### Response
 
@@ -45,11 +45,11 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 }
 ```
 
-| Field           | Type     | Description                                     |
+| Field | Type | Description |
 |----------------|----------|-------------------------------------------------|
-| `chunks_created` | integer | Number of chunks produced from the content.     |
-| `document_ids`   | string[] | IDs assigned to each chunk.                    |
-| `collection`     | string   | The collection the content was ingested into.  |
+| `chunks_created` | integer | Number of chunks produced from the content. |
+| `document_ids` | string[] | IDs assigned to each chunk. |
+| `collection` | string | The collection the content was ingested into. |
 
 ### Examples
 
@@ -120,22 +120,22 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 
 ### Request body
 
-| Parameter    | Type    | Required | Default      | Description                                                |
+| Parameter | Type | Required | Default | Description |
 |-------------|---------|----------|--------------|------------------------------------------------------------|
-| `collection` | string  | Yes      | --           | Collection to search.                                      |
-| `query`      | string  | Yes      | --           | The search query.                                          |
-| `strategy`   | string  | No       | `null`       | Retrieval strategy (see below).                            |
-| `limit`      | integer | No       | 10           | Maximum number of results to return.                       |
-| `rerank`     | boolean | No       | `false`      | Whether to rerank results for improved relevance ordering. |
+| `collection` | string | Yes |, | Collection to search. |
+| `query` | string | Yes |, | The search query. |
+| `strategy` | string | No | `null` | Retrieval strategy (see below). |
+| `limit` | integer | No | 10 | Maximum number of results to return. |
+| `rerank` | boolean | No | `false` | Whether to rerank results for improved relevance ordering. |
 
 ### Search strategies
 
-| Strategy   | Description                                                                                                  |
+| Strategy | Description |
 |-----------|--------------------------------------------------------------------------------------------------------------|
-| `semantic` | Vector similarity search. Best for conceptual or meaning-based queries.                                      |
-| `bm25`     | Classic keyword-based ranking (BM25 algorithm). Best for exact term matching.                                |
-| `fuzzy`    | Tolerates typos and approximate matches. Useful for user-facing search with imprecise input.                 |
-| `hybrid`   | Combines semantic and keyword search, then merges results. Best overall performance for most use cases.      |
+| `semantic` | Vector similarity search. Best for conceptual or meaning-based queries. |
+| `bm25` | Classic keyword-based ranking (BM25 algorithm). Best for exact term matching. |
+| `fuzzy` | Tolerates typos and approximate matches. Useful for user-facing search with imprecise input. |
+| `hybrid` | Combines semantic and keyword search, then merges results. Best overall performance for most use cases. |
 
 ### Response
 

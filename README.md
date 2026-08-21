@@ -1,16 +1,16 @@
 <p align="center">
-  <img src="docs/img/ares-logo.svg" width="400" alt="A.R.E.S — Agentic Retrieval Enhanced Server">
+ <img src="docs/img/ares-logo.svg" width="400" alt="A.R.E.S — Agentic Retrieval Enhanced Server">
 </p>
 
 <p align="center">
-  Agentic Retrieval Enhanced Server. Rust. Multi-provider LLM. Tool calling. RAG. MCP.<br>
-  Extensible via ContextProvider trait. Run standalone or embed as a library.
+Agentic Retrieval Enhanced Server. Rust. Multi-provider LLM. Tool calling. RAG. MCP.<br>
+Extensible via ContextProvider trait. Run standalone or embed as a library.
 </p>
 
 <p align="center">
-  <a href="https://github.com/dirmacs/ares"><img src="https://img.shields.io/github/stars/dirmacs/ares?style=flat" alt="GitHub"></a>
-  <a href="https://dirmacs.github.io/ares"><img src="https://img.shields.io/badge/docs-mdbook-blue" alt="docs"></a>
-  <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="MIT">
+ <a href="https://github.com/dirmacs/ares"><img src="https://img.shields.io/github/stars/dirmacs/ares?style=flat" alt="GitHub"></a>
+ <a href="https://dirmacs.github.io/ares"><img src="https://img.shields.io/badge/docs-mdbook-blue" alt="docs"></a>
+ <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="MIT">
 </p>
 
 ---
@@ -21,35 +21,35 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 
 ## Features
 
-- **Multi-provider LLM**: Ollama, OpenAI, Anthropic Claude, LlamaCpp (direct GGUF loading)
-- **TOML configuration**: declarative, hot-reloading
-- **Configurable agents**: define via [TOON](https://toonformat.dev) with custom models, tools, and prompts
-- **Workflow engine**: declarative execution with agent routing
-- **Tool calling**: type-safe function calling with automatic schema generation
-- **ToolCoordinator**: provider-agnostic multi-turn tool calling for all LLM clients
-- **Per-agent tool filtering**: restrict which tools each agent can access
-- **Streaming**: real-time responses from all providers
-- **Auth**: JWT with Argon2 password hashing
-- **Database**: PostgreSQL with multi-tenant isolation, optional vector stores (ares-vector, Qdrant, LanceDB)
-- **MCP**: pluggable Model Context Protocol server integration
-- **Multi-agent orchestration**: specialized agent routing
-- **RAG**: pure-Rust vector store, multi-strategy search (semantic, BM25, fuzzy, hybrid), reranking
-- **Memory**: user personalization and context management
-- **Deep research**: multi-step research with parallel subagents
-- **Web search**: built-in via [daedra](https://github.com/dirmacs/daedra)
-- **OpenAPI**: automatic documentation generation
-- **Config validation**: circular reference detection and unused config warnings
-- **Loop detection**: 3-tier escalation (warn → force alternative → halt) for repetitive outputs
-- **Crash recovery**: checkpoint serialization — save agent state at each step, restore on restart
-- **Cordis primitives (0.8.0)**: unified `Context{store+isolate+intercept+fiber+parent+root}` with witnessed effects (LIFO `Disposable` accumulator), `TypeId`-keyed coherent table (`HashMap<TypeId, Box<dyn Any>>`), Fiber states `Inactive/Active/Reloading/Unloading` with inertia `Mutex` + epoch `:uid` watch fan-out, Events 5 dispatch modes (`Emit/Parallel/Serial/Bail/Waterfall`), Loader `EntryTree` reconcile
-- **Unified services**: `ToolService` precedence `tenant runtime → fleet runtime → MCP bridge → static` with `ctx.isolate(tenant)`, `LlmService` circuit breaker `Closed/Open/HalfOpen` + per-request `ModelOverride` via `ctx.intercept`, `AgentResolverService` ordered `tenant DB → community → system`; single `AgentExecutionService` for all 5 call sites; `SchedulerService`/`PipelineService`/`TriggerService`/`SkillsService`/`WorkflowService`
-- **Handler migration (0.8.0)**: 177 handlers `State<AppState> → State<Arc<Context>>` with `ctx.get::<Service>()`, `admin.rs` 3059→165 thin shards (15 files), `v1.rs` 1074→161 thin shards (5 files), `cfg(feature)` 0 in handlers via `Service::check()`, HMR file-watch 500ms debounce
+- Multi-provider LLM: Ollama, OpenAI, Anthropic Claude, LlamaCpp (direct GGUF loading)
+- TOML configuration: declarative, hot-reloading
+- Configurable agents: define via [TOON](https://toonformat.dev) with custom models, tools, and prompts
+- Workflow engine: declarative execution with agent routing
+- Tool calling: type-safe function calling with automatic schema generation
+- ToolCoordinator: provider-agnostic multi-turn tool calling for all LLM clients
+- Per-agent tool filtering: restrict which tools each agent can access
+- Streaming: real-time responses from all providers
+- Auth: JWT with Argon2 password hashing
+- Database: PostgreSQL with multi-tenant isolation, optional vector stores (ares-vector, Qdrant, LanceDB)
+- MCP: pluggable Model Context Protocol server integration
+- Multi-agent orchestration: specialized agent routing
+- RAG: pure-Rust vector store, multi-strategy search (semantic, BM25, fuzzy, hybrid), reranking
+- Memory: user personalization and context management
+- Deep research: multi-step research with parallel subagents
+- Web search: built-in via [daedra](https://github.com/dirmacs/daedra)
+- OpenAPI: automatic documentation generation
+- Config validation: circular reference detection and unused config warnings
+- Loop detection: 3-tier escalation (warn → force alternative → halt) for repetitive outputs
+- Crash recovery: checkpoint serialization, save agent state at each step, restore on restart
+- Cordis primitives (0.8.0): unified `Context{store+isolate+intercept+fiber+parent+root}` with witnessed effects (LIFO `Disposable` accumulator), `TypeId`-keyed coherent table (`HashMap<TypeId, Box<dyn Any>>`), Fiber states `Inactive/Active/Reloading/Unloading` with inertia `Mutex` + epoch `:uid` watch fan-out, Events 5 dispatch modes (`Emit/Parallel/Serial/Bail/Waterfall`), Loader `EntryTree` reconcile
+- Unified services: `ToolService` precedence `tenant runtime → fleet runtime → MCP bridge → static` with `ctx.isolate(tenant)`, `LlmService` circuit breaker `Closed/Open/HalfOpen` + per-request `ModelOverride` via `ctx.intercept`, `AgentResolverService` ordered `tenant DB → community → system`; single `AgentExecutionService` for all 5 call sites; `SchedulerService`/`PipelineService`/`TriggerService`/`SkillsService`/`WorkflowService`
+- Handler migration (0.8.0): 177 handlers `State<AppState> → State<Arc<Context>>` with `ctx.get::<Service>()`, `admin.rs` 3059→165 thin shards (15 files), `v1.rs` 1074→161 thin shards (5 files), `cfg(feature)` 0 in handlers via `Service::check()`, HMR file-watch 500ms debounce
 
 ## Installation
 
 A.R.E.S can be used as a **standalone server** or as a **library** in your Rust project.
 
-### As a Library
+### As a library
 
 Add to your project (0.8.0 Cordis):
 
@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### As a Binary
+### As a binary
 
 ```bash
 # Install from crates.io (0.8.0 Cordis)
@@ -95,7 +95,7 @@ ares-server init
 ares-server
 ```
 
-## CLI Commands
+## CLI commands
 
 A.R.E.S provides a full-featured CLI with colored output:
 
@@ -134,7 +134,7 @@ ares-server --config custom.toml
 ares-server --no-color init
 ```
 
-### Init Command Options
+### Init command options
 
 | Option | Description |
 |--------|-------------|
@@ -145,15 +145,15 @@ ares-server --no-color init
 | `--host <ADDR>` | Server host address (default: 127.0.0.1) |
 | `--port <PORT>` | Server port (default: 3000) |
 
-## Quick Start (Development)
+## Quick start (development)
 
 ### Prerequisites
 
-- **Rust 1.91+**: Install via [rustup](https://rustup.rs/)
+- Rust 1.91+: Install via [rustup](https://rustup.rs/)
 - **Ollama** (recommended): For local LLM inference - [Install Ollama](https://ollama.ai)
 - **just** (recommended): Command runner - [Install just](https://just.systems)
 
-### 1. Clone and Setup
+### 1. Clone and setup
 
 ```bash
 git clone https://github.com/dirmacs/ares.git
@@ -164,7 +164,7 @@ cp .env.example .env
 just setup
 ```
 
-### 2. Start Ollama (Recommended)
+### 2. Start Ollama (recommended)
 
 ```bash
 # Install a model
@@ -175,7 +175,7 @@ ollama pull ministral-3:3b
 ollama serve
 ```
 
-### 3. Build and Run
+### 3. Build and run
 
 ```bash
 # Build with default features (local-db + ollama)
@@ -189,15 +189,15 @@ cargo run
 
 Server runs on `http://localhost:3000`
 
-## Feature Flags
+## Feature flags
 
 A.R.E.S uses Cargo features for conditional compilation:
 
-### LLM Providers
+### LLM providers
 
 | Feature | Description | Default |
 |---------|-------------|---------|
-| `ollama` | Ollama local inference | ✅ Yes |
+| `ollama` | Ollama local inference |  Yes |
 | `openai` | OpenAI API (and compatible) | No |
 | `anthropic` | Anthropic Claude API | No |
 | `llamacpp` | Direct GGUF model loading | No |
@@ -205,19 +205,19 @@ A.R.E.S uses Cargo features for conditional compilation:
 | `llamacpp-metal` | LlamaCpp with Metal (macOS) | No |
 | `llamacpp-vulkan` | LlamaCpp with Vulkan | No |
 
-### Database & Vector Stores
+### Database & vector stores
 
 | Feature | Description | Default |
 |---------|-------------|---------|
-| `postgres` | PostgreSQL database | ✅ Yes |
-| `ares-vector` | Pure-Rust embedded HNSW vector store | ✅ Yes |
+| `postgres` | PostgreSQL database |  Yes |
+| `ares-vector` | Pure-Rust embedded HNSW vector store |  Yes |
 | `qdrant` | Qdrant vector database | No |
 | `pgvector` | PostgreSQL pgvector extension | No |
 | `chromadb` | ChromaDB embedding database | No |
 | `pinecone` | Pinecone managed vector database | No |
 | `lancedb` | LanceDB vector database | No |
 
-### UI & Documentation
+### UI & documentation
 
 | Feature | Description | Default |
 |---------|-------------|---------|
@@ -234,7 +234,7 @@ A.R.E.S uses Cargo features for conditional compilation:
 
 > **Warning:** The `local-embeddings` feature does **NOT** work on Windows MSVC due to `ort-sys` linker errors. Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs instead.
 
-### Feature Bundles
+### Feature bundles
 
 | Feature | Includes |
 |---------|----------|
@@ -248,7 +248,7 @@ A.R.E.S uses Cargo features for conditional compilation:
 
 > **Note:** `local-embeddings` is excluded from `full` and `full-ui` bundles due to Windows MSVC compatibility issues. Use `full-local-embeddings` or `full-ui-local-embeddings` on Linux/macOS.
 
-### Building with Features
+### Building with features
 
 ```bash
 # Default (ollama + local-db)
@@ -287,7 +287,7 @@ cargo build --release
 
 A.R.E.S uses a **TOML configuration file** (`ares.toml`) for declarative configuration of all components. The server **requires** this file to start.
 
-### Quick Start
+### Quick start
 
 ```bash
 # Copy the example config
@@ -298,7 +298,7 @@ export JWT_SECRET="your-secret-key-at-least-32-characters"
 export API_KEY="your-api-key"
 ```
 
-### Configuration File (ares.toml)
+### Configuration file (ares.toml)
 
 The configuration file defines providers, models, agents, tools, and workflows:
 
@@ -383,7 +383,7 @@ entry_agent = "research"
 max_depth = 10
 ```
 
-### Per-Agent Tool Filtering
+### Per-agent tool filtering
 
 Each agent can specify which tools it has access to:
 
@@ -399,21 +399,21 @@ tools = ["calculator", "web_search"]  # Both tools
 
 If `tools` is empty or omitted, the agent has no tool access.
 
-### Configuration Validation
+### Configuration validation
 
 The configuration is validated on load with:
 
-- **Reference checking**: Models must reference valid providers, agents must reference valid models
-- **Circular reference detection**: Workflows cannot have circular agent references
-- **Environment variables**: All referenced env vars must be set
+- Reference checking: Models must reference valid providers, agents must reference valid models
+- Circular reference detection: Workflows cannot have circular agent references
+- Environment variables: All referenced env vars must be set
 
 For warnings about unused configuration items (providers, models, tools not referenced by anything), the `validate_with_warnings()` method is available.
 
-### Hot Reloading
+### Hot reloading
 
 Configuration changes are **automatically detected** and applied without restarting the server. Edit `ares.toml` and the changes will be picked up within 500ms.
 
-### Environment Variables
+### Environment variables
 
 The following environment variables **must** be set (referenced by `ares.toml`):
 
@@ -426,7 +426,7 @@ API_KEY=your-api-key
 OPENAI_API_KEY=sk-...
 ```
 
-### Provider Priority
+### Provider priority
 
 When multiple providers are configured, they are selected in this order:
 
@@ -434,25 +434,25 @@ When multiple providers are configured, they are selected in this order:
 2. **OpenAI** - If `OPENAI_API_KEY` is set
 3. **Ollama** - Default fallback (no API key required)
 
-### Dynamic Configuration (TOON)
+### Dynamic configuration (TOON)
 
 In addition to `ares.toml`, A.R.E.S supports **TOON (Token Oriented Object Notation)** files for behavioral configuration with hot-reloading:
 
 ```
 config/
-├── agents/
-│   ├── router.toon
-│   ├── orchestrator.toon
-│   └── product.toon
-├── models/
-│   ├── fast.toon
-│   └── balanced.toon
-├── tools/
-│   └── calculator.toon
-├── workflows/
-│   └── default.toon
-└── mcps/
-    └── filesystem.toon
+ agents/
+    router.toon
+    orchestrator.toon
+    product.toon
+ models/
+    fast.toon
+    balanced.toon
+ tools/
+    calculator.toon
+ workflows/
+    default.toon
+ mcps/
+     filesystem.toon
 ```
 
 **Example TOON agent config** (`config/agents/router.toon`):
@@ -481,7 +481,7 @@ hot_reload = true
 
 TOON files are automatically hot-reloaded when changed. See [docs/DIR-12-research.md](docs/DIR-12-research.md) for details.
 
-### User-Created Agents API
+### User-created agents API
 
 Users can create custom agents stored in the database with TOON import/export:
 
@@ -513,9 +513,9 @@ system_prompt: |
 
 ## Extending ARES
 
-ARES is designed as a library that extension crates can build upon. Core extension is the Cordis `Context` (0.8.0). Legacy `base_router(AppState)`/`ContextProvider` remain as deprecated shims for one release — new code uses `build_router(ctx: Arc<Context>)` + `ctx.get::<Service>()`.
+ARES is designed as a library that extension crates can build upon. Core extension is the Cordis `Context` (0.8.0). Legacy `base_router(AppState)`/`ContextProvider` remain as deprecated shims for one release, new code uses `build_router(ctx: Arc<Context>)` + `ctx.get::<Service>()`.
 
-### `build_router(ctx)` — Cordis Context Router (0.8.0)
+### `build_router(ctx)`, Cordis Context Router (0.8.0)
 
 ```rust
 use std::sync::Arc;
@@ -529,9 +529,9 @@ let app = build_router(ctx.clone())
 axum::serve(listener, app).await?;
 ```
 
-Legacy alias: `pub type AppState = Arc<Context>; pub fn base_router(ctx: AppState) -> Router { build_router(ctx) }` — migrates 177 handlers `State<AppState> → State<Arc<Context>>`.
+Legacy alias: `pub type AppState = Arc<Context>; pub fn base_router(ctx: AppState) -> Router { build_router(ctx) }`, migrates 177 handlers `State<AppState> → State<Arc<Context>>`.
 
-### `ContextProvider` — Pluggable Context Injection (legacy)
+### `ContextProvider`, Pluggable Context Injection (legacy)
 
 Inject external context into every agent call before LLM invocation:
 
@@ -554,11 +554,11 @@ impl ContextProvider for MyContextProvider {
 
 By default, ARES uses `NoOpContextProvider` (returns `None`). New services use `ctx.get::<dyn ToolService>()` / `ctx.get::<AgentResolverService>()` etc. (see `docs/cordis-mapping.md`).
 
-## Architecture (Cordis) — 0.8.0
+## Architecture (Cordis), 0.8.0
 
-**Cordis primitives** — see `docs/cordis-mapping.md` + `ARCHITECTURE.md` (synced from `docs/cordis-redesign.md`) for full spec (Γ^∞ = μΓ. Γ × (Γ→Γ) × Σ, Thm 61 temporal, Thm 63 spatial, Thm 73 confluence).
+**Cordis primitives**, see `docs/cordis-mapping.md` + `ARCHITECTURE.md` (synced from `docs/cordis-redesign.md`) for full spec (Γ^∞ = μΓ. Γ × (Γ→Γ) × Σ, Thm 61 temporal, Thm 63 spatial, Thm 73 confluence).
 
-#### Context — Γ^∞
+#### Context, Γ^∞
 
 ```rust
 pub struct Context {
@@ -586,7 +586,7 @@ pub trait Service: Send + Sync + 'static {
 
 *Store* is the `TypeId`-keyed coherent table (Cordis Σ). *Isolate* creates tenant realms (`ctx.isolate::<dyn ToolService>("tenant:acme")` → disjoint tools). *Intercept* creates prototype-chain overrides (`ctx.intercept(ModelOverride{model:"gpt-4o-mini"})` → per-request pin without mutating provider).
 
-#### Witnessed effects — LIFO Disposable
+#### Witnessed effects, LIFO disposable
 
 ```rust
 pub trait Disposable: Send + 'static { fn dispose(self: Box<Self>); }
@@ -596,7 +596,7 @@ impl<F: FnOnce() + Send + 'static> Disposable for F { fn dispose(self: Box<Self>
 
 Temporal composability (Thm 61): `ctx.plugin(Foo)..` → `ctx.provide(Bar(42))` → `fiber.dispose().await` → `ctx.get::<Bar>().is_none()` and context recovered (LIFO reverse). `EffectGuard` drops in reverse order.
 
-#### Fiber — state machine + epoch :uid watch
+#### Fiber, state machine + epoch :uid watch
 
 ```rust
 pub enum FiberState { Inactive{error: Option<CordisError>}, Active{epoch: String}, Reloading, Unloading }
@@ -615,9 +615,9 @@ impl Fiber {
 }
 ```
 
-`ReflectService{notifiers: HashMap<TypeId, watch::Sender<()>>, dependents: HashMap<TypeId, Vec<FiberId>>}` — `notify(tid)` BFS walks dependents + `tokio::sync::watch` fan-out → `Fiber::refresh`. Replaces 60s `ArcSwap` polls (`runtime_registry.rs` `start_background_reload`, `provider_registry.rs`, `catalog.rs`).
+`ReflectService{notifiers: HashMap<TypeId, watch::Sender<()>>, dependents: HashMap<TypeId, Vec<FiberId>>}`, `notify(tid)` BFS walks dependents + `tokio::sync::watch` fan-out → `Fiber::refresh`. Replaces 60s `ArcSwap` polls (`runtime_registry.rs` `start_background_reload`, `provider_registry.rs`, `catalog.rs`).
 
-#### Events — 5 dispatch modes
+#### Events, 5 dispatch modes
 
 ```rust
 pub enum Dispatch { Emit, Parallel/*JoinSet*/, Serial, Bail/*first ok*/, Waterfall/*tower::Service chain*/ }
@@ -628,7 +628,7 @@ impl EventsService {
 // broadcast + HashMap<EventId, Vec<Handler>> fan-out; waterfall via tower::Service
 ```
 
-#### Loader — EntryTree reconcile (HMR)
+#### Loader, EntryTree reconcile (HMR)
 
 ```rust
 pub struct Entry { id: String, plugin: String, config: Value, disabled: bool, isolate: Option<String>, intercept: HashMap<String, Value> }
@@ -678,28 +678,28 @@ Agents `ctx.get::<dyn ToolService>().resolve(name)` + `ctx.isolate("tool_service
 
 `LlmService` wraps `ClientPool` with `Breaker{Closed/Open{until: Instant}/HalfOpen}` (threshold 5, cooldown 30s) tracked as `Service::check()` (guarded withdrawal Thm 63), plus `ctx.intercept(ModelOverride{model})` per-request pin. `AgentResolverService` ordered `tenant DB tenant_agents → community public → system AgentRegistry TOML/TOON` with `ctx.isolate("agent", tenant_label)`.
 
-#### Handler migration — 177 `State<Arc<Context>>`
+#### Handler migration, 177 `State<Arc<Context>>`
 
 `src/lib.rs` deleted `pub struct AppState{17-22 fields}` + `base_router` shim + `3× #![allow(deprecated)]` → `pub type AppState = Arc<Context>; pub type CordisAppState = AppState; pub fn build_router(ctx: AppState) -> Router`. Every handler `State<AppState> → State<Arc<Context>>` + `ctx.get::<ConfigService>()`/`TenantDbService`/`ToolRegistryService`/etc. via `src/context_services.rs` 18 wrappers. `grep -R State<AppState` 0, `grep pub struct AppState` 0, `grep base_router` 0 (deprecated shim kept one release via `pub use` alias).
 
 #### Admin thin shards + cfg 0
 
-`src/api/handlers/admin.rs` 3059 → 165 (thin `pub mod` + `#[path]`) + `admin/*.rs` 15 files 2905 lines (tenants, agents, providers, tools, schedules, triggers, pipelines, billing, mcp, fleet_secrets, connectors, health, audit, shared helpers), `v1.rs` 1074→161 thin shards 5 files. `routes.rs` `fn build_routes(ctx:&Context)->Router` merges `RouteSet`s via `ctx.get`. `crates/ares-agents/src/configurable.rs` 6 `#[cfg(postgres)]` fields → `PostgresService/McpService/SkillsService::check()`, handlers `if ctx.get::<PostgresService>().is_some()` not `#[cfg]` — `cargo check --no-default-features` and `--features openai,postgres,mcp` both pass, `grep -R #\[cfg\(feature src/api/handlers` 0, `grep -R execute_for_tenant` 0.
+`src/api/handlers/admin.rs` 3059 → 165 (thin `pub mod` + `#[path]`) + `admin/*.rs` 15 files 2905 lines (tenants, agents, providers, tools, schedules, triggers, pipelines, billing, mcp, fleet_secrets, connectors, health, audit, shared helpers), `v1.rs` 1074→161 thin shards 5 files. `routes.rs` `fn build_routes(ctx:&Context)->Router` merges `RouteSet`s via `ctx.get`. `crates/ares-agents/src/configurable.rs` 6 `#[cfg(postgres)]` fields → `PostgresService/McpService/SkillsService::check()`, handlers `if ctx.get::<PostgresService>().is_some()` not `#[cfg]`, `cargo check --no-default-features` and `--features openai,postgres,mcp` both pass, `grep -R #\[cfg\(feature src/api/handlers` 0, `grep -R execute_for_tenant` 0.
 
-#### Scheduler HMR + pipeline/trigger/skill/workflow Services
+#### Scheduler HMR + pipeline/trigger/skill/workflow services
 
-`SchedulerService` (361 lines) owns 60s tick with catch-up `NEXT_RUN_AT` cron (`cron` crate) + `agent_schedules`/`missed_runs` DB, `Service::init` `select! tick+watch` + `NOTIFY`/`LISTEN` fallback, `SharedFix` `shared_execution = Arc<AgentExecutionService>` injected into both `SchedulerService` and downstream `PipelineService`/`TriggerService`. File-watch HMR `notify::RecommendedWatcher` proof `Configuration hot-reloaded successfully via Cordis watch` (random-port 39476/39120 E2E `curl /health` OK, `curl /api/auth/login` 200). `PipelineService` owns `agent_pipelines` conditional propagation, `TriggerService` owns webhook/document_upload/field_change dispatch, `SkillsService` sequential `ToolCall/LlmCall/SkillCall/Condition` depth 8 with `SkillStep` + `SkillId`, `WorkflowService` router delegation — all `ctx.get::<AgentExecutionService>().execute(req,&ctx)` single site (phase 6).
+`SchedulerService` (361 lines) owns 60s tick with catch-up `NEXT_RUN_AT` cron (`cron` crate) + `agent_schedules`/`missed_runs` DB, `Service::init` `select! tick+watch` + `NOTIFY`/`LISTEN` fallback, `SharedFix` `shared_execution = Arc<AgentExecutionService>` injected into both `SchedulerService` and downstream `PipelineService`/`TriggerService`. File-watch HMR `notify::RecommendedWatcher` proof `Configuration hot-reloaded successfully via Cordis watch` (random-port 39476/39120 E2E `curl /health` OK, `curl /api/auth/login` 200). `PipelineService` owns `agent_pipelines` conditional propagation, `TriggerService` owns webhook/document_upload/field_change dispatch, `SkillsService` sequential `ToolCall/LlmCall/SkillCall/Condition` depth 8 with `SkillStep` + `SkillId`, `WorkflowService` router delegation, all `ctx.get::<AgentExecutionService>().execute(req,&ctx)` single site (phase 6).
 
-### Key Components (0.8.0 Cordis)
+### Key components (0.8.0 Cordis)
 
 - **Context/Fiber/Registry/Events/Loader/Reflect** (`crates/ares-cordis-core` leaf, zero ARES deps): Γ^∞ store+isolate+intercept, witnessed LIFO, epoch :uid, 5-mode bus, EntryTree reconcile, file-watch HMR
-- **ConfigService/CatalogService/ProviderRegistryService**: replace `AresConfigManager`/`NvidiaCatalogCache` 60s polls with `Service::check` + `Fiber::refresh`
-- **ToolService/ToolServiceWrapper**: unified `tenant→fleet→MCP→static` precedence, `ctx.isolate` tenant realms
-- **AgentResolverService/AgentServiceWrapper/LlmService**: ordered tenant→community→system, breaker + intercept
-- **AgentExecutionService**: single `execute(req,ctx)` for chat/v1/scheduler/pipeline/trigger (observability/cost/usage/budget/loop)
-- **SchedulerService/PipelineService/TriggerService/SkillsService/WorkflowService**: own their DB tables + inject `AgentExecutionService`, `build_routes(ctx)` merges RouteSets
+- ConfigService/CatalogService/ProviderRegistryService: replace `AresConfigManager`/`NvidiaCatalogCache` 60s polls with `Service::check` + `Fiber::refresh`
+- ToolService/ToolServiceWrapper: unified `tenant→fleet→MCP→static` precedence, `ctx.isolate` tenant realms
+- AgentResolverService/AgentServiceWrapper/LlmService: ordered tenant→community→system, breaker + intercept
+- AgentExecutionService: single `execute(req,ctx)` for chat/v1/scheduler/pipeline/trigger (observability/cost/usage/budget/loop)
+- SchedulerService/PipelineService/TriggerService/SkillsService/WorkflowService: own their DB tables + inject `AgentExecutionService`, `build_routes(ctx)` merges RouteSets
 
-## API Documentation
+## API documentation
 
 Interactive Swagger UI available at: `http://localhost:3000/swagger-ui/`
 
@@ -754,7 +754,7 @@ curl -X POST http://localhost:3000/api/chat \
   }'
 ```
 
-### Deep Research
+### Deep research
 
 ```bash
 curl -X POST http://localhost:3000/api/research \
@@ -779,7 +779,7 @@ max_depth = 5                    # Maximum agent chain depth
 max_iterations = 10              # Maximum total iterations
 ```
 
-#### List Available Workflows
+#### List available workflows
 
 ```bash
 curl http://localhost:3000/api/workflows \
@@ -791,7 +791,7 @@ Response:
 ["default", "research"]
 ```
 
-#### Execute a Workflow
+#### Execute a workflow
 
 ```bash
 curl -X POST http://localhost:3000/api/workflows/default \
@@ -849,11 +849,11 @@ curl -X POST http://localhost:3000/api/workflows/default \
   }'
 ```
 
-### Admin & Deployment API
+### Admin & deployment API
 
 Admin endpoints require the `X-Admin-Secret` header.
 
-#### Trigger Deploy
+#### Trigger deploy
 
 ```bash
 curl -X POST http://localhost:3000/api/admin/deploy \
@@ -867,21 +867,21 @@ Response:
 {"id": "deploy-abc123", "status": "running", "message": "Deploy started"}
 ```
 
-#### Check Deploy Status
+#### Check deploy status
 
 ```bash
 curl http://localhost:3000/api/admin/deploy/deploy-abc123 \
   -H "X-Admin-Secret: $ADMIN_SECRET"
 ```
 
-#### List Recent Deploys
+#### List recent deploys
 
 ```bash
 curl http://localhost:3000/api/admin/deploys \
   -H "X-Admin-Secret: $ADMIN_SECRET"
 ```
 
-#### Service Health
+#### Service health
 
 ```bash
 curl http://localhost:3000/api/admin/services \
@@ -896,16 +896,16 @@ Response:
 }
 ```
 
-#### Service Logs
+#### Service logs
 
 ```bash
 curl http://localhost:3000/api/admin/services/ares/logs \
   -H "X-Admin-Secret: $ADMIN_SECRET"
 ```
 
-### RAG (Retrieval Augmented Generation)
+### RAG (retrieval augmented generation)
 
-A.R.E.S includes a comprehensive RAG system with a pure-Rust vector store. Requires the `ares-vector` feature. For local files, use the generic Rust CLI and pass every deployment-specific path or collection explicitly:
+A.R.E.S includes a complete RAG system with a pure-Rust vector store. Requires the `ares-vector` feature. For local files, use the generic Rust CLI and pass every deployment-specific path or collection explicitly:
 
 ```bash
 ares-server rag ingest-dir \
@@ -925,7 +925,7 @@ ares-server rag search \
   --top-k 5
 ```
 
-#### Ingest Documents
+#### Ingest documents
 
 ```bash
 curl -X POST http://localhost:3000/api/rag/ingest \
@@ -941,7 +941,7 @@ curl -X POST http://localhost:3000/api/rag/ingest \
   }'
 ```
 
-#### Search Documents
+#### Search documents
 
 ```bash
 curl -X POST http://localhost:3000/api/rag/search \
@@ -962,21 +962,21 @@ curl -X POST http://localhost:3000/api/rag/search \
 - `fuzzy`: Typo-tolerant search
 - `hybrid`: Weighted combination of semantic + BM25
 
-#### List Collections
+#### List collections
 
 ```bash
 curl http://localhost:3000/api/rag/collections \
   -H "Authorization: Bearer <access_token>"
 ```
 
-## Tool Calling
+## Tool calling
 
 A.R.E.S supports tool calling with all LLM providers that support function calling (OpenAI, Anthropic, Ollama with ministral-3:3b+, etc.):
 
-### Built-in Tools
+### Built-in tools
 
-- **calculator**: Basic arithmetic operations
-- **web_search**: Web search via DuckDuckGo (no API key required)
+- calculator: Basic arithmetic operations
+- web_search: Web search via DuckDuckGo (no API key required)
 
 ### Unified ToolCoordinator
 
@@ -1017,7 +1017,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### ToolCallingConfig Options
+### Toolcallingconfig options
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -1029,9 +1029,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Testing
 
-A.R.E.S has comprehensive test coverage with both mocked and live tests.
+A.R.E.S has complete test coverage with both mocked and live tests.
 
-### Unit & Integration Tests (Mocked)
+### Unit & integration tests (mocked)
 
 ```bash
 # Run all tests (no external services required)
@@ -1043,7 +1043,7 @@ cargo test -- --nocapture
 # Or: just test-verbose
 ```
 
-### Live Ollama Tests
+### Live Ollama tests
 
 Tests that connect to a **real Ollama instance** are available but **ignored by default**.
 
@@ -1051,7 +1051,7 @@ Tests that connect to a **real Ollama instance** are available but **ignored by 
 - Running Ollama server at `http://localhost:11434`
 - A model installed (e.g., `ollama pull ministral-3:3b`)
 
-#### Running Live Tests
+#### Running live tests
 
 ```bash
 # Set the environment variable and run ignored tests
@@ -1071,7 +1071,7 @@ OLLAMA_URL=http://192.168.1.100:11434 OLLAMA_MODEL=mistral OLLAMA_LIVE_TESTS=1 \
 
 Or add `OLLAMA_LIVE_TESTS=1` to your `.env` file.
 
-### API Tests (Hurl)
+### API tests (hurl)
 
 End-to-end API tests using [Hurl](https://hurl.dev):
 
@@ -1093,7 +1093,7 @@ just hurl-chat
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for more testing details.
 
-## Common Commands (just)
+## Common commands (just)
 
 A.R.E.S uses [just](https://just.systems) as a command runner. Run `just --list` to see all available commands:
 
@@ -1150,7 +1150,7 @@ just status         # Show environment status
 
 ## Troubleshooting
 
-### Configuration File Not Found
+### Configuration file not found
 
 ```bash
 # Error: Configuration file 'ares.toml' not found!
@@ -1159,7 +1159,7 @@ just status         # Show environment status
 ares-server init
 ```
 
-### Port Already in Use
+### Port already in use
 
 ```bash
 # Error: Address already in use (os error 48)
@@ -1173,7 +1173,7 @@ kill -9 <PID>          # Linux/macOS
 taskkill /PID <PID> /F # Windows
 ```
 
-### Ollama Connection Failed
+### Ollama connection failed
 
 ```bash
 # Check if Ollama is running
@@ -1186,7 +1186,7 @@ ollama serve
 just docker-services
 ```
 
-### Missing Environment Variables
+### Missing environment variables
 
 ```bash
 # Error: MissingEnvVar("JWT_SECRET")
@@ -1196,7 +1196,7 @@ cp .env.example .env
 # Edit .env and set JWT_SECRET (min 32 characters) and API_KEY
 ```
 
-### UI Build Errors (Node.js runtime required)
+### UI build errors (node.js runtime required)
 
 ```bash
 # Error: npx: command not found
@@ -1210,7 +1210,7 @@ brew install node  # macOS
 # or download from https://nodejs.org
 ```
 
-### WASM Build Errors
+### WASM build errors
 
 ```bash
 # Error: target `wasm32-unknown-unknown` not found
@@ -1224,32 +1224,32 @@ cargo install trunk --locked
 
 ## Requirements
 
-### Minimum Requirements
+### Minimum requirements
 
-- **Rust**: 1.91 or later
-- **Operating System**: Linux, macOS, or Windows
-- **Memory**: 2GB RAM (4GB+ recommended for larger models)
+- Rust: 1.91 or later
+- Operating System: Linux, macOS, or Windows
+- Memory: 2GB RAM (4GB+ recommended for larger models)
 
-### Optional Requirements
+### Optional requirements
 
-- **Ollama**: For local LLM inference (recommended)
-- **Node.js runtime**: Bun, npm, or Deno (required for UI development)
-- **Docker**: For containerized deployment
-- **GPU**: NVIDIA (CUDA) or Apple Silicon (Metal) for accelerated inference
+- Ollama: For local LLM inference (recommended)
+- Node.js runtime: Bun, npm, or Deno (required for UI development)
+- Docker: For containerized deployment
+- GPU: NVIDIA (CUDA) or Apple Silicon (Metal) for accelerated inference
 
-## Security Considerations
+## Security considerations
 
-- **JWT_SECRET**: Must be at least 32 characters. Generate with: `openssl rand -base64 32`
-- **API_KEY**: Should be unique per deployment
-- **Environment Variables**: Never commit `.env` files to version control
-- **HTTPS**: Use HTTPS in production (configure via reverse proxy)
-- **Rate Limiting**: Consider adding rate limiting for production deployments
+- JWT_SECRET: Must be at least 32 characters. Generate with: `openssl rand -base64 32`
+- API_KEY: Should be unique per deployment
+- Environment Variables: Never commit `.env` files to version control
+- HTTPS: Use HTTPS in production (configure via reverse proxy)
+- Rate Limiting: Consider adding rate limiting for production deployments
 
 ## Contributing
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-### Quick Contribution Guide
+### Quick contribution guide
 
 ```bash
 # 1. Fork and clone the repository
@@ -1271,7 +1271,7 @@ git push origin feature/my-feature
 # 5. Open a Pull Request
 ```
 
-### Development Setup
+### Development setup
 
 ```bash
 # Install development dependencies

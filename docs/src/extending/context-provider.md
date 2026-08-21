@@ -2,13 +2,13 @@
 
 ARES provides a `ContextProvider` trait that lets extension crates inject external context into every agent call before LLM invocation.
 
-## How It Works
+## How it works
 
 Before every LLM call, ARES checks `state.context_provider.get_context(agent_name, tenant_id)`. If it returns `Some(context)`, the context is prepended to the agent's system prompt.
 
-By default, ARES uses `NoOpContextProvider` which returns `None` — agents run with their configured system prompt only.
+By default, ARES uses `NoOpContextProvider` which returns `None`, agents run with their configured system prompt only.
 
-## Implementing Your Own
+## Implementing your own
 
 ```rust
 use ares::agents::context_provider::ContextProvider;
@@ -33,7 +33,7 @@ impl ContextProvider for MyKnowledgeProvider {
 }
 ```
 
-## Wiring Into AppState
+## Wiring into AppState
 
 ```rust
 use std::sync::Arc;
@@ -46,9 +46,9 @@ let state = AppState {
 };
 ```
 
-## Use Cases
+## Use cases
 
-- **Knowledge base injection** — fetch relevant docs per agent and tenant
-- **User preference injection** — personalize agent behavior based on user history
-- **Compliance constraints** — inject regulatory rules into agent prompts
-- **RAG augmentation** — supplement the built-in RAG with external retrieval
+- **Knowledge base injection**, fetch relevant docs per agent and tenant
+- **User preference injection**, personalize agent behavior based on user history
+- **Compliance constraints**, inject regulatory rules into agent prompts
+- **RAG augmentation**, supplement the built-in RAG with external retrieval

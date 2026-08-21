@@ -2,7 +2,7 @@
 
 ARES integrates with [Model Context Protocol](https://modelcontextprotocol.io) servers, allowing agents to use external tools as first-class capabilities.
 
-## Feature Flag
+## Feature flag
 
 ```toml
 [dependencies]
@@ -15,7 +15,7 @@ MCP is included in the default feature set.
 
 MCP servers are configured via `.toon` files in your config directory. Each server gets its own TOON configuration.
 
-## How It Works
+## How it works
 
 1. ARES discovers MCP server configs from the config directory
 2. `McpRegistry::from_dir()` loads and connects to configured servers
@@ -30,7 +30,7 @@ Agent Request → McpRegistry → get_client("eruka") → McpClient → MCP Serv
 Agent Response ← Tool Result ←────────────────────────────────────────┘
 ```
 
-## Library Usage
+## Library usage
 
 ```rust
 use ares::mcp::McpRegistry;

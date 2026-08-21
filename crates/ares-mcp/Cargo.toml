@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = true
-description = "Model Context Protocol integration for A.R.E.S"
+description = "Model Context Protocol client and server for ARES"
 [features]
 default = ["mcp", "postgres"]
 mcp = ["dep:rmcp","dep:reqwest","dep:serde","dep:serde_json","dep:thiserror","dep:tokio","dep:tracing","dep:toml","dep:toon-format"]

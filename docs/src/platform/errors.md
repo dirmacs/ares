@@ -1,10 +1,10 @@
-# Error Handling
+# Error handling
 
 ARES uses conventional HTTP status codes and a consistent JSON error format across all endpoints. This page documents the error response structure, status code meanings, and common errors with their solutions.
 
 ---
 
-## Error Response Format
+## Error response format
 
 All errors return a JSON object with an `error` field containing a human-readable message:
 
@@ -18,9 +18,9 @@ The HTTP status code indicates the category of error. The `error` string provide
 
 ---
 
-## HTTP Status Codes
+## HTTP status codes
 
-### Success Codes
+### Success codes
 
 | Code | Meaning | When Used |
 |---|---|---|
@@ -28,7 +28,7 @@ The HTTP status code indicates the category of error. The `error` string provide
 | `201` | Created | Resource successfully created (tenant, agent, API key) |
 | `204` | No Content | Successful delete with no response body |
 
-### Client Error Codes
+### Client error codes
 
 | Code | Meaning | When Used |
 |---|---|---|
@@ -40,7 +40,7 @@ The HTTP status code indicates the category of error. The `error` string provide
 | `422` | Unprocessable Entity | Request is well-formed but contains invalid values (e.g., unknown tier, invalid model name) |
 | `429` | Too Many Requests | Rate limit or quota exceeded |
 
-### Server Error Codes
+### Server error codes
 
 | Code | Meaning | When Used |
 |---|---|---|
@@ -48,9 +48,9 @@ The HTTP status code indicates the category of error. The `error` string provide
 
 ---
 
-## Common Errors and Solutions
+## Common errors and solutions
 
-### Authentication Errors
+### Authentication errors
 
 **Missing API key:**
 ```
@@ -80,7 +80,7 @@ HTTP 401
 ```
 Verify the admin secret matches the value configured in `ares.toml`.
 
-### Resource Errors
+### Resource errors
 
 **Agent not found:**
 ```
@@ -103,7 +103,7 @@ HTTP 409
 ```
 An agent with this name already exists. Use a different name or update the existing agent.
 
-### Validation Errors
+### Validation errors
 
 **Invalid tier:**
 ```
@@ -126,7 +126,7 @@ HTTP 400
 ```
 Ensure your request body is valid JSON. Check for trailing commas, unquoted keys, or mismatched brackets. Verify the `Content-Type: application/json` header is set.
 
-### Rate Limit Errors
+### Rate limit errors
 
 **Quota exceeded:**
 ```
@@ -144,7 +144,7 @@ Your tenant has hit the daily rate cap. Wait until the next UTC day or upgrade y
 
 See [Rate Limits and Quotas](../platform/rate-limits.md) for details on limits by tier.
 
-### Server Errors
+### Server errors
 
 **Internal server error:**
 ```
@@ -155,19 +155,19 @@ An unexpected error occurred on the server. These are not caused by your request
 
 ---
 
-## Error Handling Best Practices
+## Error handling best practices
 
 1. **Always check the HTTP status code first.** The status code tells you the error category before you parse the response body.
 
 2. **Parse the error message for user display.** The `error` field is written to be human-readable and safe to show to end users.
 
-3. **Retry on 429 and 500.** Rate limit errors (429) should be retried with exponential backoff. Server errors (500) may be transient — retry once or twice before treating as a permanent failure.
+3. **Retry on 429 and 500.** Rate limit errors (429) should be retried with exponential backoff. Server errors (500) may be transient, retry once or twice before treating as a permanent failure.
 
 4. **Do not retry on 400, 401, 403, 404, 409, or 422.** These indicate problems with the request itself. Fix the request before retrying.
 
 5. **Log the full response.** When debugging, log both the HTTP status code and the response body. The error message often contains the specific field or value that caused the problem.
 
-### Example: Robust Error Handling (Python)
+### Example: reliable error handling (Python)
 
 ```python
 import requests
@@ -199,7 +199,7 @@ def run_agent(api_key, agent_name, input_data):
         raise APIError(f"API error ({response.status_code}): {error}")
 ```
 
-### Example: Robust Error Handling (JavaScript)
+### Example: reliable error handling (JavaScript)
 
 ```javascript
 async function runAgent(apiKey, agentName, inputData) {

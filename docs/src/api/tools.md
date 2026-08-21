@@ -2,7 +2,7 @@
 
 ARES provides a type-safe tool calling framework with automatic schema generation.
 
-## Built-in Tools
+## Built-in tools
 
 | Tool | Description | Feature |
 |------|-------------|---------|
@@ -10,7 +10,7 @@ ARES provides a type-safe tool calling framework with automatic schema generatio
 | Web Search | Search via [Daedra](https://github.com/dirmacs/daedra) | `search-tools` |
 | Web Scrape | Fetch URL and extract readable text content | `search-tools` |
 
-## Tool Trait
+## Tool trait
 
 Implement `Tool` to create custom tools:
 
@@ -43,7 +43,7 @@ impl Tool for MyTool {
 }
 ```
 
-## Tool Registry
+## Tool registry
 
 ```rust
 use ares::tools::ToolRegistry;
@@ -71,7 +71,7 @@ let result = registry.execute("my_tool", serde_json::json!({"input": "hello"})).
 assert!(registry.has_tool("calculator"));
 ```
 
-## Tool Configuration
+## Tool configuration
 
 Tools support per-tool configuration (enabled/disabled, timeouts):
 
@@ -102,7 +102,7 @@ println!("Response: {}", result.content);
 println!("Tool calls: {}", result.tool_calls.len());
 ```
 
-## Per-Agent Tool Filtering
+## Per-Agent tool filtering
 
 Agents can be restricted to specific tools via TOON configuration:
 

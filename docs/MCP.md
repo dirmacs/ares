@@ -1,13 +1,13 @@
-# MCP (Model Context Protocol) Server
+# MCP (model Context protocol) server
 
 A.R.E.S includes a full MCP server implementation that exposes tools via the Model Context Protocol, enabling integration with AI assistants like Claude Desktop, Zed, and other MCP-compatible clients.
 
 ## Features
 
-- **Calculator Tool**: Perform basic arithmetic operations (add, subtract, multiply, divide)
-- **Web Search Tool**: Search the web using DuckDuckGo via [daedra](https://github.com/dirmacs/daedra) (no API key required)
-- **Server Stats Tool**: Get server statistics and operation counts
-- **Echo Tool**: Simple echo for testing connectivity
+- Calculator Tool: Perform basic arithmetic operations (add, subtract, multiply, divide)
+- Web Search Tool: Search the web using DuckDuckGo via [daedra](https://github.com/dirmacs/daedra) (no API key required)
+- Server Stats Tool: Get server statistics and operation counts
+- Echo Tool: Simple echo for testing connectivity
 
 ## Enabling MCP
 
@@ -23,7 +23,7 @@ Or with other features:
 cargo build --features "mcp,ollama"
 ```
 
-## Starting the MCP Server
+## Starting the MCP server
 
 The MCP server runs over stdio (standard input/output) as per the MCP specification:
 
@@ -37,11 +37,11 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-## Configuring with Claude Desktop
+## Configuring with claude desktop
 
 Add the following to your Claude Desktop configuration file:
 
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`  
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json` 
 **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
@@ -55,9 +55,9 @@ Add the following to your Claude Desktop configuration file:
 }
 ```
 
-## Available Tools
+## Available tools
 
-### calculator
+### Calculator
 
 Perform basic arithmetic operations.
 
@@ -85,7 +85,7 @@ Perform basic arithmetic operations.
 }
 ```
 
-### web_search
+### Web_search
 
 Search the web for information using DuckDuckGo.
 
@@ -116,7 +116,7 @@ Search the web for information using DuckDuckGo.
 }
 ```
 
-### server_stats
+### Server_stats
 
 Get statistics about the MCP server.
 
@@ -132,7 +132,7 @@ Get statistics about the MCP server.
 }
 ```
 
-### echo
+### Echo
 
 Echo back a message (useful for testing).
 
@@ -151,7 +151,7 @@ Echo back a message (useful for testing).
 Hello, MCP!
 ```
 
-## Programmatic Usage
+## Programmatic usage
 
 You can also use the MCP server programmatically:
 
@@ -183,20 +183,20 @@ This runs 14 additional MCP-related tests covering:
 - Operation count tracking
 - Tool execution via name lookup
 
-## Implementation Details
+## Implementation details
 
 The MCP server is implemented in `src/mcp/server.rs` using the `rmcp` crate (Rust MCP SDK). Key components:
 
-- **McpServer**: Main server struct implementing `ServerHandler`
-- **Tool definitions**: JSON Schema-based tool definitions
-- **execute_tool**: Unified tool execution by name
-- **Operation tracking**: Mutex-protected operation counter
+- McpServer: Main server struct implementing `ServerHandler`
+- Tool definitions: JSON Schema-based tool definitions
+- execute_tool: Unified tool execution by name
+- Operation tracking: Mutex-protected operation counter
 
-## Protocol Version
+## Protocol version
 
 The server uses MCP protocol version `2024-11-05` (latest as of implementation).
 
-## Error Handling
+## Error handling
 
 Tool execution errors are returned as `CallToolResult::error` with descriptive messages:
 
@@ -205,7 +205,7 @@ Tool execution errors are returned as `CallToolResult::error` with descriptive m
 - Unknown operation: "Error: Unknown operation '...'"
 - Unknown tool: "Unknown tool: ..."
 
-## See Also
+## See also
 
 - [Model Context Protocol Specification](https://modelcontextprotocol.io/)
 - [rmcp Rust SDK](https://github.com/modelcontextprotocol/rust-sdk)

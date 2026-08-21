@@ -8,12 +8,77 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::watch;
+
+static NEXT_FIBER_ID: AtomicUsize = AtomicUsize::new(1);
+
+// Inventory / linkme static registration — real compile-time collection
+#[cfg(feature = "inventory")]
+pub struct CordisInventory {
+    pub name: &'static str,
+}
+
+#[cfg(feature = "inventory")]
+inventory::collect!(CordisInventory);
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    CordisInventory { name: "RegistryService" }
+}
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    CordisInventory { name: "EventsService" }
+}
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    CordisInventory { name: "ReflectService" }
+}
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    CordisInventory { name: "Loader" }
+}
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    CordisInventory { name: "SchedulerService" }
+}
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    CordisInventory { name: "AgentExecutionService" }
+}
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    CordisInventory { name: "UnifiedToolService" }
+}
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    CordisInventory { name: "LlmService" }
+}
+
+#[cfg(feature = "inventory")]
+pub fn inventory_len() -> usize {
+    inventory::iter::<CordisInventory>.into_iter().count()
+}
+
+#[cfg(not(feature = "inventory"))]
+pub fn inventory_len() -> usize {
+    0
+}
 
 use thiserror::Error;
 
 pub mod loader;
 pub use loader::{Entry, EntryTree, Loader};
+
+pub mod watcher;
+pub mod hmr;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -53,7 +118,7 @@ where
 }
 
 pub trait Effect: Send + Sync + 'static {
-    fn apply(&self, ctx: &Arc<Context>) -> Box<dyn Disposable>;
+    fn apply(&self, ctx: &Context) -> Box<dyn Disposable>;
 }
 
 // EffectGuard reverses on Drop (LIFO)
@@ -371,6 +436,64 @@ impl Context {
     // Snapshot for temporal test: capture store length + versions
     pub fn snapshot_len(&self) -> usize {
         self.store.read().len()
+    }
+
+    pub async fn plugin<S: Service>(self: &Arc<Self>, svc: S) -> Result<FiberId, CordisError> {
+        let tid = TypeId::of::<S>();
+        if self.store.read().contains_key(&tid) {
+            return Err(CordisError::Configuration(format!(
+                "duplicate provider for {:?}",
+                tid
+            )));
+        }
+        let disposable = svc.init(self).await?;
+        let svc_arc = self.provide(svc);
+        let fid = NEXT_FIBER_ID.fetch_add(1, Ordering::SeqCst) as u64;
+        if let Some(d) = disposable {
+            let fiber = self.fiber.clone();
+            let undo: Box<dyn FnOnce() + Send> = Box::new(move || {
+                d.dispose();
+            });
+            fiber.push_undo(undo);
+        }
+        let fiber = self.fiber.clone();
+        if svc_arc.check() {
+            let epoch = fiber.compute_epoch(self);
+            *fiber.epoch.write() = epoch.clone();
+            *fiber.state.write() = FiberState::Active { epoch };
+        } else {
+            *fiber.state.write() = FiberState::Inactive { error: None };
+            if let Some(reflect) = self.get::<ReflectService>() {
+                reflect.notify(tid);
+            }
+        }
+        if let Some(reflect) = self.get::<ReflectService>() {
+            let _ = reflect.ensure_notifier(tid);
+            reflect.set_context(self);
+        }
+        Ok(fid)
+    }
+
+    pub async fn plugin_with<P: Plugin>(self: &Arc<Self>, plugin: P, config: P::Config) -> Result<FiberId, CordisError> {
+        if let Some(registry) = self.get::<RegistryService>() {
+            return registry.plugin(self, plugin, config);
+        }
+        let tid = TypeId::of::<P::Provides>();
+        if self.store.read().contains_key(&tid) {
+            return Err(CordisError::Configuration(format!(
+                "duplicate provider for {:?}",
+                tid
+            )));
+        }
+        let disposable = plugin.apply(self, config)?;
+        let fiber = Arc::new(Fiber::new());
+        let undo: Box<dyn FnOnce() + Send> = Box::new(move || {
+            disposable.dispose();
+        });
+        fiber.push_undo(undo);
+        let fid = NEXT_FIBER_ID.fetch_add(1, Ordering::SeqCst) as u64;
+        let _ = fiber;
+        Ok(fid)
     }
 }
 

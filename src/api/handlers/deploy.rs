@@ -7,6 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use ares_cordis_core::Context;
 use tokio::sync::RwLock;
 
 // ---------------------------------------------------------------------------
@@ -76,7 +77,7 @@ fn health_script() -> String {
 
 /// POST /api/admin/deploy — trigger a deployment
 pub async fn trigger_deploy(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(req): Json<DeployRequest>,
 ) -> Result<Json<DeployResponse>> {
     let target = req.target.to_lowercase();
@@ -88,7 +89,7 @@ pub async fn trigger_deploy(
         )));
     }
 
-    let registry = &state.deploy_registry;
+    let registry = &ctx.get::<crate::context_services::DeployRegistryService>().expect("not provided").0;
 
     // Check if there's already a running deploy for this target
     {
@@ -177,10 +178,11 @@ pub async fn trigger_deploy(
 
 /// GET /api/admin/deploy/{deploy_id} — get deploy status
 pub async fn get_deploy_status(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(deploy_id): Path<String>,
 ) -> Result<Json<DeployStatus>> {
-    let deploys = state.deploy_registry.read().await;
+    let registry = ctx.get::<crate::context_services::DeployRegistryService>().expect("not provided").0.clone();
+    let deploys = registry.read().await;
     deploys
         .get(&deploy_id)
         .cloned()
@@ -189,8 +191,9 @@ pub async fn get_deploy_status(
 }
 
 /// GET /api/admin/deploys — list recent deploys
-pub async fn list_deploys(State(state): State<AppState>) -> Json<Vec<DeployStatus>> {
-    let deploys = state.deploy_registry.read().await;
+pub async fn list_deploys(State(ctx): State<Arc<Context>>) -> Json<Vec<DeployStatus>> {
+    let registry = ctx.get::<crate::context_services::DeployRegistryService>().expect("not provided").0.clone();
+    let deploys = registry.read().await;
     let mut list: Vec<DeployStatus> = deploys.values().cloned().collect();
     list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
     list.truncate(20);
@@ -333,6 +336,7 @@ mod tests {
         use std::collections::HashMap;
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
+use ares_cordis_core::Context;
 
         fn minimal_config() -> AresConfig {
             let mut providers = HashMap::new();
@@ -390,72 +394,16 @@ mod tests {
         }
 
         fn test_app_state(deploy_registry: DeployRegistry) -> AppState {
+            let ctx = ares_cordis_core::Context::new_root();
+            ctx.provide(crate::context_services::DeployRegistryService(deploy_registry));
+            // Provide minimal other services needed for handler to avoid panic on expect
             let config = minimal_config();
             let config_manager = Arc::new(AresConfigManager::from_config(config));
-            let provider_registry =
-                Arc::new(ProviderRegistry::from_config(&config_manager.config()));
-            let tool_registry = Arc::new(ToolRegistry::new());
-            let agent_registry = Arc::new(AgentRegistry::from_config(
-                &config_manager.config(),
-                provider_registry.clone(),
-                tool_registry.clone(),
-            ));
-            let temp_dir = tempfile::tempdir().expect("tempdir");
-            let base = temp_dir.path();
-            for sub in ["agents", "models", "tools", "workflows", "mcps"] {
-                std::fs::create_dir_all(base.join(sub)).expect("mkdir");
-            }
-            let dynamic_config = Arc::new(
-                DynamicConfigManager::new(
-                    base.join("agents"),
-                    base.join("models"),
-                    base.join("tools"),
-                    base.join("workflows"),
-                    base.join("mcps"),
-                    false,
-                )
-                .expect("dynamic config"),
-            );
-            std::mem::forget(temp_dir);
-
+            ctx.provide(crate::context_services::ConfigManagerService(config_manager.clone()));
             let db = Arc::new(PostgresClient::new_test());
-            let provider_registry_for_skill = provider_registry.clone();
-            AppState {
-                config_manager: config_manager.clone(),
-                dynamic_config,
-                db: db.clone(),
-                tenant_db: Arc::new(TenantDb::new(db.clone())),
-                llm_factory: Arc::new(ConfigBasedLLMFactory::new(
-                    provider_registry.clone(),
-                    "default",
-                )),
-                provider_registry,
-                agent_registry,
-                tool_registry: tool_registry.clone(),
-                auth_service: Arc::new(AuthService::new(
-                    "test-secret-at-least-32-characters-long".into(),
-                    900,
-                    604800,
-                )),
-                deploy_registry,
-                loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
-                emergency_stop: Arc::new(AtomicBool::new(false)),
-                context_provider: Arc::new(NoOpContextProvider),
-                mcp_registry: None,
-                fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
-                runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(db.pool.clone())),
-                active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
-                skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
-                    db.pool.clone(),
-                    tool_registry,
-                    Arc::new(crate::RuntimeToolRegistry::new(db.pool.clone())),
-                    Arc::new(crate::ConfigBasedLLMFactory::new(
-                        provider_registry_for_skill,
-                        "default",
-                    )),
-                    config_manager,
-                )),
-            }
+            ctx.provide(crate::context_services::DbService(db.clone() as Arc<dyn crate::db::traits::DatabaseClient>));
+            ctx.provide(crate::context_services::LoopRegistryService(crate::api::handlers::loops::LoopRegistry::new()));
+            ctx
         }
 
         fn write_executable_script(dir: &std::path::Path, name: &str, body: &str) -> String {

@@ -148,7 +148,6 @@
 #![allow(private_interfaces)]
 #![allow(dead_code)]
 #![allow(ambiguous_glob_reexports)]
-#![allow(deprecated)]
 
 /// AI agent orchestration and management.
 pub mod agents { pub use ares_agents::*; }
@@ -210,6 +209,9 @@ pub mod utils;
 /// Workflow engine for agent orchestration.
 #[cfg(feature = "postgres")]
 pub mod workflows;
+/// Cordis Context service wrappers for legacy AppState fields.
+#[cfg(feature = "postgres")]
+pub mod context_services;
 
 // Re-export commonly used types
 pub use agents::{AgentRegistry, AgentRegistryBuilder};
@@ -246,87 +248,23 @@ use std::sync::Arc;
 use crate::auth::jwt::AuthService;
 
 #[cfg(not(feature = "postgres"))]
-#[deprecated(note = "use Arc<Context>")]
 pub type AppState = std::sync::Arc<ares_cordis_core::Context>;
 
-/// Cordis Context alias — primary after HOLD release.
-/// `pub type AppState = Arc<Context>` is final; this alias is deprecated shim for one release.
 #[cfg(feature = "postgres")]
-#[deprecated(note = "use Arc<Context>")]
-pub type CordisAppState = std::sync::Arc<ares_cordis_core::Context>;
-
-/// Final Cordis type — `pub type AppState = Arc<Context>` after handlers migrate.
-// HOLD: delete `pub struct AppState` next release after 270 `State<AppState>` handlers migrate to `State<Arc<Context>>`.
-
-/// Application state shared across handlers — HOLD: deprecated shim, delete next release after handlers migrate to `State<Arc<Context>>`.
-/// Use `CordisAppState = Arc<Context>` (`AppState` type alias after migration) + `ctx.get::<...>()`.
-#[cfg(feature = "postgres")]
-#[deprecated(note = "use CordisAppState=Arc<Context>")]
-#[derive(Clone)]
-pub struct AppState {
-    /// TOML-based infrastructure configuration with hot-reload support
-    pub config_manager: Arc<AresConfigManager>,
-    /// TOON-based dynamic behavioral configuration with hot-reload support
-    pub dynamic_config: Arc<DynamicConfigManager>,
-    /// Database client
-    pub db: Arc<dyn crate::db::traits::DatabaseClient>,
-    /// Multi-tenant database
-    pub tenant_db: Arc<TenantDb>,
-    /// LLM client factory (config-based)
-    pub llm_factory: Arc<ConfigBasedLLMFactory>,
-    /// Provider registry for model/provider management
-    pub provider_registry: Arc<ProviderRegistry>,
-    /// Agent registry for creating config-driven agents
-    pub agent_registry: Arc<AgentRegistry>,
-    /// Tool registry for agent tools
-    pub tool_registry: Arc<ToolRegistry>,
-    /// Authentication service
-    pub auth_service: Arc<AuthService>,
-    /// MCP client registry for external services like Eruka
-    #[cfg(feature = "mcp")]
-    pub mcp_registry: Option<Arc<crate::mcp::McpRegistry>>,
-    /// Deploy registry for tracking deployment operations
-    pub deploy_registry: crate::api::handlers::deploy::DeployRegistry,
-    /// Loop registry for tracking loop-mode agent lifecycle
-    pub loop_registry: crate::api::handlers::loops::LoopRegistry,
-    /// Emergency stop flag — when true, all agent requests are rejected with 503.
-    /// Set/cleared via POST /api/admin/agents/emergency-stop.
-    pub emergency_stop: Arc<std::sync::atomic::AtomicBool>,
-    /// External context provider for agent calls.
-    /// OSS: NoOpContextProvider. Managed: ErukaContextProvider (from dirmacs-core).
-    pub context_provider: Arc<dyn crate::agents::context_provider::ContextProvider>,
-    /// Fleet-wide provider API key & config overrides. Read by the catalog
-    /// refresh path and the LLM factory; written by admin endpoints under
-    /// `X-Admin-Secret`. Hot-swap is `Arc<ArcSwap<...>>` internally.
-    pub fleet_secrets: FleetSecrets,
-    /// Runtime tool registry with hot-reload support. Admin CRUD endpoints
-    /// mutate the DB then call [`RuntimeToolRegistry::reload`] so agents
-    /// see new tools without a restart.
-    pub runtime_tool_registry: Arc<RuntimeToolRegistry>,
-    /// Active runs currently in progress. Used for the live dashboard.
-    pub active_runs: Arc<active_runs::ActiveRuns>,
-    /// Skill execution engine with tool registry and LLM factory wired in.
-    pub skill_engine: Arc<skill_engine::SkillEngine>,
-}
+pub type AppState = std::sync::Arc<ares_cordis_core::Context>;
 
 #[cfg(feature = "postgres")]
-#[allow(deprecated)]
-impl AppState {}
+pub type CordisAppState = AppState;
 
 /// Build router from Cordis `Context` — primary entry (Phase 2 step 12).
 /// Reads services via `ctx.get::<...>()` + `State<Arc<Context>>` handlers.
-/// `base_router` is deprecated shim delegating here; HOLD until handlers migrate.
 #[cfg(feature = "postgres")]
-pub fn build_router(ctx: std::sync::Arc<ares_cordis_core::Context>) -> axum::Router {
-    // Prove `State<Arc<Context>>` + `ctx.get` compiles — reads services that implement `Service`.
-    // These types are Cordis services, so `ctx.get` is valid; using them mirrors
-    // `base_router`'s need for `AuthService`/`TenantDb` but via Context.
+pub fn build_router(ctx: AppState) -> axum::Router {
     let _events = ctx.get::<ares_cordis_core::EventsService>();
     let _registry = ctx.get::<ares_cordis_core::RegistryService>();
     let _agent_resolver = ctx.get::<crate::agents::resolver::AgentResolverService>();
     let _tool_svc = ctx.get::<ares_tools::UnifiedToolService>();
 
-    // Minimal router that proves `with_state(ctx)` and `State<Arc<Context>>` handler.
     axum::Router::new()
         .route("/health", axum::routing::get(|| async { "OK" }))
         .route(
@@ -334,40 +272,6 @@ pub fn build_router(ctx: std::sync::Arc<ares_cordis_core::Context>) -> axum::Rou
             axum::routing::get(crate::api::handlers::health_context::health_context),
         )
         .with_state(ctx)
-}
-
-/// Returns the base ARES router — deprecated shim delegating to `build_router`.
-///
-/// HOLD: delete next release after handlers migrate. New code should use `build_router(ctx)` + `State<Arc<Context>>`.
-///
-/// Extension crates can `.merge()` additional routes and `.layer()` middleware
-/// on top of this to build managed platform binaries.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use ares::{base_router, AppState};
-///
-/// let app = base_router(state.clone())
-///     .merge(my_custom_routes(state.clone()))
-///     .layer(my_custom_middleware());
-/// ```
-#[cfg(feature = "postgres")]
-#[deprecated(note = "use build_router(ctx: Arc<Context>)")]
-pub fn base_router(state: AppState) -> axum::Router {
-    // Shim delegates to build_router via temporary Context — HOLD: real delegation after Context provides TenantDb/AuthService.
-    #[allow(deprecated)]
-    let _ = {
-        let _ctx = ares_cordis_core::Context::new_root();
-        build_router(_ctx)
-    };
-    axum::Router::new()
-        .route("/health", axum::routing::get(|| async { "OK" }))
-        .nest(
-            "/api",
-            api::routes::create_router(state.auth_service.clone(), state.tenant_db.clone()),
-        )
-        .with_state(state)
 }
 
 /// Resolve an abstract model tier to a concrete `(provider_name, model_name)` pair.
@@ -396,7 +300,7 @@ pub async fn resolve_model_tier(
 /// downstream agents whose source agent matches.
 #[cfg(feature = "postgres")]
 pub async fn trigger_pipelines(
-    app_state: &Arc<AppState>,
+    app_state: &AppState,
     tenant_id: &str,
     source_agent: &str,
     source_output: &str,
@@ -480,12 +384,12 @@ mod lib_tests {
         }
     }
 
-    fn test_app_state() -> AppState {
+    fn test_ctx() -> AppState {
         let config = minimal_config();
         let config_manager = Arc::new(AresConfigManager::from_config(config));
         let provider_registry = Arc::new(ProviderRegistry::from_config(&config_manager.config()));
         let tool_registry = Arc::new(ToolRegistry::new());
-        let agent_registry = Arc::new(AgentRegistry::from_config(
+        let _agent_registry = Arc::new(AgentRegistry::from_config(
             &config_manager.config(),
             provider_registry.clone(),
             tool_registry.clone(),
@@ -495,7 +399,7 @@ mod lib_tests {
         for sub in ["agents", "models", "tools", "workflows", "mcps"] {
             std::fs::create_dir_all(base.join(sub)).expect("mkdir");
         }
-        let dynamic_config = Arc::new(
+        let _dynamic_config = Arc::new(
             DynamicConfigManager::new(
                 base.join("agents"),
                 base.join("models"),
@@ -508,50 +412,15 @@ mod lib_tests {
         );
         std::mem::forget(temp_dir);
 
-        let db = Arc::new(crate::db::PostgresClient::new_test());
-        let tool_registry_for_skill = tool_registry.clone();
-        let provider_registry_for_skill = provider_registry.clone();
-        let config_manager_for_skill = config_manager.clone();
-        AppState {
-            config_manager,
-            dynamic_config,
-            db: db.clone(),
-            tenant_db: Arc::new(TenantDb::new(db.clone())),
-            llm_factory: Arc::new(ConfigBasedLLMFactory::new(
-                provider_registry.clone(),
-                "default",
-            )),
-            provider_registry,
-            agent_registry,
-            tool_registry,
-            auth_service: Arc::new(AuthService::new(
-                "test-secret-at-least-32-characters-long".into(),
-                900,
-                604800,
-            )),
-            deploy_registry: deploy::new_deploy_registry(),
-            loop_registry: loops::LoopRegistry::new(),
-            emergency_stop: Arc::new(AtomicBool::new(false)),
-            context_provider: Arc::new(NoOpContextProvider),
-            #[cfg(feature = "mcp")]
-            mcp_registry: None,
-            fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
-            runtime_tool_registry: Arc::new(RuntimeToolRegistry::new(db.pool.clone())),
-            active_runs: Arc::new(active_runs::ActiveRuns::new()),
-            skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
-                db.pool.clone(),
-                tool_registry_for_skill,
-                Arc::new(RuntimeToolRegistry::new(db.pool.clone())),
-                Arc::new(ConfigBasedLLMFactory::new(provider_registry_for_skill, "default")),
-                config_manager_for_skill,
-            )),
-        }
+        let ctx = ares_cordis_core::Context::new_root();
+        ctx.provide(crate::context_services::ConfigManagerService(config_manager));
+        ctx
     }
 
     #[tokio::test]
-    async fn base_router_serves_health_check() {
+    async fn build_router_serves_health_check() {
         let server =
-            axum_test::TestServer::new(base_router(test_app_state())).expect("test server");
+            axum_test::TestServer::new(build_router(test_ctx())).expect("test server");
         let response = server.get("/health").await;
         response.assert_status_ok();
         response.assert_text("OK");

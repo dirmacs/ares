@@ -548,9 +548,9 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
 
 fn validate_tool_type(t: &str) -> Result<()> {
     match t {
-        "http" | "mcp" | "script" | "sql" => Ok(()),
+        "http" | "mcp" | "script" | "sql" | "rhai" => Ok(()),
         _ => Err(AppError::InvalidInput(format!(
-            "Invalid tool_type '{t}'. Must be one of: http, mcp, script, sql"
+            "Invalid tool_type '{t}'. Must be one of: http, mcp, script, sql, rhai"
         ))),
     }
 }

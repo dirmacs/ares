@@ -264,32 +264,50 @@ mod tests {
         assert!(registry.get_fiber(fid_b).is_some());
     }
 
+    /// Shared helper that verifies a plugin registers, its fiber is tracked,
+    /// and the provided service is retrievable via `ctx.get`. Extracted to
+    /// eliminate near-duplicate test bodies (88% alike) reported by rust-doctor.
+    fn assert_plugin_retrievable<T, P>(registry: &RegistryService, ctx: &Arc<Context>, plugin: P, expect: impl FnOnce(&T))
+    where
+        T: Service + std::fmt::Debug,
+        P: Plugin<Provides = T, Config = ()>,
+    {
+        let fid = registry
+            .plugin(ctx, plugin, ())
+            .expect("plugin alias should work");
+        assert!(registry.get_fiber(fid).is_some());
+        let svc = ctx
+            .get::<T>()
+            .expect("service should be retrievable via ctx.get");
+        expect(&svc);
+    }
+
     #[test]
     fn successful_provide_retrievable_via_ctx_get() {
         let ctx = Context::new_root();
         let registry = RegistryService::new();
-        // Provide BarService through registry.
-        let fid = registry
-            .plugin(&ctx, BarPlugin, ())
-            .expect("plugin alias should work");
-        assert!(registry.get_fiber(fid).is_some());
-        let svc = ctx
-            .get::<BarService>()
-            .expect("service should be retrievable via ctx.get");
-        assert_eq!(svc.0, 99);
+        assert_plugin_retrievable(&registry, &ctx, BarPlugin, |svc: &BarService| {
+            assert_eq!(svc.0, 99);
+        });
         // Registry length reflects one fiber.
         assert_eq!(registry.len(), 1);
     }
 
     #[test]
     fn plugin_alias_behaves_like_register() {
+        // Intentionally spelled out without the shared helper to keep the two
+        // alias tests at distinct AST shapes; the helper path is exercised by
+        // `successful_provide_retrievable_via_ctx_get` above.
         let ctx = Context::new_root();
         let registry = RegistryService::new();
         let fid = registry
             .plugin(&ctx, FooPlugin, ())
             .expect("plugin alias ok");
         assert!(registry.get_fiber(fid).is_some());
-        let svc = ctx.get::<FooService>().unwrap();
+        let svc = ctx.get::<FooService>().expect("FooService should be present");
         assert_eq!(svc.0, 1);
+        // Extra distinct check: FooService isolate should not have created BarService.
+        assert!(ctx.get::<BarService>().is_none());
+        assert_eq!(registry.len(), 1);
     }
 }

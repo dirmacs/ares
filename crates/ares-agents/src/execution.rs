@@ -165,6 +165,7 @@ impl AgentExecutionService {
     ) -> Result<AgentResponse, AppError> {
         // 1) load conversation history via `TenantDb` if Some
         let effective_history = req.history.clone();
+        // Phase 6 §21: cfg required — db field type differs without postgres
         #[cfg(feature = "postgres")]
         if let Some(tenant_db) = &self.tenant_db {
             let _pool = tenant_db.pool();
@@ -178,12 +179,14 @@ impl AgentExecutionService {
             // and only prove the `TenantDb` wiring compiles and is exercised.
             let _ = _pool;
         }
+        // Phase 6 §21: cfg required — db field type differs without postgres
         #[cfg(not(feature = "postgres"))]
         {
             let _ = &self.tenant_db;
             let _ = &effective_history;
         }
         // Also consider DatabaseClient for history if TenantDb absent
+        // Phase 6 §21: cfg required — db field type differs without postgres
         #[cfg(feature = "postgres")]
         if let Some(_db) = &self.db {
             tracing::trace!("DatabaseClient available for conversation history");
@@ -281,6 +284,7 @@ impl AgentExecutionService {
                     match coordinator.execute(Some(&system_prompt), &req.message).await {
                         Ok(coord_result) => {
                             // 6) observability sink `run_history`/`agent_runs` if db Some
+                            // Phase 6 §21: cfg required — db field type differs without postgres
                             #[cfg(feature = "postgres")]
                             if let Some(_db) = &self.db {
                                 tracing::debug!(
@@ -290,6 +294,7 @@ impl AgentExecutionService {
                                 // Real path: insert into run_history and agent_runs tables
                                 let _ = "run_history agent_runs";
                             }
+                            // Phase 6 §21: cfg required — db field type differs without postgres
                             #[cfg(not(feature = "postgres"))]
                             {
                                 let _ = "run_history agent_runs sink disabled without postgres";
@@ -297,6 +302,7 @@ impl AgentExecutionService {
 
                             // 7) usage/cost aggregation + token budget check + loop detection via `crate::loop_detector`
                             let usage = coord_result.total_usage.clone();
+                            // Phase 6 §21: cfg required — db field type differs without postgres
                             #[cfg(feature = "postgres")]
                             if let Some(tenant_db) = &self.tenant_db {
                                 let _pool = tenant_db.pool();
@@ -355,6 +361,7 @@ impl AgentExecutionService {
             // Try create_for_model as secondary fallback
             if let Ok(fb_client) = factory.create_default().await {
                 if let Ok(content) = fb_client.generate(&req.message).await {
+                    // Phase 6 §21: cfg required — db field type differs without postgres
                     #[cfg(feature = "postgres")]
                     if let Some(_db) = &self.db {
                         tracing::debug!("fallback observability run_history/agent_runs");
@@ -374,11 +381,13 @@ impl AgentExecutionService {
 
         // No LLM factory or all fallbacks exhausted — echo path still exercises
         // observability and loop detection so the required symbols are present.
+        // Phase 6 §21: cfg required — db field type differs without postgres
         #[cfg(feature = "postgres")]
         if let Some(_db) = &self.db {
             tracing::debug!("echo fallback observability run_history/agent_runs");
             let _ = "run_history agent_runs";
         }
+        // Phase 6 §21: cfg required — db field type differs without postgres
         #[cfg(not(feature = "postgres"))]
         {
             let _ = "run_history agent_runs";

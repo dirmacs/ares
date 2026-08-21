@@ -114,6 +114,7 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         );
 
     // Skills routes (requires skills feature)
+    // Phase 6 §21: route registration gated — handler types require feature deps to compile
     #[cfg(feature = "skills")]
     {
         protected_routes = protected_routes
@@ -640,6 +641,7 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
     );
 
     // Eruka context middleware — only when eruka-context feature is enabled
+    // Phase 6 §21: route registration gated — handler types require feature deps to compile
     #[cfg(feature = "eruka-context")]
     let v1_routes = v1_routes.layer(middleware::from_fn(
         crate::middleware::eruka_context::eruka_context_middleware,
@@ -671,6 +673,7 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
 /// `ctx.get::<AdminTenantsService>()` etc. and merge their routers.
 ///
 /// Mirrors `create_router` admin + v1 route sets but via `ctx` (future: `ctx.get::<...>().check()`).
+// Phase 6 §21: route registration gated — handler types require feature deps to compile
 #[cfg(feature = "postgres")]
 pub fn build_routes(ctx: &Arc<Context>) -> Router<AppState> {
     let _ = ctx;
@@ -693,6 +696,7 @@ pub fn build_routes(ctx: &Arc<Context>) -> Router<AppState> {
         .merge(crate::api::handlers::v1::agents::routes())
 }
 
+// Phase 6 §21: route registration gated — handler types require feature deps to compile
 #[cfg(not(feature = "postgres"))]
 pub fn build_routes(ctx: &Arc<Context>) -> Router<Arc<Context>> {
     let _ = ctx;

@@ -878,7 +878,6 @@ mod tests {
             workflows: HashMap::new(),
             rag: RagConfig::default(),
             billing: BillingConfig::default(),
-            #[cfg(feature = "skills")]
             skills: None,
         }
     }

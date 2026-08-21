@@ -24,7 +24,7 @@ This project follows the [Rust Code of Conduct](https://www.rust-lang.org/polici
 
 ### Prerequisites
 
-- Rust 1.91+: Install via [rustup](https://rustup.rs/)
+- Rust 1.98+: Install via [rustup](https://rustup.rs/)
 - Git: For version control
 - **just** (recommended): Command runner - [Install just](https://just.systems)
 - **Docker** (optional): For running Qdrant vector database

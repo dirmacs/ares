@@ -15,12 +15,16 @@ use crate::AppState;
 // Service — owns DB access + injects AgentExecutionService
 // ---------------------------------------------------------------------------
 
+// Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
 use ares_agents::execution::{AgentExecutionService, AgentRequest};
+// Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
 use ares_cordis_core::{Context, CordisError, Disposable};
+// Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
 use crate::db::PostgresClient;
+// Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
 use tokio::task::JoinHandle;
 
@@ -37,6 +41,7 @@ pub struct TriggerService {
     _handle: parking_lot::Mutex<Option<JoinHandle<()>>>,
 }
 
+// Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(not(feature = "postgres"))]
 /// Stub for non-postgres builds — satisfies `Service` + cargo check without DB.
 pub struct TriggerService;

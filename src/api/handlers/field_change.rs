@@ -4,7 +4,7 @@
 //! field-change triggers for the tenant.
 
 use crate::db::schedules as db_schedules;
-use crate::{trigger_engine, AppState};
+use crate::trigger_engine;
 use ares_types::types::AppError;
 use axum::{
     extract::State,
@@ -43,6 +43,21 @@ pub async fn handle_field_change(
     Json(payload): Json<FieldChangeEvent>,
 ) -> crate::types::Result<StatusCode> {
     verify_webhook_secret(&headers)?;
+
+    if let Some(svc) = ctx.get::<crate::trigger_engine::TriggerService>() {
+        svc.dispatch_field_change(
+            &payload.tenant_id,
+            &payload.table,
+            &payload.column,
+            &payload.record_id,
+            payload.old_value.clone(),
+            payload.new_value.clone(),
+            &ctx,
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+        return Ok(StatusCode::OK);
+    }
 
     let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let store = db_schedules::EventTriggerStore::new(&__pool_1);

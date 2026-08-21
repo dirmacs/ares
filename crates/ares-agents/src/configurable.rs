@@ -1342,6 +1342,22 @@ impl Agent for ConfigurableAgent {
     }
 }
 
+/// Convert a resolved [`UserAgent`] row into an [`AgentConfig`] for agent creation.
+///
+/// Used by `AgentExecutionService` and handlers to bridge DB resolution → agent instantiation.
+#[cfg(feature = "postgres")]
+pub fn agent_config_from_user_agent(user_agent: &ares_db::postgres::UserAgent) -> AgentConfig {
+    AgentConfig {
+        model: user_agent.model.clone(),
+        system_prompt: user_agent.system_prompt.clone(),
+        tools: user_agent.tools_vec(),
+        max_tool_iterations: user_agent.max_tool_iterations as usize,
+        parallel_tools: user_agent.parallel_tools,
+        allowed_tools: None,
+        extra: std::collections::HashMap::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

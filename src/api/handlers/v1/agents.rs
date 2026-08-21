@@ -22,10 +22,11 @@ use axum::{
 };
 use chrono::{TimeZone, Utc};
 use std::sync::Arc;
+use ares_cordis_core::Context;
 
 /// GET /v1/agents — list all agents for this tenant
 pub async fn list_agents(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     Query(q): Query<PaginationQuery>,
 ) -> Result<Json<Paginated<V1Agent>>> {
@@ -33,7 +34,7 @@ pub async fn list_agents(
     let page = normalize_page(q.page);
     let per_page = normalize_per_page(q.per_page, 20);
 
-    let agents = tenant_agents::list_tenant_agents(state.tenant_db.pool(), &tc.tenant_id).await?;
+    let agents = tenant_agents::list_tenant_agents(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tc.tenant_id).await?;
     let items: Vec<V1Agent> = agents.into_iter().map(V1Agent::from).collect();
 
     Ok(Json(paginate_vec(items, page, per_page)))
@@ -41,19 +42,19 @@ pub async fn list_agents(
 
 /// GET /v1/agents/{name} — get a specific agent
 pub async fn get_agent(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     Path(name): Path<String>,
 ) -> Result<Json<V1Agent>> {
     let tc = extract_tenant(ctx)?;
     let agent =
-        tenant_agents::get_tenant_agent(state.tenant_db.pool(), &tc.tenant_id, &name).await?;
+        tenant_agents::get_tenant_agent(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tc.tenant_id, &name).await?;
     Ok(Json(V1Agent::from(agent)))
 }
 
 /// POST /v1/agents/{name}/run — execute a named agent with real LLM call
 pub async fn run_agent(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     Path(name): Path<String>,
     Json(input): Json<serde_json::Value>,
@@ -61,8 +62,7 @@ pub async fn run_agent(
     let tc = extract_tenant(ctx)?;
 
     // Emergency stop
-    if state
-        .emergency_stop
+    if state_ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
         .load(std::sync::atomic::Ordering::Relaxed)
     {
         return Err(crate::types::AppError::Unavailable(
@@ -85,24 +85,23 @@ pub async fn run_agent(
     // Execute agent with timing
     let start = std::time::Instant::now();
     use crate::agents::Agent;
-    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent(
-        state.tenant_db.pool(),
-        &state.agent_registry,
+    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+        &state_ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,
         &tc.tenant_id,
         &name,
-        &state.fleet_secrets,
+        &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
     .await?;
 
     // Skill-based agent execution
     resolved_agent
         .agent
-        .set_runtime_tools(state.runtime_tool_registry.clone(), tc.tenant_id.clone());
+        .set_runtime_tools(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), tc.tenant_id.clone());
 
     if let Some(config) = &resolved_agent.config {
         if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {
             let run_id = uuid::Uuid::new_v4().to_string();
-            state.active_runs.start(crate::active_runs::ActiveRun {
+            state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
                 run_id: run_id.clone(),
                 tenant_id: tc.tenant_id.clone(),
                 agent_name: name.clone(),
@@ -119,8 +118,7 @@ pub async fn run_agent(
                 schedule_id: None,
                 trigger_id: None,
             });
-            let skill_result = state
-                .skill_engine
+            let skill_result = state_ctx.get::<crate::context_services::SkillEngineService>().expect("not provided").0
                 .execute_skill(skill_id, &tc.tenant_id, input.clone(), &run_id)
                 .await;
             let duration_ms = start.elapsed().as_millis() as u64;
@@ -129,11 +127,11 @@ pub async fn run_agent(
             } else {
                 "error"
             };
-            state.active_runs.finish(&run_id, skill_status);
+            state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, skill_status);
 
             // Record agent run
             {
-                let pool = state.tenant_db.pool().clone();
+                let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
                 let tid = tc.tenant_id.clone();
                 let aname = resolved_agent.agent_name.clone();
                 let dur = duration_ms as i64;
@@ -262,7 +260,7 @@ pub async fn run_agent(
         run_id: run_id.clone(),
         tenant_id: tc.tenant_id.clone(),
         agent_name: name.clone(),
-        pool: state.tenant_db.pool().clone(),
+        pool: state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
     });
     resolved_agent.agent.set_observability(obs.clone());
 
@@ -271,8 +269,7 @@ pub async fn run_agent(
     runtime_context.workspace_id = runtime_workspace_id.clone();
     runtime_context.session_id = Some(agent_context.session_id.clone());
 
-    let eruka_context = state
-        .context_provider
+    let eruka_context = state_ctx.get::<crate::context_services::ContextProviderService>().expect("not provided").0
         .get_context_for_run(&runtime_context)
         .await;
     let eruka_context_hit = eruka_context.is_some();
@@ -288,7 +285,7 @@ pub async fn run_agent(
         message.clone()
     };
 
-    state.active_runs.start(crate::active_runs::ActiveRun {
+    state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),
         tenant_id: tc.tenant_id.clone(),
         agent_name: name.clone(),
@@ -313,7 +310,7 @@ pub async fn run_agent(
 
     // Aggregate run costs (fire-and-forget)
     let dur_i64 = duration_ms as i64;
-    let _pool_clone = state.tenant_db.pool().clone();
+    let _pool_clone = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let obs_for_spawn = obs.clone();
     tokio::spawn(async move {
         obs_for_spawn.aggregate_run_cost(dur_i64).await;
@@ -337,13 +334,13 @@ pub async fn run_agent(
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
-            state.active_runs.update_model(&run_id, Some(&model_name));
-            state.active_runs.finish(&run_id, "completed");
+            state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.update_model(&run_id, Some(&model_name));
+            state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "completed");
 
             // Record agent run
             {
                 let run_id_for_insert = run_id.clone();
-                let pool = state.tenant_db.pool().clone();
+                let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
                 let tid = tc.tenant_id.clone();
                 let aname = resolved_agent.agent_name.clone();
                 let itok = input_tokens as i64;
@@ -431,10 +428,10 @@ pub async fn run_agent(
             Ok(response)
         }
         Err(e) => {
-            state.active_runs.finish(&run_id, "error");
+            state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
             // Record failed run
             {
-                let pool = state.tenant_db.pool().clone();
+                let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
                 let tid = tc.tenant_id.clone();
                 let aname = resolved_agent.agent_name.clone();
                 let err_msg = e.to_string();
@@ -511,7 +508,7 @@ pub async fn run_agent(
 
 /// GET /v1/agents/{name}/runs — list runs for an agent
 pub async fn list_agent_runs(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     Path(name): Path<String>,
     Query(q): Query<PaginationQuery>,
@@ -521,8 +518,7 @@ pub async fn list_agent_runs(
     let per_page = normalize_per_page(q.per_page, 25);
     let offset = list_runs_offset(page, per_page);
 
-    let runs = agent_runs::list_agent_runs(
-        state.tenant_db.pool(),
+    let runs = agent_runs::list_agent_runs(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
         &tc.tenant_id,
         Some(&name),
         per_page as i64,
@@ -544,11 +540,11 @@ pub async fn list_agent_runs(
 
 /// GET /v1/usage — get usage summary for this tenant
 pub async fn get_usage(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
 ) -> Result<Json<V1Usage>> {
     let tc = extract_tenant(ctx)?;
-    let summary = state.tenant_db.get_usage_summary(&tc.tenant_id).await?;
+    let summary = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.get_usage_summary(&tc.tenant_id).await?;
 
     let now = Utc::now();
     let period_start = usage_period_start(now);
@@ -571,11 +567,11 @@ pub async fn get_usage(
 
 /// GET /v1/api-keys — list API keys for this tenant
 pub async fn list_api_keys(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
 ) -> Result<Json<Vec<V1ApiKey>>> {
     let tc = extract_tenant(ctx)?;
-    let keys = state.tenant_db.list_api_keys(&tc.tenant_id).await?;
+    let keys = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.list_api_keys(&tc.tenant_id).await?;
 
     let response: Vec<V1ApiKey> = keys
         .into_iter()
@@ -595,13 +591,12 @@ pub async fn list_api_keys(
 
 /// POST /v1/api-keys — create a new API key
 pub async fn create_api_key(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
     let tc = extract_tenant(ctx)?;
-    let (api_key, raw_key) = state
-        .tenant_db
+    let (api_key, raw_key) = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
         .create_api_key(&tc.tenant_id, payload.name)
         .await?;
 
@@ -620,13 +615,12 @@ pub async fn create_api_key(
 
 /// DELETE /v1/api-keys/{id} — revoke an API key
 pub async fn revoke_api_key(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     Path(key_id): Path<String>,
 ) -> Result<StatusCode> {
     let tc = extract_tenant(ctx)?;
-    state
-        .tenant_db
+    state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
         .revoke_api_key(&tc.tenant_id, &key_id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -635,18 +629,18 @@ pub async fn revoke_api_key(
 /// GDPR: DELETE /v1/tenant/data — purge all tenant data (usage_events, agent_runs, api_keys)
 /// The tenant account itself is NOT deleted; only operational data is purged.
 pub async fn delete_tenant_data(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
 ) -> Result<Json<serde_json::Value>> {
     let tc = extract_tenant(ctx)?;
     let tid = &tc.tenant_id;
 
-    let pool = state.tenant_db.pool();
+    let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
 
     let usage_rows: Vec<i64> =
         sqlx::query_scalar("DELETE FROM usage_events WHERE tenant_id = $1 RETURNING 1")
             .bind(tid)
-            .fetch_all(pool)
+            .fetch_all(&pool)
             .await
             .unwrap_or_default();
     let usage_deleted = usage_rows.len() as i64;
@@ -654,7 +648,7 @@ pub async fn delete_tenant_data(
     let run_rows: Vec<i64> =
         sqlx::query_scalar("DELETE FROM agent_runs WHERE tenant_id = $1 RETURNING 1")
             .bind(tid)
-            .fetch_all(pool)
+            .fetch_all(&pool)
             .await
             .unwrap_or_default();
     let runs_deleted = run_rows.len() as i64;
@@ -663,7 +657,7 @@ pub async fn delete_tenant_data(
     let key_rows: Vec<i64> =
         sqlx::query_scalar("DELETE FROM api_keys WHERE tenant_id = $1 RETURNING 1")
             .bind(tid)
-            .fetch_all(pool)
+            .fetch_all(&pool)
             .await
             .unwrap_or_default();
     let keys_deleted = key_rows.len() as i64;
@@ -671,7 +665,7 @@ pub async fn delete_tenant_data(
     // Also clear monthly cache
     let _ = sqlx::query("DELETE FROM monthly_usage_cache WHERE tenant_id = $1")
         .bind(tid)
-        .execute(pool)
+        .execute(&pool)
         .await;
 
     Ok(Json(serde_json::json!({

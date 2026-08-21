@@ -882,9 +882,9 @@ async fn run_server(
     root_ctx.provide(ares::context_services::DynamicConfigService(dynamic_config.clone()));
     root_ctx.provide(ares::context_services::DbService(db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>));
     root_ctx.provide(ares::context_services::TenantDbService(tenant_db.clone()));
-    root_ctx.provide(ares::context_services::LlmFactoryService(llm_factory.clone()));
+    root_ctx.provide_arc(llm_factory.clone());
     root_ctx.provide(ares::context_services::ProviderRegistryService(provider_registry.clone()));
-    root_ctx.provide(ares::context_services::AgentRegistryService(agent_registry.clone()));
+    root_ctx.provide_arc(agent_registry.clone());
     root_ctx.provide(ares::context_services::ToolRegistryService(tool_registry.clone()));
     root_ctx.provide(ares::context_services::AuthServiceWrapper(auth_service.clone()));
     #[cfg(feature = "mcp")]

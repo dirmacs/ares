@@ -378,7 +378,7 @@ pub async fn test_tenant_agent_handler(
     db_get_tenant_agent(&__pool_23, &tenant_id, &agent_name).await?;
     let agent_config = tenant_agent::agent_config_from_json(&req.config)?;
     let __pool_24 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
-    let mut draft_agent = ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0
+    let mut draft_agent = ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided")
         .create_agent_from_config_with_fallbacks(
             &agent_name,
             &agent_config,

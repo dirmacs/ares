@@ -153,7 +153,7 @@ pub async fn v1_chat(
     // Legacy fallback: resolve_agent_for_tenant + inline execution
     let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
         state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool(),
-        &state_ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,
+        &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &tc.tenant_id,
         &agent_name,
         &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
@@ -331,7 +331,7 @@ pub async fn v1_research(
         .await
     {
         Ok(client) => client,
-        Err(_) => state_ctx.get::<crate::context_services::LlmFactoryService>().expect("not provided").0.create_default().await?,
+        Err(_) => state_ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>().expect("LlmFactory not provided").create_default().await?,
     };
     let model_name = llm_client.model_name().to_string();
     ensure_research_model_allowed(&state_ctx, &tc.tenant_id, &model_name).await?;

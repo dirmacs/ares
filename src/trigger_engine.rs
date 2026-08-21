@@ -622,7 +622,7 @@ async fn execute_triggered_agent_legacy(
     }
 
     let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(&pool,
-        &app_state.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,
+        &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &trigger.tenant_id,
         &trigger.target_agent,
         &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,

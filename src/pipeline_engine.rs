@@ -347,7 +347,7 @@ async fn execute_target_agent(
     let pool = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
 
     let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(&pool,
-        &app_state.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,
+        &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         tenant_id,
         &pipeline.target_agent,
         &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,

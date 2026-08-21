@@ -1,6 +1,8 @@
 //! V1 chat domain — cordis Phase6
 //! Bodies moved from v1.rs
 
+use std::sync::Arc;
+use ares_cordis_core::Context;
 use super::*;
 
 use crate::agents::context_provider::AgentRuntimeContext;
@@ -22,18 +24,17 @@ use axum::{
 
 /// POST /v1/chat — tenant-scoped chat (API key auth, no conversation history)
 pub async fn v1_chat(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     Json(payload): Json<ChatRequest>,
 ) -> Result<axum::response::Response> {
     let tc = extract_tenant(ctx)?;
 
     // Quota enforcement — check monthly + daily request limits
-    enforce_quota(&state, &tc).await?;
+    enforce_quota(&state_ctx, &tc).await?;
 
     // Emergency stop — kill switch for all agents
-    if state
-        .emergency_stop
+    if state_ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
         .load(std::sync::atomic::Ordering::Relaxed)
     {
         return Err(crate::types::AppError::Unavailable(
@@ -68,8 +69,7 @@ pub async fn v1_chat(
     runtime_context.workspace_id = payload.workspace_id.clone();
     runtime_context.session_id = Some(agent_context.session_id.clone());
 
-    let eruka_context = state
-        .context_provider
+    let eruka_context = state_ctx.get::<crate::context_services::ContextProviderService>().expect("not provided").0
         .get_context_for_run(&runtime_context)
         .await;
     let eruka_context_hit = eruka_context.is_some();
@@ -88,11 +88,11 @@ pub async fn v1_chat(
 
     use crate::agents::Agent;
     let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
-        state.tenant_db.pool(),
-        &state.agent_registry,
+        state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool(),
+        &state_ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,
         &tc.tenant_id,
         &agent_name,
-        &state.fleet_secrets,
+        &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
     .await?;
     // Give the agent access to its tenant's runtime (DB-defined) tools so the
@@ -101,7 +101,7 @@ pub async fn v1_chat(
     if cfg!(feature = "postgres") {
         resolved_agent
             .agent
-            .set_runtime_tools(state.runtime_tool_registry.clone(), tc.tenant_id.clone());
+            .set_runtime_tools(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), tc.tenant_id.clone());
     }
     let response = resolved_agent
         .agent
@@ -118,7 +118,7 @@ pub async fn v1_chat(
 
     // Record agent run with real model/provider
     {
-        let pool = state.tenant_db.pool().clone();
+        let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
         let tid = tc.tenant_id.clone();
         let aname = resolved_agent.agent_name.clone();
         let itok = input_tokens as i64;
@@ -202,12 +202,12 @@ pub async fn v1_chat(
 }
 
 async fn ensure_research_model_allowed(
-    state: &AppState,
+    state_ctx: &AppState,
     tenant_id: &str,
     model_name: &str,
 ) -> Result<()> {
-    let allowlist_store =
-        crate::db::tenant_allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let allowlist_store = crate::db::tenant_allowlist::TenantAllowlistStore::new(&pool);
     research_model_allowlist_decision(
         allowlist_store
             .is_model_allowed(tenant_id, model_name)
@@ -216,7 +216,7 @@ async fn ensure_research_model_allowed(
     )
 }
 
-fn research_model_allowlist_decision(is_allowed: bool, model_name: &str) -> Result<()> {
+pub(crate) fn research_model_allowlist_decision(is_allowed: bool, model_name: &str) -> Result<()> {
     if is_allowed {
         return Ok(());
     }
@@ -228,15 +228,14 @@ fn research_model_allowlist_decision(is_allowed: bool, model_name: &str) -> Resu
 
 /// POST /v1/research — tenant-scoped research with provider-reported metering.
 pub async fn v1_research(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     Json(payload): Json<ResearchRequest>,
 ) -> Result<Response> {
     let tc = extract_tenant(ctx)?;
-    enforce_quota(&state, &tc).await?;
+    enforce_quota(&state_ctx, &tc).await?;
 
-    if state
-        .emergency_stop
+    if state_ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
         .load(std::sync::atomic::Ordering::Relaxed)
     {
         return Err(AppError::Unavailable(
@@ -245,7 +244,7 @@ pub async fn v1_research(
     }
 
     let start = std::time::Instant::now();
-    let config = state.config_manager.config();
+    let config = state_ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
     let workflow = config.get_workflow("research");
     let (depth, max_iterations) = research_depth_and_iterations(
         payload.depth,
@@ -263,16 +262,15 @@ pub async fn v1_research(
         .map(|m| m.provider.clone())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let llm_client = match state
-        .provider_registry
+    let llm_client = match state_ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0
         .create_client_for_model(model_key)
         .await
     {
         Ok(client) => client,
-        Err(_) => state.llm_factory.create_default().await?,
+        Err(_) => state_ctx.get::<crate::context_services::LlmFactoryService>().expect("not provided").0.create_default().await?,
     };
     let model_name = llm_client.model_name().to_string();
-    ensure_research_model_allowed(&state, &tc.tenant_id, &model_name).await?;
+    ensure_research_model_allowed(&state_ctx, &tc.tenant_id, &model_name).await?;
 
     let coordinator = ResearchCoordinator::new(llm_client, depth, max_iterations);
     let (findings, sources, usage) = coordinator.research_with_usage(&payload.query).await?;

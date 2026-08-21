@@ -1,6 +1,8 @@
 //! Admin fleet_secrets domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
+use std::sync::Arc;
+use ares_cordis_core::Context;
 use super::*;
 
 
@@ -14,7 +16,7 @@ use axum::{
 use sha2::Digest;
 
 pub async fn upsert_fleet_provider(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(provider_name): Path<String>,
     Json(req): Json<FleetProviderUpsertRequest>,
 ) -> Result<Json<serde_json::Value>> {
@@ -34,7 +36,8 @@ pub async fn upsert_fleet_provider(
         ));
     }
 
-    let store = fps::FleetProviderSecretsStore::new(state.tenant_db.pool());
+    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = fps::FleetProviderSecretsStore::new(&__pool_1);
     let master = MasterKey::from_env();
     if req.api_key.is_some() && master.is_none() {
         return Err(AppError::Configuration(
@@ -61,7 +64,7 @@ pub async fn upsert_fleet_provider(
     // Reload + atomically swap the in-memory map. The store gives us the
     // encrypted form; we need the decrypted form for the in-memory cache.
     let map = store.load_all(master.as_ref()).await?;
-    state.fleet_secrets.store(map);
+    ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0.store(map);
 
     // Audit log — redact the raw key, only emit the boolean + last-4.
     let details = serde_json::json!({
@@ -72,7 +75,7 @@ pub async fn upsert_fleet_provider(
         "fallback_providers": stored.fallback_providers,
     })
     .to_string();
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let name = provider_name.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
@@ -100,10 +103,11 @@ pub async fn upsert_fleet_provider(
 /// Hard-delete a fleet provider override. Gone from the DB and from the
 /// in-memory cache. Re-add via the UI to bring it back.
 pub async fn delete_fleet_provider(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(provider_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let store = fps::FleetProviderSecretsStore::new(state.tenant_db.pool());
+    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = fps::FleetProviderSecretsStore::new(&__pool_2);
     let affected = store.delete(&provider_name).await?;
     if affected == 0 {
         return Err(AppError::NotFound(format!(
@@ -115,9 +119,9 @@ pub async fn delete_fleet_provider(
     // Reload + atomically swap the in-memory map.
     let master = MasterKey::from_env();
     let map = store.load_all(master.as_ref()).await?;
-    state.fleet_secrets.store(map);
+    ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0.store(map);
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let name = provider_name.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
@@ -143,18 +147,18 @@ pub async fn delete_fleet_provider(
 /// call shape is different — the UI surfaces a clear error in that case
 /// and tells the operator to test via the provider's own dashboard.
 pub async fn verify_fleet_provider(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(provider_name): Path<String>,
 ) -> Result<Json<FleetProviderVerifyResponse>> {
     let start = std::time::Instant::now();
 
     // Look up the in-memory override (decrypted).
-    let entry = state.fleet_secrets.get(&provider_name);
+    let entry = ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0.get(&provider_name);
     let override_ = entry.clone();
 
     // Fall back to the registry's ProviderConfig for the base URL when the
     // admin hasn't set an override.
-    let provider_config = state.provider_registry.get_provider(&provider_name);
+    let provider_config = ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0.get_provider(&provider_name);
 
     let (api_base, api_key) = match (override_, provider_config.as_ref()) {
         (Some(o), _) => {

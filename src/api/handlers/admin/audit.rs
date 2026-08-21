@@ -18,14 +18,15 @@ use axum::{
 };
 use sha2::Digest;
 use std::sync::Arc;
+use ares_cordis_core::Context;
 
 pub async fn list_alerts(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Query(q): Query<AlertsQuery>,
 ) -> Result<Json<Vec<db_alerts::Alert>>> {
     let limit = q.limit.unwrap_or(50).min(200);
-    let alerts = db_alerts::list_alerts(
-        state.tenant_db.pool(),
+    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let alerts = db_alerts::list_alerts(&__pool_1,
         q.severity.as_deref(),
         q.resolved,
         limit,
@@ -35,18 +36,18 @@ pub async fn list_alerts(
 }
 
 pub async fn resolve_alert(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(alert_id): Path<String>,
     Json(payload): Json<ResolveAlertRequest>,
 ) -> Result<StatusCode> {
-    db_alerts::resolve_alert(
-        state.tenant_db.pool(),
+    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    db_alerts::resolve_alert(&__pool_2,
         &alert_id,
         payload.resolved_by.as_deref(),
     )
     .await?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(&pool, "resolve_alert", "alert", &alert_id, None, None)
             .await;
@@ -56,17 +57,18 @@ pub async fn resolve_alert(
 }
 
 pub async fn list_audit_log(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Query(q): Query<AuditLogQuery>,
 ) -> Result<Json<Vec<audit_log::AuditLogEntry>>> {
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
-    let entries = audit_log::list_audit_log(state.tenant_db.pool(), limit, offset).await?;
+    let __pool_3 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let entries = audit_log::list_audit_log(&__pool_3, limit, offset).await?;
     Ok(Json(entries))
 }
 
 pub async fn get_daily_usage(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
     Query(q): Query<DailyUsageQuery>,
 ) -> Result<Json<Vec<DailyUsageEntry>>> {
@@ -77,6 +79,7 @@ pub async fn get_daily_usage(
         .as_secs() as i64;
     let start_ts = now_ts - (days * 86400);
 
+    let __pool_4 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let rows = sqlx::query(
         "SELECT
             (created_at / 86400) * 86400 as day_ts,
@@ -88,7 +91,7 @@ pub async fn get_daily_usage(
     )
     .bind(&tenant_id)
     .bind(start_ts)
-    .fetch_all(state.tenant_db.pool())
+    .fetch_all(&__pool_4)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -106,21 +109,21 @@ pub async fn get_daily_usage(
 }
 
 pub async fn list_agent_runs_handler(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
     Query(q): Query<AgentRunsQuery>,
 ) -> Result<Json<Vec<AgentRunResponse>>> {
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
-    let runs = agent_runs::list_agent_runs(
-        state.tenant_db.pool(),
+    let __pool_5 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let runs = agent_runs::list_agent_runs(&__pool_5,
         &tenant_id,
         Some(&agent_name),
         limit,
         offset,
     )
     .await?;
-    let config = state.config_manager.config();
+    let config = ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
     let response = runs
         .into_iter()
         .map(|run| AgentRunResponse::from_run(run, &config.billing))
@@ -129,12 +132,12 @@ pub async fn list_agent_runs_handler(
 }
 
 pub async fn create_agent_run_feedback_handler(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name, run_id)): Path<(String, String, String)>,
     Json(payload): Json<CreateAgentRunFeedbackRequest>,
 ) -> Result<Json<agent_feedback::AgentRunFeedback>> {
-    let feedback = agent_feedback::insert_agent_run_feedback(
-        state.tenant_db.pool(),
+    let __pool_6 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let feedback = agent_feedback::insert_agent_run_feedback(&__pool_6,
         agent_feedback::NewAgentRunFeedback {
             tenant_id: tenant_id.clone(),
             agent_name: agent_name.clone(),
@@ -149,7 +152,7 @@ pub async fn create_agent_run_feedback_handler(
     .await?;
 
     let feedback_id = feedback.id.clone();
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     tokio::spawn(async move {
         let details = serde_json::json!({
             "agent_name": agent_name,
@@ -172,13 +175,13 @@ pub async fn create_agent_run_feedback_handler(
 }
 
 pub async fn get_agent_feedback_summary_handler(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
     Query(q): Query<AgentFeedbackSummaryQuery>,
 ) -> Result<Json<agent_feedback::AgentFeedbackSummary>> {
     let days = q.days.unwrap_or(30).clamp(1, 366);
-    let summary = agent_feedback::get_agent_feedback_summary(
-        state.tenant_db.pool(),
+    let __pool_7 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let summary = agent_feedback::get_agent_feedback_summary(&__pool_7,
         &tenant_id,
         &agent_name,
         days,
@@ -188,29 +191,32 @@ pub async fn get_agent_feedback_summary_handler(
 }
 
 pub async fn list_tenant_allowed_tools(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<allowlist::TenantToolAllowlistItem>>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let __pool_8 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = allowlist::TenantAllowlistStore::new(&__pool_8);
     let items = store.list_tools(&tenant_id).await?;
     Ok(Json(items))
 }
 
 pub async fn add_tenant_allowed_tool(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
     Json(req): Json<AllowToolRequest>,
 ) -> Result<Json<allowlist::TenantToolAllowlistItem>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let __pool_9 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = allowlist::TenantAllowlistStore::new(&__pool_9);
     let item = store.allow_tool(&tenant_id, &req.tool_name).await?;
     Ok(Json(item))
 }
 
 pub async fn delete_tenant_allowed_tool(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, tool_name)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let __pool_10 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = allowlist::TenantAllowlistStore::new(&__pool_10);
     let rows = store.deny_tool(&tenant_id, &tool_name).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(
@@ -222,29 +228,32 @@ pub async fn delete_tenant_allowed_tool(
 }
 
 pub async fn list_tenant_allowed_models(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<allowlist::TenantModelAllowlistItem>>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let __pool_11 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = allowlist::TenantAllowlistStore::new(&__pool_11);
     let items = store.list_models(&tenant_id).await?;
     Ok(Json(items))
 }
 
 pub async fn add_tenant_allowed_model(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
     Json(req): Json<AllowModelRequest>,
 ) -> Result<Json<allowlist::TenantModelAllowlistItem>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let __pool_12 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = allowlist::TenantAllowlistStore::new(&__pool_12);
     let item = store.allow_model(&tenant_id, &req.model_id).await?;
     Ok(Json(item))
 }
 
 pub async fn delete_tenant_allowed_model(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, model_id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let __pool_13 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = allowlist::TenantAllowlistStore::new(&__pool_13);
     let rows = store.deny_model(&tenant_id, &model_id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(
@@ -256,29 +265,32 @@ pub async fn delete_tenant_allowed_model(
 }
 
 pub async fn list_tenant_allowed_rag_sources(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<allowlist::TenantRagAllowlistItem>>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let __pool_14 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = allowlist::TenantAllowlistStore::new(&__pool_14);
     let items = store.list_rag_sources(&tenant_id).await?;
     Ok(Json(items))
 }
 
 pub async fn add_tenant_allowed_rag_source(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
     Json(req): Json<AllowRagSourceRequest>,
 ) -> Result<Json<allowlist::TenantRagAllowlistItem>> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let __pool_15 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = allowlist::TenantAllowlistStore::new(&__pool_15);
     let item = store.allow_rag_source(&tenant_id, &req.rag_source).await?;
     Ok(Json(item))
 }
 
 pub async fn delete_tenant_allowed_rag_source(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, rag_source)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let store = allowlist::TenantAllowlistStore::new(state.tenant_db.pool());
+    let __pool_16 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = allowlist::TenantAllowlistStore::new(&__pool_16);
     let rows = store.deny_rag_source(&tenant_id, &rag_source).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(
@@ -290,25 +302,27 @@ pub async fn delete_tenant_allowed_rag_source(
 }
 
 pub async fn get_agent_stats_handler(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<Json<agent_runs::AgentRunStats>> {
-    let stats =
-        agent_runs::get_agent_run_stats(state.tenant_db.pool(), &tenant_id, &agent_name).await?;
+        let __pool_17 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let stats = agent_runs::get_agent_run_stats(&__pool_17, &tenant_id, &agent_name).await?;
     Ok(Json(stats))
 }
 
 pub async fn list_all_agents_handler(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<agent_runs::AllAgentsEntry>>> {
-    let agents = agent_runs::list_all_agents(state.tenant_db.pool()).await?;
+    let __pool_18 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let agents = agent_runs::list_all_agents(&__pool_18).await?;
     Ok(Json(agents))
 }
 
 pub async fn get_platform_stats(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
 ) -> Result<Json<agent_runs::PlatformStats>> {
-    let stats = agent_runs::get_platform_stats(state.tenant_db.pool()).await?;
+    let __pool_19 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let stats = agent_runs::get_platform_stats(&__pool_19).await?;
     Ok(Json(stats))
 }
 
@@ -316,7 +330,7 @@ pub async fn get_platform_stats(
 
 /// GET /api/admin/runs/live — SSE stream of active agent runs
 pub async fn stream_active_runs(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
 ) -> axum::response::Sse<
     impl futures::Stream<
         Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
@@ -326,7 +340,7 @@ pub async fn stream_active_runs(
     use std::time::Duration;
     use tokio::time::interval;
 
-    let active_runs = Arc::clone(&state.active_runs);
+    let active_runs = Arc::clone(&ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0);
     let stream = futures::stream::unfold(interval(Duration::from_secs(2)), move |mut interval| {
         let active_runs = Arc::clone(&active_runs);
         async move {

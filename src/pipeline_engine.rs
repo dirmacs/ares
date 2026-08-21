@@ -5,6 +5,7 @@ use ares_db::agent_runs::{self, AgentRunMetadata};
 use ares_db::schedules::{AgentPipeline, PipelineStore};
 use ares_types::types::AgentContext;
 use std::sync::Arc;
+use crate::AppState;
 
 /// Cordis service stub for pipeline — owns `agent_pipelines` lookup and
 /// conditional evaluation.
@@ -136,7 +137,7 @@ pub async fn execute_pipeline(
     source_agent_name: &str,
     source_output: &str,
     tenant_id: &str,
-    app_state: &Arc<crate::AppState>,
+    app_state: &AppState,
 ) -> Result<Vec<String>, String> {
     execute_pipeline_with_origin(source_agent_name, source_output, tenant_id, None, app_state).await
 }
@@ -146,9 +147,10 @@ pub(crate) async fn execute_pipeline_with_origin(
     source_output: &str,
     tenant_id: &str,
     origin: Option<PipelineOrigin>,
-    app_state: &Arc<crate::AppState>,
+    app_state: &AppState,
 ) -> Result<Vec<String>, String> {
-    let store = PipelineStore::new(app_state.tenant_db.pool());
+    let __pool_1 = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = PipelineStore::new(&__pool_1);
     let pipelines = store
         .get_pipelines_for_source(tenant_id, source_agent_name)
         .await
@@ -195,7 +197,7 @@ async fn execute_target_agent(
     source_output: &str,
     tenant_id: &str,
     origin: Option<&PipelineOrigin>,
-    app_state: &Arc<crate::AppState>,
+    app_state: &AppState,
 ) -> Result<(), String> {
     use crate::agents::context_provider::AgentRuntimeContext;
     use crate::agents::tenant_agent;
@@ -204,14 +206,13 @@ async fn execute_target_agent(
         run_cost_aggregation_request, spawn_run_cost_aggregation, RunObservability,
     };
 
-    let pool = app_state.tenant_db.pool();
+    let pool = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
 
-    let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
-        pool,
-        &app_state.agent_registry,
+    let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(&pool,
+        &app_state.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,
         tenant_id,
         &pipeline.target_agent,
-        &app_state.fleet_secrets,
+        &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
     .await
     .map_err(|e| format!("Agent resolution failed: {}", e))?;
@@ -223,7 +224,7 @@ async fn execute_target_agent(
     // Skill-based execution
     if let Some(config) = &resolved_agent.config {
         if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {
-            app_state.active_runs.start(pipeline_active_run(
+            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(pipeline_active_run(
                 &run_id,
                 tenant_id,
                 &pipeline.target_agent,
@@ -232,8 +233,7 @@ async fn execute_target_agent(
                 Some(format!("skill:{}", skill_id)),
             ));
 
-            let skill_result = app_state
-                .skill_engine
+            let skill_result = app_state.get::<crate::context_services::SkillEngineService>().expect("not provided").0
                 .execute_skill(
                     skill_id,
                     tenant_id,
@@ -248,7 +248,7 @@ async fn execute_target_agent(
             } else {
                 "error"
             };
-            app_state.active_runs.finish(&run_id, skill_status);
+            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, skill_status);
 
             let (input_tokens, output_tokens) = skill_result
                 .as_ref()
@@ -343,7 +343,7 @@ async fn execute_target_agent(
     });
     resolved_agent.agent.set_observability(obs.clone());
     resolved_agent.agent.set_runtime_tools(
-        app_state.runtime_tool_registry.clone(),
+        app_state.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(),
         tenant_id.to_string(),
     );
 
@@ -354,8 +354,7 @@ async fn execute_target_agent(
     );
     runtime_context.session_id = Some(run_id.clone());
 
-    let eruka_context = app_state
-        .context_provider
+    let eruka_context = app_state.get::<crate::context_services::ContextProviderService>().expect("not provided").0
         .get_context_for_run(&runtime_context)
         .await;
     let eruka_context_hit = eruka_context.is_some();
@@ -372,7 +371,7 @@ async fn execute_target_agent(
         user_memory: None,
     };
 
-    app_state.active_runs.start(pipeline_active_run(
+    app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(pipeline_active_run(
         &run_id,
         tenant_id,
         &pipeline.target_agent,
@@ -416,10 +415,9 @@ async fn execute_target_agent(
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
-            app_state
-                .active_runs
+            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0
                 .update_model(&run_id, Some(&model_name));
-            app_state.active_runs.finish(&run_id, "completed");
+            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "completed");
         }
         Err(e) => {
             status = "failed";
@@ -428,7 +426,7 @@ async fn execute_target_agent(
             output_tokens = 0;
             model_name = "unknown".to_string();
             provider_name = "unknown".to_string();
-            app_state.active_runs.finish(&run_id, "error");
+            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
         }
     }
 

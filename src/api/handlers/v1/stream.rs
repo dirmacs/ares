@@ -1,6 +1,8 @@
 //! V1 stream domain — cordis Phase6
 //! Bodies moved from v1.rs
 
+use std::sync::Arc;
+use ares_cordis_core::Context;
 use super::*;
 
 use crate::agents::tenant_agent;
@@ -19,30 +21,29 @@ use chrono::{TimeZone, Utc};
 
 /// POST /v1/agents/{name}/sandbox-run — dry-run an agent with sandbox=true
 pub async fn sandbox_run_agent(
-    State(state): State<AppState>,
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     Path(name): Path<String>,
     Json(input): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
     let tc = extract_tenant(ctx)?;
 
-    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent(
-        state.tenant_db.pool(),
-        &state.agent_registry,
+    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+        &state_ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,
         &tc.tenant_id,
         &name,
-        &state.fleet_secrets,
+        &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
     .await?;
     resolved_agent
         .agent
-        .set_runtime_tools(state.runtime_tool_registry.clone(), tc.tenant_id.clone());
+        .set_runtime_tools(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), tc.tenant_id.clone());
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let started = Utc::now();
     let tools = resolved_agent.agent.get_filtered_tool_definitions();
     let tool_trace_specs =
-        sandbox_tool_trace_specs(state.runtime_tool_registry.as_ref(), &tc.tenant_id, &tools);
+        sandbox_tool_trace_specs(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.as_ref(), &tc.tenant_id, &tools);
     let tool_names = tools
         .iter()
         .map(|tool| tool.name.clone())
@@ -78,8 +79,7 @@ pub async fn sandbox_run_agent(
         schedule_id: None,
         trigger_id: None,
     };
-    agent_runs::insert_agent_run_with_id_and_metadata(
-        state.tenant_db.pool(),
+    agent_runs::insert_agent_run_with_id_and_metadata(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
         &run_id,
         &tc.tenant_id,
         &name,
@@ -96,7 +96,8 @@ pub async fn sandbox_run_agent(
     )
     .await?;
 
-    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = RunHistoryStore::new(&pool);
     for call in sandbox_tool_call_requests(
         &run_id,
         &tc.tenant_id,
@@ -129,9 +130,9 @@ pub async fn sandbox_run_agent(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SandboxToolTraceSpec {
-    name: String,
-    tool_type: String,
+pub(crate) struct SandboxToolTraceSpec {
+    pub(crate) name: String,
+    pub(crate) tool_type: String,
 }
 
 fn sandbox_tool_trace_specs(
@@ -150,7 +151,7 @@ fn sandbox_tool_trace_specs(
         .collect()
 }
 
-fn sandbox_tool_call_requests(
+pub(crate) fn sandbox_tool_call_requests(
     run_id: &str,
     tenant_id: &str,
     agent_name: &str,
@@ -196,7 +197,7 @@ pub async fn list_agent_logs(
 /// cordis Phase6: runtime gating via Service check — previously feature-gated
 /// When vector services are not configured the handler returns 503 via AppError.
 pub async fn semantic_search(
-    State(_state): State<AppState>,
+    State(_state): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     Json(payload): Json<crate::types::SemanticSearchRequest>,
 ) -> Result<Json<crate::types::SemanticSearchResponse>> {

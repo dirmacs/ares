@@ -136,12 +136,11 @@ pub async fn resolve_agent(
     user_id: &str,
     agent_name: String,
 ) -> Result<(UserAgent, String)> {
-    let user_agent = state
-        .db
+    let user_agent = state.get::<crate::context_services::DbService>().expect("not provided").0
         .get_user_agent_by_name(user_id, &agent_name)
         .await?;
-    let public_agent = state.db.get_public_agent_by_name(&agent_name).await?;
-    let config = state.config_manager.config();
+    let public_agent = state.get::<crate::context_services::DbService>().expect("not provided").0.get_public_agent_by_name(&agent_name).await?;
+    let config = state.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
     let system_config = config.get_agent(&agent_name);
     let now = chrono::Utc::now().timestamp();
     resolve_from_candidates(

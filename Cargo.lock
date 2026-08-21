@@ -307,9 +307,13 @@ dependencies = [
 name = "ares-cordis-core"
 version = "0.7.3"
 dependencies = [
+ "inventory",
+ "libloading",
+ "notify",
  "parking_lot",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -467,6 +471,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "hex",
+ "inventory",
  "jsonwebtoken 10.3.0",
  "lance",
  "lancedb",

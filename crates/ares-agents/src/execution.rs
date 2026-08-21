@@ -82,6 +82,11 @@ pub struct AgentExecutionService {
     llm_factory: Option<Arc<ares_llm::provider_registry::ConfigBasedLLMFactory>>,
     context_provider: Option<Arc<dyn crate::context_provider::ContextProvider>>,
     tool_service: Option<Arc<dyn ToolService>>,
+    /// Agent registry for creating agents from config (Phase 4 §15).
+    agent_registry: Option<Arc<crate::registry::AgentRegistry>>,
+    /// Fleet secrets for provider resolution during agent creation.
+    #[cfg(feature = "postgres")]
+    fleet_secrets: Option<Arc<ares_config::fleet_secrets::FleetSecrets>>,
 }
 
 impl AgentExecutionService {
@@ -100,6 +105,9 @@ impl AgentExecutionService {
             llm_factory: None,
             context_provider: None,
             tool_service: None,
+            agent_registry: None,
+            #[cfg(feature = "postgres")]
+            fleet_secrets: None,
         }
     }
 
@@ -145,6 +153,76 @@ impl AgentExecutionService {
     /// Inject/replace the fallback tool service after construction (Cordis DI shim).
     pub fn inject_tool_service(&mut self, svc: Arc<dyn ToolService>) {
         self.tool_service = Some(svc);
+    }
+
+    /// Attach an agent registry for creating agents from resolved configs.
+    pub fn with_agent_registry(mut self, registry: Arc<crate::registry::AgentRegistry>) -> Self {
+        self.agent_registry = Some(registry);
+        self
+    }
+
+    /// Attach fleet secrets for provider resolution.
+    #[cfg(feature = "postgres")]
+    pub fn with_fleet_secrets(mut self, secrets: Arc<ares_config::fleet_secrets::FleetSecrets>) -> Self {
+        self.fleet_secrets = Some(secrets);
+        self
+    }
+
+    /// Execute an agent by name using the full pipeline: resolve → create → execute.
+    ///
+    /// This is the PRIMARY entry point that handlers should call. It:
+    /// 1. Resolves the agent via `AgentResolverService` (3-tier: tenant → community → system)
+    /// 2. Creates the agent via `AgentRegistry::create_agent_from_config_with_fallbacks`
+    /// 3. Calls `agent.execute(message, context)`
+    /// 4. Returns the response
+    ///
+    /// Observability (ActiveRuns, RunObservability) is handled by the caller
+    /// since those types live in the root crate.
+    #[cfg(feature = "postgres")]
+    pub async fn execute_agent(
+        &self,
+        req: &AgentRequest,
+        ctx: &Arc<Context>,
+    ) -> std::result::Result<crate::AgentResponse, AppError> {
+        use crate::Agent;
+
+        // Resolve agent config
+        let resolver = ctx.get::<crate::resolver::AgentResolverService>()
+            .ok_or_else(|| AppError::Configuration("AgentResolverService not provided".into()))?;
+        let user_id = req.tenant.as_deref().unwrap_or("");
+        let (user_agent, _source) = resolver.resolve_async(&req.agent_name, user_id).await?;
+
+        // Build AgentConfig from resolved UserAgent
+        let config = crate::configurable::agent_config_from_user_agent(&user_agent);
+
+        // Create the agent using the registry
+        let registry = self.agent_registry.as_ref()
+            .ok_or_else(|| AppError::Configuration("AgentRegistry not set on AgentExecutionService".into()))?;
+        let tenant_db = self.tenant_db.as_ref()
+            .ok_or_else(|| AppError::Configuration("TenantDb not set on AgentExecutionService".into()))?;
+        let fleet_secrets = self.fleet_secrets.as_ref()
+            .ok_or_else(|| AppError::Configuration("FleetSecrets not set on AgentExecutionService".into()))?;
+
+        let agent = registry
+            .create_agent_from_config_with_fallbacks(
+                &req.agent_name,
+                &config,
+                user_id,
+                tenant_db.pool(),
+                fleet_secrets,
+            )
+            .await?;
+
+        // Build context for execution
+        let agent_context = ares_types::types::AgentContext {
+            user_id: user_id.to_string(),
+            session_id: format!("exec-{}", uuid::Uuid::new_v4()),
+            conversation_history: req.history.clone(),
+            user_memory: None,
+        };
+
+        // Execute the agent
+        agent.execute(&req.message, &agent_context).await
     }
 
     // dedup from chat.rs:execute_agent — factored into unified execution path

@@ -3041,6 +3041,7 @@ api_key_env = "API"
             model: "m1".into(),
             system_prompt: Some("Be helpful".into()),
             tools: vec!["calc".into(), "search".into()],
+            allowed_tools: None,
             max_tool_iterations: 7,
             parallel_tools: true,
             extra: {

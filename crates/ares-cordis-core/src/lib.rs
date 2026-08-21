@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 use parking_lot::{Mutex, RwLock};
-use serde::{de::DeserializeOwned, Serialize};
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -79,6 +78,8 @@ pub use loader::{Entry, EntryTree, Loader};
 
 pub mod watcher;
 pub mod hmr;
+pub mod registry;
+pub use registry::{Plugin, RegistryService};
 
 #[cfg(feature = "rhai")]
 pub mod rhai_service;
@@ -422,6 +423,49 @@ impl Context {
         0
     }
 
+    pub fn isolate_label(&self, tid: TypeId) -> Option<Symbol> {
+        if let Some(label) = self.isolate.read().get(&tid).cloned() {
+            return Some(label);
+        }
+        if let Some(parent) = &self.parent {
+            return parent.isolate_label(tid);
+        }
+        None
+    }
+
+    pub fn provide_arc<T: Service>(self: &Arc<Self>, svc: Arc<T>) -> Arc<T> {
+        let tid = TypeId::of::<T>();
+        let any: Arc<dyn Any + Send + Sync> = svc.clone();
+        let prev = self.store.write().insert(tid, any);
+        {
+            let mut versions = self.versions.write();
+            let e = versions.entry(tid).or_insert(0);
+            *e += 1;
+        }
+        let weak = Arc::downgrade(self);
+        let fiber = self.fiber.clone();
+        let prev_clone = prev;
+        let undo: Box<dyn FnOnce() + Send> = Box::new(move || {
+            if let Some(ctx) = weak.upgrade() {
+                let mut store = ctx.store.write();
+                if let Some(prev_any) = prev_clone {
+                    store.insert(tid, prev_any);
+                } else {
+                    store.remove(&tid);
+                }
+                let mut versions = ctx.versions.write();
+                if let Some(v) = versions.get_mut(&tid) {
+                    *v = v.saturating_sub(1);
+                    if *v == 0 {
+                        versions.remove(&tid);
+                    }
+                }
+            }
+        });
+        fiber.push_undo(undo);
+        svc
+    }
+
     pub fn fiber(&self) -> Arc<Fiber> {
         self.fiber.clone()
     }
@@ -490,14 +534,9 @@ impl Context {
                 tid
             )));
         }
-        let disposable = plugin.apply(self, config)?;
-        let fiber = Arc::new(Fiber::new());
-        let undo: Box<dyn FnOnce() + Send> = Box::new(move || {
-            disposable.dispose();
-        });
-        fiber.push_undo(undo);
+        let provides = plugin.apply(self, config)?;
+        self.provide_arc(provides);
         let fid = NEXT_FIBER_ID.fetch_add(1, Ordering::SeqCst) as u64;
-        let _ = fiber;
         Ok(fid)
     }
 }
@@ -622,91 +661,8 @@ pub fn compute_epoch(inject: &HashMap<TypeId, Symbol>) -> String {
     format!(":{}", frags.join(":"))
 }
 
-// ---------------------------------------------------------------------------
-// RegistryService & Plugin (Phase 2, Step 10)
-// ---------------------------------------------------------------------------
-
-pub trait Plugin: Send + Sync + 'static {
-    type Config: Serialize + DeserializeOwned + Send + Sync + 'static;
-    type Provides: Service;
-    fn apply(
-        &self,
-        ctx: &Arc<Context>,
-        config: Self::Config,
-    ) -> Result<Box<dyn Disposable>, CordisError>;
-}
-
-pub struct RegistryService {
-    fibers: RwLock<HashMap<FiberId, Arc<Fiber>>>,
-    // single-source discipline: TypeId -> FiberId (isolate realm simplified to global; Phase 3 will add isolate map)
-    provided: RwLock<HashMap<TypeId, FiberId>>,
-    next_id: Mutex<FiberId>,
-}
-
-impl RegistryService {
-    pub fn new() -> Self {
-        Self {
-            fibers: RwLock::new(HashMap::new()),
-            provided: RwLock::new(HashMap::new()),
-            next_id: Mutex::new(1),
-        }
-    }
-
-    /// Register a plugin, enforce single-source discipline.
-    /// Returns FiberId or Err(Configuration("duplicate provider for <TypeId>"))
-    pub fn plugin<P: Plugin>(
-        &self,
-        ctx: &Arc<Context>,
-        plugin: P,
-        config: P::Config,
-    ) -> Result<FiberId, CordisError> {
-        let tid = TypeId::of::<P::Provides>();
-        {
-            let provided = self.provided.read();
-            if provided.contains_key(&tid) {
-                return Err(CordisError::Configuration(format!(
-                    "duplicate provider for {:?}",
-                    tid
-                )));
-            }
-        }
-        let disposable = plugin.apply(ctx, config)?;
-        let mut id_guard = self.next_id.lock();
-        let fid = *id_guard;
-        *id_guard += 1;
-        drop(id_guard);
-
-        let fiber = Arc::new(Fiber::new());
-        // push the plugin's disposable onto fiber's acc so dispose reverts it
-        let undo: Box<dyn FnOnce() + Send> = Box::new(move || {
-            disposable.dispose();
-        });
-        fiber.push_undo(undo);
-        self.fibers.write().insert(fid, fiber);
-        self.provided.write().insert(tid, fid);
-        Ok(fid)
-    }
-
-    pub fn get_fiber(&self, id: FiberId) -> Option<Arc<Fiber>> {
-        self.fibers.read().get(&id).cloned()
-    }
-
-    pub fn remove(&self, id: FiberId) -> Option<Arc<Fiber>> {
-        let fiber = self.fibers.write().remove(&id)?;
-        // remove provided entry
-        let mut provided = self.provided.write();
-        provided.retain(|_, v| *v != id);
-        Some(fiber)
-    }
-}
-
-impl Default for RegistryService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Service for RegistryService {}
+// RegistryService and Plugin live in registry.rs to keep single-source discipline
+// and isolate-aware checks in one place. Re-exported here for ergonomics.
 
 // ---------------------------------------------------------------------------
 // ReflectService — Phase 3 unified hot-reload (watch + BFS via Fiber::refresh)
@@ -1044,11 +1000,10 @@ mod tests {
             type Provides = FooService;
             fn apply(
                 &self,
-                ctx: &Arc<Context>,
+                _ctx: &Arc<Context>,
                 _cfg: Self::Config,
-            ) -> Result<Box<dyn Disposable>, CordisError> {
-                ctx.provide(FooService(1));
-                Ok(Box::new(|| {}) as Box<dyn Disposable>)
+            ) -> Result<Arc<Self::Provides>, CordisError> {
+                Ok(Arc::new(FooService(1)))
             }
         }
 
@@ -1058,11 +1013,10 @@ mod tests {
             type Provides = FooService;
             fn apply(
                 &self,
-                ctx: &Arc<Context>,
+                _ctx: &Arc<Context>,
                 _cfg: Self::Config,
-            ) -> Result<Box<dyn Disposable>, CordisError> {
-                ctx.provide(FooService(2));
-                Ok(Box::new(|| {}) as Box<dyn Disposable>)
+            ) -> Result<Arc<Self::Provides>, CordisError> {
+                Ok(Arc::new(FooService(2)))
             }
         }
 

@@ -238,16 +238,12 @@ impl Plugin for RhaiPlugin {
 
     fn apply(
         &self,
-        ctx: &Arc<Context>,
+        _ctx: &Arc<Context>,
         config: Self::Config,
-    ) -> Result<Box<dyn Disposable>, CordisError> {
+    ) -> Result<Arc<Self::Provides>, CordisError> {
         let svc = RhaiService::from_config(config)
             .map_err(|e| CordisError::Configuration(format!("rhai compile failed: {}", e)))?;
-        let _arc = ctx.provide(svc);
-        // Return disposable that logs on dispose; ctx.provide already registered undo on ctx.fiber
-        Ok(Box::new(|| {
-            tracing::info!("RhaiPlugin disposed");
-        }))
+        Ok(Arc::new(svc))
     }
 }
 
@@ -262,8 +258,8 @@ impl crate::Plugin for RhaiPlugin {
         &self,
         _ctx: &Arc<crate::Context>,
         _config: Self::Config,
-    ) -> Result<Box<dyn crate::Disposable>, crate::CordisError> {
-        Ok(Box::new(|| {}))
+    ) -> Result<Arc<Self::Provides>, crate::CordisError> {
+        Ok(Arc::new(RhaiService))
     }
 }
 

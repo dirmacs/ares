@@ -871,6 +871,13 @@ async fn run_server(
         .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
 
     // Provide AppState fields as Cordis services — replaces `let state = AppState { ... }`
+    // =========================================================================
+    // Cordis Bootstrap: provide all services to Context (Phase 2 §12, Phase 7)
+    // =========================================================================
+    // These `provide` calls replace the old `AppState { field1, field2, ... }` struct.
+    // Handlers access them via `ctx.get::<ServiceWrapper>()`. As handlers migrate to
+    // dedicated services (AgentResolverService, AgentExecutionService, etc.), these
+    // wrappers become unused and can be removed. Target: 0 context_services wrappers.
     root_ctx.provide(ares::context_services::ConfigManagerService(Arc::clone(&config_manager)));
     root_ctx.provide(ares::context_services::DynamicConfigService(dynamic_config.clone()));
     root_ctx.provide(ares::context_services::DbService(db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>));

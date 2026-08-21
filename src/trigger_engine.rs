@@ -323,7 +323,11 @@ impl TriggerService {
             history: Vec::new(),
             ctx_provider: None,
         };
-        let resp = exec.execute(req, ctx).await.map_err(|e| e.to_string())?;
+        // Phase 4 §15: prefer execute_agent (full pipeline) with fallback to legacy execute
+        let resp = match exec.execute_agent(&req, ctx).await {
+            Ok(result) => result.response,
+            Err(_) => exec.execute(req, ctx).await.map_err(|e| e.to_string())?,
+        };
         // Propagate to pipelines (downstream). AppState is Arc<Context>.
         let ctx_clone: AppState = ctx.clone();
         let _ = crate::pipeline_engine::execute_pipeline_with_origin(

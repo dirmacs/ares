@@ -934,6 +934,7 @@ async fn run_server(
             .with_llm_factory(llm_factory.clone())
             .with_agent_registry(agent_registry.clone())
             .with_fleet_secrets(Arc::new(ares::FleetSecrets::new()))
+            .with_run_tracker(active_runs.clone() as Arc<dyn ares_agents::RunTracker>)
     );
     // Provide to context so handlers can use ctx.get::<AgentExecutionService>()
     root_ctx.provide_arc(shared_execution.clone());

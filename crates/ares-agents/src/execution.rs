@@ -9,6 +9,23 @@ use std::sync::Arc;
 use ares_cordis_core::{Context, CordisError, Service};
 use ares_types::types::{AppError, Message};
 
+/// Result of `AgentExecutionService::execute_agent` including resolution metadata.
+///
+/// This allows callers (v1/chat, scheduler, pipeline) to record which source the agent
+/// came from and what config was used, without re-resolving.
+#[cfg(feature = "postgres")]
+#[derive(Debug, Clone)]
+pub struct ExecutionResult {
+    /// The agent's response.
+    pub response: crate::AgentResponse,
+    /// Source tier where the agent was resolved (tenant/community/system).
+    pub source: crate::resolver::AgentSource,
+    /// Name of the agent that was executed.
+    pub agent_name: String,
+    /// Run ID for correlation with ActiveRuns.
+    pub run_id: String,
+}
+
 use crate::AgentResponse;
 
 // Re-export canonical ToolService so callers can use `crate::execution::ToolService`
@@ -87,6 +104,8 @@ pub struct AgentExecutionService {
     /// Fleet secrets for provider resolution during agent creation.
     #[cfg(feature = "postgres")]
     fleet_secrets: Option<Arc<ares_config::fleet_secrets::FleetSecrets>>,
+    /// Run tracker for observability (Phase 4: extracted from root crate ActiveRuns).
+    run_tracker: Option<Arc<dyn RunTracker>>,
 }
 
 impl AgentExecutionService {
@@ -108,6 +127,7 @@ impl AgentExecutionService {
             agent_registry: None,
             #[cfg(feature = "postgres")]
             fleet_secrets: None,
+            run_tracker: None,
         }
     }
 
@@ -168,29 +188,34 @@ impl AgentExecutionService {
         self
     }
 
+    /// Attach a run tracker for observability.
+    pub fn with_run_tracker(mut self, tracker: Arc<dyn RunTracker>) -> Self {
+        self.run_tracker = Some(tracker);
+        self
+    }
+
     /// Execute an agent by name using the full pipeline: resolve → create → execute.
     ///
     /// This is the PRIMARY entry point that handlers should call. It:
     /// 1. Resolves the agent via `AgentResolverService` (3-tier: tenant → community → system)
     /// 2. Creates the agent via `AgentRegistry::create_agent_from_config_with_fallbacks`
     /// 3. Calls `agent.execute(message, context)`
-    /// 4. Returns the response
+    /// 4. Returns `ExecutionResult` with response + resolution metadata
     ///
-    /// Observability (ActiveRuns, RunObservability) is handled by the caller
-    /// since those types live in the root crate.
+    /// Run tracking (start/finish) is handled internally via `RunTracker`.
     #[cfg(feature = "postgres")]
     pub async fn execute_agent(
         &self,
         req: &AgentRequest,
         ctx: &Arc<Context>,
-    ) -> std::result::Result<crate::AgentResponse, AppError> {
+    ) -> std::result::Result<ExecutionResult, AppError> {
         use crate::Agent;
 
         // Resolve agent config
         let resolver = ctx.get::<crate::resolver::AgentResolverService>()
             .ok_or_else(|| AppError::Configuration("AgentResolverService not provided".into()))?;
         let user_id = req.tenant.as_deref().unwrap_or("");
-        let (user_agent, _source) = resolver.resolve_async(&req.agent_name, user_id).await?;
+        let (user_agent, source) = resolver.resolve_async(&req.agent_name, user_id).await?;
 
         // Build AgentConfig from resolved UserAgent
         let config = crate::configurable::agent_config_from_user_agent(&user_agent);
@@ -213,6 +238,12 @@ impl AgentExecutionService {
             )
             .await?;
 
+        // Track run start
+        let run_id = uuid::Uuid::new_v4().to_string();
+        if let Some(tracker) = &self.run_tracker {
+            tracker.start_run(&run_id, user_id, &req.agent_name, Some("execution_service"));
+        }
+
         // Build context for execution
         let agent_context = ares_types::types::AgentContext {
             user_id: user_id.to_string(),
@@ -222,7 +253,20 @@ impl AgentExecutionService {
         };
 
         // Execute the agent
-        agent.execute(&req.message, &agent_context).await
+        let result = agent.execute(&req.message, &agent_context).await;
+
+        // Track run finish
+        if let Some(tracker) = &self.run_tracker {
+            let status = if result.is_ok() { "completed" } else { "failed" };
+            tracker.finish_run(&run_id, status);
+        }
+
+        result.map(|response| ExecutionResult {
+            response,
+            source,
+            agent_name: req.agent_name.clone(),
+            run_id,
+        })
     }
 
     // dedup from chat.rs:execute_agent — factored into unified execution path
@@ -505,4 +549,17 @@ impl Service for AgentExecutionService {
     fn check(&self) -> bool {
         self.llm_factory.is_some()
     }
+}
+
+/// Trait for tracking active agent runs. Implemented by the root crate's `ActiveRuns`
+/// and injected into `AgentExecutionService` via the Context.
+///
+/// This allows `ares-agents` (a leaf crate) to track runs without depending on root-crate types.
+pub trait RunTracker: Send + Sync + 'static {
+    /// Register a new run as active.
+    fn start_run(&self, run_id: &str, tenant_id: &str, agent_name: &str, source: Option<&str>);
+    /// Update run progress.
+    fn update_run(&self, run_id: &str, status: &str, step: i32);
+    /// Mark run as finished with terminal status.
+    fn finish_run(&self, run_id: &str, status: &str);
 }

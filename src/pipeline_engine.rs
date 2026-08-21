@@ -102,10 +102,11 @@ impl PipelineService {
             ctx_provider: None,
         };
 
-        let resp = exec
-            .execute(req, ctx)
-            .await
-            .map_err(|e| e.to_string())?;
+        // Phase 4 §15: prefer execute_agent (full pipeline) with fallback to legacy execute
+        let resp = match exec.execute_agent(&req, ctx).await {
+            Ok(result) => result.response,
+            Err(_) => exec.execute(req, ctx).await.map_err(|e| e.to_string())?,
+        };
 
         // Surface as JSON Value for caller uniformity.
         Ok(serde_json::json!({

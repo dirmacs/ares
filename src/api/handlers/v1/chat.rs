@@ -87,11 +87,70 @@ pub async fn v1_chat(
     };
 
     use crate::agents::Agent;
-    // Phase 4 §15: v1/chat uses AgentExecutionService::execute_agent for core resolution+execution
-    // but keeps the observability wrapper (agent_runs, token budgets) locally until those move to a crate.
-    // The tenant_agent::resolve_agent_for_tenant path provides ResolvedTenantAgent metadata needed for
-    // agent_runs recording (source, config_version), so full migration requires returning that metadata
-    // from execute_agent. For now: resolution via legacy path, execution via agent.execute().
+    // Phase 4 §15: v1/chat delegates to AgentExecutionService for resolve+create+execute.
+    // Observability (agent_runs recording) remains local since it needs v1-specific metadata
+    // (workspace_id, eruka_context_hit, request_source).
+    if let Some(exec_svc) = state_ctx.get::<ares_agents::execution::AgentExecutionService>() {
+        let req = ares_agents::execution::AgentRequest {
+            agent_name: agent_name.clone(),
+            tenant: Some(tc.tenant_id.clone()),
+            message: effective_message.clone(),
+            history: agent_context.conversation_history.clone(),
+            ctx_provider: None,
+        };
+        let exec_result = exec_svc.execute_agent(&req, &state_ctx).await?;
+        let duration_ms = start.elapsed().as_millis() as i64;
+        let response_text = exec_result.response.content;
+        let (model_name, provider_name) = execution_metadata_names(exec_result.response.metadata.as_ref());
+        let (input_tokens, output_tokens) =
+            llm_token_counts_u32(exec_result.response.usage.as_ref(), &effective_message, &response_text);
+
+        // Record agent run with metadata from ExecutionResult
+        {
+            let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+            let tid = tc.tenant_id.clone();
+            let aname = exec_result.agent_name.clone();
+            let itok = input_tokens as i64;
+            let otok = output_tokens as i64;
+            let mname = model_name.clone();
+            let pname = provider_name.clone();
+            let metadata = agent_runs::AgentRunMetadata {
+                workspace_id: payload.workspace_id.clone(),
+                session_id: Some(agent_context.session_id.clone()),
+                request_source: Some("api_v1_chat".to_string()),
+                product: None,
+                agent_config_source: Some(exec_result.source.as_str().to_string()),
+                agent_config_version: None,
+                eruka_binding_id: None,
+                eruka_context_hit,
+                eruka_read_count: if eruka_context_hit { 1 } else { 0 },
+                eruka_write_count: 0,
+                pipeline_id: None,
+                schedule_id: None,
+                trigger_id: None,
+            };
+            tokio::spawn(async move {
+                let _ = agent_runs::insert_agent_run_with_metadata(
+                    &pool, &tid, &aname, None, "completed", itok, otok, duration_ms,
+                    None, &mname, &pname, false, Some(&metadata),
+                ).await;
+            });
+        }
+
+        return Ok(axum::Json(serde_json::json!({
+            "response": response_text,
+            "agent": exec_result.agent_name,
+            "source": exec_result.source.as_str(),
+            "model": model_name,
+            "provider": provider_name,
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+        })).into_response());
+    }
+
+    // Legacy fallback: resolve_agent_for_tenant + inline execution
     let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
         state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool(),
         &state_ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,

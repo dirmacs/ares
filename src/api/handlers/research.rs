@@ -5,6 +5,8 @@ use crate::{
     utils::toml_config::{AresConfig, WorkflowConfig},
     AppState,
 };
+use std::sync::Arc;
+use ares_cordis_core::Context;
 use axum::{extract::State, Json};
 use std::time::Instant;
 
@@ -84,23 +86,22 @@ pub(crate) fn finalize_research_response(
     security(("bearer" = []))
 )]
 pub async fn deep_research(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     AuthUser(_claims): AuthUser,
     Json(payload): Json<ResearchRequest>,
 ) -> Result<Json<ResearchResponse>> {
     let start = Instant::now();
-    ensure_research_emergency_stop_inactive(&state.emergency_stop)?;
+    ensure_research_emergency_stop_inactive(&ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0)?;
 
-    let config = state.config_manager.config();
+    let config = ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
     let (depth, max_iterations, model_name) = plan_research_run(&config, &payload);
 
-    let llm_client = match state
-        .provider_registry
+    let llm_client = match ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0
         .create_client_for_model(model_name)
         .await
     {
         Ok(client) => client,
-        Err(_) => state.llm_factory.create_default().await?,
+        Err(_) => ctx.get::<crate::context_services::LlmFactoryService>().expect("not provided").0.create_default().await?,
     };
 
     let coordinator = ResearchCoordinator::new(llm_client, depth, max_iterations);

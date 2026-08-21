@@ -13,6 +13,7 @@ use axum::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
+use ares_cordis_core::Context;
 
 /// Simulated database field-change payload.
 #[derive(Debug, Deserialize)]
@@ -37,13 +38,14 @@ pub struct FieldChangeEvent {
 /// matching agents.  Secured by `X-Webhook-Secret` when `WEBHOOK_SECRET`
 /// is configured.
 pub async fn handle_field_change(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     headers: HeaderMap,
     Json(payload): Json<FieldChangeEvent>,
 ) -> crate::types::Result<StatusCode> {
     verify_webhook_secret(&headers)?;
 
-    let store = db_schedules::EventTriggerStore::new(state.tenant_db.pool());
+    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_schedules::EventTriggerStore::new(&__pool_1);
     let triggers = store
         .list_by_event_type(&payload.tenant_id, "field_change")
         .await?;
@@ -68,7 +70,7 @@ pub async fn handle_field_change(
         })
         .collect();
 
-    let app_state = Arc::new(state);
+    let app_state = ctx.clone();
     for trigger in matching {
         let context = serde_json::json!({
             "event": "field_change",

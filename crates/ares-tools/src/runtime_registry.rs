@@ -11,6 +11,7 @@ use std::any::TypeId as CordisTypeId;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+#[cfg(any(feature = "mcp", test))]
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -18,6 +19,7 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde_json::Value;
 // cordis Phase 3 unified imports for ReflectService watch + deprecated shim tracing
+#[cfg(feature = "mcp")]
 use tracing;
 
 use ares_db::runtime_tools::{RuntimeTool, RuntimeToolStore};
@@ -608,6 +610,7 @@ impl RuntimeToolRegistry {
     #[deprecated(note = "polling replaced by ReflectService::notify + Fiber::refresh; no background task spawned")]
     pub fn start_background_reload(self: Arc<Self>) -> bool {
         // REMOVED: polling fallback retained for one release then delete.
+        #[cfg(feature = "mcp")]
         tracing::warn!(
             "RuntimeToolRegistry::start_background_reload is deprecated: use ReflectService::notify(TypeId::of::<RuntimeToolRegistry>()) with Fiber::refresh via watch channel; no background task spawned"
         );

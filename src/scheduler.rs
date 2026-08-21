@@ -747,7 +747,7 @@ async fn execute_scheduled_agent(
 
     // 2. Resolve and execute regular LLM-backed agents.
     let mut resolved_agent = match tenant_agent::resolve_agent_for_tenant(&pool,
-        &app_state.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,
+        &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &sched.tenant_id,
         &sched.agent_name,
         &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,

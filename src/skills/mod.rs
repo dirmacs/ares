@@ -499,8 +499,8 @@ impl SkillsService {
                             // For now use provider_registry path via LlmFactoryService fallback
                             let _ = (llm, cap);
                             // Fallback to factory
-                            if let Some(factory) = ctx.get::<crate::context_services::LlmFactoryService>() {
-                                let registry = factory.0.registry();
+                            if let Some(factory) = ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>() {
+                                let registry = factory.registry();
                                 let client = match registry.create_client_for_model(&model_name).await {
                                     Ok(c) => c,
                                     Err(_) => registry.create_client_for_provider(&provider_name).await.map_err(|e| format!("LLM client creation failed: {}", e))?,
@@ -509,8 +509,8 @@ impl SkillsService {
                             } else {
                                 return Err("LLM service not available via Context".to_string());
                             }
-                        } else if let Some(factory) = ctx.get::<crate::context_services::LlmFactoryService>() {
-                            let registry = factory.0.registry();
+                        } else if let Some(factory) = ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>() {
+                            let registry = factory.registry();
                             let client = match registry.create_client_for_model(&model_name).await {
                                 Ok(c) => c,
                                 Err(_) => registry.create_client_for_provider(&provider_name).await.map_err(|e| format!("LLM client creation failed: {}", e))?,
@@ -624,8 +624,8 @@ impl SkillsService {
                 } else {
                     ("default".to_string(), model_tier.clone())
                 };
-                let response = if let Some(factory) = ctx.get::<crate::context_services::LlmFactoryService>() {
-                    let registry = factory.0.registry();
+                let response = if let Some(factory) = ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>() {
+                    let registry = factory.registry();
                     let client = match registry.create_client_for_model(&model_name).await {
                         Ok(c) => c,
                         Err(_) => registry.create_client_for_provider(&provider_name).await.map_err(|e| format!("LLM client creation failed: {}", e))?,

@@ -322,6 +322,7 @@ impl RuntimeToolRegistry {
     pub fn validate_execution_config(tool_type: &str, execution_config: &Value) -> Result<()> {
         match tool_type {
             "http" => HttpTool::parse_config(execution_config).map(|_| ()),
+            "rhai" => crate::rhai_tool::RhaiTool::parse_config(execution_config).map(|_| ()),
             "script" => ScriptTool::parse_config(execution_config).map(|_| ()),
             "sql" => Self::validate_sql_config(execution_config),
             "mcp" => Self::validate_mcp_config(execution_config),
@@ -367,6 +368,7 @@ impl RuntimeToolRegistry {
         let result = Self::validate_execution_config(&row.tool_type, &row.execution_config)
             .and_then(|()| match row.tool_type.as_str() {
                 "http" => Self::materialise_http(row),
+                "rhai" => Self::materialise_rhai(row),
                 "script" => Self::materialise_script(row),
                 "sql" => Self::materialise_sql(row),
                 "mcp" => Self::materialise_mcp(row),
@@ -394,6 +396,16 @@ impl RuntimeToolRegistry {
             row.parameters_schema.clone(),
             config,
         )))
+    }
+
+    fn materialise_rhai(row: &RuntimeTool) -> Result<Arc<dyn Tool>> {
+        let config = crate::rhai_tool::RhaiTool::parse_config(&row.execution_config)?;
+        Ok(Arc::new(crate::rhai_tool::RhaiTool::new(
+            &row.name,
+            &row.description,
+            row.parameters_schema.clone(),
+            config,
+        )?))
     }
 
     #[cfg(any(feature = "postgres", test))]

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-publish = false
+publish = true
 description = "LLM provider clients and abstractions for A.R.E.S"
 
 [features]

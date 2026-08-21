@@ -21,7 +21,7 @@ Ground-up Rust redesign that adopts Cordis ideas (Γ^∞ = μΓ. Γ × (Γ→Γ)
 
 - `src/lib.rs` god-struct eliminated; `build_router(ctx: Arc<Context>)` is primary, `base_router` deprecated shim retained one release.
 - `run_server` shrinks from 17 steps to ~8 `plugin` calls; `inventory` static registration replaces manual wiring.
-- `rust-version = "1.91"` stable, Axum 0.8 `:param` retained, `features` both `openai,postgres,mcp` and `no-default` must pass (`bkataru` + `ares.toml` symlink ignored).
+- `rust-version = "1.98"` stable, Axum 0.8 `:param` retained, `features` both `openai,postgres,mcp` and `no-default` must pass (`bkataru` + `ares.toml` symlink ignored).
 - Generic, provider-agnostic, zero client-specific code preserved.
 
 ### Docs

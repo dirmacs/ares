@@ -1,7 +1,7 @@
 # Cordis → rust mapping (phase 0, step 5)
 
 Source: DeepSeek Cordis paper ("A Programming model for Spatiotemporal Composability", Aug 2026, `cordiverse/cordis` + `cordiverse/paper`) and DeepSeek Harness (`deepseek-ai/deepseek-harness`, TS, ~60 packages, 12 layers).
-Target: ARES `/opt/ares` (dirmacs/ares v0.7.3, 11 crates + `ares-server` root, Rust 1.91, Tokio/Axum).
+Target: ARES `/opt/ares` (dirmacs/ares v0.7.3, 11 crates + `ares-server` root, Rust 1.98, Tokio/Axum).
 This doc is strategy only, no code changes. Spike crate `crates/ares-cordis-core` (Phase 1) must prove the theorems before adoption.
 
 ---
@@ -405,13 +405,13 @@ impl RegistryService {
 }
 ```
 
-Static registration (preferred production): `inventory`/`linkme` (compile-time plugin set), real surface is `RegistryService::plugin` (single-source discipline); `inventory::submit!` / `linkme::distributed_slice` of `fn(&Arc<Context>) -> Result<FiberId, CordisError>` is the future shortcut once crate count stabilizes (see `crates/ares-cordis-core/src/lib.rs` HMR section and `Wiring` task). Dynamic HMR (dev only, behind `#[cfg(feature = "hmr")]` off by default): `libloading` path that `dlopen`s `.so` and calls `Plugin::apply` via `extern "C"`; if `libloading` ABI fragility blocks (Rust `1.91` toolchain coupling, `unsafe` soundness), fall back to file-watch + full fiber reload (re-read config/TOON), 90% of value per plan, see `watcher` fallback below.
+Static registration (preferred production): `inventory`/`linkme` (compile-time plugin set), real surface is `RegistryService::plugin` (single-source discipline); `inventory::submit!` / `linkme::distributed_slice` of `fn(&Arc<Context>) -> Result<FiberId, CordisError>` is the future shortcut once crate count stabilizes (see `crates/ares-cordis-core/src/lib.rs` HMR section and `Wiring` task). Dynamic HMR (dev only, behind `#[cfg(feature = "hmr")]` off by default): `libloading` path that `dlopen`s `.so` and calls `Plugin::apply` via `extern "C"`; if `libloading` ABI fragility blocks (Rust `1.98` toolchain coupling, `unsafe` soundness), fall back to file-watch + full fiber reload (re-read config/TOON), 90% of value per plan, see `watcher` fallback below.
 
 ### Hmr yagni decision (plan assumptions §contingencies)
 
 Decision: DEFER `libloading` HMR, keep file-watch + `Fiber::reload` as production path.
 
-- Rationale: `libloading::Library::new` + `Symbol<extern "C">` requires `unsafe`, a stable `repr(C)` ABI boundary, and the `.so` to be built with the exact same Rust toolchain (`1.91`). ABI drift across patches, `rust-doctor` soundness flags, and `Box::leak` ownership hazards make `libloading` too brittle for a generic runtime. As plan contingency states: "If `libloading` HMR proves too complex for Rust (dynamic library ABI fragility, `unsafe` surface), fall back to file-watch + full fiber reload without dynamic code swapping … `file watcher still triggers Fiber::reload()` by re-reading config/TOON, which already covers 90% of self-evolution value. Dynamic code HMR can be deferred to a later phase behind `#[cfg(feature = "hmr")]` without blocking the core redesign."
+- Rationale: `libloading::Library::new` + `Symbol<extern "C">` requires `unsafe`, a stable `repr(C)` ABI boundary, and the `.so` to be built with the exact same Rust toolchain (`1.98`). ABI drift across patches, `rust-doctor` soundness flags, and `Box::leak` ownership hazards make `libloading` too brittle for a generic runtime. As plan contingency states: "If `libloading` HMR proves too complex for Rust (dynamic library ABI fragility, `unsafe` surface), fall back to file-watch + full fiber reload without dynamic code swapping … `file watcher still triggers Fiber::reload()` by re-reading config/TOON, which already covers 90% of self-evolution value. Dynamic code HMR can be deferred to a later phase behind `#[cfg(feature = "hmr")]` without blocking the core re…
 - Fallback implemented: `crates/ares-cordis-core/src/watcher.rs` (`watch_many` / `watch_cordis_entries`) uses `notify::RecommendedWatcher` (debounced `500 ms` + `100 ms` settle, same as `AresConfigManager::start_watching`) to watch `config/agents/*.toon` (recursive) and `config/entries.json` (or `config/cordis-entries.toon` parent dir). On `Modify`/`Create` it calls `ReflectService::notify(tid)` which BFS-walks `dependents` and spawns `Fiber::refresh` (epoch recompute via `compute_epoch`). No restart, no `libloading`. Logs `Configuration hot-reloaded successfully via Cordis watch` (generalizes `AresConfigManager`'s `Configuration hot-reloaded successfully` which is already proven on random-port E2E `39476`/`39120`, see `docs/cordis-redesign.md` §9/9b).
 - Stub preserved: `crates/ares-cordis-core/src/hmr.rs` is `#[cfg(feature = "hmr")]` (Cargo feature `hmr = ["dep:libloading"]`, off by default). It shows `libloading::Library::new` + `get::<HmrEntryFn>` + owned `HmrLibrary` holder (RAII, no `Box::leak`) calling `cordis_plugin_apply` (`extern "C"`). Enable with `cargo build --features hmr` and a `.so` built with the same toolchain. Not invoked by `src/main.rs` or `ReflectService`, `watcher` is the production path.
 - `Cargo.toml`: `[features] hmr = ["dep:libloading"]` (`libloading 0.8` optional, `notify 8.2.0` always for `watcher`), `default = []`.
@@ -441,6 +441,6 @@ Per YAGNI (Phase 1, §8) + HMR deferral above:
 
 ## 13. Consequences & alternatives
 
-- If `async fn in trait` causes `dyn` issues, use `async_trait` only for that trait and document why (Rust 1.91 floor, 1.75+ stable for `async fn in trait`, but `dyn Service` may need `async_trait`, prefer `impl Future` return).
+- If `async fn in trait` causes `dyn` issues, use `async_trait` only for that trait and document why (Rust 1.98 floor, 1.75+ stable for `async fn in trait`, but `dyn Service` may need `async_trait`, prefer `impl Future` return).
 - If `TypeId` + `HashMap` proves too coarse (downcasting ergonomics), evaluate `anymap`/`typemap` crates, but hand-rolled `HashMap<TypeId, Box<dyn Any>>` is sufficient for spike.
 - If epoch String concatenation bloats logs, switch to `sha2` digest and keep `:uid1:uid2` only in `tracing::debug!`.

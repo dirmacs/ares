@@ -16,8 +16,8 @@
 //! ares-server --config my-config.toml
 //! ```
 
-#![allow(deprecated)]
-#![allow(dead_code)]
+#![allow(deprecated, reason = "AppState alias and CLI init bridge re-export deprecated shims for one release")]
+#![allow(dead_code, reason = "CLI init/rag paths unused in lib build; keep for binary")]
 
 #[cfg(all(feature = "postgres", feature = "mcp"))]
 use ares::mcp::McpRegistry;

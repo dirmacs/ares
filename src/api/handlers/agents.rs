@@ -1,6 +1,9 @@
 //! Built-in agent listing handler.
 
 use crate::{types::AgentType, AppState};
+use std::sync::Arc;
+use crate::AppState;
+use ares_cordis_core::Context;
 use axum::{extract::State, Json};
 use serde::Serialize;
 
@@ -36,7 +39,7 @@ pub(crate) fn builtin_agent_catalog() -> Vec<AgentInfo> {
 }
 
 /// Lists all available built-in agents.
-pub async fn list_agents(State(_state): State<AppState>) -> Json<Vec<AgentInfo>> {
+pub async fn list_agents(State(_ctx): State<Arc<Context>>) -> Json<Vec<AgentInfo>> {
     Json(builtin_agent_catalog())
 }
 

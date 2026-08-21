@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use ares_cordis_core::Context;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -144,7 +145,7 @@ pub struct LoopSummary {
 
 /// POST /loops/start — spawn a new LoopRunner task and return its ID.
 pub async fn start_loop(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(req): Json<StartLoopRequest>,
 ) -> Result<Json<StartLoopResponse>> {
     let id = Uuid::new_v4().to_string();
@@ -167,10 +168,10 @@ pub async fn start_loop(
         finish_reason: None,
     };
 
-    state.loop_registry.insert(entry).await;
+    ctx.get::<crate::context_services::LoopRegistryService>().expect("not provided").0.insert(entry).await;
 
     // Clone handles needed by the background task.
-    let registry = state.loop_registry.clone();
+    let registry = ctx.get::<crate::context_services::LoopRegistryService>().expect("not provided").0.clone();
     let loop_id = id.clone();
     let agent_name = req.agent.clone();
     let prompt = req.prompt.clone();
@@ -204,16 +205,16 @@ pub async fn start_loop(
 }
 
 /// GET /loops — list all loops with their current state summaries.
-pub async fn list_loops(State(state): State<AppState>) -> Json<Vec<LoopSummary>> {
-    Json(state.loop_registry.list().await)
+pub async fn list_loops(State(ctx): State<Arc<Context>>) -> Json<Vec<LoopSummary>> {
+    Json(ctx.get::<crate::context_services::LoopRegistryService>().expect("not provided").0.list().await)
 }
 
 /// DELETE /loops/{id} — set the stop flag; the runner will halt after the current tick.
 pub async fn stop_loop(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    if state.loop_registry.stop(&id).await {
+    if ctx.get::<crate::context_services::LoopRegistryService>().expect("not provided").0.stop(&id).await {
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound(format!("Loop '{}' not found", id)))
@@ -333,8 +334,8 @@ mod tests {
             started_at_epoch_secs: 100,
             last_tick_epoch_secs: 130,
         };
-        assert!(registry.update_state("loop-state", state.clone()).await);
-        assert!(!registry.update_state("missing", state.clone()).await);
+        assert!(registry.update_state("loop-state", ctx.clone()).await);
+        assert!(!registry.update_state("missing", ctx.clone()).await);
 
         let list = registry.list().await;
         let entry = list.iter().find(|l| l.id == "loop-state").expect("entry");
@@ -428,7 +429,7 @@ mod tests {
             started_at_epoch_secs: 100,
             last_tick_epoch_secs: 200,
         };
-        let json = serde_json::to_string(&state).unwrap();
+        let json = serde_json::to_string(&ctx).unwrap();
         let back: LoopModeState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, state);
     }

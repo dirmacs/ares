@@ -27,7 +27,8 @@ pub async fn list_pipelines(
             "tenant_id query param is required".into(),
         ));
     }
-    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_schedules::PipelineStore::new(&__pool_1);
     let pipelines = store.list_pipelines(tenant_id).await?;
     Ok(Json(pipelines))
 }
@@ -36,7 +37,8 @@ pub async fn create_pipeline(
     State(ctx): State<Arc<Context>>,
     Json(req): Json<db_schedules::CreatePipelineRequest>,
 ) -> Result<Json<db_schedules::AgentPipeline>> {
-    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_schedules::PipelineStore::new(&__pool_2);
     let pipeline = store.create_pipeline(&req).await?;
 
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
@@ -61,7 +63,8 @@ pub async fn list_tenant_pipelines(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<db_schedules::AgentPipeline>>> {
-    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_3 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_schedules::PipelineStore::new(&__pool_3);
     let pipelines = store.list_pipelines(&tenant_id).await?;
     Ok(Json(pipelines))
 }
@@ -72,7 +75,8 @@ pub async fn create_tenant_pipeline(
     Json(mut req): Json<db_schedules::CreatePipelineRequest>,
 ) -> Result<Json<db_schedules::AgentPipeline>> {
     req.tenant_id = tenant_id;
-    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_4 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_schedules::PipelineStore::new(&__pool_4);
     let pipeline = store.create_pipeline(&req).await?;
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = pipeline.tenant_id.clone();
@@ -96,7 +100,8 @@ pub async fn update_tenant_pipeline(
     Path((tenant_id, id)): Path<(String, String)>,
     Json(req): Json<db_schedules::CreatePipelineRequest>,
 ) -> Result<Json<db_schedules::AgentPipeline>> {
-    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_5 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_schedules::PipelineStore::new(&__pool_5);
     let pipeline = store
         .update_pipeline(&tenant_id, &id, &req)
         .await?
@@ -126,7 +131,8 @@ pub async fn delete_tenant_pipeline(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let store = db_schedules::PipelineStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_6 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_schedules::PipelineStore::new(&__pool_6);
     let rows = store.delete_pipeline_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(

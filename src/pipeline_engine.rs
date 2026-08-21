@@ -149,7 +149,8 @@ pub(crate) async fn execute_pipeline_with_origin(
     origin: Option<PipelineOrigin>,
     app_state: &AppState,
 ) -> Result<Vec<String>, String> {
-    let store = PipelineStore::new(&app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_1 = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = PipelineStore::new(&__pool_1);
     let pipelines = store
         .get_pipelines_for_source(tenant_id, source_agent_name)
         .await

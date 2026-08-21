@@ -231,6 +231,8 @@ pub(crate) async fn enforce_quota(state: &AppState, tc: &TenantContext) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::handlers::v1::chat::research_model_allowlist_decision;
+    use crate::api::handlers::v1::stream::{sandbox_tool_call_requests, SandboxToolTraceSpec};
     use axum::body::to_bytes;
     use chrono::TimeZone;
 

@@ -21,7 +21,8 @@ pub async fn list_health_metrics(
     State(ctx): State<Arc<Context>>,
     Query(q): Query<ListHealthMetricsQuery>,
 ) -> Result<Json<Vec<AgentHealthMetrics>>> {
-    let store = RunHistoryStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = RunHistoryStore::new(&__pool_1);
     let metrics = store
         .list_health_metrics(&q.tenant_id, q.limit, q.offset)
         .await?;
@@ -33,7 +34,8 @@ pub async fn list_model_metrics(
     State(ctx): State<Arc<Context>>,
     Query(q): Query<ListModelMetricsQuery>,
 ) -> Result<Json<Vec<ModelHealthMetrics>>> {
-    let store = RunHistoryStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = RunHistoryStore::new(&__pool_2);
     let metrics = store
         .list_model_metrics(&q.tenant_id, q.limit, q.offset)
         .await?;
@@ -45,7 +47,8 @@ pub async fn insert_health_metrics(
     State(ctx): State<Arc<Context>>,
     Json(req): Json<AgentHealthMetrics>,
 ) -> Result<Json<AgentHealthMetrics>> {
-    let store = RunHistoryStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_3 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = RunHistoryStore::new(&__pool_3);
     let metrics = store.insert_health_metrics(&req).await?;
     Ok(Json(metrics))
 }
@@ -54,7 +57,8 @@ pub async fn list_tenant_model_tiers(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<db_tiers::TenantModelTier>>> {
-    let store = db_tiers::TenantModelTierStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_4 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_tiers::TenantModelTierStore::new(&__pool_4);
     let tiers = store.list_for_tenant(&tenant_id).await?;
     Ok(Json(tiers))
 }
@@ -63,7 +67,8 @@ pub async fn get_tenant_model_tier(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, tier_name)): Path<(String, String)>,
 ) -> Result<Json<db_tiers::TenantModelTier>> {
-    let store = db_tiers::TenantModelTierStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_5 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_tiers::TenantModelTierStore::new(&__pool_5);
     let tier = store.get(&tenant_id, &tier_name).await?.ok_or_else(|| {
         AppError::NotFound(format!("tier {tier_name} not found for tenant {tenant_id}"))
     })?;
@@ -84,7 +89,8 @@ pub async fn set_tenant_model_tier(
         )));
     }
 
-    let store = db_tiers::TenantModelTierStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_6 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_tiers::TenantModelTierStore::new(&__pool_6);
     let tier = store.set(&tenant_id, &tier_name, &req).await?;
 
     let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
@@ -109,7 +115,8 @@ pub async fn delete_tenant_model_tier(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, tier_name)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let store = db_tiers::TenantModelTierStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_7 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_tiers::TenantModelTierStore::new(&__pool_7);
     let rows = store.delete(&tenant_id, &tier_name).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(

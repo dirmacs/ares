@@ -26,7 +26,7 @@ ares-types = { workspace = true }
 ares-config = { workspace = true }
 ares-tools = { workspace = true }
 ares-db = { workspace = true, optional = true }
-ares-cordis-core = { path = "../ares-cordis-core" }
+ares-cordis-core = { workspace = true }
 chrono = { workspace = true }
 sqlx = { workspace = true, optional = true }
 async-stream = "0.3.6"

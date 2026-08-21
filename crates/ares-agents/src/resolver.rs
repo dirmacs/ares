@@ -80,7 +80,6 @@ use ares_cordis_core::{CordisError, Service};
 use ares_db::TenantDb;
 
 use crate::registry::AgentRegistry;
-use crate::Agent;
 
 /// Unified agent resolver — single place that resolves agents with ordered
 /// precedence `tenant_db tenant_agents → community public → system AgentRegistry`.
@@ -94,67 +93,100 @@ pub struct AgentResolverService {
     pub tenant_db: Arc<TenantDb>,
     /// System registry (TOML/TOON) fallback.
     pub agent_registry: Arc<AgentRegistry>,
+    /// Static config for system-tier fallback.
+    pub config: Arc<AresConfig>,
 }
 
 impl AgentResolverService {
     /// Create a new resolver service.
-    pub fn new(tenant_db: Arc<TenantDb>, agent_registry: Arc<AgentRegistry>) -> Self {
+    pub fn new(
+        tenant_db: Arc<TenantDb>,
+        agent_registry: Arc<AgentRegistry>,
+        config: Arc<AresConfig>,
+    ) -> Self {
         Self {
             tenant_db,
             agent_registry,
+            config,
         }
     }
 
-    /// Resolve an agent by name with optional tenant scoping.
+    /// Resolve an agent by name with optional tenant scoping — system-only, no DB I/O.
     ///
-    /// Ordered precedence:
-    /// 1. `tenant_db` `tenant_agents` (tenant-owned)
-    /// 2. `community public` (shared)
-    /// 3. `system AgentRegistry` (TOML/TOON)
-    ///
-    /// Reuses existing `resolve_agent_for_tenant` logic:
-    /// // TODO: delegate to `ares_db::tenant_agents::resolve_agent_config` + `resolver::resolve_from_candidates`
-    /// // and then `agent_registry.create_agent` or tenant-specific ConfigurableAgent.
+    /// Ordered precedence for the sync path is system-only:
+    /// uses `config.get_agent(name)` (and registry fallback) via
+    /// `system_agent_from_config` + `resolve_from_candidates`.
     pub fn resolve(
         &self,
         name: &str,
-        tenant: Option<TenantId>,
-    ) -> std::result::Result<Arc<dyn Agent>, AppError> {
-        // Stub: check system registry presence and synthesize a ConfigurableAgent.
-        // Full implementation will:
-        // 1) if let Some(tid) = tenant.as_deref() {
-        //        if let Ok(row) = /* tenant_agents::get_tenant_agent(pool, tid, name).await */ {
-        //            return Ok(Arc::new(ConfigurableAgent::from_tenant_row(...)));
-        //        }
-        //        if let Some(public) = /* public agent lookup */ { return Ok(public); }
-        //    }
-        // 2) if let Ok(agent) = self.agent_registry.create_agent(name).await { return Ok(Arc::new(agent)); }
-        // For now, verify system registry has the agent and return a placeholder error
-        // that keeps `cargo check` green without async DB I/O.
-        if self.agent_registry.has_agent(name) {
-            // TODO: materialise Arc<dyn Agent> via `agent_registry.create_agent(name).await`
-            // Cannot await in sync stub; caller should use async variant in future phase.
-            return Err(AppError::Configuration(format!(
-                "Agent '{name}' found in system registry but sync stub cannot materialise without async (tenant={:?})",
-                tenant
-            )));
-        }
-        // Also check tenant scope placeholder
-        if let Some(tid) = tenant {
-            // TODO: reuse existing `resolve_agent_for_tenant` / `resolve_from_candidates` with DB fetch
-            let _ = tid;
-        }
-        Err(AppError::NotFound(format!("Agent '{name}' not found")))
+        _tenant: Option<TenantId>,
+    ) -> std::result::Result<(UserAgent, AgentSource), AppError> {
+        let system_config_owned = self.agent_registry.get_config_any(name);
+        let system_config = self
+            .config
+            .get_agent(name)
+            .or(system_config_owned.as_ref());
+        resolve_from_candidates(None, None, system_config, name, chrono::Utc::now().timestamp())
     }
 
-    /// Async variant used when DB access is required.
+    /// Async 3-tier resolution: `tenant_db` user → community public → system config.
+    ///
+    /// Mirrors the free function `resolve_agent` but uses `self.tenant_db.pool()`
+    /// via `sqlx` and `self.config`/`self.agent_registry` for the system tier.
     pub async fn resolve_async(
         &self,
-        _name: &str,
+        name: &str,
+        user_id: &str,
+    ) -> std::result::Result<(UserAgent, AgentSource), AppError> {
+        let user_agent = sqlx::query_as::<_, UserAgent>(
+            "SELECT * FROM user_agents WHERE user_id = $1 AND name = $2",
+        )
+        .bind(user_id)
+        .bind(name)
+        .fetch_optional(self.tenant_db.pool())
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        let public_agent = sqlx::query_as::<_, UserAgent>(
+            "SELECT * FROM user_agents WHERE is_public = true AND name = $1 LIMIT 1",
+        )
+        .bind(name)
+        .fetch_optional(self.tenant_db.pool())
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        let system_config_owned = self.agent_registry.get_config_any(name);
+        let system_config = self
+            .config
+            .get_agent(name)
+            .or(system_config_owned.as_ref());
+        resolve_from_candidates(
+            user_agent,
+            public_agent,
+            system_config,
+            name,
+            chrono::Utc::now().timestamp(),
+        )
+    }
+
+    /// Compatibility wrapper retaining the original `Option<TenantId>` signature.
+    /// Treats `tenant` as `user_id` when present; falls back to system-only otherwise.
+    pub async fn resolve_async_for_tenant(
+        &self,
+        name: &str,
+        tenant: Option<TenantId>,
+    ) -> std::result::Result<(UserAgent, AgentSource), AppError> {
+        let user_id = tenant.as_deref().unwrap_or("");
+        self.resolve_async(name, user_id).await
+    }
+
+    /// Tenant-aware async resolution with explicit `user_id` and optional `tenant` label.
+    /// The `tenant` label is currently unused but preserved for `ctx.isolate` compatibility.
+    pub async fn resolve_async_with_tenant(
+        &self,
+        name: &str,
         _tenant: Option<TenantId>,
-    ) -> std::result::Result<Arc<dyn Agent>, AppError> {
-        // TODO: async implementation that queries `tenant_db.pool()` for tenant_agents
-        Err(AppError::NotFound("async resolver stub".into()))
+        user_id: &str,
+    ) -> std::result::Result<(UserAgent, AgentSource), AppError> {
+        self.resolve_async(name, user_id).await
     }
 }
 

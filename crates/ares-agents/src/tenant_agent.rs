@@ -1116,19 +1116,19 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64;
-            sqlx::query!(
+            sqlx::query(
                 r#"
                 INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, true, $7, $7)
                 "#,
-                &id,
-                &tenant_id,
-                "product",
-                "Broken",
-                Option::<String>::None,
-                &serde_json::json!({ "model": "default", "parallel_tools": "yes" }),
-                now_ts
             )
+            .bind(&id)
+            .bind(&tenant_id)
+            .bind("product")
+            .bind("Broken")
+            .bind(Option::<String>::None)
+            .bind(&serde_json::json!({ "model": "default", "parallel_tools": "yes" }))
+            .bind(now_ts)
             .execute(&pool)
             .await
             .expect("insert invalid tenant config via raw SQL");
@@ -1160,19 +1160,19 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64;
-            sqlx::query!(
+            sqlx::query(
                 r#"
                 INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, true, $7, $7)
                 "#,
-                &id,
-                &tenant_id,
-                "product",
-                "Broken",
-                Option::<String>::None,
-                &serde_json::json!({ "model": "" }),
-                now_ts
             )
+            .bind(&id)
+            .bind(&tenant_id)
+            .bind("product")
+            .bind("Broken")
+            .bind(Option::<String>::None)
+            .bind(&serde_json::json!({ "model": "" }))
+            .bind(now_ts)
             .execute(&pool)
             .await
             .expect("insert empty-model tenant config via raw SQL");

@@ -239,6 +239,106 @@ pub fn rhai_value_to_json(dynamic: &Dynamic) -> Value {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers extracted to reduce `Tool::execute` complexity (DRY, one level)
+// ---------------------------------------------------------------------------
+
+fn is_not_found_error(msg: &str) -> bool {
+    msg.contains("Function not found")
+        || msg.contains("not found")
+        || msg.contains("unknown function")
+        || msg.contains("Unable to find function")
+}
+
+fn is_arity_error(msg: &str) -> bool {
+    msg.contains("parameter") || msg.contains("argument") || msg.contains("signature")
+}
+
+fn build_scope(args: &Value) -> std::result::Result<(Dynamic, Scope<'static>), String> {
+    let dynamic = rhai::serde::to_dynamic(args).map_err(|e| format!("args conversion failed: {e}"))?;
+    let mut scope = Scope::new();
+    scope.push_dynamic("args", dynamic.clone());
+    if let Some(map) = dynamic.clone().try_cast::<rhai::Map>() {
+        for (k, v) in map {
+            let _ = scope.push_dynamic(k.to_string(), v);
+        }
+    } else if let Some(obj) = args.as_object() {
+        for (k, v) in obj {
+            if let Ok(d) = rhai::serde::to_dynamic(v.clone()) {
+                let _ = scope.push_dynamic(k.clone(), d);
+            }
+        }
+    }
+    Ok((dynamic, scope))
+}
+
+fn fallback_direct_eval(
+    engine: &Engine,
+    ast: &AST,
+    entry: &str,
+    scope: &mut Scope,
+) -> std::result::Result<Dynamic, String> {
+    match engine.eval_ast_with_scope::<Dynamic>(scope, ast) {
+        Ok(v) => Ok(v),
+        Err(e2) => {
+            let msg2 = e2.to_string();
+            if is_not_found_error(&msg2) {
+                match engine.call_fn::<Dynamic>(scope, ast, entry, ()) {
+                    Ok(v) => Ok(v),
+                    Err(e3) => Err(e3.to_string()),
+                }
+            } else {
+                Err(msg2)
+            }
+        }
+    }
+}
+
+fn fallback_zero_arg(
+    engine: &Engine,
+    ast: &AST,
+    entry: &str,
+    scope: &mut Scope,
+) -> std::result::Result<Dynamic, String> {
+    match engine.call_fn::<Dynamic>(scope, ast, entry, ()) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn invoke_with_fallbacks(
+    engine: &Engine,
+    ast: &AST,
+    entry: &str,
+    scope: &mut Scope,
+    arg: Dynamic,
+) -> std::result::Result<Dynamic, String> {
+    match engine.call_fn::<Dynamic>(scope, ast, entry, (arg.clone(),)) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let msg = e.to_string();
+            if is_not_found_error(&msg) {
+                return fallback_direct_eval(engine, ast, entry, scope);
+            }
+            if is_arity_error(&msg) {
+                return fallback_zero_arg(engine, ast, entry, scope).or(Err(msg));
+            }
+            Err(msg)
+        }
+    }
+}
+
+fn execute_blocking(
+    engine: &Engine,
+    ast: &AST,
+    entry: &str,
+    args: Value,
+) -> std::result::Result<Value, String> {
+    let (arg, mut scope) = build_scope(&args)?;
+    let dynamic_result = invoke_with_fallbacks(engine, ast, entry, &mut scope, arg)?;
+    Ok(rhai_value_to_json(&dynamic_result))
+}
+
 #[async_trait]
 impl Tool for RhaiTool {
     fn name(&self) -> &str {
@@ -258,92 +358,13 @@ impl Tool for RhaiTool {
         let ast = self.ast.clone();
         let entry = self.entry.clone();
         let timeout_dur = self.timeout;
-
-        // spawn_blocking to avoid blocking Axum worker thread
-        let blocking = tokio::task::spawn_blocking(move || -> std::result::Result<Value, String> {
-            // Value -> Dynamic via rhai serde
-            let dynamic = rhai::serde::to_dynamic(&args).map_err(|e| format!("args conversion failed: {e}"))?;
-
-            let mut scope = Scope::new();
-            // push "args" as Dynamic
-            scope.push_dynamic("args", dynamic.clone());
-
-            // push individual keys for convenience if args is object
-            // Use try_cast to Map (BTreeMap<Identifier, Dynamic>)
-            if let Some(map) = dynamic.clone().try_cast::<rhai::Map>() {
-                for (k, v) in map {
-                    // k is Identifier (SmartString); push as variable
-                    // ignore duplicate push errors (e.g., invalid identifier)
-                    let _ = scope.push_dynamic(k.to_string(), v);
-                }
-            } else if let Some(obj) = args.as_object() {
-                // Fallback: iterate JSON object directly if Dynamic wasn't a Map
-                // (shouldn't happen since serde conversion of object -> Map)
-                for (k, v) in obj {
-                    if let Ok(d) = rhai::serde::to_dynamic(v.clone()) {
-                        let _ = scope.push_dynamic(k.clone(), d);
-                    }
-                }
-            }
-
-            // Try call_fn with single Dynamic argument first
-            let call_result: std::result::Result<Dynamic, Box<rhai::EvalAltResult>> =
-                engine.call_fn(&mut scope, &ast, &entry, (dynamic.clone(),));
-
-            let dynamic_result = match call_result {
-                Ok(v) => v,
-                Err(e) => {
-                    let msg = e.to_string();
-                    let is_not_found = msg.contains("Function not found")
-                        || msg.contains("not found")
-                        || msg.contains("unknown function")
-                        || msg.contains("Unable to find function");
-                    if is_not_found {
-                        // fallback: evaluate AST directly (script without entry function)
-                        // Need a fresh scope clone? reuse scope which already has `args`
-                        match engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast) {
-                            Ok(v) => v,
-                            Err(e2) => {
-                                let msg2 = e2.to_string();
-                                // if eval also failed because function definition returns unit,
-                                // try call with empty args as alternative entry signature
-                                if msg2.contains("Function not found") || msg2.contains("not found") {
-                                    // try zero-arg call
-                                    match engine.call_fn::<Dynamic>(&mut scope, &ast, &entry, ()) {
-                                        Ok(v) => v,
-                                        Err(e3) => return Err(format!("{e3}")),
-                                    }
-                                } else {
-                                    return Err(format!("{e2}"));
-                                }
-                            }
-                        }
-                    } else if msg.contains("parameter") || msg.contains("argument") || msg.contains("signature") {
-                        // arity mismatch — try zero-arg version
-                        match engine.call_fn::<Dynamic>(&mut scope, &ast, &entry, ()) {
-                            Ok(v) => v,
-                            Err(_) => return Err(msg),
-                        }
-                    } else {
-                        return Err(msg);
-                    }
-                }
-            };
-
-            Ok(rhai_value_to_json(&dynamic_result))
-        });
-
-        // apply timeout
+        let blocking = tokio::task::spawn_blocking(move || execute_blocking(&engine, &ast, &entry, args));
         let timed = tokio::time::timeout(timeout_dur, blocking).await;
         match timed {
             Ok(join_res) => match join_res {
                 Ok(inner) => match inner {
                     Ok(v) => Ok(v),
-                    Err(e) => {
-                        // Map operation limit / other runtime errors to External
-                        // but syntax errors should be Configuration; we treat all runtime as External
-                        Err(AppError::External(format!("Rhai error: {e}")))
-                    }
+                    Err(e) => Err(AppError::External(format!("Rhai error: {e}"))),
                 },
                 Err(join_err) => Err(AppError::Internal(format!("Rhai join error: {join_err}"))),
             },
@@ -371,6 +392,36 @@ mod tests {
             max_call_levels: None,
         };
         RhaiTool::new("test", "test tool", json!({}), cfg).expect("tool creation")
+    }
+
+    /// Shared helper that executes a Rhai script and asserts the JSON result
+    /// equals `expected`. Extracted to eliminate the 84% near-duplicate bodies
+    /// between `test_execute_simple_add` and `test_json_result` reported by
+    /// rust-doctor. Plain prose: create tool, execute, compare.
+    async fn assert_execute_success(script: &str, input: Value, expected: Value) {
+        let tool = mk_tool(script, None, None, None);
+        let out = tool.execute(input.clone()).await.expect("execute should succeed");
+        assert_eq!(out, expected, "script `{script}` input `{input:?}`");
+    }
+
+    /// Shared helper that runs an infinite-loop script and asserts it fails
+    /// with a message containing one of `needles`. Extracted to eliminate the
+    /// 68-node exact duplicate bodies between `test_max_ops_exceeded` and
+    /// `test_timeout` (rust-doctor duplicate_function_body).
+    async fn assert_execution_fails(
+        script: &str,
+        max_ops: Option<u64>,
+        timeout_ms: Option<u64>,
+        needles: &[&str],
+    ) {
+        let tool = mk_tool(script, None, max_ops, timeout_ms);
+        let res = tool.execute(json!({})).await;
+        assert!(res.is_err(), "expected error for script `{script}`, got {res:?}");
+        let msg = res.unwrap_err().to_string().to_lowercase();
+        assert!(
+            needles.iter().any(|n| msg.contains(&n.to_lowercase())),
+            "msg `{msg}` should contain one of {needles:?}"
+        );
     }
 
     #[test]
@@ -425,36 +476,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_simple_add() {
-        let tool = mk_tool(r#"fn execute(args){ args["a"] + args["b"] }"#, None, None, None);
-        let out = tool.execute(json!({"a": 2, "b": 3})).await.expect("execute");
         // Rhai ints map to JSON numbers
-        assert_eq!(out, json!(5));
+        assert_execute_success(
+            r#"fn execute(args){ args["a"] + args["b"] }"#,
+            json!({"a": 2, "b": 3}),
+            json!(5),
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn test_max_ops_exceeded() {
         // low max_ops should trigger quickly
-        let tool = mk_tool("fn execute(args){ while true {} }", None, Some(1000), Some(2000));
-        let res = tool.execute(json!({})).await;
-        assert!(res.is_err(), "expected max ops error, got {res:?}");
-        let msg = res.unwrap_err().to_string().to_lowercase();
-        assert!(
-            msg.contains("operation") || msg.contains("exceed") || msg.contains("rhai error"),
-            "msg was {msg}"
-        );
+        assert_execution_fails(
+            "fn execute(args){ while true {} }",
+            Some(1000),
+            Some(2000),
+            &["operation", "exceed", "rhai error"],
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn test_timeout() {
         // very low timeout + huge max_ops so timeout triggers before ops limit
-        let tool = mk_tool("fn execute(args){ while true {} }", None, Some(1_000_000_000), Some(50));
-        let res = tool.execute(json!({})).await;
-        assert!(res.is_err(), "expected timeout");
-        let msg = res.unwrap_err().to_string().to_lowercase();
-        assert!(
-            msg.contains("timed out") || msg.contains("timeout") || msg.contains("rhai"),
-            "msg was {msg}"
-        );
+        assert_execution_fails(
+            "fn execute(args){ while true {} }",
+            Some(1_000_000_000),
+            Some(50),
+            &["timed out", "timeout", "rhai"],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -472,18 +524,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_result() {
-        let tool = mk_tool(
+        assert_execute_success(
             r#"fn execute(args){ #{"sum": args["x"] + args["y"], "greeting": "hello " + args["name"] } }"#,
-            None,
-            None,
-            None,
-        );
-        let out = tool
-            .execute(json!({"x": 10, "y": 5, "name": "world"}))
-            .await
-            .expect("execute");
-        assert_eq!(out["sum"], json!(15));
-        assert_eq!(out["greeting"], json!("hello world"));
+            json!({"x": 10, "y": 5, "name": "world"}),
+            json!({"sum": 15, "greeting": "hello world"}),
+        )
+        .await;
     }
 
     #[tokio::test]

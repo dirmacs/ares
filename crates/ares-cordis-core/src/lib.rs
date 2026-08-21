@@ -15,6 +15,9 @@ use thiserror::Error;
 pub mod loader;
 pub use loader::{Entry, EntryTree, Loader};
 
+pub mod watcher;
+pub mod hmr;
+
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
@@ -53,7 +56,7 @@ where
 }
 
 pub trait Effect: Send + Sync + 'static {
-    fn apply(&self, ctx: &Arc<Context>) -> Box<dyn Disposable>;
+    fn apply(&self, ctx: &Context) -> Box<dyn Disposable>;
 }
 
 // EffectGuard reverses on Drop (LIFO)
@@ -154,7 +157,7 @@ impl Fiber {
     }
 
     /// Compute epoch as ":type_name:version:..." sorted (monoid over concatenation)
-    pub fn compute_epoch(&self, ctx: &Arc<Context>) -> String {
+    pub fn compute_epoch(&self, ctx: &Context) -> String {
         let injects = self.injects.read();
         if injects.is_empty() {
             return ":".to_string();
@@ -503,7 +506,7 @@ pub trait Plugin: Send + Sync + 'static {
     type Provides: Service;
     fn apply(
         &self,
-        ctx: &Arc<Context>,
+        ctx: &Context,
         config: Self::Config,
     ) -> Result<Box<dyn Disposable>, CordisError>;
 }
@@ -528,7 +531,7 @@ impl RegistryService {
     /// Returns FiberId or Err(Configuration("duplicate provider for <TypeId>"))
     pub fn plugin<P: Plugin>(
         &self,
-        ctx: &Arc<Context>,
+        ctx: &Context,
         plugin: P,
         config: P::Config,
     ) -> Result<FiberId, CordisError> {

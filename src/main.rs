@@ -645,15 +645,35 @@ async fn run_server(
     ares::health_metrics_job::spawn(state.tenant_db.pool().clone());
 
     // =================================================================
-    // Background Scheduler (Agent Schedules)
+    // Background Scheduler (Agent Schedules) — Cordis Service (Phase 4)
     // =================================================================
     {
-        let pool = state.tenant_db.pool().clone();
-        let scheduler_state = Arc::new(state.clone());
-        tokio::spawn(async move {
-            ares::scheduler::start_scheduler(pool, scheduler_state).await;
-        });
-        tracing::info!("Background scheduler spawned (60s tick)");
+        // SchedulerService owns tick_ms 60_000, db, agent_execution, catch-up + cron
+        let execution = Arc::new(ares_agents::execution::AgentExecutionService::new());
+        let scheduler = ares::scheduler::SchedulerService::new(
+            db_arc.clone(),
+            execution,
+            60_000,
+        );
+        // Cordis wiring: provide via _root_ctx and init tick loop (select! tick + watch)
+        let sched = _root_ctx.provide(scheduler);
+        // Ensure ReflectService watch notifier for DB NOTIFY / polling fallback
+        {
+            use std::any::TypeId;
+            if let Some(reflect) = _root_ctx.get::<ares_cordis_core::ReflectService>() {
+                let _rx = reflect.ensure_notifier_for::<ares::scheduler::SchedulerService>();
+                reflect.register_dependent(TypeId::of::<ares::scheduler::SchedulerService>(), 1);
+                reflect.set_context(&_root_ctx);
+                let _ = reflect.subscribe(TypeId::of::<ares::scheduler::SchedulerService>());
+            }
+        }
+        if let Err(e) = ares_cordis_core::Service::init(&*sched, &_root_ctx).await {
+            tracing::warn!("SchedulerService init failed: {}", e);
+        } else {
+            tracing::info!("SchedulerService spawned (tick_ms=60_000, watch + catch-up owned)");
+        }
+        // Legacy shim: start_scheduler is now owned by Service; not spawned here
+        // tokio::spawn(ares::scheduler::start_scheduler(pool, state)) retained as deprecated
     }
 
     // =================================================================

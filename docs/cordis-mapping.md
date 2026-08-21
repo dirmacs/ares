@@ -1,14 +1,14 @@
-# Cordis → Rust Mapping (Phase 0, Step 5)
+# Cordis → rust mapping (phase 0, step 5)
 
-**Source:** DeepSeek Cordis paper ("A Programming Paradigm for Spatiotemporal Composability", Aug 2026, `cordiverse/cordis` + `cordiverse/paper`) and DeepSeek Harness (`deepseek-ai/deepseek-harness`, TS, ~60 packages, 12 layers).
-**Target:** ARES `/opt/ares` (dirmacs/ares v0.7.3, 11 crates + `ares-server` root, Rust 1.91, Tokio/Axum).
-**This doc is strategy only** — no code changes. Spike crate `crates/ares-cordis-core` (Phase 1) must prove the theorems before adoption.
+Source: DeepSeek Cordis paper ("A Programming model for Spatiotemporal Composability", Aug 2026, `cordiverse/cordis` + `cordiverse/paper`) and DeepSeek Harness (`deepseek-ai/deepseek-harness`, TS, ~60 packages, 12 layers).
+Target: ARES `/opt/ares` (dirmacs/ares v0.7.3, 11 crates + `ares-server` root, Rust 1.91, Tokio/Axum).
+This doc is strategy only, no code changes. Spike crate `crates/ares-cordis-core` (Phase 1) must prove the theorems before adoption.
 
 ---
 
-## 1. Core Equation
+## 1. Core equation
 
-Cordis: `Γ^∞ = μΓ. Γ × (Γ → Γ) × Σ` — unified context that lifts effect systems (revertible mutations) and coeffect systems (typed dependency declarations) to runtime.
+Cordis: `Γ^∞ = μΓ. Γ × (Γ → Γ) × Σ`, unified context that lifts effect systems (revertible mutations) and coeffect systems (typed dependency declarations) to runtime.
 
 Rust mapping:
 
@@ -40,7 +40,7 @@ No `unsafe`. No `libloading` in spike (stubbed); YAGNI HMR deferred behind `#[cf
 
 ---
 
-## 2. Witnessed Effects — Temporal Composability
+## 2. Witnessed effects, temporal composability
 
 Cordis witnessed effect function: `(Γ → Γ) × (Γ → Γ)` pair (do + undo) with LIFO accumulator for revertible mutations. Guarantees: if fiber disposes, all effects it applied are reverted in reverse order.
 
@@ -79,7 +79,7 @@ impl Context {
 }
 ```
 
-**Spike verification (Phase 1, §8):** temporal composability test
+Spike verification (Phase 1, §8): temporal composability test
 ```rust
 #[tokio::test]
 async fn temporal_composability() {
@@ -96,7 +96,7 @@ Must hold before Phase 2.
 
 ---
 
-## 3. Coeffect Table Σ — Spatial Composability
+## 3. Coeffect table σ, spatial composability
 
 Cordis Σ is a `TypeId`-keyed table of dependency declarations (`inject = ["foo"]`). Fiber recomputes epoch from dependency UIDs; if epoch unchanged, no reload.
 
@@ -123,7 +123,7 @@ impl CoeffectTable {
 
 - `aranymap` crate is not needed; `HashMap<TypeId, Box<dyn Any + Send + Sync>>` with `TypeId::of::<T>()` suffices.
 - `Symbol` is `Arc<str>` or `&'static str` for `isolate` labels (e.g., `tenant:abc`).
-- Handlers currently take `State<AppState>` (17–22 fields, `src/lib.rs:230`). New handlers: `State<Arc<Context>>` + `ctx.get::<T>()` where `T` is declared as `inject`. Example:
+- Handlers currently take `State<AppState>` (17, 22 fields, `src/lib.rs:230`). New handlers: `State<Arc<Context>>` + `ctx.get::<T>()` where `T` is declared as `inject`. Example:
   ```rust
   // Before (P0 god-struct):
   async fn chat(State(state): State<AppState>, ...) -> Response
@@ -135,7 +135,7 @@ impl CoeffectTable {
   }
   ```
 
-**Spike verification:** spatial composability
+Spike verification: spatial composability
 ```rust
 #[tokio::test]
 async fn spatial_composability() {
@@ -153,11 +153,11 @@ async fn spatial_composability() {
 
 ---
 
-## 4. Isolate & Intercept
+## 4. Isolate & intercept
 
 ### Isolate (spatial scoping)
 
-Cordis `isolate("name", label)` creates realm where `provide`/`inject` are scoped.
+Cordis `isolate("name", label)` creates areas where `provide`/`inject` are scoped.
 
 Rust:
 ```rust
@@ -199,9 +199,9 @@ Lookup order (must walk): `intercept → store → parent.intercept → parent.s
 
 ---
 
-## 5. Fiber Lifecycle (with Inertial Lock)
+## 5. Fiber lifecycle (with inertial lock)
 
-Cordis Fiber states: `Inactive → Reloading → Active → Unloading` plus `Inertia` lock to serialize transitions (Thm 63 — guarded withdrawal: provider does not withdraw until dependents deactivate).
+Cordis Fiber states: `Inactive → Reloading → Active → Unloading` plus `Inertia` lock to serialize transitions (Thm 63, guarded withdrawal: provider does not withdraw until dependents deactivate).
 
 Rust:
 
@@ -235,7 +235,7 @@ impl Fiber {
 }
 ```
 
-- `EffectIter` is `Box<dyn Iterator<Item = Box<dyn Effect>> + Send>` — each `Service::init` yields effects.
+- `EffectIter` is `Box<dyn Iterator<Item = Box<dyn Effect>> + Send>`, each `Service::init` yields effects.
 - `CommittedView` is `HashMap<TypeId, Arc<dyn Any>>` snapshot taken at `Active` entry; used for rollback on failure.
 - `notify` (see §7) triggers `Fiber::refresh()` via BFS over dependent fibers.
 
@@ -243,7 +243,7 @@ File placement: `crates/ares-cordis-core/src/fiber.rs` (spike) → later `crates
 
 ---
 
-## 6. Epoch — Hash of Dependency UIDs
+## 6. Epoch, hash of dependency uids
 
 Cordis epoch is monoid `":uid1:uid2:..."` (concatenation). Fiber skips reload if epoch unchanged.
 
@@ -261,12 +261,12 @@ pub fn compute_epoch(injects: &CoeffectTable) -> String {
 // Example: epoch = ":ares_llm::LlmService:tenant_acme:ares_tools::ToolService:tenant_acme"
 ```
 
-- Epoch is String, not hash — paper uses concatenation for debuggability; if perf matters, switch to `sha2` hash later.
+- Epoch is String, not hash, paper uses concatenation for debuggability; if perf matters, switch to `sha2` hash later.
 - `Fiber::refresh` compares `self.epoch.read()` vs `compute_epoch(&self.injects)`; logs diff via `tracing::debug!`.
 
 ---
 
-## 7. Notify — Reactive Recomputation (tokio::sync::watch)
+## 7. Notify, reactive recomputation (tokio::sync::watch)
 
 Cordis `notify` is fan-out to dependent fibers. In TS Harness it's `EventEmitter`; in Rust it's `tokio::sync::watch`.
 
@@ -304,7 +304,7 @@ Replaces: `RuntimeToolRegistry::start_background_reload` (60s poll, `crates/ares
 
 ---
 
-## 8. Events — 5 Dispatch Modes
+## 8. Events, 5 dispatch modes
 
 Cordis Events: `emit` / `parallel` / `serial` / `bail` / `waterfall` typed bus.
 
@@ -344,11 +344,11 @@ impl EventsService {
 }
 ```
 
-Mapping from TS Harness (12 layers, ~60 packages) — in Rust, one crate suffices; do not replicate layering ceremony. `EventsService` is a `Service` itself (`ctx.provide(EventsService::new())`), so any fiber can `ctx.get::<EventsService>().unwrap().on(...)`.
+Mapping from TS Harness (12 layers, ~60 packages), in Rust, one crate suffices; do not replicate layering ceremony. `EventsService` is a `Service` itself (`ctx.provide(EventsService::new())`), so any fiber can `ctx.get::<EventsService>().unwrap().on(...)`.
 
 ---
 
-## 9. Loader & Config Reconciliation (Declarative)
+## 9. Loader & config reconciliation (declarative)
 
 Cordis Loader: `Entry { id, plugin, config, disabled, isolate, intercept }` + `EntryTree(Vec<Entry>)` persisted to `config/entries.json` (or `config/cordis-entries.toon` via `toon-format 0.4.1`). `Loader::reconcile(current, desired)` diffs incrementally.
 
@@ -376,11 +376,11 @@ impl Loader {
 }
 ```
 
-Persistence: `config/entries.json` (or `config/cordis-entries.toon`) separate from `ares.toml` symlink (`/opt/ares-config/ares.toml`) — do not conflict (see Assumptions in plan). Reuse `toon-format` serialization.
+Persistence: `config/entries.json` (or `config/cordis-entries.toon`) separate from `ares.toml` symlink (`/opt/ares-config/ares.toml`), do not conflict (see Assumptions in plan). Reuse `toon-format` serialization.
 
 ---
 
-## 10. Plugin & RegistryService
+## 10. Plugin & registryservice
 
 Cordis plugins are `FnOnce(&Context, Config) -> Result<Disposable>` or struct with `apply`. Registry enforces single-source discipline.
 
@@ -405,42 +405,42 @@ impl RegistryService {
 }
 ```
 
-Static registration (preferred production): `inventory`/`linkme` (compile-time plugin set) — real surface is `RegistryService::plugin` (single-source discipline); `inventory::submit!` / `linkme::distributed_slice` of `fn(&Arc<Context>) -> Result<FiberId, CordisError>` is the future shortcut once crate count stabilizes (see `crates/ares-cordis-core/src/lib.rs` HMR section and `Wiring` task). Dynamic HMR (dev only, behind `#[cfg(feature = "hmr")]` **off by default**): `libloading` path that `dlopen`s `.so` and calls `Plugin::apply` via `extern "C"`; if `libloading` ABI fragility blocks (Rust `1.91` toolchain coupling, `unsafe` soundness), fall back to file-watch + full fiber reload (re-read config/TOON) — 90% of value per plan, see `watcher` fallback below.
+Static registration (preferred production): `inventory`/`linkme` (compile-time plugin set), real surface is `RegistryService::plugin` (single-source discipline); `inventory::submit!` / `linkme::distributed_slice` of `fn(&Arc<Context>) -> Result<FiberId, CordisError>` is the future shortcut once crate count stabilizes (see `crates/ares-cordis-core/src/lib.rs` HMR section and `Wiring` task). Dynamic HMR (dev only, behind `#[cfg(feature = "hmr")]` off by default): `libloading` path that `dlopen`s `.so` and calls `Plugin::apply` via `extern "C"`; if `libloading` ABI fragility blocks (Rust `1.91` toolchain coupling, `unsafe` soundness), fall back to file-watch + full fiber reload (re-read config/TOON), 90% of value per plan, see `watcher` fallback below.
 
-### HMR YAGNI decision (plan Assumptions §Contingencies)
+### Hmr yagni decision (plan assumptions §contingencies)
 
-**Decision: DEFER `libloading` HMR, keep file-watch + `Fiber::reload` as production path.**
+Decision: DEFER `libloading` HMR, keep file-watch + `Fiber::reload` as production path.
 
 - Rationale: `libloading::Library::new` + `Symbol<extern "C">` requires `unsafe`, a stable `repr(C)` ABI boundary, and the `.so` to be built with the exact same Rust toolchain (`1.91`). ABI drift across patches, `rust-doctor` soundness flags, and `Box::leak` ownership hazards make `libloading` too brittle for a generic runtime. As plan contingency states: "If `libloading` HMR proves too complex for Rust (dynamic library ABI fragility, `unsafe` surface), fall back to file-watch + full fiber reload without dynamic code swapping … `file watcher still triggers Fiber::reload()` by re-reading config/TOON, which already covers 90% of self-evolution value. Dynamic code HMR can be deferred to a later phase behind `#[cfg(feature = "hmr")]` without blocking the core redesign."
-- Fallback implemented: `crates/ares-cordis-core/src/watcher.rs` (`watch_many` / `watch_cordis_entries`) uses `notify::RecommendedWatcher` (debounced `500 ms` + `100 ms` settle, same as `AresConfigManager::start_watching`) to watch `config/agents/*.toon` (recursive) and `config/entries.json` (or `config/cordis-entries.toon` parent dir). On `Modify`/`Create` it calls `ReflectService::notify(tid)` which BFS-walks `dependents` and spawns `Fiber::refresh` (epoch recompute via `compute_epoch`). No restart, no `libloading`. Logs `Configuration hot-reloaded successfully via Cordis watch` (generalizes `AresConfigManager`'s `Configuration hot-reloaded successfully` which is already proven on random-port E2E `39476`/`39120` — see `docs/cordis-redesign.md` §9/9b).
-- Stub preserved: `crates/ares-cordis-core/src/hmr.rs` is `#[cfg(feature = "hmr")]` (Cargo feature `hmr = ["dep:libloading"]`, off by default). It shows `libloading::Library::new` + `get::<HmrEntryFn>` + owned `HmrLibrary` holder (RAII, no `Box::leak`) calling `cordis_plugin_apply` (`extern "C"`). Enable with `cargo build --features hmr` and a `.so` built with the same toolchain. Not invoked by `src/main.rs` or `ReflectService` — `watcher` is the production path.
+- Fallback implemented: `crates/ares-cordis-core/src/watcher.rs` (`watch_many` / `watch_cordis_entries`) uses `notify::RecommendedWatcher` (debounced `500 ms` + `100 ms` settle, same as `AresConfigManager::start_watching`) to watch `config/agents/*.toon` (recursive) and `config/entries.json` (or `config/cordis-entries.toon` parent dir). On `Modify`/`Create` it calls `ReflectService::notify(tid)` which BFS-walks `dependents` and spawns `Fiber::refresh` (epoch recompute via `compute_epoch`). No restart, no `libloading`. Logs `Configuration hot-reloaded successfully via Cordis watch` (generalizes `AresConfigManager`'s `Configuration hot-reloaded successfully` which is already proven on random-port E2E `39476`/`39120`, see `docs/cordis-redesign.md` §9/9b).
+- Stub preserved: `crates/ares-cordis-core/src/hmr.rs` is `#[cfg(feature = "hmr")]` (Cargo feature `hmr = ["dep:libloading"]`, off by default). It shows `libloading::Library::new` + `get::<HmrEntryFn>` + owned `HmrLibrary` holder (RAII, no `Box::leak`) calling `cordis_plugin_apply` (`extern "C"`). Enable with `cargo build --features hmr` and a `.so` built with the same toolchain. Not invoked by `src/main.rs` or `ReflectService`, `watcher` is the production path.
 - `Cargo.toml`: `[features] hmr = ["dep:libloading"]` (`libloading 0.8` optional, `notify 8.2.0` always for `watcher`), `default = []`.
 
 ---
 
-## 11. What Is Explicitly Not Ported in Spike (updated)
+## 11. What is explicitly not ported in spike (updated)
 
 Per YAGNI (Phase 1, §8) + HMR deferral above:
 
-- ❌ `libloading` HMR **DEFERRED** — file-watch fallback `crates/ares-cordis-core/src/watcher.rs` (`notify` → `ReflectService::notify` → `Fiber::reload` via epoch) covers 90% value without dynamic code. Dynamic code swap remains as `crates/ares-cordis-core/src/hmr.rs` stub behind `#[cfg(feature = "hmr")]` (off by default, `libloading 0.8` optional). See HMR decision above and `lib.rs` HMR section.
-- ❌ WASM — deferred.
-- ❌ Visual layer package (~60 TS packages, 12 layers) — in Rust, one crate; do not replicate ceremony.
-- ❌ `ares.toml` symlink handling — keep `AresConfigManager::start_watching()` as-is for Phase 2; Loader is additive. `watcher` generalizes it to Cordis entries/TOON without touching `ares.toml` symlink (`/opt/ares-config/ares.toml`).
+-  `libloading` HMR DEFERRED, file-watch fallback `crates/ares-cordis-core/src/watcher.rs` (`notify` → `ReflectService::notify` → `Fiber::reload` via epoch) covers 90% value without dynamic code. Dynamic code swap remains as `crates/ares-cordis-core/src/hmr.rs` stub behind `#[cfg(feature = "hmr")]` (off by default, `libloading 0.8` optional). See HMR decision above and `lib.rs` HMR section.
+-  WASM, deferred.
+-  Visual layer package (~60 TS packages, 12 layers), in Rust, one crate; do not replicate ceremony.
+-  `ares.toml` symlink handling, keep `AresConfigManager::start_watching()` as-is for Phase 2; Loader is additive. `watcher` generalizes it to Cordis entries/TOON without touching `ares.toml` symlink (`/opt/ares-config/ares.toml`).
 
 ---
 
-## 12. Critical Anchors (Reread Before Phases 2/4/5)
+## 12. Critical anchors (reread before phases 2/4/5)
 
-- `/opt/ares/src/main.rs` `run_server` (lines 296–889, 17 steps) → becomes `root_ctx.plugin(...).plugin(...).await` (5–8 lines). Every registry/pool/cache must migrate to a `Service`.
-- `/opt/ares/src/lib.rs` `AppState` (230–274, 17–22 fields) + `base_router()` → `Arc<Context>`, `build_router(ctx: Arc<Context>)`.
+- `/opt/ares/src/main.rs` `run_server` (lines 296, 889, 17 steps) → becomes `root_ctx.plugin(...).plugin(...).await` (5, 8 lines). Every registry/pool/cache must migrate to a `Service`.
+- `/opt/ares/src/lib.rs` `AppState` (230, 274, 17, 22 fields) + `base_router()` → `Arc<Context>`, `build_router(ctx: Arc<Context>)`.
 - `/opt/ares/crates/ares-tools/src/runtime_registry.rs` `start_background_reload` (60s poll, `ArcSwap`) → epoch-driven `notify`.
 - `/opt/ares/crates/ares-llm/src/provider_registry.rs` `ArcSwap<HashMap>` + `NvidiaCatalogCache` → `LlmService` with circuit breaker.
-- `/opt/ares/src/api/handlers/admin.rs` 190 KB, 5,946 lines — split by domain in Phase 6.
+- `/opt/ares/src/api/handlers/admin.rs` 190 KB, 5,946 lines, split by domain in Phase 6.
 
 ---
 
-## 13. Consequences & Alternatives
+## 13. Consequences & alternatives
 
-- If `async fn in trait` causes `dyn` issues, use `async_trait` only for that trait and document why (Rust 1.91 floor, 1.75+ stable for `async fn in trait`, but `dyn Service` may need `async_trait` — prefer `impl Future` return).
-- If `TypeId` + `HashMap` proves too coarse (downcasting ergonomics), evaluate `anymap`/`typemap` crates — but hand-rolled `HashMap<TypeId, Box<dyn Any>>` is sufficient for spike.
+- If `async fn in trait` causes `dyn` issues, use `async_trait` only for that trait and document why (Rust 1.91 floor, 1.75+ stable for `async fn in trait`, but `dyn Service` may need `async_trait`, prefer `impl Future` return).
+- If `TypeId` + `HashMap` proves too coarse (downcasting ergonomics), evaluate `anymap`/`typemap` crates, but hand-rolled `HashMap<TypeId, Box<dyn Any>>` is sufficient for spike.
 - If epoch String concatenation bloats logs, switch to `sha2` digest and keep `:uid1:uid2` only in `tracing::debug!`.

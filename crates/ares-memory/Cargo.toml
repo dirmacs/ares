@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = true
-description = "Conversation context and user memory utilities for A.R.E.S"
+description = "Conversation context and memory utilities for ARES"
 
 [dependencies]
 ares-types = { workspace = true }

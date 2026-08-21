@@ -4,7 +4,7 @@ ARES is a multi-tenant platform. Each enterprise client operates within an isola
 
 ---
 
-## Core Concepts
+## Core concepts
 
 ### Tenants
 
@@ -31,7 +31,7 @@ Every tenant is assigned a tier that governs their resource limits:
 
 Tiers can be changed at any time via the Admin API without disrupting the tenant's service.
 
-### Agent Templates
+### Agent templates
 
 When a tenant is provisioned, ARES clones a set of pre-configured agent templates based on the specified `product_type`. Templates provide a working starting point that can be customized after creation.
 
@@ -45,7 +45,7 @@ Available product types:
 
 Each template defines the agent's model, system prompt, tool access, and default configuration. After provisioning, agents can be freely modified or new ones added.
 
-### API Key Scoping
+### API key scoping
 
 Every API key is bound to exactly one tenant. When a request arrives with an API key:
 
@@ -56,7 +56,7 @@ Every API key is bound to exactly one tenant. When a request arrives with an API
 
 A tenant can have multiple API keys (e.g., separate keys for production, staging, and mobile). Each key's usage is tracked individually but counts toward the shared tenant quota.
 
-### Data Isolation
+### Data isolation
 
 Tenant isolation is enforced at the database query level. Every data-accessing query includes the tenant ID as a filter condition. This means:
 
@@ -67,11 +67,11 @@ Tenant isolation is enforced at the database query level. Every data-accessing q
 
 ---
 
-## Provisioning Flow
+## Provisioning flow
 
 The recommended way to onboard a new client is the atomic provisioning endpoint. It creates all required resources in a single database transaction.
 
-### Step 1: Provision the Client
+### Step 1: provision the client
 
 ```bash
 curl -X POST http://localhost:3000/api/admin/provision-client \
@@ -115,11 +115,11 @@ This single call:
 
 If any step fails, the entire operation is rolled back. You will never end up with a half-provisioned tenant.
 
-### Step 2: Deliver the API Key
+### Step 2: deliver the API key
 
-Securely deliver the `raw_api_key` to your client. This is the only time the full key is visible — ARES stores only a hashed version internally.
+Securely deliver the `raw_api_key` to your client. This is the only time the full key is visible, ARES stores only a hashed version internally.
 
-### Step 3: Verify the Setup
+### Step 3: verify the setup
 
 Confirm the tenant's agents are accessible using their new API key:
 
@@ -130,7 +130,7 @@ curl http://localhost:3000/v1/agents \
 
 The client should see their four provisioned agents.
 
-### Step 4: Test an Agent Run
+### Step 4: test an agent run
 
 ```bash
 curl -X POST http://localhost:3000/v1/agents/kasino-classifier/run \
@@ -145,9 +145,9 @@ curl -X POST http://localhost:3000/v1/agents/kasino-classifier/run \
 
 ---
 
-## Managing Tenants After Provisioning
+## Managing tenants after provisioning
 
-### Add More Agents
+### Add more agents
 
 ```bash
 curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/agents \
@@ -165,7 +165,7 @@ curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/agents \
   }'
 ```
 
-### Issue Additional API Keys
+### Issue additional API keys
 
 ```bash
 curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/api-keys \
@@ -174,7 +174,7 @@ curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/api-keys \
   -d '{"name": "staging-key"}'
 ```
 
-### Upgrade a Tenant's Tier
+### Upgrade a tenant's tier
 
 ```bash
 curl -X PUT http://localhost:3000/api/admin/tenants/{tenant_id}/quota \
@@ -183,7 +183,7 @@ curl -X PUT http://localhost:3000/api/admin/tenants/{tenant_id}/quota \
   -d '{"tier": "enterprise"}'
 ```
 
-### Monitor Usage
+### Monitor usage
 
 ```bash
 # Current period summary
@@ -197,7 +197,7 @@ curl "http://localhost:3000/api/admin/tenants/{tenant_id}/usage/daily?days=30" \
 
 ---
 
-## Architecture Notes
+## Architecture notes
 
 - **Shared infrastructure:** All tenants run on the same ARES instance and database. Isolation is logical, not physical. This keeps operational costs low for the MVP phase.
 - **Atomic provisioning:** The provisioning endpoint uses a database transaction. If agent template cloning fails halfway through, the tenant and any partially created resources are rolled back.

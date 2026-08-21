@@ -1,13 +1,13 @@
 # Agents
 
-ARES agents are autonomous units that process requests using a configured LLM model, a system prompt, and a set of tools. Each agent is specialized for a particular domain or task — routing, research, product knowledge, risk analysis, and more.
+ARES agents are autonomous units that process requests using a configured LLM model, a system prompt, and a set of tools. Each agent is specialized for a particular domain or task, routing, research, product knowledge, risk analysis, and more.
 
 Agents are defined by four properties:
 
-- **Model** — The LLM that powers the agent (e.g., `llama-3.3-70b`, `claude-3-5-sonnet`, `deepseek-r1`).
-- **System prompt** — Instructions that shape the agent's behavior, personality, and domain knowledge.
-- **Tools** — Capabilities the agent can invoke during processing (e.g., `calculator`, `web_search`, `code_interpreter`).
-- **Name** — A unique identifier used to route requests to this agent.
+- **Model**, The LLM that powers the agent (e.g., `llama-3.3-70b`, `claude-3-5-sonnet`, `deepseek-r1`).
+- **System prompt**, Instructions that shape the agent's behavior, personality, and domain knowledge.
+- **Tools**, Capabilities the agent can invoke during processing (e.g., `calculator`, `web_search`, `code_interpreter`).
+- **Name**, A unique identifier used to route requests to this agent.
 
 Agents can be platform-provided (available to all users) or user-defined (private, created via API or TOON config).
 
@@ -108,12 +108,12 @@ Create a new custom agent.
 
 #### Request body
 
-| Parameter      | Type     | Required | Description                                  |
+| Parameter | Type | Required | Description |
 |---------------|----------|----------|----------------------------------------------|
-| `name`         | string   | Yes      | Unique agent name (alphanumeric, hyphens).   |
-| `model`        | string   | Yes      | LLM model identifier.                       |
-| `system_prompt` | string  | Yes      | Instructions that define agent behavior.     |
-| `tools`        | string[] | No       | List of tool names the agent can use.        |
+| `name` | string | Yes | Unique agent name (alphanumeric, hyphens). |
+| `model` | string | Yes | LLM model identifier. |
+| `system_prompt` | string | Yes | Instructions that define agent behavior. |
+| `tools` | string[] | No | List of tool names the agent can use. |
 
 #### Example
 
@@ -155,9 +155,9 @@ GET /api/user/agents/{name}
 
 Retrieve the full configuration of a specific user agent.
 
-| Parameter | Type   | In   | Description      |
+| Parameter | Type | In | Description |
 |-----------|--------|------|------------------|
-| `name`    | string | path | The agent's name |
+| `name` | string | path | The agent's name |
 
 ```bash
 curl http://localhost:3000/api/user/agents/code-reviewer \

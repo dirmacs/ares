@@ -1,18 +1,18 @@
-# GGUF Model Usage Guide
+# GGUF model usage guide
 
 This guide covers how to use GGUF models directly with A.R.E.S via the LlamaCpp integration for completely local, offline LLM inference.
 
 ## What is GGUF?
 
 GGUF (GPT-Generated Unified Format) is a file format for storing models for inference with llama.cpp. It's designed to be:
-- **Fast**: Optimized for CPU inference
-- **Flexible**: Supports quantization (4-bit, 5-bit, 8-bit)
-- **Portable**: Single-file format, easy to distribute
-- **Efficient**: Lower memory usage than full-precision models
+- Fast: Optimized for CPU inference
+- Flexible: Supports quantization (4-bit, 5-bit, 8-bit)
+- Portable: Single-file format, easy to distribute
+- Efficient: Lower memory usage than full-precision models
 
-## Quick Start
+## Quick start
 
-### 1. Enable LlamaCpp Feature
+### 1. Enable LlamaCpp feature
 
 Build A.R.E.S with LlamaCpp support:
 
@@ -30,11 +30,11 @@ cargo build --features "llamacpp-metal"
 cargo build --features "llamacpp-vulkan"
 ```
 
-### 2. Download a GGUF Model
+### 2. Download a GGUF model
 
 Choose a model from Hugging Face. Here are some recommended options:
 
-#### Small Models (Good for testing, < 4GB RAM)
+#### Small models (good for testing, < 4GB RAM)
 
 ```bash
 # Llama 3.2 1B (Fastest, minimal resources)
@@ -47,7 +47,7 @@ wget https://huggingface.co/bartowski/Phi-3-mini-4k-instruct-GGUF/resolve/main/P
 wget https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
 ```
 
-#### Medium Models (8-16GB RAM)
+#### Medium models (8-16GB RAM)
 
 ```bash
 # Llama 3.2 3B (Great balance)
@@ -60,7 +60,7 @@ wget https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/
 wget https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
 ```
 
-#### Large Models (32GB+ RAM or GPU)
+#### Large models (32GB+ RAM or GPU)
 
 ```bash
 # Llama 3.1 70B (Highest quality)
@@ -70,7 +70,7 @@ wget https://huggingface.co/bartowski/Meta-Llama-3.1-70B-Instruct-GGUF/resolve/m
 wget https://huggingface.co/Qwen/Qwen2.5-72B-Instruct-GGUF/resolve/main/qwen2.5-72b-instruct-q4_k_m.gguf
 ```
 
-### 3. Configure Environment
+### 3. Configure environment
 
 Set the model path in your `.env` file:
 
@@ -96,7 +96,7 @@ cargo run --features "llamacpp"
 
 The server will automatically use the LlamaCpp provider when `LLAMACPP_MODEL_PATH` is set.
 
-## Quantization Formats
+## Quantization formats
 
 GGUF models come in different quantization levels. Here's what they mean:
 
@@ -113,9 +113,9 @@ GGUF models come in different quantization levels. Here's what they mean:
 
 **Recommendation**: Start with `Q4_K_M` - it offers the best balance of quality, speed, and size.
 
-## Hardware Requirements
+## Hardware requirements
 
-### CPU Inference
+### CPU inference
 
 | Model Size | RAM Required | CPU Threads | Tokens/sec (approx) |
 |------------|--------------|-------------|---------------------|
@@ -125,7 +125,7 @@ GGUF models come in different quantization levels. Here's what they mean:
 | 13B (Q4) | 10-12 GB | 8-16 | 5-8 |
 | 70B (Q4) | 40-50 GB | 16+ | 1-3 |
 
-### GPU Acceleration
+### GPU acceleration
 
 GPU acceleration dramatically improves performance:
 
@@ -145,9 +145,9 @@ cargo build --features "llamacpp-vulkan"
 - 13B model: 30-60 tokens/sec
 - 70B model: 10-20 tokens/sec (requires 48GB+ VRAM)
 
-## Programmatic Usage
+## Programmatic usage
 
-### Basic Generation
+### Basic generation
 
 ```rust
 use ares::llm::{LLMClient, Provider};
@@ -170,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Streaming Generation
+### Streaming generation
 
 ```rust
 use ares::llm::{LLMClient, Provider};
@@ -198,7 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### With System Prompt
+### With system prompt
 
 ```rust
 let response = client
@@ -209,7 +209,7 @@ let response = client
     .await?;
 ```
 
-### With Conversation History
+### With conversation history
 
 ```rust
 let history = vec![
@@ -221,7 +221,7 @@ let history = vec![
 let response = client.generate_with_history(&history).await?;
 ```
 
-### Custom Parameters
+### Custom parameters
 
 ```rust
 use ares::llm::llamacpp::LlamaCppClient;
@@ -235,13 +235,13 @@ let client = LlamaCppClient::with_params(
 )?;
 ```
 
-## Tool Calling with GGUF Models
+## Tool calling with GGUF models
 
 **Note**: Tool calling requires models specifically trained for function calling (e.g., Llama 3.1+, Mistral Tool models).
 
 Currently, the LlamaCpp client has basic tool calling support. For production tool calling, we recommend using Ollama which has more mature tool calling implementations.
 
-### Basic Tool Support
+### Basic tool support
 
 ```rust
 use ares::llm::{LLMClient, Provider};
@@ -280,9 +280,9 @@ if !response.tool_calls.is_empty() {
 }
 ```
 
-## Performance Optimization
+## Performance optimization
 
-### 1. Adjust Context Size
+### 1. Adjust Context size
 
 Larger context = more memory, slower inference:
 
@@ -294,7 +294,7 @@ LLAMACPP_N_CTX=2048
 LLAMACPP_N_CTX=8192
 ```
 
-### 2. Thread Count
+### 2. Thread count
 
 Match your CPU core count:
 
@@ -306,7 +306,7 @@ lscpu | grep "^CPU(s):"
 LLAMACPP_N_THREADS=6
 ```
 
-### 3. Batch Size
+### 3. Batch size
 
 For production, adjust batch processing in code:
 
@@ -320,7 +320,7 @@ let mut client = LlamaCppClient::with_params(
 )?;
 ```
 
-### 4. Model Selection
+### 4. Model selection
 
 Choose the right quantization:
 - Development: Q4_K_M
@@ -329,7 +329,7 @@ Choose the right quantization:
 
 ## Troubleshooting
 
-### Error: "Failed to load model"
+### Error: "failed to load model"
 
 **Solution**: Check the file path and ensure the GGUF file is valid:
 
@@ -338,7 +338,7 @@ file /path/to/model.gguf
 # Should show: "GGUF model file"
 ```
 
-### Error: "Out of memory"
+### Error: "out of memory"
 
 **Solutions**:
 1. Use a smaller model (e.g., 1B or 3B)
@@ -346,7 +346,7 @@ file /path/to/model.gguf
 3. Reduce context size: `LLAMACPP_N_CTX=2048`
 4. Close other applications
 
-### Slow Inference
+### Slow inference
 
 **Solutions**:
 1. Increase threads: `LLAMACPP_N_THREADS=8`
@@ -363,38 +363,38 @@ file /path/to/model.gguf
 3. Adjust your system prompt
 4. Try a different model architecture
 
-## Best Practices
+## Best practices
 
-### 1. Model Selection
-- **For chat**: Use `-Instruct` or `-Chat` models
-- **For code**: Use CodeLlama or Qwen-Coder models
-- **For speed**: Use 1B-3B models
-- **For quality**: Use 7B-13B models
+### 1. Model selection
+- For chat: Use `-Instruct` or `-Chat` models
+- For code: Use CodeLlama or Qwen-Coder models
+- For speed: Use 1B-3B models
+- For quality: Use 7B-13B models
 
-### 2. Memory Management
+### 2. Memory management
 - Load the model once, reuse the client
 - Monitor RAM usage with `htop` or Task Manager
 - Don't load multiple large models simultaneously
 
-### 3. Context Window
+### 3. Context window
 - Don't waste context on repetitive content
 - Summarize long conversations periodically
 - Use appropriate context size for your use case
 
-### 4. Production Deployment
+### 4. Production deployment
 - Pre-download models during container build
 - Use Q4_K_M or Q5_K_M for balance
 - Enable GPU acceleration when available
 - Set reasonable token limits to prevent abuse
 
-## Recommended Models by Use Case
+## Recommended models by use case
 
-### General Chat
+### General chat
 - Llama 3.2 3B Instruct (best for most cases)
 - Mistral 7B Instruct (high quality)
 - Phi-3 Mini (efficient)
 
-### Code Generation
+### Code generation
 - CodeLlama 7B Instruct
 - Qwen 2.5 Coder 7B
 - DeepSeek Coder 6.7B
@@ -403,12 +403,12 @@ file /path/to/model.gguf
 - Qwen 2.5 (any size)
 - Llama 3.1 (8B+)
 
-### Creative Writing
+### Creative writing
 - Llama 3.1 70B (if resources allow)
 - Mistral 7B
 - Llama 3.2 3B
 
-### Fast Responses
+### Fast responses
 - Llama 3.2 1B
 - Phi-3 Mini
 - TinyLlama 1.1B
@@ -420,7 +420,7 @@ file /path/to/model.gguf
 - [GGUF Spec](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md)
 - [Quantization Guide](https://github.com/ggerganov/llama.cpp/blob/master/examples/quantize/README.md)
 
-## Example: Complete Setup
+## Example: complete setup
 
 Here's a complete example to get started with a 3B model:
 

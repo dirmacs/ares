@@ -1,19 +1,19 @@
-# Loop Detection & Safety
+# Loop detection & safety
 
 ARES includes built-in safety mechanisms to prevent agents from getting stuck in infinite loops or crashing mid-execution.
 
-## Loop Detection
+## Loop detection
 
 The `LoopDetector` monitors agent tool-calling conversations for repetitive patterns using a sliding-window hash approach.
 
-### How It Works
+### How it works
 
 1. Each agent response is hashed (after whitespace normalization)
 2. Hashes are stored in a sliding window (configurable size, default 10)
 3. When duplicate hashes exceed a threshold, a loop is detected
 4. The detector escalates through 3 tiers of intervention
 
-### Escalation Tiers
+### Escalation tiers
 
 | Tier | Action | Description |
 |------|--------|-------------|
@@ -35,11 +35,11 @@ let config = LoopDetectorConfig {
 let mut detector = LoopDetector::new(config);
 ```
 
-### Usage in Agents
+### Usage in agents
 
 Loop detection is automatically applied during multi-turn tool-calling conversations. The `ConfigurableAgent` checks the detector after each response.
 
-## Crash Recovery
+## Crash recovery
 
 The `CheckpointManager` provides state serialization for long-running agent tasks.
 
@@ -76,7 +76,7 @@ Old checkpoints are cleaned up automatically based on age:
 manager.cleanup(Duration::from_secs(86400))?;
 ```
 
-## Emergency Stop
+## Emergency stop
 
 The emergency stop is a global kill switch that immediately rejects all agent requests with HTTP 503.
 

@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = true
-description = "Cordis primitives for A.R.E.S — Context, Fiber, Effect, Events (spike leaf crate, zero ARES deps)"
+description = "Cordis primitives for ARES: context, fiber, effect, and events. Leaf crate with no other ARES dependencies"
 
 [features]
 # HMR via libloading — deferred per docs/cordis-mapping.md §11, off by default.
@@ -14,6 +14,9 @@ description = "Cordis primitives for A.R.E.S — Context, Fiber, Effect, Events 
 # ABI fragility forces fallback to file-watch + full fiber reload (90% value).
 hmr = ["dep:libloading"]
 inventory = ["dep:inventory"]
+linkme = ["dep:linkme"]
+# Rhai scripting for Cordis — safe hot-reloadable logic for Services/Plugins/Fibers
+rhai = ["dep:rhai", "rhai/sync"]
 default = ["inventory"]
 
 [dependencies]
@@ -24,8 +27,10 @@ parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 notify = "8.2.0"
+rhai = { workspace = true, optional = true }
 libloading = { version = "0.8", optional = true }
 inventory = { version = "0.3", optional = true }
+linkme = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

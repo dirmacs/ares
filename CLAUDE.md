@@ -1,8 +1,8 @@
-# ARES — Build & Deploy Instructions
+# ARES, build & deploy instructions
 
 *Copy this file to `/opt/ares/CLAUDE.md` on the VPS.*
 
-## Critical Rule
+## Critical rule
 
 ARES is a **GENERIC** multi-tenant AI agent runtime. It has ZERO client-specific code. No client routes, no client tables, no client business logic. Kasino and eHB are CLIENTS that call `/v1/chat` with their tenant API keys.
 
@@ -14,16 +14,16 @@ cargo build --release --no-default-features --features openai,postgres,mcp
 
 If cargo runs out of memory: `CARGO_BUILD_JOBS=1 cargo build --release --no-default-features --features openai,postgres,mcp`
 
-## After Rebuild
+## After rebuild
 
 ```bash
 sudo systemctl restart ares
 curl -s localhost:3000/health  # verify it's up
 ```
 
-## Route Parameters
+## Route parameters
 
-Axum 0.7 uses matchit 0.7 which requires **`:param`** syntax. Do NOT use `{param}` — that's Axum 0.8 / matchit 0.8 only. Using `{param}` silently fails (404).
+Axum 0.7 uses matchit 0.7 which requires **`:param`** syntax. Do NOT use `{param}`, that's Axum 0.8 / matchit 0.8 only. Using `{param}` silently fails (404).
 
 Verify before touching routes:
 ```bash

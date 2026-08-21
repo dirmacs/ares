@@ -1,10 +1,10 @@
-# Capability Preservation Checklist (Phase 0, Step 7)
+# Capability preservation checklist (Phase 0, step 7)
 
 **Rule:** Every externally observable capability at `e4f3bcc` must survive the rewrite (or have intentional behavior change documented in Phase 7 step 24). This checklist groups by route namespace and background job, per plan step 7. Each row is a concrete input → expected observable output, not just `cargo test` passing.
 
 ---
 
-## Public Routes (no auth)
+## Public routes (no auth)
 
 | Path | Method | Capability | Expected Output |
 |------|--------|------------|-----------------|
@@ -23,7 +23,7 @@
 
 ---
 
-## Protected Routes (JWT `Authorization: Bearer`)
+## Protected routes (JWT `Authorization: bearer`)
 
 | Path | Method | Capability | Expected Output |
 |------|--------|------------|-----------------|
@@ -43,9 +43,9 @@
 
 ---
 
-## Admin Routes (`X-Admin-Secret`)
+## Admin routes (`X-Admin-Secret`)
 
-Admin is the largest surface — 190 KB `admin.rs` at `e4f3bcc`. Split by domain in Phase 6, but same paths/auth must survive.
+Admin is the largest surface, 190 KB `admin.rs` at `e4f3bcc`. Split by domain in Phase 6, but same paths/auth must survive.
 
 | Domain | Representative Paths | Capability |
 |--------|----------------------|------------|
@@ -62,7 +62,7 @@ Admin is the largest surface — 190 KB `admin.rs` at `e4f3bcc`. Split by domain
 | Emergency Stop | `POST /api/admin/agents/emergency-stop` | Global 503 flag |
 | Runtime Providers/Tools | `GET/POST /api/admin/runtime/providers`, `GET/POST /api/admin/runtime/tools`, `POST /api/admin/runtime/tools/:id/test`, `GET /api/admin/runtime/tools/:id/versions` | `runtime_providers` (021), `runtime_tools` (015) + hot-reload `reload()` |
 | Fleet Secrets | `GET/PUT /api/admin/fleet-secrets` | Encrypted provider configs (`FleetSecrets` + `FleetProviderSecretsStore`) |
-| Connectors | `GET/POST /api/admin/connectors` | `skills_and_connectors` (019) — slack/google/linkedin/salesforce/hubspot prebuilt |
+| Connectors | `GET/POST /api/admin/connectors` | `skills_and_connectors` (019), slack/google/linkedin/salesforce/hubspot prebuilt |
 | MCP Servers | `GET/POST /api/admin/mcp/servers` | `McpRegistry` clients (rmcp) |
 | Billing | `GET /api/admin/billing/*` | Cost aggregation per tenant/period |
 | OAuth | `GET/POST /api/admin/oauth/*` | `oauth_credentials` store |
@@ -76,7 +76,7 @@ Admin is the largest surface — 190 KB `admin.rs` at `e4f3bcc`. Split by domain
 
 ---
 
-## v1 Routes (API key `X-API-Key` or `Authorization: Bearer <api_key>`)
+## v1 routes (API key `X-API-Key` or `Authorization: bearer <api_key>`)
 
 | Path | Method | Capability | Expected Output |
 |------|--------|------------|-----------------|
@@ -89,7 +89,7 @@ Admin is the largest surface — 190 KB `admin.rs` at `e4f3bcc`. Split by domain
 
 ---
 
-## Background Jobs & Engines
+## Background jobs & engines
 
 | Job | Table / Source | Trigger | Observable Proof |
 |-----|----------------|---------|------------------|
@@ -116,26 +116,26 @@ Admin is the largest surface — 190 KB `admin.rs` at `e4f3bcc`. Split by domain
 | **Cost/Usage/Token budgets** | `POST /api/chat` populates `usage` header → `track_usage` middleware → `run_history` + `agent_runs` + `token_budgets` enforcement |
 | **Per-agent tool assignment** | `AgentConfig.allowed_tools` filter (R50-1) → `TenantToolAllowed` / `TenantModelAllowed` checks |
 | **MCP bridge** | `McpRegistry` → `ToolRegistry` bridge still exposes MCP tools as agent-callable; MCP server direct `AgentExecutionService` path is intentional improvement (latency) not regression |
-| **Axum route param syntax** | `:param` (matchit 0.7) stays `:id` not `{id}` until Axum 0.8 upgrade — grep `src/api/routes.rs` if upgraded |
+| **Axum route param syntax** | `:param` (matchit 0.7) stays `:id` not `{id}` until Axum 0.8 upgrade, grep `src/api/routes.rs` if upgraded |
 | **Config symlink** | `ares.toml` remains symlink to `/opt/ares-config/ares.toml` on VPS; Loader state in `config/entries.json` / `config/cordis-entries.toon` must not conflict |
-| **ARES stays generic** | Zero client-specific routes/tables/logic — client needs are plugins in client's repo calling `/v1/*` |
+| **ARES stays generic** | Zero client-specific routes/tables/logic, client needs are plugins in client's repo calling `/v1/*` |
 
 ---
 
-## Intentional Behavior Changes (documented, not regressions)
+## Intentional behavior changes (documented, not regressions)
 
 | Change | Justification |
 |--------|---------------|
 | MCP server calls `AgentExecutionService` directly instead of HTTP `reqwest` loopback | Latency improvement, eliminates loopback failure mode; observable: same `ChatResponse` but faster, no `localhost:3000` hop in traces |
 | 60s poll → epoch `notify` (watch channel + Postgres NOTIFY/LISTEN) | Eliminates stale window, reduces DB load; observable: `runtime_tools` change visible immediately, not up to 60s later |
-| 17-step `run_server` → 5–8 `plugin` calls | Simplification, same services initialized; observable: startup logs show same component counts |
+| 17-step `run_server` → 5,8 `plugin` calls | Simplification, same services initialized; observable: startup logs show same component counts |
 | `sequential orchestrator` → `JoinSet` parallel | Throughput improvement; sequential semantics preserved via `Dispatch::Serial` where order matters |
 
 ---
 
-## Verification Matrix Hook (Phase 7, Step 22)
+## Verification matrix hook (Phase 7, step 22)
 
-For each row above, Phase 7 (steps 22–24) runs:
+For each row above, Phase 7 (steps 22,24) runs:
 
 1. `curl -s localhost:3000/health` → `200`
 2. `curl -s localhost:3000/api/chat -H 'Authorization: Bearer <jwt>' -d '{"message":"hello"}'` → valid `ChatResponse` with `usage`

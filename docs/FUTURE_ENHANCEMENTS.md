@@ -1,4 +1,4 @@
-# Future Enhancements
+# Future enhancements
 
 This document tracks features that are planned but deferred to future iterations. Each section includes:
 - Current status (stub, not started, etc.)
@@ -8,7 +8,7 @@ This document tracks features that are planned but deferred to future iterations
 
 ---
 
-## Table of Contents
+## Table of contents
 
 1. [GPU Acceleration for Embeddings](#gpu-acceleration-for-embeddings)
 2. [Embedding Cache](#embedding-cache)
@@ -18,9 +18,9 @@ This document tracks features that are planned but deferred to future iterations
 
 ---
 
-## GPU Acceleration for Embeddings
+## GPU acceleration for embeddings
 
-### Status: Deferred (Stubs Only)
+### Status: deferred (stubs only)
 
 ### Rationale
 
@@ -31,9 +31,9 @@ GPU acceleration for embedding models would significantly improve throughput for
 3. Testing infrastructure across multiple GPU types
 4. Build complexity for CI/CD
 
-### Implementation Considerations
+### Implementation considerations
 
-#### ONNX Runtime Execution Providers
+#### ONNX runtime execution providers
 
 FastEmbed uses `ort` (ONNX Runtime) internally. GPU acceleration can be added via execution providers:
 
@@ -64,7 +64,7 @@ impl AccelerationBackend {
 }
 ```
 
-#### Candle GPU Support (for Qwen3)
+#### Candle GPU support (for qwen3)
 
 Qwen3 embeddings use Candle instead of ONNX. GPU support is available via features:
 
@@ -74,7 +74,7 @@ candle-core = { version = "0.9", features = ["cuda"] }  # NVIDIA
 candle-core = { version = "0.9", features = ["metal"] } # Apple Silicon
 ```
 
-#### Feature Flags (Proposed)
+#### Feature flags (proposed)
 
 ```toml
 [features]
@@ -85,7 +85,7 @@ vulkan = ["ort/vulkan"]
 directml = ["ort/directml"]
 ```
 
-### Stub Location
+### Stub location
 
 - `src/rag/embeddings.rs` - `AccelerationBackend` enum (placeholder)
 
@@ -96,19 +96,19 @@ directml = ["ort/directml"]
 
 ---
 
-## Embedding Cache
+## Embedding cache
 
-### Status: Implemented (In-Memory LRU)
+### Status: implemented (In-Memory LRU)
 
 The in-memory LRU embedding cache is now fully implemented. See `src/rag/cache.rs`.
 
-### Current Implementation
+### Current implementation
 
-- **Backend**: In-memory LRU cache using `parking_lot::RwLock<HashMap>`
-- **Key Strategy**: SHA-256 hash of `text + model_name`
-- **Eviction Policy**: LRU (Least Recently Used) with configurable max size
-- **TTL Support**: Optional per-entry TTL with automatic expiry
-- **Thread-safe**: Uses atomic counters and `RwLock` for concurrent access
+- Backend: In-memory LRU cache using `parking_lot::RwLock<HashMap>`
+- Key Strategy: SHA-256 hash of `text + model_name`
+- Eviction Policy: LRU (Least Recently Used) with configurable max size
+- TTL Support: Optional per-entry TTL with automatic expiry
+- Thread-safe: Uses atomic counters and `RwLock` for concurrent access
 
 ### Usage
 
@@ -134,7 +134,7 @@ let stats = service.cache_stats();
 println!("Hit rate: {:.1}%", stats.hit_rate());
 ```
 
-### Future Backend Options
+### Future backend options
 
 Additional backends can be added by implementing the `EmbeddingCache` trait:
 
@@ -157,12 +157,12 @@ let config = CacheConfig {
 };
 ```
 
-### Implementation Location
+### Implementation location
 
 - `src/rag/cache.rs` - `EmbeddingCache` trait, `LruEmbeddingCache`, and `NoOpCache` implementations
 - `src/rag/embeddings.rs` - `CachedEmbeddingService` wrapper
 
-### Future Configuration (Proposed TOML)
+### Future configuration (proposed TOML)
 
 ```toml
 [rag.cache]
@@ -183,32 +183,32 @@ path = "./data/embedding_cache"
 
 ---
 
-## AI-Native Protocols
+## Ai-native protocols
 
-### Status: Not Started (Research Required)
+### Status: not started (research required)
 
 ### Rationale
 
 These are emerging protocols for agent-to-agent communication and UI integration. They are not yet standardized or widely adopted.
 
-### Protocols to Research
+### Protocols to research
 
 | Protocol | Full Name | Purpose | Status |
 |----------|-----------|---------|--------|
-| MCP | Model Context Protocol | Tool/context sharing | ✅ Implemented |
+| MCP | Model Context Protocol | Tool/context sharing |  Implemented |
 | ACP | Agent Communication Protocol | Agent messaging | Research needed |
 | AG-UI | Agent UI Protocol | UI components for agents | Research needed |
 | ANP | Agent Network Protocol | Multi-agent networking | Research needed |
 | A2A | Agent-to-Agent Protocol | Direct agent communication | Research needed |
 
-### Research Questions
+### Research questions
 
 1. Are there official specifications for these protocols?
 2. Do Rust implementations exist?
 3. Which protocols are production-ready vs experimental?
 4. How do they integrate with existing MCP implementation?
 
-### Next Steps
+### Next steps
 
 1. Search for official documentation/specs
 2. Check for Rust crates on crates.io
@@ -217,15 +217,15 @@ These are emerging protocols for agent-to-agent communication and UI integration
 
 ---
 
-## Vector Store Migration Utility
+## Vector store migration utility
 
-### Status: Not Started
+### Status: not started
 
 ### Rationale
 
 As users may switch between vector store providers (e.g., from Qdrant to LanceDB), a migration utility would help preserve indexed data.
 
-### Proposed Features
+### Proposed features
 
 ```rust
 // Future: src/rag/migration.rs
@@ -261,7 +261,7 @@ pub struct MigrationReport {
 }
 ```
 
-### CLI Integration (Proposed)
+### CLI integration (proposed)
 
 ```bash
 # Future CLI command
@@ -276,13 +276,13 @@ ares-server migrate \
 
 ---
 
-## Advanced Search Features
+## Advanced search features
 
-### Status: Partially Planned
+### Status: partially planned
 
-### Features for Future Iterations
+### Features for future iterations
 
-#### 1. Full-Text Search with Tantivy
+#### 1. Full-text search with tantivy
 
 ```toml
 # Future dependency
@@ -295,7 +295,7 @@ Tantivy is a Lucene-like full-text search engine in Rust. It would provide:
 - Phrase queries
 - Highlighting
 
-#### 2. Approximate Nearest Neighbor (ANN) Tuning
+#### 2. Approximate nearest neighbor (ANN) tuning
 
 Most vector stores support ANN algorithm tuning:
 
@@ -306,7 +306,7 @@ hnsw_m = 16              # Number of connections per layer
 hnsw_ef_construct = 100  # Construction-time search width
 ```
 
-#### 3. Multi-Vector Search
+#### 3. Multi-vector search
 
 Support for multiple embedding types per document:
 
@@ -320,7 +320,7 @@ pub struct MultiVectorDocument {
 }
 ```
 
-#### 4. Query Expansion
+#### 4. Query expansion
 
 Automatic query expansion using:
 - Synonyms
@@ -342,24 +342,24 @@ impl QueryExpander {
 
 ---
 
-## LLM Client Connection Pooling (DIR-44)
+## LLM client connection pooling (DIR-44)
 
-### Status: ✅ Implemented
+### Status: implemented
 
 Connection pooling for LLM clients has been implemented to enable efficient connection reuse across requests, reducing latency and resource consumption.
 
-### Implementation Details
+### Implementation details
 
 **Location**: `src/llm/pool.rs`
 
 **Features**:
-- ✅ Pool management with configurable max connections per provider
-- ✅ Connection reuse across requests via `PooledClientGuard` RAII pattern
-- ✅ Health checking for stale connections (idle timeout + max lifetime)
-- ✅ Graceful cleanup on shutdown
-- ✅ Background cleanup task for removing stale connections
-- ✅ Thread-safe with `parking_lot::RwLock` and `tokio::sync::Semaphore`
-- ✅ Builder pattern for pool configuration
+- Pool management with configurable max connections per provider
+- Connection reuse across requests via `PooledClientGuard` RAII pattern
+- Health checking for stale connections (idle timeout + max lifetime)
+- Graceful cleanup on shutdown
+- Background cleanup task for removing stale connections
+- Thread-safe with `parking_lot::RwLock` and `tokio::sync::Semaphore`
+- Builder pattern for pool configuration
 
 ### Usage
 
@@ -407,7 +407,7 @@ let config = PoolConfig {
 };
 ```
 
-### Implementation Location
+### Implementation location
 
 - `src/llm/pool.rs` - Core pooling implementation
 - `src/llm/mod.rs` - Public exports
@@ -418,16 +418,16 @@ let config = PoolConfig {
 
 ---
 
-## Implementation Priority
+## Implementation priority
 
 When resources become available, implement in this order:
 
-1. ~~**Embedding Cache** (High impact, moderate effort)~~ - **DONE**
-2. ~~**LLM Client Pooling (DIR-44)** (High impact, moderate effort)~~ - **DONE**
-3. **GPU Acceleration** (High impact, high effort)
-4. **Advanced Search** (Medium impact, varies)
-5. **Migration Utility** (Low priority unless requested)
-6. **AI-Native Protocols** (Pending standardization)
+1. ~~Embedding Cache (High impact, moderate effort)~~ - DONE
+2. ~~LLM Client Pooling (DIR-44) (High impact, moderate effort)~~ - DONE
+3. GPU Acceleration (High impact, high effort)
+4. Advanced Search (Medium impact, varies)
+5. Migration Utility (Low priority unless requested)
+6. AI-Native Protocols (Pending standardization)
 
 ---
 
@@ -444,5 +444,5 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2026-02-03  
-**Related**: [DIR-24 Implementation Plan](./DIR-24_RAG_IMPLEMENTATION_PLAN.md)
+Last Updated: 2026-02-03 
+Related: [DIR-24 Implementation Plan](./DIR-24_RAG_IMPLEMENTATION_PLAN.md)

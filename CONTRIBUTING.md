@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to A.R.E.S (Agentic Retrieval Enhanced Server)! This document provides guidelines and instructions for contributing.
 
-## Table of Contents
+## Table of contents
 
 - [Code of Conduct](#code-of-conduct)
 - [Getting Started](#getting-started)
@@ -16,37 +16,37 @@ Thank you for your interest in contributing to A.R.E.S (Agentic Retrieval Enhanc
 - [Pull Request Process](#pull-request-process)
 - [Release Process](#release-process)
 
-## Code of Conduct
+## Code of conduct
 
 This project follows the [Rust Code of Conduct](https://www.rust-lang.org/policies/code-of-conduct). Please be respectful and constructive in all interactions.
 
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
-- **Rust 1.91+**: Install via [rustup](https://rustup.rs/)
-- **Git**: For version control
+- Rust 1.91+: Install via [rustup](https://rustup.rs/)
+- Git: For version control
 - **just** (recommended): Command runner - [Install just](https://just.systems)
 - **Docker** (optional): For running Qdrant vector database
 - **Ollama** (optional): For local LLM inference
 - **Node.js runtime** (for UI development): bun, npm, or deno
 
-### Fork and Clone
+### Fork and clone
 
 1. Fork the repository on GitHub
 2. Clone your fork:
-   ```bash
+ ```bash
    git clone https://github.com/dirmacs/ares.git
    cd ares
    ```
 3. Add the upstream remote:
-   ```bash
+ ```bash
    git remote add upstream https://github.com/dirmacs/ares.git
    ```
 
-## Development Setup
+## Development setup
 
-### Environment Variables
+### Environment variables
 
 Create a `.env` file from the example:
 
@@ -87,7 +87,7 @@ QDRANT_URL=http://localhost:6334
 # QDRANT_API_KEY=
 ```
 
-### Building the Project
+### Building the project
 
 ```bash
 # Build with default features (local-db + ollama)
@@ -107,7 +107,7 @@ cargo build --release
 # Or: just build-release
 ```
 
-### Running Locally
+### Running locally
 
 ```bash
 # Start with default configuration
@@ -127,11 +127,11 @@ RUST_LOG=trace cargo run
 # Or: just run-trace
 ```
 
-## Feature Flags
+## Feature flags
 
-A.R.E.S uses feature flags for conditional compilation. Understanding these is crucial for development:
+A.R.E.S uses feature flags for conditional compilation. Understanding these is important for development:
 
-### LLM Providers
+### LLM providers
 
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
@@ -141,7 +141,7 @@ A.R.E.S uses feature flags for conditional compilation. Understanding these is c
 | `llamacpp-cuda` | LlamaCpp + CUDA | GPU drivers |
 | `llamacpp-metal` | LlamaCpp + Metal | macOS only |
 
-### Database Backends
+### Database backends
 
 | Feature | Description |
 |---------|-------------|
@@ -149,7 +149,7 @@ A.R.E.S uses feature flags for conditional compilation. Understanding these is c
 | `turso` | Remote Turso database |
 | `qdrant` | Qdrant vector database |
 
-### UI & Documentation Features
+### UI & documentation features
 
 | Feature | Description |
 |---------|-------------|
@@ -158,7 +158,7 @@ A.R.E.S uses feature flags for conditional compilation. Understanding these is c
 
 > **Note:** The `swagger-ui` feature was made optional in v0.2.5 to reduce binary size and build time. It requires network access during build to download Swagger UI assets.
 
-### Feature Bundles
+### Feature bundles
 
 | Feature | Includes |
 |---------|----------|
@@ -168,7 +168,7 @@ A.R.E.S uses feature flags for conditional compilation. Understanding these is c
 | `full-ui` | All optional features + UI |
 | `minimal` | No optional features |
 
-### Working with Features
+### Working with features
 
 ```bash
 # Test with specific feature combination
@@ -194,7 +194,7 @@ cargo build --features "ui,swagger-ui"
 
 > **Note about docs.rs:** Some features (`llamacpp`, `qdrant`, `swagger-ui`) cannot be built on docs.rs due to their build requirements (native compilation, network access, or filesystem writes). Documentation is built with: `ollama`, `openai`, `local-db`, `turso`, `mcp`.
 
-## Using just (Recommended)
+## Using just (recommended)
 
 A.R.E.S uses [just](https://just.systems) as a command runner to simplify development workflows:
 
@@ -243,9 +243,9 @@ just check-node            # Check for Node.js runtime
 just pre-commit            # Format, lint, and test
 ```
 
-## Making Changes
+## Making changes
 
-### Branch Naming
+### Branch naming
 
 Use descriptive branch names:
 
@@ -254,7 +254,7 @@ Use descriptive branch names:
 - `docs/update-readme`
 - `refactor/llm-client-trait`
 
-### Commit Messages
+### Commit messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
@@ -287,7 +287,7 @@ fix(auth): handle expired refresh tokens correctly
 test(api): add concurrent login tests
 ```
 
-### Adding New Features
+### Adding new features
 
 1. **Discuss First**: For significant changes, open an issue to discuss the approach
 2. **Feature Gate**: Use Cargo features for optional functionality
@@ -295,7 +295,7 @@ test(api): add concurrent login tests
 4. **Test**: Add unit and integration tests
 5. **Example**: Consider adding usage examples
 
-### Adding a New LLM Provider
+### Adding a new LLM provider
 
 1. Create `src/llm/your_provider.rs`
 2. Implement the `LLMClient` trait
@@ -304,7 +304,7 @@ test(api): add concurrent login tests
 5. Add tests
 6. Document environment variables
 
-### Adding a New Tool
+### Adding a new tool
 
 1. Create `src/tools/your_tool.rs`
 2. Implement the `Tool` trait
@@ -312,7 +312,7 @@ test(api): add concurrent login tests
 4. Add tests
 5. Document the tool's purpose and parameters
 
-### Adding a New Agent (via TOML)
+### Adding a new agent (via TOML)
 
 New agents can be added purely via configuration in `ares.toml`:
 
@@ -328,7 +328,7 @@ Your role is to...
 
 The `ConfigurableAgent` will automatically pick up this configuration.
 
-### Adding a New Workflow
+### Adding a new workflow
 
 Workflows are also defined in `ares.toml`:
 
@@ -339,24 +339,24 @@ fallback_agent = "product"             # Fallback if entry agent fails
 max_depth = 5                          # Maximum routing depth
 ```
 
-## CLI Development
+## CLI development
 
 The CLI is implemented in `src/cli/` with the following structure:
 
 ```
 src/cli/
-├── mod.rs      # CLI argument parsing with clap
-├── init.rs     # Init command scaffolding logic
-└── output.rs   # Colored TUI output helpers
+ mod.rs      # CLI argument parsing with clap
+ init.rs     # Init command scaffolding logic
+ output.rs   # Colored TUI output helpers
 ```
 
-### Adding a New CLI Command
+### Adding a new CLI command
 
 1. Add the command variant to `Commands` enum in `src/cli/mod.rs`
 2. Implement the command handler in `src/main.rs`
 3. Add tests in `tests/cli_tests.rs`
 
-### CLI Testing
+### CLI testing
 
 ```bash
 # Run CLI unit tests
@@ -371,7 +371,7 @@ cargo run -- config --config /tmp/test-project/ares.toml
 cargo run -- agent list --config /tmp/test-project/ares.toml
 ```
 
-## UI Development
+## UI development
 
 The embedded web UI is built with Leptos and requires a Node.js runtime (bun, npm, or deno).
 
@@ -391,7 +391,7 @@ cargo install trunk --locked
 cd ui && bun install  # or npm install
 ```
 
-### Development Workflow
+### Development workflow
 
 ```bash
 # Run UI dev server (hot reload)
@@ -410,45 +410,45 @@ just build-ui
 # Or: cargo build --features "ui"
 ```
 
-### UI Project Structure
+### UI project structure
 
 ```
 ui/
-├── src/
-│   ├── lib.rs        # Main app component
-│   ├── api.rs        # API client
-│   ├── state.rs      # Global state management
-│   ├── types.rs      # Type definitions
-│   ├── components/   # Reusable UI components
-│   └── pages/        # Page components
-├── index.html        # HTML template
-├── Trunk.toml        # Trunk configuration
-├── Cargo.toml        # Rust dependencies
-└── tailwind.config.js # Tailwind CSS config
+ src/
+    lib.rs        # Main app component
+    api.rs        # API client
+    state.rs      # Global state management
+    types.rs      # Type definitions
+    components/   # Reusable UI components
+    pages/        # Page components
+ index.html        # HTML template
+ Trunk.toml        # Trunk configuration
+ Cargo.toml        # Rust dependencies
+ tailwind.config.js # Tailwind CSS config
 ```
 
-### Node.js Runtime Detection
+### Node.js runtime detection
 
 The build system automatically detects available runtimes:
 
-1. **bun** (preferred) - Fastest, recommended
-2. **npm** - Standard Node.js package manager
-3. **deno** - Alternative runtime
+1. bun (preferred) - Fastest, recommended
+2. npm - Standard Node.js package manager
+3. deno - Alternative runtime
 
 If no runtime is found, the build will fail with instructions.
 
-### Architecture: Key Registries
+### Architecture: key registries
 
 When contributing code, understand these core components:
 
-- **`AresConfigManager`** (`src/utils/toml_config.rs`): Thread-safe config access with hot-reload
-- **`ProviderRegistry`** (`src/llm/provider_registry.rs`): Creates LLM clients from config
-- **`AgentRegistry`** (`src/agents/registry.rs`): Creates agents from TOML definitions
-- **`ToolRegistry`** (`src/tools/registry.rs`): Manages tool availability and configuration
-- **`WorkflowEngine`** (`src/workflows/engine.rs`): Executes declarative workflows
-- **`ConfigurableAgent`** (`src/agents/configurable.rs`): Generic config-driven agent
+- `AresConfigManager` (`src/utils/toml_config.rs`): Thread-safe config access with hot-reload
+- `ProviderRegistry` (`src/llm/provider_registry.rs`): Creates LLM clients from config
+- `AgentRegistry` (`src/agents/registry.rs`): Creates agents from TOML definitions
+- `ToolRegistry` (`src/tools/registry.rs`): Manages tool availability and configuration
+- `WorkflowEngine` (`src/workflows/engine.rs`): Executes declarative workflows
+- `ConfigurableAgent` (`src/agents/configurable.rs`): Generic config-driven agent
 
-### Configuration Validation
+### Configuration validation
 
 The configuration system validates:
 - Reference integrity (models → providers, agents → models, workflows → agents)
@@ -459,7 +459,7 @@ Use `config.validate_with_warnings()` to also get warnings about unused config i
 
 ## Testing
 
-### Running Tests
+### Running tests
 
 ```bash
 # Run all tests (mocked, no external services required)
@@ -491,7 +491,7 @@ cargo test --lib
 # Or: just test-lib
 ```
 
-### Live Ollama Tests
+### Live Ollama tests
 
 There are additional tests that connect to a **real Ollama instance**. These tests are **ignored by default** and must be explicitly enabled.
 
@@ -500,7 +500,7 @@ There are additional tests that connect to a **real Ollama instance**. These tes
 1. A running Ollama server (default: `http://localhost:11434`)
 2. A model pulled (e.g., `ollama pull ministral-3:3b`)
 
-#### Running Live Tests
+#### Running live tests
 
 **Option 1: Using just (recommended)**
 
@@ -541,7 +541,7 @@ Then run:
 cargo test --test ollama_live_tests -- --ignored
 ```
 
-#### Configuring Live Tests
+#### Configuring live tests
 
 You can customize the Ollama connection:
 
@@ -553,7 +553,7 @@ OLLAMA_URL=http://192.168.1.100:11434 OLLAMA_LIVE_TESTS=1 cargo test --test olla
 OLLAMA_MODEL=mistral OLLAMA_LIVE_TESTS=1 cargo test --test ollama_live_tests -- --ignored
 ```
 
-#### Live Test Coverage
+#### Live test coverage
 
 The live tests cover:
 - Connection verification
@@ -565,7 +565,7 @@ The live tests cover:
 - Error handling (invalid models)
 - Sequential and concurrent requests
 
-### Test Coverage
+### Test coverage
 
 ```bash
 # Install coverage tool
@@ -578,7 +578,7 @@ cargo llvm-cov --html --open
 cargo llvm-cov --lcov --output-path lcov.info
 ```
 
-### Writing Tests
+### Writing tests
 
 - Place unit tests in the same file using `#[cfg(test)]` modules
 - Place integration tests in the `tests/` directory
@@ -611,7 +611,7 @@ mod tests {
 }
 ```
 
-## Code Style
+## Code style
 
 ### Formatting
 
@@ -665,8 +665,8 @@ cargo clippy --all-features -- -D warnings
 ///
 /// ```rust,ignore
 /// let client = create_client(Provider::Ollama {
-///     base_url: "http://localhost:11434".into(),
-///     model: "ministral-3:3b".into(),
+/// base_url: "http://localhost:11434".into(),
+/// model: "ministral-3:3b".into(),
 /// }).await?;
 /// ```
 pub async fn create_client(provider: Provider) -> Result<Box<dyn LLMClient>> {
@@ -674,9 +674,9 @@ pub async fn create_client(provider: Provider) -> Result<Box<dyn LLMClient>> {
 }
 ```
 
-## Pull Request Process
+## Pull request process
 
-### Before Submitting
+### Before submitting
 
 1. [ ] Rebase on latest `main`
 2. [ ] Run `cargo fmt`
@@ -686,7 +686,7 @@ pub async fn create_client(provider: Provider) -> Result<Box<dyn LLMClient>> {
 6. [ ] Update documentation if needed (README, QUICK_REFERENCE, CHANGELOG)
 7. [ ] Add/update tests for changes
 
-### PR Description Template
+### PR description template
 
 ```markdown
 ## Description
@@ -717,7 +717,7 @@ Describe testing done.
 - [ ] All tests pass
 ```
 
-### Review Process
+### Review process
 
 1. Automated CI checks must pass
 2. At least one maintainer approval required
@@ -725,7 +725,7 @@ Describe testing done.
 4. Squash commits if requested
 5. Maintainer will merge when ready
 
-## Release Process
+## Release process
 
 Releases are managed by maintainers:
 
@@ -743,10 +743,10 @@ We follow [Semantic Versioning](https://semver.org/):
 - MINOR: New features, backward compatible
 - PATCH: Bug fixes, backward compatible
 
-## Getting Help
+## Getting help
 
-- **Issues**: Search existing issues or create a new one
-- **Discussions**: For questions and ideas
+- Issues: Search existing issues or create a new one
+- Discussions: For questions and ideas
 
 ## Recognition
 
@@ -755,4 +755,4 @@ Contributors will be recognized in:
 - README.md contributors section
 - GitHub release notes
 
-Thank you for contributing to A.R.E.S! 🚀
+Thank you for contributing to A.R.E.S! 

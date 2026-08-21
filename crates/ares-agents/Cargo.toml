@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = true
-description = "AI agent orchestration for A.R.E.S"
+description = "Agent orchestration for ARES"
 
 [features]
 default = []

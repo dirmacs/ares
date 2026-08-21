@@ -1,24 +1,24 @@
-# Guide: Build a Chat Agent
+# Guide: build a chat agent
 
-This guide walks you through creating a custom chat agent on ARES — from defining its behavior to testing it in production.
+This guide walks you through creating a custom chat agent on ARES, from defining its behavior to testing it in production.
 
 ---
 
-## What is an Agent?
+## What is an agent?
 
 An ARES agent is a configured LLM endpoint with a specific personality, instructions, and tool access. Each agent has:
 
-- A **name** — unique identifier used in API calls
-- A **model** — which LLM powers it (e.g., `llama-3.3-70b`, `claude-3.5-sonnet`)
-- A **system prompt** — instructions that define the agent's behavior
-- **Tools** — optional capabilities like `calculator` or `web_search`
-- **Configuration** — max tokens, temperature, and other parameters
+- A **name**, unique identifier used in API calls
+- A **model**, which LLM powers it (e.g., `llama-3.3-70b`, `claude-3.5-sonnet`)
+- A **system prompt**, instructions that define the agent's behavior
+- **Tools**, optional capabilities like `calculator` or `web_search`
+- **Configuration**, max tokens, temperature, and other parameters
 
 You can create agents in two ways: via the configuration file or via the API.
 
 ---
 
-## Option 1: Define in ares.toml
+## Option 1: define in ares.toml
 
 For agents that are part of your core platform, define them in the `ares.toml` configuration file:
 
@@ -42,7 +42,7 @@ max_tokens = 4096
 
 Restart ARES to load the new agent. It will be available immediately at `/api/chat` using `agent_type: "financial-analyst"`.
 
-### TOON Config Format
+### TOON config format
 
 ARES also supports the TOON configuration format for more structured agent definitions:
 
@@ -67,11 +67,11 @@ The TOON format structures the system prompt into semantic fields that ARES asse
 
 ---
 
-## Option 2: Create via API
+## Option 2: create via API
 
 For tenant-specific agents or agents you want to manage programmatically, use the API.
 
-### As a Platform Admin
+### As a platform admin
 
 ```bash
 curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/agents \
@@ -89,7 +89,7 @@ curl -X POST http://localhost:3000/api/admin/tenants/{tenant_id}/agents \
   }'
 ```
 
-### As an Authenticated User
+### As an authenticated user
 
 ```bash
 curl -X POST http://localhost:3000/api/user/agents \
@@ -109,9 +109,9 @@ curl -X POST http://localhost:3000/api/user/agents \
 
 ---
 
-## Testing Your Agent
+## Testing your agent
 
-### Basic Chat
+### Basic chat
 
 Send a message to your agent:
 
@@ -150,7 +150,7 @@ curl -X POST http://localhost:3000/api/chat \
   }'
 ```
 
-### With Tool Usage
+### With tool usage
 
 If your agent has tools enabled, ARES handles the tool calling loop automatically. You send a normal chat message, and the agent uses tools as needed:
 
@@ -184,11 +184,11 @@ This returns a Server-Sent Events stream. See the [V1 API docs](../enterprise/v1
 
 ---
 
-## Iterating on the System Prompt
+## Iterating on the system prompt
 
 The system prompt is the most important part of your agent. Here are practical guidelines:
 
-### Be Specific About Format
+### Be specific about format
 
 Bad:
 ```
@@ -205,7 +205,7 @@ You are a financial analyst. When presenting calculations:
 - End with a bold summary line
 ```
 
-### Define Boundaries
+### Define boundaries
 
 Tell the agent what it should *not* do:
 
@@ -217,7 +217,7 @@ Constraints:
 - If you don't have enough data to answer accurately, say so
 ```
 
-### Include Examples
+### Include examples
 
 For complex formatting requirements, show the agent what you want:
 
@@ -230,18 +230,18 @@ When comparing metrics, use this format:
 | EBITDA | $300K | $480K | +60% |
 ```
 
-### Test Edge Cases
+### Test edge cases
 
 After writing your system prompt, test these scenarios:
 
-1. **Off-topic requests** — Does the agent stay in character or helpfully redirect?
-2. **Ambiguous inputs** — Does the agent ask for clarification?
-3. **Tool failures** — Does the agent handle tool errors gracefully?
-4. **Long conversations** — Does the agent maintain context over multiple turns?
+1. **Off-topic requests**, Does the agent stay in character or helpfully redirect?
+2. **Ambiguous inputs**, Does the agent ask for clarification?
+3. **Tool failures**, Does the agent handle tool errors gracefully?
+4. **Long conversations**, Does the agent maintain context over multiple turns?
 
 ---
 
-## Adding Tool Access
+## Adding tool access
 
 Agents can use built-in tools to extend their capabilities:
 
@@ -264,7 +264,7 @@ See the [Tool Calling guide](./tool-calling.md) for details on how tool executio
 
 ---
 
-## Choosing a Model
+## Choosing a model
 
 Different models have different strengths. Consider these factors when choosing:
 

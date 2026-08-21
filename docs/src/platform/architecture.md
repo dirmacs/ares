@@ -1,8 +1,8 @@
-# Architecture (Cordis) — 0.8.0
+# Architecture (Cordis) 0.8.0
 
-ARES 0.8.0 is a Cordis-informed redesign (Γ^∞ = μΓ. Γ × (Γ→Γ) × Σ — *A Programming Paradigm for Spatiotemporal Composability*, Aug 2026). See `docs/cordis-mapping.md` + `ARCHITECTURE.md` (synced from `docs/cordis-redesign.md` 9d) and `docs/cordis-redesign.md` handoff for the full spec, dependency graph, request lifecycle, and verification logs.
+ARES 0.8.0 is a Cordis-informed redesign (Γ^∞ = μΓ. Γ × (Γ→Γ) × Σ, *A Programming Paradigm for Spatiotemporal Composability*, Aug 2026). See `docs/cordis-mapping.md` + `ARCHITECTURE.md` (synced from `docs/cordis-redesign.md` 9d) and `docs/cordis-redesign.md` handoff for the full spec, dependency graph, request lifecycle, and verification logs.
 
-## Context — Γ^∞
+## Context, Γ^∞
 
 ```rust
 pub struct Context {
@@ -28,9 +28,9 @@ pub trait Service: Send + Sync + 'static {
 }
 ```
 
-Store is the `TypeId`-keyed coherent table (Cordis Σ). Isolate creates tenant realms (`ctx.isolate::<dyn ToolService>("tenant:acme")`), intercept creates prototype-chain overrides (`ctx.intercept(ModelOverride{model:"gpt-4o-mini"})`).
+The store is the `TypeId`-keyed coherent table (Cordis Σ). Isolate creates tenant realms (`ctx.isolate::<dyn ToolService>("tenant:acme")`), intercept creates prototype-chain overrides (`ctx.intercept(ModelOverride{model:"gpt-4o-mini"})`).
 
-## Witnessed effects — LIFO Disposable
+## Witnessed effects, LIFO disposable
 
 ```rust
 pub trait Disposable: Send + 'static { fn dispose(self: Box<Self>); }
@@ -38,7 +38,7 @@ pub trait Disposable: Send + 'static { fn dispose(self: Box<Self>); }
 
 `provide` pushes undo onto `fiber.acc: Vec<Box<dyn FnOnce() + Send>>`. Temporal composability (Thm 61): `fiber.dispose()` reverses all effects LIFO and recovers the context snapshot.
 
-## Fiber — state machine + epoch :uid watch
+## Fiber, state machine and epoch :uid watch
 
 ```rust
 pub enum FiberState { Inactive{error: Option<CordisError>}, Active{epoch: String}, Reloading, Unloading }
@@ -53,11 +53,11 @@ pub struct Fiber {
 
 `Fiber::compute_epoch` sorts `HashMap<TypeId,Symbol>` into `":uid1:uid2:..."` monoid from `ctx.get_version(TypeId)`. `ReflectService{notifiers: HashMap<TypeId,watch::Sender<()>>, dependents: HashMap<TypeId,Vec<FiberId>>}` `notify(tid)` BFS walks dependents + `tokio::sync::watch` fan-out → `Fiber::refresh` (replaces 60 s `ArcSwap` polls).
 
-## Events — 5 dispatch modes
+## Events, 5 dispatch modes
 
-`Dispatch::Emit/Parallel(JoinSet)/Serial/Bail/Waterfall` via `HashMap<EventId,Vec<Handler>>` + `broadcast` and `tower::Service` for waterfall.
+`Dispatch::Emit/Parallel(JoinSet)/Serial/Bail/Waterfall` via `HashMap<EventId,Vec<Handler>>` with `broadcast` and `tower::Service` for waterfall.
 
-## Loader — EntryTree reconcile (HMR)
+## Loader, EntryTree reconcile (HMR)
 
 ```rust
 pub struct Entry { id: String, plugin: String, config: Value, disabled: bool, isolate: Option<String>, intercept: HashMap<String, Value> }
@@ -66,11 +66,11 @@ pub enum LoaderAction { RebuildFiber{ id }, UpdateConfig{ id }, Retire{ id }, Be
 pub fn reconcile(current: &EntryTree, desired: &EntryTree) -> Vec<LoaderAction>;
 ```
 
-Per-field diff persisted to `config/entries.json` / `config/cordis-entries.toon` (`toon-format 0.4.1`), never `ares.toml` symlink. Confluence (Thm 73). File-watch `crates/ares-cordis-core/src/watcher.rs` 500 ms debounce + `ReflectService::notify` → `Fiber::refresh` (90% HMR, `libloading` deferred behind `#[cfg(feature="hmr")]`).
+The loader persists per-field diffs to `config/entries.json` or `config/cordis-entries.toon` (`toon-format 0.4.1`), never to the `ares.toml` symlink. Confluence (Thm 73) holds. File watching in `crates/ares-cordis-core/src/watcher.rs` uses 500 ms debounce and calls `ReflectService::notify` to trigger `Fiber::refresh` (covers 90 percent of HMR, `libloading` remains behind `#[cfg(feature="hmr")]`).
 
 ## 8-plugin wiring via Context::plugin
 
-17 sequential `run_server` steps → 8 `root_ctx.plugin(...).await` (single-source guard `duplicate provider for <TypeId>`):
+Seventeen sequential `run_server` steps become eight `root_ctx.plugin(...).await` calls (single-source guard `duplicate provider for <TypeId>`):
 
 ```rust
 let root_ctx = Context::new_root();
@@ -92,16 +92,16 @@ let app = build_router(root_ctx);
 
 ## Unified services
 
-- **ToolService** `tenant runtime → fleet runtime → MCP bridge → static`, `ctx.isolate(tenant)` disjoint sets.
-- **LlmService** breaker `Closed/Open/HalfOpen` (5/30 s) + `ModelOverride` via `ctx.intercept`.
-- **AgentResolverService** ordered `tenant DB → community → system`, `ctx.isolate`.
-- **AgentExecutionService** single `execute(req,ctx)` for chat/v1/scheduler/pipeline/trigger.
-- **SchedulerService / PipelineService / TriggerService / SkillsService / WorkflowService** own their DB tables + inject `AgentExecutionService`; `build_routes(ctx)` merges `RouteSet`s.
+- ToolService: `tenant runtime -> fleet runtime -> MCP bridge -> static`, `ctx.isolate(tenant)` gives disjoint sets.
+- LlmService: breaker `Closed/Open/HalfOpen` (5/30 s) + `ModelOverride` via `ctx.intercept`.
+- AgentResolverService: ordered `tenant DB -> community -> system`, `ctx.isolate`.
+- AgentExecutionService: single `execute(req,ctx)` for chat, v1, scheduler, pipeline, and trigger.
+- SchedulerService, PipelineService, TriggerService, SkillsService, and WorkflowService own their DB tables and inject `AgentExecutionService`; `build_routes(ctx)` merges `RouteSet`s.
 
-## Handler migration — 177 State<Arc<Context>>
+## Handler migration, 177 State<Arc<Context>>
 
-`src/lib.rs` deleted `pub struct AppState{17-22 fields}` → `pub type AppState = Arc<Context>`. Every handler `State<AppState> → State<Arc<Context>>` + `ctx.get::<Service>()` via `src/context_services.rs` 18 wrappers. `admin.rs` 3059→165 thin shards (15 files), `v1.rs` 1074→161 (5 files), `cfg(feature)` 0 in handlers via `Service::check()`.
+`src/lib.rs` removes `pub struct AppState{17-22 fields}` and replaces it with `pub type AppState = Arc<Context>`. Every handler moves from `State<AppState>` to `State<Arc<Context>>` and uses `ctx.get::<Service>()` via 18 wrappers in `src/context_services.rs`. `admin.rs` shrinks from 3059 to 165 lines in 15 files, `v1.rs` from 1074 to 161 in 5 files, and `cfg(feature)` is no longer used in handlers (replaced by `Service::check()`.
 
-## Scheduler HMR + verification
+## Scheduler HMR and verification
 
-`SchedulerService` 361 lines `60_000` tick + catch-up (`cron` crate) + `select! tick+watch` + `NOTIFY/LISTEN`. File-watch proof `Configuration hot-reloaded successfully via Cordis watch` on random-port E2E `39476`/`39120` (`curl /health` OK). See `ARCHITECTURE.md` §§6-9d and `docs/cordis-baseline.md` for the full verification matrix (`cargo check` both, `clippy -D warnings`, `rust-doctor` 86→86 Great, `cargo test` 15/15 + 193/193).
+`SchedulerService` has 361 lines, a `60_000` ms tick with catch-up (`cron` crate), and `select! tick+watch` with `NOTIFY/LISTEN`. File-watch logs `Configuration hot-reloaded successfully via Cordis watch` on random-port E2E `39476`/`39120` (`curl /health` returns 200). See `ARCHITECTURE.md` sections 6 through 9d and `docs/cordis-baseline.md` for the full verification matrix (`cargo check` both, `clippy -D warnings`, `rust-doctor` 86 to 86 Great, `cargo test` 15/15 + 193/193).

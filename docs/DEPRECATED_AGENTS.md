@@ -1,35 +1,35 @@
-# Deprecated Agents Migration Guide
+# Deprecated agents migration guide
 
-**Version**: 0.2.0  
-**Date**: 2024-12-15  
-**Updated**: 2024-12-19 (TOON format support)
+Version: 0.2.0 
+Date: 2024-12-15 
+Updated: 2024-12-19 (TOON format support)
 
 ---
 
 ## Overview
 
-In v0.2.0, the legacy hardcoded agents have been **removed** and replaced with `ConfigurableAgent`, which is dynamically created from configuration. This provides:
+In v0.2.0, the legacy hardcoded agents have been removed and replaced with `ConfigurableAgent`, which is dynamically created from configuration. This provides:
 
-- ✅ No code changes needed to modify agent behavior
-- ✅ Hot-reloading of agent configurations
-- ✅ Per-agent model selection
-- ✅ Per-agent tool filtering
-- ✅ Custom system prompts via config
+- No code changes needed to modify agent behavior
+- Hot-reloading of agent configurations
+- Per-agent model selection
+- Per-agent tool filtering
+- Custom system prompts via config
 
-### Configuration Architecture
+### Configuration architecture
 
-A.R.E.S uses a **hybrid TOML + TOON** configuration system:
+A.R.E.S uses a hybrid TOML + TOON configuration system:
 
 | Format | File | Purpose | Hot-Reload |
 |--------|------|---------|------------|
-| **TOML** | `ares.toml` | Infrastructure (server, auth, database, providers) | ✅ Yes |
-| **TOON** | `config/*.toon` | Behavioral (agents, models, tools, workflows) | ✅ Yes |
+| TOML | `ares.toml` | Infrastructure (server, auth, database, providers) |  Yes |
+| TOON | `config/*.toon` | Behavioral (agents, models, tools, workflows) |  Yes |
 
-**TOON (Token Oriented Object Notation)** is optimized for LLM consumption with 30-60% token savings.
+TOON (Token Oriented Object Notation) is optimized for LLM consumption with 30-60% token savings.
 
 ---
 
-## What Was Removed
+## What was removed
 
 The following agent files were removed in v0.2.0:
 
@@ -43,13 +43,13 @@ The following agent files were removed in v0.2.0:
 
 ---
 
-## Migration Steps
+## Migration steps
 
-### Step 1: Create TOON Agent Files
+### Step 1: create TOON agent files
 
 Create individual `.toon` files for each agent in `config/agents/`:
 
-**config/agents/product.toon**:
+config/agents/product.toon:
 ```toon
 name: product
 model: balanced
@@ -89,7 +89,7 @@ tools[0]:
 system_prompt: "You are an HR Agent specialized in human resources queries.\n\nYour responsibilities include:\n- Employee policies and procedures\n- Benefits information\n- Hiring processes\n- Workplace guidelines\n\nBe helpful and maintain confidentiality."
 ```
 
-### TOON Format Quick Reference
+### TOON format quick reference
 
 ```toon
 # Agent configuration
@@ -104,7 +104,7 @@ system_prompt: "Single line prompt"
 system_prompt: "Line 1\nLine 2\nLine 3"
 ```
 
-### Step 2: Ensure Models Are Defined
+### Step 2: ensure models are defined
 
 Models go in `config/models/*.toon`:
 
@@ -117,7 +117,7 @@ temperature: 0.7
 max_tokens: 2048
 ```
 
-### Step 3: Update Any Direct Agent Usage
+### Step 3: update any direct agent usage
 
 If you had code that directly instantiated legacy agents:
 
@@ -138,7 +138,7 @@ let agent = agent_registry.create_agent("product").await?;
 let response = agent.execute(query, &context).await?;
 ```
 
-### Step 4: Use the Chat Endpoint
+### Step 4: use the chat endpoint
 
 The recommended approach is to use the HTTP API, which handles agent creation automatically:
 
@@ -165,11 +165,11 @@ curl -X POST http://localhost:3000/api/chat \
 
 ---
 
-## Using Workflows
+## Using workflows
 
 For multi-agent orchestration, use the workflow engine:
 
-### Define a Workflow (TOON)
+### Define a workflow (TOON)
 
 **config/workflows/default.toon**:
 ```toon
@@ -180,7 +180,7 @@ max_depth: 5
 max_iterations: 10
 ```
 
-### Execute a Workflow
+### Execute a workflow
 
 ```bash
 curl -X POST http://localhost:3000/api/workflows/default \
@@ -191,7 +191,7 @@ curl -X POST http://localhost:3000/api/workflows/default \
   }'
 ```
 
-### Workflow Response
+### Workflow response
 
 ```json
 {
@@ -212,38 +212,38 @@ curl -X POST http://localhost:3000/api/workflows/default \
 
 ---
 
-## Directory Structure
+## Directory structure
 
 ```
 ares/
-├── ares.toml                    # Infrastructure config (TOML)
-├── config/                      # Behavioral configs (TOON, hot-reload)
-│   ├── agents/
-│   │   ├── router.toon
-│   │   ├── orchestrator.toon
-│   │   ├── product.toon
-│   │   ├── invoice.toon
-│   │   ├── sales.toon
-│   │   ├── finance.toon
-│   │   └── hr.toon
-│   ├── models/
-│   │   ├── fast.toon
-│   │   ├── balanced.toon
-│   │   └── powerful.toon
-│   ├── tools/
-│   │   ├── calculator.toon
-│   │   └── web_search.toon
-│   ├── workflows/
-│   │   └── default.toon
-│   └── mcps/
-│       └── filesystem.toon
-└── data/
-    └── ares.db
+ ares.toml                    # Infrastructure config (TOML)
+ config/                      # Behavioral configs (TOON, hot-reload)
+    agents/
+       router.toon
+       orchestrator.toon
+       product.toon
+       invoice.toon
+       sales.toon
+       finance.toon
+       hr.toon
+    models/
+       fast.toon
+       balanced.toon
+       powerful.toon
+    tools/
+       calculator.toon
+       web_search.toon
+    workflows/
+       default.toon
+    mcps/
+        filesystem.toon
+ data/
+     ares.db
 ```
 
 ---
 
-## Key Differences
+## Key differences
 
 | Aspect | Legacy Agents | ConfigurableAgent |
 |--------|--------------|-------------------|
@@ -256,7 +256,7 @@ ares/
 
 ---
 
-## Benefits of the New Approach
+## Benefits of the new approach
 
 1. **No Recompilation**: Change agent behavior by editing `.toon` files
 2. **Hot Reloading**: Changes apply without restart
@@ -270,7 +270,7 @@ ares/
 
 ## Troubleshooting
 
-### Agent Not Found
+### Agent not found
 
 If you get "Agent 'xxx' not found" errors:
 
@@ -278,7 +278,7 @@ If you get "Agent 'xxx' not found" errors:
 2. Check the `name:` field matches the expected agent name
 3. Verify the model referenced by the agent exists in `config/models/`
 
-### Missing Model
+### Missing model
 
 If you get "Model 'xxx' not found" errors:
 
@@ -286,7 +286,7 @@ If you get "Model 'xxx' not found" errors:
 2. Check the `provider:` field references a valid provider in `ares.toml`
 3. Verify provider configuration is correct
 
-### Tools Not Working
+### Tools not working
 
 If agent tools aren't being used:
 
@@ -294,7 +294,7 @@ If agent tools aren't being used:
 2. Check tools are defined in `config/tools/`
 3. Verify the model supports tool calling
 
-### TOON Parse Errors
+### TOON parse errors
 
 If you see "Multiple values at root level" errors:
 

@@ -1,6 +1,6 @@
-# Models & Providers
+# Models & providers
 
-ARES routes LLM requests across multiple providers through a single API. You do not call providers directly — ARES selects the appropriate model based on the agent configuration and handles credentials, rate limits, and failover transparently.
+ARES routes LLM requests across multiple providers through a single API. You do not call providers directly, ARES selects the appropriate model based on the agent configuration and handles credentials, rate limits, and failover transparently.
 
 ## Available models
 
@@ -62,13 +62,13 @@ ARES uses a named-provider system. Each provider is configured with its API endp
 
 ### Provider details
 
-**Groq** — High-throughput inference on custom LPUs. Extremely fast response times. Hosts open-source models (Llama, Mixtral). Free tier available with rate limits.
+**Groq**, High-throughput inference on custom LPUs. Extremely fast response times. Hosts open-source models (Llama, Mixtral). Free tier available with rate limits.
 
-**Anthropic** — Claude models. Best-in-class for complex reasoning, instruction following, and safety. Requires a paid API key.
+**Anthropic**, Claude models. Best-in-class for complex reasoning, instruction following, and safety. Requires a paid API key.
 
-**NVIDIA (DeepSeek)** — NVIDIA-hosted DeepSeek models via the NVIDIA AI API. Strong at code generation and structured technical output.
+**NVIDIA (DeepSeek)**, NVIDIA-hosted DeepSeek models via the NVIDIA AI API. Strong at code generation and structured technical output.
 
-**Ollama** — Self-hosted, local inference. No external API calls. Useful for development, air-gapped environments, or when you need to keep data on-premises.
+**Ollama**, Self-hosted, local inference. No external API calls. Useful for development, air-gapped environments, or when you need to keep data on-premises.
 
 ## Rate limits
 

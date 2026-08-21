@@ -16,6 +16,7 @@ use std::any::TypeId;
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
+use crate::AppState;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -104,7 +105,7 @@ impl SchedulerService {
     /// Catch-up owned by the service — uses `self.db` pool.
     pub async fn run_catchup_schedules_owned(
         &self,
-        app_state: &Arc<crate::AppState>,
+        app_state: &AppState,
     ) -> Result<Vec<String>, String> {
         let store = ScheduleStore::new(&self.db.pool);
         run_catchup_schedules(&store, app_state).await
@@ -113,7 +114,7 @@ impl SchedulerService {
     /// Due-schedule pass owned by the service.
     pub async fn run_due_schedules_owned(
         &self,
-        app_state: &Arc<crate::AppState>,
+        app_state: &AppState,
     ) -> Result<(), String> {
         let pool = &self.db.pool;
         run_due_schedules(pool, app_state).await
@@ -121,7 +122,7 @@ impl SchedulerService {
 
     /// Service-owned tick body — runs catch-up then due schedules.
     /// Extracted so `init` tick loop and legacy `run_due_schedules` share logic.
-    async fn tick_once(&self, app_state: &Arc<crate::AppState>) -> Result<(), String> {
+    async fn tick_once(&self, app_state: &AppState) -> Result<(), String> {
         self.run_due_schedules_owned(app_state).await
     }
 }
@@ -342,7 +343,7 @@ pub(crate) fn scheduled_pipeline_trigger<'a>(
 }
 
 /// Start the background scheduler loop (legacy shim — prefer SchedulerService).
-pub async fn start_scheduler(pool: PgPool, app_state: Arc<crate::AppState>) {
+pub async fn start_scheduler(pool: PgPool, app_state: AppState) {
     let mut ticker = interval(Duration::from_secs(60));
     loop {
         ticker.tick().await;
@@ -352,7 +353,7 @@ pub async fn start_scheduler(pool: PgPool, app_state: Arc<crate::AppState>) {
     }
 }
 
-async fn run_due_schedules(pool: &PgPool, app_state: &Arc<crate::AppState>) -> Result<(), String> {
+async fn run_due_schedules(pool: &PgPool, app_state: &AppState) -> Result<(), String> {
     let store = ScheduleStore::new(pool);
 
     // 1. First, handle catch-up for schedules that are past their grace window.
@@ -410,7 +411,7 @@ async fn run_due_schedules(pool: &PgPool, app_state: &Arc<crate::AppState>) -> R
 /// table so we never trigger the same missed slot twice.
 async fn run_catchup_schedules(
     store: &ScheduleStore<'_>,
-    app_state: &Arc<crate::AppState>,
+    app_state: &AppState,
 ) -> Result<Vec<String>, String> {
     let mut attempted = Vec::new();
     let overdue = store
@@ -538,7 +539,7 @@ fn scheduled_usage_source(is_catchup: bool) -> &'static str {
 
 async fn execute_scheduled_agent(
     sched: &AgentSchedule,
-    app_state: &Arc<crate::AppState>,
+    app_state: &AppState,
     is_catchup: bool,
 ) -> Result<(), String> {
     use crate::agents::Agent;
@@ -548,10 +549,10 @@ async fn execute_scheduled_agent(
         RunObservability, run_cost_aggregation_request, spawn_run_cost_aggregation,
     };
 
-    let pool = app_state.tenant_db.pool();
+    let pool = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
 
     let tenant_agent_record =
-        crate::db::tenant_agents::get_tenant_agent(pool, &sched.tenant_id, &sched.agent_name)
+        crate::db::tenant_agents::get_tenant_agent(&pool, &sched.tenant_id, &sched.agent_name)
             .await
             .map_err(|e| format!("Agent lookup failed: {}", e))?;
 
@@ -604,7 +605,7 @@ async fn execute_scheduled_agent(
         .await
         .map_err(|e| e.to_string())?;
 
-        app_state.active_runs.start(crate::active_runs::ActiveRun {
+        app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
             run_id: run_id.clone(),
             tenant_id: sched.tenant_id.clone(),
             agent_name: sched.agent_name.clone(),
@@ -622,8 +623,7 @@ async fn execute_scheduled_agent(
             trigger_id: None,
         });
 
-        let skill_result = app_state
-            .skill_engine
+        let skill_result = app_state.get::<crate::context_services::SkillEngineService>().expect("not provided").0
             .execute_skill(
                 skill_id,
                 &sched.tenant_id,
@@ -638,7 +638,7 @@ async fn execute_scheduled_agent(
         } else {
             "error"
         };
-        app_state.active_runs.finish(&run_id, active_status);
+        app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, active_status);
 
         let status = if skill_result.is_ok() {
             "completed"
@@ -663,7 +663,7 @@ async fn execute_scheduled_agent(
         .bind(output_tokens)
         .bind(duration_ms)
         .bind(error_message.as_deref())
-        .execute(pool)
+        .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -716,12 +716,11 @@ async fn execute_scheduled_agent(
     }
 
     // 2. Resolve and execute regular LLM-backed agents.
-    let mut resolved_agent = match tenant_agent::resolve_agent_for_tenant(
-        pool,
-        &app_state.agent_registry,
+    let mut resolved_agent = match tenant_agent::resolve_agent_for_tenant(&pool,
+        &app_state.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,
         &sched.tenant_id,
         &sched.agent_name,
-        &app_state.fleet_secrets,
+        &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
     .await
     {
@@ -746,7 +745,7 @@ async fn execute_scheduled_agent(
     });
     resolved_agent.agent.set_observability(obs.clone());
     resolved_agent.agent.set_runtime_tools(
-        app_state.runtime_tool_registry.clone(),
+        app_state.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(),
         sched.tenant_id.clone(),
     );
 
@@ -757,8 +756,7 @@ async fn execute_scheduled_agent(
     );
     runtime_context.session_id = Some(run_id.clone());
 
-    let eruka_context = app_state
-        .context_provider
+    let eruka_context = app_state.get::<crate::context_services::ContextProviderService>().expect("not provided").0
         .get_context_for_run(&runtime_context)
         .await;
     let eruka_context_hit = eruka_context.is_some();
@@ -816,7 +814,7 @@ async fn execute_scheduled_agent(
     .await
     .map_err(|e| e.to_string())?;
 
-    app_state.active_runs.start(crate::active_runs::ActiveRun {
+    app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),
         tenant_id: sched.tenant_id.clone(),
         agent_name: sched.agent_name.clone(),
@@ -873,10 +871,9 @@ async fn execute_scheduled_agent(
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
 
-            app_state
-                .active_runs
+            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0
                 .update_model(&run_id, Some(&model_name));
-            app_state.active_runs.finish(&run_id, "completed");
+            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "completed");
 
             let trigger = scheduled_pipeline_trigger(sched, &response.content);
             let _ = crate::pipeline_engine::execute_pipeline_with_origin(
@@ -899,7 +896,7 @@ async fn execute_scheduled_agent(
             model_name = "unknown".to_string();
             provider_name = "unknown".to_string();
 
-            app_state.active_runs.finish(&run_id, "error");
+            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
         }
     }
 
@@ -917,7 +914,7 @@ async fn execute_scheduled_agent(
     .bind(error_msg.as_deref())
     .bind(&model_name)
     .bind(&provider_name)
-    .execute(pool)
+    .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
 

@@ -2,6 +2,10 @@
 //!
 //! Handles HTTP requests for executing declarative workflows defined in ares.toml.
 
+use std::sync::Arc;
+use crate::AppState;
+use ares_cordis_core::Context;
+
 use crate::{
     auth::middleware::AuthUser,
     types::{AgentContext, Result, WorkflowRequest},
@@ -35,13 +39,13 @@ use uuid::Uuid;
     security(("bearer" = []))
 )]
 pub async fn execute_workflow(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
     Path(workflow_name): Path<String>,
     Json(payload): Json<WorkflowRequest>,
 ) -> Result<Json<WorkflowOutput>> {
     // Create workflow engine
-    let workflow_engine = WorkflowEngine::new(state.clone());
+    let workflow_engine = WorkflowEngine::new(ctx.clone());
 
     // Check if workflow exists
     if !workflow_engine.has_workflow(&workflow_name) {
@@ -81,10 +85,10 @@ pub async fn execute_workflow(
     security(("bearer" = []))
 )]
 pub async fn list_workflows(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     AuthUser(_claims): AuthUser,
 ) -> Result<Json<Vec<WorkflowInfo>>> {
-    let config = state.config_manager.config();
+    let config = ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
 
     let workflows: Vec<WorkflowInfo> = config
         .workflows

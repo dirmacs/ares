@@ -2,6 +2,8 @@
 //!
 //! Requires the `skills` feature flag.
 
+use std::sync::Arc;
+use ares_cordis_core::Context;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -36,9 +38,9 @@ pub struct SkillsListResponse {
 
 /// GET /api/skills — list all discovered skills with scope-based priority.
 pub async fn list_skills(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
 ) -> Json<SkillsListResponse> {
-    let config = skills_config_from_state(&state);
+    let config = skills_config_from_state(&ctx);
     let summaries = crate::skills::list_skills(&config);
     let count = summaries.len();
     let skills = summaries
@@ -55,10 +57,10 @@ pub async fn list_skills(
 
 /// GET /api/skills/{name} — get a single skill by qualified name.
 pub async fn get_skill(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(name): Path<String>,
 ) -> Result<Json<SkillDetailResponse>, StatusCode> {
-    let config = skills_config_from_state(&state);
+    let config = skills_config_from_state(&ctx);
     match crate::skills::get_skill(&config, &name) {
         Some(skill) => {
             let fqn = skill.qualified_name();
@@ -75,8 +77,8 @@ pub async fn get_skill(
 }
 
 /// Build SkillsConfig from AppState config manager.
-fn skills_config_from_state(state: &AppState) -> crate::skills::SkillsConfig {
-    let config = state.config_manager.config();
+fn skills_config_from_state(ctx: &AppState) -> crate::skills::SkillsConfig {
+    let config = ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
     match &config.skills {
         Some(skills_toml) => crate::skills::SkillsConfig {
             project_dir: skills_toml.project_dir.clone(),

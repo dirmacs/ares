@@ -1,6 +1,8 @@
 //! Admin providers domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
+use std::sync::Arc;
+use ares_cordis_core::Context;
 use super::*;
 
 
@@ -14,12 +16,12 @@ use axum::{
 };
 use sha2::Digest;
 
-pub async fn list_models_handler(State(state): State<AppState>) -> Result<Json<Vec<ModelInfo>>> {
-    Ok(Json(state.provider_registry.list_models()))
+pub async fn list_models_handler(State(ctx): State<Arc<Context>>) -> Result<Json<Vec<ModelInfo>>> {
+    Ok(Json(ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0.list_models()))
 }
 
-pub async fn reload_runtime_provider_registry(state: &AppState) -> Result<()> {
-    let store = RuntimeProviderStore::new(state.tenant_db.pool());
+pub async fn reload_runtime_provider_registry(ctx: &AppState) -> Result<()> {
+    let store = RuntimeProviderStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let providers = store.list_all().await?;
     let mut entries = Vec::with_capacity(providers.len());
     let mut names = Vec::with_capacity(providers.len());
@@ -41,17 +43,16 @@ pub async fn reload_runtime_provider_registry(state: &AppState) -> Result<()> {
         });
     }
 
-    state
-        .provider_registry
+    ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0
         .reload_runtime_providers(entries, names);
     Ok(())
 }
 
 /// List all runtime providers (global / tenant-scoped).
 pub async fn list_runtime_providers(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<RuntimeProviderResponse>>> {
-    let store = RuntimeProviderStore::new(state.tenant_db.pool());
+    let store = RuntimeProviderStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let providers = store.list_all().await?;
     let response: Vec<RuntimeProviderResponse> = providers.into_iter().map(|p| p.into()).collect();
     tracing::info!("Listed {} runtime providers", response.len());
@@ -60,11 +61,11 @@ pub async fn list_runtime_providers(
 
 /// Get a single runtime provider by name.
 pub async fn get_runtime_provider(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(name): Path<String>,
     Query(query): Query<RuntimeProviderScopeQuery>,
 ) -> Result<Json<RuntimeProviderResponse>> {
-    let store = RuntimeProviderStore::new(state.tenant_db.pool());
+    let store = RuntimeProviderStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let provider = store
         .get_scoped(query.tenant_id.as_deref(), &name)
         .await?
@@ -75,24 +76,24 @@ pub async fn get_runtime_provider(
 
 /// Create or update a runtime provider.
 pub async fn upsert_runtime_provider(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(mut req): Json<CreateRuntimeProviderRequest>,
 ) -> Result<Json<RuntimeProviderResponse>> {
-    let store = RuntimeProviderStore::new(state.tenant_db.pool());
+    let store = RuntimeProviderStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     preserve_redacted_runtime_provider_secret(&store, &mut req).await?;
     let provider = store.upsert(&req).await?;
-    reload_runtime_provider_registry(&state).await?;
+    reload_runtime_provider_registry(&ctx).await?;
     tracing::info!("Upserted runtime provider {}", provider.name);
     Ok(Json(provider.into()))
 }
 
 /// Hard-delete a runtime provider by name.
 pub async fn delete_runtime_provider(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(name): Path<String>,
     Query(query): Query<RuntimeProviderScopeQuery>,
 ) -> Result<StatusCode> {
-    let store = RuntimeProviderStore::new(state.tenant_db.pool());
+    let store = RuntimeProviderStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let rows = store
         .delete_scoped(query.tenant_id.as_deref(), &name)
         .await?;
@@ -101,7 +102,7 @@ pub async fn delete_runtime_provider(
             "runtime provider {name} not found"
         )));
     }
-    reload_runtime_provider_registry(&state).await?;
+    reload_runtime_provider_registry(&ctx).await?;
     tracing::info!("Deleted runtime provider {}", name);
     Ok(StatusCode::NO_CONTENT)
 }

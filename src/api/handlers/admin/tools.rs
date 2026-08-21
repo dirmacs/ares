@@ -1,6 +1,8 @@
 //! Admin tools domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
+use std::sync::Arc;
+use ares_cordis_core::Context;
 use super::*;
 
 
@@ -14,19 +16,19 @@ use axum::{
 use sha2::Digest;
 
 pub async fn list_runtime_tools(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<ares_db::runtime_tools::RuntimeTool>>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
+    let store = RuntimeToolStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let tools = store.get_all().await?;
     Ok(Json(tools))
 }
 
 /// Get a single runtime tool by its UUID.
 pub async fn get_runtime_tool(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<Json<ares_db::runtime_tools::RuntimeTool>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
+    let store = RuntimeToolStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let tool = store
         .get_by_id(&id)
         .await?
@@ -37,19 +39,19 @@ pub async fn get_runtime_tool(
 /// Create a new runtime tool. After a successful DB insert the in-memory
 /// [`RuntimeToolRegistry`] is reloaded so agents see the tool immediately.
 pub async fn create_runtime_tool(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(req): Json<CreateRuntimeToolRequest>,
 ) -> Result<Json<serde_json::Value>> {
     validate_runtime_tool_execution_config(&req.tool_type, &req.execution_config)?;
 
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
+    let store = RuntimeToolStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let tool = store.create(&req).await?;
 
-    if let Err(e) = state.runtime_tool_registry.reload().await {
+    if let Err(e) = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.reload().await {
         tracing::warn!("Failed to hot-reload runtime tools after create: {}", e);
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let tool_id = tool.id.clone();
     let tool_name = tool.name.clone();
     let tool_type = tool.tool_type.clone();
@@ -82,12 +84,12 @@ pub async fn create_runtime_tool(
 /// Update a runtime tool. The DB row is patched and the change is automatically
 /// snapshotted into `runtime_tool_versions` before the registry is reloaded.
 pub async fn update_runtime_tool(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
     Json(req): Json<UpdateRuntimeToolRequest>,
 ) -> Result<Json<serde_json::Value>> {
     validate_runtime_tool_update_scope_preflight(&req)?;
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
+    let store = RuntimeToolStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     if let Some(execution_config) = &req.execution_config {
         let existing = store
             .get_by_id(&id)
@@ -97,11 +99,11 @@ pub async fn update_runtime_tool(
     }
     let tool = store.update(&id, &req).await?;
 
-    if let Err(e) = state.runtime_tool_registry.reload().await {
+    if let Err(e) = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.reload().await {
         tracing::warn!("Failed to hot-reload runtime tools after update: {}", e);
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let tool_id = id.clone();
     let new_version = tool.version;
     tokio::spawn(async move {
@@ -127,20 +129,20 @@ pub async fn update_runtime_tool(
 
 /// Hard-delete a runtime tool (cascades to versions & executions).
 pub async fn delete_runtime_tool(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
+    let store = RuntimeToolStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let affected = store.delete(&id).await?;
     if affected == 0 {
         return Err(AppError::NotFound(format!("runtime tool {id} not found")));
     }
 
-    if let Err(e) = state.runtime_tool_registry.reload().await {
+    if let Err(e) = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.reload().await {
         tracing::warn!("Failed to hot-reload runtime tools after delete: {}", e);
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let tool_id = id.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
@@ -162,11 +164,11 @@ pub async fn delete_runtime_tool(
 
 /// Execute a runtime tool with sample input and record the result.
 pub async fn test_runtime_tool(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
     Json(req): Json<TestRuntimeToolRequest>,
 ) -> Result<Json<TestRuntimeToolResponse>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
+    let store = RuntimeToolStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let tool = store
         .get_by_id(&id)
         .await?
@@ -176,14 +178,13 @@ pub async fn test_runtime_tool(
 
     // If the registry doesn't yet contain this tool (e.g. first test after
     // creation), force a reload before executing.
-    if state.runtime_tool_registry.get(&tool.name).is_none() {
-        if let Err(e) = state.runtime_tool_registry.reload().await {
+    if ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.get(&tool.name).is_none() {
+        if let Err(e) = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.reload().await {
             tracing::warn!("Failed to reload runtime tools before test: {}", e);
         }
     }
 
-    let result = state
-        .runtime_tool_registry
+    let result = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0
         .execute(&tool.name, req.input_args.clone())
         .await;
     let latency_ms = start.elapsed().as_millis() as u64;
@@ -210,7 +211,7 @@ pub async fn test_runtime_tool(
         tracing::warn!("Failed to log runtime tool test execution: {}", e);
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let tool_id = id.clone();
     tokio::spawn(async move {
         let details = serde_json::json!({
@@ -239,10 +240,10 @@ pub async fn test_runtime_tool(
 
 /// Return the version history for a runtime tool.
 pub async fn list_runtime_tool_versions(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ares_db::runtime_tools::RuntimeToolVersion>>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
+    let store = RuntimeToolStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     // Verify the tool exists before returning versions.
     let _ = store
         .get_by_id(&id)
@@ -259,10 +260,10 @@ pub async fn list_runtime_tool_versions(
 /// `description`) are applied via the normal `update` path, which
 /// automatically snapshots the current state as a new version entry.
 pub async fn rollback_runtime_tool(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((id, version)): Path<(String, i32)>,
 ) -> Result<Json<serde_json::Value>> {
-    let store = RuntimeToolStore::new(state.tenant_db.pool());
+    let store = RuntimeToolStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
 
     let _ = store
         .get_by_id(&id)
@@ -288,11 +289,11 @@ pub async fn rollback_runtime_tool(
 
     let updated = store.update(&id, &update_req).await?;
 
-    if let Err(e) = state.runtime_tool_registry.reload().await {
+    if let Err(e) = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.reload().await {
         tracing::warn!("Failed to hot-reload runtime tools after rollback: {}", e);
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let tool_id = id.clone();
     let new_version = updated.version;
     tokio::spawn(async move {

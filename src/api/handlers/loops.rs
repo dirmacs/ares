@@ -334,8 +334,8 @@ mod tests {
             started_at_epoch_secs: 100,
             last_tick_epoch_secs: 130,
         };
-        assert!(registry.update_state("loop-state", ctx.clone()).await);
-        assert!(!registry.update_state("missing", ctx.clone()).await);
+        assert!(registry.update_state("loop-state", state.clone()).await);
+        assert!(!registry.update_state("missing", state.clone()).await);
 
         let list = registry.list().await;
         let entry = list.iter().find(|l| l.id == "loop-state").expect("entry");
@@ -429,7 +429,7 @@ mod tests {
             started_at_epoch_secs: 100,
             last_tick_epoch_secs: 200,
         };
-        let json = serde_json::to_string(&ctx).unwrap();
+        let json = serde_json::to_string(&state).unwrap();
         let back: LoopModeState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, state);
     }

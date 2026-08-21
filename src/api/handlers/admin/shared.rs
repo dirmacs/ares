@@ -455,6 +455,7 @@ pub struct AllowRagSourceRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::handlers::admin::{has_admin_role, AdminClaims, RoleEntry, admin_token_from_request, runtime_tool_capabilities};
     use crate::utils::toml_config::ModelPricingConfig;
 
     fn run(provider_name: &str, model_name: &str) -> agent_runs::AgentRun {
@@ -569,7 +570,7 @@ mod tests {
 
     #[test]
     fn draft_test_agent_runtime_tools_must_be_attached() {
-        let source = include_str!("admin.rs");
+        let source = include_str!("agents.rs");
         assert!(source.contains("draft_agent.set_runtime_tools("));
         assert!(source.contains("ctx.get::<crate::context_services::RuntimeToolRegistryService>()"));
     }
@@ -839,7 +840,7 @@ mod tests {
             connector_type: "gmail".into(),
             redirect_uri: "https://evil.example/callback".into(),
         };
-        let encoded = encode_oauth_state(&ctx).unwrap();
+        let encoded = encode_oauth_state(&state).unwrap();
         assert!(encoded.contains("&signature="));
         let decoded = decode_oauth_state(&encoded).unwrap();
         assert_eq!(decoded.tenant_id, "tenant 1");
@@ -855,7 +856,7 @@ mod tests {
             connector_type: "gmail".into(),
             redirect_uri: "/connectors".into(),
         };
-        let tampered = encode_oauth_state(&ctx)
+        let tampered = encode_oauth_state(&state)
             .unwrap()
             .replace("tenant-1", "tenant-2");
 
@@ -895,7 +896,7 @@ mod tests {
             provider,
             "client id",
             "https://app.example/api/oauth/callback",
-            &ctx,
+            &state,
         )
         .unwrap();
         assert!(url.starts_with("https://slack.com/oauth/v2/authorize?"));
@@ -1068,7 +1069,7 @@ mod tests {
 
     #[test]
     fn tenant_trigger_update_handler_audits_update_action() {
-        let source = include_str!("admin.rs");
+        let source = include_str!("triggers.rs");
         assert!(source.contains("pub async fn update_tenant_trigger"));
         assert!(source.contains("trigger_update"));
         assert!(source.contains("trigger {id} not found for tenant {tenant_id}"));
@@ -1642,7 +1643,8 @@ pub async fn list_agent_versions_handler(
     State(ctx): State<Arc<Context>>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
-    let records = agent_versions::get_agent_version_history(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &agent_id, 50)
+    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let records = agent_versions::get_agent_version_history(&__pool_1, &agent_id, 50)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -1656,7 +1658,8 @@ pub async fn rollback_agent_handler(
     Path((agent_id, version)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
     // Fetch the target version from DB
-    let history = agent_versions::get_agent_version_history(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &agent_id, 100)
+    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let history = agent_versions::get_agent_version_history(&__pool_2, &agent_id, 100)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -1684,12 +1687,12 @@ pub async fn rollback_agent_handler(
     let _ = agent_versions::record_agent_versions(&pool, &[agent_config], "rollback").await;
 
     // Audit log
-    let pool2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_3 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let aid = agent_id.clone();
     let ver = version.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
-            &pool2,
+            &__pool_3,
             "agent_rollback",
             "agent",
             &aid,
@@ -1744,7 +1747,8 @@ pub use ares_config::fleet_secrets::{MasterKey, decrypt_api_key, last_n_visible}
 pub async fn list_fleet_providers(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<serde_json::Value>>> {
-    let store = fps::FleetProviderSecretsStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_4 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = fps::FleetProviderSecretsStore::new(&__pool_4);
     let master = MasterKey::from_env();
     // Decrypt all rows so the UI can show the last-4 of the stored key.
     // Decryption errors on individual rows are logged and skipped inside
@@ -2628,9 +2632,9 @@ pub fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
 pub fn encode_oauth_state_payload(state: &OAuthState) -> String {
     format!(
         "tenant_id={}&connector_type={}&redirect_uri={}",
-        percent_encode_component(&ctx.tenant_id),
-        percent_encode_component(&ctx.connector_type),
-        percent_encode_component(&safe_callback_redirect_uri(&ctx.redirect_uri))
+        percent_encode_component(&state.tenant_id),
+        percent_encode_component(&state.connector_type),
+        percent_encode_component(&safe_callback_redirect_uri(&state.redirect_uri))
     )
 }
 
@@ -2726,7 +2730,7 @@ pub fn build_authorize_url(
     state: &OAuthState,
 ) -> Result<String> {
     Ok(format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&ctx={}&access_type=offline&prompt=consent",
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&access_type=offline&prompt=consent",
         provider.auth_url,
         percent_encode_component(client_id),
         percent_encode_component(callback_url),
@@ -2857,7 +2861,8 @@ pub async fn receive_webhook(
     State(ctx): State<Arc<Context>>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
-    let store = db_schedules::EventTriggerStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_5 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = db_schedules::EventTriggerStore::new(&__pool_5);
     let trigger = store.get_trigger(&trigger_id).await?;
     if let Some(trigger) = trigger {
         if !webhook_trigger_matches(&trigger) {
@@ -2876,7 +2881,7 @@ pub async fn receive_webhook(
             if let Err(e) = crate::trigger_engine::execute_triggered_agent(
                 &trigger,
                 &message,
-                &std::sync::Arc::new(state),
+                &ctx,
             )
             .await
             {

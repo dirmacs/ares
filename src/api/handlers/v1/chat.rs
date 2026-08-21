@@ -2,6 +2,7 @@
 //! Bodies moved from v1.rs
 
 use std::sync::Arc;
+use ares_cordis_core::Context;
 use super::*;
 
 use crate::agents::context_provider::AgentRuntimeContext;
@@ -215,7 +216,7 @@ async fn ensure_research_model_allowed(
     )
 }
 
-fn research_model_allowlist_decision(is_allowed: bool, model_name: &str) -> Result<()> {
+pub(crate) fn research_model_allowlist_decision(is_allowed: bool, model_name: &str) -> Result<()> {
     if is_allowed {
         return Ok(());
     }

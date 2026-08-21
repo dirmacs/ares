@@ -19,7 +19,6 @@ use axum::{
     Extension, Json,
 };
 use std::sync::Arc;
-use crate::AppState;
 use ares_cordis_core::Context;
 use uuid::Uuid;
 
@@ -357,7 +356,7 @@ async fn execute_agent(
 
     // Resolve agent using the 3-tier hierarchy (User -> Community -> System)
     let (user_agent, source) =
-        resolve_agent(state, &context.user_id, agent_name.to_string()).await?;
+        resolve_agent(ctx, &context.user_id, agent_name.to_string()).await?;
 
     let config = agent_config_from_user_agent(&user_agent);
 
@@ -518,7 +517,7 @@ pub async fn chat_stream(
         Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
     >,
 > {
-    chat_stream_response(state, claims, payload)
+    chat_stream_response(ctx, claims, payload)
 }
 
 /// Stream a chat response using EventSource-compatible query parameters.
@@ -548,7 +547,7 @@ pub async fn chat_stream_get(
         Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
     >,
 > {
-    chat_stream_response(state, claims, query.into())
+    chat_stream_response(ctx, claims, query.into())
 }
 
 fn chat_stream_response(
@@ -579,6 +578,12 @@ fn chat_stream_response(
     let active_runs = Arc::clone(&ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0);
 
     let stream = async_stream::stream! {
+        // Cordis: hold Context-derived services for stream (avoid temp dropped)
+        let db = state_clone.get::<crate::context_services::DbService>().expect("not provided").0.clone();
+        let config_manager = state_clone.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.clone();
+        let provider_registry = state_clone.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0.clone();
+        let llm_factory = state_clone.get::<crate::context_services::LlmFactoryService>().expect("not provided").0.clone();
+        let tenant_db = state_clone.get::<crate::context_services::TenantDbService>().expect("not provided").0.clone();
         if let Some(e) = &validation_error {
             let event = stream_error_event(&e.to_string(), None);
             yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
@@ -586,26 +591,25 @@ fn chat_stream_response(
         }
 
         // Setup conversation
-        if !state_clone.db.conversation_exists(&context_id_clone).await.unwrap_or(false) {
-            if let Err(e) = state_clone
-                .db
+        if !db.conversation_exists(&context_id_clone).await.unwrap_or(false) {
+            if let Err(e) = db
                 .create_conversation(&context_id_clone, &claims_clone.sub, None)
                 .await {
                 tracing::warn!("Failed to create conversation {}: {}", context_id_clone, e);
             }
         }
 
-        let history = state_clone.db.get_conversation_history(&context_id_clone).await.unwrap_or_else(|e| {
+        let history = db.get_conversation_history(&context_id_clone).await.unwrap_or_else(|e| {
             tracing::warn!("Failed to get conversation history for {}: {}", context_id_clone, e);
             vec![]
         });
 
         // Load user memory
-        let memory_facts = state_clone.db.get_user_memory(&claims_clone.sub).await.unwrap_or_else(|e| {
+        let memory_facts = db.get_user_memory(&claims_clone.sub).await.unwrap_or_else(|e| {
             tracing::warn!("Failed to get user memory for {}: {}", claims_clone.sub, e);
             vec![]
         });
-        let preferences = state_clone.db.get_user_preferences(&claims_clone.sub).await.unwrap_or_else(|e| {
+        let preferences = db.get_user_preferences(&claims_clone.sub).await.unwrap_or_else(|e| {
             tracing::warn!("Failed to get user preferences for {}: {}", claims_clone.sub, e);
             vec![]
         });
@@ -627,19 +631,18 @@ fn chat_stream_response(
         let agent_type = if let Some(at) = agent_type_req {
             at
         } else {
-            let config = state_clone.config_manager.config();
+            let config = config_manager.config();
             let router_model = config
                 .get_agent("router")
                 .map(|a| a.model.as_str())
                 .unwrap_or("fast");
 
-            let router_llm = match state_clone
-                .provider_registry
+            let router_llm = match provider_registry
                 .create_client_for_model(router_model)
                 .await
             {
                 Ok(client) => client,
-                Err(_) => match state_clone.llm_factory.create_default().await {
+                Err(_) => match llm_factory.create_default().await {
                     Ok(c) => c,
                     Err(e) => {
                         let event = stream_error_event(
@@ -707,13 +710,12 @@ fn chat_stream_response(
         };
 
         // Get LLM client for streaming
-        let llm = match state_clone
-            .provider_registry
+        let llm = match provider_registry
             .create_client_for_model(&user_agent.model)
             .await
         {
             Ok(c) => c,
-            Err(_) => match state_clone.llm_factory.create_default().await {
+            Err(_) => match llm_factory.create_default().await {
                 Ok(c) => c,
                 Err(e) => {
                     let event = stream_error_event(
@@ -769,16 +771,14 @@ fn chat_stream_response(
 
         // Store messages in conversation
         let msg_id = Uuid::new_v4().to_string();
-        if let Err(e) = state_clone
-            .db
+        if let Err(e) = db
             .add_message(&msg_id, &context_id_clone, MessageRole::User, &message)
             .await {
             tracing::error!("Failed to store user message in conversation {}: {}", context_id_clone, e);
         }
 
         let resp_id = Uuid::new_v4().to_string();
-        if let Err(e) = state_clone
-            .db
+        if let Err(e) = db
             .add_message(&resp_id, &context_id_clone, MessageRole::Assistant, &full_response)
             .await {
             tracing::error!("Failed to store assistant message in conversation {}: {}", context_id_clone, e);
@@ -786,7 +786,7 @@ fn chat_stream_response(
 
         // Record agent run for billing (streaming calls were previously invisible)
         {
-            let pool = state_clone.tenant_db.pool().clone();
+            let pool = tenant_db.pool().clone();
             let tid = claims_clone.sub.clone();
             let aname = agent_name.to_string();
             let itok = crate::memory::estimate_tokens(&message) as i64;

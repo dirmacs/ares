@@ -36,7 +36,8 @@ pub async fn upsert_fleet_provider(
         ));
     }
 
-    let store = fps::FleetProviderSecretsStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = fps::FleetProviderSecretsStore::new(&__pool_1);
     let master = MasterKey::from_env();
     if req.api_key.is_some() && master.is_none() {
         return Err(AppError::Configuration(
@@ -105,7 +106,8 @@ pub async fn delete_fleet_provider(
     State(ctx): State<Arc<Context>>,
     Path(provider_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let store = fps::FleetProviderSecretsStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let store = fps::FleetProviderSecretsStore::new(&__pool_2);
     let affected = store.delete(&provider_name).await?;
     if affected == 0 {
         return Err(AppError::NotFound(format!(

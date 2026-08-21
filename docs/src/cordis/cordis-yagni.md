@@ -63,7 +63,7 @@ Total workspace Rust ≈ 88k lines (excluding `src/` root ~190KB admin.rs etc. +
 - Do not create `ares-config-domains` (8 crates for server/auth/providers/tools/agents/workflows/rag/billing), that is Phase 5 module split, not crate split.
 - Do not create `ares-db-postgres`/`ares-db-vectors` splits, feature flags suffice.
 - Do not create `ares-providers`/`ares-workflows` crates, current `ares-llm` + `src/workflows` boundary is sufficient; engines become `Service`s, not crates.
-- Do not merge `ares-vector` despite small size, it is published and has distinct `hnsw_rs` deps and `rust-version = "1.75"` (vs 1.91 for workspace).
+- Do not merge `ares-vector` despite small size, it is published and has distinct `hnsw_rs` deps and `rust-version = "1.75"` (vs 1.98 for workspace).
 
 ## Ordering
 

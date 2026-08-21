@@ -2,7 +2,7 @@
 
 ARES supports SKILL.md file discovery and loading via the `skills` feature flag, powered by [thulp-skill-files](https://crates.io/crates/thulp-skill-files).
 
-## Feature Flag
+## Feature flag
 
 ```toml
 [dependencies]
@@ -22,7 +22,7 @@ plugin_dirs = ["./plugins/my-plugin/skills"]
 
 ## API
 
-### List Skills
+### List skills
 
 ```
 GET /api/skills
@@ -30,7 +30,7 @@ GET /api/skills
 
 Returns all discovered skills with scope-based priority (project > personal > enterprise > plugin).
 
-### Get Skill
+### Get skill
 
 ```
 GET /api/skills/{name}
@@ -38,7 +38,7 @@ GET /api/skills/{name}
 
 Returns a single skill by qualified name, including full body content.
 
-## Library Usage
+## Library usage
 
 Skills are also available as a library API for direct Rust usage:
 
@@ -61,7 +61,7 @@ let summaries = list_skills(&config);
 let skill = get_skill(&config, "my-skill");
 ```
 
-## Skill File Format
+## Skill file format
 
 Skills are SKILL.md files with YAML frontmatter:
 
@@ -71,16 +71,16 @@ name: my-skill
 description: What this skill does
 ---
 
-# My Skill
+# My skill
 
 Instructions for the AI agent...
 ```
 
-## Scope Priority
+## Scope priority
 
 When multiple skills share the same name, scope priority determines which wins:
 
-1. **Project** — `./.claude/skills/` (highest priority)
-2. **Personal** — `~/.claude/skills/`
-3. **Enterprise** — organization-wide skills
-4. **Plugin** — from plugin directories (lowest priority)
+1. **Project**, `./.claude/skills/` (highest priority)
+2. **Personal**, `~/.claude/skills/`
+3. **Enterprise**, organization-wide skills
+4. **Plugin**, from plugin directories (lowest priority)

@@ -1,4 +1,4 @@
-# ARES RAG Pipeline Integration
+# ARES RAG pipeline integration
 
 ## Overview
 
@@ -7,61 +7,61 @@ The ARES RAG (Retrieval-Augmented Generation) pipeline provides semantic search 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Document Ingestion Flow                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. Document Upload                                              │
-│     └─> POST /api/rag/ingest                                     │
-│                                                                  │
-│  2. Chunking                                                     │
-│     ├─> Word Chunking (200 words, 50 overlap)                   │
-│     ├─> Semantic Chunking (500 words, structure-aware)          │
-│     └─> Character Chunking (500 chars, 100 overlap)             │
-│                                                                  │
-│  3. Embedding Generation                                         │
-│     └─> Local ONNX models (fastembed)                           │
-│         ├─> BAAI/bge-small-en-v1.5 (default, 384 dims)          │
-│         ├─> BAAI/bge-base-en-v1.5 (768 dims)                    │
-│         └─> 30+ other models supported                          │
-│                                                                  │
-│  4. Vector Storage                                               │
-│     └─> AresVector (HNSW, pure Rust)                            │
-│         ├─> Cosine similarity metric                            │
-│         ├─> Persistent or in-memory mode                        │
-│         └─> User-scoped collections                             │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────┐
-│                      Semantic Search Flow                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. Query Embedding                                              │
-│     └─> Same model as ingestion                                 │
-│                                                                  │
-│  2. Vector Search                                                │
-│     └─> HNSW approximate nearest neighbor                       │
-│         └─> Cosine similarity                                   │
-│                                                                  │
-│  3. Search Strategies                                            │
-│     ├─> Semantic (dense vectors)                                │
-│     ├─> BM25 (lexical, sparse)                                  │
-│     ├─> Fuzzy (typo-tolerant)                                   │
-│     └─> Hybrid (RRF fusion of above)                            │
-│                                                                  │
-│  4. Reranking (optional)                                         │
-│     └─> Cross-encoder models                                    │
-│         ├─> BGE reranker                                        │
-│         └─> Jina reranker                                       │
-│                                                                  │
-│  5. Context Injection                                            │
-│     └─> Top-k results formatted for LLM                         │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+                     Document Ingestion Flow                      
+
+                                                                  
+  1. Document Upload                                              
+     > POST /api/rag/ingest                                     
+                                                                  
+  2. Chunking                                                     
+     > Word Chunking (200 words, 50 overlap)                   
+     > Semantic Chunking (500 words, structure-aware)          
+     > Character Chunking (500 chars, 100 overlap)             
+                                                                  
+  3. Embedding Generation                                         
+     > Local ONNX models (fastembed)                           
+         > BAAI/bge-small-en-v1.5 (default, 384 dims)          
+         > BAAI/bge-base-en-v1.5 (768 dims)                    
+         > 30+ other models supported                          
+                                                                  
+  4. Vector Storage                                               
+     > AresVector (HNSW, pure Rust)                            
+         > Cosine similarity metric                            
+         > Persistent or in-memory mode                        
+         > User-scoped collections                             
+                                                                  
+
+
+
+                      Semantic Search Flow                        
+
+                                                                  
+  1. Query Embedding                                              
+     > Same model as ingestion                                 
+                                                                  
+  2. Vector Search                                                
+     > HNSW approximate nearest neighbor                       
+         > Cosine similarity                                   
+                                                                  
+  3. Search Strategies                                            
+     > Semantic (dense vectors)                                
+     > BM25 (lexical, sparse)                                  
+     > Fuzzy (typo-tolerant)                                   
+     > Hybrid (RRF fusion of above)                            
+                                                                  
+  4. Reranking (optional)                                         
+     > Cross-encoder models                                    
+         > BGE reranker                                        
+         > Jina reranker                                       
+                                                                  
+  5. Context Injection                                            
+     > Top-k results formatted for LLM                         
+                                                                  
+
 ```
 
-## Feature Flags
+## Feature flags
 
 The RAG pipeline requires two features to be enabled:
 
@@ -73,21 +73,21 @@ cargo build --features "ares-vector,local-embeddings" --no-default-features
 cargo build --features "ares-vector,local-embeddings,postgres,ollama,openai,mcp"
 ```
 
-### Feature Dependencies
+### Feature dependencies
 
 - **`ares-vector`**: Pure Rust HNSW vector database
-  - No native dependencies
-  - Compiles anywhere Rust works
-  - Persistent or in-memory storage
-  
+ - No native dependencies
+ - Compiles anywhere Rust works
+ - Persistent or in-memory storage
+ 
 - **`local-embeddings`**: ONNX-based embedding models
-  - Uses `fastembed` crate
-  - Pre-downloads models via `lancor` (handles HuggingFace CDN correctly)
-  - **NOT supported on Windows MSVC** (use WSL, Linux, or macOS)
+ - Uses `fastembed` crate
+ - Pre-downloads models via `lancor` (handles HuggingFace CDN correctly)
+ - **NOT supported on Windows MSVC** (use WSL, Linux, or macOS)
 
-## API Endpoints
+## API endpoints
 
-### Document Ingestion
+### Document ingestion
 
 ```http
 POST /api/rag/ingest
@@ -112,7 +112,7 @@ Authorization: Bearer <jwt_token>
 }
 ```
 
-### Semantic Search
+### Semantic search
 
 ```http
 POST /api/rag/search
@@ -152,7 +152,7 @@ Authorization: Bearer <jwt_token>
 }
 ```
 
-### Collection Management
+### Collection management
 
 ```http
 # List collections
@@ -168,7 +168,7 @@ Authorization: Bearer <jwt_token>
 }
 ```
 
-## User Isolation
+## User isolation
 
 All RAG collections are automatically scoped per-user to prevent data leakage:
 
@@ -176,7 +176,7 @@ All RAG collections are automatically scoped per-user to prevent data leakage:
 - Users can only access their own collections
 - Collection names in API responses are unscoped (user-facing)
 
-## CLI Ingestion and Search
+## CLI ingestion and search
 
 Use the generic Rust CLI for local document ingestion. The CLI has no built-in corpus paths or collection names; provide deployment-specific values explicitly or from your own wrapper outside the OSS repository.
 
@@ -218,7 +218,7 @@ ares-server rag search \
 
 Managed deployments should keep site-specific defaults in their private wrapper repository and pass them to `ares-server rag ingest-dir`; do not add private paths, customer names, or secrets to this OSS repository.
 
-### Context Injection Pattern
+### Context injection pattern
 
 For LLM context injection, use the search results like this:
 
@@ -244,7 +244,7 @@ let prompt = format!(
 
 ## Testing
 
-### Integration Tests
+### Integration tests
 
 Run the EHB ingestion tests:
 
@@ -260,7 +260,7 @@ cargo test --features "ares-vector,local-embeddings" --test rag_ehb_ingestion_te
   -- --ignored test_ehb_batch_ingestion
 ```
 
-### Test Coverage
+### Test coverage
 
 The test suite covers:
 - Document discovery (finds all markdown files)
@@ -270,50 +270,50 @@ The test suite covers:
 - Collection stats (verifies storage)
 - Search accuracy (validates relevance)
 
-## Performance Characteristics
+## Performance characteristics
 
-### Embedding Generation
-- **Throughput**: ~50-100 texts/second (BGE small, single core)
-- **Latency**: ~10-20ms per text
-- **Model size**: ~50-100MB (cached after first download)
+### Embedding generation
+- Throughput: ~50-100 texts/second (BGE small, single core)
+- Latency: ~10-20ms per text
+- Model size: ~50-100MB (cached after first download)
 
-### Vector Search
-- **Index build**: O(n log n) for n documents
-- **Search latency**: <10ms for 1000 documents
-- **Memory**: ~100 bytes per vector (384 dims, float32)
+### Vector search
+- Index build: O(n log n) for n documents
+- Search latency: <10ms for 1000 documents
+- Memory: ~100 bytes per vector (384 dims, float32)
 
 ### Chunking
-- **Word chunking**: ~1000 docs/second
-- **Semantic chunking**: ~500 docs/second (structure analysis)
+- Word chunking: ~1000 docs/second
+- Semantic chunking: ~500 docs/second (structure analysis)
 
 ## Troubleshooting
 
-### Common Issues
+### Common issues
 
 **Issue**: "Collection already exists"
-- **Fix**: Use a different collection name or delete the existing one first
+- Fix: Use a different collection name or delete the existing one first
 
 **Issue**: "Embedding failed"
-- **Check**: Ensure `local-embeddings` feature is enabled
-- **Check**: Verify model cache at `.fastembed_cache/`
+- Check: Ensure `local-embeddings` feature is enabled
+- Check: Verify model cache at `.fastembed_cache/`
 
 **Issue**: "Search returns no results"
-- **Check**: Verify documents were ingested (`GET /api/rag/collections`)
-- **Check**: Lower the `threshold` parameter
-- **Check**: Ensure query is similar to ingested content
+- Check: Verify documents were ingested (`GET /api/rag/collections`)
+- Check: Lower the `threshold` parameter
+- Check: Ensure query is similar to ingested content
 
 **Issue**: "OOM on reranker"
-- **Fix**: Disable reranking (`"rerank": false`)
-- **Fix**: Use smaller reranker model (`"bge-reranker-small"`)
+- Fix: Disable reranking (`"rerank": false`)
+- Fix: Use smaller reranker model (`"bge-reranker-small"`)
 
-### Debug Mode
+### Debug mode
 
 Enable verbose logging:
 ```bash
 RUST_LOG=debug ares-server
 ```
 
-## Future Enhancements
+## Future enhancements
 
 - [ ] GPU acceleration for embeddings (ORT execution providers)
 - [ ] Multi-tenant vector isolation

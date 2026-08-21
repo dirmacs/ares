@@ -4,6 +4,8 @@
 //! It replaces the hardcoded agent implementations with a flexible,
 //! configuration-driven approach.
 
+#![allow(deprecated)]
+
 use crate::{Agent, AgentResponse, ExecutionMetadata};
 use ares_config::toml_config::AgentConfig;
 use ares_llm::coordinator::ConversationMessage;
@@ -14,6 +16,7 @@ use ares_tools::ToolService;
 use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
 use async_trait::async_trait;
 use std::sync::Arc;
+use ares_cordis_core::Context;
 
 // cordis Phase6: runtime postgres availability via Service::check() — replaces compile-time #[cfg(feature="postgres")] branching
 // Previously: `#[cfg(feature = "postgres")] token_budget_pool: Option<PgPool>`
@@ -125,12 +128,10 @@ fn is_prebuilt_connector_tool(name: &str) -> bool {
 impl ConfigurableAgent {
     /// Create a new configurable agent from TOML config
     ///
-    /// # Arguments
-    ///
-    /// * `name` - The agent name (used to determine AgentType)
-    /// * `config` - The agent configuration from ares.toml
-    /// * `llm` - The LLM client (already created from the model config)
-    /// * `tool_registry` - Optional tool registry for tool calling
+    /// Deprecated shim kept for one commit. New code should use
+    /// `new_with_tool_service` with a service obtained via
+    /// `ctx.get::<dyn ToolService>()`.
+    #[deprecated(note = "use new_with_tool_service with ctx.get::<dyn ToolService>()")]
     pub fn new(
         name: &str,
         config: &AgentConfig,
@@ -141,6 +142,9 @@ impl ConfigurableAgent {
     }
 
     /// Create a new configurable agent with explicit provider metadata
+    ///
+    /// Deprecated shim. Prefer `new_with_provider_and_tool_service`.
+    #[deprecated(note = "use new_with_provider_and_tool_service with ctx.get::<dyn ToolService>()")]
     pub fn new_with_provider(
         name: &str,
         config: &AgentConfig,
@@ -188,6 +192,9 @@ impl ConfigurableAgent {
     }
 
     /// Create a new configurable agent with explicit parameters
+    ///
+    /// Deprecated shim. Prefer `with_tool_service_params`.
+    #[deprecated(note = "use with_tool_service_params with ctx.get::<dyn ToolService>()")]
     #[allow(clippy::too_many_arguments)]
     pub fn with_params(
         name: &str,
@@ -221,6 +228,133 @@ impl ConfigurableAgent {
             #[cfg(feature = "postgres")]
             runtime_tenant_id: None,
         }
+    }
+
+    // Preferred constructors that accept a unified ToolService obtained via
+    // ctx.get::<dyn ToolService>(). Handlers should use these instead of the
+    // ToolRegistry variants below.
+
+    /// Create an agent wired to a unified ToolService.
+    ///
+    /// Obtain the service via `ctx.get::<dyn ToolService>()` and pass it here.
+    /// This is the Cordis DI path. The service provides all tools with tenant
+    /// precedence already handled.
+    pub fn new_with_tool_service(
+        name: &str,
+        config: &AgentConfig,
+        llm: Box<dyn LLMClient>,
+        tool_service: Option<Arc<dyn ToolService>>,
+    ) -> Self {
+        Self::new_with_provider_and_tool_service(name, config, llm, tool_service, config.model.clone())
+    }
+
+    /// Create an agent with provider metadata and a unified ToolService.
+    pub fn new_with_provider_and_tool_service(
+        name: &str,
+        config: &AgentConfig,
+        llm: Box<dyn LLMClient>,
+        tool_service: Option<Arc<dyn ToolService>>,
+        provider_name: String,
+    ) -> Self {
+        let agent_type = Self::name_to_type(name);
+        let system_prompt = config
+            .system_prompt
+            .clone()
+            .unwrap_or_else(|| Self::default_system_prompt(name));
+        let allowed_tools = config.allowed_tools.clone().or_else(|| {
+            if config.tools.is_empty() {
+                None
+            } else {
+                Some(config.tools.clone())
+            }
+        });
+        Self {
+            name: name.to_string(),
+            agent_type,
+            llm,
+            provider_name,
+            system_prompt,
+            tool_registry: None,
+            tool_service,
+            allowed_tools,
+            max_tool_iterations: config.max_tool_iterations,
+            parallel_tools: config.parallel_tools,
+            observability: None,
+            fallback_llms: Vec::new(),
+            #[cfg(feature = "postgres")]
+            token_budget_pool: None,
+            #[cfg(feature = "postgres")]
+            run_id: None,
+            #[cfg(feature = "postgres")]
+            runtime_tool_registry: None,
+            #[cfg(feature = "postgres")]
+            runtime_tenant_id: None,
+        }
+    }
+
+    /// Create an agent with explicit parameters and a unified ToolService.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_tool_service_params(
+        name: &str,
+        agent_type: AgentType,
+        llm: Box<dyn LLMClient>,
+        system_prompt: String,
+        tool_service: Option<Arc<dyn ToolService>>,
+        allowed_tools: Option<Vec<String>>,
+        max_tool_iterations: usize,
+        parallel_tools: bool,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            agent_type,
+            llm,
+            provider_name: "unknown".to_string(),
+            system_prompt,
+            tool_registry: None,
+            tool_service,
+            allowed_tools,
+            max_tool_iterations,
+            parallel_tools,
+            observability: None,
+            fallback_llms: Vec::new(),
+            #[cfg(feature = "postgres")]
+            token_budget_pool: None,
+            #[cfg(feature = "postgres")]
+            run_id: None,
+            #[cfg(feature = "postgres")]
+            runtime_tool_registry: None,
+            #[cfg(feature = "postgres")]
+            runtime_tenant_id: None,
+        }
+    }
+
+    /// Create an agent by resolving the ToolService from a Context.
+    ///
+    /// This is the one line handlers should use: `ConfigurableAgent::new_from_context(&ctx, name, &config, llm)`.
+    pub fn new_from_context(
+        ctx: &Arc<Context>,
+        name: &str,
+        config: &AgentConfig,
+        llm: Box<dyn LLMClient>,
+    ) -> Self {
+        let tool_service = ctx
+            .get::<ares_tools::UnifiedToolService>()
+            .map(|svc| svc as Arc<dyn ToolService>);
+        Self::new_with_tool_service(name, config, llm, tool_service)
+    }
+
+    /// Same as `new_from_context` but with explicit provider name.
+    pub fn new_from_context_with_provider(
+        ctx: &Arc<Context>,
+        name: &str,
+        config: &AgentConfig,
+        llm: Box<dyn LLMClient>,
+        provider_name: String,
+    ) -> Self {
+        let tool_service = ctx
+            .get::<ares_tools::UnifiedToolService>()
+            .map(|svc| svc as Arc<dyn ToolService>);
+        Self::new_with_provider_and_tool_service(name, config, llm, tool_service, provider_name)
     }
 
     /// Convert agent name to AgentType

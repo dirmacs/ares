@@ -247,7 +247,7 @@ impl ares_cordis_core::Service for HealthJobService {
                 }
             });
             // Detach: init must not block; store handle weakly for drop safety (optional)
-            let _ = handle;
+            std::mem::drop(handle);
             Ok(None)
         })
     }

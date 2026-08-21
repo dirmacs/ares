@@ -23,16 +23,16 @@ Optional, depending on your provider configuration:
 
 ---
 
-## Quick Start
+## Quick start
 
-### 1. Clone the Repository
+### 1. clone the repository
 
 ```bash
 git clone https://github.com/dirmacs/ares
 cd ares
 ```
 
-### 2. Set Up the Database
+### 2. set up the database
 
 Create a PostgreSQL database for ARES:
 
@@ -42,7 +42,7 @@ createdb ares
 
 ARES runs migrations automatically on startup. No manual schema setup is required.
 
-### 3. Create Configuration
+### 3. create configuration
 
 Copy the example config and customize it:
 
@@ -71,7 +71,7 @@ name = "llama-3.3-70b"
 context_length = 131072
 ```
 
-### 4. Set Environment Variables
+### 4. set environment variables
 
 ```bash
 export DATABASE_URL="postgres://localhost/ares"
@@ -113,9 +113,9 @@ You should receive a `200 OK` response. ARES is running.
 
 ---
 
-## Feature Flags
+## Feature flags
 
-ARES uses Cargo feature flags to control which capabilities are compiled into the binary. This keeps the binary lean — only include what you need.
+ARES uses Cargo feature flags to control which capabilities are compiled into the binary. This keeps the binary lean, only include what you need.
 
 | Feature | Default | Description |
 |---|---|---|
@@ -126,7 +126,7 @@ ARES uses Cargo feature flags to control which capabilities are compiled into th
 | `mcp` | No | Model Context Protocol support for external tool servers |
 | `ares-vector` | No | Vector storage and semantic search |
 
-### Build Examples
+### Build examples
 
 **Minimal build (Groq only):**
 
@@ -148,7 +148,7 @@ cargo build --release --no-default-features --features openai,postgres,mcp
 
 ---
 
-## Production Deployment
+## Production deployment
 
 ### systemd Service
 
@@ -192,7 +192,7 @@ View logs:
 journalctl -u ares -f
 ```
 
-### Caddy Reverse Proxy
+### Caddy reverse proxy
 
 [Caddy](https://caddyserver.com/) provides automatic HTTPS with Let's Encrypt. Create a `Caddyfile`:
 
@@ -228,11 +228,11 @@ DATABASE_URL=postgres://ares:strong-password-here@localhost/ares
 
 ---
 
-## Configuration Reference
+## Configuration reference
 
 The `ares.toml` file is the primary configuration file. It controls server settings, providers, models, and agent definitions.
 
-### Server Section
+### Server section
 
 ```toml
 [server]
@@ -240,7 +240,7 @@ port = 3000          # HTTP port (overrides PORT env var)
 host = "0.0.0.0"     # Bind address
 ```
 
-### Database Section
+### Database section
 
 ```toml
 [database]
@@ -248,7 +248,7 @@ url = "postgres://ares:password@localhost/ares"
 max_connections = 10
 ```
 
-### Provider Section
+### Provider section
 
 Each provider is defined as a `[[providers]]` entry:
 
@@ -290,7 +290,7 @@ name = "mistral-7b"
 context_length = 32768
 ```
 
-### Agent Section
+### Agent section
 
 Static agents can be defined in the config file:
 

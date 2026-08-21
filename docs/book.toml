@@ -1,7 +1,7 @@
 [book]
-title = "ARES Documentation"
+title = "ARES documentation"
 authors = ["Dirmacs"]
-description = "A.R.E.S — Agentic Retrieval Enhanced Server. Multi-provider LLM platform with tool calling, RAG, and multi-tenant enterprise support."
+description = "Documentation for ARES, an agent platform with multi-provider LLM support, tool calling, RAG, and multi-tenant support."
 language = "en"
 src = "src"
 

@@ -1,6 +1,6 @@
 # V1 Client API
 
-The V1 API is the primary interface for enterprise clients integrating ARES into their applications. All endpoints are scoped to the authenticated tenant — you only see your own agents, runs, and usage.
+The V1 API is the primary interface for enterprise clients integrating ARES into their applications. All endpoints are scoped to the authenticated tenant, you only see your own agents, runs, and usage.
 
 **Base URL:** `http://localhost:3000`
 
@@ -18,7 +18,7 @@ API keys are issued during tenant provisioning. You can create additional keys v
 
 ## Agents
 
-### List Agents
+### List agents
 
 ```
 GET /v1/agents?page=1&per_page=20
@@ -56,7 +56,7 @@ Returns a paginated list of agents configured for your tenant.
 }
 ```
 
-### Get Agent Details
+### Get agent details
 
 ```
 GET /v1/agents/{name}
@@ -85,7 +85,7 @@ Returns full details for a single agent.
 }
 ```
 
-### Run an Agent
+### Run an agent
 
 ```
 POST /v1/agents/{name}/run
@@ -131,7 +131,7 @@ Execute an agent with the provided input. This is the core endpoint for triggeri
 
 If the agent fails, `status` will be `"failed"` and `error` will contain a description.
 
-### List Agent Runs
+### List agent runs
 
 ```
 GET /v1/agents/{name}/runs?page=1&per_page=20
@@ -143,7 +143,7 @@ Returns the run history for a specific agent, newest first.
 
 ## Chat
 
-### Send a Chat Message
+### Send a chat message
 
 ```
 POST /v1/chat
@@ -175,7 +175,7 @@ Send a message to a model or agent and receive a complete response.
 }
 ```
 
-### Stream a Chat Response
+### Stream a chat response
 
 ```
 POST /v1/chat/stream
@@ -195,7 +195,7 @@ data: {"delta": "", "finish_reason": "stop", "tokens_used": 312}
 
 ## Usage
 
-### Get Usage Summary
+### Get usage summary
 
 ```
 GET /v1/usage
@@ -225,7 +225,7 @@ Returns your tenant's usage for the current billing period.
 
 ## API Keys
 
-### List API Keys
+### List API keys
 
 ```
 GET /v1/api-keys
@@ -250,7 +250,7 @@ Returns all API keys for your tenant. The full key secret is never returned afte
 }
 ```
 
-### Create API Key
+### Create API key
 
 ```
 POST /v1/api-keys
@@ -276,9 +276,9 @@ POST /v1/api-keys
 }
 ```
 
-> **Important:** The `secret` field is only returned once at creation time. Store it securely — it cannot be retrieved again.
+> **Important:** The `secret` field is only returned once at creation time. Store it securely, it cannot be retrieved again.
 
-### Revoke API Key
+### Revoke API key
 
 ```
 DELETE /v1/api-keys/{id}
@@ -290,7 +290,7 @@ Immediately invalidates the key. Returns `204 No Content` on success.
 
 ## Examples
 
-### Run an Agent (curl)
+### Run an agent (curl)
 
 ```bash
 curl -X POST http://localhost:3000/v1/agents/risk-analyzer/run \
@@ -304,7 +304,7 @@ curl -X POST http://localhost:3000/v1/agents/risk-analyzer/run \
   }'
 ```
 
-### Run an Agent (Python)
+### Run an agent (Python)
 
 ```python
 import requests
@@ -336,14 +336,14 @@ print(f"Duration: {result['duration_ms']}ms")
 print(f"Tokens: {result['tokens_used']}")
 ```
 
-### Check Usage (curl)
+### Check usage (curl)
 
 ```bash
 curl http://localhost:3000/v1/usage \
   -H "Authorization: Bearer ares_x7k9m2p4q8r1s5t3"
 ```
 
-### Check Usage (Python)
+### Check usage (Python)
 
 ```python
 response = requests.get(f"{BASE_URL}/v1/usage", headers=headers)
@@ -353,7 +353,7 @@ print(f"Runs this month: {usage['total_runs']} / {usage['quota_runs']}")
 print(f"Tokens this month: {usage['total_tokens']} / {usage['quota_tokens']}")
 ```
 
-### Chat with Streaming (Python)
+### Chat with streaming (Python)
 
 ```python
 import requests
@@ -377,7 +377,7 @@ for line in response.iter_lines():
             print(data.get("delta", ""), end="", flush=True)
 ```
 
-### Chat with Streaming (JavaScript)
+### Chat with streaming (JavaScript)
 
 ```javascript
 const response = await fetch("http://localhost:3000/v1/chat/stream", {

@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-## What base_router() Includes
+## What base_router() includes
 
 | Route Group | Endpoints |
 |-------------|-----------|
@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | V1 (API Key) | `/api/v1/chat`, `/api/v1/agents/*`, `/api/v1/usage` |
 | RAG | `/api/rag/ingest`, `/api/rag/search` (requires `local-embeddings` + `ares-vector` features) |
 
-## Registering Custom Tools
+## Registering custom tools
 
 ```rust
 let mut tool_registry = ToolRegistry::with_config(&config);
@@ -57,7 +57,7 @@ tool_registry.register(Arc::new(ares::tools::calculator::Calculator));
 tool_registry.register(Arc::new(MyCustomTool::new()));
 ```
 
-## Adding Middleware
+## Adding middleware
 
 ```rust
 let app = base_router(state.clone())

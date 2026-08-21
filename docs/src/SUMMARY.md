@@ -2,7 +2,7 @@
 
 [Introduction](./introduction.md)
 
-# Getting Started
+# Getting started
 
 - [Quickstart](./getting-started/quickstart.md)
 - [Authentication](./getting-started/authentication.md)
@@ -36,14 +36,14 @@
 - [Error Handling](./platform/errors.md)
 - [Self-Hosting](./platform/self-hosting.md)
 
-# Cordis Redesign (0.8.0)
+# Cordis redesign (0.8.0)
 
-- [Mapping — Γ^∞ → Rust](./cordis/cordis-mapping.md)
-- [Remedies — P0-P10](./cordis/cordis-remedies.md)
-- [Capabilities — Preservation Checklist](./cordis/cordis-capabilities.md)
-- [Baseline — Gates](./cordis/cordis-baseline.md)
+- [Mapping, Γ^∞ → Rust](./cordis/cordis-mapping.md)
+- [Remedies, P0-P10](./cordis/cordis-remedies.md)
+- [Capabilities, Preservation Checklist](./cordis/cordis-capabilities.md)
+- [Baseline, Gates](./cordis/cordis-baseline.md)
 - [YAGNI Ladder](./cordis/cordis-yagni.md)
-- [Handoff — Architecture](./cordis/cordis-redesign.md)
+- [Handoff, Architecture](./cordis/cordis-redesign.md)
 
 # Extending ARES
 

@@ -12,13 +12,13 @@ Every request to `/api/admin/*` must include the admin secret:
 X-Admin-Secret: <secret>
 ```
 
-This secret is set in your `ares.toml` configuration. Guard it carefully — it grants full platform access.
+This secret is set in your `ares.toml` configuration. Guard it carefully, it grants full platform access.
 
 ---
 
 ## Tenants
 
-### Create Tenant
+### Create tenant
 
 ```
 POST /api/admin/tenants
@@ -46,7 +46,7 @@ Valid tiers: `free`, `dev`, `pro`, `enterprise`.
 }
 ```
 
-### List Tenants
+### List tenants
 
 ```
 GET /api/admin/tenants
@@ -68,7 +68,7 @@ GET /api/admin/tenants
 }
 ```
 
-### Get Tenant Details
+### Get tenant details
 
 ```
 GET /api/admin/tenants/{id}
@@ -89,7 +89,7 @@ GET /api/admin/tenants/{id}
 }
 ```
 
-### Update Tenant Tier
+### Update tenant tier
 
 ```
 PUT /api/admin/tenants/{id}/quota
@@ -109,13 +109,13 @@ PUT /api/admin/tenants/{id}/quota
 
 ## Provisioning
 
-### Provision a Client
+### Provision a client
 
 ```
 POST /api/admin/provision-client
 ```
 
-This is the recommended way to onboard a new enterprise client. It atomically creates a tenant, clones the appropriate agent templates, and generates an API key — all in a single transaction. If any step fails, everything is rolled back.
+This is the recommended way to onboard a new enterprise client. It atomically creates a tenant, clones the appropriate agent templates, and generates an API key, all in a single transaction. If any step fails, everything is rolled back.
 
 **Request Body:**
 
@@ -175,7 +175,7 @@ curl -X POST http://localhost:3000/api/admin/provision-client \
 
 ## API Keys
 
-### Create API Key for Tenant
+### Create API key for tenant
 
 ```
 POST /api/admin/tenants/{id}/api-keys
@@ -200,7 +200,7 @@ POST /api/admin/tenants/{id}/api-keys
 }
 ```
 
-### List API Keys for Tenant
+### List API keys for tenant
 
 ```
 GET /api/admin/tenants/{id}/api-keys
@@ -224,9 +224,9 @@ GET /api/admin/tenants/{id}/api-keys
 
 ---
 
-## Tenant Agents
+## Tenant agents
 
-### List Tenant Agents
+### List tenant agents
 
 ```
 GET /api/admin/tenants/{id}/agents
@@ -250,7 +250,7 @@ GET /api/admin/tenants/{id}/agents
 }
 ```
 
-### Create Tenant Agent
+### Create tenant agent
 
 ```
 POST /api/admin/tenants/{id}/agents
@@ -271,7 +271,7 @@ POST /api/admin/tenants/{id}/agents
 }
 ```
 
-### Update Tenant Agent
+### Update tenant agent
 
 ```
 PUT /api/admin/tenants/{id}/agents/{name}
@@ -279,7 +279,7 @@ PUT /api/admin/tenants/{id}/agents/{name}
 
 **Request Body:** Same structure as create. Fields provided will be updated.
 
-### Delete Tenant Agent
+### Delete tenant agent
 
 ```
 DELETE /api/admin/tenants/{id}/agents/{name}
@@ -289,9 +289,9 @@ Returns `204 No Content` on success.
 
 ---
 
-## Templates and Models
+## Templates and models
 
-### List Agent Templates
+### List agent templates
 
 ```
 GET /api/admin/agent-templates?product_type=kasino
@@ -318,7 +318,7 @@ Returns the pre-configured agent templates available for a given product type. T
 }
 ```
 
-### List Available Models
+### List available models
 
 ```
 GET /api/admin/models
@@ -355,9 +355,9 @@ Returns all models configured across all providers.
 
 ---
 
-## Usage and Analytics
+## Usage and analytics
 
-### Tenant Usage Summary
+### Tenant usage summary
 
 ```
 GET /api/admin/tenants/{id}/usage
@@ -379,7 +379,7 @@ GET /api/admin/tenants/{id}/usage
 }
 ```
 
-### Daily Usage Breakdown
+### Daily usage breakdown
 
 ```
 GET /api/admin/tenants/{id}/usage/daily?days=30
@@ -396,7 +396,7 @@ GET /api/admin/tenants/{id}/usage/daily?days=30
 }
 ```
 
-### Agent Run History
+### Agent run history
 
 ```
 GET /api/admin/tenants/{id}/agents/{name}/runs?limit=50
@@ -418,7 +418,7 @@ GET /api/admin/tenants/{id}/agents/{name}/runs?limit=50
 }
 ```
 
-### Agent Stats
+### Agent stats
 
 ```
 GET /api/admin/tenants/{id}/agents/{name}/stats
@@ -439,7 +439,7 @@ GET /api/admin/tenants/{id}/agents/{name}/stats
 }
 ```
 
-### Cross-Tenant Agent List
+### Cross-Tenant agent list
 
 ```
 GET /api/admin/agents
@@ -447,7 +447,7 @@ GET /api/admin/agents
 
 Returns agents across all tenants. Useful for platform-wide visibility.
 
-### Platform Stats
+### Platform stats
 
 ```
 GET /api/admin/stats
@@ -467,9 +467,9 @@ GET /api/admin/stats
 
 ---
 
-## Alerts and Audit
+## Alerts and audit
 
-### List Alerts
+### List alerts
 
 ```
 GET /api/admin/alerts?severity=critical&resolved=false&limit=100
@@ -500,7 +500,7 @@ GET /api/admin/alerts?severity=critical&resolved=false&limit=100
 }
 ```
 
-### Resolve Alert
+### Resolve alert
 
 ```
 POST /api/admin/alerts/{id}/resolve
@@ -508,7 +508,7 @@ POST /api/admin/alerts/{id}/resolve
 
 Returns `200 OK` with the updated alert object.
 
-### Audit Log
+### Audit log
 
 ```
 GET /api/admin/audit-log?limit=50

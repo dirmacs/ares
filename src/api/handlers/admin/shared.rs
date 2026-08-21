@@ -2861,6 +2861,22 @@ pub async fn receive_webhook(
     State(ctx): State<Arc<Context>>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
+    // Prefer TriggerService via Cordis DI (owns DB + AgentExecutionService).
+    if let Some(svc) = ctx.get::<crate::trigger_engine::TriggerService>() {
+        match svc
+            .dispatch_webhook(&trigger_id, payload.clone(), &ctx)
+            .await
+        {
+            Ok(v) => return Ok(Json(v)),
+            Err(e) if e.contains("not found") => {
+                return Err(AppError::NotFound(e));
+            }
+            Err(e) => {
+                tracing::warn!(trigger_id=%trigger_id, error=%e, "Webhook TriggerService dispatch failed");
+                return Err(AppError::Internal(e));
+            }
+        }
+    }
     let __pool_5 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let store = db_schedules::EventTriggerStore::new(&__pool_5);
     let trigger = store.get_trigger(&trigger_id).await?;

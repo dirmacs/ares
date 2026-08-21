@@ -4,7 +4,7 @@
 //! document-upload triggers for the tenant.
 
 use crate::db::schedules as db_schedules;
-use crate::{trigger_engine, AppState};
+use crate::trigger_engine;
 use ares_types::types::AppError;
 use axum::{
     extract::State,
@@ -46,6 +46,23 @@ pub async fn handle_document_upload(
     Json(payload): Json<DocumentUploadEvent>,
 ) -> crate::types::Result<StatusCode> {
     verify_webhook_secret(&headers)?;
+
+    // Prefer TriggerService (Cordis DI) — owns DB + AgentExecutionService.
+    // Falls back to direct store + execute_triggered_agent if service absent (tests).
+    if let Some(svc) = ctx.get::<crate::trigger_engine::TriggerService>() {
+        svc.dispatch_document_upload(
+            &payload.tenant_id,
+            &payload.bucket,
+            &payload.key,
+            payload.size,
+            &payload.content_type,
+            &payload.signed_url,
+            &ctx,
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+        return Ok(StatusCode::OK);
+    }
 
     let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let store = db_schedules::EventTriggerStore::new(&__pool_1);

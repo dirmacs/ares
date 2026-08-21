@@ -18,24 +18,25 @@ use axum::{
 use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
+use ares_cordis_core::Context;
 
 pub async fn list_skills(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<db_skills::Skill>>> {
     let tenant_id = required_skill_tenant_id(&params)?.to_string();
-    let store = db_skills::SkillStore::new(state.tenant_db.pool());
+    let store = db_skills::SkillStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let skills = store.list_skills(Some(&tenant_id)).await?;
     Ok(Json(skills))
 }
 
 pub async fn get_skill(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<db_skills::Skill>> {
     let tenant_id = required_skill_tenant_id(&params)?.to_string();
-    let store = db_skills::SkillStore::new(state.tenant_db.pool());
+    let store = db_skills::SkillStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let skill = store
         .get_skill_for_tenant(&id, &tenant_id)
         .await?
@@ -44,13 +45,13 @@ pub async fn get_skill(
 }
 
 pub async fn create_skill(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(req): Json<db_skills::CreateSkillRequest>,
 ) -> Result<Json<db_skills::Skill>> {
-    let store = db_skills::SkillStore::new(state.tenant_db.pool());
+    let store = db_skills::SkillStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let skill = store.create_skill(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = skill.tenant_id.clone();
     let s_name = skill.name.clone();
     tokio::spawn(async move {
@@ -63,18 +64,18 @@ pub async fn create_skill(
 }
 
 pub async fn update_skill(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
     Json(req): Json<db_skills::CreateSkillRequest>,
 ) -> Result<Json<db_skills::Skill>> {
     normalized_skill_tenant_id(&req.tenant_id)?;
-    let store = db_skills::SkillStore::new(state.tenant_db.pool());
+    let store = db_skills::SkillStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let skill = store
         .update_skill(&id, &req)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("skill {id} not found")))?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = skill.tenant_id.clone();
     let s_name = skill.name.clone();
     tokio::spawn(async move {
@@ -87,18 +88,18 @@ pub async fn update_skill(
 }
 
 pub async fn delete_skill(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<StatusCode> {
     let tenant_id = required_skill_tenant_id(&params)?.to_string();
-    let store = db_skills::SkillStore::new(state.tenant_db.pool());
+    let store = db_skills::SkillStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let rows = store.delete_skill_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!("skill {id} not found")));
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let sid = id.clone();
     let t_id = tenant_id.clone();
     tokio::spawn(async move {
@@ -111,20 +112,18 @@ pub async fn delete_skill(
 }
 
 pub async fn run_skill(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(req): Json<RunSkillRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let run_id = uuid::Uuid::new_v4().to_string();
     let tenant_id = normalized_run_skill_tenant_id(&req.tenant_id)?.to_string();
     let skill_id = req.skill_id;
     let agent_name = admin_skill_agent_name(&skill_id);
-    state
-        .active_runs
+    ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0
         .start(admin_skill_active_run(&run_id, &tenant_id, &skill_id));
 
     let metadata = admin_skill_run_metadata(&run_id);
-    agent_runs::insert_agent_run_with_id_and_metadata(
-        state.tenant_db.pool(),
+    agent_runs::insert_agent_run_with_id_and_metadata(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
         &run_id,
         &tenant_id,
         &agent_name,
@@ -145,11 +144,10 @@ pub async fn run_skill(
         run_id: run_id.clone(),
         tenant_id: tenant_id.clone(),
         agent_name: agent_name.clone(),
-        pool: state.tenant_db.pool().clone(),
+        pool: ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
     });
     let start = std::time::Instant::now();
-    let result = state
-        .skill_engine
+    let result = ctx.get::<crate::context_services::SkillEngineService>().expect("not provided").0
         .execute_skill(&skill_id, &tenant_id, req.input, &run_id)
         .await;
     let duration_ms = start.elapsed().as_millis() as i64;
@@ -159,7 +157,7 @@ pub async fn run_skill(
         "failed"
     };
     let active_status = if result.is_ok() { "completed" } else { "error" };
-    state.active_runs.finish(&run_id, active_status);
+    ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, active_status);
 
     let (input_tokens, output_tokens) = result
         .as_ref()
@@ -179,7 +177,7 @@ pub async fn run_skill(
     .bind(output_tokens)
     .bind(duration_ms)
     .bind(error_message.as_deref())
-    .execute(state.tenant_db.pool())
+    .execute(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone())
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -195,7 +193,7 @@ pub async fn run_skill(
 }
 
 pub async fn list_connectors(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<db_skills::Connector>>> {
     let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
@@ -204,19 +202,19 @@ pub async fn list_connectors(
             "tenant_id query param is required".into(),
         ));
     }
-    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
+    let store = db_skills::ConnectorStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let connectors = store.list_connectors(tenant_id).await?;
     Ok(Json(connectors))
 }
 
 pub async fn create_connector(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(req): Json<db_skills::CreateConnectorRequest>,
 ) -> Result<Json<db_skills::Connector>> {
-    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
+    let store = db_skills::ConnectorStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let connector = store.create_connector(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = connector.tenant_id.clone();
     let c_name = connector.name.clone();
     tokio::spawn(async move {
@@ -235,17 +233,17 @@ pub async fn create_connector(
 }
 
 pub async fn update_connector(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
     Json(req): Json<db_skills::CreateConnectorRequest>,
 ) -> Result<Json<db_skills::Connector>> {
-    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
+    let store = db_skills::ConnectorStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let connector = store
         .update_connector(&id, &req)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("connector {id} not found")))?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = connector.tenant_id.clone();
     let c_name = connector.name.clone();
     tokio::spawn(async move {
@@ -264,16 +262,16 @@ pub async fn update_connector(
 }
 
 pub async fn delete_connector(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
+    let store = db_skills::ConnectorStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let rows = store.delete_connector(&id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!("connector {id} not found")));
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let cid = id.clone();
     tokio::spawn(async move {
         let _ =
@@ -285,10 +283,10 @@ pub async fn delete_connector(
 }
 
 pub async fn delete_tenant_connector(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let store = db_skills::ConnectorStore::new(state.tenant_db.pool());
+    let store = db_skills::ConnectorStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let rows = store.delete_connector_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(
@@ -296,7 +294,7 @@ pub async fn delete_tenant_connector(
         )));
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let cid = id.clone();
     let t_id = tenant_id.clone();
     tokio::spawn(async move {
@@ -315,7 +313,7 @@ pub async fn delete_tenant_connector(
 }
 
 pub async fn oauth_authorize(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     headers: HeaderMap,
     Query(query): Query<OAuthAuthorizeQuery>,
 ) -> Result<Redirect> {
@@ -326,7 +324,7 @@ pub async fn oauth_authorize(
     }
 
     let provider = oauth_provider_config(&query.connector_type)?;
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
+    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let credential = store
         .get(&query.tenant_id, provider.provider, &query.connector_type)
         .await?
@@ -353,7 +351,7 @@ pub async fn oauth_authorize(
 }
 
 pub async fn oauth_callback(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     headers: HeaderMap,
     Query(query): Query<OAuthCallbackQuery>,
 ) -> Result<Redirect> {
@@ -363,7 +361,7 @@ pub async fn oauth_callback(
 
     let oauth_state = decode_oauth_state(&query.state)?;
     let provider = oauth_provider_config(&oauth_state.connector_type)?;
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
+    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let credential = store
         .get(
             &oauth_state.tenant_id,
@@ -429,10 +427,10 @@ pub async fn oauth_callback(
 }
 
 pub async fn list_oauth_credentials(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<OAuthCredentialResponse>>> {
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
+    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let credentials = store
         .list_by_tenant(&tenant_id)
         .await?
@@ -443,15 +441,15 @@ pub async fn list_oauth_credentials(
 }
 
 pub async fn create_oauth_credential(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
     Json(mut req): Json<ares_db::oauth_credentials::CreateOAuthCredentialRequest>,
 ) -> Result<Json<OAuthCredentialResponse>> {
     normalize_oauth_credential_request(tenant_id, &mut req)?;
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
+    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let credential = store.create(&req).await?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let cred_id = credential.id.clone();
     let t_id = credential.tenant_id.clone();
     tokio::spawn(async move {
@@ -470,10 +468,10 @@ pub async fn create_oauth_credential(
 }
 
 pub async fn delete_oauth_credential(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(state.tenant_db.pool());
+    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let rows = store.delete_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(
@@ -481,7 +479,7 @@ pub async fn delete_oauth_credential(
         )));
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
             &pool,

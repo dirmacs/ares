@@ -116,7 +116,7 @@ impl WorkflowEngine {
         context: &AgentContext,
     ) -> Result<WorkflowOutput> {
         // Get workflow configuration
-        let config = self.state.config_manager.config();
+        let config = self.state.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
         let workflow = config.get_workflow(workflow_name).ok_or_else(|| {
             AppError::Configuration(format!(
                 "Workflow '{}' not found in configuration",
@@ -172,15 +172,13 @@ impl WorkflowEngine {
             };
 
             // Create the agent
-            let mut agent = self
-                .state
-                .agent_registry
+            let mut agent = self.state.get::<crate::context_services::AgentRegistryService>().expect("not provided").0
                 .create_agent_from_config_with_fallbacks(
                     &current_agent_name,
                     &agent_config,
                     &context.user_id,
-                    self.state.tenant_db.pool(),
-                    &self.state.fleet_secrets,
+                    &self.state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+                    &self.state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
                 )
                 .await?;
             agent.set_run_id(uuid::Uuid::new_v4().to_string());
@@ -259,8 +257,7 @@ impl WorkflowEngine {
 
     /// Get available workflow names
     pub fn available_workflows(&self) -> Vec<String> {
-        self.state
-            .config_manager
+        self.state.get::<crate::context_services::ConfigManagerService>().expect("not provided").0
             .config()
             .workflows
             .keys()
@@ -270,8 +267,7 @@ impl WorkflowEngine {
 
     /// Check if a workflow exists
     pub fn has_workflow(&self, name: &str) -> bool {
-        self.state
-            .config_manager
+        self.state.get::<crate::context_services::ConfigManagerService>().expect("not provided").0
             .config()
             .workflows
             .contains_key(name)
@@ -279,8 +275,7 @@ impl WorkflowEngine {
 
     /// Get workflow configuration
     pub fn get_workflow_config(&self, name: &str) -> Option<WorkflowConfig> {
-        self.state
-            .config_manager
+        self.state.get::<crate::context_services::ConfigManagerService>().expect("not provided").0
             .config()
             .get_workflow(name)
             .cloned()
@@ -443,60 +438,27 @@ mod tests {
         ));
 
         // Create a dummy AppState for testing
-        let state = AppState {
-            config_manager: Arc::new(AresConfigManager::from_config((*config).clone())),
-            dynamic_config: Arc::new(
-                DynamicConfigManager::new(
-                    std::path::PathBuf::from("config/agents"),
-                    std::path::PathBuf::from("config/models"),
-                    std::path::PathBuf::from("config/tools"),
-                    std::path::PathBuf::from("config/workflows"),
-                    std::path::PathBuf::from("config/mcps"),
-                    false,
-                )
-                .unwrap(),
-            ),
-            db: create_workflow_test_db().await,
-            tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                crate::db::PostgresClient::new_remote(workflow_test_db_url(), String::new())
-                    .await
-                    .expect("tenant db"),
-            ))),
-            llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
-                provider_registry.clone(),
-                "default",
-            )),
-            provider_registry: provider_registry.clone(),
-            agent_registry,
-            tool_registry: tool_registry.clone(),
-            auth_service: Arc::new(crate::auth::jwt::AuthService::new(
-                "secret".to_string(),
-                900,
-                604800,
-            )),
-            #[cfg(feature = "mcp")]
-            mcp_registry: None,
-            deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
-            loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
-            emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_provider: Arc::new(crate::agents::NoOpContextProvider),
-            fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
-            runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
-                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-            )),
-            active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
-            skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
-                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                tool_registry.clone(),
-                Arc::new(crate::RuntimeToolRegistry::new(
-                    sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                )),
-                Arc::new(crate::ConfigBasedLLMFactory::new(
-                    provider_registry.clone(),
-                    "default",
-                )),
-                Arc::new(AresConfigManager::from_config((*config).clone())),
-            )),
+        let state: AppState = {
+            let ctx = ares_cordis_core::Context::new_root();
+            ctx.provide(crate::context_services::ConfigManagerService(Arc::new(AresConfigManager::from_config((*config).clone()))));
+            ctx.provide(crate::context_services::DynamicConfigService(Arc::new(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap())));
+            let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
+            ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
+            ctx.provide(crate::context_services::TenantDbService(Arc::new(crate::db::TenantDb::new(db_tmp.clone()))));
+            ctx.provide(crate::context_services::LlmFactoryService(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default"))));
+            ctx.provide(crate::context_services::ProviderRegistryService(provider_registry.clone()));
+            ctx.provide(crate::context_services::AgentRegistryService(agent_registry.clone()));
+            ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
+            ctx.provide(crate::context_services::AuthServiceWrapper(Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800))));
+            ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));
+            ctx.provide(crate::context_services::LoopRegistryService(crate::api::handlers::loops::LoopRegistry::new()));
+            ctx.provide(crate::context_services::EmergencyStopService(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
+            ctx.provide(crate::context_services::FleetSecretsService(ares_config::fleet_secrets::FleetSecrets::new()));
+            ctx.provide(crate::context_services::RuntimeToolRegistryService(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone()))));
+            ctx.provide(crate::context_services::ActiveRunsService(Arc::new(crate::active_runs::ActiveRuns::new())));
+            ctx.provide(crate::context_services::SkillEngineService(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone()))))));
+            ctx
         };
 
         let engine = WorkflowEngine::new(state);
@@ -518,60 +480,27 @@ mod tests {
         ));
 
         // Create a dummy AppState for testing
-        let state = AppState {
-            config_manager: Arc::new(AresConfigManager::from_config((*config).clone())),
-            dynamic_config: Arc::new(
-                DynamicConfigManager::new(
-                    std::path::PathBuf::from("config/agents"),
-                    std::path::PathBuf::from("config/models"),
-                    std::path::PathBuf::from("config/tools"),
-                    std::path::PathBuf::from("config/workflows"),
-                    std::path::PathBuf::from("config/mcps"),
-                    false,
-                )
-                .unwrap(),
-            ),
-            db: create_workflow_test_db().await,
-            tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                crate::db::PostgresClient::new_remote(workflow_test_db_url(), String::new())
-                    .await
-                    .expect("tenant db"),
-            ))),
-            llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
-                provider_registry.clone(),
-                "default",
-            )),
-            provider_registry: provider_registry.clone(),
-            agent_registry,
-            tool_registry: tool_registry.clone(),
-            auth_service: Arc::new(crate::auth::jwt::AuthService::new(
-                "secret".to_string(),
-                900,
-                604800,
-            )),
-            #[cfg(feature = "mcp")]
-            mcp_registry: None,
-            deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
-            loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
-            emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_provider: Arc::new(crate::agents::NoOpContextProvider),
-            fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
-            runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
-                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-            )),
-            active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
-            skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
-                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                tool_registry.clone(),
-                Arc::new(crate::RuntimeToolRegistry::new(
-                    sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                )),
-                Arc::new(crate::ConfigBasedLLMFactory::new(
-                    provider_registry.clone(),
-                    "default",
-                )),
-                Arc::new(AresConfigManager::from_config((*config).clone())),
-            )),
+        let state: AppState = {
+            let ctx = ares_cordis_core::Context::new_root();
+            ctx.provide(crate::context_services::ConfigManagerService(Arc::new(AresConfigManager::from_config((*config).clone()))));
+            ctx.provide(crate::context_services::DynamicConfigService(Arc::new(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap())));
+            let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
+            ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
+            ctx.provide(crate::context_services::TenantDbService(Arc::new(crate::db::TenantDb::new(db_tmp.clone()))));
+            ctx.provide(crate::context_services::LlmFactoryService(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default"))));
+            ctx.provide(crate::context_services::ProviderRegistryService(provider_registry.clone()));
+            ctx.provide(crate::context_services::AgentRegistryService(agent_registry.clone()));
+            ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
+            ctx.provide(crate::context_services::AuthServiceWrapper(Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800))));
+            ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));
+            ctx.provide(crate::context_services::LoopRegistryService(crate::api::handlers::loops::LoopRegistry::new()));
+            ctx.provide(crate::context_services::EmergencyStopService(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
+            ctx.provide(crate::context_services::FleetSecretsService(ares_config::fleet_secrets::FleetSecrets::new()));
+            ctx.provide(crate::context_services::RuntimeToolRegistryService(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone()))));
+            ctx.provide(crate::context_services::ActiveRunsService(Arc::new(crate::active_runs::ActiveRuns::new())));
+            ctx.provide(crate::context_services::SkillEngineService(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone()))))));
+            ctx
         };
 
         let engine = WorkflowEngine::new(state);
@@ -593,60 +522,27 @@ mod tests {
         ));
 
         // Create a dummy AppState for testing
-        let state = AppState {
-            config_manager: Arc::new(AresConfigManager::from_config((*config).clone())),
-            dynamic_config: Arc::new(
-                DynamicConfigManager::new(
-                    std::path::PathBuf::from("config/agents"),
-                    std::path::PathBuf::from("config/models"),
-                    std::path::PathBuf::from("config/tools"),
-                    std::path::PathBuf::from("config/workflows"),
-                    std::path::PathBuf::from("config/mcps"),
-                    false,
-                )
-                .unwrap(),
-            ),
-            db: create_workflow_test_db().await,
-            tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                crate::db::PostgresClient::new_remote(workflow_test_db_url(), String::new())
-                    .await
-                    .expect("tenant db"),
-            ))),
-            llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
-                provider_registry.clone(),
-                "default",
-            )),
-            provider_registry: provider_registry.clone(),
-            agent_registry,
-            tool_registry: tool_registry.clone(),
-            auth_service: Arc::new(crate::auth::jwt::AuthService::new(
-                "secret".to_string(),
-                900,
-                604800,
-            )),
-            #[cfg(feature = "mcp")]
-            mcp_registry: None,
-            deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
-            loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
-            emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_provider: Arc::new(crate::agents::NoOpContextProvider),
-            fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
-            runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
-                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-            )),
-            active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
-            skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
-                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                tool_registry.clone(),
-                Arc::new(crate::RuntimeToolRegistry::new(
-                    sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                )),
-                Arc::new(crate::ConfigBasedLLMFactory::new(
-                    provider_registry.clone(),
-                    "default",
-                )),
-                Arc::new(AresConfigManager::from_config((*config).clone())),
-            )),
+        let state: AppState = {
+            let ctx = ares_cordis_core::Context::new_root();
+            ctx.provide(crate::context_services::ConfigManagerService(Arc::new(AresConfigManager::from_config((*config).clone()))));
+            ctx.provide(crate::context_services::DynamicConfigService(Arc::new(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap())));
+            let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
+            ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
+            ctx.provide(crate::context_services::TenantDbService(Arc::new(crate::db::TenantDb::new(db_tmp.clone()))));
+            ctx.provide(crate::context_services::LlmFactoryService(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default"))));
+            ctx.provide(crate::context_services::ProviderRegistryService(provider_registry.clone()));
+            ctx.provide(crate::context_services::AgentRegistryService(agent_registry.clone()));
+            ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
+            ctx.provide(crate::context_services::AuthServiceWrapper(Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800))));
+            ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));
+            ctx.provide(crate::context_services::LoopRegistryService(crate::api::handlers::loops::LoopRegistry::new()));
+            ctx.provide(crate::context_services::EmergencyStopService(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
+            ctx.provide(crate::context_services::FleetSecretsService(ares_config::fleet_secrets::FleetSecrets::new()));
+            ctx.provide(crate::context_services::RuntimeToolRegistryService(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone()))));
+            ctx.provide(crate::context_services::ActiveRunsService(Arc::new(crate::active_runs::ActiveRuns::new())));
+            ctx.provide(crate::context_services::SkillEngineService(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone()))))));
+            ctx
         };
 
         let engine = WorkflowEngine::new(state);
@@ -726,60 +622,27 @@ mod tests {
             tool_registry.clone(),
         ));
 
-        let state = AppState {
-            config_manager: Arc::new(AresConfigManager::from_config((*config).clone())),
-            dynamic_config: Arc::new(
-                DynamicConfigManager::new(
-                    std::path::PathBuf::from("config/agents"),
-                    std::path::PathBuf::from("config/models"),
-                    std::path::PathBuf::from("config/tools"),
-                    std::path::PathBuf::from("config/workflows"),
-                    std::path::PathBuf::from("config/mcps"),
-                    false,
-                )
-                .unwrap(),
-            ),
-            db: create_workflow_test_db().await,
-            tenant_db: Arc::new(crate::db::TenantDb::new(Arc::new(
-                crate::db::PostgresClient::new_remote(workflow_test_db_url(), String::new())
-                    .await
-                    .expect("tenant db"),
-            ))),
-            llm_factory: Arc::new(crate::ConfigBasedLLMFactory::new(
-                provider_registry.clone(),
-                "default",
-            )),
-            provider_registry: provider_registry.clone(),
-            agent_registry,
-            tool_registry: tool_registry.clone(),
-            auth_service: Arc::new(crate::auth::jwt::AuthService::new(
-                "secret".to_string(),
-                900,
-                604800,
-            )),
-            #[cfg(feature = "mcp")]
-            mcp_registry: None,
-            deploy_registry: crate::api::handlers::deploy::new_deploy_registry(),
-            loop_registry: crate::api::handlers::loops::LoopRegistry::new(),
-            emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_provider: Arc::new(crate::agents::NoOpContextProvider),
-            fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
-            runtime_tool_registry: Arc::new(crate::RuntimeToolRegistry::new(
-                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-            )),
-            active_runs: Arc::new(crate::active_runs::ActiveRuns::new()),
-            skill_engine: Arc::new(crate::skill_engine::SkillEngine::new(
-                sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                tool_registry.clone(),
-                Arc::new(crate::RuntimeToolRegistry::new(
-                    sqlx::PgPool::connect_lazy(&workflow_test_db_url()).expect("lazy pool"),
-                )),
-                Arc::new(crate::ConfigBasedLLMFactory::new(
-                    provider_registry.clone(),
-                    "default",
-                )),
-                Arc::new(AresConfigManager::from_config((*config).clone())),
-            )),
+        let state: AppState = {
+            let ctx = ares_cordis_core::Context::new_root();
+            ctx.provide(crate::context_services::ConfigManagerService(Arc::new(AresConfigManager::from_config((*config).clone()))));
+            ctx.provide(crate::context_services::DynamicConfigService(Arc::new(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap())));
+            let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
+            ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
+            ctx.provide(crate::context_services::TenantDbService(Arc::new(crate::db::TenantDb::new(db_tmp.clone()))));
+            ctx.provide(crate::context_services::LlmFactoryService(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default"))));
+            ctx.provide(crate::context_services::ProviderRegistryService(provider_registry.clone()));
+            ctx.provide(crate::context_services::AgentRegistryService(agent_registry.clone()));
+            ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
+            ctx.provide(crate::context_services::AuthServiceWrapper(Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800))));
+            ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));
+            ctx.provide(crate::context_services::LoopRegistryService(crate::api::handlers::loops::LoopRegistry::new()));
+            ctx.provide(crate::context_services::EmergencyStopService(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
+            ctx.provide(crate::context_services::FleetSecretsService(ares_config::fleet_secrets::FleetSecrets::new()));
+            ctx.provide(crate::context_services::RuntimeToolRegistryService(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone()))));
+            ctx.provide(crate::context_services::ActiveRunsService(Arc::new(crate::active_runs::ActiveRuns::new())));
+            ctx.provide(crate::context_services::SkillEngineService(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone()))))));
+            ctx
         };
 
         WorkflowEngine::new(state)

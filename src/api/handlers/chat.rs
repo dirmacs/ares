@@ -19,6 +19,8 @@ use axum::{
     Extension, Json,
 };
 use std::sync::Arc;
+use crate::AppState;
+use ares_cordis_core::Context;
 use uuid::Uuid;
 
 /// Validates chat request payload before routing.
@@ -200,31 +202,30 @@ pub(crate) fn stream_done_event(
     security(("bearer" = []))
 )]
 pub async fn chat(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
     tenant_ctx: Option<Extension<crate::models::TenantContext>>,
     Json(payload): Json<ChatRequest>,
 ) -> Result<Response> {
     validate_chat_request(&payload)?;
-    ensure_emergency_stop_inactive(&state.emergency_stop)?;
+    ensure_emergency_stop_inactive(&ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0)?;
 
     // Get or create conversation
     let context_id = resolve_context_id(payload.context_id.as_ref());
 
     // Check if conversation exists, create if not
-    if !state.db.conversation_exists(&context_id).await? {
-        state
-            .db
+    if !ctx.get::<crate::context_services::DbService>().expect("not provided").0.conversation_exists(&context_id).await? {
+        ctx.get::<crate::context_services::DbService>().expect("not provided").0
             .create_conversation(&context_id, &claims.sub, None)
             .await?;
     }
-    let history = state.db.get_conversation_history(&context_id).await?;
+    let history = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_conversation_history(&context_id).await?;
     // Compute history token estimate in the same pass (before clone into AgentContext)
     let history_input_tokens: usize = history.iter().map(|m| estimate_tokens(&m.content)).sum();
 
     // Load user memory
-    let memory_facts = state.db.get_user_memory(&claims.sub).await?;
-    let preferences = state.db.get_user_preferences(&claims.sub).await?;
+    let memory_facts = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_user_memory(&claims.sub).await?;
+    let preferences = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_user_preferences(&claims.sub).await?;
     let user_memory = build_user_memory_if_present(&claims.sub, memory_facts, preferences);
 
     // Build agent context
@@ -240,19 +241,18 @@ pub async fn chat(
         at
     } else {
         // Get router model from config, or use default
-        let config = state.config_manager.config();
+        let config = ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
         let router_model = config
             .get_agent("router")
             .map(|a| a.model.as_str())
             .unwrap_or("fast");
 
-        let router_llm = match state
-            .provider_registry
+        let router_llm = match ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0
             .create_client_for_model(router_model)
             .await
         {
             Ok(client) => client,
-            Err(_) => state.llm_factory.create_default().await?,
+            Err(_) => ctx.get::<crate::context_services::LlmFactoryService>().expect("not provided").0.create_default().await?,
         };
 
         let router = RouterAgent::new(router_llm);
@@ -263,19 +263,17 @@ pub async fn chat(
     let agent_name_for_run = AgentRegistry::type_to_name(&agent_type).to_string();
     let start = std::time::Instant::now();
     let (response, usage) =
-        execute_agent(agent_type, &payload.message, &agent_context, &state).await?;
+        execute_agent(agent_type, &payload.message, &agent_context, &ctx).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
     // Store messages in conversation
     let msg_id = Uuid::new_v4().to_string();
-    state
-        .db
+    ctx.get::<crate::context_services::DbService>().expect("not provided").0
         .add_message(&msg_id, &context_id, MessageRole::User, &payload.message)
         .await?;
 
     let resp_id = Uuid::new_v4().to_string();
-    state
-        .db
+    ctx.get::<crate::context_services::DbService>().expect("not provided").0
         .add_message(
             &resp_id,
             &context_id,
@@ -294,7 +292,7 @@ pub async fn chat(
 
     // Record agent run (fire-and-forget)
     {
-        let pool = state.tenant_db.pool().clone();
+        let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
         let agent_name = agent_name_for_run;
         let user_id = claims.sub.clone();
         let tenant_id_for_run = tenant_ctx
@@ -350,7 +348,7 @@ async fn execute_agent(
     agent_type: AgentType,
     message: &str,
     context: &AgentContext,
-    state: &AppState,
+    ctx: &AppState,
 ) -> Result<(ChatResponse, Option<crate::llm::client::TokenUsage>)> {
     // Get agent name from type
     let agent_name = AgentRegistry::type_to_name(&agent_type);
@@ -364,14 +362,12 @@ async fn execute_agent(
     let config = agent_config_from_user_agent(&user_agent);
 
     // Create agent from registry using the resolved config
-    let mut agent = state
-        .agent_registry
+    let mut agent = ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0
         .create_agent_from_config_with_fallbacks(
             agent_name,
             &config,
-            &context.user_id,
-            state.tenant_db.pool(),
-            &state.fleet_secrets,
+            &context.user_id, &ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+            &ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
         )
         .await?;
 
@@ -381,12 +377,12 @@ async fn execute_agent(
         run_id: run_id.clone(),
         tenant_id: context.user_id.clone(),
         agent_name: agent_name.to_string(),
-        pool: state.tenant_db.pool().clone(),
+        pool: ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
     });
     agent.set_observability(obs.clone());
     agent.set_run_id(run_id.clone());
 
-    state.active_runs.start(crate::active_runs::ActiveRun {
+    ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),
         tenant_id: context.user_id.clone(),
         agent_name: agent_name.to_string(),
@@ -408,11 +404,11 @@ async fn execute_agent(
     let start = std::time::Instant::now();
     let agent_resp = match agent.execute(message, context).await {
         Ok(resp) => {
-            state.active_runs.finish(&run_id, "completed");
+            ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "completed");
             resp
         }
         Err(e) => {
-            state.active_runs.finish(&run_id, "error");
+            ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
             return Err(e);
         }
     };
@@ -446,11 +442,11 @@ async fn execute_agent(
     security(("bearer" = []))
 )]
 pub async fn get_user_memory(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<UserMemory>> {
-    let facts = state.db.get_user_memory(&claims.sub).await?;
-    let preferences = state.db.get_user_preferences(&claims.sub).await?;
+    let facts = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_user_memory(&claims.sub).await?;
+    let preferences = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_user_preferences(&claims.sub).await?;
 
     Ok(Json(UserMemory {
         user_id: claims.sub,
@@ -514,7 +510,7 @@ impl From<ChatStreamQuery> for ChatRequest {
     security(("bearer" = []))
 )]
 pub async fn chat_stream(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
     Json(payload): Json<ChatRequest>,
 ) -> axum::response::Sse<
@@ -544,7 +540,7 @@ pub async fn chat_stream(
     security(("bearer" = []))
 )]
 pub async fn chat_stream_get(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
     Query(query): Query<ChatStreamQuery>,
 ) -> axum::response::Sse<
@@ -556,7 +552,7 @@ pub async fn chat_stream_get(
 }
 
 fn chat_stream_response(
-    state: AppState,
+    ctx: AppState,
     claims: Claims,
     payload: ChatRequest,
 ) -> axum::response::Sse<
@@ -567,20 +563,20 @@ fn chat_stream_response(
     use axum::response::sse::{Event, Sse};
 
     let validation_error = validate_chat_request(&payload)
-        .and_then(|_| ensure_emergency_stop_inactive(&state.emergency_stop))
+        .and_then(|_| ensure_emergency_stop_inactive(&ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0))
         .err();
 
     // Get or create conversation
     let context_id = resolve_context_id(payload.context_id.as_ref());
 
     // Clone values we need for the async stream
-    let state_clone = state.clone();
+    let state_clone = ctx.clone();
     let claims_clone = claims.clone();
     let message = payload.message.clone();
     let agent_type_req = payload.agent_type;
     let runtime_workspace_id = payload.workspace_id.clone();
     let context_id_clone = context_id.clone();
-    let active_runs = Arc::clone(&state.active_runs);
+    let active_runs = Arc::clone(&ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0);
 
     let stream = async_stream::stream! {
         if let Some(e) = &validation_error {

@@ -1,6 +1,8 @@
 //! Admin health domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
+use std::sync::Arc;
+use ares_cordis_core::Context;
 use super::*;
 
 
@@ -16,10 +18,10 @@ use axum::{
 use sha2::Digest;
 
 pub async fn list_health_metrics(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Query(q): Query<ListHealthMetricsQuery>,
 ) -> Result<Json<Vec<AgentHealthMetrics>>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let store = RunHistoryStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let metrics = store
         .list_health_metrics(&q.tenant_id, q.limit, q.offset)
         .await?;
@@ -28,10 +30,10 @@ pub async fn list_health_metrics(
 
 /// List model health metrics for a tenant, grouped by (tenant_id, model).
 pub async fn list_model_metrics(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Query(q): Query<ListModelMetricsQuery>,
 ) -> Result<Json<Vec<ModelHealthMetrics>>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let store = RunHistoryStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let metrics = store
         .list_model_metrics(&q.tenant_id, q.limit, q.offset)
         .await?;
@@ -40,28 +42,28 @@ pub async fn list_model_metrics(
 
 /// Insert agent health metrics.
 pub async fn insert_health_metrics(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Json(req): Json<AgentHealthMetrics>,
 ) -> Result<Json<AgentHealthMetrics>> {
-    let store = RunHistoryStore::new(state.tenant_db.pool());
+    let store = RunHistoryStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let metrics = store.insert_health_metrics(&req).await?;
     Ok(Json(metrics))
 }
 
 pub async fn list_tenant_model_tiers(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<db_tiers::TenantModelTier>>> {
-    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let store = db_tiers::TenantModelTierStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let tiers = store.list_for_tenant(&tenant_id).await?;
     Ok(Json(tiers))
 }
 
 pub async fn get_tenant_model_tier(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, tier_name)): Path<(String, String)>,
 ) -> Result<Json<db_tiers::TenantModelTier>> {
-    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let store = db_tiers::TenantModelTierStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let tier = store.get(&tenant_id, &tier_name).await?.ok_or_else(|| {
         AppError::NotFound(format!("tier {tier_name} not found for tenant {tenant_id}"))
     })?;
@@ -69,12 +71,11 @@ pub async fn get_tenant_model_tier(
 }
 
 pub async fn set_tenant_model_tier(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, tier_name)): Path<(String, String)>,
     Json(req): Json<db_tiers::SetTenantModelTierRequest>,
 ) -> Result<Json<db_tiers::TenantModelTier>> {
-    if !state
-        .provider_registry
+    if !ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0
         .has_provider_for_tenant(&req.provider_name, Some(&tenant_id))
     {
         return Err(AppError::InvalidInput(format!(
@@ -83,10 +84,10 @@ pub async fn set_tenant_model_tier(
         )));
     }
 
-    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let store = db_tiers::TenantModelTierStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let tier = store.set(&tenant_id, &tier_name, &req).await?;
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = tenant_id.clone();
     let t_name = tier_name.clone();
     tokio::spawn(async move {
@@ -105,10 +106,10 @@ pub async fn set_tenant_model_tier(
 }
 
 pub async fn delete_tenant_model_tier(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<Context>>,
     Path((tenant_id, tier_name)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let store = db_tiers::TenantModelTierStore::new(state.tenant_db.pool());
+    let store = db_tiers::TenantModelTierStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
     let rows = store.delete(&tenant_id, &tier_name).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(
@@ -116,7 +117,7 @@ pub async fn delete_tenant_model_tier(
         )));
     }
 
-    let pool = state.tenant_db.pool().clone();
+    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
     let t_id = tenant_id.clone();
     let t_name = tier_name.clone();
     tokio::spawn(async move {

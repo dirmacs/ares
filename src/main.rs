@@ -291,16 +291,7 @@ fn main() {
     std::process::exit(1);
 }
 
-#[cfg(feature = "postgres")]
-fn start_runtime_tool_background_reload(registry: &Arc<ares::RuntimeToolRegistry>) -> bool {
-    // Phase3 migrated: background polling replaced by ReflectService::notify(TypeId) + Fiber::refresh via watch
-    // REMOVED: polling fallback retained for one release then delete (shim returns false without spawning)
-    tracing::warn!(
-        "start_runtime_tool_background_reload is deprecated: registry reload now via ReflectService::notify(TypeId::of::<RuntimeToolRegistry>()) + Fiber::refresh via watch channel; no background task spawned"
-    );
-    let _ = registry;
-    false
-}
+// Phase3: start_background_reload removed — reload via ReflectService::notify + Fiber::refresh
 
 #[cfg(feature = "postgres")]
 #[tokio::main]
@@ -853,11 +844,7 @@ async fn run_server(
     if let Err(e) = runtime_tool_registry.reload().await {
         tracing::warn!("Failed to preload runtime tools on startup: {}", e);
     }
-    // Phase3 migrated: background polling replaced by ReflectService::notify + Fiber::refresh (shim retained, returns false without spawning)
-    #[allow(deprecated)]
-    if start_runtime_tool_background_reload(&runtime_tool_registry) {
-        tracing::info!("Runtime tool background reload started");
-    }
+    // Phase3: background polling eliminated — reload via ReflectService::notify + Fiber::refresh
 
     let skill_engine = Arc::new(ares::skill_engine::SkillEngine::new(
         db_arc.pool.clone(),
@@ -874,6 +861,12 @@ async fn run_server(
             runtime: runtime_tool_registry.clone(),
             unified: None,
         })
+        .await
+        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
+
+    // Cordis plugin: CalculatorService via DI (Step 11 — proves plugin pattern for tools)
+    root_ctx
+        .plugin(ares::tools::CalculatorService)
         .await
         .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
 
@@ -903,6 +896,14 @@ async fn run_server(
     let active_runs = Arc::new(ares::active_runs::ActiveRuns::new());
     root_ctx.provide(ares::context_services::ActiveRunsService(active_runs.clone()));
     root_ctx.provide(ares::context_services::SkillEngineService(skill_engine.clone()));
+
+    // Cordis: AgentResolverService — replaces inline resolve_agent in handlers (Phase 5 §19)
+    root_ctx.provide(ares_agents::resolver::AgentResolverService::new(
+        tenant_db.clone(),
+        agent_registry.clone(),
+        config_manager.config(),
+    ));
+
     let state: AppState = root_ctx.clone();
 
     if let Err(e) = api::handlers::admin::reload_runtime_provider_registry(&state).await {
@@ -919,7 +920,16 @@ async fn run_server(
     // =================================================================
     // Cordis plugin 7/9: SchedulerService owns tick_ms 60_000, db, agent_execution, with next_run_at(cron) impl
     // Shared execution for Scheduler + Pipeline (both inject AgentExecutionService)
-    let shared_execution = Arc::new(ares_agents::execution::AgentExecutionService::new());
+    let shared_execution = Arc::new(
+        ares_agents::execution::AgentExecutionService::new()
+            .with_db(db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>)
+            .with_tenant_db(tenant_db.clone())
+            .with_llm_factory(llm_factory.clone())
+            .with_agent_registry(agent_registry.clone())
+            .with_fleet_secrets(Arc::new(ares::FleetSecrets::new()))
+    );
+    // Provide to context so handlers can use ctx.get::<AgentExecutionService>()
+    root_ctx.provide_arc(shared_execution.clone());
     {
         root_ctx
             .plugin(ares::scheduler::SchedulerService::new(
@@ -1517,17 +1527,10 @@ fn ui_routes() -> Router<AppState> {
 
 #[cfg(all(test, feature = "postgres"))]
 mod tests {
-    use super::*;
-
     #[tokio::test]
-    async fn start_runtime_tool_background_reload_reports_started() {
-        let pool =
-            sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool never fails");
-        let registry = Arc::new(ares::RuntimeToolRegistry::with_interval(pool, 60));
-
-        #[allow(deprecated)]
-        let result = start_runtime_tool_background_reload(&registry);
-        // REMOVED: polling fallback retained for one release then delete — shim returns false without spawning
-        assert!(!result);
+    async fn placeholder_keep_test_module() {
+        // start_runtime_tool_background_reload was removed (Phase 3)
+        // Reload now via ReflectService::notify + Fiber::refresh
+        assert!(true);
     }
 }

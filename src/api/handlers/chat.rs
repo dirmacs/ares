@@ -354,6 +354,27 @@ async fn execute_agent(
 
     ensure_not_direct_router(&agent_type)?;
 
+    // Cordis DI path: delegate core execution to AgentExecutionService (Phase 4 §15)
+    if let Some(exec_svc) = ctx.get::<ares_agents::execution::AgentExecutionService>() {
+        let req = ares_agents::execution::AgentRequest {
+            agent_name: agent_name.to_string(),
+            tenant: Some(context.user_id.clone()),
+            message: message.to_string(),
+            history: context.conversation_history.clone(),
+            ctx_provider: None,
+        };
+        let resp = exec_svc.execute_agent(&req, ctx).await?;
+        let source = "system"; // AgentExecutionService handles resolution internally
+        return Ok((
+            chat_response_from_agent_output(agent_type, source, &context.session_id, resp.content),
+            resp.usage.map(|u| crate::llm::client::TokenUsage {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+            }),
+        ));
+    }
+
     // Resolve agent using the 3-tier hierarchy (User -> Community -> System)
     let (user_agent, source) =
         resolve_agent(ctx, &context.user_id, agent_name.to_string()).await?;

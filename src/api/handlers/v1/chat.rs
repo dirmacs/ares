@@ -87,6 +87,11 @@ pub async fn v1_chat(
     };
 
     use crate::agents::Agent;
+    // Phase 4 §15: v1/chat uses AgentExecutionService::execute_agent for core resolution+execution
+    // but keeps the observability wrapper (agent_runs, token budgets) locally until those move to a crate.
+    // The tenant_agent::resolve_agent_for_tenant path provides ResolvedTenantAgent metadata needed for
+    // agent_runs recording (source, config_version), so full migration requires returning that metadata
+    // from execute_agent. For now: resolution via legacy path, execution via agent.execute().
     let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
         state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool(),
         &state_ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,

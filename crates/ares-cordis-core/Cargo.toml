@@ -8,6 +8,14 @@ authors.workspace = true
 publish = false
 description = "Cordis primitives for A.R.E.S — Context, Fiber, Effect, Events (spike leaf crate, zero ARES deps)"
 
+[features]
+# HMR via libloading — deferred per docs/cordis-mapping.md §11, off by default.
+# When enabled, `hmr` module dlopens a .so and calls Plugin::apply via extern "C".
+# ABI fragility forces fallback to file-watch + full fiber reload (90% value).
+hmr = ["dep:libloading"]
+inventory = ["dep:inventory"]
+default = ["inventory"]
+
 [dependencies]
 tokio = { workspace = true }
 thiserror = { workspace = true }
@@ -15,6 +23,10 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+notify = "8.2.0"
+libloading = { version = "0.8", optional = true }
+inventory = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = "3.10"

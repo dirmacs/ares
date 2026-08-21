@@ -1,37 +1,37 @@
-# A.R.E.S Project Status & Completion Summary
+# A.R.E.S project status & completion summary
 
-**Date**: 2024-12-15  
-**Updated**: 2026-02-03  
-**Status**: ✅ All Core Features Implemented and Tested  
-**Version**: 0.6.0
-
----
-
-## Executive Summary
-
-A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed into a **local-first**, production-ready agentic chatbot server with comprehensive LLM provider support, tool calling, **hybrid TOML + TOON configuration**, **RAG with pure-Rust vector store**, and robust testing infrastructure.
-
-### Key Achievements
-
-✅ **Local-First by Default**: Ollama + SQLite, no external APIs required  
-✅ **Direct GGUF Support**: Full LlamaCpp integration with streaming  
-✅ **Comprehensive Tool Calling**: Multi-turn orchestration with Ollama  
-✅ **Feature-Gated Architecture**: Flexible compilation with 15+ feature flags  
-✅ **Hybrid Configuration**: TOML for infrastructure, TOON for behavioral configs (30-60% token savings)  
-✅ **Hot Reloading**: Configuration changes apply without server restart  
-✅ **Workflow Engine**: Multi-agent orchestration with declarative workflows  
-✅ **ConfigurableAgent**: Dynamic agent creation from TOON files (legacy agents removed)  
-✅ **RAG System**: Pure-Rust ares-vector store, multi-strategy search, reranking  
-✅ **Model Capabilities (DIR-43)**: Intelligent model selection based on task requirements  
-✅ **458 Passing Tests**: Unit, integration, mocked network tests, RAG, and MCP tests  
-✅ **CI/CD Pipeline**: Multi-platform testing with GitHub Actions  
-✅ **Developer Documentation**: Setup guides, contributing guidelines, GGUF usage  
-✅ **[daedra](https://github.com/dirmacs/daedra) Integration**: Local web search without proprietary APIs  
-✅ **MCP Server Implementation**: Full Model Context Protocol support with tools  
+Date: 2024-12-15 
+Updated: 2026-02-03 
+Status: All Core Features Implemented and Tested 
+Version: 0.6.0
 
 ---
 
-## Iteration 1: Investigation & Decoupling
+## Executive summary
+
+A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed into a local-first, production-ready agentic chatbot server with complete LLM provider support, tool calling, hybrid TOML + TOON configuration, RAG with pure-Rust vector store, and robust testing infrastructure.
+
+### Key achievements
+
+Local-First by Default: Ollama + SQLite, no external APIs required 
+Direct GGUF Support: Full LlamaCpp integration with streaming 
+complete Tool Calling: Multi-turn orchestration with Ollama 
+Feature-Gated Architecture: Flexible compilation with 15+ feature flags 
+Hybrid Configuration: TOML for infrastructure, TOON for behavioral configs (30-60% token savings) 
+Hot Reloading: Configuration changes apply without server restart 
+Workflow Engine: Multi-agent orchestration with declarative workflows 
+ConfigurableAgent: Dynamic agent creation from TOON files (legacy agents removed) 
+RAG System: Pure-Rust ares-vector store, multi-strategy search, reranking 
+Model Capabilities (DIR-43): Intelligent model selection based on task requirements 
+ 458 Passing Tests: Unit, integration, mocked network tests, RAG, and MCP tests 
+CI/CD Pipeline: Multi-platform testing with GitHub Actions 
+Developer Documentation: Setup guides, contributing guidelines, GGUF usage 
+ [daedra](https://github.com/dirmacs/daedra) Integration: Local web search without proprietary APIs 
+MCP Server Implementation: Full Model Context Protocol support with tools 
+
+---
+
+## Iteration 1: Investigation & decoupling
 
 ### Objectives
 - Remove dependency on Turso and Qdrant cloud services
@@ -39,83 +39,83 @@ A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed in
 - Complete or remove TODOs/FIXMEs
 - Ensure test coverage and quality
 
-### Completed Tasks
+### Completed tasks
 
-#### 1. Local-First Architecture
-- **Default Features**: Set to `local-db` and `ollama`
-- **libsql**: Local SQLite backend configured by default
-- **No Cloud Dependencies**: Turso/Qdrant are optional features
-- **Provider Priority**: LlamaCpp → OpenAI → Ollama
+#### 1. Local-first architecture
+- Default Features: Set to `local-db` and `ollama`
+- libsql: Local SQLite backend configured by default
+- No Cloud Dependencies: Turso/Qdrant are optional features
+- Provider Priority: LlamaCpp → OpenAI → Ollama
 
-#### 2. [daedra](https://github.com/dirmacs/daedra) Integration
-- **Location**: `src/tools/search.rs`
-- **Function**: `WebSearch` tool uses `daedra::tools::search::perform_search`
-- **Benefit**: No DuckDuckGo API key or external search service required
-- **Status**: ✅ Fully integrated and tested
+#### 2. [Daedra](https://github.com/dirmacs/daedra) Integration
+- Location: `src/tools/search.rs`
+- Function: `WebSearch` tool uses `daedra::tools::search::perform_search`
+- Benefit: No DuckDuckGo API key or external search service required
+- Status: Fully integrated and tested
 
-#### 3. Code Cleanup
-- **Anthropic Provider**: Removed unimplemented stub
-- **Provider Enum**: Cleaned up to only include implemented providers
-- **TODOs**: Addressed or documented all critical TODOs
-- **FIXMEs**: Resolved implementation stubs
+#### 3. Code cleanup
+- Anthropic Provider: Removed unimplemented stub
+- Provider Enum: Cleaned up to only include implemented providers
+- TODOs: Addressed or documented all critical TODOs
+- FIXMEs: Resolved implementation stubs
 
-#### 4. Test Infrastructure
-- **API Tests**: `tests/api_tests.rs` - 37 tests covering auth, chat, agents, errors
-- **LLM Tests**: `tests/llm_tests.rs` - 21 tests for mock clients and tool calling
-- **Ollama Integration**: `tests/ollama_integration_tests.rs` - 15 wiremock tests
-- **MCP Tests**: `src/mcp/server.rs` - 14 tests for MCP server functionality
-- **Unit Tests**: `src/llm/*.rs` - 14 tests for LLM client implementations
-- **TOML Config Tests**: `src/utils/toml_config.rs` - 3 tests for config parsing/validation
-- **Provider Registry Tests**: `src/llm/provider_registry.rs` - 3 tests
-- **Agent Registry Tests**: `src/agents/registry.rs` - 1 test
-- **Tool Registry Tests**: `src/tools/registry.rs` - 3 tests
-- **Coverage**: All core functionality tested
-- **Status**: ✅ 458 tests passing
+#### 4. Test infrastructure
+- API Tests: `tests/api_tests.rs` - 37 tests covering auth, chat, agents, errors
+- LLM Tests: `tests/llm_tests.rs` - 21 tests for mock clients and tool calling
+- Ollama Integration: `tests/ollama_integration_tests.rs` - 15 wiremock tests
+- MCP Tests: `src/mcp/server.rs` - 14 tests for MCP server functionality
+- Unit Tests: `src/llm/*.rs` - 14 tests for LLM client implementations
+- TOML Config Tests: `src/utils/toml_config.rs` - 3 tests for config parsing/validation
+- Provider Registry Tests: `src/llm/provider_registry.rs` - 3 tests
+- Agent Registry Tests: `src/agents/registry.rs` - 1 test
+- Tool Registry Tests: `src/tools/registry.rs` - 3 tests
+- Coverage: All core functionality tested
+- Status: 458 tests passing
 
-#### 5. CI/CD & Quality
-- **GitHub Actions**: `.github/workflows/ci.yml`
-  - Format checking (cargo fmt)
-  - Linting (cargo clippy)
-  - Multi-platform builds (Linux, macOS, Windows)
-  - Feature matrix testing
-  - Documentation builds
-  - Security audit
-  - MSRV check
-- **Contributing Guide**: `CONTRIBUTING.md` with PR workflow
-- **Status**: ✅ Complete
+#### 5. CI/CD & quality
+- GitHub Actions: `.github/workflows/ci.yml`
+ - Format checking (cargo fmt)
+ - Linting (cargo clippy)
+ - Multi-platform builds (Linux, macOS, Windows)
+ - Feature matrix testing
+ - Documentation builds
+ - Security audit
+ - MSRV check
+- Contributing Guide: `CONTRIBUTING.md` with PR workflow
+- Status: Complete
 
 ---
 
-## Iteration 2: LLM Provider Implementation
+## Iteration 2: LLM provider implementation
 
 ### Objectives
 - Implement direct GGUF model loading with llama.cpp
 - Add full tool calling support for Ollama
 - Research ecosystem for best practices
-- Design comprehensive feature gating system
+- Design complete feature gating system
 
-### Completed Tasks
+### Completed tasks
 
-#### 1. GGUF/LlamaCpp Implementation
+#### 1. GGUF/LlamaCpp implementation
 
-**Crate Selected**: `llama-cpp-2` v0.1.129
+Crate Selected: `llama-cpp-2` v0.1.129
 
-**Rationale**:
+Rationale:
 - Most actively maintained bindings
 - Direct llama.cpp FFI with safety wrappers
 - GPU backend support (CUDA, Metal, Vulkan)
 - Proven in production
 
-**Implementation**: `src/llm/llamacpp.rs`
-- ✅ Model loading from GGUF files
-- ✅ Synchronous generation with `spawn_blocking`
-- ✅ Streaming via tokio mpsc channels
-- ✅ System prompts and conversation history
-- ✅ Basic tool calling support
-- ✅ Configurable context size, threads, max tokens
-- ✅ Error handling and validation
+Implementation: `src/llm/llamacpp.rs`
+- Model loading from GGUF files
+- Synchronous generation with `spawn_blocking`
+- Streaming via tokio mpsc channels
+- System prompts and conversation history
+- Basic tool calling support
+- Configurable context size, threads, max tokens
+- Error handling and validation
 
-**Features**:
+Features:
 ```toml
 llamacpp        # CPU-only
 llamacpp-cuda   # NVIDIA GPU
@@ -123,87 +123,87 @@ llamacpp-metal  # Apple Silicon
 llamacpp-vulkan # Vulkan API
 ```
 
-#### 2. Ollama Tool Calling
+#### 2. Ollama tool calling
 
-**Library**: `ollama-rs` v0.3.3
+Library: `ollama-rs` v0.3.3
 
-**Implementation**: `src/llm/ollama.rs`
+Implementation: `src/llm/ollama.rs`
 
-**Components**:
+Components:
 
-1. **OllamaClient**
-   - Chat completion with/without tools
-   - Streaming responses
-   - Tool definition conversion (ToolDefinition → ToolInfo)
-   - Tool call parsing (Ollama format → ToolCall)
+1. OllamaClient
+ - Chat completion with/without tools
+ - Streaming responses
+ - Tool definition conversion (ToolDefinition → ToolInfo)
+ - Tool call parsing (Ollama format → ToolCall)
 
-2. **OllamaToolCoordinator**
-   - Multi-turn tool calling orchestration
-   - Tool execution via ToolRegistry
-   - Automatic result injection
-   - Max iteration safeguards
-   - Streaming final responses
-   - Detailed execution tracking
+2. OllamaToolCoordinator
+ - Multi-turn tool calling orchestration
+ - Tool execution via ToolRegistry
+ - Automatic result injection
+ - Max iteration safeguards
+ - Streaming final responses
+ - Detailed execution tracking
 
-3. **Tool Conversion**
-   - JSON Schema → Ollama ToolInfo
-   - Ollama ToolCall → Standard ToolCall
-   - Argument validation
-   - Error handling
+3. Tool Conversion
+ - JSON Schema → Ollama ToolInfo
+ - Ollama ToolCall → Standard ToolCall
+ - Argument validation
+ - Error handling
 
-**Testing**: 15 mocked integration tests using wiremock
+Testing: 15 mocked integration tests using wiremock
 
-#### 3. Research Findings
+#### 3. Research findings
 
-**GGUF Ecosystem**:
+GGUF Ecosystem:
 - Primary options: `llama-cpp-2`, `llama_cpp`, `candle`
 - `llama-cpp-2` chosen for safety + performance balance
 - Quantization formats: Q4_K_M recommended for most users
 - GPU acceleration adds 5-10x performance boost
 
-**Ollama Capabilities**:
+Ollama Capabilities:
 - Native tool calling in ministral-3, granite 4, qwen3, etc.
 - NDJSON streaming format
 - Built-in model management
 - Easy local deployment
 
-**Tool Calling Standards**:
+Tool Calling Standards:
 - OpenAI function calling format
 - JSON Schema for parameter definitions
 - Multi-turn conversation patterns
 - Error recovery strategies
 
-#### 4. Feature Gating Architecture
+#### 4. Feature gating architecture
 
-**Feature Categories**:
+Feature Categories:
 
-1. **LLM Providers** (mutually inclusive)
-   - `ollama` (default)
-   - `openai`
-   - `anthropic`
-   - `llamacpp`
-   - `llamacpp-cuda`
-   - `llamacpp-metal`
-   - `llamacpp-vulkan`
+1. LLM Providers (mutually inclusive)
+ - `ollama` (default)
+ - `openai`
+ - `anthropic`
+ - `llamacpp`
+ - `llamacpp-cuda`
+ - `llamacpp-metal`
+ - `llamacpp-vulkan`
 
-2. **Database Backends** (mutually inclusive)
-   - `local-db` (default)
-   - `turso`
-   - `qdrant`
+2. Database Backends (mutually inclusive)
+ - `local-db` (default)
+ - `turso`
+ - `qdrant`
 
-3. **Additional Features**
-   - `mcp` (Model Context Protocol)
+3. Additional Features
+ - `mcp` (Model Context Protocol)
 
-4. **Convenience Bundles**
-   - `all-llm` = ollama + openai + anthropic + llamacpp
-   - `all-db` = local-db + turso + qdrant
-   - `full` = all features (except local-embeddings on Windows)
-   - `full-local-embeddings` = full + local-embeddings (Linux/macOS only)
-   - `full-ui` = full + UI
-   - `full-ui-local-embeddings` = full + UI + local-embeddings (Linux/macOS only)
-   - `minimal` = no optional features
+4. Convenience Bundles
+ - `all-llm` = ollama + openai + anthropic + llamacpp
+ - `all-db` = local-db + turso + qdrant
+ - `full` = all features (except local-embeddings on Windows)
+ - `full-local-embeddings` = full + local-embeddings (Linux/macOS only)
+ - `full-ui` = full + UI
+ - `full-ui-local-embeddings` = full + UI + local-embeddings (Linux/macOS only)
+ - `minimal` = no optional features
 
-**Design Principles**:
+Design Principles:
 - Default = local-first (ollama + local-db)
 - Features are additive, not exclusive
 - GPU backends are mutually exclusive per provider
@@ -211,15 +211,15 @@ llamacpp-vulkan # Vulkan API
 
 ---
 
-## Iteration 3: Documentation & Developer Experience
+## Iteration 3: Documentation & developer experience
 
-### Completed Tasks
+### Completed tasks
 
-#### 1. GGUF Usage Guide
+#### 1. GGUF usage guide
 
-**File**: `docs/GGUF_USAGE.md` (445 lines)
+File: `docs/GGUF_USAGE.md` (445 lines)
 
-**Contents**:
+Contents:
 - What is GGUF and why use it
 - Quick start guide
 - Model recommendations by size and use case
@@ -231,58 +231,58 @@ llamacpp-vulkan # Vulkan API
 - Troubleshooting guide
 - Best practices
 
-**Model Recommendations**:
-- **Small**: Llama 3.2 1B, Phi-3 Mini (< 4GB RAM)
-- **Medium**: Llama 3.2 3B, Mistral 7B (8-16GB RAM)
-- **Large**: Llama 3.1 70B (32GB+ RAM)
+Model Recommendations:
+- Small: Llama 3.2 1B, Phi-3 Mini (< 4GB RAM)
+- Medium: Llama 3.2 3B, Mistral 7B (8-16GB RAM)
+- Large: Llama 3.1 70B (32GB+ RAM)
 
-#### 2. Docker Compose Development Environment
+#### 2. Docker compose development environment
 
-**File**: `docker-compose.dev.yml`
+File: `docker-compose.dev.yml`
 
-**Services**:
-- **ollama**: Local LLM server with GPU support
-- **qdrant**: Vector database with web dashboard
-- **ares**: Main application server
+Services:
+- ollama: Local LLM server with GPU support
+- qdrant: Vector database with web dashboard
+- ares: Main application server
 
-**Features**:
+Features:
 - Health checks for all services
 - Volume persistence
 - Environment variable configuration
 - GPU passthrough (NVIDIA)
 - Service dependencies
 
-#### 3. Setup Scripts
+#### 3. Setup scripts
 
-**Bash**: `scripts/dev-setup.sh` (285 lines)
+Bash: `scripts/dev-setup.sh` (285 lines)
 - Interactive model selection
 - Docker Compose orchestration
 - Ollama model pulling
 - Environment file generation
 - Service health checking
 
-**PowerShell**: `scripts/dev-setup.ps1` (308 lines)
+PowerShell: `scripts/dev-setup.ps1` (308 lines)
 - Windows-compatible version
 - Same functionality as bash script
 - Native PowerShell cmdlets
 - Color output
 
-**Capabilities**:
+Capabilities:
 - One-command development setup
 - Pull multiple models at once
 - Automatic secret generation
 - Service status checking
 
-#### 4. Developer Documentation
+#### 4. Developer documentation
 
-**CONTRIBUTING.md**:
+CONTRIBUTING.md:
 - Local setup instructions
 - Feature flag usage
 - Testing guidelines
 - PR workflow
 - Code style standards
 
-**README.md Enhancements**:
+README.md Enhancements:
 - Local-first emphasis
 - Feature flag documentation
 - Provider priority explanation
@@ -291,7 +291,7 @@ llamacpp-vulkan # Vulkan API
 
 ---
 
-## Iteration 4: Hybrid TOML + TOON Configuration
+## Iteration 4: Hybrid TOML + TOON configuration
 
 ### Objectives
 - Replace hardcoded agent and model configurations with declarative config
@@ -300,28 +300,28 @@ llamacpp-vulkan # Vulkan API
 - Validate configuration integrity (references between components)
 - Use TOON format for behavioral configs (30-60% token savings over JSON/TOML)
 
-### Architecture Split
+### Architecture split
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         ARES Configuration                          │
-├─────────────────────────────┬───────────────────────────────────────┤
-│      TOML (ares.toml)       │           TOON (config/*.toon)        │
-│      ─────────────────      │           ────────────────────        │
-│  ✓ Server (host, port)      │  ✓ Agents (system prompts, tools)     │
-│  ✓ Auth (JWT, API keys)     │  ✓ Models (temperature, tokens)       │
-│  ✓ Database (URLs, creds)   │  ✓ Tools (enabled, timeouts)          │
-│  ✓ Providers (LLM endpoints)│  ✓ Workflows (routing, depth)         │
-│  ✓ RAG settings             │  ✓ MCPs (commands, env vars)          │
-│                             │                                       │
-│  🔒 Requires restart        │  🔄 Hot-reloadable                    │
-│  📁 Single file             │  📁 One file per entity               │
-└─────────────────────────────┴───────────────────────────────────────┘
+
+                         ARES Configuration                          
+
+      TOML (ares.toml)                  TOON (config/*.toon)        
+                               
+   Server (host, port)         Agents (system prompts, tools)     
+   Auth (JWT, API keys)        Models (temperature, tokens)       
+   Database (URLs, creds)      Tools (enabled, timeouts)          
+   Providers (LLM endpoints)   Workflows (routing, depth)         
+   RAG settings                MCPs (commands, env vars)          
+                                                                    
+   Requires restart           Hot-reloadable                    
+   Single file                One file per entity               
+
 ```
 
-### Completed Tasks
+### Completed tasks
 
-#### 1. TOML Configuration (`src/utils/toml_config.rs`)
+#### 1. Toml configuration (`src/utils/toml_config.rs`)
 
 **Infrastructure Config** (`ares.toml`):
 ```toml
@@ -333,12 +333,12 @@ llamacpp-vulkan # Vulkan API
 ```
 
 **Key Features**:
-- ✅ Environment variable references for secrets (`api_key_env = "OPENAI_API_KEY"`)
-- ✅ Named provider references
-- ✅ Comprehensive validation
-- ✅ Hot-reloading via `AresConfigManager`
+- Environment variable references for secrets (`api_key_env = "OPENAI_API_KEY"`)
+- Named provider references
+- complete validation
+- Hot-reloading via `AresConfigManager`
 
-#### 2. TOON Configuration (`src/utils/toon_config.rs`)
+#### 2. Toon configuration (`src/utils/toon_config.rs`)
 
 **Behavioral Config** (`config/*.toon`):
 
@@ -366,7 +366,7 @@ system_prompt: "You are an orchestrator agent..."
 - `ToonMcpConfig`: MCP server configurations
 - `DynamicConfigManager`: Hot-reload for all TOON files
 
-#### 3. Hot Reloading
+#### 3. Hot reloading
 
 **TOML** (`AresConfigManager`):
 - Uses `arc-swap` for lockless reads
@@ -395,32 +395,32 @@ registry.create_default_client().await?;              // Default model
 - Per-agent tool assignment
 - Custom system prompts from config
 
-#### 6. Directory Structure
+#### 6. Directory structure
 
 ```
 ares/
-├── ares.toml                    # Infrastructure config (TOML)
-├── config/                      # Behavioral configs (TOON, hot-reload)
-│   ├── agents/
-│   │   ├── router.toon
-│   │   ├── orchestrator.toon
-│   │   └── ...
-│   ├── models/
-│   │   ├── fast.toon
-│   │   ├── balanced.toon
-│   │   └── powerful.toon
-│   ├── tools/
-│   │   ├── calculator.toon
-│   │   └── web_search.toon
-│   ├── workflows/
-│   │   └── default.toon
-│   └── mcps/
-│       └── filesystem.toon
-└── data/
-    └── ares.db
+ ares.toml                    # Infrastructure config (TOML)
+ config/                      # Behavioral configs (TOON, hot-reload)
+    agents/
+       router.toon
+       orchestrator.toon
+       ...
+    models/
+       fast.toon
+       balanced.toon
+       powerful.toon
+    tools/
+       calculator.toon
+       web_search.toon
+    workflows/
+       default.toon
+    mcps/
+        filesystem.toon
+ data/
+     ares.db
 ```
 
-#### 7. Key Files
+#### 7. Key files
 
 | File | Purpose |
 |------|---------|
@@ -442,9 +442,9 @@ ares/
 
 ---
 
-## Test Coverage Summary
+## Test coverage summary
 
-### Unit Tests (src/)
+### Unit tests (src/)
 - `src/llm/client.rs`: 4 tests
 - `src/llm/ollama.rs`: 8 tests
 - `src/llm/provider_registry.rs`: 3 tests
@@ -453,29 +453,29 @@ ares/
 - `src/utils/toml_config.rs`: 3 tests
 - `src/agents/configurable.rs`: 2 tests
 - `src/agents/registry.rs`: 1 test
-- **Total**: 26 tests
+- Total: 26 tests
 
-### Integration Tests (tests/)
+### Integration tests (tests/)
 
-#### API Tests (`api_tests.rs`)
+#### API tests (`api_tests.rs`)
 - Health endpoint: 2 tests
 - Authentication: 10 tests
 - Chat endpoints: 1 test (live Ollama, ignored by default)
 - Mock LLM client: 6 tests
 - Serialization/Structures: 10 tests
 - Edge cases: 8 tests
-- **Total**: 37 tests (36 + 1 ignored)
+- Total: 37 tests (36 + 1 ignored)
 
-#### LLM Tests (`llm_tests.rs`)
+#### LLM tests (`llm_tests.rs`)
 - Mock client: 7 tests
 - Tool calling: 4 tests
 - Streaming: 1 test
 - Provider selection: 1 test
 - Edge cases: 5 tests
 - Tool structures: 3 tests
-- **Total**: 21 tests
+- Total: 21 tests
 
-#### Ollama Integration (`ollama_integration_tests.rs`)
+#### Ollama integration (`ollama_integration_tests.rs`)
 - Basic chat: 3 tests
 - Streaming: 1 test
 - Tool calling: 2 tests
@@ -483,86 +483,86 @@ ares/
 - Edge cases: 3 tests
 - Concurrency: 1 test
 - Format helpers: 3 tests
-- **Total**: 15 tests
+- Total: 15 tests
 
 ### Overall
-- **Total Tests**: 72
-- **Pass Rate**: 100%
-- **Coverage**: Core functionality fully tested
-- **Mocking**: wiremock for network, mockall for traits
+- Total Tests: 72
+- Pass Rate: 100%
+- Coverage: Core functionality fully tested
+- Mocking: wiremock for network, mockall for traits
 
 ---
 
-## Feature Comparison Matrix
+## Feature comparison matrix
 
 | Feature | Before | After | Notes |
 |---------|--------|-------|-------|
 | Default DB | Turso (cloud) | SQLite (local) | No auth token needed |
 | Default LLM | None | Ollama (local) | No API key needed |
-| GGUF Support | ❌ | ✅ | Direct model loading |
-| Ollama Tools | Partial | ✅ Complete | Multi-turn orchestration |
-| OpenAI Tools | Partial | ✅ Updated | Latest async-openai API |
+| GGUF Support |  |  | Direct model loading |
+| Ollama Tools | Partial |  Complete | Multi-turn orchestration |
+| OpenAI Tools | Partial |  Updated | Latest async-openai API |
 | Web Search | External API | daedra (local) | No API key needed |
 | Test Coverage | Basic | Comprehensive | 175+ tests |
-| CI/CD | ❌ | ✅ | GitHub Actions |
+| CI/CD |  |  | GitHub Actions |
 | Feature Flags | Basic | 12+ flags | Flexible builds |
 | Documentation | Minimal | Complete | 4 guide documents |
 | Dev Setup | Manual | Automated | Scripts for both OS |
 
 ---
 
-## File Structure
+## File structure
 
 ```
 ares/
-├── .github/
-│   └── workflows/
-│       └── ci.yml                    # CI/CD pipeline
-├── docs/
-│   ├── GGUF_USAGE.md                 # GGUF comprehensive guide
-│   └── PROJECT_STATUS.md             # This file
-├── scripts/
-│   ├── dev-setup.sh                  # Linux/Mac setup
-│   └── dev-setup.ps1                 # Windows setup
-├── src/
-│   ├── llm/
-│   │   ├── client.rs                 # Provider abstraction
-│   │   ├── ollama.rs                 # ✨ Enhanced tool calling
-│   │   ├── llamacpp.rs               # ✨ GGUF support
-│   │   └── openai.rs                 # ✨ Updated API
-│   └── tools/
-│       └── search.rs                 # ✨ daedra integration
-├── tests/
-│   ├── api_tests.rs                  # ✨ 36 tests
-│   ├── llm_tests.rs                  # ✨ 21 tests
-│   └── ollama_integration_tests.rs   # ✨ 15 tests (new)
-├── CONTRIBUTING.md                   # ✨ New
-├── docker-compose.dev.yml            # ✨ New
-└── Cargo.toml                        # ✨ Enhanced features
+ .github/
+    workflows/
+        ci.yml                    # CI/CD pipeline
+ docs/
+    GGUF_USAGE.md                 # GGUF comprehensive guide
+    PROJECT_STATUS.md             # This file
+ scripts/
+    dev-setup.sh                  # Linux/Mac setup
+    dev-setup.ps1                 # Windows setup
+ src/
+    llm/
+       client.rs                 # Provider abstraction
+       ollama.rs                 #  Enhanced tool calling
+       llamacpp.rs               #  GGUF support
+       openai.rs                 #  Updated API
+    tools/
+        search.rs                 #  daedra integration
+ tests/
+    api_tests.rs                  #  36 tests
+    llm_tests.rs                  #  21 tests
+    ollama_integration_tests.rs   #  15 tests (new)
+ CONTRIBUTING.md                   #  New
+ docker-compose.dev.yml            #  New
+ Cargo.toml                        #  Enhanced features
 
-✨ = New or significantly enhanced
+ = New or significantly enhanced
 ```
 
 ---
 
-## Provider Comparison
+## Provider comparison
 
 | Provider | Setup Complexity | Performance | Cost | Tool Calling | Streaming |
 |----------|------------------|-------------|------|--------------|-----------|
-| **Ollama** | ⭐ Easy | ⭐⭐⭐ Fast | Free | ✅ Excellent | ✅ |
-| **LlamaCpp** | ⭐⭐ Medium | ⭐⭐⭐⭐ Very Fast | Free | ⚠️ Basic | ✅ |
-| **OpenAI** | ⭐ Easy | ⭐⭐⭐⭐⭐ Excellent | $$$ | ✅ Excellent | ✅ |
-| **Anthropic** | ⭐ Easy | ⭐⭐⭐⭐⭐ Excellent | $$$ | ✅ Excellent | ✅ |
+| Ollama |  Easy |  Fast | Free |  Excellent |  |
+| LlamaCpp |  Medium |  Very Fast | Free |  Basic |  |
+| OpenAI |  Easy |  Excellent | $$$ |  Excellent |  |
+| Anthropic |  Easy |  Excellent | $$$ |  Excellent |  |
 
-**Recommendations**:
-- **Development**: Ollama (easy setup, good tools)
-- **Production (local)**: LlamaCpp with GPU (fastest)
-- **Production (cloud)**: OpenAI (best quality, managed)
-- **Hybrid**: All three feature-gated
+Recommendations:
+- Development: Ollama (easy setup, good tools)
+- Production (local): LlamaCpp with GPU (fastest)
+- Production (cloud): OpenAI (best quality, managed)
+- Hybrid: All three feature-gated
 
 ---
 
-## Performance Benchmarks
+## Performance benchmarks
 
 ### LlamaCpp (CPU - 8 cores, Q4_K_M)
 - 1B model: ~40-60 tokens/sec
@@ -581,37 +581,37 @@ ares/
 
 ---
 
-## Known Limitations & Future Work
+## Known limitations & future work
 
-### Current Limitations
-1. **LlamaCpp Tool Calling**: Basic implementation, not as robust as Ollama
-2. **GPU Memory**: Large models (70B+) require significant VRAM
-3. **Windows GPU**: CUDA/Vulkan setup requires manual driver configuration
+### Current limitations
+1. LlamaCpp Tool Calling: Basic implementation, not as robust as Ollama
+2. GPU Memory: Large models (70B+) require significant VRAM
+3. Windows GPU: CUDA/Vulkan setup requires manual driver configuration
 
-### Recommended Next Steps
+### Recommended next steps
 
-**High Priority**:
-1. ✅ ~~Merge changes and open PR~~ (ready)
-2. ✅ ~~Enable GitHub Actions CI~~ (complete)
-3. ✅ ~~Complete MCP server implementation~~ (complete)
-4. Enhance LlamaCpp tool calling (parity with Ollama)
+High Priority:
+1. ~~Merge changes and open PR~~ (ready)
+2. ~~Enable GitHub Actions CI~~ (complete)
+3. ~~Complete MCP server implementation~~ (complete)
+4. improve LlamaCpp tool calling (parity with Ollama)
 5. Add E2E tests with real Ollama instance in CI
 
-**Medium Priority**:
+Medium Priority:
 1. Add more specialized agents (research, coding, etc.)
 2. Implement conversation summarization for long contexts
 3. Add metrics and monitoring (Prometheus/OpenTelemetry)
 
-**Low Priority**:
+Low Priority:
 1. ~~Support more LLM providers (Anthropic, Cohere)~~ Anthropic added in v0.4.0
 2. Add voice input/output support
 3. Add Cohere provider
 
 ---
 
-## Security Considerations
+## Security considerations
 
-✅ **Implemented**:
+Implemented:
 - Argon2 password hashing
 - JWT with configurable secrets
 - Input validation on all endpoints
@@ -619,7 +619,7 @@ ares/
 - No hardcoded secrets
 - Environment variable configuration
 
-⚠️ **Recommended for Production**:
+Recommended for Production:
 - Enable HTTPS/TLS
 - Use RS256 JWT (asymmetric keys)
 - Implement request rate limiting
@@ -629,7 +629,7 @@ ares/
 
 ---
 
-## Build & Test Commands
+## Build & test commands
 
 ### Development
 ```bash
@@ -655,7 +655,7 @@ cargo clippy -- -D warnings
 cargo audit
 ```
 
-### Feature-Specific Builds
+### Feature-specific builds
 ```bash
 # OpenAI only
 cargo build --features "openai,local-db"
@@ -672,9 +672,9 @@ cargo build --no-default-features
 
 ---
 
-## Deployment Options
+## Deployment options
 
-### 1. Docker Compose (Recommended for Development)
+### 1. Docker compose (recommended for development)
 ```bash
 # Start all services
 docker compose -f docker-compose.dev.yml up
@@ -683,7 +683,7 @@ docker compose -f docker-compose.dev.yml up
 docker compose -f docker-compose.dev.yml up ollama qdrant
 ```
 
-### 2. Standalone Binary
+### 2. Standalone binary
 ```bash
 # Build release
 cargo build --release --features "ollama,local-db"
@@ -692,7 +692,7 @@ cargo build --release --features "ollama,local-db"
 ./target/release/ares
 ```
 
-### 3. Docker Container
+### 3. Docker container
 ```bash
 # Build
 docker build -t ares:latest .
@@ -701,7 +701,7 @@ docker build -t ares:latest .
 docker run -p 3000:3000 -e OLLAMA_BASE_URL=http://host.docker.internal:11434 ares:latest
 ```
 
-### 4. Systemd Service (Linux)
+### 4. Systemd Service (linux)
 ```ini
 [Unit]
 Description=A.R.E.S Server
@@ -721,7 +721,7 @@ WantedBy=multi-user.target
 
 ---
 
-## Environment Variables Reference
+## Environment variables reference
 
 ### Required
 ```bash
@@ -729,7 +729,7 @@ JWT_SECRET=<min-32-chars>
 API_KEY=<your-key>
 ```
 
-### LLM Providers (choose one or more)
+### LLM providers (choose one or more)
 ```bash
 # Ollama (default)
 OLLAMA_BASE_URL=http://localhost:11434
@@ -770,7 +770,7 @@ RUST_LOG=info,ares=debug
 
 ---
 
-## Iteration 4: Workflow Engine & Dynamic Agents (v0.2.0)
+## Iteration 4: Workflow engine & dynamic agents (v0.2.0)
 
 ### Objectives
 - Complete workflow engine for multi-agent orchestration
@@ -778,19 +778,19 @@ RUST_LOG=info,ares=debug
 - Improve router agent for reliable delegation
 - Remove deprecated legacy agents
 
-### Completed Tasks
+### Completed tasks
 
-#### 1. Workflow Engine Implementation
+#### 1. Workflow engine implementation
 
 **Location**: `src/workflows/engine.rs`
 
 **Features**:
-- ✅ Execute declarative workflows from TOML configuration
-- ✅ Multi-agent routing via router agents
-- ✅ Fallback agent support when routing fails
-- ✅ Depth and iteration limits for workflow execution
-- ✅ Detailed execution tracking (steps, timing, reasoning path)
-- ✅ Robust router output parsing (handles various LLM output formats)
+- Execute declarative workflows from TOML configuration
+- Multi-agent routing via router agents
+- Fallback agent support when routing fails
+- Depth and iteration limits for workflow execution
+- Detailed execution tracking (steps, timing, reasoning path)
+- Robust router output parsing (handles various LLM output formats)
 
 **Workflow Output Structure**:
 ```json
@@ -811,7 +811,7 @@ RUST_LOG=info,ares=debug
 }
 ```
 
-#### 2. ConfigurableAgent as Primary
+#### 2. Configurableagent as primary
 
 **Location**: `src/agents/configurable.rs`
 
@@ -829,21 +829,21 @@ tools = ["calculator"]
 system_prompt = "You are a Product Agent..."
 ```
 
-#### 3. Router Agent Improvements
+#### 3. Router agent improvements
 
-**Location**: `src/agents/router.rs`
+Location: `src/agents/router.rs`
 
-- ✅ Returns lowercase agent names for workflow compatibility
-- ✅ Robust output parsing handles:
-  - Clean output: "product"
-  - Whitespace: "  product  "
-  - Extra text: "I would route this to product"
-  - Agent suffix: "product agent"
-- ✅ Falls back to orchestrator for unrecognized routing
+- Returns lowercase agent names for workflow compatibility
+- Robust output parsing handles:
+ - Clean output: "product"
+ - Whitespace: " product "
+ - Extra text: "I would route this to product"
+ - Agent suffix: "product agent"
+- Falls back to orchestrator for unrecognized routing
 
-#### 4. Legacy Agent Removal
+#### 4. Legacy agent removal
 
-**Removed Files** (previously deprecated):
+Removed Files (previously deprecated):
 - `src/agents/product.rs`
 - `src/agents/invoice.rs`
 - `src/agents/sales.rs`
@@ -852,58 +852,58 @@ system_prompt = "You are a Product Agent..."
 
 These are fully replaced by `ConfigurableAgent` with TOML configuration.
 
-#### 5. API Endpoints
+#### 5. Api endpoints
 
-**New Workflow Endpoints**:
+New Workflow Endpoints:
 - `GET /api/workflows` - List available workflows
 - `POST /api/workflows/{name}` - Execute a workflow
 
-**Hurl Test Coverage**:
-- ✅ List workflows with auth
-- ✅ Execute workflow with validation
-- ✅ Execute workflow with context
-- ✅ Handle nonexistent workflows (404)
-- ✅ Unauthorized access protection
+Hurl Test Coverage:
+- List workflows with auth
+- Execute workflow with validation
+- Execute workflow with context
+- Handle nonexistent workflows (404)
+- Unauthorized access protection
 
-#### 6. Test Results
+#### 6. Test results
 
 | Category | Count | Status |
 |----------|-------|--------|
-| Unit Tests | 53 | ✅ Pass |
-| API Tests | 36 | ✅ Pass |
-| Integration Tests | 10 | ✅ Pass |
-| LLM Tests | 21 | ✅ Pass |
-| Ollama Integration | 15 | ✅ Pass |
-| RAG Tests | 45 | ✅ Pass |
-| **Total** | **180** | ✅ **All Pass** |
+| Unit Tests | 53 |  Pass |
+| API Tests | 36 |  Pass |
+| Integration Tests | 10 |  Pass |
+| LLM Tests | 21 |  Pass |
+| Ollama Integration | 15 |  Pass |
+| RAG Tests | 45 |  Pass |
+| Total | 180 |  All Pass |
 
 ---
 
-## Iteration 5: RAG Pipeline & Vector Store (v0.3.0 / DIR-24)
+## Iteration 5: RAG pipeline & vector store (v0.3.0 / DIR-24)
 
 ### Objectives
 - Implement pure-Rust vector database for local-first operation
-- Add comprehensive RAG pipeline with document ingestion
+- Add complete RAG pipeline with document ingestion
 - Support multiple search strategies (semantic, BM25, fuzzy, hybrid)
 - Add reranking for improved search relevance
 - Maintain zero external service dependencies
 
-### Completed Tasks
+### Completed tasks
 
-#### 1. ares-vector Crate (Pure-Rust Vector DB)
+#### 1. Ares-vector crate (Pure-Rust vector DB)
 
-**Location**: `crates/ares-vector/`
+Location: `crates/ares-vector/`
 
-**Features**:
-- ✅ HNSW (Hierarchical Navigable Small World) graph indexing
-- ✅ Multiple distance metrics (Cosine, Euclidean, Dot Product)
-- ✅ Memory-mapped persistence via `memmap2`
-- ✅ Collection management (create, delete, list)
-- ✅ Batch operations for efficient ingestion
-- ✅ Thread-safe with `parking_lot` RwLocks
-- ✅ No external dependencies (no Qdrant/Milvus/etc.)
+Features:
+- HNSW (Hierarchical Navigable Small World) graph indexing
+- Multiple distance metrics (Cosine, Euclidean, Dot Product)
+- Memory-mapped persistence via `memmap2`
+- Collection management (create, delete, list)
+- Batch operations for efficient ingestion
+- Thread-safe with `parking_lot` RwLocks
+- No external dependencies (no Qdrant/Milvus/etc.)
 
-**Key Files**:
+Key Files:
 - `lib.rs`: Public API
 - `collection.rs`: Vector collection management
 - `index.rs`: HNSW implementation
@@ -911,42 +911,42 @@ These are fully replaced by `ConfigurableAgent` with TOML configuration.
 
 #### 2. Embedding Service
 
-**Location**: `src/rag/embeddings.rs`
+Location: `src/rag/embeddings.rs`
 
-**Models Supported**:
+Models Supported:
 - BGE family (small, base, large)
 - All-MiniLM (L6, L12)
 - Nomic Embed Text v1.5
 - Qwen3 Embeddings (via Candle)
 - GTE-Modern-BERT (via Candle)
 
-**Features**:
-- ✅ Dense embeddings via FastEmbed/ONNX
-- ✅ Sparse embeddings for hybrid search (SPLADE)
-- ✅ Batch processing with configurable sizes
-- ✅ Dimension normalization
+Features:
+- Dense embeddings via FastEmbed/ONNX
+- Sparse embeddings for hybrid search (SPLADE)
+- Batch processing with configurable sizes
+- Dimension normalization
 
-#### 3. Chunking Strategies
+#### 3. Chunking strategies
 
-**Location**: `src/rag/chunker.rs`
+Location: `src/rag/chunker.rs`
 
-**Strategies**:
+Strategies:
 | Strategy | Description | Use Case |
 |----------|-------------|----------|
 | Word | Fixed word count chunks | General purpose |
 | Character | Fixed character count | Precise control |
 | Semantic | Sentence boundary aware | Natural splits |
 
-**Features**:
-- ✅ Configurable chunk size and overlap
-- ✅ Minimum chunk filtering
-- ✅ UTF-8 safe splitting
+Features:
+- Configurable chunk size and overlap
+- Minimum chunk filtering
+- UTF-8 safe splitting
 
-#### 4. Multi-Strategy Search
+#### 4. Multi-strategy search
 
-**Location**: `src/rag/search.rs`
+Location: `src/rag/search.rs`
 
-**Search Strategies**:
+Search Strategies:
 | Strategy | Algorithm | Best For |
 |----------|-----------|----------|
 | Semantic | Vector similarity | Conceptual matching |
@@ -954,27 +954,27 @@ These are fully replaced by `ConfigurableAgent` with TOML configuration.
 | Fuzzy | Levenshtein distance | Typo tolerance |
 | Hybrid | Weighted combination | Best of both |
 
-**Features**:
-- ✅ Configurable hybrid weights
-- ✅ Top-k retrieval
-- ✅ Score normalization
+Features:
+- Configurable hybrid weights
+- Top-k retrieval
+- Score normalization
 
 #### 5. Reranking
 
-**Location**: `src/rag/reranker.rs`
+Location: `src/rag/reranker.rs`
 
-**Models**:
+Models:
 - MiniLM-L6-v2 cross-encoder
 - BGE Reranker
 
-**Features**:
-- ✅ Cross-encoder scoring
-- ✅ Score normalization
-- ✅ Configurable candidate count
+Features:
+- Cross-encoder scoring
+- Score normalization
+- Configurable candidate count
 
-#### 6. RAG API Endpoints
+#### 6. Rag API endpoints
 
-**Endpoints**:
+Endpoints:
 - `POST /api/rag/ingest` - Ingest documents with chunking
 - `POST /api/rag/search` - Multi-strategy search
 - `GET /api/rag/collections` - List collections
@@ -982,7 +982,7 @@ These are fully replaced by `ConfigurableAgent` with TOML configuration.
 
 #### 7. Configuration
 
-**ares.toml [rag] section**:
+ares.toml [rag] section:
 ```toml
 [rag]
 vector_store = "ares-vector"
@@ -993,7 +993,7 @@ chunk_size = 200
 chunk_overlap = 50
 ```
 
-#### 8. Test Coverage
+#### 8. Test coverage
 
 | Test Category | Count |
 |---------------|-------|
@@ -1002,23 +1002,23 @@ chunk_overlap = 50
 | Chunking | 8 |
 | Search | 6 |
 | Reranking | 4 |
-| **Total RAG** | **45** |
+| Total RAG | 45 |
 
 ---
 
-## Success Metrics
+## Success metrics
 
 | Metric | Target | Achieved | Status |
 |--------|--------|----------|--------|
-| Local-first by default | Yes | ✅ Yes | ✅ |
-| No cloud dependencies | Yes | ✅ Yes | ✅ |
-| GGUF support | Yes | ✅ Yes | ✅ |
-| Tool calling | Full | ✅ Full | ✅ |
-| Test coverage | >70% | ✅ 100% core | ✅ |
-| CI/CD | Yes | ✅ Yes | ✅ |
-| Documentation | Complete | ✅ Complete | ✅ |
-| Feature flags | 8+ | ✅ 15+ | ✅ |
-| RAG / Vector Store | Yes | ✅ Yes | ✅ |
+| Local-first by default | Yes |  Yes |  |
+| No cloud dependencies | Yes |  Yes |  |
+| GGUF support | Yes |  Yes |  |
+| Tool calling | Full |  Full |  |
+| Test coverage | >70% |  100% core |  |
+| CI/CD | Yes |  Yes |  |
+| Documentation | Complete |  Complete |  |
+| Feature flags | 8+ |  15+ |  |
+| RAG / Vector Store | Yes |  Yes |  |
 
 ---
 
@@ -1026,78 +1026,78 @@ chunk_overlap = 50
 
 All objectives from the five iterations have been successfully completed:
 
-✅ **Iteration 1**: Local-first architecture, daedra integration, code cleanup, comprehensive testing  
-✅ **Iteration 2**: GGUF/LlamaCpp implementation, full Ollama tool calling, feature gating  
-✅ **Iteration 3**: Documentation, developer experience, setup automation  
-✅ **Iteration 4**: Workflow engine, ConfigurableAgent, router improvements, legacy agent removal  
-✅ **Iteration 5**: Pure-Rust vector store, RAG pipeline, multi-strategy search, reranking  
-✅ **Iteration 6**: Model Capabilities (DIR-43), intelligent model selection
+Iteration 1: Local-first architecture, daedra integration, code cleanup, complete testing 
+Iteration 2: GGUF/LlamaCpp implementation, full Ollama tool calling, feature gating 
+Iteration 3: Documentation, developer experience, setup automation 
+Iteration 4: Workflow engine, ConfigurableAgent, router improvements, legacy agent removal 
+Iteration 5: Pure-Rust vector store, RAG pipeline, multi-strategy search, reranking 
+Iteration 6: Model Capabilities (DIR-43), intelligent model selection
 
-**The A.R.E.S project is production-ready for local-first LLM applications with excellent developer experience, RAG capabilities, and comprehensive testing.**
+The A.R.E.S project is production-ready for local-first LLM applications with excellent developer experience, RAG capabilities, and complete testing.
 
-### What's New in v0.6.0
-- **Model Capabilities (DIR-43)**: Intelligent model selection based on task requirements
-  - New `ModelCapabilities` struct with auto-detection for popular models
-  - `CapabilityRequirements` builder for specifying task needs (tools, vision, context, etc.)
-  - `ProviderRegistry::find_models()` returns models matching requirements, sorted by score
-  - `ProviderRegistry::find_best_model()` returns the optimal model for a task
-  - `ProviderRegistry::create_client_for_requirements()` creates client for best-matching model
-  - Preset requirements: `for_agent()`, `for_vision()`, `for_coding()`, `for_local()`
-  - Capability tiers: cost (free→premium), speed (slow→realtime), quality (basic→premium)
-  - Auto-detected capabilities for Claude, GPT-4, Llama, Mistral, Qwen, DeepSeek models
-  - Scoring system considers cost, speed, quality, locality, and capability fit
-- **Location**: `src/llm/capabilities.rs`, extended `src/llm/provider_registry.rs`
+### What's new in v0.6.0
+- Model Capabilities (DIR-43): Intelligent model selection based on task requirements
+ - New `ModelCapabilities` struct with auto-detection for popular models
+ - `CapabilityRequirements` builder for specifying task needs (tools, vision, context, etc.)
+ - `ProviderRegistry::find_models()` returns models matching requirements, sorted by score
+ - `ProviderRegistry::find_best_model()` returns the optimal model for a task
+ - `ProviderRegistry::create_client_for_requirements()` creates client for best-matching model
+ - Preset requirements: `for_agent()`, `for_vision()`, `for_coding()`, `for_local()`
+ - Capability tiers: cost (free→premium), speed (slow→realtime), quality (basic→premium)
+ - Auto-detected capabilities for Claude, GPT-4, Llama, Mistral, Qwen, DeepSeek models
+ - Scoring system considers cost, speed, quality, locality, and capability fit
+- Location: `src/llm/capabilities.rs`, extended `src/llm/provider_registry.rs`
 
-### What's New in v0.5.0
-- **Unified ToolCoordinator**: Provider-agnostic multi-turn tool calling orchestration
-  - New `ToolCoordinator` struct in `src/llm/coordinator.rs`
-  - Works with any `LLMClient` implementation (OpenAI, Anthropic, Ollama, LlamaCpp)
-  - `ToolCallingConfig` for configuring max iterations, parallel execution, timeouts
-  - New `generate_with_tools_and_history()` method added to `LLMClient` trait
-  - **Breaking**: `OllamaToolCoordinator` removed - migrate to `ToolCoordinator`
+### What's new in v0.5.0
+- Unified ToolCoordinator: Provider-agnostic multi-turn tool calling orchestration
+ - New `ToolCoordinator` struct in `src/llm/coordinator.rs`
+ - Works with any `LLMClient` implementation (OpenAI, Anthropic, Ollama, LlamaCpp)
+ - `ToolCallingConfig` for configuring max iterations, parallel execution, timeouts
+ - New `generate_with_tools_and_history()` method added to `LLMClient` trait
+ - Breaking: `OllamaToolCoordinator` removed - migrate to `ToolCoordinator`
 
-### What's New in v0.4.0
-- **Anthropic Claude Provider**: Full support for Claude models via the Anthropic API
-  - New `anthropic` feature flag
-  - Supports Claude 3.5 Sonnet, Claude 3 Opus, Haiku, and all Claude model variants
-  - Streaming and tool calling support
-  - Token usage tracking via `TokenUsage` in `LLMResponse`
-- **Windows MSVC Fix**: Fixed ort-sys linker errors on Windows MSVC
-  - Added compile-time error for `local-embeddings` on Windows MSVC
-  - Removed `local-embeddings` from `full` feature bundle
-  - New bundles: `full-local-embeddings`, `full-ui-local-embeddings` for Linux/macOS
-- **Security**: Updated `lru` to 0.16.3 (fixes RUSTSEC-2026-0002)
+### What's new in v0.4.0
+- Anthropic Claude Provider: Full support for Claude models via the Anthropic API
+ - New `anthropic` feature flag
+ - Supports Claude 3.5 Sonnet, Claude 3 Opus, Haiku, and all Claude model variants
+ - Streaming and tool calling support
+ - Token usage tracking via `TokenUsage` in `LLMResponse`
+- Windows MSVC Fix: Fixed ort-sys linker errors on Windows MSVC
+ - Added compile-time error for `local-embeddings` on Windows MSVC
+ - Removed `local-embeddings` from `full` feature bundle
+ - New bundles: `full-local-embeddings`, `full-ui-local-embeddings` for Linux/macOS
+- Security: Updated `lru` to 0.16.3 (fixes RUSTSEC-2026-0002)
 
-### What's New in v0.3.1
-- **Vector Persistence Fix**: Fixed critical bug where vectors were not saved to disk on server shutdown
-  - Added `export_all()` method to `HnswIndex` and `Collection`
-  - Updated `save_collection()` to properly export and persist vectors
-  - Added regression tests for persistence
-- **Race Condition Fix**: Fixed parallel model loading race condition in embedding service
-  - Added per-model initialization locks using `OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>>`
-  - Prevents concurrent downloads when multiple threads initialize the same model
-- **Test Coverage**: All 28 ares-vector tests, 35 RAG unit tests, and 11 live tests pass
+### What's new in v0.3.1
+- Vector Persistence Fix: Fixed critical bug where vectors were not saved to disk on server shutdown
+ - Added `export_all()` method to `HnswIndex` and `Collection`
+ - Updated `save_collection()` to properly export and persist vectors
+ - Added regression tests for persistence
+- Race Condition Fix: Fixed parallel model loading race condition in embedding service
+ - Added per-model initialization locks using `OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>>`
+ - Prevents concurrent downloads when multiple threads initialize the same model
+- Test Coverage: All 28 ares-vector tests, 35 RAG unit tests, and 11 live tests pass
 
-### What's New in v0.3.0
-- **ares-vector**: Pure-Rust vector database with HNSW indexing (no external dependencies)
-- **RAG Pipeline**: Document ingestion, chunking (word/semantic/character), embeddings
-- **Multi-Strategy Search**: Semantic, BM25, fuzzy, and hybrid search modes
-- **Reranking**: Cross-encoder reranking for improved relevance
-- **Collection Management**: Full CRUD operations for vector collections
-- **API Endpoints**: `/api/rag/ingest`, `/api/rag/search`, `/api/rag/collections`
+### What's new in v0.3.0
+- ares-vector: Pure-Rust vector database with HNSW indexing (no external dependencies)
+- RAG Pipeline: Document ingestion, chunking (word/semantic/character), embeddings
+- Multi-Strategy Search: Semantic, BM25, fuzzy, and hybrid search modes
+- Reranking: Cross-encoder reranking for improved relevance
+- Collection Management: Full CRUD operations for vector collections
+- API Endpoints: `/api/rag/ingest`, `/api/rag/search`, `/api/rag/collections`
 
-### What's New in v0.2.0
-- **Workflow Engine**: Execute multi-agent workflows declaratively
-- **ConfigurableAgent**: All agents defined via TOML configuration
-- **Improved Router**: Robust parsing and reliable delegation
-- **Cleaner Codebase**: Legacy agents removed, cleaner architecture
+### What's new in v0.2.0
+- Workflow Engine: Execute multi-agent workflows declaratively
+- ConfigurableAgent: All agents defined via TOML configuration
+- Improved Router: Robust parsing and reliable delegation
+- Cleaner Codebase: Legacy agents removed, cleaner architecture
 
-### Next Immediate Actions
+### Next immediate actions
 1. Review and merge the implementation
 2. Create a release tag (v0.5.0)
 3. Consider publishing to crates.io
 
-### For Questions or Issues
+### For questions or issues
 - Check `CONTRIBUTING.md` for development guidelines
 - See `docs/GGUF_USAGE.md` for GGUF model setup
 - Run `scripts/dev-setup.sh` (or `.ps1`) for automated setup
@@ -1105,8 +1105,8 @@ All objectives from the five iterations have been successfully completed:
 
 ---
 
-**Project Status**: ✅ **COMPLETE**  
-**Quality**: ⭐⭐⭐⭐⭐ Production Ready  
-**Documentation**: ⭐⭐⭐⭐⭐ Comprehensive  
-**Test Coverage**: ⭐⭐⭐⭐⭐ Excellent  
-**Developer Experience**: ⭐⭐⭐⭐⭐ Outstanding
+Project Status: COMPLETE 
+Quality:  Production Ready 
+Documentation:  complete 
+Test Coverage:  Excellent 
+Developer Experience:  Outstanding

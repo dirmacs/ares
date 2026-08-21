@@ -14,13 +14,13 @@ X-Admin-Secret: <secret>
 
 ---
 
-## Trigger a Deployment
+## Trigger a deployment
 
 ```
 POST /api/admin/deploy
 ```
 
-Starts a deployment for the specified target service. The deployment runs asynchronously — you receive a deployment ID immediately and poll for completion.
+Starts a deployment for the specified target service. The deployment runs asynchronously, you receive a deployment ID immediately and poll for completion.
 
 **Request Body:**
 
@@ -32,9 +32,9 @@ Starts a deployment for the specified target service. The deployment runs asynch
 
 | Target | Description |
 |---|---|
-| `ares` | ARES backend — pulls latest code, rebuilds, and restarts |
-| `admin` | dirmacs-admin dashboard — rebuilds Leptos frontend |
-| `eruka` | Eruka backend — pulls, rebuilds, and restarts |
+| `ares` | ARES backend, pulls latest code, rebuilds, and restarts |
+| `admin` | dirmacs-admin dashboard, rebuilds Leptos frontend |
+| `eruka` | Eruka backend, pulls, rebuilds, and restarts |
 
 **Response:**
 
@@ -57,7 +57,7 @@ curl -X POST http://localhost:3000/api/admin/deploy \
 
 ---
 
-## Poll Deployment Status
+## Poll deployment status
 
 ```
 GET /api/admin/deploy/{id}
@@ -84,9 +84,9 @@ Returns the current status of a deployment. Poll this endpoint until `status` is
 |---|---|
 | `running` | Deployment is in progress |
 | `success` | Deployment completed successfully |
-| `failed` | Deployment failed — check `output` for details |
+| `failed` | Deployment failed, check `output` for details |
 
-### Polling Pattern
+### Polling pattern
 
 The recommended approach is to trigger a deployment, then poll every 3 seconds until it completes:
 
@@ -156,7 +156,7 @@ while True:
 
 ---
 
-## List Recent Deployments
+## List recent deployments
 
 ```
 GET /api/admin/deploys
@@ -196,9 +196,9 @@ curl http://localhost:3000/api/admin/deploys \
 
 ---
 
-## Service Health
+## Service health
 
-### List All Services
+### List all services
 
 ```
 GET /api/admin/services
@@ -241,7 +241,7 @@ curl http://localhost:3000/api/admin/services \
   -H "X-Admin-Secret: your-admin-secret"
 ```
 
-### Get Service Logs
+### Get service logs
 
 ```
 GET /api/admin/services/{name}/logs

@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = true
-description = "LLM provider clients and abstractions for A.R.E.S"
+description = "LLM provider clients and abstractions for ARES"
 
 [features]
 default = []

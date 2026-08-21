@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = true
-description = "Built-in agent tools for A.R.E.S"
+description = "Built-in tools for ARES agents"
 
 [features]
 default = []

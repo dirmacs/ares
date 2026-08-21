@@ -1,17 +1,154 @@
 //! Inter-agent pipeline execution engine.
 
-use ares_cordis_core::Service;
+use ares_cordis_core::{Context, CordisError, Disposable, Service};
 use ares_db::agent_runs::{self, AgentRunMetadata};
 use ares_db::schedules::{AgentPipeline, PipelineStore};
+use ares_db::PostgresClient;
+use ares_agents::execution::{AgentExecutionService, AgentRequest};
 use ares_types::types::AgentContext;
+use serde_json::Value;
 use std::sync::Arc;
+use tokio::task::JoinHandle;
 use crate::AppState;
 
-/// Cordis service stub for pipeline — owns `agent_pipelines` lookup and
-/// conditional evaluation.
-pub struct PipelineService;
+/// Cordis service owning `agent_pipelines` lookup and conditional evaluation,
+/// injecting `AgentExecutionService` for downstream execution.
+///
+/// Pipelines are triggered downstream (no tick loop); `Service::init` merely
+/// proves `ReflectService` wiring and returns no guard (pipelines are
+/// event-driven via `execute_pipeline` / `execute_pipeline_with_origin`).
+pub struct PipelineService {
+    pub db: Arc<PostgresClient>,
+    pub execution: Arc<AgentExecutionService>,
+    _handle: parking_lot::Mutex<Option<JoinHandle<()>>>,
+}
 
-impl Service for PipelineService {}
+impl PipelineService {
+    /// Create a new service with explicit dependencies.
+    pub fn new(db: Arc<PostgresClient>, execution: Arc<AgentExecutionService>) -> Self {
+        Self {
+            db,
+            execution,
+            _handle: parking_lot::Mutex::new(None),
+        }
+    }
+
+    /// Execute a single pipeline by id for a tenant, applying conditional
+    /// evaluation against `input` and then delegating to
+    /// `ctx.get::<AgentExecutionService>().execute` (fallback: `self.execution`).
+    ///
+    /// Lookup: `agent_pipelines` where `tenant_id=$1 AND id=$2` (enabled check
+    /// enforced — disabled pipelines return `Err`).
+    pub async fn execute_pipeline(
+        &self,
+        pipeline_id: &str,
+        tenant: &str,
+        input: Value,
+        ctx: &Arc<Context>,
+    ) -> Result<Value, String> {
+        let pool = &self.db.pool;
+        // Direct lookup by id+tenant (no dedicated store method — use raw query
+        // to avoid adding a new store API while still proving `agent_pipelines` ownership).
+        let row = sqlx::query(
+            "SELECT id, tenant_id, source_agent, target_agent, condition, enabled, created_at, updated_at \
+             FROM agent_pipelines WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant)
+        .bind(pipeline_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("pipeline {pipeline_id} not found for tenant {tenant}"))?;
+
+        use sqlx::Row;
+        let pipeline = AgentPipeline {
+            id: row.try_get::<String, _>("id").map_err(|e| e.to_string())?,
+            tenant_id: row.try_get::<String, _>("tenant_id").map_err(|e| e.to_string())?,
+            source_agent: row.try_get::<String, _>("source_agent").map_err(|e| e.to_string())?,
+            target_agent: row.try_get::<String, _>("target_agent").map_err(|e| e.to_string())?,
+            condition: row.try_get::<Option<String>, _>("condition").map_err(|e| e.to_string())?,
+            enabled: row.try_get::<bool, _>("enabled").map_err(|e| e.to_string())?,
+            created_at: row.try_get::<i64, _>("created_at").map_err(|e| e.to_string())?,
+            updated_at: row.try_get::<i64, _>("updated_at").map_err(|e| e.to_string())?,
+        };
+
+        if !pipeline.enabled {
+            return Err(format!("pipeline {pipeline_id} is disabled"));
+        }
+
+        let input_str = match &input {
+            Value::String(s) => s.clone(),
+            _ => input.to_string(),
+        };
+
+        if let Some(condition) = &pipeline.condition {
+            if !evaluate_condition(condition, &input_str) {
+                return Err(format!(
+                    "pipeline {pipeline_id} condition not met: {condition}"
+                ));
+            }
+        }
+
+        // Prefer Context-provided execution (DI), fallback to injected `self.execution`.
+        let exec: Arc<AgentExecutionService> = ctx
+            .get::<AgentExecutionService>()
+            .unwrap_or_else(|| self.execution.clone());
+
+        let req = AgentRequest {
+            agent_name: pipeline.target_agent.clone(),
+            tenant: Some(tenant.to_string()),
+            message: input_str,
+            history: Vec::new(),
+            ctx_provider: None,
+        };
+
+        let resp = exec
+            .execute(req, ctx)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Surface as JSON Value for caller uniformity.
+        Ok(serde_json::json!({
+            "pipeline_id": pipeline.id,
+            "target_agent": pipeline.target_agent,
+            "content": resp.content,
+            "usage": resp.usage,
+        }))
+    }
+}
+
+// Guard that aborts background task on dispose (kept for symmetry with SchedulerService).
+struct PipelineGuard {
+    handle: Arc<parking_lot::Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl Disposable for PipelineGuard {
+    fn dispose(self: Box<Self>) {
+        if let Some(h) = self.handle.lock().take() {
+            h.abort();
+        }
+    }
+}
+
+impl Service for PipelineService {
+    fn name(&self) -> &'static str {
+        "PipelineService"
+    }
+
+    fn init(&self, ctx: &Arc<Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+        // Prove ReflectService wiring (no tick loop needed — pipelines are downstream-triggered).
+        // Mirror SchedulerService's ensure_notifier/register_dependent pattern so wiring is uniform.
+        if let Some(reflect) = ctx.get::<ares_cordis_core::ReflectService>() {
+            use std::any::TypeId;
+            let tid = TypeId::of::<PipelineService>();
+            let _rx = reflect.ensure_notifier(tid);
+            reflect.register_dependent(tid, 1);
+            reflect.set_context(ctx);
+        }
+        // No background loop; return None (no guard needed) but keep handle slot for lifecycle symmetry.
+        Box::pin(async move { Ok(None) })
+    }
+}
 
 pub(crate) const PIPELINE_REQUEST_SOURCE: &str = "pipeline";
 

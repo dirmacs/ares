@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-publish = false
+publish = true
 description = "Cordis primitives for A.R.E.S — Context, Fiber, Effect, Events (spike leaf crate, zero ARES deps)"
 
 [features]

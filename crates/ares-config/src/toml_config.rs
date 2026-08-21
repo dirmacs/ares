@@ -2119,6 +2119,7 @@ entry_agent = "router"
     }
 
     fn set_test_env() {
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe {
             std::env::set_var(
                 "TEST_JWT_SECRET",
@@ -2399,6 +2400,7 @@ model = "m"
 
     #[test]
     fn test_validation_missing_jwt_env_var() {
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe {
             std::env::remove_var("MISSING_JWT_ENV_FOR_TEST");
         }
@@ -2417,6 +2419,7 @@ api_key_env = "TEST_API_KEY"
     #[test]
     fn test_validation_missing_openai_api_key_env() {
         set_test_env();
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe {
             std::env::remove_var("MISSING_OPENAI_KEY");
         }
@@ -2440,6 +2443,7 @@ default_model = "gpt-4o"
     #[test]
     fn test_validation_qdrant_api_key_env() {
         set_test_env();
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe {
             std::env::remove_var("MISSING_QDRANT_KEY");
         }
@@ -2817,6 +2821,7 @@ api_key_env = "API_KEY"
 [database]
 "#,
         ).unwrap();
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe { std::env::set_var("SHORT_KEY", "short"); }
         let result = config.jwt_secret();
         assert!(result.is_err());
@@ -2835,6 +2840,7 @@ api_key_env = "API_KEY"
 [database]
 "#,
         ).unwrap();
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe { std::env::remove_var("NONEXISTENT_JWT_99999"); }
         let result = config.jwt_secret();
         assert!(matches!(result, Err(ConfigError::MissingEnvVar(_))));
@@ -2851,6 +2857,7 @@ api_key_env = "API_KEY"
 [database]
 "#,
         ).unwrap();
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe { std::env::set_var("VALID_JWT_SECRET", "a-very-long-secret-that-is-definitely-32-chars"); }
         let result = config.jwt_secret();
         assert!(result.is_ok());
@@ -2870,6 +2877,7 @@ api_key_env = "MY_API_KEY"
 [database]
 "#,
         ).unwrap();
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe { std::env::set_var("MY_API_KEY", "sk-test-12345"); }
         assert_eq!(config.api_key().unwrap(), "sk-test-12345");
     }
@@ -2885,6 +2893,7 @@ api_key_env = "MISSING_API_77777"
 [database]
 "#,
         ).unwrap();
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe { std::env::remove_var("MISSING_API_77777"); }
         assert!(matches!(config.api_key(), Err(ConfigError::MissingEnvVar(_))));
     }
@@ -2902,6 +2911,7 @@ api_key_env = "API"
 [database]
 "#,
         ).unwrap();
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe { std::env::set_var("MY_RESOLVE_VAR", "resolved_value"); }
         assert_eq!(config.resolve_env("MY_RESOLVE_VAR"), Some("resolved_value".into()));
     }
@@ -2917,6 +2927,7 @@ api_key_env = "API"
 [database]
 "#,
         ).unwrap();
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe { std::env::remove_var("MY_MISSING_RESOLVE_VAR"); }
         assert_eq!(config.resolve_env("MY_MISSING_RESOLVE_VAR"), None);
     }

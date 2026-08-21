@@ -385,7 +385,7 @@ impl SkillsService {
         {
             let _ = (skill_id, &input, ctx, &self.execution);
             // Without postgres, skill store unavailable — return context echo for correctness of cargo check both.
-            #[allow(clippy::needless_return)]
+            #[allow(clippy::needless_return, reason = "cfg stub uses explicit return to keep postgres/non-postgres branches symmetric for audit")]
             return Ok(serde_json::json!({"input": input, "skill_id": skill_id, "status":"ok"}));
         }
 

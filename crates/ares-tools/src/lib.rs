@@ -3,6 +3,7 @@
 pub mod calculator;
 pub mod http_tool;
 pub mod registry;
+pub mod rhai_tool;
 pub mod tool_service;
 pub mod script_tool;
 
@@ -26,6 +27,7 @@ pub mod connectors;
 
 pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
 pub use registry::{Tool, ToolRegistry};
+pub use rhai_tool::{RhaiTool, RhaiToolConfig};
 pub use tool_service::{ToolService, UnifiedToolService, TenantId};
 
 #[cfg(test)]

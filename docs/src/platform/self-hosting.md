@@ -8,7 +8,7 @@ Run your own ARES instance on your infrastructure. This guide covers local devel
 
 | Requirement | Minimum Version | Notes |
 |---|---|---|
-| Rust | 1.91+ | Install via [rustup](https://rustup.rs/) |
+| Rust | 1.98+ | Install via [rustup](https://rustup.rs/) |
 | PostgreSQL | 15+ | Used for tenants, agents, usage tracking |
 | Git | 2.x | For cloning the repository |
 

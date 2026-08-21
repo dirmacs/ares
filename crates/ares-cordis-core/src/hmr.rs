@@ -2,7 +2,7 @@
 //!
 //! **Decision (YAGNI, plan Assumptions §Contingencies):** dynamic code swapping
 //! via `libloading` is **deferred** due to ABI fragility. A `.so` built with one
-//! Rust toolchain (`1.91`) cannot safely `dlopen` into a binary built with a
+//! Rust toolchain (`1.98`) cannot safely `dlopen` into a binary built with a
 //! different patch, `extern "C"` entry points require `unsafe` and a stable ABI
 //! boundary (`repr(C)`), and `libloading::Library::new` + `Symbol` (`unsafe`)
 //! introduces soundness surface that `rust-doctor` would flag. The fallback

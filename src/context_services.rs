@@ -32,15 +32,11 @@ impl Service for DbService {}
 pub struct TenantDbService(pub Arc<TenantDb>);
 impl Service for TenantDbService {}
 
-// LLM
-pub struct LlmFactoryService(pub Arc<ConfigBasedLLMFactory>);
-impl Service for LlmFactoryService {}
+// LLM — ConfigBasedLLMFactory now implements Service directly (ctx.get::<ConfigBasedLLMFactory>())
+// AgentRegistry now implements Service directly (ctx.get::<AgentRegistry>())
 
 pub struct ProviderRegistryService(pub Arc<ProviderRegistry>);
 impl Service for ProviderRegistryService {}
-
-pub struct AgentRegistryService(pub Arc<AgentRegistry>);
-impl Service for AgentRegistryService {}
 
 pub struct ToolRegistryService(pub Arc<ToolRegistry>);
 impl Service for ToolRegistryService {}

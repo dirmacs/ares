@@ -86,7 +86,7 @@ pub async fn run_agent(
     let start = std::time::Instant::now();
     use crate::agents::Agent;
     let mut resolved_agent = tenant_agent::resolve_required_tenant_agent(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
-        &state_ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0,
+        &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &tc.tenant_id,
         &name,
         &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,

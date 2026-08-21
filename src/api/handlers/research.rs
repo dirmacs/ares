@@ -101,7 +101,7 @@ pub async fn deep_research(
         .await
     {
         Ok(client) => client,
-        Err(_) => ctx.get::<crate::context_services::LlmFactoryService>().expect("not provided").0.create_default().await?,
+        Err(_) => ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>().expect("LlmFactory not provided").create_default().await?,
     };
 
     let coordinator = ResearchCoordinator::new(llm_client, depth, max_iterations);

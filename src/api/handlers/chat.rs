@@ -251,7 +251,7 @@ pub async fn chat(
             .await
         {
             Ok(client) => client,
-            Err(_) => ctx.get::<crate::context_services::LlmFactoryService>().expect("not provided").0.create_default().await?,
+            Err(_) => ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>().expect("LlmFactory not provided").create_default().await?,
         };
 
         let router = RouterAgent::new(router_llm);
@@ -381,7 +381,7 @@ async fn execute_agent(
     let config = agent_config_from_user_agent(&user_agent);
 
     // Create agent from registry using the resolved config
-    let mut agent = ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0
+    let mut agent = ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided")
         .create_agent_from_config_with_fallbacks(
             agent_name,
             &config,
@@ -602,7 +602,7 @@ fn chat_stream_response(
         let db = state_clone.get::<crate::context_services::DbService>().expect("not provided").0.clone();
         let config_manager = state_clone.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.clone();
         let provider_registry = state_clone.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0.clone();
-        let llm_factory = state_clone.get::<crate::context_services::LlmFactoryService>().expect("not provided").0.clone();
+        let llm_factory = state_clone.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>().expect("LlmFactory not provided").clone();
         let tenant_db = state_clone.get::<crate::context_services::TenantDbService>().expect("not provided").0.clone();
         if let Some(e) = &validation_error {
             let event = stream_error_event(&e.to_string(), None);

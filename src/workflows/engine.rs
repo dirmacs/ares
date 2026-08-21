@@ -197,7 +197,7 @@ impl WorkflowEngine {
             };
 
             // Create the agent via AgentRegistryService via Context
-            let mut agent = self.ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0
+            let mut agent = self.ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided")
                 .create_agent_from_config_with_fallbacks(
                     &current_agent_name,
                     &agent_config,
@@ -470,9 +470,9 @@ mod tests {
             let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
             ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
             ctx.provide(crate::context_services::TenantDbService(Arc::new(crate::db::TenantDb::new(db_tmp.clone()))));
-            ctx.provide(crate::context_services::LlmFactoryService(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default"))));
+            ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
             ctx.provide(crate::context_services::ProviderRegistryService(provider_registry.clone()));
-            ctx.provide(crate::context_services::AgentRegistryService(agent_registry.clone()));
+            ctx.provide_arc(agent_registry.clone());
             ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
             ctx.provide(crate::context_services::AuthServiceWrapper(Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800))));
             ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));
@@ -512,9 +512,9 @@ mod tests {
             let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
             ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
             ctx.provide(crate::context_services::TenantDbService(Arc::new(crate::db::TenantDb::new(db_tmp.clone()))));
-            ctx.provide(crate::context_services::LlmFactoryService(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default"))));
+            ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
             ctx.provide(crate::context_services::ProviderRegistryService(provider_registry.clone()));
-            ctx.provide(crate::context_services::AgentRegistryService(agent_registry.clone()));
+            ctx.provide_arc(agent_registry.clone());
             ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
             ctx.provide(crate::context_services::AuthServiceWrapper(Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800))));
             ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));
@@ -554,9 +554,9 @@ mod tests {
             let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
             ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
             ctx.provide(crate::context_services::TenantDbService(Arc::new(crate::db::TenantDb::new(db_tmp.clone()))));
-            ctx.provide(crate::context_services::LlmFactoryService(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default"))));
+            ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
             ctx.provide(crate::context_services::ProviderRegistryService(provider_registry.clone()));
-            ctx.provide(crate::context_services::AgentRegistryService(agent_registry.clone()));
+            ctx.provide_arc(agent_registry.clone());
             ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
             ctx.provide(crate::context_services::AuthServiceWrapper(Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800))));
             ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));
@@ -654,9 +654,9 @@ mod tests {
             let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
             ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
             ctx.provide(crate::context_services::TenantDbService(Arc::new(crate::db::TenantDb::new(db_tmp.clone()))));
-            ctx.provide(crate::context_services::LlmFactoryService(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default"))));
+            ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
             ctx.provide(crate::context_services::ProviderRegistryService(provider_registry.clone()));
-            ctx.provide(crate::context_services::AgentRegistryService(agent_registry.clone()));
+            ctx.provide_arc(agent_registry.clone());
             ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
             ctx.provide(crate::context_services::AuthServiceWrapper(Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800))));
             ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));

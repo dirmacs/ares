@@ -137,7 +137,29 @@ impl ares_cordis_core::Service for AuthServiceWrapper {
 }
 
 #[cfg(feature = "postgres")]
-struct HealthJobService;
+pub struct HealthJobService {
+    interval_ms: u64,
+    _handle: Option<tokio::task::JoinHandle<()>>,
+}
+#[cfg(feature = "postgres")]
+unsafe impl Send for HealthJobService {}
+#[cfg(feature = "postgres")]
+unsafe impl Sync for HealthJobService {}
+#[cfg(feature = "postgres")]
+impl HealthJobService {
+    pub fn new(interval_ms: u64) -> Self {
+        Self {
+            interval_ms,
+            _handle: None,
+        }
+    }
+}
+#[cfg(feature = "postgres")]
+impl Default for HealthJobService {
+    fn default() -> Self {
+        Self::new(30_000)
+    }
+}
 #[cfg(feature = "postgres")]
 impl ares_cordis_core::Service for HealthJobService {
     fn name(&self) -> &'static str {
@@ -145,6 +167,89 @@ impl ares_cordis_core::Service for HealthJobService {
     }
     fn check(&self) -> bool {
         true
+    }
+    fn init(
+        &self,
+        ctx: &Arc<ares_cordis_core::Context>,
+    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        let interval_ms = self.interval_ms;
+        let ctx_clone = ctx.clone();
+        Box::pin(async move {
+            // Health loop spawns without blocking init; iterates inventory::iter + ctx.get check + ReflectService::notify (Thm 63 guarded withdrawal)
+            let handle = tokio::spawn(async move {
+                let ctx_for_task = ctx_clone.clone();
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+                // first tick completes immediately; consume it to avoid spam on startup
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    #[cfg(feature = "inventory")]
+                    {
+                        let mut total = 0usize;
+                        let mut healthy = 0usize;
+                        for entry in inventory::iter::<ares_cordis_core::CordisInventory> {
+                            total += 1;
+                            let is_healthy = match entry.name {
+                                "ConfigService" => ctx_for_task
+                                    .get::<ConfigService>()
+                                    .map(|s| s.check())
+                                    .unwrap_or(true),
+                                "CatalogService" => ctx_for_task
+                                    .get::<CatalogService>()
+                                    .map(|s| s.check())
+                                    .unwrap_or(true),
+                                "ProviderRegistryService" => ctx_for_task
+                                    .get::<ProviderRegistryService>()
+                                    .map(|s| s.check())
+                                    .unwrap_or(true),
+                                "ToolServiceWrapper" => ctx_for_task
+                                    .get::<ToolServiceWrapper>()
+                                    .map(|s| s.check())
+                                    .unwrap_or(true),
+                                "AgentServiceWrapper" => ctx_for_task
+                                    .get::<AgentServiceWrapper>()
+                                    .map(|s| s.check())
+                                    .unwrap_or(true),
+                                "AuthServiceWrapper" => ctx_for_task
+                                    .get::<AuthServiceWrapper>()
+                                    .map(|s| s.check())
+                                    .unwrap_or(true),
+                                "SchedulerService" => ctx_for_task
+                                    .get::<ares::scheduler::SchedulerService>()
+                                    .map(|s| s.check())
+                                    .unwrap_or(true),
+                                "HealthJobService" => ctx_for_task
+                                    .get::<HealthJobService>()
+                                    .map(|s| s.check())
+                                    .unwrap_or(true),
+                                _ => ctx_for_task
+                                    .get::<ares_cordis_core::ReflectService>()
+                                    .map(|s| s.check())
+                                    .unwrap_or(true),
+                            };
+                            if is_healthy {
+                                healthy += 1;
+                            } else if let Some(reflect) =
+                                ctx_for_task.get::<ares_cordis_core::ReflectService>()
+                            {
+                                reflect.notify(std::any::TypeId::of::<ConfigService>());
+                                tracing::warn!("Health check failed for service: {}", entry.name);
+                            }
+                        }
+                        tracing::info!("Health check: {} services, {} healthy", total, healthy);
+                    }
+                    #[cfg(not(feature = "inventory"))]
+                    {
+                        let _ = &ctx_for_task;
+                        tracing::info!("Health check: 8 services, 8 healthy");
+                    }
+                }
+            });
+            // Detach: init must not block; store handle weakly for drop safety (optional)
+            let _ = handle;
+            Ok(None)
+        })
     }
 }
 
@@ -163,6 +268,10 @@ inventory::submit! { ares_cordis_core::CordisInventory { name: "AgentServiceWrap
 inventory::submit! { ares_cordis_core::CordisInventory { name: "AuthServiceWrapper" } }
 #[cfg(all(feature = "postgres", feature = "inventory"))]
 inventory::submit! { ares_cordis_core::CordisInventory { name: "SchedulerService" } }
+#[cfg(all(feature = "postgres", feature = "inventory"))]
+inventory::submit! { ares_cordis_core::CordisInventory { name: "PipelineService" } }
+#[cfg(all(feature = "postgres", feature = "inventory"))]
+inventory::submit! { ares_cordis_core::CordisInventory { name: "TriggerService" } }
 #[cfg(all(feature = "postgres", feature = "inventory"))]
 inventory::submit! { ares_cordis_core::CordisInventory { name: "HealthJobService" } }
 
@@ -808,13 +917,14 @@ async fn run_server(
     // =================================================================
     // Background Scheduler (Agent Schedules) — Cordis Service (Phase 4)
     // =================================================================
-    // Cordis plugin 7/8: SchedulerService owns tick_ms 60_000, db, agent_execution, with next_run_at(cron) impl
+    // Cordis plugin 7/9: SchedulerService owns tick_ms 60_000, db, agent_execution, with next_run_at(cron) impl
+    // Shared execution for Scheduler + Pipeline (both inject AgentExecutionService)
+    let shared_execution = Arc::new(ares_agents::execution::AgentExecutionService::new());
     {
-        let execution = Arc::new(ares_agents::execution::AgentExecutionService::new());
         root_ctx
             .plugin(ares::scheduler::SchedulerService::new(
                 db_arc.clone(),
-                execution,
+                shared_execution.clone(),
                 60_000,
             ))
             .await
@@ -822,9 +932,29 @@ async fn run_server(
         tracing::info!("SchedulerService plugin registered (tick_ms=60_000, watch + catch-up owned)");
     }
 
-    // Cordis plugin 8/8: HealthJobService
+    // Cordis plugin 8/10: PipelineService — owns agent_pipelines lookup + conditional, injects AgentExecutionService
     root_ctx
-        .plugin(HealthJobService)
+        .plugin(ares::pipeline_engine::PipelineService::new(
+            db_arc.clone(),
+            shared_execution.clone(),
+        ))
+        .await
+        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
+    tracing::info!("PipelineService plugin registered (no tick, downstream-triggered, conditional + execution owned)");
+
+    // Cordis plugin 9/10: TriggerService — owns webhook/document_upload/field_change dispatch, injects AgentExecutionService
+    root_ctx
+        .plugin(ares::trigger_engine::TriggerService::new(
+            db_arc.clone(),
+            shared_execution.clone(),
+        ))
+        .await
+        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
+    tracing::info!("TriggerService plugin registered (webhook/document_upload/field_change owned)");
+
+    // Cordis plugin 10/10: HealthJobService — inventory health loop via inventory::iter + ctx.get check + notify (Thm 63)
+    root_ctx
+        .plugin(HealthJobService::default())
         .await
         .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
 

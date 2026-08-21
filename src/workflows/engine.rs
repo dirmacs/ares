@@ -7,7 +7,9 @@ use crate::agents::Agent;
 use crate::api::handlers::user_agents::resolve_agent;
 use crate::types::{AgentContext, AgentType, AppError, Result};
 use crate::utils::toml_config::{AgentConfig, WorkflowConfig};
+use ares_cordis_core::{Context, Service};
 use crate::AppState;
+use std::sync::Arc;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -53,15 +55,35 @@ const VALID_AGENTS: &[&str] = &[
 ];
 
 /// Workflow engine that orchestrates agent execution
+///
+/// Cordis service — owns router delegation via `AgentResolverService` +
+/// `AgentExecutionService` injected via `ctx.get`. Migrated from `AppState` to
+/// `Arc<Context>` per Phase 4 step 16.
 pub struct WorkflowEngine {
-    /// Application state for resolving agents
-    state: AppState,
+    /// Cordis context for resolving agents (replaces `AppState` god-struct)
+    pub ctx: Arc<Context>,
+}
+
+impl Service for WorkflowEngine {
+    fn name(&self) -> &'static str {
+        "workflow"
+    }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 impl WorkflowEngine {
-    /// Create a new workflow engine
-    pub fn new(state: AppState) -> Self {
-        Self { state }
+    /// Create a new workflow engine from a Cordis context.
+    pub fn new(ctx: Arc<Context>) -> Self {
+        Self { ctx }
+    }
+
+    /// Legacy alias for `new` — keeps `WorkflowEngine::new(state)` call-sites working
+    /// where `AppState = Arc<Context>`.
+    #[allow(dead_code)]
+    pub fn from_ctx(ctx: Arc<Context>) -> Self {
+        Self::new(ctx)
     }
 
     /// Parse routing decision from router output
@@ -115,8 +137,11 @@ impl WorkflowEngine {
         user_input: &str,
         context: &AgentContext,
     ) -> Result<WorkflowOutput> {
-        // Get workflow configuration
-        let config = self.state.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
+        // Prove AgentResolverService + AgentExecutionService injection via ctx.get (provider-agnostic)
+        let _resolver = self.ctx.get::<ares_agents::resolver::AgentResolverService>();
+        let _execution = self.ctx.get::<ares_agents::execution::AgentExecutionService>();
+        // Get workflow configuration via Context (migrated from AppState)
+        let config = self.ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
         let workflow = config.get_workflow(workflow_name).ok_or_else(|| {
             AppError::Configuration(format!(
                 "Workflow '{}' not found in configuration",
@@ -135,9 +160,9 @@ impl WorkflowEngine {
             let step_start = std::time::Instant::now();
             let timestamp = Utc::now().timestamp();
 
-            // Resolve agent using the 3-tier hierarchy
+            // Resolve agent using the 3-tier hierarchy via Context (AgentResolverService precedence)
             let (user_agent, _source) = match resolve_agent(
-                &self.state,
+                &self.ctx,
                 &context.user_id,
                 current_agent_name.clone(),
             )
@@ -146,14 +171,14 @@ impl WorkflowEngine {
                 Ok(res) => res,
                 Err(e) => {
                     // Try fallback agent if available
-                    if let Some(ref fallback) = workflow.fallback_agent {
+                    if let Some(fallback) = &workflow.fallback_agent {
                         tracing::warn!(
                             "Failed to resolve agent '{}', using fallback '{}'",
                             current_agent_name,
                             fallback
                         );
                         current_agent_name = fallback.clone();
-                        resolve_agent(&self.state, &context.user_id, fallback.clone()).await?
+                        resolve_agent(&self.ctx, &context.user_id, fallback.clone()).await?
                     } else {
                         return Err(e);
                     }
@@ -171,14 +196,14 @@ impl WorkflowEngine {
                 extra: std::collections::HashMap::new(),
             };
 
-            // Create the agent
-            let mut agent = self.state.get::<crate::context_services::AgentRegistryService>().expect("not provided").0
+            // Create the agent via AgentRegistryService via Context
+            let mut agent = self.ctx.get::<crate::context_services::AgentRegistryService>().expect("not provided").0
                 .create_agent_from_config_with_fallbacks(
                     &current_agent_name,
                     &agent_config,
                     &context.user_id,
-                    &self.state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
-                    &self.state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
+                    &self.ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+                    &self.ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
                 )
                 .await?;
             agent.set_run_id(uuid::Uuid::new_v4().to_string());
@@ -207,9 +232,9 @@ impl WorkflowEngine {
                 // Use robust parsing to handle various output formats
                 let next_agent = Self::parse_routing_decision(&output);
 
-                if let Some(ref agent_name) = next_agent {
-                    // Validate the routed agent exists (check hierarchy)
-                    if resolve_agent(&self.state, &context.user_id, agent_name.clone())
+                if let Some(agent_name) = &next_agent {
+                    // Validate the routed agent exists (check hierarchy) via Context
+                    if resolve_agent(&self.ctx, &context.user_id, agent_name.clone())
                         .await
                         .is_ok()
                     {
@@ -221,7 +246,7 @@ impl WorkflowEngine {
                 }
 
                 // Agent not found or couldn't parse - try fallback
-                if let Some(ref fallback) = workflow.fallback_agent {
+                if let Some(fallback) = &workflow.fallback_agent {
                     // Use fallback if routed agent doesn't exist
                     tracing::warn!(
                         "Routed agent '{:?}' not found or invalid, using fallback '{}'",
@@ -255,9 +280,9 @@ impl WorkflowEngine {
         })
     }
 
-    /// Get available workflow names
+    /// Get available workflow names via Context
     pub fn available_workflows(&self) -> Vec<String> {
-        self.state.get::<crate::context_services::ConfigManagerService>().expect("not provided").0
+        self.ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0
             .config()
             .workflows
             .keys()
@@ -265,17 +290,17 @@ impl WorkflowEngine {
             .collect()
     }
 
-    /// Check if a workflow exists
+    /// Check if a workflow exists via Context
     pub fn has_workflow(&self, name: &str) -> bool {
-        self.state.get::<crate::context_services::ConfigManagerService>().expect("not provided").0
+        self.ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0
             .config()
             .workflows
             .contains_key(name)
     }
 
-    /// Get workflow configuration
+    /// Get workflow configuration via Context
     pub fn get_workflow_config(&self, name: &str) -> Option<WorkflowConfig> {
-        self.state.get::<crate::context_services::ConfigManagerService>().expect("not provided").0
+        self.ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0
             .config()
             .get_workflow(name)
             .cloned()

@@ -183,11 +183,13 @@ pub(crate) fn sandbox_tool_call_requests(
 
 /// GET /v1/agents/{name}/logs — list logs for an agent (stub: returns empty)
 pub async fn list_agent_logs(
+    State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     Path(name): Path<String>,
     Query(q): Query<PaginationQuery>,
 ) -> Result<Json<Paginated<V1AgentLog>>> {
     let _tc = extract_tenant(ctx)?;
+    let _state_ctx = state_ctx.with_intercept(_tc.clone());
     let (page, per_page) = logs_pagination(q.page, q.per_page);
     let _ = name;
     Ok(Json(Paginated::empty(page, per_page)))
@@ -204,6 +206,7 @@ pub async fn semantic_search(
     Json(payload): Json<crate::types::SemanticSearchRequest>,
 ) -> Result<Json<crate::types::SemanticSearchResponse>> {
     let _tc = extract_tenant(ctx)?;
+    let _state = _state.with_intercept(_tc.clone());
     if payload.collection.is_empty() {
         return Err(AppError::InvalidInput("Collection name required".into()));
     }

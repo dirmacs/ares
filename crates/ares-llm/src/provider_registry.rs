@@ -2042,14 +2042,82 @@ mod tests {
             "tenant:tenant-a isolated ctx should resolve a provider"
         );
     }
+
+    #[test]
+    fn tenant_from_ctx_reads_tenant_context_intercept() {
+        // Unlabeled root has no isolate label and no intercept, so tenant is
+        // None (fleet-wide). A TenantContext intercept is the fallback when
+        // isolate_label is missing.
+        let ctx: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        assert_eq!(tenant_from_ctx(&ctx), None);
+
+        let intercepted = ctx.with_intercept(ares_types::models::TenantContext::new(
+            "tenant-a".into(),
+            ares_types::models::TenantTier::Pro,
+        ));
+        assert_eq!(tenant_from_ctx(&intercepted), Some("tenant-a".to_string()));
+
+        // Intercept-only ctx should resolve the tenant-a runtime provider.
+        let registry = ProviderRegistry::new();
+        let global = RuntimeProviderEntry {
+            tenant_id: None,
+            display_name: "Global Shared".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://global.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("global-model".to_string()),
+            headers: HashMap::new(),
+            api_key: Some("global-key".to_string()),
+            enabled: true,
+        };
+        let tenant = RuntimeProviderEntry {
+            tenant_id: Some("tenant-a".to_string()),
+            display_name: "Tenant Shared".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://tenant.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("tenant-model".to_string()),
+            headers: HashMap::new(),
+            api_key: Some("tenant-key".to_string()),
+            enabled: true,
+        };
+        registry.reload_runtime_providers(
+            vec![global, tenant],
+            vec!["shared-runtime".to_string(), "shared-runtime".to_string()],
+        );
+        let provider = registry
+            .get_provider_for_ctx(&intercepted, "shared-runtime")
+            .expect("intercept-only ctx should resolve the tenant-a provider");
+        assert_eq!(
+            ProviderRegistry::provider_default_model(&provider),
+            "tenant-model"
+        );
+    }
+
+    #[test]
+    fn tenant_from_ctx_isolate_label_wins_over_intercept() {
+        // Isolate label is the primary source even when a TenantContext
+        // intercept is present. Intercept "from-intercept", then isolate
+        // as tenant:from-isolate, must yield the isolate id.
+        let ctx: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let intercepted = ctx.with_intercept(ares_types::models::TenantContext::new(
+            "from-intercept".into(),
+            ares_types::models::TenantTier::Pro,
+        ));
+        let isolated = intercepted.isolate::<ProviderRegistry>("tenant:from-isolate");
+        assert_eq!(
+            tenant_from_ctx(&isolated),
+            Some("from-isolate".to_string())
+        );
+    }
 }
 
 /// Derive the tenant id from the context's isolate namespace for
 /// [`ProviderRegistry`], stripping a leading `tenant:`/`user:` prefix.
 ///
-/// Mirrors `ares_agents::resolver::user_id_from_ctx`: an isolate label of the
-/// form `tenant:<id>` or `user:<id>` yields `<id>`; empty or unlabeled contexts
-/// yield `None` (fleet-wide resolution).
+/// Isolate labels win. When unlabeled for `ProviderRegistry`, falls back to a
+/// [`ares_types::models::TenantContext`] intercept (`tenant_id` if non-empty).
+/// Empty labels/ids yield `None` (fleet-wide resolution).
 pub fn tenant_from_ctx(ctx: &std::sync::Arc<ares_cordis_core::Context>) -> Option<String> {
     ctx.isolate_label(std::any::TypeId::of::<ProviderRegistry>())
         .and_then(|label| {
@@ -2057,6 +2125,11 @@ pub fn tenant_from_ctx(ctx: &std::sync::Arc<ares_cordis_core::Context>) -> Optio
                 .strip_prefix("tenant:")
                 .or_else(|| label.strip_prefix("user:"))
                 .map(|s| s.to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            ctx.get::<ares_types::models::TenantContext>()
+                .map(|tc| tc.tenant_id.clone())
                 .filter(|s| !s.is_empty())
         })
 }

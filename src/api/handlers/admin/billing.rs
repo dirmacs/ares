@@ -18,7 +18,7 @@ pub async fn list_llm_calls(
     State(ctx): State<Arc<Context>>,
     Query(q): Query<ListLlmCallsQuery>,
 ) -> Result<Json<Vec<RunLlmCall>>> {
-    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_1 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_1);
     let calls = store.list_llm_calls(&q).await?;
     Ok(Json(calls))
@@ -29,7 +29,7 @@ pub async fn get_llm_call(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<Json<RunLlmCall>> {
-    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_2 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_2);
     let call = store
         .get_llm_call(&id)
@@ -43,7 +43,7 @@ pub async fn insert_llm_call(
     State(ctx): State<Arc<Context>>,
     Json(req): Json<LogLlmCallRequest>,
 ) -> Result<Json<RunLlmCall>> {
-    let __pool_3 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_3 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_3);
     let call = store.insert_llm_call(&req).await?;
     Ok(Json(call))
@@ -54,7 +54,7 @@ pub async fn list_tool_calls(
     State(ctx): State<Arc<Context>>,
     Query(q): Query<ListToolCallsQuery>,
 ) -> Result<Json<Vec<RunToolCall>>> {
-    let __pool_4 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_4 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_4);
     let calls = store.list_tool_calls(&q).await?;
     Ok(Json(calls))
@@ -65,7 +65,7 @@ pub async fn get_tool_call(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<Json<RunToolCall>> {
-    let __pool_5 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_5 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_5);
     let call = store
         .get_tool_call(&id)
@@ -79,7 +79,7 @@ pub async fn insert_tool_call(
     State(ctx): State<Arc<Context>>,
     Json(req): Json<LogToolCallRequest>,
 ) -> Result<Json<RunToolCall>> {
-    let __pool_6 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_6 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_6);
     let call = store.insert_tool_call(&req).await?;
     Ok(Json(call))
@@ -90,7 +90,7 @@ pub async fn get_run_cost(
     State(ctx): State<Arc<Context>>,
     Path(run_id): Path<String>,
 ) -> Result<Json<RunCost>> {
-    let __pool_7 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_7 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_7);
     let cost = store
         .get_run_cost(&run_id)
@@ -104,7 +104,7 @@ pub async fn list_run_costs(
     State(ctx): State<Arc<Context>>,
     Query(q): Query<ListRunCostsQuery>,
 ) -> Result<Json<Vec<RunCost>>> {
-    let __pool_8 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_8 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_8);
     let limit = q.limit.clamp(1, 10_000);
     let offset = q.offset.max(0);
@@ -127,7 +127,7 @@ pub async fn get_tenant_billing_summary(
     Query(q): Query<BillingMonthQuery>,
 ) -> Result<Json<BillingSummaryResponse>> {
     let (month, period_start, period_end) = billing_month_bounds(&q.month)?;
-    let __pool_9 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_9 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_9);
     let costs = store
         .list_run_costs(&tenant_id, 10_000, 0, Some(period_start), Some(period_end))
@@ -148,7 +148,7 @@ pub async fn get_tenant_billing_line_items(
     Query(q): Query<BillingMonthQuery>,
 ) -> Result<Json<BillingLineItemsResponse>> {
     let (month, period_start, period_end) = billing_month_bounds(&q.month)?;
-    let __pool_10 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_10 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_10);
     let items = store
         .list_run_costs(&tenant_id, 10_000, 0, Some(period_start), Some(period_end))
@@ -167,7 +167,7 @@ pub async fn get_tenant_billing_line_items(
 pub async fn list_billing_model_rates(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<ModelRateResponse>>> {
-    let config = ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
+    let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
     Ok(Json(model_rate_responses(&config.billing)))
 }
 
@@ -181,7 +181,7 @@ pub async fn get_tenant_budget(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<TenantBudget>> {
-    let __pool_11 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_11 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_11);
     let budget = store
         .get_tenant_budget(&tenant_id)
@@ -196,7 +196,7 @@ pub async fn set_tenant_budget(
     Path(tenant_id): Path<String>,
     Json(mut req): Json<SetTenantBudgetRequest>,
 ) -> Result<Json<TenantBudget>> {
-    let __pool_12 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_12 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_12);
     req.tenant_id = tenant_id;
     let budget = store.set_tenant_budget(&req).await?;
@@ -208,7 +208,7 @@ pub async fn delete_tenant_budget(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let __pool_13 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_13 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_13);
     let rows = store.delete_tenant_budget(&tenant_id).await?;
     Ok(Json(
@@ -221,7 +221,7 @@ pub async fn get_token_budget(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<TokenBudget>> {
-    let __pool_14 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_14 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = TokenBudgetStore::new(&__pool_14);
     let budget = store
         .get_budget(&tenant_id)
@@ -236,7 +236,7 @@ pub async fn set_token_budget(
     Path(tenant_id): Path<String>,
     Json(req): Json<SetTokenBudgetRequest>,
 ) -> Result<Json<TokenBudget>> {
-    let __pool_15 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_15 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = TokenBudgetStore::new(&__pool_15);
     let budget = store
         .set_budget(&tenant_id, req.token_limit, &req.period)
@@ -249,7 +249,7 @@ pub async fn get_token_budget_status(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<BudgetStatus>> {
-    let __pool_16 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_16 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = TokenBudgetStore::new(&__pool_16);
     let status = store.check_budget(&tenant_id).await?;
     Ok(Json(status))
@@ -260,7 +260,7 @@ pub async fn reset_token_budget_period(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<BudgetStatus>> {
-    let __pool_17 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_17 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = TokenBudgetStore::new(&__pool_17);
     store.reset_period(&tenant_id).await?;
     let status = store.check_budget(&tenant_id).await?;
@@ -273,7 +273,7 @@ pub async fn list_token_usage(
     Path(tenant_id): Path<String>,
     Query(q): Query<ListTokenUsageQuery>,
 ) -> Result<Json<Vec<TokenUsageEntry>>> {
-    let __pool_18 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_18 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = TokenBudgetStore::new(&__pool_18);
     let usage = store
         .list_usage(&tenant_id, q.limit.clamp(1, 10_000))
@@ -286,7 +286,7 @@ pub async fn list_budget_alerts(
     State(ctx): State<Arc<Context>>,
     Query(q): Query<ListBudgetAlertsQuery>,
 ) -> Result<Json<Vec<BudgetAlert>>> {
-    let __pool_19 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_19 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_19);
     let alerts = store.list_budget_alerts(&q).await?;
     Ok(Json(alerts))
@@ -298,7 +298,7 @@ pub async fn acknowledge_budget_alert(
     Path(id): Path<String>,
     Json(req): Json<AcknowledgeBudgetAlertRequest>,
 ) -> Result<Json<BudgetAlert>> {
-    let __pool_20 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_20 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&__pool_20);
     let alert = store.acknowledge_budget_alert(&id, &req).await?;
     Ok(Json(alert))

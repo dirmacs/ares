@@ -481,9 +481,9 @@ impl SkillsService {
                     SkillStep::LlmCall { prompt, model_tier } => {
                         tracing::info!("Step {}: llm_call tier={}", step_index, model_tier);
                         let start = std::time::Instant::now();
-                        // Resolve model via ConfigManagerService + token budget via pool
-                        let (provider_name, model_name) = if let Some(cfg_svc) = ctx.get::<crate::context_services::ConfigManagerService>() {
-                            let cfg = cfg_svc.0.config();
+                        // Resolve model via AresConfigManager + token budget via pool
+                        let (provider_name, model_name) = if let Some(cfg) = ctx.get::<crate::AresConfigManager>() {
+                            let cfg = cfg.config();
                             crate::resolve_model_tier(&tenant_id, &model_tier, &pool, &cfg)
                                 .await
                                 .unwrap_or_else(|| ("default".to_string(), model_tier.clone()))
@@ -618,8 +618,8 @@ impl SkillsService {
             }
             SkillStep::LlmCall { prompt, model_tier } => {
                 let start = std::time::Instant::now();
-                let (provider_name, model_name) = if let Some(cfg_svc) = ctx.get::<crate::context_services::ConfigManagerService>() {
-                    let cfg = cfg_svc.0.config();
+                let (provider_name, model_name) = if let Some(cfg) = ctx.get::<crate::AresConfigManager>() {
+                    let cfg = cfg.config();
                     crate::resolve_model_tier(tenant_id, model_tier, pool, &cfg).await.unwrap_or_else(|| ("default".to_string(), model_tier.clone()))
                 } else {
                     ("default".to_string(), model_tier.clone())

@@ -27,7 +27,7 @@ pub async fn list_schedules(
             "tenant_id query param is required".into(),
         ));
     }
-    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_1 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = db_schedules::ScheduleStore::new(&__pool_1);
     let schedules = store.list_schedules(tenant_id).await?;
     Ok(Json(schedules))
@@ -43,7 +43,7 @@ pub async fn list_schedule_missed_runs(
         .and_then(|value| value.parse::<i32>().ok())
         .unwrap_or(10)
         .clamp(1, 100);
-    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_2 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = db_schedules::ScheduleStore::new(&__pool_2);
     let audits = store
         .list_missed_runs_for_tenant(&tenant_id, &schedule_id, limit)
@@ -55,11 +55,11 @@ pub async fn create_schedule(
     State(ctx): State<Arc<Context>>,
     Json(req): Json<db_schedules::CreateScheduleRequest>,
 ) -> Result<Json<db_schedules::AgentSchedule>> {
-    let __pool_3 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_3 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = db_schedules::ScheduleStore::new(&__pool_3);
     let schedule = store.create_schedule(&req).await?;
 
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let t_id = schedule.tenant_id.clone();
     let a_name = schedule.agent_name.clone();
     tokio::spawn(async move {
@@ -82,14 +82,14 @@ pub async fn update_schedule(
     Path(id): Path<String>,
     Json(req): Json<db_schedules::CreateScheduleRequest>,
 ) -> Result<Json<db_schedules::AgentSchedule>> {
-    let __pool_4 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_4 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = db_schedules::ScheduleStore::new(&__pool_4);
     let schedule = store
         .update_schedule(&id, &req)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("schedule {id} not found")))?;
 
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let t_id = schedule.tenant_id.clone();
     let a_name = schedule.agent_name.clone();
     tokio::spawn(async move {
@@ -111,14 +111,14 @@ pub async fn delete_schedule(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let __pool_5 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_5 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = db_schedules::ScheduleStore::new(&__pool_5);
     let rows = store.delete_schedule(&id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!("schedule {id} not found")));
     }
 
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let sid = id.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
@@ -148,7 +148,7 @@ pub async fn delete_tenant_schedule(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let __pool_6 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_6 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = db_schedules::ScheduleStore::new(&__pool_6);
     let rows = store.delete_schedule_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
@@ -157,7 +157,7 @@ pub async fn delete_tenant_schedule(
         )));
     }
 
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let sid = id.clone();
     let t_id = tenant_id.clone();
     tokio::spawn(async move {

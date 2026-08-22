@@ -35,7 +35,7 @@ pub async fn sandbox_run_agent(
         None => state_ctx,
     };
 
-    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(&state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &state_ctx,
         &name,
@@ -86,7 +86,7 @@ pub async fn sandbox_run_agent(
         schedule_id: None,
         trigger_id: None,
     };
-    agent_runs::insert_agent_run_with_id_and_metadata(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+    agent_runs::insert_agent_run_with_id_and_metadata(&state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
         &run_id,
         &tc.tenant_id,
         &name,
@@ -103,7 +103,7 @@ pub async fn sandbox_run_agent(
     )
     .await?;
 
-    let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RunHistoryStore::new(&pool);
     for call in sandbox_tool_call_requests(
         &run_id,

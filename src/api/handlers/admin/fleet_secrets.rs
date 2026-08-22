@@ -36,7 +36,7 @@ pub async fn upsert_fleet_provider(
         ));
     }
 
-    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_1 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = fps::FleetProviderSecretsStore::new(&__pool_1);
     let master = MasterKey::from_env();
     if req.api_key.is_some() && master.is_none() {
@@ -75,7 +75,7 @@ pub async fn upsert_fleet_provider(
         "fallback_providers": stored.fallback_providers,
     })
     .to_string();
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let name = provider_name.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
@@ -106,7 +106,7 @@ pub async fn delete_fleet_provider(
     State(ctx): State<Arc<Context>>,
     Path(provider_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_2 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = fps::FleetProviderSecretsStore::new(&__pool_2);
     let affected = store.delete(&provider_name).await?;
     if affected == 0 {
@@ -121,7 +121,7 @@ pub async fn delete_fleet_provider(
     let map = store.load_all(master.as_ref()).await?;
     ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0.store(map);
 
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let name = provider_name.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
@@ -158,7 +158,7 @@ pub async fn verify_fleet_provider(
 
     // Fall back to the registry's ProviderConfig for the base URL when the
     // admin hasn't set an override.
-    let provider_config = ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0.get_provider_for_ctx(&ctx, &provider_name);
+    let provider_config = ctx.get::<crate::ProviderRegistry>().expect("not provided").get_provider_for_ctx(&ctx, &provider_name);
 
     let (api_base, api_key) = match (override_, provider_config.as_ref()) {
         (Some(o), _) => {

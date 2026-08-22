@@ -917,9 +917,11 @@ mod tests {
         let ctx = ares_cordis_core::Context::new_root();
         let config = minimal_config();
         let config_manager = Arc::new(AresConfigManager::from_config(config));
+        ctx.provide_arc(config_manager.clone());
         ctx.provide(crate::context_services::ConfigManagerService(config_manager.clone()));
         let db = Arc::new(crate::db::PostgresClient::new_test());
         let tenant_db = Arc::new(TenantDb::new(db.clone()));
+        ctx.provide_arc(tenant_db.clone());
         ctx.provide(crate::context_services::TenantDbService(tenant_db.clone()));
         ctx.provide(crate::context_services::DbService(db.clone() as Arc<dyn crate::db::traits::DatabaseClient>));
         let auth_service = Arc::new(AuthService::new(
@@ -927,6 +929,7 @@ mod tests {
             900,
             604800,
         ));
+        ctx.provide_arc(auth_service.clone());
         ctx.provide(crate::context_services::AuthServiceWrapper(auth_service));
         ctx.provide(crate::context_services::DeployRegistryService(deploy::new_deploy_registry()));
         ctx.provide(crate::context_services::LoopRegistryService(loops::LoopRegistry::new()));
@@ -934,8 +937,8 @@ mod tests {
     }
 
     fn test_server(state: AppState) -> axum_test::TestServer {
-        let auth = state.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0.clone();
-        let tenant_db = state.get::<crate::context_services::TenantDbService>().expect("not provided").0.clone();
+        let auth = state.get::<crate::auth::jwt::AuthService>().expect("not provided").clone();
+        let tenant_db = state.get::<crate::TenantDb>().expect("not provided").clone();
         let app = create_router(auth, tenant_db).with_state(state);
         axum_test::TestServer::new(app).expect("test server")
     }
@@ -972,7 +975,7 @@ mod tests {
     #[tokio::test]
     async fn create_router_builds_without_panic() {
         let state = test_app_state();
-        let _ = create_router(state.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0.clone(), state.get::<crate::context_services::TenantDbService>().expect("not provided").0.clone());
+        let _ = create_router(state.get::<crate::auth::jwt::AuthService>().expect("not provided").clone(), state.get::<crate::TenantDb>().expect("not provided").clone());
     }
 
     #[test]
@@ -1002,7 +1005,7 @@ mod tests {
     #[tokio::test]
     async fn create_router_exposes_loop_routes_behind_jwt() {
         let state = test_app_state();
-        let tokens = state.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0
+        let tokens = state.get::<crate::auth::jwt::AuthService>().expect("not provided")
             .generate_tokens("user-1", "user@example.com")
             .expect("tokens");
         let server = test_server(state);

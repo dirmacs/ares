@@ -59,7 +59,7 @@ pub async fn handle_field_change(
         return Ok(StatusCode::OK);
     }
 
-    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_1 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = db_schedules::EventTriggerStore::new(&__pool_1);
     let triggers = store
         .list_by_event_type(&payload.tenant_id, "field_change")

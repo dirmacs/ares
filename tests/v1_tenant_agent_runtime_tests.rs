@@ -214,9 +214,7 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
     let state: AppState = Context::new_root();
     state.provide_arc(config_manager.clone());
     state.provide_arc(dynamic_config);
-    state.provide(ares::context_services::DbService(
-        db.clone() as std::sync::Arc<dyn ares::db::traits::DatabaseClient>,
-    ));
+    state.provide_arc(db.clone());
     state.provide_arc(tenant_db.clone());
     state.provide_arc(llm_factory.clone());
     state.provide_arc(provider_registry.clone());
@@ -228,9 +226,7 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
     state.provide(ares::api::handlers::deploy::DeployRegistry::default());
     state.provide(ares::api::handlers::loops::LoopRegistry::new());
     state.provide(ares::context_services::EmergencyStop::new(false));
-    state.provide(ares::context_services::ContextProviderService(
-        std::sync::Arc::new(ares::agents::context_provider::NoOpContextProvider),
-    ));
+    state.provide(ares::agents::ContextProviderHandle::new(std::sync::Arc::new(ares::agents::context_provider::NoOpContextProvider)));
     state.provide(ares_config::fleet_secrets::FleetSecrets::new());
     state.provide_arc(runtime_tool_registry.clone());
     state.provide(ares::active_runs::ActiveRuns::new());

@@ -417,7 +417,7 @@ use ares_cordis_core::Context;
             let config_manager = Arc::new(AresConfigManager::from_config(config));
             ctx.provide_arc(config_manager.clone());
             let db = Arc::new(PostgresClient::new_test());
-            ctx.provide(crate::context_services::DbService(db.clone() as Arc<dyn crate::db::traits::DatabaseClient>));
+            ctx.provide_arc(db.clone());
             ctx.provide(crate::api::handlers::loops::LoopRegistry::new());
             ctx
         }

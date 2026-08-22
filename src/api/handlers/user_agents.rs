@@ -1,5 +1,6 @@
 use crate::{
     db::postgres::UserAgent,
+    db::traits::DatabaseClient,
     types::{AppError, Result},
     utils::toml_config::AgentConfig,
     AppState,
@@ -143,10 +144,10 @@ pub async fn resolve_agent(
         return Ok((agent, source.as_str().into()));
     }
     // Fallback: inline resolution (legacy path, to be removed)
-    let user_agent = state.get::<crate::context_services::DbService>().expect("not provided").0
+    let user_agent = state.get::<crate::db::PostgresClient>().expect("not provided")
         .get_user_agent_by_name(user_id, &agent_name)
         .await?;
-    let public_agent = state.get::<crate::context_services::DbService>().expect("not provided").0.get_public_agent_by_name(&agent_name).await?;
+    let public_agent = state.get::<crate::db::PostgresClient>().expect("not provided").get_public_agent_by_name(&agent_name).await?;
     let config = state.get::<crate::AresConfigManager>().expect("not provided").config();
     let system_config = config.get_agent(&agent_name);
     let now = chrono::Utc::now().timestamp();

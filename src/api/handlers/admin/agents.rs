@@ -438,7 +438,7 @@ pub async fn test_tenant_agent_handler(
     runtime_context.session_id = Some(agent_context.session_id.clone());
 
     let eruka_context = if req.use_eruka_context {
-        ctx.get::<crate::context_services::ContextProviderService>().expect("not provided").0
+        ctx.get::<crate::agents::ContextProviderHandle>().expect("not provided").0
             .get_context_for_run(&runtime_context)
             .await
     } else {

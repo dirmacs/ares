@@ -522,11 +522,12 @@ impl UserAgent {
 mod tests {
     use super::*;
 
-    #[test]
-    fn postgres_client_readable_via_cordis() {
+    #[tokio::test]
+    async fn postgres_client_readable_via_cordis() {
         use ares_cordis_core::Service;
-        let ctx = std::sync::Arc::new(ares_cordis_core::Context::new_root());
-        ctx.provide(PostgresClient::new_test());
+        let ctx = ares_cordis_core::Context::new_root();
+        let client = PostgresClient::new_memory().await.expect("memory");
+        ctx.provide(client);
         let got = ctx.get::<PostgresClient>().expect("provided");
         assert_eq!(got.name(), "postgres_client");
         assert!(got.check());

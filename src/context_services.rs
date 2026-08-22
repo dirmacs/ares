@@ -1,19 +1,16 @@
-//! Cordis Context service wrappers for legacy AppState fields.
-//! Each wrapper holds the original AppState field type and implements `Service`
-//! so `ctx.get::<Wrapper>().unwrap().0.clone()` retrieves the field via Context.
+//! Remaining Cordis wrappers that cannot impl Service on the inner type:
+//! - [`ToolRegistryService`] — isolate TypeId for tenant tool realms
+//! - [`EmergencyStop`] — native Service (kill switch)
+//!
+//! `PostgresClient` and [`ares_agents::ContextProviderHandle`] are native Service
+//! types; handlers `ctx.get` them directly.
 
 use std::sync::Arc;
 use crate::AppState;
 use std::sync::atomic::AtomicBool;
 
-use crate::agents::context_provider::ContextProvider;
-use crate::db::traits::DatabaseClient;
 use crate::ToolRegistry;
 use ares_cordis_core::Service;
-
-// Trait-object wrappers: the inner types are `dyn` and cannot implement Service themselves.
-pub struct DbService(pub Arc<dyn DatabaseClient>);
-impl Service for DbService {}
 
 // LLM — ConfigBasedLLMFactory now implements Service directly (ctx.get::<ConfigBasedLLMFactory>())
 // AgentRegistry now implements Service directly (ctx.get::<AgentRegistry>())
@@ -56,10 +53,7 @@ impl Service for EmergencyStop {
     }
 }
 
-// Context provider
-pub struct ContextProviderService(pub Arc<dyn ContextProvider>);
-impl Service for ContextProviderService {}
-
+// ContextProviderHandle (was ContextProviderService) lives in ares_agents::context_provider.
 
 #[cfg(test)]
 mod tests {
@@ -74,5 +68,13 @@ mod tests {
         assert!(!got.is_active());
         got.set_active(true);
         assert!(got.is_active());
+    }
+
+    #[tokio::test]
+    async fn postgres_client_readable_via_cordis() {
+        let ctx = Context::new_root();
+        let client = crate::db::PostgresClient::new_test();
+        ctx.provide(client);
+        assert!(ctx.get::<crate::db::PostgresClient>().is_some());
     }
 }

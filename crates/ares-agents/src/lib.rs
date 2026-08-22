@@ -65,7 +65,7 @@ use async_trait::async_trait;
 
 // Re-export commonly used types
 pub use configurable::ConfigurableAgent;
-pub use context_provider::{ContextProvider, NoOpContextProvider};
+pub use context_provider::{ContextProvider, ContextProviderHandle, NoOpContextProvider};
 pub use registry::{AgentRegistry, AgentRegistryBuilder};
 #[cfg(feature = "postgres")]
 pub use resolver::{AgentResolverService, AgentSource, TenantId};

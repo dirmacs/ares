@@ -290,7 +290,7 @@ pub async fn run_agent(
     runtime_context.workspace_id = runtime_workspace_id.clone();
     runtime_context.session_id = Some(agent_context.session_id.clone());
 
-    let eruka_context = state_ctx.get::<crate::context_services::ContextProviderService>().expect("not provided").0
+    let eruka_context = state_ctx.get::<crate::agents::ContextProviderHandle>().expect("not provided").0
         .get_context_for_run(&runtime_context)
         .await;
     let eruka_context_hit = eruka_context.is_some();

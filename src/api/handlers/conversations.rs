@@ -8,7 +8,7 @@ use ares_cordis_core::Context;
 use crate::{
     auth::middleware::AuthUser,
     db::postgres::Conversation,
-    db::traits::ConversationSummary as DbConversationSummary,
+    db::traits::{ConversationSummary as DbConversationSummary, DatabaseClient},
     types::{AppError, Message, MessageRole, Result},
     AppState,
 };
@@ -132,7 +132,7 @@ pub async fn list_conversations(
     State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<Vec<ConversationSummary>>> {
-    let conversations = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_user_conversations(&claims.sub).await?;
+    let conversations = ctx.get::<crate::db::PostgresClient>().expect("not provided").get_user_conversations(&claims.sub).await?;
 
     let summaries: Vec<ConversationSummary> = conversations
         .into_iter()
@@ -163,11 +163,11 @@ pub async fn get_conversation(
     Path(id): Path<String>,
 ) -> Result<Json<ConversationDetails>> {
     // Verify conversation belongs to user
-    let conversation = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_conversation(&id).await?;
+    let conversation = ctx.get::<crate::db::PostgresClient>().expect("not provided").get_conversation(&id).await?;
 
     ensure_conversation_owner(&conversation.user_id, &claims.sub, "access")?;
 
-    let messages = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_conversation_history(&id).await?;
+    let messages = ctx.get::<crate::db::PostgresClient>().expect("not provided").get_conversation_history(&id).await?;
 
     let message_details: Vec<ConversationMessage> = messages
         .into_iter()
@@ -207,11 +207,11 @@ pub async fn update_conversation(
     Json(payload): Json<UpdateConversationRequest>,
 ) -> Result<Json<serde_json::Value>> {
     // Verify conversation belongs to user
-    let conversation = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_conversation(&id).await?;
+    let conversation = ctx.get::<crate::db::PostgresClient>().expect("not provided").get_conversation(&id).await?;
 
     ensure_conversation_owner(&conversation.user_id, &claims.sub, "modify")?;
 
-    ctx.get::<crate::context_services::DbService>().expect("not provided").0
+    ctx.get::<crate::db::PostgresClient>().expect("not provided")
         .update_conversation_title(&id, payload.title.as_deref())
         .await?;
 
@@ -239,11 +239,11 @@ pub async fn delete_conversation(
     Path(id): Path<String>,
 ) -> Result<axum::http::StatusCode> {
     // Verify conversation belongs to user
-    let conversation = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_conversation(&id).await?;
+    let conversation = ctx.get::<crate::db::PostgresClient>().expect("not provided").get_conversation(&id).await?;
 
     ensure_conversation_owner(&conversation.user_id, &claims.sub, "delete")?;
 
-    ctx.get::<crate::context_services::DbService>().expect("not provided").0.delete_conversation(&id).await?;
+    ctx.get::<crate::db::PostgresClient>().expect("not provided").delete_conversation(&id).await?;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{CordisError, Service};
+use crate::{CordisError, LoaderJournal, Service};
 
 /// TOML wrapper struct for `[[entry]]` array deserialization.
 #[derive(Debug, Deserialize)]
@@ -269,13 +269,23 @@ impl Loader {
     /// registered under the entry's `plugin` name) these arms fall back to
     /// log-only. Startup instantiation of new entries goes through
     /// [`Loader::instantiate`] instead, which reports per-entry results.
+    ///
+    /// The [`crate::LoaderJournal`] (when provided as a `Service`) makes the
+    /// `UpdateConfig` and `Retire` arms real: `UpdateConfig` stores the new
+    /// config, bumps `generation`, and calls `Fiber::update` when the journal
+    /// knows the live fiber id (leaning on [`crate::RegistryService::get_fiber`]
+    /// to resolve it); `Retire` clears the record and bumps `generation`.
+    /// When the journal is absent both arms stay log-only.
     pub fn execute_action(action: &LoaderAction, ctx: &std::sync::Arc<crate::Context>) {
-        let Some(registry) = ctx.get::<crate::PluginRegistry>() else {
-            tracing::warn!("PluginRegistry not provided; loader actions are log-only");
-            return;
-        };
+        let journal = ctx.get::<LoaderJournal>();
+        let registry = ctx.get::<crate::PluginRegistry>();
         match action {
             LoaderAction::RebuildFiber { id, plugin } => {
+                let Some(registry) = registry else {
+                    tracing::warn!(id = %id, plugin = %plugin,
+                        "PluginRegistry not provided; loader actions are log-only");
+                    return;
+                };
                 match registry
                     .get(plugin)
                     .ok_or_else(|| {
@@ -285,21 +295,77 @@ impl Loader {
                     })
                     .and_then(|factory| factory(ctx, &serde_json::Value::Null))
                 {
-                    Ok(_fid) => {
-                        tracing::info!(id = %id, plugin = %plugin, "Loader: rebuilt fiber for entry");
+                    Ok(fid) => {
+                        if let Some(journal) = &journal {
+                            journal.upsert(id, plugin, serde_json::Value::Null, Some(fid));
+                        }
+                        tracing::info!(id = %id, plugin = %plugin, fiber_id = %fid,
+                            "Loader: rebuilt fiber for entry");
                     }
                     Err(e) => {
                         tracing::warn!(id = %id, plugin = %plugin, error = %e, "Loader: rebuild failed");
                     }
                 }
             }
-            LoaderAction::UpdateConfig { id, .. } => {
-                // fiber.update(new_config) needs the live FiberId for `id`,
-                // which the loader does not track yet; stays log-only.
-                tracing::info!(id = %id, "Loader: updating fiber config for entry");
+            LoaderAction::UpdateConfig { id, new_config } => {
+                let Some(journal) = journal else {
+                    tracing::info!(id = %id, "Loader: updating fiber config for entry");
+                    return;
+                };
+                // Resolve the live fiber from the journal's recorded id so a
+                // config-only change can drive `Fiber::update` (recompute epoch
+                // + dependency satisfaction) rather than a full rebuild.
+                let recorded = journal.get(id).and_then(|r| r.fiber_id);
+                let fiber = if let Some(fid) = recorded {
+                    ctx.get::<crate::RegistryService>().and_then(|rs| rs.get_fiber(fid))
+                } else {
+                    None
+                };
+                if let Some(fiber) = fiber {
+                    // `Fiber::update` is async; run it inline only when we are
+                    // inside a multi-thread tokio runtime (as production
+                    // hot-reload is), matching the `block_in_place` pattern used
+                    // by the plugin factories. Hosting a current-thread runtime
+                    // or no runtime at all leaves the update journal-only so we
+                    // never panic on `block_in_place`/`block_on`.
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(handle)
+                            if handle.runtime_flavor()
+                                == tokio::runtime::RuntimeFlavor::CurrentThread =>
+                        {
+                            tracing::info!(id = %id,
+                                "Loader: current-thread runtime; fiber config update is journal-only");
+                        }
+                        Ok(handle) => {
+                            tracing::info!(id = %id, "Loader: applying fiber config update (live fiber)");
+                            let ctx_ref = ctx.clone();
+                            let fiber_ref = fiber.clone();
+                            tokio::task::block_in_place(move || {
+                                handle.block_on(fiber_ref.update(&ctx_ref))
+                            });
+                        }
+                        Err(_) => {
+                            tracing::info!(id = %id,
+                                "Loader: no tokio runtime in scope; fiber config update is journal-only");
+                        }
+                    }
+                } else {
+                    tracing::info!(id = %id, "Loader: no live fiber for entry; journal-only config update");
+                }
+                journal.update_config(id, new_config.clone(), recorded);
+                tracing::info!(id = %id, config = %new_config, "Loader: updated fiber config for entry");
             }
             LoaderAction::Retire { id } => {
-                tracing::info!(id = %id, "Loader: retiring entry");
+                if let Some(journal) = &journal {
+                    if let Some(removed) = journal.retire(id) {
+                        tracing::info!(id = %id, plugin = %removed.plugin,
+                            "Loader: retired entry (journal record cleared)");
+                    } else {
+                        tracing::info!(id = %id, "Loader: retiring entry (no journal record)");
+                    }
+                } else {
+                    tracing::info!(id = %id, "Loader: retiring entry");
+                }
             }
             LoaderAction::Begin { id } => {
                 // `Entry.plugin` is not carried by this action; startup
@@ -314,7 +380,10 @@ impl Loader {
     ///
     /// Looks up the factory registered under `plugin_name`, invokes it with
     /// `(ctx, config)` so the plugin lands via `Context::plugin` (single-source
-    /// discipline applies), and returns the resulting fiber id. Missing
+    /// discipline applies), and returns the resulting fiber id. When the
+    /// [`crate::LoaderJournal`] is provided, the successful instantiation
+    /// records `{plugin, config, fiber_id: Some(fid), generation+1}` so later
+    /// `UpdateConfig` / `Retire` actions can resolve the live fiber. Missing
     /// registry or missing factory are `CordisError::Configuration`.
     pub fn instantiate(
         ctx: &std::sync::Arc<crate::Context>,
@@ -333,7 +402,10 @@ impl Loader {
             )));
         };
         let fid = factory(ctx, config)?;
-        tracing::info!(entry_id=%entry_id, plugin=%plugin_name, "Loader: instantiated plugin");
+        if let Some(journal) = ctx.get::<LoaderJournal>() {
+            journal.upsert(entry_id, plugin_name, config.clone(), Some(fid));
+        }
+        tracing::info!(entry_id=%entry_id, plugin=%plugin_name, fiber_id=%fid, "Loader: instantiated plugin");
         Ok(fid)
     }
 }
@@ -341,7 +413,9 @@ impl Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Context;
     use serde_json::json;
+    use std::sync::Arc;
 
     #[test]
     fn entry_json_round_trip() {
@@ -513,5 +587,163 @@ disabled = false
         // New entry should produce a Begin action
         assert!(!actions.is_empty());
         assert!(matches!(actions[0], LoaderAction::Begin { .. }));
+    }
+
+    #[test]
+    fn loader_journal_upsert_and_get() {
+        let journal = LoaderJournal::new();
+        assert!(journal.is_empty());
+        journal.upsert("svc:alpha", "AlphaService", json!({"v": 1}), Some(7));
+        assert_eq!(journal.len(), 1);
+        let rec = journal.get("svc:alpha").expect("record present");
+        assert_eq!(rec.plugin, "AlphaService");
+        assert_eq!(rec.config, json!({"v": 1}));
+        assert_eq!(rec.fiber_id, Some(7));
+        assert_eq!(rec.generation, 1);
+    }
+
+    #[test]
+    fn retire_clears_record_and_bumps_generation_tracking() {
+        let journal = LoaderJournal::new();
+        journal.upsert("svc:beta", "BetaService", json!({"v": 1}), Some(11));
+
+        // Retire removes the record entirely.
+        let removed = journal.retire("svc:beta").expect("record present before retire");
+        assert_eq!(removed.plugin, "BetaService");
+        assert!(journal.get("svc:beta").is_none());
+        assert!(journal.is_empty());
+
+        // A later upsert for the same id starts a fresh generation, so the
+        // previous record is not re-born at its old generation.
+        journal.upsert("svc:beta", "BetaService", json!({"v": 2}), Some(12));
+        let rec = journal.get("svc:beta").unwrap();
+        assert_eq!(rec.fiber_id, Some(12));
+        assert_eq!(rec.generation, 1);
+    }
+
+    #[test]
+    fn update_config_bumps_generation_and_stores_new_config() {
+        let journal = LoaderJournal::new();
+        journal.upsert("svc:gamma", "GammaService", json!({"v": 1}), Some(21));
+        assert_eq!(journal.get("svc:gamma").unwrap().generation, 1);
+
+        let updated = journal
+            .update_config("svc:gamma", json!({"v": 2}), None)
+            .expect("record exists");
+        assert_eq!(updated.config, json!({"v": 2}));
+        assert_eq!(updated.generation, 2);
+
+        // Config persisted in the journal.
+        let rec = journal.get("svc:gamma").unwrap();
+        assert_eq!(rec.config, json!({"v": 2}));
+        assert_eq!(rec.generation, 2);
+        // fiber_id unchanged when not explicitly updated.
+        assert_eq!(rec.fiber_id, Some(21));
+    }
+
+    #[test]
+    fn update_config_missing_id_is_noop() {
+        let journal = LoaderJournal::new();
+        assert!(journal.update_config("svc:ghost", json!({"v": 1}), None).is_none());
+        assert!(journal.is_empty());
+    }
+
+    #[test]
+    fn execute_action_retire_clears_journal_record() {
+        let ctx = Context::new_root();
+        let journal = ctx.provide(LoaderJournal::new());
+        journal.upsert("svc:delta", "DeltaService", json!({"v": 1}), Some(31));
+
+        Loader::execute_action(&LoaderAction::Retire { id: "svc:delta".into() }, &ctx);
+        assert!(journal.get("svc:delta").is_none());
+        assert!(journal.is_empty());
+    }
+
+    #[test]
+    fn execute_action_update_config_bumps_generation_without_fiber() {
+        let ctx = Context::new_root();
+        let journal = ctx.provide(LoaderJournal::new());
+        journal.upsert("svc:epsilon", "EpsilonService", json!({"v": 1}), Some(41));
+
+        Loader::execute_action(
+            &LoaderAction::UpdateConfig {
+                id: "svc:epsilon".into(),
+                new_config: json!({"v": 2}),
+            },
+            &ctx,
+        );
+
+        // No RegistryService / live fiber was resolvable, so the update is
+        // journal-only, but the record must still advance generation and store
+        // the new config.
+        let rec = journal.get("svc:epsilon").expect("record retained");
+        assert_eq!(rec.config, json!({"v": 2}));
+        assert_eq!(rec.generation, 2);
+        assert_eq!(rec.fiber_id, Some(41));
+    }
+
+    #[test]
+    fn execute_action_update_config_without_journal_is_log_only() {
+        let ctx = Context::new_root();
+        // No registry, no journal — arm must not panic and must stay log-only.
+        Loader::execute_action(
+            &LoaderAction::UpdateConfig {
+                id: "svc:zeta".into(),
+                new_config: json!({"v": 2}),
+            },
+            &ctx,
+        );
+        assert!(ctx.get::<LoaderJournal>().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn instantiate_writes_journal_record_and_update_reaches_live_fiber() {
+        use crate::RegistryService;
+
+        let ctx = Context::new_root();
+        ctx.provide(LoaderJournal::new());
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        // A small plugin factory that provides a service via Context::plugin,
+        // mirroring the production factory pattern.
+        #[derive(Debug)]
+        struct Svc;
+        impl Service for Svc {}
+
+        plugin_registry.register(
+            "SvcFactory",
+            Arc::new(|ctx, config| {
+                let _ = config;
+                let future = ctx.plugin(Svc);
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(future)
+                })
+            }),
+        );
+
+        let fid = Loader::instantiate(&ctx, "SvcFactory", &json!({"v": 1}), "svc:theta")
+            .expect("instantiate should succeed");
+        assert!(fid > 0);
+
+        let journal = ctx.get::<LoaderJournal>().expect("journal present");
+        let rec = journal.get("svc:theta").expect("instantiate wrote journal record");
+        assert_eq!(rec.plugin, "SvcFactory");
+        assert_eq!(rec.config, json!({"v": 1}));
+        assert_eq!(rec.fiber_id, Some(fid));
+        assert_eq!(rec.generation, 1);
+
+        // UpdateConfig with the live fiber resolves through RegistryService and
+        // drives Fiber::update — repeat it against the same ctx.
+        Loader::execute_action(
+            &LoaderAction::UpdateConfig {
+                id: "svc:theta".into(),
+                new_config: json!({"v": 2}),
+            },
+            &ctx,
+        );
+        let rec = journal.get("svc:theta").expect("record retained");
+        assert_eq!(rec.config, json!({"v": 2}));
+        assert_eq!(rec.generation, 2);
     }
 }

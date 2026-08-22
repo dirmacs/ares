@@ -84,6 +84,18 @@ File changes are detected via `notify` crate with 500ms debounce. When a watched
 
 No polling loops. No 60-second stale windows.
 
+## Dispatcher parity
+
+The events dispatcher (`EventsService`) mirrors the Cordis five dispatch modes. `Emit` invokes every handler fire-and-forget on the runtime and broadcasts the event and payload on the bus, returning immediately. `Parallel` fans handlers out across a `JoinSet` and propagates the first error it observes. `Serial` threads the payload through each handler in order and aborts on the first error. `Bail` stops at the first handler that returns a non-null result, without running later handlers. `Waterfall` is a serial transform chain: each handler passes its result to the next, and a handler short-circuits by returning an object whose `waterfall_stop` field is `true`. That sentinel is the Rust analogue of the TS `next()` closure, a documented static-dispatch deviation since Rust passes no `next` parameter to a handler.
+
+## Loader journal
+
+`LoaderJournal` keeps live bookkeeping for loader entries. Each record stores the plugin label, the last applied config, the live fiber id when known, and a monotonically increasing generation counter. `Loader::execute_action` and `Loader::instantiate` use it: `RebuildFiber` and `instantiate` upsert a record, `UpdateConfig` bumps generation and reaches the live fiber (via `RegistryService::get_fiber`) to call `Fiber::update`, and `Retire` clears the record. It is provided as a service with `ctx.provide(LoaderJournal::new())`; when absent, the loader actions degrade to log-only.
+
+## Fiber lifecycle
+
+A fiber transitions through lifecycle states as services are provided and reloaded. `Active` and `Inactive` reflect a service whose dependencies are satisfied or missing, while `Reloading` and `Unloading` cover in-flight change and teardown. `Loading` marks a fiber mid-instantiation and `Failed` records a terminal error from a plugin activation; a failed fiber stays observable so operator tooling (for example the admin Cordis endpoints and the loader journal) can report why a registration did not become `Active`.
+
 ## Adding a new tool
 
 1. Implement the `Tool` trait in `crates/ares-tools/src/tools/`

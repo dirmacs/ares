@@ -196,7 +196,7 @@ async fn load_tenant_agent_config(
     Ok(Some((agent_config, config_version, config_json)))
 }
 
-pub async fn resolve_agent_for_tenant(
+pub(crate) async fn resolve_agent_for_tenant(
     pool: &PgPool,
     agent_registry: &AgentRegistry,
     tenant_id: &str,
@@ -287,7 +287,7 @@ pub async fn resolve_required_tenant_agent_from_ctx(
     resolve_required_tenant_agent(pool, agent_registry, &tenant_id, agent_name, fleet_secrets).await
 }
 
-pub async fn resolve_required_tenant_agent(
+pub(crate) async fn resolve_required_tenant_agent(
     pool: &PgPool,
     agent_registry: &AgentRegistry,
     tenant_id: &str,
@@ -320,7 +320,7 @@ pub async fn resolve_required_tenant_agent(
 }
 
 /// Legacy helper kept for backward compatibility with older callers.
-/// New runtime code should use `resolve_agent_for_tenant` or `resolve_required_tenant_agent`.
+/// New runtime code should use `resolve_agent_from_ctx` or `resolve_required_tenant_agent_from_ctx`.
 pub async fn create_tenant_agent(
     pool: &PgPool,
     agent_registry: &AgentRegistry,

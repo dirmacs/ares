@@ -525,7 +525,7 @@ Handle employee info, policies, and benefits."#
     /// All visibility and execution is filtered by `tenant_id`, so the agent
     /// can never reach another tenant's tools.
     #[cfg(feature = "postgres")]
-    pub fn set_runtime_tools(
+    pub(crate) fn set_runtime_tools(
         &mut self,
         registry: Arc<ares_tools::runtime_registry::RuntimeToolRegistry>,
         tenant_id: String,
@@ -535,11 +535,12 @@ Handle employee info, policies, and benefits."#
     }
 
     #[cfg(not(feature = "postgres"))]
-    /// Stub when `postgres` feature is disabled — no-op, keeps handler bodies compiling without `#[cfg]`.
-    /// Cordis P1: `PostgresService::check()` (i.e. `cfg!(feature = "postgres")`) is the runtime gate;
-    /// this method exists in both builds so `if cfg!(feature = "postgres") { agent.set_runtime_tools(...) }` compiles.
+    /// Stub when `postgres` feature is disabled — no-op.
+    /// Cordis P1: `PostgresService::check()` (i.e. `cfg!(feature = "postgres")`) is the runtime gate.
+    /// `set_runtime_tools_from_ctx` is the public API; this crate-private method exists in both
+    /// builds so the from_ctx wrapper compiles without `#[cfg]`.
     /// Uses `Arc<()>` to avoid depending on `RuntimeToolRegistry` which is `#[cfg(any(postgres, test))]` in `ares-tools`.
-    pub fn set_runtime_tools(&mut self, _registry: Arc<()>, _tenant_id: String) {}
+    pub(crate) fn set_runtime_tools(&mut self, _registry: Arc<()>, _tenant_id: String) {}
 
     fn runtime_tenant_from_ctx(ctx: &Arc<Context>) -> Option<String> {
         #[cfg(feature = "postgres")]

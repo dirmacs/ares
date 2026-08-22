@@ -158,7 +158,7 @@ pub async fn verify_fleet_provider(
 
     // Fall back to the registry's ProviderConfig for the base URL when the
     // admin hasn't set an override.
-    let provider_config = ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0.get_provider(&provider_name);
+    let provider_config = ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0.get_provider_for_ctx(&ctx, &provider_name);
 
     let (api_base, api_key) = match (override_, provider_config.as_ref()) {
         (Some(o), _) => {

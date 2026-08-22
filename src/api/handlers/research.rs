@@ -97,7 +97,7 @@ pub async fn deep_research(
     let (depth, max_iterations, model_name) = plan_research_run(&config, &payload);
 
     let llm_client = match ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0
-        .create_client_for_model(model_name)
+        .create_client_for_model_ctx(&ctx, model_name)
         .await
     {
         Ok(client) => client,

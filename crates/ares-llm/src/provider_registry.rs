@@ -209,6 +209,20 @@ impl ProviderRegistry {
         self.providers.get(name).cloned()
     }
 
+    /// Resolve a provider visible to the tenant derived from the context's isolate
+    /// namespace. Reads `ctx.isolate_label(TypeId::of::<ProviderRegistry>())` and
+    /// strips a leading `tenant:`/`user:` prefix (mirroring
+    /// `ares_agents::resolver::user_id_from_ctx`), delegating to
+    /// `get_provider_for_tenant` with the derived tenant (`None` when unlabeled).
+    pub fn get_provider_for_ctx(
+        &self,
+        ctx: &std::sync::Arc<ares_cordis_core::Context>,
+        name: &str,
+    ) -> Option<ProviderConfig> {
+        let tenant = tenant_from_ctx(ctx);
+        self.get_provider_for_tenant(name, tenant.as_deref())
+    }
+
     fn runtime_provider_entry_for_tenant(
         &self,
         name: &str,
@@ -535,12 +549,35 @@ impl ProviderRegistry {
         names
     }
 
-    /// Create an LLM client for a specific model by name
+    /// Create an LLM client for a specific model by name.
+    ///
+    /// Fleet-wide tenant resolution (tenant `None`).
     pub async fn create_client_for_model(&self, model_name: &str) -> Result<Box<dyn LLMClient>> {
+        self.create_client_for_model_inner(model_name, None).await
+    }
+
+    /// Create an LLM client for a specific model by name, deriving the tenant
+    /// from the context's isolate namespace so tenant-scoped runtime providers
+    /// are used when the caller holds a tenant-isolated context.
+    pub async fn create_client_for_model_ctx(
+        &self,
+        ctx: &std::sync::Arc<ares_cordis_core::Context>,
+        model_name: &str,
+    ) -> Result<Box<dyn LLMClient>> {
+        let tenant = tenant_from_ctx(ctx);
+        self.create_client_for_model_inner(model_name, tenant.as_deref())
+            .await
+    }
+
+    async fn create_client_for_model_inner(
+        &self,
+        model_name: &str,
+        tenant: Option<&str>,
+    ) -> Result<Box<dyn LLMClient>> {
         // 1. Try legacy explicit models first
         if let Some(model_config) = self.models.get(model_name) {
             let runtime_entry =
-                self.runtime_provider_entry_for_tenant(&model_config.provider, None);
+                self.runtime_provider_entry_for_tenant(&model_config.provider, tenant);
             if let Some(entry) = runtime_entry {
                 let provider = Self::provider_from_runtime_entry_with_params(
                     &model_config.provider,
@@ -569,7 +606,7 @@ impl ProviderRegistry {
         if let Some(model_id) = Self::bedrock_model_id_from_name(model_name) {
             let model_config = Self::bedrock_model_config(model_id);
             let provider_config = self
-                .get_provider("bedrock")
+                .get_provider_for_tenant("bedrock", tenant)
                 .unwrap_or_else(Self::default_bedrock_provider_config);
             let provider = Provider::from_model_config(&model_config, &provider_config)?;
             return provider.create_client().await;
@@ -579,7 +616,7 @@ impl ProviderRegistry {
         if let Some(model_id) = Self::azure_model_id_from_name(model_name) {
             let model_config = Self::azure_model_config(model_id);
             let provider_config = self
-                .get_provider("azure")
+                .get_provider_for_tenant("azure", tenant)
                 .unwrap_or_else(Self::default_azure_provider_config);
             let provider = Provider::from_model_config(&model_config, &provider_config)?;
             return provider.create_client().await;
@@ -1949,6 +1986,89 @@ mod tests {
             "No model found matching requirements",
         );
     }
+
+    #[test]
+    fn get_provider_for_ctx_derives_tenant_from_isolate_namespace() {
+        // Cordis design (§4): per-tenant provider resolution should be driven by
+        // the context's isolate namespace, not a throwaway method param.
+        // get_provider_for_ctx(ctx, name) reads
+        // ctx.isolate_label(TypeId::of::<ProviderRegistry>()) and strips a
+        // leading 'tenant:' prefix (mirroring resolver::user_id_from_ctx) so a
+        // tenant-isolated context resolves the tenant-scoped provider.
+
+        let registry = ProviderRegistry::new();
+        let global = RuntimeProviderEntry {
+            tenant_id: None,
+            display_name: "Global Shared".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://global.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("global-model".to_string()),
+            headers: HashMap::new(),
+            api_key: Some("global-key".to_string()),
+            enabled: true,
+        };
+        let tenant = RuntimeProviderEntry {
+            tenant_id: Some("tenant-a".to_string()),
+            display_name: "Tenant Shared".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://tenant.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("tenant-model".to_string()),
+            headers: HashMap::new(),
+            api_key: Some("tenant-key".to_string()),
+            enabled: true,
+        };
+        registry.reload_runtime_providers(
+            vec![global, tenant],
+            vec!["shared-runtime".to_string(), "shared-runtime".to_string()],
+        );
+
+        let ctx: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+
+        // Untagged context -> no isolate label -> falls back to the fleet-wide
+        // provider (the shared "shared-runtime" entry's tenant is None).
+        let fleet = registry.get_provider_for_ctx(&ctx, "shared-runtime");
+        assert!(fleet.is_some(), "untagged ctx should resolve the fleet provider");
+
+        // A tenant-isolated context must drive resolution: the isolate label
+        // 'tenant:tenant-a' derives tenant 'tenant-a', so the tenant-scoped
+        // provider wins.
+        let tenant_ctx = ctx.isolate::<ProviderRegistry>("tenant:tenant-a");
+        let tenant_provider =
+            registry.get_provider_for_ctx(&tenant_ctx, "shared-runtime");
+        assert!(
+            tenant_provider.is_some(),
+            "tenant:tenant-a isolated ctx should resolve a provider"
+        );
+    }
+}
+
+/// Derive the tenant id from the context's isolate namespace for
+/// [`ProviderRegistry`], stripping a leading `tenant:`/`user:` prefix.
+///
+/// Mirrors `ares_agents::resolver::user_id_from_ctx`: an isolate label of the
+/// form `tenant:<id>` or `user:<id>` yields `<id>`; empty or unlabeled contexts
+/// yield `None` (fleet-wide resolution).
+pub fn tenant_from_ctx(ctx: &std::sync::Arc<ares_cordis_core::Context>) -> Option<String> {
+    ctx.isolate_label(std::any::TypeId::of::<ProviderRegistry>())
+        .and_then(|label| {
+            label
+                .strip_prefix("tenant:")
+                .or_else(|| label.strip_prefix("user:"))
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty())
+        })
+}
+
+// Cordis Service impl — allows direct ctx.get::<ProviderRegistry>() and makes
+// ProviderRegistry a valid isolate-realm key for per-tenant provider scoping.
+impl ares_cordis_core::Service for ProviderRegistry {
+    fn name(&self) -> &'static str { "provider_registry" }
+    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool { true }
 }
 
 // Cordis Service impl — allows direct ctx.get::<ConfigBasedLLMFactory>() without wrapper

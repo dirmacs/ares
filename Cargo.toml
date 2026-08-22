@@ -30,17 +30,17 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10.4"
 async-trait = "0.1"
 
-ares-types = { version = "0.8.0", path = "crates/ares-types" }
-ares-config = { version = "0.8.0", path = "crates/ares-config" }
-ares-rag = { version = "0.8.0", path = "crates/ares-rag" }
-ares-tools = { version = "0.8.0", path = "crates/ares-tools" }
-ares-llm = { version = "0.8.0", path = "crates/ares-llm" }
-ares-db = { version = "0.8.0", path = "crates/ares-db" }
-ares-mcp = { version = "0.8.0", path = "crates/ares-mcp" }
-ares-agents = { version = "0.8.0", path = "crates/ares-agents" }
-ares-auth = { version = "0.8.0", path = "crates/ares-auth" }
-ares-memory = { version = "0.8.0", path = "crates/ares-memory" }
-ares-cordis-core = { version = "0.8.0", path = "crates/ares-cordis-core" }
+ares-types = { version = "0.9.0", path = "crates/ares-types" }
+ares-config = { version = "0.9.0", path = "crates/ares-config" }
+ares-rag = { version = "0.9.0", path = "crates/ares-rag" }
+ares-tools = { version = "0.9.0", path = "crates/ares-tools" }
+ares-llm = { version = "0.9.0", path = "crates/ares-llm" }
+ares-db = { version = "0.9.0", path = "crates/ares-db" }
+ares-mcp = { version = "0.9.0", path = "crates/ares-mcp" }
+ares-agents = { version = "0.9.0", path = "crates/ares-agents" }
+ares-auth = { version = "0.9.0", path = "crates/ares-auth" }
+ares-memory = { version = "0.9.0", path = "crates/ares-memory" }
+ares-cordis-core = { version = "0.9.0", path = "crates/ares-cordis-core" }
 anyhow = "1.0.100"
 hex = "0.4"
 rand = "0.9.2"
@@ -225,7 +225,7 @@ ares-db = { workspace = true }
 ares-mcp = { workspace = true }
 ares-agents = { workspace = true }
 ares-auth = { workspace = true }
-ares-cordis-core = { version = "0.8.0", path = "crates/ares-cordis-core" }
+ares-cordis-core = { version = "0.9.0", path = "crates/ares-cordis-core" }
 inventory = { workspace = true, optional = true }
 
 # HuggingFace model downloads (DRY — reuse lancor's hub client)

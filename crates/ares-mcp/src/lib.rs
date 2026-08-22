@@ -35,7 +35,7 @@ pub mod client;
 pub mod registry;
 
 #[cfg(all(feature = "mcp", feature = "postgres"))]
-pub use server::start_mcp_server;
+pub use server::{start_mcp_server, AgentRunner};
 
 #[cfg(feature = "mcp")]
 pub use extension::{McpToolExtension, NoOpMcpExtension};

@@ -1,5 +1,7 @@
 use crate::db::tenants::TenantDb;
+use ares_cordis_core::{Context, Service, ServiceInitFuture};
 use axum::{extract::Request, middleware::Next, response::Response};
+use parking_lot::Mutex;
 use std::sync::Arc;
 
 pub async fn track_usage(req: Request, next: Next) -> Response {
@@ -33,6 +35,53 @@ pub(crate) struct MeteringSnapshot {
     pub model_name: Option<String>,
     pub agent_name: Option<String>,
     pub provider_name: Option<String>,
+}
+
+/// Request-scoped usage metering, interceptable via Cordis `with_intercept`.
+#[derive(Debug)]
+pub struct UsageContext {
+    pub tenant_id: String,
+    snapshot: Mutex<Option<MeteringSnapshot>>,
+}
+
+impl Clone for UsageContext {
+    fn clone(&self) -> Self {
+        Self {
+            tenant_id: self.tenant_id.clone(),
+            snapshot: Mutex::new(self.snapshot.lock().clone()),
+        }
+    }
+}
+
+impl UsageContext {
+    pub fn new(tenant_id: impl Into<String>) -> Self {
+        Self {
+            tenant_id: tenant_id.into(),
+            snapshot: Mutex::new(None),
+        }
+    }
+
+    pub fn record(&self, snapshot: MeteringSnapshot) {
+        *self.snapshot.lock() = Some(snapshot);
+    }
+
+    pub fn snapshot(&self) -> Option<MeteringSnapshot> {
+        self.snapshot.lock().clone()
+    }
+}
+
+impl Service for UsageContext {
+    fn name(&self) -> &'static str {
+        "usage_context"
+    }
+
+    fn init(&self, _ctx: &Arc<Context>) -> ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 /// Bind parameters for a usage_events INSERT (no database I/O).
@@ -122,6 +171,13 @@ pub(crate) fn usage_event_params(
         agent_name: snapshot.agent_name.clone(),
         provider_name: snapshot.provider_name.clone(),
     }
+}
+
+/// Reads intercepted [`UsageContext`] and maps its snapshot to INSERT params.
+pub(crate) fn usage_event_params_from_ctx(ctx: &Arc<Context>) -> Option<UsageEventParams> {
+    let usage = ctx.get::<UsageContext>()?;
+    let snapshot = usage.snapshot()?;
+    Some(usage_event_params(&usage.tenant_id, &snapshot))
 }
 
 async fn record_usage(
@@ -343,5 +399,42 @@ mod tests {
     fn record_usage_early_return_when_no_metering() {
         let snapshot = parse_metering_headers(&HeaderMap::new());
         assert_eq!(snapshot, None);
+    }
+
+    #[test]
+    fn usage_context_readable_via_cordis_intercept() {
+        let root = ares_cordis_core::Context::new_root();
+        let child = root.with_intercept(UsageContext::new("acme"));
+        let retrieved = child
+            .get::<UsageContext>()
+            .expect("intercept must make UsageContext readable");
+        assert_eq!(retrieved.tenant_id, "acme");
+        assert_eq!(retrieved.snapshot(), None);
+    }
+
+    #[test]
+    fn usage_context_record_then_params_from_ctx() {
+        let root = ares_cordis_core::Context::new_root();
+        let child = root.with_intercept(UsageContext::new("acme"));
+        let usage = child
+            .get::<UsageContext>()
+            .expect("intercept must make UsageContext readable");
+        usage.record(MeteringSnapshot {
+            input_tokens: 3,
+            output_tokens: 7,
+            token_count: 10,
+            model_name: Some("gpt".into()),
+            agent_name: Some("bot".into()),
+            provider_name: Some("openai".into()),
+        });
+        let params = usage_event_params_from_ctx(&child).expect("recorded snapshot");
+        assert_eq!(params.tenant_id, "acme");
+        assert_eq!(params.token_count, 10);
+    }
+
+    #[test]
+    fn usage_event_params_from_ctx_none_without_intercept() {
+        let root = ares_cordis_core::Context::new_root();
+        assert_eq!(usage_event_params_from_ctx(&root), None);
     }
 }

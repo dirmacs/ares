@@ -402,13 +402,15 @@ impl AgentExecutionService {
             policy.authorize(&ovr.model)?;
         }
 
+        let tenant = tenant_from_request_ctx(ctx, req.tenant.as_deref());
+
         // 2) inject memory via `ContextProvider` if Some
         // Prefer per-request ctx_provider (req.ctx_provider) over service-level
         let mut injected_context: Option<String> = None;
         let provider_opt: Option<Arc<dyn crate::context_provider::ContextProvider>> =
             req.ctx_provider.clone().or_else(|| self.context_provider.clone());
         if let Some(provider) = provider_opt {
-            let tid = req.tenant.clone().unwrap_or_default();
+            let tid = tenant.clone().unwrap_or_default();
             let rt_ctx = crate::context_provider::AgentRuntimeContext::new(
                 tid.clone(),
                 &req.agent_name,
@@ -435,7 +437,7 @@ impl AgentExecutionService {
         let _dyn_tool_probe: Option<Arc<dyn ToolService>> = self.tool_service.clone();
         let tool_definitions = resolved_tool_service
             .as_ref()
-            .map(|svc| svc.list(req.tenant.clone()))
+            .map(|svc| svc.list(tenant.clone()))
             .unwrap_or_default();
         tracing::debug!(
             count = tool_definitions.len(),
@@ -445,7 +447,7 @@ impl AgentExecutionService {
         // Keep a handle for direct resolve fallbacks
         let _resolve_probe = resolved_tool_service
             .as_ref()
-            .and_then(|svc| svc.resolve("__probe__", req.tenant.clone()));
+            .and_then(|svc| svc.resolve("__probe__", tenant.clone()));
 
         // Build system prompt with injected memory
         let system_prompt = if let Some(extra) = injected_context.clone() {
@@ -517,7 +519,7 @@ impl AgentExecutionService {
                             if let Some(tenant_db) = &self.tenant_db {
                                 let _pool = tenant_db.pool();
                                 tracing::debug!(
-                                    tenant = ?req.tenant,
+                                    tenant = ?tenant,
                                     prompt = usage.prompt_tokens,
                                     completion = usage.completion_tokens,
                                     total = usage.total_tokens,
@@ -625,6 +627,24 @@ impl Default for AgentExecutionService {
     }
 }
 
+/// Derive tenant for `execute` without requiring the postgres-only resolver module.
+fn tenant_from_request_ctx(ctx: &Arc<Context>, fallback: Option<&str>) -> Option<String> {
+    #[cfg(feature = "postgres")]
+    {
+        let id = crate::resolver::user_id_from_ctx(ctx, fallback.unwrap_or(""));
+        if id.is_empty() { None } else { Some(id) }
+    }
+    #[cfg(not(feature = "postgres"))]
+    {
+        if let Some(tc) = ctx.get::<ares_types::models::TenantContext>() {
+            if !tc.tenant_id.is_empty() {
+                return Some(tc.tenant_id.clone());
+            }
+        }
+        fallback.filter(|s| !s.is_empty()).map(str::to_string)
+    }
+}
+
 impl Service for AgentExecutionService {
     fn name(&self) -> &'static str {
         "AgentExecutionService"
@@ -709,6 +729,68 @@ mod tests {
             count.load(Ordering::SeqCst),
             2,
             "Dispatch::Parallel must join both 'agent.started' handlers before returning"
+        );
+    }
+
+    struct RecordingToolService {
+        last: std::sync::Mutex<Option<Option<String>>>,
+    }
+
+    impl ToolService for RecordingToolService {
+        fn resolve(&self, _name: &str, tenant: Option<String>) -> Option<Arc<dyn ares_tools::Tool>> {
+            *self.last.lock().unwrap() = Some(tenant);
+            None
+        }
+        fn list(&self, tenant: Option<String>) -> Vec<ares_types::types::ToolDefinition> {
+            *self.last.lock().unwrap() = Some(tenant);
+            vec![]
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_lists_tools_using_tenant_context_intercept() {
+        let recorder = Arc::new(RecordingToolService {
+            last: std::sync::Mutex::new(None),
+        });
+        let svc = AgentExecutionService::new().with_tool_service(recorder.clone());
+        let ctx = Context::new_root().with_intercept(ares_types::models::TenantContext::new(
+            "acme".into(),
+            ares_types::models::TenantTier::Pro,
+        ));
+        let req = AgentRequest {
+            agent_name: "echo".into(),
+            tenant: None,
+            message: "hi".into(),
+            ..Default::default()
+        };
+        svc.execute(req, &ctx).await.expect("echo fallback");
+        assert_eq!(*recorder.last.lock().unwrap(), Some(Some("acme".into())));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn execute_isolate_label_wins_over_intercept_for_tools() {
+        let recorder = Arc::new(RecordingToolService {
+            last: std::sync::Mutex::new(None),
+        });
+        let svc = AgentExecutionService::new().with_tool_service(recorder.clone());
+        let intercepted = Context::new_root().with_intercept(
+            ares_types::models::TenantContext::new(
+                "from-intercept".into(),
+                ares_types::models::TenantTier::Pro,
+            ),
+        );
+        let ctx = intercepted.isolate::<crate::resolver::AgentResolverService>("tenant:from-isolate");
+        let req = AgentRequest {
+            agent_name: "echo".into(),
+            tenant: Some("from-request".into()),
+            message: "hi".into(),
+            ..Default::default()
+        };
+        svc.execute(req, &ctx).await.expect("echo fallback");
+        assert_eq!(
+            *recorder.last.lock().unwrap(),
+            Some(Some("from-isolate".into()))
         );
     }
 }

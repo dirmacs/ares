@@ -817,9 +817,9 @@ async fn run_server(
     struct ApiDoc;
 
     // Http plugin owns `/health` and `/api`. Extra binary routes merge on top.
-    let http = state.get::<ares_http::Http>().ok_or_else(|| {
-        "Http plugin not instantiated; add [[entry]] plugin=\"Http\" to config/cordis-entries.toml"
-    })?;
+    let http = state.get::<ares_http::Http>().ok_or(
+        "Http plugin not instantiated; add [[entry]] plugin=\"Http\" to config/cordis-entries.toml",
+    )?;
     let extra = axum::Router::new()
         .route("/health/detailed", get(health_check_detailed))
         .route("/config/info", get(config_info))

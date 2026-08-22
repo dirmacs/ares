@@ -644,17 +644,6 @@ AppError::FeatureDisabled(_) => ErrorCode::InternalError,
     }
     }
 
-    /// Check if this is an internal error that should be logged.
-    fn is_internal(&self) -> bool {
-        matches!(
-            self,
-            AppError::Database(_)
-                | AppError::LLM(_)
-                | AppError::Configuration(_)
-                | AppError::Internal(_)
-        )
-    }
-
     /// Check if this error is transient and retrying with a fallback provider
     /// may succeed (timeout, rate limit, 5xx upstream).
     pub fn is_retryable(&self) -> bool {

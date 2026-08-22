@@ -356,6 +356,10 @@ impl EventsService {
 
 Mapping from TS Harness (12 layers, ~60 packages), in Rust, one crate suffices; do not replicate layering ceremony. `EventsService` is a `Service` itself (`ctx.provide(EventsService::new())`), so any fiber can `ctx.get::<EventsService>().unwrap().on(...)`.
 
+### Event-first skill execution (0.9.0)
+
+Each skill receives the request `Context`. Tool steps run on a tenant-scoped context created with `ctx.isolate::<Tools>(tenant_id)` and invoke `Tools::execute` through `tools.execute`. Every Skill `LlmCall` step uses strict `Llm::complete` through `llm.complete`; `SkillEngine` and `SkillsService` do not call providers directly or fall back to `generate_with_history`. When `EventsService` is present, `waterfall_around` wraps these capability calls.
+
 ---
 
 ## 9. loader & config reconciliation (Declarative)

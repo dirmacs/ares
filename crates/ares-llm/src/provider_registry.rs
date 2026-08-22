@@ -318,7 +318,6 @@ impl ProviderRegistry {
             | ProviderConfig::Azure { default_model, .. }
             | ProviderConfig::Bedrock { default_model, .. }
             | ProviderConfig::Ollama { default_model, .. } => default_model,
-            _ => "",
         }
     }
 

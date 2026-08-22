@@ -121,7 +121,7 @@ async fn fanout_pipelines(
 use crate::execution::{Execute, AgentRequest};
 // Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
-use cordis::{Context, CordisError, Disposable};
+use cordis::{Context, Disposable};
 // Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
 use ares_store::PostgresClient;
@@ -353,6 +353,7 @@ impl TriggerService {
                             &trigger.tenant_id,
                             serde_json::json!({"message": event_message}),
                             &run_id,
+                            ctx,
                         )
                         .await;
                     let duration_ms = start.elapsed().as_millis() as i64;
@@ -599,6 +600,7 @@ async fn execute_triggered_agent_legacy(
                 &trigger.tenant_id,
                 serde_json::json!({"message": event_message}),
                 &run_id,
+                app_state,
             )
             .await;
 

@@ -131,9 +131,73 @@ impl SkillEngine {
         }
     }
 
-    fn resolve_tenant_tool(&self, tenant_id: &str, name: &str) -> Option<Arc<dyn ares_tools::Tool>> {
-        let ctx = cordis::Context::new_root().isolate::<Tools>(tenant_id);
-        self.tools.resolve(&ctx, name)
+    fn scoped_tool_context(
+        &self,
+        ctx: &Arc<cordis::Context>,
+        tenant_id: &str,
+    ) -> Arc<cordis::Context> {
+        ctx.isolate::<Tools>(tenant_id.to_string())
+    }
+
+    fn resolve_tenant_tool(
+        &self,
+        ctx: &Arc<cordis::Context>,
+        tenant_id: &str,
+        name: &str,
+    ) -> Option<Arc<dyn ares_tools::Tool>> {
+        let scoped = self.scoped_tool_context(ctx, tenant_id);
+        let tools = scoped.get::<Tools>().unwrap_or_else(|| Arc::clone(&self.tools));
+        tools.resolve(&scoped, name)
+    }
+
+    async fn execute_tenant_tool(
+        &self,
+        ctx: &Arc<cordis::Context>,
+        tenant_id: &str,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let scoped = self.scoped_tool_context(ctx, tenant_id);
+        let tools = scoped.get::<Tools>().unwrap_or_else(|| Arc::clone(&self.tools));
+        tools
+            .execute(&scoped, name, args)
+            .await
+            .map_err(|e| match e {
+                AppError::NotFound(_) => format!("Tool {name} not found"),
+                e => format!("Tool {name} execution error: {e}"),
+            })
+    }
+
+    async fn complete_llm_step(
+        &self,
+        ctx: &Arc<cordis::Context>,
+        messages: &[(String, String)],
+        model_name: &str,
+    ) -> Result<LLMResponse, String> {
+        // Preserve the existing skill behavior: concatenate message contents in order.
+        let prompt = messages
+            .iter()
+            .map(|(_, content)| content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let request_ctx = if model_name.is_empty() || ctx.get::<ares_llm::ModelOverride>().is_some() {
+            Arc::clone(ctx)
+        } else {
+            ctx.with_intercept(ares_llm::ModelOverride {
+                model: model_name.to_string(),
+            })
+        };
+        let content = self
+            .llm
+            .complete(&request_ctx, &prompt)
+            .await
+            .map_err(|e| format!("LLM generation failed: {e}"))?;
+        Ok(LLMResponse {
+            content,
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            usage: None,
+        })
     }
 
     /// Execute a skill by id for a tenant.
@@ -146,8 +210,9 @@ impl SkillEngine {
         tenant_id: &str,
         input: serde_json::Value,
         run_id: &str,
+        ctx: &Arc<cordis::Context>,
     ) -> Result<serde_json::Value, String> {
-        self.execute_skill_at_depth(skill_id, tenant_id, input, run_id, 0)
+        self.execute_skill_at_depth(skill_id, tenant_id, input, run_id, ctx, 0)
             .await
     }
 
@@ -157,6 +222,7 @@ impl SkillEngine {
         tenant_id: &str,
         input: serde_json::Value,
         run_id: &str,
+        ctx: &Arc<cordis::Context>,
         depth: usize,
     ) -> Result<serde_json::Value, String> {
         validate_skill_call_depth(depth)?;
@@ -184,15 +250,10 @@ impl SkillEngine {
                     ensure_tenant_tool_allowed(&self.pool, tenant_id, &tool_name).await?;
                     let start = std::time::Instant::now();
 
-                    // Resolve via Tools (tenant isolate → runtime → static).
-                    let result = if let Some(tool) = self.resolve_tenant_tool(tenant_id, &tool_name)
-                    {
-                        tool.execute(args.clone())
-                            .await
-                            .map_err(|e| format!("Tool {} execution error: {}", tool_name, e))?
-                    } else {
-                        return Err(format!("Tool {} not found", tool_name));
-                    };
+                    // Execute via request-context Tools (tenant isolate → runtime → static).
+                    let result = self
+                        .execute_tenant_tool(ctx, tenant_id, &tool_name, args.clone())
+                        .await?;
 
                     let latency_ms = start.elapsed().as_millis() as i64;
 
@@ -223,22 +284,12 @@ impl SkillEngine {
                             .unwrap_or_else(|| ("default".to_string(), model_tier.clone()));
                     ensure_tenant_model_allowed(&self.pool, tenant_id, &model_name).await?;
 
-                    // Build messages and call LLM
+                    // Build messages and call Llm through the request context.
                     let messages = vec![("user".to_string(), prompt.clone())];
-                    let registry = self.llm.provider_registry();
-                    let client = match registry.create_client_for_model(&model_name).await {
-                        Ok(c) => c,
-                        Err(_) => registry
-                            .create_client_for_provider(&provider_name)
-                            .await
-                            .map_err(|e| format!("LLM client creation failed: {}", e))?,
-                    };
-
                     self.enforce_token_budget_before_llm_call(tenant_id).await?;
-                    let response = client
-                        .generate_with_history(&messages)
-                        .await
-                        .map_err(|e| format!("LLM generation failed: {}", e))?;
+                    let response = self
+                        .complete_llm_step(ctx, &messages, &model_name)
+                        .await?;
                     self.record_llm_token_budget_usage(tenant_id, run_id, &model_name, &response)
                         .await?;
 
@@ -271,6 +322,7 @@ impl SkillEngine {
                         tenant_id,
                         input,
                         run_id,
+                        ctx,
                         depth + 1,
                     ))
                     .await?;
@@ -288,6 +340,7 @@ impl SkillEngine {
                             let sub_step_index = step_index + 1 + sub_idx as i32;
                             self.execute_sub_step(
                                 sub_step,
+                                ctx,
                                 tenant_id,
                                 run_id,
                                 sub_step_index,
@@ -309,6 +362,7 @@ impl SkillEngine {
     async fn execute_sub_step(
         &self,
         step: &SkillStep,
+        ctx: &Arc<cordis::Context>,
         tenant_id: &str,
         run_id: &str,
         step_index: i32,
@@ -321,13 +375,9 @@ impl SkillEngine {
                 ensure_tenant_tool_allowed(&self.pool, tenant_id, tool_name).await?;
                 let start = std::time::Instant::now();
 
-                let result = if let Some(tool) = self.resolve_tenant_tool(tenant_id, tool_name) {
-                    tool.execute(args.clone())
-                        .await
-                        .map_err(|e| format!("Tool {} execution error: {}", tool_name, e))?
-                } else {
-                    return Err(format!("Tool {} not found", tool_name));
-                };
+                let result = self
+                    .execute_tenant_tool(ctx, tenant_id, tool_name, args.clone())
+                    .await?;
 
                 let latency_ms = start.elapsed().as_millis() as i64;
                 context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
@@ -354,20 +404,10 @@ impl SkillEngine {
                 ensure_tenant_model_allowed(&self.pool, tenant_id, &model_name).await?;
 
                 let messages = vec![("user".to_string(), prompt.clone())];
-                let registry = self.llm.provider_registry();
-                let client = match registry.create_client_for_model(&model_name).await {
-                    Ok(c) => c,
-                    Err(_) => registry
-                        .create_client_for_provider(&provider_name)
-                        .await
-                        .map_err(|e| format!("LLM client creation failed: {}", e))?,
-                };
-
                 self.enforce_token_budget_before_llm_call(tenant_id).await?;
-                let response = client
-                    .generate_with_history(&messages)
-                    .await
-                    .map_err(|e| format!("LLM generation failed: {}", e))?;
+                let response = self
+                    .complete_llm_step(ctx, &messages, &model_name)
+                    .await?;
                 self.record_llm_token_budget_usage(tenant_id, run_id, &model_name, &response)
                     .await?;
 
@@ -396,6 +436,7 @@ impl SkillEngine {
                     tenant_id,
                     input.clone(),
                     run_id,
+                    ctx,
                     depth + 1,
                 ))
                 .await?;
@@ -411,6 +452,7 @@ impl SkillEngine {
                         let sub_step_index = step_index + 1 + sub_idx as i32;
                         Box::pin(self.execute_sub_step(
                             sub_step,
+                            ctx,
                             tenant_id,
                             run_id,
                             sub_step_index,
@@ -678,7 +720,114 @@ impl cordis::Service for SkillEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ares_llm::{ClientPool, ProviderRegistry};
+    use ares_tools::Tool;
+    use cordis::{Context, EventsService};
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct EventProbeTool(Arc<AtomicBool>);
+
+    #[async_trait::async_trait]
+    impl Tool for EventProbeTool {
+        fn name(&self) -> &str {
+            "event-probe"
+        }
+
+        fn description(&self) -> &str {
+            "tool used to prove tools.execute dispatch"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+
+        async fn execute(&self, _args: serde_json::Value) -> ares_types::Result<serde_json::Value> {
+            self.0.store(true, Ordering::SeqCst);
+            Ok(json!({"reached": true}))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn skill_llm_call_uses_complete_waterfall() {
+        let mut registry = ProviderRegistry::new();
+        registry.register_provider(
+            "local",
+            ares_llm::ProviderConfig::Ollama {
+                api_key_env: "SKILL_ENGINE_TEST_KEY".to_string(),
+                base_url: "http://127.0.0.1:9".to_string(),
+                default_model: "test-model".to_string(),
+            },
+        );
+        registry.register_model(
+            "test-model",
+            ares_llm::ModelConfig {
+                provider: "local".to_string(),
+                model: "test-model".to_string(),
+                temperature: 0.0,
+                max_tokens: 32,
+            },
+        );
+        let llm = Arc::new(Llm::new(
+            Arc::new(registry),
+            Arc::new(ClientPool::with_defaults()),
+            None,
+        ));
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall("llm.complete".into(), |_payload, _next| async move {
+            Ok(json!({"content": "cached"}))
+        });
+        let engine = SkillEngine::new(
+            PgPool::connect_lazy("postgres://localhost/ares_test").expect("lazy pool"),
+            Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())),
+            llm,
+        );
+
+        let response = engine
+            .complete_llm_step(
+                &ctx,
+                &[("user".to_string(), "ignored if provider is reached".to_string())],
+                "test-model",
+            )
+            .await
+            .expect("llm.complete waterfall");
+        assert_eq!(response.content, "cached");
+        assert!(response.tool_calls.is_empty());
+        assert_eq!(response.finish_reason, "stop");
+        assert!(response.usage.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn skill_tool_call_uses_request_context_tools_execute_waterfall() {
+        let reached = Arc::new(AtomicBool::new(false));
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        ctx.provide(Tools::from_static([
+            Arc::new(EventProbeTool(Arc::clone(&reached))) as Arc<dyn Tool>,
+        ]));
+        events.on_waterfall("tools.execute".into(), |_payload, _next| async move {
+            Ok(json!({"result": {"cached": true}}))
+        });
+
+        let llm = Arc::new(Llm::new(
+            Arc::new(ProviderRegistry::new()),
+            Arc::new(ClientPool::with_defaults()),
+            None,
+        ));
+        let engine = SkillEngine::new(
+            PgPool::connect_lazy("postgres://localhost/ares_test").expect("lazy pool"),
+            Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())),
+            llm,
+        );
+        let result = engine
+            .execute_tenant_tool(&ctx, "acme", "event-probe", json!({"x": 1}))
+            .await
+            .expect("tools.execute waterfall");
+
+        assert_eq!(result, json!({"cached": true}));
+        assert!(!reached.load(Ordering::SeqCst));
+    }
 
     fn test_db_url() -> Option<String> {
         std::env::var("TEST_DATABASE_URL")

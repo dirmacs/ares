@@ -299,6 +299,7 @@ impl RuntimeToolRegistry {
     }
 
     /// Reload only tools visible to a given tenant (owned + public).
+    #[allow(dead_code)]
     pub(crate) async fn reload_for_tenant(&self, tenant_id: &str) -> Result<()> {
         let store = RuntimeToolStore::new(&self.pool);
         let rows = store.get_by_tenant(tenant_id).await?;
@@ -582,6 +583,7 @@ impl RuntimeToolRegistry {
     }
 
     /// Get all enabled tool names visible to a tenant.
+    #[allow(dead_code)]
     pub(crate) fn enabled_tool_names(&self, tenant_id: Option<&str>) -> Vec<String> {
         let meta = self.metadata.load();
 

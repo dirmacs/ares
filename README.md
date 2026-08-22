@@ -43,6 +43,7 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 - Crash recovery: checkpoint serialization, save agent state at each step, restore on restart
 - Service-based architecture (0.9.0): dependency injection via typed `Context`, services register with `ctx.plugin()` or `ctx.provide()`, handlers pull deps with `ctx.get::<T>()`
 - Unified execution: single `Execute` handles resolve, create, and execute for all call sites (chat, v1 API, scheduler, pipeline, trigger)
+- Event-first skills (0.9.0): `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`), falling back to a 5ms poll only when the notifier is unavailable. Skills carry the request `Context`, isolate tools with `ctx.isolate::<Tools>(tenant_id)`, and call `Tools::execute` on that tenant isolate. Skill `LlmCall` steps strictly use `Llm::complete` through `llm.complete`, with no direct provider `generate_with_history` fallback.
 - Hot-reload: file-watch triggers automatic service refresh without restart
 - Circuit breaker: LLM provider health tracked per-endpoint with automatic failover
 

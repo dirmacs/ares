@@ -7,7 +7,7 @@ use ares_store::agent_runs::{self, AgentRunMetadata};
 use ares_store::schedules::{AgentSchedule, MissedRunAudit, ScheduleStore, compute_next_run};
 use ares_store::PostgresClient;
 use ares_types::types::AgentContext;
-use cordis::{Context, CordisError, Disposable, ReflectService, Service};
+use cordis::{Context, Disposable, ReflectService, Service};
 use crate::execution::Execute;
 use chrono::{DateTime, Utc};
 use cron::Schedule;
@@ -887,6 +887,7 @@ async fn execute_scheduled_agent(
                 &sched.tenant_id,
                 serde_json::json!({"message": "scheduled run"}),
                 &run_id,
+                app_state,
             )
             .await;
 

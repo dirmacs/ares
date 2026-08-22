@@ -33,21 +33,19 @@ fn inject_tenant_tool_service(
         return;
     };
     let tenant_id = tc.tenant_id.as_str();
-    let tenant_ctx = state_ctx.isolate::<crate::context_services::ToolRegistryService>(tenant_id);
+    let tenant_ctx = state_ctx.isolate::<crate::ToolRegistry>(tenant_id);
     let base_tools = state_ctx
-        .get::<crate::context_services::ToolRegistryService>()
-        .expect("ToolRegistry missing")
-        .0
-        .clone();
-    tenant_ctx.provide(crate::context_services::ToolRegistryService(base_tools));
+        .get::<crate::ToolRegistry>()
+        .expect("ToolRegistry missing");
+    tenant_ctx.provide_arc(base_tools.clone());
     let scoped_tools = tenant_ctx
-        .get_isolated::<crate::context_services::ToolRegistryService>(tenant_id)
+        .get_isolated::<crate::ToolRegistry>(tenant_id)
         .expect("isolated ToolRegistry missing");
 
     // ConfigurableAgent uses this service for definitions and dispatch, rather
     // than merely resolving it for logging. Runtime tools remain filtered by
     // the existing tenant_id path below.
-    let service = ares_tools::UnifiedToolService::new(scoped_tools.0.clone());
+    let service = ares_tools::UnifiedToolService::new(scoped_tools.clone());
     agent.inject_tool_service(Arc::new(service));
 }
 
@@ -211,7 +209,7 @@ pub async fn v1_chat(
 
     // Legacy fallback: resolve_agent_from_ctx + inline execution
     // Cordis isolate: tenant-scoped tool resolution
-    let tenant_ctx = state_ctx.isolate::<crate::context_services::ToolRegistryService>(&tc.tenant_id);
+    let tenant_ctx = state_ctx.isolate::<crate::ToolRegistry>(&tc.tenant_id);
     tracing::debug!(
         tenant = %tc.tenant_id,
         "v1/chat: using Cordis-isolated context for tenant tool scoping"
@@ -564,7 +562,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(TestTool("tenant_a_tool")));
         registry.register(Arc::new(TestTool("tenant_b_tool")));
-        root.provide(crate::context_services::ToolRegistryService(Arc::new(registry)));
+        root.provide_arc(Arc::new(registry));
 
         let config = AgentConfig {
             model: "test".to_string(),

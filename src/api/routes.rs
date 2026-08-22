@@ -1186,9 +1186,7 @@ mod tests {
     async fn cordis_service_lifecycle_end_to_end_over_http() {
         let ctx = Context::new_root();
         ctx.provide(ares_cordis_core::ReflectService::new());
-        ctx.provide(crate::context_services::ToolRegistryService(
-            std::sync::Arc::new(ares_tools::ToolRegistry::new()),
-        ));
+        ctx.provide_arc(std::sync::Arc::new(ares_tools::ToolRegistry::new()));
         ctx.provide(ares_cordis_core::EventsService::new());
 
         let app = crate::api::handlers::admin::cordis::routes()

@@ -172,6 +172,54 @@ impl SchedulerService {
     async fn tick_once(&self, app_state: &AppState) -> Result<(), String> {
         self.run_due_schedules_owned(app_state).await
     }
+
+    /// Enrich a scheduled run payload through the Cordis `scheduler.before_run`
+    /// waterfall (around-middleware). Handlers may transform the payload and pass
+    /// it on via `next`, or short-circuit by not calling `next`. When no
+    /// `EventsService` is provided, or the dispatch errors, the payload is left
+    /// unchanged.
+    pub async fn before_run_payload(
+        &self,
+        ctx: &Arc<Context>,
+        run: serde_json::Value,
+    ) -> serde_json::Value {
+        let Some(events) = ctx.get::<ares_cordis_core::EventsService>() else {
+            return run;
+        };
+        events
+            .dispatch(
+                "scheduler.before_run".into(),
+                run.clone(),
+                ares_cordis_core::Dispatch::Waterfall,
+            )
+            .await
+            .unwrap_or(run)
+    }
+
+    /// Consult the Cordis `scheduler.admit` policy via `Dispatch::Bail`. A
+    /// handler returning a non-null value bails (denies) the run and its returned
+    /// value replaces the payload; a null result means the handler did not bail,
+    /// so the chain continues with the original payload. A run is admitted unless
+    /// some handler bailed. Returns `true` when admitted, `false` when denied.
+    ///
+    /// Because `Dispatch::Bail` resolves to the original payload when nothing
+    /// bails (not `Null`), admission is computed as "dispatch returned the
+    /// unchanged run". When no `EventsService` is provided, or the dispatch
+    /// errors, the run is admitted.
+    pub async fn admit_run(&self, ctx: &Arc<Context>, run: serde_json::Value) -> bool {
+        let Some(events) = ctx.get::<ares_cordis_core::EventsService>() else {
+            return true;
+        };
+        let result = events
+            .dispatch(
+                "scheduler.admit".into(),
+                run.clone(),
+                ares_cordis_core::Dispatch::Bail,
+            )
+            .await
+            .unwrap_or_else(|_| run.clone());
+        result == run
+    }
 }
 
 // Guard that aborts the tick task on dispose (LIFO accumulator).
@@ -1385,6 +1433,47 @@ mod tests {
         disposable.dispose();
     }
 
+    #[tokio::test]
+    async fn scheduler_admit_bail_policy_denies_run() {
+        let service = SchedulerService::new(
+            Arc::new(PostgresClient::new_test()),
+            Arc::new(AgentExecutionService::new()),
+            60_000,
+        );
+        let ctx = Context::new_root();
+        let events = ctx.provide(ares_cordis_core::EventsService::new());
+
+        // A Cordis `Dispatch::Bail` admission policy on `scheduler.admit`: a
+        // handler that returns a non-null value bails (denies) the run, while a
+        // null result means "did not bail" (the run is admitted).
+        let disposable = events.on(
+            "scheduler.admit".into(),
+            |payload: serde_json::Value| async move {
+                if payload
+                    .get("deny")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    Ok(serde_json::json!({ "denied": true }))
+                } else {
+                    Ok(serde_json::Value::Null)
+                }
+            },
+        );
+
+        let denied = service
+            .admit_run(&ctx, serde_json::json!({ "agent_name": "a", "deny": true }))
+            .await;
+        assert_eq!(denied, false, "deny:true payload should NOT be admitted");
+
+        let admitted = service
+            .admit_run(&ctx, serde_json::json!({ "agent_name": "a", "deny": false }))
+            .await;
+        assert_eq!(admitted, true, "deny:false payload should be admitted");
+
+        disposable.dispose();
+    }
+
     #[test]
     fn scheduler_service_next_run_at_matches_free_function() {
         let cron = "0 * * * * *";
@@ -1410,5 +1499,26 @@ mod tests {
         let r2 = SchedulerService::skip_catchup_attempted_due_schedules(due, &set);
         assert_eq!(r1.len(), r2.len());
         assert_eq!(r1[0].id, r2[0].id);
+    }
+
+    #[tokio::test]
+    async fn scheduler_before_run_waterfall_enriches_payload() {
+        let service = SchedulerService::new(
+            Arc::new(PostgresClient::new_test()),
+            Arc::new(AgentExecutionService::new()),
+            60_000,
+        );
+        let ctx = Context::new_root();
+        let events = ctx.provide(ares_cordis_core::EventsService::new());
+        events.on_waterfall("scheduler.before_run".into(), |payload, next| async move {
+            let mut obj = payload.as_object().cloned().unwrap_or_default();
+            obj.insert("enriched".into(), serde_json::json!(true));
+            next(serde_json::Value::Object(obj)).await
+        });
+
+        let enriched = service
+            .before_run_payload(&ctx, serde_json::json!({"agent_name":"a","run_id":"r1"}))
+            .await;
+        assert_eq!(enriched["enriched"], serde_json::json!(true));
     }
 }

@@ -1106,6 +1106,14 @@ impl DynamicConfigManager {
     }
 }
 
+impl ares_cordis_core::Service for DynamicConfigManager {
+    fn name(&self) -> &'static str { "dynamic_config_manager" }
+    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool { true }
+}
+
 // ============= Tests =============
 
 #[cfg(test)]
@@ -1728,6 +1736,26 @@ model: fast
 
         let warnings = manager.reload().expect("reload failed");
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn dynamic_config_manager_readable_via_cordis() {
+        use ares_cordis_core::Service;
+        let dir = TempDir::new().unwrap();
+        let manager = DynamicConfigManager::new(
+            dir.path().join("agents"),
+            dir.path().join("models"),
+            dir.path().join("tools"),
+            dir.path().join("workflows"),
+            dir.path().join("mcps"),
+            false,
+        )
+        .expect("empty dynamic config");
+        let ctx = std::sync::Arc::new(ares_cordis_core::Context::new_root());
+        ctx.provide(manager);
+        let got = ctx.get::<DynamicConfigManager>().expect("provided");
+        assert_eq!(got.name(), "dynamic_config_manager");
+        assert!(got.check());
     }
 
 }

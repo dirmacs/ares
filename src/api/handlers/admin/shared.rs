@@ -1680,7 +1680,7 @@ pub async fn rollback_agent_handler(
         })?;
 
     // Hot-swap into the in-memory DynamicConfigManager
-    ctx.get::<crate::context_services::DynamicConfigService>().expect("not provided").0.upsert_agent(agent_config.clone());
+    ctx.get::<crate::DynamicConfigManager>().expect("not provided").upsert_agent(agent_config.clone());
 
     // Record the rollback as a new version entry
     let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();

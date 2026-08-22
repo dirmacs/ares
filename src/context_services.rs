@@ -7,53 +7,19 @@ use crate::AppState;
 use std::sync::atomic::AtomicBool;
 
 use crate::agents::context_provider::ContextProvider;
-use crate::api::handlers::deploy::DeployRegistry;
-use crate::api::handlers::loops::LoopRegistry;
-use crate::auth::jwt::AuthService;
-use crate::db::tenants::TenantDb;
 use crate::db::traits::DatabaseClient;
-use crate::{AresConfigManager, DynamicConfigManager, ProviderRegistry, ToolRegistry};
+use crate::ToolRegistry;
 use ares_cordis_core::Service;
 
-// Config
-pub struct ConfigManagerService(pub Arc<AresConfigManager>);
-impl Service for ConfigManagerService {}
-
-pub struct DynamicConfigService(pub Arc<DynamicConfigManager>);
-impl Service for DynamicConfigService {}
-
-// DB
+// Trait-object wrappers: the inner types are `dyn` and cannot implement Service themselves.
 pub struct DbService(pub Arc<dyn DatabaseClient>);
 impl Service for DbService {}
-
-pub struct TenantDbService(pub Arc<TenantDb>);
-impl Service for TenantDbService {}
 
 // LLM — ConfigBasedLLMFactory now implements Service directly (ctx.get::<ConfigBasedLLMFactory>())
 // AgentRegistry now implements Service directly (ctx.get::<AgentRegistry>())
 
-pub struct ProviderRegistryService(pub Arc<ProviderRegistry>);
-impl Service for ProviderRegistryService {}
-
 pub struct ToolRegistryService(pub Arc<ToolRegistry>);
 impl Service for ToolRegistryService {}
-
-// Auth
-pub struct AuthServiceWrapper(pub Arc<AuthService>);
-impl Service for AuthServiceWrapper {}
-
-// MCP optional
-#[cfg(feature = "mcp")]
-pub struct McpRegistryService(pub Option<Arc<crate::mcp::McpRegistry>>);
-#[cfg(feature = "mcp")]
-impl Service for McpRegistryService {}
-
-// Deploy/Loop
-pub struct DeployRegistryService(pub DeployRegistry);
-impl Service for DeployRegistryService {}
-
-pub struct LoopRegistryService(pub LoopRegistry);
-impl Service for LoopRegistryService {}
 
 // Emergency stop
 /// Global agent-execution kill switch.
@@ -94,6 +60,19 @@ impl Service for EmergencyStop {
 pub struct ContextProviderService(pub Arc<dyn ContextProvider>);
 impl Service for ContextProviderService {}
 
-// Postgres client direct (alternative for db)
-pub struct PostgresClientService(pub Arc<crate::db::PostgresClient>);
-impl Service for PostgresClientService {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ares_cordis_core::Context;
+
+    #[test]
+    fn emergency_stop_readable_via_cordis() {
+        let ctx = Context::new_root();
+        ctx.provide(EmergencyStop::new(false));
+        let got = ctx.get::<EmergencyStop>().expect("provided");
+        assert!(!got.is_active());
+        got.set_active(true);
+        assert!(got.is_active());
+    }
+}

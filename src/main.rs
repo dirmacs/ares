@@ -80,19 +80,6 @@ impl ares_cordis_core::Service for CatalogService {
 }
 
 #[cfg(feature = "postgres")]
-struct ProviderRegistryService(pub Arc<ProviderRegistry>);
-#[cfg(feature = "postgres")]
-impl ares_cordis_core::Service for ProviderRegistryService {
-    fn name(&self) -> &'static str {
-        "ProviderRegistryService"
-    }
-    fn check(&self) -> bool {
-        // Guarded withdrawal: if registry empty (no providers), dependents deactivate
-        true
-    }
-}
-
-#[cfg(feature = "postgres")]
 struct ToolServiceWrapper {
     pub static_registry: Arc<ToolRegistry>,
     pub runtime: Arc<ares::RuntimeToolRegistry>,
@@ -118,18 +105,6 @@ struct AgentServiceWrapper {
 impl ares_cordis_core::Service for AgentServiceWrapper {
     fn name(&self) -> &'static str {
         "AgentServiceWrapper"
-    }
-    fn check(&self) -> bool {
-        true
-    }
-}
-
-#[cfg(feature = "postgres")]
-struct AuthServiceWrapper(pub Arc<AuthService>);
-#[cfg(feature = "postgres")]
-impl ares_cordis_core::Service for AuthServiceWrapper {
-    fn name(&self) -> &'static str {
-        "AuthServiceWrapper"
     }
     fn check(&self) -> bool {
         true
@@ -200,7 +175,7 @@ impl ares_cordis_core::Service for HealthJobService {
                                     .map(|s| s.check())
                                     .unwrap_or(true),
                                 "ProviderRegistryService" => ctx_for_task
-                                    .get::<ProviderRegistryService>()
+                                    .get::<ProviderRegistry>()
                                     .map(|s| s.check())
                                     .unwrap_or(true),
                                 "ToolServiceWrapper" => ctx_for_task
@@ -212,7 +187,7 @@ impl ares_cordis_core::Service for HealthJobService {
                                     .map(|s| s.check())
                                     .unwrap_or(true),
                                 "AuthServiceWrapper" => ctx_for_task
-                                    .get::<AuthServiceWrapper>()
+                                    .get::<AuthService>()
                                     .map(|s| s.check())
                                     .unwrap_or(true),
                                 "SchedulerService" => ctx_for_task
@@ -580,9 +555,6 @@ fn config_manager_from_ctx(
     if let Some(cs) = ctx.get::<ConfigService>() {
         return Ok(cs.0.clone());
     }
-    if let Some(cms) = ctx.get::<ares::context_services::ConfigManagerService>() {
-        return Ok(cms.0.clone());
-    }
     if let Some(mgr) = ctx.get::<AresConfigManager>() {
         return Ok(mgr);
     }
@@ -593,9 +565,8 @@ fn config_manager_from_ctx(
 fn postgres_from_ctx(
     ctx: &Arc<Context>,
 ) -> Result<Arc<PostgresClient>, ares_cordis_core::CordisError> {
-    ctx.get::<ares::context_services::PostgresClientService>()
-        .map(|s| s.0.clone())
-        .ok_or_else(|| missing("PostgresClientService"))
+    ctx.get::<PostgresClient>()
+        .ok_or_else(|| missing("PostgresClient"))
 }
 
 #[cfg(feature = "postgres")]
@@ -631,11 +602,7 @@ fn factory_provider_registry(
     if let Some(catalog) = ctx.get::<CatalogService>() {
         registry = registry.with_catalog(catalog.0.clone());
     }
-    let arc = Arc::new(registry);
-    ctx.provide_arc(arc.clone());
-    let fid = block_on_plugin(ctx, ProviderRegistryService(arc.clone()))?;
-    ctx.provide(ares::context_services::ProviderRegistryService(arc));
-    Ok(fid)
+    block_on_plugin(ctx, registry)
 }
 
 #[cfg(feature = "postgres")]
@@ -666,16 +633,13 @@ fn factory_auth(
             "JWT_SECRET environment variable must be set: {e}"
         ))
     })?;
-    let auth = Arc::new(AuthService::new(
+    let auth = AuthService::new(
         jwt_secret,
         config.auth.jwt_access_expiry,
         config.auth.jwt_refresh_expiry,
-    ));
+    );
     tracing::info!("Auth service initialized");
-    ctx.provide_arc(auth.clone());
-    let fid = block_on_plugin(ctx, AuthServiceWrapper(auth.clone()))?;
-    ctx.provide(ares::context_services::AuthServiceWrapper(auth));
-    Ok(fid)
+    block_on_plugin(ctx, auth)
 }
 
 #[cfg(feature = "postgres")]
@@ -702,7 +666,7 @@ fn factory_tool_registry(
             );
         } else {
             tracing::warn!(
-                "PostgresClientService missing; pre-built connector tools are not registered"
+                "PostgresClient missing; pre-built connector tools are not registered"
             );
         }
     } else {
@@ -751,30 +715,25 @@ fn factory_dynamic_config(
                 dm.models().len(),
                 dm.tools().len()
             );
-            Arc::new(dm)
+            dm
         }
         Err(e) => {
             tracing::warn!(
                 "Failed to initialize dynamic config manager: {}. Using empty config.",
                 e
             );
-            Arc::new(
-                DynamicConfigManager::new(
-                    std::path::PathBuf::from(&config.config.agents_dir),
-                    std::path::PathBuf::from(&config.config.models_dir),
-                    std::path::PathBuf::from(&config.config.tools_dir),
-                    std::path::PathBuf::from(&config.config.workflows_dir),
-                    std::path::PathBuf::from(&config.config.mcps_dir),
-                    false,
-                )
-                .unwrap_or_else(|_| panic!("Cannot create even empty DynamicConfigManager")),
+            DynamicConfigManager::new(
+                std::path::PathBuf::from(&config.config.agents_dir),
+                std::path::PathBuf::from(&config.config.models_dir),
+                std::path::PathBuf::from(&config.config.tools_dir),
+                std::path::PathBuf::from(&config.config.workflows_dir),
+                std::path::PathBuf::from(&config.config.mcps_dir),
+                false,
             )
+            .unwrap_or_else(|_| panic!("Cannot create even empty DynamicConfigManager"))
         }
     };
-    block_on_plugin(
-        ctx,
-        ares::context_services::DynamicConfigService(dynamic_config),
-    )
+    block_on_plugin(ctx, dynamic_config)
 }
 
 #[cfg(feature = "postgres")]
@@ -785,10 +744,6 @@ fn factory_agent_registry(
     let mgr = config_manager_from_ctx(ctx)?;
     let providers = ctx
         .get::<ProviderRegistry>()
-        .or_else(|| {
-            ctx.get::<ares::context_services::ProviderRegistryService>()
-                .map(|s| s.0.clone())
-        })
         .ok_or_else(|| missing("ProviderRegistry"))?;
     let tools = ctx
         .get::<ToolRegistry>()
@@ -798,8 +753,7 @@ fn factory_agent_registry(
         })
         .ok_or_else(|| missing("ToolRegistry"))?;
     let dynamic = ctx
-        .get::<ares::context_services::DynamicConfigService>()
-        .map(|s| s.0.clone())
+        .get::<DynamicConfigManager>()
         .ok_or_else(|| missing("DynamicConfig"))?;
     let agent_registry = Arc::new(AgentRegistry::with_dynamic_config(
         &mgr.config(),
@@ -867,9 +821,8 @@ fn factory_execution_stack(
         .map(|s| s.0.clone())
         .ok_or_else(|| missing("DbService"))?;
     let tenant_db = ctx
-        .get::<ares::context_services::TenantDbService>()
-        .map(|s| s.0.clone())
-        .ok_or_else(|| missing("TenantDbService"))?;
+        .get::<ares::TenantDb>()
+        .ok_or_else(|| missing("TenantDb"))?;
     let llm_factory = ctx
         .get::<ConfigBasedLLMFactory>()
         .ok_or_else(|| missing("ConfigBasedLLMFactory"))?;
@@ -982,9 +935,9 @@ fn factory_app_state_services(
     ctx.provide(fleet_secrets);
 
     let deploy_registry = ares::api::handlers::deploy::new_deploy_registry();
-    ctx.provide(ares::context_services::DeployRegistryService(deploy_registry));
+    ctx.provide(deploy_registry);
     let loop_registry = ares::api::handlers::loops::LoopRegistry::new();
-    ctx.provide(ares::context_services::LoopRegistryService(loop_registry));
+    ctx.provide(loop_registry);
     ctx.provide(ares::context_services::EmergencyStop::new(false));
     let context_provider: Arc<dyn ares::agents::context_provider::ContextProvider> =
         Arc::new(ares::agents::NoOpContextProvider);
@@ -996,21 +949,18 @@ fn factory_app_state_services(
     {
         let mgr = config_manager_from_ctx(ctx)?;
         let config = mgr.config();
-        let mcp_registry: Option<Arc<McpRegistry>> =
-            match McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref()) {
-                Ok(registry) => {
-                    tracing::info!(
-                        "MCP registry initialized with {} clients",
-                        registry.client_names().len()
-                    );
-                    Some(Arc::new(registry))
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to initialize MCP registry: {}", e);
-                    None
-                }
-            };
-        ctx.provide(ares::context_services::McpRegistryService(mcp_registry));
+        match McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref()) {
+            Ok(registry) => {
+                tracing::info!(
+                    "MCP registry initialized with {} clients",
+                    registry.client_names().len()
+                );
+                ctx.provide(registry);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize MCP registry: {}", e);
+            }
+        }
     }
 
     let tools = ctx
@@ -1036,10 +986,10 @@ fn factory_app_state_services(
     ));
     ctx.provide_arc(skill_engine);
 
-    if let Some(tenant_db) = ctx.get::<ares::context_services::TenantDbService>() {
+    if let Some(tenant_db) = ctx.get::<ares::TenantDb>() {
         if let Some(agent_registry) = ctx.get::<AgentRegistry>() {
             ctx.provide(ares_agents::resolver::AgentResolverService::new(
-                tenant_db.0.clone(),
+                tenant_db,
                 agent_registry,
                 mgr.config(),
             ));
@@ -1202,7 +1152,7 @@ async fn run_server(
         .expect("Failed to seed agent templates");
     tracing::info!("Agent templates seeded");
 
-    // 5. provide ConfigService, TenantDbService, DbService, PostgresClientService
+    // 5. provide ConfigService, TenantDb, DbService, PostgresClient
     let db_arc = Arc::new(db);
     let tenant_db = Arc::new(ares::TenantDb::new(db_arc.clone()));
 
@@ -1210,19 +1160,12 @@ async fn run_server(
         .plugin(ConfigService(config_manager.clone()))
         .await
         .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
-    root_ctx
-        .plugin(ares::context_services::ConfigManagerService(Arc::clone(
-            &config_manager,
-        )))
-        .await
-        .expect("ConfigManager plugin failed");
     root_ctx.provide_arc(config_manager.clone());
-    root_ctx.provide(ares::context_services::TenantDbService(tenant_db.clone()));
     root_ctx.provide_arc(tenant_db.clone());
     root_ctx.provide(ares::context_services::DbService(
         db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>
     ));
-    root_ctx.provide(ares::context_services::PostgresClientService(db_arc.clone()));
+    root_ctx.provide_arc(db_arc.clone());
 
     // 6–7. register factories + Loader::load_from_file + instantiate every enabled entry
     {
@@ -1395,9 +1338,8 @@ async fn run_server(
 
     ares::health_metrics_job::spawn(
         state
-            .get::<ares::context_services::TenantDbService>()
+            .get::<ares::TenantDb>()
             .expect("not provided")
-            .0
             .pool()
             .clone(),
     );
@@ -1449,10 +1391,10 @@ async fn run_server(
     // Agent Config Versioning (Sprint 11)
     // =================================================================
     {
-        let pool = state.get::<ares::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+        let pool = state.get::<ares::TenantDb>().expect("not provided").pool().clone();
 
         // Startup snapshot: record all currently loaded agent configs
-        let startup_agents = state.get::<ares::context_services::DynamicConfigService>().expect("not provided").0.agents();
+        let startup_agents = state.get::<DynamicConfigManager>().expect("not provided").agents();
         if !startup_agents.is_empty() {
             if let Err(e) =
                 ares::db::agent_versions::record_agent_versions(&pool, &startup_agents, "startup")
@@ -1471,7 +1413,7 @@ async fn run_server(
         let (version_tx, mut version_rx) = tokio::sync::mpsc::unbounded_channel::<
             Vec<ares::utils::toon_config::ToonAgentConfig>,
         >();
-        state.get::<ares::context_services::DynamicConfigService>().expect("not provided").0.set_version_tx(version_tx);
+        state.get::<DynamicConfigManager>().expect("not provided").set_version_tx(version_tx);
 
         tokio::spawn(async move {
             while let Some(agents) = version_rx.recv().await {
@@ -1627,7 +1569,7 @@ async fn run_server(
         // API routes
         .nest(
             "/api",
-            api::routes::create_router(state.get::<ares::context_services::AuthServiceWrapper>().expect("not provided").0.clone(), state.get::<ares::context_services::TenantDbService>().expect("not provided").0.clone()),
+            api::routes::create_router(state.get::<AuthService>().expect("not provided").clone(), state.get::<ares::TenantDb>().expect("not provided").clone()),
         );
 
     // Proprietary routes are registered by ares-dirmacs, not here.
@@ -1866,7 +1808,7 @@ async fn health_check_detailed(
     }; */
 
     // Get provider info
-    let providers: Vec<String> = state.get::<ares::context_services::ConfigManagerService>().expect("not provided").0
+    let providers: Vec<String> = state.get::<AresConfigManager>().expect("not provided")
         .config()
         .providers
         .keys()
@@ -1874,7 +1816,7 @@ async fn health_check_detailed(
         .collect();
 
     // Get agent info
-    let agents: Vec<String> = state.get::<ares::context_services::ConfigManagerService>().expect("not provided").0
+    let agents: Vec<String> = state.get::<AresConfigManager>().expect("not provided")
         .config()
         .agents
         .keys()
@@ -1909,7 +1851,7 @@ async fn health_check_detailed(
 async fn config_info(
     axum::extract::State(state): axum::extract::State<Arc<Context>>,
 ) -> axum::Json<serde_json::Value> {
-    let config = state.get::<ares::context_services::ConfigManagerService>().expect("not provided").0.config();
+    let config = state.get::<AresConfigManager>().expect("not provided").config();
     axum::Json(serde_json::json!({
         "server": {
             "host": config.server.host,

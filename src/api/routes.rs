@@ -918,11 +918,9 @@ mod tests {
         let config = minimal_config();
         let config_manager = Arc::new(AresConfigManager::from_config(config));
         ctx.provide_arc(config_manager.clone());
-        ctx.provide(crate::context_services::ConfigManagerService(config_manager.clone()));
         let db = Arc::new(crate::db::PostgresClient::new_test());
         let tenant_db = Arc::new(TenantDb::new(db.clone()));
         ctx.provide_arc(tenant_db.clone());
-        ctx.provide(crate::context_services::TenantDbService(tenant_db.clone()));
         ctx.provide(crate::context_services::DbService(db.clone() as Arc<dyn crate::db::traits::DatabaseClient>));
         let auth_service = Arc::new(AuthService::new(
             "test-secret-at-least-32-characters-long".into(),
@@ -930,9 +928,8 @@ mod tests {
             604800,
         ));
         ctx.provide_arc(auth_service.clone());
-        ctx.provide(crate::context_services::AuthServiceWrapper(auth_service));
-        ctx.provide(crate::context_services::DeployRegistryService(deploy::new_deploy_registry()));
-        ctx.provide(crate::context_services::LoopRegistryService(loops::LoopRegistry::new()));
+        ctx.provide(deploy::new_deploy_registry());
+        ctx.provide(loops::LoopRegistry::new());
         ctx
     }
 

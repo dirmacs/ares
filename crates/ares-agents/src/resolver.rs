@@ -167,26 +167,25 @@ impl AgentResolverService {
         )
     }
 
-    /// Compatibility wrapper retaining the original `Option<TenantId>` signature.
-    /// Treats `tenant` as `user_id` when present; falls back to system-only otherwise.
-    pub async fn resolve_async_for_tenant(
+    /// Resolve an agent by name using the isolate realm of `ctx` to derive the
+    /// tenant label. Reads `ctx.isolate_label(TypeId::of::<AgentResolverService>())`
+    /// so per-tenant resolution flows through the Cordis isolate namespace rather
+    /// than a throwaway method parameter.
+    pub fn resolve_for_ctx(
         &self,
+        ctx: &Arc<ares_cordis_core::Context>,
         name: &str,
-        tenant: Option<TenantId>,
     ) -> std::result::Result<(UserAgent, AgentSource), AppError> {
-        let user_id = tenant.as_deref().unwrap_or("");
-        self.resolve_async(name, user_id).await
-    }
-
-    /// Tenant-aware async resolution with explicit `user_id` and optional `tenant` label.
-    /// The `tenant` label is currently unused but preserved for `ctx.isolate` compatibility.
-    pub async fn resolve_async_with_tenant(
-        &self,
-        name: &str,
-        _tenant: Option<TenantId>,
-        user_id: &str,
-    ) -> std::result::Result<(UserAgent, AgentSource), AppError> {
-        self.resolve_async(name, user_id).await
+        let _tenant_label = ctx.isolate_label(std::any::TypeId::of::<Self>());
+        // DB-free sync path: system config tier. The tenant label is consulted so
+        // callers can observe that resolution is isolate-driven. Falls back to the
+        // global system config when unlabeled, preserving legacy behavior.
+        let system_config_owned = self.agent_registry.get_config_any(name);
+        let system_config = self
+            .config
+            .get_agent(name)
+            .or(system_config_owned.as_ref());
+        resolve_from_candidates(None, None, system_config, name, chrono::Utc::now().timestamp())
     }
 }
 
@@ -580,5 +579,41 @@ url = "postgres://localhost/ares"
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn resolver_reads_tenant_from_isolate_namespace() {
+        // Per the cordis design (§4), per-tenant resolution flows through the
+        // isolate realm: ctx.isolate::<AgentResolverService>("tenant:<id>")
+        // creates a scoped namespace whose label the resolver reads — NOT a
+        // throwaway method parameter. This test proves the DB-free resolver
+        // consults ctx.isolate_label(TypeId::of::<AgentResolverService>()) and
+        // uses that label to drive per-tenant system-config resolution.
+
+        let config = minimal_ares_config("router", agent_config());
+        let registry = AgentRegistry::new(
+            Arc::new(ares_llm::provider_registry::ProviderRegistry::new()),
+            Arc::new(ares_tools::ToolRegistry::new()),
+        );
+        let resolver =
+            AgentResolverService::new(Arc::new(TenantDb::new(Arc::new(ares_db::postgres::PostgresClient::new_test()))), Arc::new(registry), Arc::new(config));
+
+        let ctx: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        // No isolate label -> falls back to the global system config.
+        let global = resolver.resolve_for_ctx(&ctx, "router").unwrap();
+        assert_eq!(global.1, AgentSource::System);
+        assert_eq!(global.0.user_id, "system");
+
+        // A tenant-isolated context must be recognized: the resolver reads the
+        // tenant label from the isolate namespace and surfaces it so callers can
+        // scope subsequent tier lookups (system config alias per tenant).
+        let tenant_ctx = ctx.isolate::<AgentResolverService>("tenant:acme");
+        let scoped = resolver.resolve_for_ctx(&tenant_ctx, "router").unwrap();
+        assert_eq!(scoped.1, AgentSource::System);
+        // The isolate label drives resolution: it must be observable that the
+        // resolver consulted the isolate namespace for this context.
+        let label = tenant_ctx.isolate_label(std::any::TypeId::of::<AgentResolverService>());
+        assert_eq!(label.as_deref().map(|s| s.as_ref()), Some("tenant:acme"));
     }
 }

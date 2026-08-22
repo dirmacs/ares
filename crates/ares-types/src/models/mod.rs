@@ -1,5 +1,5 @@
 pub mod tenant;
-pub use tenant::{ApiKey, Tenant, TenantContext, TenantQuota, TenantTier};
+pub use tenant::{ApiKey, QuotaExceeded, Tenant, TenantContext, TenantQuota, TenantTier};
 
 #[cfg(test)]
 mod tests {

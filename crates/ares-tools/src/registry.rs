@@ -1,5 +1,5 @@
 use ares_types::types::{Result, ToolDefinition};
-use ares_config::toml_config::{AresConfig, ToolConfig};
+use crate::config::ToolConfig;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -25,10 +25,11 @@ pub trait Tool: Send + Sync {
 
 /// Registry for managing tools with configuration support.
 ///
-/// Not a Cordis Service. Handlers resolve tools through [`crate::Tools`]
-/// (`ctx.get::<Tools>()`, `ctx.isolate::<Tools>(tenant_id)`), not by
-/// providing this type on `Context`.
-pub(crate) struct ToolRegistry {
+/// Not a Cordis Service. Boot/factory construct this and pass it to
+/// [`crate::Tools::new`] / [`crate::Tools::with_runtime`]. Handlers resolve
+/// tools through [`crate::Tools`] (`ctx.get::<Tools>()`,
+/// `ctx.isolate::<Tools>(tenant_id)`), not by providing this type on `Context`.
+pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
     configs: HashMap<String, ToolConfig>,
 }
@@ -43,10 +44,10 @@ impl ToolRegistry {
     }
 
     /// Create a tool registry with configurations from TOML
-    pub fn with_config(config: &AresConfig) -> Self {
+    pub fn with_config(tools: &HashMap<String, ToolConfig>) -> Self {
         Self {
             tools: HashMap::new(),
-            configs: config.tools.clone(),
+            configs: tools.clone(),
         }
     }
 
@@ -177,10 +178,7 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_config::toml_config::{
-        AresConfig, AuthConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths, RagConfig,
-        ServerConfig, ToolConfig,
-    };
+    use crate::config::ToolConfig;
     use ares_types::AppError;
     use serde_json::json;
 
@@ -275,24 +273,8 @@ mod tests {
         }
     }
 
-    fn minimal_ares_config(tools: HashMap<String, ToolConfig>) -> AresConfig {
-        AresConfig {
-            server: ServerConfig::default(),
-            auth: AuthConfig::default(),
-            database: DatabaseConfig::default(),
-            nvidia: None,
-            providers: HashMap::new(),
-            models: HashMap::new(),
-            tools,
-            agents: HashMap::new(),
-            workflows: HashMap::new(),
-            rag: RagConfig::default(),
-            billing: BillingConfig {
-                model_pricing: HashMap::new(),
-            },
-            skills: None,
-            config: DynamicConfigPaths::default(),
-        }
+    fn minimal_tool_map(tools: HashMap<String, ToolConfig>) -> HashMap<String, ToolConfig> {
+        tools
     }
 
     #[test]
@@ -356,7 +338,7 @@ mod tests {
                 extra: HashMap::new(),
             },
         );
-        let config = minimal_ares_config(tools);
+        let config = minimal_tool_map(tools);
         let registry = ToolRegistry::with_config(&config);
 
         assert!(!registry.is_enabled("from_toml"));
@@ -541,7 +523,9 @@ enabled = false
 timeout_secs = 12
 description = "Calc tool"
 "#;
-        let config: AresConfig = toml::from_str(content).unwrap();
+        let parsed: toml::Value = toml::from_str(content).unwrap();
+        let tools_tbl = parsed.get("tools").cloned().unwrap_or(toml::Value::Table(Default::default()));
+        let config: HashMap<String, ToolConfig> = tools_tbl.try_into().unwrap_or_default();
         let registry = ToolRegistry::with_config(&config);
 
         assert!(!registry.is_enabled("calculator"));

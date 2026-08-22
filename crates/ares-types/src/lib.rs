@@ -1,11 +1,11 @@
 pub mod types;
 pub mod models;
-pub use models::{ApiKey, Tenant, TenantContext, TenantQuota, TenantTier};
+pub use models::{ApiKey, QuotaExceeded, Tenant, TenantContext, TenantQuota, TenantTier};
 pub use types::{AppError, ErrorCode, Result};
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiKey, AppError, ErrorCode, Result, Tenant, TenantContext, TenantQuota, TenantTier};
+    use super::{ApiKey, AppError, ErrorCode, QuotaExceeded, Result, Tenant, TenantContext, TenantQuota, TenantTier};
 
     #[test]
     fn test_public_reexports_are_usable() {
@@ -23,5 +23,6 @@ mod tests {
         let result: Result<()> = Err(AppError::NotFound("missing".into()));
         assert!(matches!(result.unwrap_err().code(), ErrorCode::NotFound));
         assert_eq!(ctx.quota.requests_per_month, quota.requests_per_month);
+        assert_eq!(QuotaExceeded::Monthly.message(), "Monthly request quota exceeded");
     }
 }

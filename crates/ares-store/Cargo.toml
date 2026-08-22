@@ -19,8 +19,11 @@ pinecone = ["dep:pinecone-sdk"]
 pgvector = ["postgres"]
 [dependencies]
 ares-types = { workspace = true }
-ares-config = { workspace = true }
 cordis = { workspace = true }
+aes-gcm = "0.10"
+arc-swap = "1.7.1"
+thiserror = { workspace = true }
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

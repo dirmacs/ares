@@ -12,7 +12,7 @@ Phase 2 crate graph (`crates.io` already has `cordis` 0.0.0, so the Cargo packag
 | `crates/ares-agent` | `ares-agent` | `ares_agent` |
 | `crates/ares-store` | `ares-store` | `ares_store` |
 
-Root package stays `ares-server` with lib name `ares`. `ares-config` stays until Phase 4.
+Root package stays `ares-server` with lib name `ares`. Domain config lives in plugin crates; Overlay (`src/overlay.rs`) owns `ares.toml` after Phase 4.
 
 ---
 
@@ -312,7 +312,7 @@ impl ReflectService {
 // ctx.get::<ReflectService>().unwrap().notify(TypeId::of::<RuntimeToolService>());
 ```
 
-Replaces: `RuntimeToolRegistry::start_background_reload` (60s poll, `crates/ares-tools/src/runtime_registry.rs`), `ProviderRegistry` poll (`crates/ares-llm/src/provider_registry.rs`), `NvidiaCatalogCache::start_background_refresh` (`crates/ares-config/src/nvidia_catalog.rs`).
+Replaces: `RuntimeToolRegistry::start_background_reload` (60s poll, `crates/ares-tools/src/runtime_registry.rs`), `ProviderRegistry` poll (`crates/ares-llm/src/provider_registry.rs`), `NvidiaCatalogCache::start_background_refresh` (`crates/ares-llm/src/nvidia_catalog.rs`).
 
 ---
 
@@ -374,7 +374,7 @@ The `dispatch` implementation follows the five modes exactly:
 
 Cordis Loader: `Entry { id, plugin, config, disabled, isolate, intercept }` + `EntryTree(Vec<Entry>)` persisted to `config/entries.json` (or `config/cordis-entries.toon` via `toon-format 0.4.1`). `Loader::reconcile(current, desired)` diffs incrementally.
 
-Rust (Phase 3, `crates/ares-context/src/loader.rs` or `crates/ares-config`):
+Rust (Phase 3, `crates/cordis/src/loader.rs`):
 
 ```rust
 #[derive(Serialize, Deserialize, Clone)]

@@ -1,5 +1,5 @@
-use ares::llm::*;
-use ares::types::{ToolCall, ToolDefinition};
+use ares_server::llm::*;
+use ares_server::types::{ToolCall, ToolDefinition};
 use futures::StreamExt;
 
 // Import common test utilities

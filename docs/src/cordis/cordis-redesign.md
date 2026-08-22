@@ -102,7 +102,7 @@ leaf (zero ARES deps)
   crates/ares-types           │ cross-cutting
   crates/ares-vector (0.1.2)  │ pure HNSW
                               ▼
-  crates/ares-config ───────┬─► crates/ares-store (23k LOC, traits)
+  src/overlay.rs ───────┬─► crates/ares-store (23k LOC, traits)
                               │         │
   crates/ares-rag ────────────┘         ▼
                               crates/ares-llm ──► crates/ares-tools (CalculatorService, ToolService Unified)
@@ -171,7 +171,7 @@ Streaming: `async-stream` + `broadcast` preserved via `Dispatch::Parallel`.
 - `cargo check --no-default-features --features openai,postgres,mcp` **PASS** (0.42s, 934→0 warnings after `allow(missing_docs)` in `src/lib.rs`)
 - `cargo check --no-default-features` **PASS** (0.38s)
 - `cargo test --doc` **PASS** (1 passed, 10 ignored)
-- `cargo miri test` **SKIP**, `miri` component not available for `1.95.0-x86_64-unknown-linux-gnu` (`rustup component add miri` fails on this toolchain, documented per plan: leaf crates `ares-types`/`ares-config`/`ares-vector`/`ares-memory` would be checked, `tokio` crates skipped)
+- `cargo miri test` **SKIP**, `miri` component not available for `1.95.0-x86_64-unknown-linux-gnu` (`rustup component add miri` fails on this toolchain, documented per plan: leaf crates `ares-types`/`overlay`/`ares-vector`/`ares-memory` would be checked, `tokio` crates skipped)
 - `cargo test -p cordis` **12/12**, `cargo test -p ares-tools --lib --features postgres,mcp calculator` **11/11**, `cargo test -p ares-tools --lib --features postgres,mcp` **193/193**
 - `cargo clippy --no-default-features --features openai,postgres,mcp, -D warnings` **PASS** (0, after `sort_by_key`/`Default` derive/`for_kv_map`/doc allow + `allow(dead_code)` for `ReflectService`/`fallback_chain` etc. + `allow(unused_imports)` for `ToolConfig` test-only + `allow(explicit_counter_loop)` + `sort_by_key` in `deploy.rs`/`loops.rs`)
 - `cargo clippy -p cordis, -D warnings` **PASS** (`ServiceInitFuture` alias fixes `type_complexity`), `cargo clippy -p ares-vector/types/config` **PASS** (`#[cfg(test)]` scalers, `FromStr` impl)
@@ -210,7 +210,7 @@ Streaming: `async-stream` + `broadcast` preserved via `Dispatch::Parallel`.
 - **`crates/cordis/src/lib.rs:759-765` placeholder → real HMR section** documenting `RegistryService::plugin` as the real `inventory`/`linkme` static registration surface (Wiring task) and HMR watcher + `hmr` deferral (see `lib.rs` HMR block). `docs/cordis-mapping.md` §10/§11 updated with full YAGNI decision + `watcher` + `hmr` details; `docs/cordis-redesign.md` §7 updated.
 - **Tests:** `crates/cordis::watcher::tests::file_watch_triggers_reload_without_restart` (tempfile `test.toon` mutation → `ReflectService::notify` → `Fiber::refresh` epoch change, no restart) + `watcher_logs_hot_reloaded_successfully` (asserts `Configuration hot-reloaded successfully` substring) + `hmr::tests::hmr_stub_documents_deferral` (deferred error contains `deferred`). `cargo test -p cordis` **14/14** (was 12/12) including 2 watcher + 1 hmr stub, `cargo test -p cordis --features hmr` compiles stub with `libloading`.
 - **Cargo gates:** `cargo check --no-default-features --features openai,postgres,mcp` **PASS**, `cargo check --no-default-features` **PASS**, `cargo check -p cordis --features hmr` **PASS** (hmr off by default still passes). `inventory`/`linkme` placeholder no longer placeholder, `RegistryService::plugin` is real wiring (single-source `duplicate provider` check), `Wiring` task reference in `lib.rs` + `mapping.md` §10.
-- **E2E HMR proof log retained:** `Configuration hot-reloaded successfully` from `AresConfigManager::start_watching` (random-port `39476`/`39120` E2E in §9/9b, `cp /opt/ares-dirmacs/ares.toml /tmp/ares-random.toml` + `shuf` port) + `watcher` logs `Configuration hot-reloaded successfully via Cordis watch` on same substring. Grep `grep -n "hot-reloaded" crates/ares-config/src/toml_config.rs` → `1544: info!("Configuration hot-reloaded successfully")`, `grep -n "via Cordis" crates/cordis/src/watcher.rs` → `via Cordis watch`.
+- **E2E HMR proof log retained:** `Configuration hot-reloaded successfully` from `AresConfigManager::start_watching` (random-port `39476`/`39120` E2E in §9/9b, `cp /opt/ares-dirmacs/ares.toml /tmp/ares-random.toml` + `shuf` port) + `watcher` logs `Configuration hot-reloaded successfully via Cordis watch` on same substring. Grep `grep -n "hot-reloaded" src/overlay.rs` → `1544: info!("Configuration hot-reloaded successfully")`, `grep -n "via Cordis" crates/cordis/src/watcher.rs` → `via Cordis watch`.
 
 ### Strict follow-ups (now 1 → 0, this session closes HMR gap)
 

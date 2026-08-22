@@ -3,7 +3,7 @@
 use crate::connectors::{
     execute_with_retry, get_valid_access_token, ConnectorConfig, ConnectorError,
 };
-use ares_config::fleet_secrets::MasterKey;
+use ares_store::MasterKey;
 use ares_types::types::Result;
 use serde::Deserialize;
 use sqlx::PgPool;

@@ -3,9 +3,9 @@
 //! This module provides mock LLM clients and factories that can be used
 //! across different test files without duplication.
 
-use ares::llm::client::{LLMClientFactoryTrait, Provider};
-use ares::llm::{LLMClient, LLMResponse};
-use ares::types::{AppError, Result, ToolCall, ToolDefinition};
+use ares_server::llm::client::{LLMClientFactoryTrait, Provider};
+use ares_server::llm::{LLMClient, LLMResponse};
+use ares_server::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
 use std::sync::Arc;
@@ -185,7 +185,7 @@ impl LLMClient for MockLLMClient {
 
     async fn generate_with_tools_and_history(
         &self,
-        _messages: &[ares::llm::ConversationMessage],
+        _messages: &[ares_server::llm::ConversationMessage],
         _tools: &[ToolDefinition],
     ) -> Result<LLMResponse> {
         if self.should_fail {

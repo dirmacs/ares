@@ -5,7 +5,7 @@
 
 use crate::registry::{Tool, ToolRegistry};
 #[cfg(test)]
-use ares_config::toml_config::ToolConfig;
+use crate::ToolConfig;
 use ares_mcp::client::{McpClient, McpServerConfig};
 use ares_types::types::ToolDefinition;
 use ares_types::{AppError, Result};

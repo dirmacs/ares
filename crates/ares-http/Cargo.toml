@@ -1,0 +1,83 @@
+[package]
+name = "ares-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = true
+description = "HTTP adapter plugin for ARES (Axum router, auth, overlay)"
+
+[features]
+default = []
+postgres = [
+    "dep:sqlx",
+    "ares-store/postgres",
+    "ares-agent/postgres",
+    "ares-agent/scheduler",
+    "ares-agent/pipeline",
+    "ares-agent/trigger",
+    "ares-agent/workflows",
+    "ares-tools/postgres",
+]
+mcp = ["dep:ares-mcp", "ares-mcp/mcp", "ares-tools/mcp"]
+openai = ["ares-llm/openai"]
+swagger-ui = ["dep:utoipa-swagger-ui"]
+inventory = ["dep:inventory", "cordis/inventory"]
+eruka-context = ["ares-agent/eruka-context"]
+skills = ["dep:thulp-skill-files", "ares-agent/skills"]
+local-embeddings = ["ares-rag/local-embeddings"]
+ares-vector = ["dep:ares-vector", "ares-store/ares-vector"]
+
+[dependencies]
+cordis = { workspace = true }
+ares-types = { workspace = true }
+ares-agent = { workspace = true }
+ares-tools = { workspace = true }
+ares-llm = { workspace = true }
+ares-store = { workspace = true }
+ares-rag = { workspace = true }
+ares-mcp = { workspace = true, optional = true }
+ares-vector = { workspace = true, optional = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+futures = "0.3.31"
+async-stream = "0.3.6"
+toml = { workspace = true }
+toon-format = { workspace = true }
+arc-swap = "1.7.1"
+parking_lot = { workspace = true }
+notify = "8.2.0"
+sha2 = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+rust_decimal = { workspace = true }
+reqwest = { workspace = true }
+
+axum = { version = "0.8.7", features = ["macros", "multipart"] }
+tower = { version = "0.5.2", features = ["util", "timeout"] }
+tower-http = { version = "0.6.8", features = ["trace", "cors", "limit"] }
+utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
+
+jsonwebtoken = { version = "10.3.0", features = ["use_pem", "rust_crypto"] }
+argon2 = "0.5.3"
+
+sqlx = { workspace = true, optional = true }
+inventory = { workspace = true, optional = true }
+thulp-skill-files = { version = "0.3", optional = true }
+
+[dev-dependencies]
+axum-test = "18.4.1"
+tempfile = "3.23.0"
+tokio = { workspace = true }
+serde_json = { workspace = true }
+dotenvy = "0.15.7"

@@ -23,8 +23,8 @@
 use crate::capabilities::{CapabilityRequirements, ModelCapabilities, ModelWithCapabilities};
 use crate::client::{LLMClient, ModelParams, Provider};
 use arc_swap::ArcSwap;
-use ares_config::nvidia_catalog::{NvidiaCatalogCache, NvidiaConfig};
-use ares_config::toml_config::{AresConfig, ModelConfig, ProviderConfig};
+use crate::nvidia_catalog::{NvidiaCatalogCache, NvidiaConfig};
+use crate::config::{ModelConfig, ProviderConfig};
 use ares_types::types::{AppError, Result};
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -95,12 +95,16 @@ impl ProviderRegistry {
     }
 
     /// Create a provider registry from TOML configuration
-    pub fn from_config(config: &AresConfig) -> Self {
-        let mut providers = config.providers.clone();
+    pub fn from_config(
+        providers: std::collections::HashMap<String, ProviderConfig>,
+        models: std::collections::HashMap<String, ModelConfig>,
+        nvidia: Option<&NvidiaConfig>,
+    ) -> Self {
+        let mut providers = providers;
 
         // If no legacy providers are configured, synthesize a single NVIDIA provider.
         if providers.is_empty() {
-            let nvidia = config.nvidia.clone().unwrap_or_default();
+            let nvidia = nvidia.cloned().unwrap_or_default();
             let _ = std::env::var(&nvidia.api_key_env); // we don't error here; refresh will report it
             providers.insert(
                 "nvidia".to_string(),
@@ -122,15 +126,13 @@ impl ProviderRegistry {
             .entry("azure".to_string())
             .or_insert_with(Self::default_azure_provider_config);
 
-        let default_model = config
-            .nvidia
-            .as_ref()
+        let default_model = nvidia
             .map(|n| n.default_model.clone())
-            .or_else(|| config.models.keys().next().cloned());
+            .or_else(|| models.keys().next().cloned());
 
         Self {
             providers,
-            models: config.models.clone(),
+            models,
             catalog: None,
             default_model,
             runtime_providers: Arc::new(ArcSwap::from_pointee(HashMap::new())),
@@ -1047,7 +1049,7 @@ impl ProviderRegistry {
         tier_or_model: &str,
         tenant_id: &str,
         pool: &sqlx::PgPool,
-        fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
+        fleet_secrets: &ares_store::FleetSecrets,
     ) -> Result<Vec<ResolvedProviderConfig>> {
         use ares_store::tenant_model_tiers::TenantModelTierStore;
         use std::collections::HashSet;
@@ -1220,14 +1222,16 @@ impl ConfigBasedLLMFactory {
     }
 
     /// Create a factory from TOML configuration
-    pub fn from_config(config: &AresConfig) -> Result<Self> {
-        let registry = ProviderRegistry::from_config(config);
+    pub fn from_config(
+        providers: std::collections::HashMap<String, ProviderConfig>,
+        models: std::collections::HashMap<String, ModelConfig>,
+        nvidia: Option<&NvidiaConfig>,
+    ) -> Result<Self> {
+        let registry = ProviderRegistry::from_config(providers, models.clone(), nvidia);
 
-        let default_model = config
-            .nvidia
-            .as_ref()
+        let default_model = nvidia
             .map(|n| n.default_model.clone())
-            .or_else(|| config.models.keys().next().cloned())
+            .or_else(|| models.keys().next().cloned())
             .unwrap_or_else(|| "nvidia/nemotron-3-ultra-550b-a55b".to_string());
 
         Ok(Self {
@@ -1286,10 +1290,7 @@ mod tests {
     use super::*;
     use crate::capabilities::CapabilityRequirements;
 
-    use ares_config::toml_config::{
-        AresConfig, AuthConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths, RagConfig,
-        ServerConfig,
-    };
+    use crate::config::{ModelConfig, ProviderConfig};
     use std::collections::HashMap;
 
     fn sample_openai_provider() -> ProviderConfig {
@@ -1309,25 +1310,11 @@ mod tests {
         }
     }
 
-    fn minimal_ares_config(
+    fn from_maps(
         providers: HashMap<String, ProviderConfig>,
         models: HashMap<String, ModelConfig>,
-    ) -> AresConfig {
-        AresConfig {
-            server: ServerConfig::default(),
-            auth: AuthConfig::default(),
-            database: DatabaseConfig::default(),
-            nvidia: None,
-            providers,
-            models,
-            tools: HashMap::new(),
-            agents: HashMap::new(),
-            workflows: HashMap::new(),
-            rag: RagConfig::default(),
-            billing: BillingConfig::default(),
-            skills: None,
-            config: DynamicConfigPaths::default(),
-        }
+    ) -> crate::provider_registry::ProviderRegistry {
+        ProviderRegistry::from_config(providers, models, None)
     }
 
     fn assert_configuration_error<T>(result: Result<T>, expected_substring: &str) {
@@ -1826,8 +1813,7 @@ mod tests {
             sample_model_config("nvidia", "test-model"),
         );
 
-        let config = minimal_ares_config(providers, models);
-        let registry = ProviderRegistry::from_config(&config);
+        let registry = from_maps(providers, models);
 
         assert!(registry.has_provider("nvidia"));
         assert!(registry.has_model("fast"));
@@ -1922,17 +1908,14 @@ mod tests {
             sample_model_config("nvidia", "test-model"),
         );
 
-        let config = minimal_ares_config(providers, models);
-        let factory = ConfigBasedLLMFactory::from_config(&config).unwrap();
+        let factory = ConfigBasedLLMFactory::from_config(providers, models, None).unwrap();
         assert_eq!(factory.default_model(), "fast");
         assert!(factory.registry().has_model("fast"));
     }
 
     #[test]
     fn test_config_factory_from_config_no_models() {
-        let config = minimal_ares_config(HashMap::new(), HashMap::new());
-        // Should now succeed by falling back to the hardcoded default
-        let factory = ConfigBasedLLMFactory::from_config(&config).unwrap();
+        let factory = ConfigBasedLLMFactory::from_config(HashMap::new(), HashMap::new(), None).unwrap();
         assert_eq!(factory.default_model(), "nvidia/nemotron-3-ultra-550b-a55b");
     }
 

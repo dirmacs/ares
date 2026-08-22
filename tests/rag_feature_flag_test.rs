@@ -5,8 +5,8 @@
 
 #![cfg(feature = "postgres")]
 
-use ares::types::{Document, DocumentMetadata, RagIngestRequest, RagSearchRequest};
-use ares::utils::toml_config::RagConfig;
+use ares_server::types::{Document, DocumentMetadata, RagIngestRequest, RagSearchRequest};
+use ares_server::utils::toml_config::RagConfig;
 use chrono::Utc;
 
 #[test]

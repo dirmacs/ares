@@ -4,13 +4,6 @@
 # Order matters: later factories read earlier services from Context.
 
 [[entry]]
-id = "calculator"
-plugin = "CalculatorService"
-disabled = false
-
-[entry.config]
-
-[[entry]]
 id = "events"
 plugin = "EventsService"
 disabled = false
@@ -18,29 +11,36 @@ disabled = false
 [entry.config]
 
 [[entry]]
-id = "probe"
-plugin = "noop_probe"
+id = "overlay"
+plugin = "Overlay"
 disabled = false
 
 [entry.config]
 
 [[entry]]
-id = "catalog"
-plugin = "CatalogService"
+id = "store"
+plugin = "Store"
 disabled = false
 
 [entry.config]
 
 [[entry]]
-id = "providers"
-plugin = "ProviderRegistry"
+id = "tools"
+plugin = "Tools"
 disabled = false
 
 [entry.config]
 
 [[entry]]
 id = "llm"
-plugin = "LlmFactory"
+plugin = "Llm"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "execute"
+plugin = "Execute"
 disabled = false
 
 [entry.config]
@@ -48,48 +48,6 @@ disabled = false
 [[entry]]
 id = "auth"
 plugin = "AuthService"
-disabled = false
-
-[entry.config]
-
-[[entry]]
-id = "dynamic-config"
-plugin = "DynamicConfig"
-disabled = false
-
-[entry.config]
-
-[[entry]]
-id = "tools"
-plugin = "ToolRegistry"
-disabled = false
-
-[entry.config]
-
-[[entry]]
-id = "runtime-tools"
-plugin = "RuntimeToolRegistry"
-disabled = false
-
-[entry.config]
-
-[[entry]]
-id = "agents"
-plugin = "AgentRegistry"
-disabled = false
-
-[entry.config]
-
-[[entry]]
-id = "app-state"
-plugin = "AppStateServices"
-disabled = false
-
-[entry.config]
-
-[[entry]]
-id = "execution"
-plugin = "ExecutionStack"
 disabled = false
 
 [entry.config]
@@ -118,6 +76,27 @@ disabled = false
 [[entry]]
 id = "health"
 plugin = "HealthJobService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "calculator"
+plugin = "CalculatorService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "probe"
+plugin = "noop_probe"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "http"
+plugin = "Http"
 disabled = false
 
 [entry.config]

@@ -74,6 +74,12 @@ compile_error!(
     4. Disable this feature: cargo build --no-default-features --features \"...\""
 );
 
+pub mod config;
+pub use config::{
+    HybridWeightsConfig, RagChunkingConfig, RagConfig, RagRerankingConfig, RagSearchConfig,
+    RAGVectorConfig,
+};
+
 pub mod cache;
 pub mod chunker;
 #[cfg(feature = "local-embeddings")]

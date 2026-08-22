@@ -4,7 +4,7 @@
 //! All connectors authenticate via OAuth2 credentials stored in the database
 //! (`oauth_credentials` table) and encrypt/decrypt using the fleet master key.
 
-use ares_config::fleet_secrets::{decrypt_api_key, MasterKey};
+use ares_store::{decrypt_api_key, MasterKey};
 use ares_store::oauth_credentials::{OAuthCredential, OAuthCredentialStore};
 use ares_types::types::{AppError, Result};
 use serde::Deserialize;

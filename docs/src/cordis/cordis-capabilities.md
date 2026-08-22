@@ -99,7 +99,7 @@ Admin is the largest surface, 190 KB `admin.rs` at `e4f3bcc`. Split by domain in
 | **Skill Engine** (`src/skill_engine.rs` 34 KB, depth limiting) | `skills` + `connectors` | Sequential `ToolCall`/`LlmCall`/`SkillCall`/`Condition` | Real tool calls + LLM calls in skill steps (R50-5 wired) |
 | **Workflow Engine** (`src/workflows/engine.rs`, router/orchestrator) | TOON workflows dir | `POST /workflows` | Router vs orchestrator branch, fallback handling |
 | **Health Metrics Job** (`src/health_metrics_job.rs` hourly) | `health_metrics` | Hourly aggregation | `GET /api/admin/health-metrics` shows hourly rows |
-| **Nvidia Catalog Refresh** (`crates/ares-config/src/nvidia_catalog.rs`, `catalog.start_background_refresh()`) | `build.nvidia.com/models` | Periodic refresh (default interval) | `GET /api/admin/models` returns ~97 models |
+| **Nvidia Catalog Refresh** (`crates/ares-llm/src/nvidia_catalog.rs`, `catalog.start_background_refresh()`) | `build.nvidia.com/models` | Periodic refresh (default interval) | `GET /api/admin/models` returns ~97 models |
 | **Runtime Tool/ Provider Hot-Reload** (`runtime_registry.rs`, `provider_registry.rs`) | Postgres `runtime_tools` / `runtime_providers` | Was 60s `ArcSwap` poll → Phase 3 epoch `notify` | Mutate `runtime_tools` DB row → without restart `ToolService::list` reflects change (no 60s stale window) |
 | **Agent Version Snapshot** (`src/main.rs` startup snapshot + hot-reload `mpsc::unbounded_channel`) | `config/agents/*.toon` | TOON file change + `DynamicConfigManager::start_watching` | Modify `config/agents/test.toon` → `agent_versions` row appears via `hot_reload` task |
 

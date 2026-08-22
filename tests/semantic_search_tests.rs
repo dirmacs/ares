@@ -4,7 +4,7 @@
 
 #![cfg(all(feature = "ares-vector", feature = "local-embeddings"))]
 
-use ares::{
+use ares_server::{
     db::{AresVectorStore, VectorStore},
     rag::embeddings::{EmbeddingModelType, EmbeddingService},
     types::{Document, DocumentMetadata},
@@ -39,7 +39,7 @@ async fn test_semantic_search_empty_collection_returns_empty() {
     let svc = Arc::new(EmbeddingService::with_model(EmbeddingModelType::default()).unwrap());
     let embedding = svc.embed_text("test query").await.unwrap();
 
-    let results: Vec<ares::types::SearchResult> = store
+    let results: Vec<ares_server::types::SearchResult> = store
         .search("test_empty", &embedding, 10, 0.0)
         .await
         .unwrap();
@@ -81,12 +81,12 @@ async fn test_semantic_search_returns_relevant_results() {
     store.upsert("test_docs", &docs_with_emb).await.unwrap();
 
     let rust_query = svc.embed_text("Tell me about Rust").await.unwrap();
-    let rust_results: Vec<ares::types::SearchResult> = store.search("test_docs", &rust_query, 2, 0.0).await.unwrap();
+    let rust_results: Vec<ares_server::types::SearchResult> = store.search("test_docs", &rust_query, 2, 0.0).await.unwrap();
     assert!(!rust_results.is_empty());
     assert_eq!(rust_results[0].document.id, "rust_doc");
 
     let py_query = svc.embed_text("What is Python used for").await.unwrap();
-    let py_results: Vec<ares::types::SearchResult> = store.search("test_docs", &py_query, 2, 0.0).await.unwrap();
+    let py_results: Vec<ares_server::types::SearchResult> = store.search("test_docs", &py_query, 2, 0.0).await.unwrap();
     assert!(!py_results.is_empty());
     assert_eq!(py_results[0].document.id, "python_doc");
 }
@@ -125,8 +125,8 @@ async fn test_semantic_search_respects_threshold() {
     store.upsert("threshold_test", &docs_with_emb).await.unwrap();
 
     let query = svc.embed_text("The quick brown fox jumps over the lazy dog").await.unwrap();
-    let results_high: Vec<ares::types::SearchResult> = store.search("threshold_test", &query, 10, 0.8).await.unwrap();
-    let results_low: Vec<ares::types::SearchResult> = store.search("threshold_test", &query, 10, 0.0).await.unwrap();
+    let results_high: Vec<ares_server::types::SearchResult> = store.search("threshold_test", &query, 10, 0.8).await.unwrap();
+    let results_low: Vec<ares_server::types::SearchResult> = store.search("threshold_test", &query, 10, 0.0).await.unwrap();
 
     assert!(results_low.len() >= results_high.len(), "Lower threshold should give equal or more results");
 }

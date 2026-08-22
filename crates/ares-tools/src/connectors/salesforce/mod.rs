@@ -4,7 +4,7 @@ use crate::connectors::{
     execute_with_retry, get_valid_access_token, require_tenant_id, ConnectorConfig, ConnectorError,
 };
 use crate::registry::Tool;
-use ares_config::fleet_secrets::MasterKey;
+use ares_store::MasterKey;
 use ares_types::types::{AppError, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};

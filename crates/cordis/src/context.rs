@@ -47,9 +47,9 @@ impl Context {
         })
     }
 
-    pub fn isolate<T: Service>(self: &Arc<Self>, label: impl Into<Symbol>) -> Arc<Self> {
+    pub fn isolate_type(self: &Arc<Self>, tid: TypeId, label: impl Into<Symbol>) -> Arc<Self> {
         let mut parent_isolate = self.isolate.read().clone();
-        parent_isolate.insert(TypeId::of::<T>(), label.into());
+        parent_isolate.insert(tid, label.into());
         Arc::new(Self {
             store: RwLock::new(HashMap::new()),
             isolate: RwLock::new(parent_isolate),
@@ -59,6 +59,10 @@ impl Context {
             parent: Some(self.clone()),
             root: self.root.clone(),
         })
+    }
+
+    pub fn isolate<T: Service>(self: &Arc<Self>, label: impl Into<Symbol>) -> Arc<Self> {
+        self.isolate_type(TypeId::of::<T>(), label)
     }
 
     pub fn intercept<T: Service>(self: &Arc<Self>, val: T) -> Arc<Self> {

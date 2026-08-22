@@ -9,7 +9,7 @@ Rule: `rust-safe-large` YAGNI ladder, walk each crate before writing any new cra
 | Crate | Lines (rs) | Files | Deps (key) | Description |
 |-------|------------|-------|------------|-------------|
 | ares-types | 1,980 | 4 | axum, utoipa, chrono, serde | TenantTier, tenant models, shared API types |
-| ares-config | 6,135 | 5 | toon-format, toml, arc-swap, notify, reqwest, aes-gcm | TOML/TOON config, 110 KB toml_config.rs, fleet_secrets, nvidia_catalog |
+| overlay | 6,135 | 5 | toon-format, toml, arc-swap, notify, reqwest, aes-gcm | TOML/TOON config, 110 KB toml_config.rs, fleet_secrets, nvidia_catalog |
 | ares-store | 23,019 | 30+ | sqlx, libsql, qdrant, lancedb, lance, chromadb, pinecone | DB + vector store clients, 20+ modules (tenants, skills, schedules, runtime_*) |
 | ares-llm | 13,503 | 13 | async-openai, arc-swap, parking_lot, futures | LLM clients, provider_registry, pool, coordinator, capabilities |
 | ares-agent | 9,460 | 15 | ares-llm, ares-tools, ares-store | Agent registry, resolver, configurable, orchestrator, research, memory |
@@ -28,7 +28,7 @@ Total workspace Rust ≈ 88k lines (excluding `src/` root ~190KB admin.rs etc. +
 
 - ares-types, KEEP. Cross-cutting types used by all crates (`TenantTier`, API DTOs). 1,980 lines is above noise threshold, and it has axum/utoipa dependencies that leaf crates need without pulling the whole server. Workspace `version.workspace` ensures single version.
 
-- ares-config, KEEP but split internally. 6,135 lines, cross-cutting, but `toml_config.rs` alone is 110 KB per plan (currently split across `toml_config.rs`/`toon_config.rs`/`nvidia_catalog.rs`/`fleet_secrets.rs`). YAGNI: keep as one crate (config is a coherent domain), but Phase 5 must split by domain (`server`, `auth`, `providers`, `tools`, `agents`, `workflows`, `rag`, `billing`) behind `Service` traits, not as separate crates, as modules. Do not create 8 config crates.
+- overlay, KEEP but split internally. 6,135 lines, cross-cutting, but `toml_config.rs` alone is 110 KB per plan (currently split across `toml_config.rs`/`toon_config.rs`/`nvidia_catalog.rs`/`fleet_secrets.rs`). YAGNI: keep as one crate (config is a coherent domain), but Phase 5 must split by domain (`server`, `auth`, `providers`, `tools`, `agents`, `workflows`, `rag`, `billing`) behind `Service` traits, not as separate crates, as modules. Do not create 8 config crates.
 
 - ares-store, KEEP but modularize internally. 23k lines is the workspace's largest crate, but it is the DB boundary (traits + implementations for postgres/turso/vectors). Splitting into `ares-store-postgres`/`ares-vector-stores` would be premature, the 6 backends share `traits.rs` and transaction logic. Instead, enforce feature-gated modules (`postgres`, `turso`, `qdrant`, etc.) and plan Phase 3 to replace polling reload with `Fiber::refresh`. Do not merge into `ares-server`, DB belongs at leaf.
 
@@ -60,7 +60,7 @@ Total workspace Rust ≈ 88k lines (excluding `src/` root ~190KB admin.rs etc. +
 
 ## Anti-decisions (explicitly not doing)
 
-- Do not create `ares-config-domains` (8 crates for server/auth/providers/tools/agents/workflows/rag/billing), that is Phase 5 module split, not crate split.
+- Do not create `eight domain crates` (8 crates for server/auth/providers/tools/agents/workflows/rag/billing), that is Phase 5 module split, not crate split.
 - Do not create `ares-store-postgres`/`ares-store-vectors` splits, feature flags suffice.
 - Do not create `ares-providers`/`ares-workflows` crates, current `ares-llm` + `src/workflows` boundary is sufficient; engines become `Service`s, not crates.
 - Do not merge `ares-vector` despite small size, it is published and has distinct `hnsw_rs` deps and `rust-version = "1.75"` (vs 1.98 for workspace).

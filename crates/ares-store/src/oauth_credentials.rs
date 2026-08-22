@@ -2,11 +2,11 @@
 //!
 //! Provides CRUD for `oauth_credentials` table (migration 023).
 //! All sensitive fields (client_secret, access_token, refresh_token) are
-//! encrypted at rest using AES-256-GCM via `ares_config::fleet_secrets`.
+//! encrypted at rest using AES-256-GCM via `crate::fleet_secrets`.
 //! The store handles encryption/decryption internally; callers work with
 //! plaintext strings in requests and `EncryptedPayload` structs in responses.
 
-use ares_config::fleet_secrets::{EncryptedPayload, MasterKey, encrypt_api_key};
+use crate::fleet_secrets::{EncryptedPayload, MasterKey, encrypt_api_key};
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
@@ -381,7 +381,7 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_config::fleet_secrets::decrypt_api_key;
+    use crate::fleet_secrets::decrypt_api_key;
     use sqlx::PgPool;
     use std::sync::LazyLock;
     use tokio::sync::Mutex;

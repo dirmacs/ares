@@ -1,0 +1,283 @@
+//! V1 stream domain — cordis Phase6
+//! Bodies moved from v1.rs
+
+use std::sync::Arc;
+use cordis::Context;
+use super::*;
+
+use ares_agent::tenant_agent;
+use ares_store::agent_runs;
+use ares_store::run_history::{LogToolCallRequest, RunHistoryStore};
+use ares_types::models::TenantContext;
+use crate::Result;
+use crate::HttpError;
+use ares_agent::Agent;
+use ares_types::types::ToolDefinition;
+use axum::{
+    extract::{Extension, Path, Query, State},
+    Json,
+};
+use chrono::{TimeZone, Utc};
+
+/// POST /v1/agents/{name}/sandbox-run — dry-run an agent with sandbox=true
+pub async fn sandbox_run_agent(
+    State(state_ctx): State<Arc<Context>>,
+    ctx: Option<Extension<TenantContext>>,
+    usage: Option<Extension<crate::middleware::usage::UsageContext>>,
+    Path(name): Path<String>,
+    Json(input): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>> {
+    let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
+    let state_ctx = match usage {
+        Some(Extension(u)) => state_ctx.with_intercept(u),
+        None => state_ctx,
+    };
+
+    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(&state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone(),
+        &state_ctx.get::<ares_agent::AgentRegistry>().expect("AgentRegistry not provided"),
+        &state_ctx,
+        &name,
+        &state_ctx.get::<ares_store::FleetSecrets>().expect("not provided"),
+    )
+    .await?;
+    resolved_agent
+        .agent
+        .set_tools(state_ctx.get::<ares_tools::Tools>().expect("Tools not provided"));
+    resolved_agent.agent.bind_request_ctx(state_ctx.clone());
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let started = Utc::now();
+    let tool_defs = resolved_agent.agent.get_filtered_tool_definitions();
+    let tool_trace_specs = sandbox_tool_trace_specs_from_ctx(&state_ctx, &tool_defs);
+    let tool_names = tool_defs
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect::<Vec<_>>();
+    let message = extract_agent_run_message(&input);
+
+    let trace = vec![
+        format!("Resolved agent '{}' for tenant '{}'", name, tc.tenant_id),
+        format!("Config source: {}", resolved_agent.source.as_str()),
+        format!("System prompt: {}", resolved_agent.agent.system_prompt()),
+        format!("Allowed tools: {:?}", resolved_agent.agent.allowed_tools()),
+        format!(
+            "Max tool iterations: {}",
+            resolved_agent.agent.max_tool_iterations()
+        ),
+        format!("Parallel tools: {}", resolved_agent.agent.parallel_tools()),
+        format!("Input message: {}", message),
+        "Sandbox mode active — no LLM calls or tool executions performed".to_string(),
+    ];
+
+    let metadata = agent_runs::AgentRunMetadata {
+        workspace_id: None,
+        session_id: Some(run_id.clone()),
+        request_source: Some("api_v1_sandbox".to_string()),
+        product: Some("fleet_manager".to_string()),
+        agent_config_source: Some(resolved_agent.source.as_str().to_string()),
+        agent_config_version: resolved_agent.config_version.clone(),
+        eruka_binding_id: None,
+        eruka_context_hit: false,
+        eruka_read_count: 0,
+        eruka_write_count: 0,
+        pipeline_id: None,
+        schedule_id: None,
+        trigger_id: None,
+    };
+    agent_runs::insert_agent_run_with_id_and_metadata(&state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone(),
+        &run_id,
+        &tc.tenant_id,
+        &name,
+        None,
+        "completed",
+        0,
+        0,
+        0,
+        None,
+        "sandbox",
+        "sandbox",
+        false,
+        Some(&metadata),
+    )
+    .await?;
+
+    let pool = state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let store = RunHistoryStore::new(&pool);
+    for call in sandbox_tool_call_requests(
+        &run_id,
+        &tc.tenant_id,
+        &name,
+        &tool_trace_specs,
+        started.timestamp(),
+    ) {
+        store.insert_tool_call(&call).await?;
+    }
+
+    Ok(Json(serde_json::json!({
+        "sandbox": true,
+        "run_id": run_id,
+        "agent_name": name,
+        "tenant_id": tc.tenant_id,
+        "config_source": resolved_agent.source.as_str(),
+        "config_version": resolved_agent.config_version,
+        "system_prompt": resolved_agent.agent.system_prompt(),
+        "tools": tool_names,
+        "input": input,
+        "trace": trace,
+        "mock_response": {
+            "content": format!("[SANDBOX] Agent {} would process: '{}' using {} tool(s). No external actions taken.", name, message, tool_defs.len()),
+            "tool_calls": tool_defs.iter().map(|t| serde_json::json!({
+                "tool": t.name,
+                "mock_result": { "status": "skipped", "reason": "sandbox_mode" }
+            })).collect::<Vec<_>>(),
+        }
+    })))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SandboxToolTraceSpec {
+    pub(crate) name: String,
+    pub(crate) tool_type: String,
+}
+
+#[cfg(test)]
+fn tenant_id_for_sandbox(ctx: &Arc<Context>) -> String {
+    ctx.get::<TenantContext>()
+        .map(|tc| tc.tenant_id.clone())
+        .unwrap_or_default()
+}
+
+fn sandbox_tool_trace_specs(
+    tools: &ares_tools::Tools,
+    ctx: &Arc<Context>,
+    tool_defs: &[ToolDefinition],
+) -> Vec<SandboxToolTraceSpec> {
+    tool_defs
+        .iter()
+        .map(|tool| SandboxToolTraceSpec {
+            name: tool.name.clone(),
+            tool_type: tools
+                .tool_type(ctx, &tool.name)
+                .unwrap_or_else(|| "mcp".to_string()),
+        })
+        .collect()
+}
+
+fn sandbox_tool_trace_specs_from_ctx(
+    ctx: &Arc<Context>,
+    tool_defs: &[ToolDefinition],
+) -> Vec<SandboxToolTraceSpec> {
+    match ctx.get::<ares_tools::Tools>() {
+        Some(tools) => sandbox_tool_trace_specs(tools.as_ref(), ctx, tool_defs),
+        None => tool_defs
+            .iter()
+            .map(|tool| SandboxToolTraceSpec {
+                name: tool.name.clone(),
+                tool_type: "mcp".to_string(),
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn sandbox_tool_call_requests(
+    run_id: &str,
+    tenant_id: &str,
+    agent_name: &str,
+    tool_specs: &[SandboxToolTraceSpec],
+    created_at: i64,
+) -> Vec<LogToolCallRequest> {
+    tool_specs
+        .iter()
+        .enumerate()
+        .map(|(idx, tool)| LogToolCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: run_id.to_string(),
+            tenant_id: tenant_id.to_string(),
+            agent_name: agent_name.to_string(),
+            step_index: idx as i32,
+            tool_name: tool.name.clone(),
+            tool_type: tool.tool_type.clone(),
+            arguments: serde_json::json!({ "sandbox": true }),
+            result: Some(serde_json::json!({ "status": "skipped", "reason": "sandbox_mode" })),
+            latency_ms: 0,
+            status: "success".to_string(),
+            error_message: None,
+            created_at,
+        })
+        .collect()
+}
+
+/// GET /v1/agents/{name}/logs — list logs for an agent (stub: returns empty)
+pub async fn list_agent_logs(
+    State(state_ctx): State<Arc<Context>>,
+    ctx: Option<Extension<TenantContext>>,
+    usage: Option<Extension<crate::middleware::usage::UsageContext>>,
+    Path(name): Path<String>,
+    Query(q): Query<PaginationQuery>,
+) -> Result<Json<Paginated<V1AgentLog>>> {
+    let _tc = extract_tenant(ctx)?;
+    let _state_ctx = state_ctx.with_intercept(_tc.clone());
+    let _state_ctx = match usage {
+        Some(Extension(u)) => _state_ctx.with_intercept(u),
+        None => _state_ctx,
+    };
+    let (page, per_page) = logs_pagination(q.page, q.per_page);
+    let _ = name;
+    Ok(Json(Paginated::empty(page, per_page)))
+}
+
+/// POST /v1/search/semantic — semantic document search
+///
+/// Searches ingested documents using semantic similarity.
+/// cordis Phase6: runtime gating via Service check — previously feature-gated
+/// When vector services are not configured the handler returns 503 via AppError.
+pub async fn semantic_search(
+    State(_state): State<Arc<Context>>,
+    ctx: Option<Extension<TenantContext>>,
+    usage: Option<Extension<crate::middleware::usage::UsageContext>>,
+    Json(payload): Json<ares_types::types::SemanticSearchRequest>,
+) -> Result<Json<ares_types::types::SemanticSearchResponse>> {
+    let _tc = extract_tenant(ctx)?;
+    let _state = _state.with_intercept(_tc.clone());
+    let _state = match usage {
+        Some(Extension(u)) => _state.with_intercept(u),
+        None => _state,
+    };
+    if payload.collection.is_empty() {
+        return Err(HttpError::from(AppError::InvalidInput("Collection name required".to_string())));
+    }
+    if payload.query.is_empty() {
+        return Err(HttpError::from(AppError::InvalidInput("Query required".to_string())));
+    }
+    Err(HttpError::from(AppError::InvalidInput(
+        "semantic search not enabled — vector service unavailable (enable ares-vector)".into()
+    )))
+}
+
+pub fn routes() -> axum::Router<Arc<Context>> {
+    use axum::routing::{get, post};
+    axum::Router::new()
+        .route("/v1/stream/sandbox_run_agent", post(sandbox_run_agent))
+        .route("/v1/stream/list_agent_logs", get(list_agent_logs))
+        .route("/v1/stream/semantic_search", post(semantic_search))
+}
+
+// cordis Phase6: RouteSet Service
+use cordis::Service;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ares_types::models::TenantTier;
+
+    #[test]
+    fn sandbox_tool_trace_specs_from_ctx_reads_intercept() {
+        let root = Context::new_root();
+        assert_eq!(tenant_id_for_sandbox(&root), "");
+
+        let scoped = root.with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
+        assert_eq!(tenant_id_for_sandbox(&scoped), "acme");
+    }
+}

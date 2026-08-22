@@ -1,6 +1,6 @@
 use crate::configurable::ConfigurableAgent;
 use crate::registry::AgentRegistry;
-use ares_config::toml_config::AgentConfig;
+use crate::AgentConfig;
 use ares_types::types::{AppError, Result};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
@@ -201,7 +201,7 @@ pub(crate) async fn resolve_agent_for_tenant(
     agent_registry: &AgentRegistry,
     tenant_id: &str,
     agent_name: &str,
-    fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
+    fleet_secrets: &ares_store::FleetSecrets,
 ) -> Result<ResolvedAgent> {
     if let Some((agent_config, config_version, config_json)) =
         load_tenant_agent_config(pool, tenant_id, agent_name).await?
@@ -266,7 +266,7 @@ pub async fn resolve_agent_from_ctx(
     agent_registry: &AgentRegistry,
     ctx: &std::sync::Arc<cordis::Context>,
     agent_name: &str,
-    fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
+    fleet_secrets: &ares_store::FleetSecrets,
 ) -> Result<ResolvedAgent> {
     let tenant_id = tenant_id_from_agent_ctx(ctx).ok_or_else(|| {
         AppError::Auth("Missing tenant context".to_string())
@@ -279,7 +279,7 @@ pub async fn resolve_required_tenant_agent_from_ctx(
     agent_registry: &AgentRegistry,
     ctx: &std::sync::Arc<cordis::Context>,
     agent_name: &str,
-    fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
+    fleet_secrets: &ares_store::FleetSecrets,
 ) -> Result<ResolvedAgent> {
     let tenant_id = tenant_id_from_agent_ctx(ctx).ok_or_else(|| {
         AppError::Auth("Missing tenant context".to_string())
@@ -292,7 +292,7 @@ pub(crate) async fn resolve_required_tenant_agent(
     agent_registry: &AgentRegistry,
     tenant_id: &str,
     agent_name: &str,
-    fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
+    fleet_secrets: &ares_store::FleetSecrets,
 ) -> Result<ResolvedAgent> {
     let Some((agent_config, config_version, config_json)) =
         load_tenant_agent_config(pool, tenant_id, agent_name).await?
@@ -326,7 +326,7 @@ pub async fn create_tenant_agent(
     agent_registry: &AgentRegistry,
     tenant_id: &str,
     agent_name: &str,
-    fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
+    fleet_secrets: &ares_store::FleetSecrets,
 ) -> Option<ConfigurableAgent> {
     let load_result = load_tenant_agent_config(pool, tenant_id, agent_name).await;
     if !legacy_create_should_use_tenant_config(&load_result) {
@@ -355,7 +355,7 @@ mod tests {
         tenant_agent_disabled_error, tenant_agent_not_found_error, tenant_config_version,
         tenant_id_from_agent_ctx, AgentConfigSource,
     };
-    use ares_config::toml_config::AgentConfig;
+    use crate::AgentConfig;
     use ares_types::types::{AppError, Result as AresResult};
 
     #[test]
@@ -730,7 +730,8 @@ mod tests {
         };
         use crate::registry::AgentRegistry;
         use crate::Agent;
-        use ares_config::toml_config::{AgentConfig, ModelConfig, ProviderConfig};
+        use crate::AgentConfig;
+        use ares_llm::{ModelConfig, ProviderConfig};
         use ares_store::postgres::PostgresClient;
         use ares_store::tenant_agents::{
             create_tenant_agent as db_create_tenant_agent, update_tenant_agent,
@@ -738,7 +739,7 @@ mod tests {
         };
         use ares_store::tenant_allowlist::TenantAllowlistStore;
         use ares_llm::ProviderRegistry;
-        use ares_tools::registry::ToolRegistry;
+        use ares_tools::{Tool, Tools};
         use ares_types::types::{AgentContext, AppError};
         use axum::{routing::post, Json, Router};
         use serde_json::{json, Value};
@@ -854,7 +855,7 @@ mod tests {
             );
 
             let mut registry =
-                AgentRegistry::new(Arc::new(provider_registry), Arc::new(ToolRegistry::new()));
+                AgentRegistry::new(Arc::new(provider_registry), Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())));
             registry.register(
                 "product",
                 AgentConfig {
@@ -923,7 +924,7 @@ mod tests {
                 &registry,
                 &tenant_id,
                 "product",
-                &ares_config::fleet_secrets::FleetSecrets::new(),
+                &ares_store::FleetSecrets::new(),
             )
             .await;
             assert!(agent.is_none());
@@ -943,7 +944,7 @@ mod tests {
                 &registry,
                 &tenant_id,
                 "product",
-                &ares_config::fleet_secrets::FleetSecrets::new(),
+                &ares_store::FleetSecrets::new(),
             )
             .await
             .expect("tenant row should produce an agent");
@@ -965,7 +966,7 @@ mod tests {
                 &registry,
                 &tenant_id,
                 "product",
-                &ares_config::fleet_secrets::FleetSecrets::new(),
+                &ares_store::FleetSecrets::new(),
             )
             .await
             .expect("resolve tenant agent");
@@ -989,7 +990,7 @@ mod tests {
                 &registry,
                 &tenant_id,
                 "product",
-                &ares_config::fleet_secrets::FleetSecrets::new(),
+                &ares_store::FleetSecrets::new(),
             )
             .await
             .expect("resolve registry agent");
@@ -1038,7 +1039,7 @@ mod tests {
             );
 
             let mut registry =
-                AgentRegistry::new(Arc::new(provider_registry), Arc::new(ToolRegistry::new()));
+                AgentRegistry::new(Arc::new(provider_registry), Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())));
             registry.register(
                 "product",
                 AgentConfig {
@@ -1055,12 +1056,12 @@ mod tests {
             let mut overrides = HashMap::new();
             overrides.insert(
                 "ollama-primary".to_string(),
-                ares_config::fleet_secrets::ProviderOverride {
+                ares_store::ProviderOverride {
                     fallback_providers: vec!["ollama-fallback".to_string()],
                     ..Default::default()
                 },
             );
-            let fleet_secrets = ares_config::fleet_secrets::FleetSecrets::from_providers(overrides);
+            let fleet_secrets = ares_store::FleetSecrets::from_providers(overrides);
 
             let err = match resolve_agent_for_tenant(
                 &pool,
@@ -1090,7 +1091,7 @@ mod tests {
                 &registry,
                 &tenant_id,
                 "product",
-                &ares_config::fleet_secrets::FleetSecrets::new(),
+                &ares_store::FleetSecrets::new(),
             )
             .await
             {
@@ -1116,7 +1117,7 @@ mod tests {
                 &registry,
                 &tenant_id,
                 "product",
-                &ares_config::fleet_secrets::FleetSecrets::new(),
+                &ares_store::FleetSecrets::new(),
             )
             .await
             .expect("resolve for execution");
@@ -1158,7 +1159,7 @@ mod tests {
                 &registry,
                 &tenant_id,
                 "product",
-                &ares_config::fleet_secrets::FleetSecrets::new(),
+                &ares_store::FleetSecrets::new(),
             )
             .await
             {
@@ -1203,7 +1204,7 @@ mod tests {
                 &registry,
                 &tenant_id,
                 "product",
-                &ares_config::fleet_secrets::FleetSecrets::new(),
+                &ares_store::FleetSecrets::new(),
             )
             .await
             {
@@ -1248,7 +1249,7 @@ mod tests {
                 &registry,
                 &tenant_id,
                 "product",
-                &ares_config::fleet_secrets::FleetSecrets::new(),
+                &ares_store::FleetSecrets::new(),
             )
             .await;
             assert!(agent.is_none());

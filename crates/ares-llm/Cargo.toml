@@ -11,9 +11,9 @@ description = "LLM provider clients and abstractions for ARES"
 [features]
 default = []
 ollama = ["dep:ollama-rs"]
-openai = ["dep:async-openai", "dep:reqwest"]
+openai = ["dep:async-openai"]
 azure = ["openai"]
-bedrock = ["dep:reqwest"]
+bedrock = []
 llamacpp = ["dep:llama-cpp-2"]
 anthropic = ["dep:claude-sdk"]
 llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]
@@ -23,7 +23,6 @@ postgres = ["dep:sqlx", "ares-store/postgres"]
 
 [dependencies]
 ares-types = { workspace = true }
-ares-config = { workspace = true }
 ares-tools = { workspace = true }
 ares-store = { workspace = true, optional = true }
 cordis = { workspace = true }
@@ -44,7 +43,8 @@ ollama-rs = { version = "0.3.3", features = ["stream"], optional = true }
 async-openai = { version = "0.33.1", features = ["chat-completion"], optional = true }
 llama-cpp-2 = { version = "0.1.130", optional = true }
 claude-sdk = { version = "1.0.0", optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 wiremock = "0.6.5"

@@ -7,11 +7,10 @@
 #![allow(deprecated, reason = "deprecated AgentRegistry shims retained for one-release migration; internal use until loader cutover")]
 
 use crate::{Agent, AgentResponse, ExecutionMetadata};
-use ares_config::toml_config::AgentConfig;
+use crate::AgentConfig;
 use ares_llm::coordinator::ConversationMessage;
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use ares_llm::{LLMClient, LLMResponse};
-use ares_tools::registry::ToolRegistry;
 use ares_tools::Tools;
 use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
 use async_trait::async_trait;
@@ -60,8 +59,6 @@ pub struct ConfigurableAgent {
     provider_name: String,
     /// The system prompt from configuration
     system_prompt: String,
-    /// Built-in tools available to this agent.
-    tool_registry: Option<Arc<ToolRegistry>>,
     /// Unified tools capability. Prefer `set_tools` + request ctx.
     tools: Option<Arc<Tools>>,
     /// Request Cordis context bound for this execution (Tools isolate + ExternalContext).
@@ -117,9 +114,9 @@ impl ConfigurableAgent {
         name: &str,
         config: &AgentConfig,
         llm: Box<dyn LLMClient>,
-        tool_registry: Option<Arc<ToolRegistry>>,
+        tools: Option<Arc<Tools>>,
     ) -> Self {
-        Self::new_with_provider(name, config, llm, tool_registry, config.model.clone())
+        Self::new_with_provider(name, config, llm, tools, config.model.clone())
     }
 
     /// Shared helper that resolves the common `agent_type`, `system_prompt`,
@@ -154,7 +151,7 @@ impl ConfigurableAgent {
         name: &str,
         config: &AgentConfig,
         llm: Box<dyn LLMClient>,
-        tool_registry: Option<Arc<ToolRegistry>>,
+        tools: Option<Arc<Tools>>,
         provider_name: String,
     ) -> Self {
         let (agent_type, system_prompt, allowed_tools) =
@@ -166,8 +163,7 @@ impl ConfigurableAgent {
             llm,
             provider_name,
             system_prompt,
-            tool_registry,
-            tools: None,
+            tools,
             cordis_ctx: None,
             allowed_tools,
             max_tool_iterations: config.max_tool_iterations,
@@ -188,7 +184,7 @@ impl ConfigurableAgent {
         agent_type: AgentType,
         llm: Box<dyn LLMClient>,
         system_prompt: String,
-        tool_registry: Option<Arc<ToolRegistry>>,
+        tools: Option<Arc<Tools>>,
         allowed_tools: Option<Vec<String>>,
         max_tool_iterations: usize,
         parallel_tools: bool,
@@ -199,8 +195,7 @@ impl ConfigurableAgent {
             llm,
             provider_name: "unknown".to_string(),
             system_prompt,
-            tool_registry,
-            tools: None,
+            tools,
             cordis_ctx: None,
             allowed_tools,
             max_tool_iterations,
@@ -211,9 +206,7 @@ impl ConfigurableAgent {
         }
     }
 
-    // Preferred constructors that accept a unified ToolService obtained via
-    // ctx.get::<dyn ToolService>(). Handlers should use these instead of the
-    // ToolRegistry variants below.
+    // Preferred constructors that accept unified Tools from ctx.get::<Tools>().
 
     /// Create an agent wired to a unified ToolService.
     ///
@@ -224,9 +217,9 @@ impl ConfigurableAgent {
         name: &str,
         config: &AgentConfig,
         llm: Box<dyn LLMClient>,
-        _tool_service: Option<Arc<Tools>>,
+        tool_service: Option<Arc<Tools>>,
     ) -> Self {
-        Self::new_with_provider_and_tool_service(name, config, llm, None, config.model.clone())
+        Self::new_with_provider_and_tool_service(name, config, llm, tool_service, config.model.clone())
     }
 
     /// Create an agent with provider metadata and a unified ToolService.
@@ -234,7 +227,7 @@ impl ConfigurableAgent {
         name: &str,
         config: &AgentConfig,
         llm: Box<dyn LLMClient>,
-        _tool_service: Option<Arc<Tools>>,
+        tool_service: Option<Arc<Tools>>,
         provider_name: String,
     ) -> Self {
         let (agent_type, system_prompt, allowed_tools) =
@@ -245,8 +238,7 @@ impl ConfigurableAgent {
             llm,
             provider_name,
             system_prompt,
-            tool_registry: None,
-            tools: None,
+            tools: tool_service,
             cordis_ctx: None,
             allowed_tools,
             max_tool_iterations: config.max_tool_iterations,
@@ -264,7 +256,7 @@ impl ConfigurableAgent {
         agent_type: AgentType,
         llm: Box<dyn LLMClient>,
         system_prompt: String,
-        _tool_service: Option<Arc<Tools>>,
+        tool_service: Option<Arc<Tools>>,
         allowed_tools: Option<Vec<String>>,
         max_tool_iterations: usize,
         parallel_tools: bool,
@@ -275,8 +267,7 @@ impl ConfigurableAgent {
             llm,
             provider_name: "unknown".to_string(),
             system_prompt,
-            tool_registry: None,
-            tools: None,
+            tools: tool_service,
             cordis_ctx: None,
             allowed_tools,
             max_tool_iterations,
@@ -376,21 +367,14 @@ Handle employee info, policies, and benefits."#
         self.parallel_tools
     }
 
-    /// Check if this agent may use tools (built-in registry, or a tenant-scoped
-    /// runtime registry).
+    /// Check if this agent may use tools (built-in or tenant-scoped via `Tools`).
     pub fn has_tools(&self) -> bool {
-        if self.tool_registry.is_some() {
-            return true;
-        }
-        if self.tools.is_some() {
-            return true;
-        }
-        false
+        self.tools.is_some()
     }
 
-    /// Get the tool registry (if any)
-    pub fn tool_registry(&self) -> Option<&Arc<ToolRegistry>> {
-        self.tool_registry.as_ref()
+    /// Get the unified tools capability (if any).
+    pub fn tools(&self) -> Option<&Arc<Tools>> {
+        self.tools.as_ref()
     }
 
     /// Store the unified `Tools` capability used for list/resolve/dispatch.
@@ -631,26 +615,18 @@ Handle employee info, policies, and benefits."#
     /// If `allowed_tools` is set, returns only those tools (if enabled).
     /// Otherwise returns no tools: tool use is deny-by-default.
     pub fn get_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let mut defs = match (&self.tool_registry, &self.allowed_tools) {
-            (Some(registry), Some(allowed)) if !allowed.is_empty() => {
-                let allowed_refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
-                registry.get_tool_definitions_for(&allowed_refs)
-            }
-            _ => Vec::new(),
+        let (Some(tools), Some(allowed)) = (&self.tools, &self.allowed_tools) else {
+            return Vec::new();
         };
-
-        if let (Some(tools), Some(ctx), Some(allowed)) =
-            (&self.tools, &self.cordis_ctx, &self.allowed_tools)
-        {
-            let existing: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
-            for def in tools.list(ctx) {
-                if allowed.iter().any(|a| a == &def.name) && !existing.contains(&def.name) {
-                    defs.push(def);
-                }
-            }
+        if allowed.is_empty() {
+            return Vec::new();
         }
-
-        defs
+        let ctx = self.cordis_ctx.clone().unwrap_or_else(Context::new_root);
+        tools
+            .list(&ctx)
+            .into_iter()
+            .filter(|def| allowed.iter().any(|a| a == &def.name))
+            .collect()
     }
 
     /// Check if a specific tool is allowed for this agent.
@@ -663,20 +639,8 @@ Handle employee info, policies, and benefits."#
         if !whitelisted {
             return false;
         }
-        let builtin = self
-            .tool_registry
-            .as_ref()
-            .map(|r| r.is_enabled(tool_name))
-            .unwrap_or(false);
-        if builtin {
-            return true;
-        }
-        if let (Some(tools), Some(ctx)) = (&self.tools, &self.cordis_ctx) {
-            if tools.resolve(ctx, tool_name).is_some() {
-                return true;
-            }
-        }
-        false
+        // Presence of Tools matches the old empty-registry default-enabled path.
+        self.tools.is_some()
     }
 
     fn tenant_scoped_builtin_args(
@@ -721,23 +685,19 @@ Handle employee info, policies, and benefits."#
         }
     }
 
-    /// Execute a single tool call. Built-in `ToolRegistry` first, then `Tools::resolve(ctx, name)`.
+    /// Execute a single tool call via `Tools::resolve(ctx, name)`.
     async fn dispatch_tool(
         &self,
         name: &str,
         args: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        if let Some(reg) = &self.tool_registry {
-            if reg.has_tool(name) {
-                let args = self.tenant_scoped_builtin_args(name, args)?;
-                return reg.execute(name, args).await;
-            }
-        }
-        if let (Some(tools), Some(ctx)) = (&self.tools, &self.cordis_ctx) {
-            if let Some(tool) = tools.resolve(ctx, name) {
-                let args = self.tenant_scoped_builtin_args(name, args)?;
-                return tool.execute(args).await;
-            }
+        let Some(tools) = &self.tools else {
+            return Err(AppError::NotFound(format!("Tool not found: {name}")));
+        };
+        let ctx = self.cordis_ctx.clone().unwrap_or_else(Context::new_root);
+        if let Some(tool) = tools.resolve(&ctx, name) {
+            let args = self.tenant_scoped_builtin_args(name, args)?;
+            return tool.execute(args).await;
         }
         Err(AppError::NotFound(format!("Tool not found: {name}")))
     }
@@ -906,11 +866,13 @@ When referencing facts above, cite [E1], [E2] etc.",
                 }
 
                 let tool_start = std::time::Instant::now();
-                let is_builtin = self
-                    .tool_registry
-                    .as_ref()
-                    .map(|r| r.has_tool(&tc.name))
-                    .unwrap_or(false);
+                let is_builtin = {
+                    let ctx = self.cordis_ctx.clone().unwrap_or_else(Context::new_root);
+                    self.tools
+                        .as_ref()
+                        .and_then(|t| t.resolve(&ctx, &tc.name))
+                        .is_some()
+                };
                 let tool_type = self.observed_tool_type(&tc.name, is_builtin);
                 let result = self.dispatch_tool(&tc.name, tc.arguments.clone()).await;
                 let tool_latency = tool_start.elapsed().as_millis() as i64;
@@ -1181,7 +1143,8 @@ pub fn agent_config_from_user_agent(user_agent: &ares_store::postgres::UserAgent
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_config::toml_config::AgentConfig;
+    use ares_tools::Tool;
+    use crate::AgentConfig;
     use ares_llm::client::TokenUsage;
     use ares_llm::LLMResponse;
     use ares_types::types::{Message, MessageRole, Preference, ToolCall, UserMemory};
@@ -1389,18 +1352,18 @@ mod tests {
         }
     }
 
-    fn make_registry_with_tool(name: &str) -> Arc<ToolRegistry> {
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(MockTool::new(name)));
-        Arc::new(reg)
+    fn make_tools_with_tool(name: &str) -> Arc<Tools> {
+        Arc::new(Tools::from_static([
+            Arc::new(MockTool::new(name)) as Arc<dyn Tool>,
+        ]))
     }
 
-    fn make_registry_with_echo_tool(name: &str) -> Arc<ToolRegistry> {
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(EchoArgsTool {
-            name: name.to_string(),
-        }));
-        Arc::new(reg)
+    fn make_tools_with_echo_tool(name: &str) -> Arc<Tools> {
+        Arc::new(Tools::from_static([
+            Arc::new(EchoArgsTool {
+                name: name.to_string(),
+            }) as Arc<dyn Tool>,
+        ]))
     }
 
     // ==========================================================
@@ -1577,25 +1540,24 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_registry_returns_some_when_provided() {
+    fn test_tools_returns_some_when_provided() {
         let config = make_config(vec![], None);
-        let reg = Arc::new(ToolRegistry::new());
+        let tools = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
         let agent = ConfigurableAgent::new(
             "router",
             &config,
             Box::new(MockLLM::new()),
-            Some(reg.clone()),
+            Some(tools.clone()),
         );
-        assert!(agent.tool_registry().is_some());
-        // Same Arc
-        assert!(Arc::ptr_eq(agent.tool_registry().unwrap(), &reg));
+        assert!(agent.tools().is_some());
+        assert!(Arc::ptr_eq(agent.tools().unwrap(), &tools));
     }
 
     #[test]
-    fn test_tool_registry_returns_none_when_absent() {
+    fn test_tools_returns_none_when_absent() {
         let config = make_config(vec![], None);
         let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
-        assert!(agent.tool_registry().is_none());
+        assert!(agent.tools().is_none());
     }
 
     #[test]
@@ -1622,7 +1584,7 @@ mod tests {
     #[test]
     fn test_can_use_tool_not_in_allowed_list() {
         let config = make_config(vec!["calculator"], None);
-        let reg = Arc::new(ToolRegistry::new());
+        let reg = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
         let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), Some(reg));
         assert!(!agent.can_use_tool("web_search"), "not in allowed → false");
     }
@@ -1647,7 +1609,7 @@ mod tests {
 
     #[test]
     fn test_get_filtered_tool_definitions_with_registry() {
-        let reg = make_registry_with_tool("calculator");
+        let reg = make_tools_with_tool("calculator");
         let config = make_config(vec!["calculator"], None);
         let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), Some(reg));
         let defs = agent.get_filtered_tool_definitions();
@@ -1666,7 +1628,7 @@ mod tests {
             AgentType::Finance,
             Box::new(MockLLM::new()),
             "Custom prompt".to_string(),
-            Some(Arc::new(ToolRegistry::new())),
+            Some(Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()))),
             Some(vec!["tool_a".to_string()]),
             10,
             true,
@@ -1674,7 +1636,7 @@ mod tests {
         assert_eq!(agent.name(), "my-agent");
         assert!(matches!(agent.agent_type(), AgentType::Finance));
         assert_eq!(agent.system_prompt(), "Custom prompt");
-        assert!(agent.tool_registry().is_some());
+        assert!(agent.tools().is_some());
         let allowed = agent.allowed_tools().expect("should have allowed tools");
         assert_eq!(allowed.len(), 1);
         assert_eq!(agent.max_tool_iterations(), 10);
@@ -1867,7 +1829,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_tool_path_no_tool_calls_returns_final() {
-        let reg = make_registry_with_tool("calculator");
+        let reg = make_tools_with_tool("calculator");
         let mut config = make_config(vec!["calculator"], Some("system"));
         config.max_tool_iterations = 3;
         // MockLLM returns empty tool_calls → immediate return
@@ -1886,7 +1848,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_tool_path_tool_calls_then_final() {
-        let reg = make_registry_with_tool("calculator");
+        let reg = make_tools_with_tool("calculator");
         let mut config = make_config(vec!["calculator"], Some("system"));
         config.max_tool_iterations = 3;
 
@@ -1914,7 +1876,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_tool_path_max_iterations_reaches_synthesis() {
-        let reg = make_registry_with_tool("calculator");
+        let reg = make_tools_with_tool("calculator");
         let mut config = make_config(vec!["calculator"], Some("system"));
         config.max_tool_iterations = 2; // low limit to trigger synthesis
 
@@ -1962,9 +1924,9 @@ mod tests {
             }
         }
 
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(FailingTool));
-        let reg = Arc::new(reg);
+        let reg = Arc::new(Tools::from_static([
+            Arc::new(FailingTool) as Arc<dyn Tool>,
+        ]));
 
         let mut config = make_config(vec!["fail_tool"], Some("system"));
         config.max_tool_iterations = 3;
@@ -1998,7 +1960,7 @@ mod tests {
 
     #[test]
     fn test_can_use_tool_empty_list_denies_all() {
-        let reg = Arc::new(ToolRegistry::new());
+        let reg = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
         let agent = ConfigurableAgent::with_params(
             "router",
             AgentType::Router,
@@ -2025,7 +1987,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_prebuilt_connector_injects_runtime_tenant() {
-        let reg = make_registry_with_echo_tool("slack_send_message");
+        let reg = make_tools_with_echo_tool("slack_send_message");
         let mut agent = ConfigurableAgent::with_params(
             "orchestrator",
             AgentType::Orchestrator,
@@ -2050,7 +2012,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_prebuilt_connector_rejects_cross_tenant_arg() {
-        let reg = make_registry_with_echo_tool("slack_send_message");
+        let reg = make_tools_with_echo_tool("slack_send_message");
         let mut agent = ConfigurableAgent::with_params(
             "orchestrator",
             AgentType::Orchestrator,
@@ -2077,7 +2039,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_tool_allowed_tool_succeeds() {
-        let reg = make_registry_with_tool("http");
+        let reg = make_tools_with_tool("http");
         let mut config = make_config(vec!["http"], Some("system"));
         config.max_tool_iterations = 3;
 
@@ -2104,10 +2066,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_tool_disallowed_tool_returns_error() {
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(MockTool::new("http")));
-        reg.register(Arc::new(MockTool::new("sql")));
-        let reg = Arc::new(reg);
+        let reg = Arc::new(Tools::from_static([
+            Arc::new(MockTool::new("http")) as Arc<dyn Tool>,
+            Arc::new(MockTool::new("sql")) as Arc<dyn Tool>,
+        ]));
 
         let agent = ConfigurableAgent::with_params(
             "orchestrator",
@@ -2145,7 +2107,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_tool_empty_allowed_tools_denies_all() {
-        let reg = make_registry_with_tool("http");
+        let reg = make_tools_with_tool("http");
         let agent = ConfigurableAgent::with_params(
             "orchestrator",
             AgentType::Orchestrator,
@@ -2177,10 +2139,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_tool_none_allowed_tools_denies_all() {
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(MockTool::new("http")));
-        reg.register(Arc::new(MockTool::new("sql")));
-        let reg = Arc::new(reg);
+        let reg = Arc::new(Tools::from_static([
+            Arc::new(MockTool::new("http")) as Arc<dyn Tool>,
+            Arc::new(MockTool::new("sql")) as Arc<dyn Tool>,
+        ]));
 
         let agent = ConfigurableAgent::with_params(
             "orchestrator",
@@ -2247,7 +2209,7 @@ mod tests {
 
     #[test]
     fn test_set_allowed_tools_intersection() {
-        let reg = Arc::new(ToolRegistry::new());
+        let reg = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
         let mut agent = ConfigurableAgent::with_params(
             "router",
             AgentType::Router,

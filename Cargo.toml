@@ -1,10 +1,10 @@
 # Cargo workspace configuration
 [workspace]
 members = [
-    ".", "crates/ares-vector", "crates/ares-types", "crates/ares-config",
+    ".", "crates/ares-vector", "crates/ares-types",
     "crates/ares-rag", "crates/ares-tools", "crates/ares-llm",
     "crates/ares-store", "crates/ares-mcp", "crates/ares-agent",
-    "crates/cordis",
+    "crates/ares-http", "crates/cordis", "crates/ares",
 ]
 exclude = ["ui"]
 resolver = "2"
@@ -31,13 +31,14 @@ chrono-tz = "0.10.4"
 async-trait = "0.1"
 
 ares-types = { version = "0.9.0", path = "crates/ares-types" }
-ares-config = { version = "0.9.0", path = "crates/ares-config" }
 ares-rag = { version = "0.9.0", path = "crates/ares-rag" }
 ares-tools = { version = "0.9.0", path = "crates/ares-tools" }
 ares-llm = { version = "0.9.0", path = "crates/ares-llm" }
 ares-store = { version = "0.9.0", path = "crates/ares-store" }
 ares-mcp = { version = "0.9.0", path = "crates/ares-mcp" }
 ares-agent = { version = "0.9.0", path = "crates/ares-agent" }
+ares-http = { version = "0.9.0", path = "crates/ares-http" }
+ares = { version = "0.9.0", path = "crates/ares" }
 cordis = { version = "0.9.0", path = "crates/cordis", package = "ares-cordis" }
 anyhow = "1.0.100"
 hex = "0.4"
@@ -96,7 +97,7 @@ exclude = [
 
 # Library configuration - allows other projects to use this as a dependency
 [lib]
-name = "ares"
+name = "ares_server"
 path = "src/lib.rs"
 
 # Binary configuration - allows running as standalone server
@@ -108,11 +109,11 @@ path = "src/main.rs"
 # Default features for NVIDIA NIM cloud inference
 default = ["postgres", "openai", "ares-vector", "mcp", "inventory"]
 # Cordis static registration via inventory (compile-time)
-inventory = ["dep:inventory", "cordis/inventory"]
+inventory = ["dep:inventory", "cordis/inventory", "ares-http/inventory"]
 
 # ============= LLM Providers =============
 # OpenAI - OpenAI API and compatible endpoints (e.g. NVIDIA NIM)
-openai = ["ares-llm/openai"]
+openai = ["ares-llm/openai", "ares-http/openai"]
 
 # Azure AI Foundry - OpenAI-compatible chat completions with Foundry auth headers
 azure = ["ares-llm/azure"]
@@ -122,7 +123,7 @@ bedrock = ["ares-llm/bedrock"]
 
 # ============= Database Backends =============
 # PostgreSQL database via sqlx (default)
-postgres = ["dep:sqlx", "ares-store/postgres", "ares-agent/postgres", "ares-mcp/postgres", "ares-tools/postgres"]
+postgres = ["dep:sqlx", "ares-store/postgres", "ares-agent/postgres", "ares-agent/scheduler", "ares-agent/pipeline", "ares-agent/trigger", "ares-agent/workflows", "ares-mcp/postgres", "ares-tools/postgres", "ares-http/postgres"]
 
 # Turso/libSQL - Edge-native SQLite-compatible database
 turso = ["dep:libsql", "ares-store/turso"]
@@ -130,7 +131,7 @@ turso = ["dep:libsql", "ares-store/turso"]
 # ============= Vector Store Backends =============
 # ares-vector - Pure Rust embedded vector database with HNSW (default, local-first)
 # No native dependencies, compiles anywhere Rust does
-ares-vector = ["dep:ares-vector", "ares-store/ares-vector"]
+ares-vector = ["dep:ares-vector", "ares-store/ares-vector", "ares-http/ares-vector"]
 
 # LanceDB - Serverless, embedded vector database
 # Note: Requires protoc compilation, may have issues on Windows MSVC
@@ -160,21 +161,21 @@ pinecone = ["dep:pinecone-sdk", "ares-store/pinecone"]
 # 0.7.3 compile break when mcp was enabled alone); 0.7.5 moves server/usage
 # behind `cfg(all(mcp, postgres))` so library consumers can use mcp without
 # dragging sqlx into their dependency graph.
-mcp = ["ares-mcp/mcp", "ares-tools/mcp"]
+mcp = ["ares-mcp/mcp", "ares-tools/mcp", "ares-http/mcp"]
 
 # Eruka context injection - fetches per-agent context from Eruka with caching
-eruka-context = ["ares-agent/eruka-context"]
+eruka-context = ["ares-agent/eruka-context", "ares-http/eruka-context"]
 
 # Local embeddings - fastembed-based ONNX embedding models
 # WARNING: This feature does NOT work on Windows MSVC due to ort-sys linker errors.
 # Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs instead.
-local-embeddings = ["ares-rag/local-embeddings"]
+local-embeddings = ["ares-rag/local-embeddings", "ares-http/local-embeddings"]
 
 # HMR via libloading — off by default. Forwards to cordis/hmr (dlopen plugin .so).
 hmr = ["cordis/hmr"]
 
 # Skills - SKILL.md file discovery and loading via thulp
-skills = ["dep:thulp-skill-files", "ares-config/skills"]
+skills = ["dep:thulp-skill-files", "ares-http/skills", "ares-agent/skills"]
 
 # Email sending via SMTP (opt-in, requires lettre feature)
 email = ["dep:lettre"]
@@ -187,7 +188,7 @@ search-tools = ["ares-tools/search-tools"]
 ui = ["dep:rust-embed", "dep:mime_guess"]
 
 # Swagger UI - interactive API documentation (requires network during build)
-swagger-ui = ["dep:utoipa-swagger-ui"]
+swagger-ui = ["dep:utoipa-swagger-ui", "ares-http/swagger-ui"]
 
 # ============= Feature Bundles =============
 # All LLM providers
@@ -220,13 +221,14 @@ minimal = []
 
 [dependencies]
 ares-types = { workspace = true }
-ares-config = { workspace = true }
 ares-rag = { workspace = true }
 ares-tools = { workspace = true }
 ares-llm = { workspace = true }
 ares-store = { workspace = true }
 ares-mcp = { workspace = true }
 ares-agent = { workspace = true }
+ares-http = { workspace = true }
+ares = { workspace = true }
 cordis = { workspace = true }
 inventory = { workspace = true, optional = true }
 

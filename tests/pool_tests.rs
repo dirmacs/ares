@@ -37,7 +37,7 @@ impl MockLLMClient {
 
 #[cfg(test)]
 mod pool_config_tests {
-    use ares::llm::pool::PoolConfig;
+    use ares_server::llm::pool::PoolConfig;
     use std::time::Duration;
 
     #[test]
@@ -81,7 +81,7 @@ mod pool_config_tests {
 
 #[cfg(test)]
 mod pool_basic_tests {
-    use ares::llm::pool::{ClientPool, ClientPoolBuilder, PoolConfig};
+    use ares_server::llm::pool::{ClientPool, ClientPoolBuilder, PoolConfig};
 
     #[test]
     fn test_pool_creation_with_defaults() {
@@ -129,8 +129,8 @@ mod pool_basic_tests {
 #[cfg(test)]
 #[cfg(feature = "ollama")]
 mod pool_provider_tests {
-    use ares::llm::client::{ModelParams, Provider};
-    use ares::llm::pool::{ClientPool, ClientPoolBuilder, PoolConfig};
+    use ares_server::llm::client::{ModelParams, Provider};
+    use ares_server::llm::pool::{ClientPool, ClientPoolBuilder, PoolConfig};
 
     fn create_test_provider() -> Provider {
         Provider::Ollama {
@@ -209,7 +209,7 @@ mod pool_provider_tests {
 
 #[cfg(test)]
 mod pool_concurrency_tests {
-    use ares::llm::pool::{ClientPool, PoolConfig};
+    use ares_server::llm::pool::{ClientPool, PoolConfig};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -269,8 +269,8 @@ mod pool_concurrency_tests {
 #[cfg(test)]
 #[cfg(feature = "ollama")]
 mod pool_lifecycle_tests {
-    use ares::llm::client::{ModelParams, Provider};
-    use ares::llm::pool::{ClientPool, PoolConfig};
+    use ares_server::llm::client::{ModelParams, Provider};
+    use ares_server::llm::pool::{ClientPool, PoolConfig};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -322,7 +322,7 @@ mod pool_lifecycle_tests {
 
 #[cfg(test)]
 mod pool_stats_tests {
-    use ares::llm::pool::{ClientPool, PoolStats};
+    use ares_server::llm::pool::{ClientPool, PoolStats};
 
     #[test]
     fn test_pool_stats_structure() {
@@ -359,7 +359,7 @@ mod pool_stats_tests {
 
 #[cfg(test)]
 mod pool_builder_tests {
-    use ares::llm::pool::{ClientPoolBuilder, PoolConfig};
+    use ares_server::llm::pool::{ClientPoolBuilder, PoolConfig};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -400,7 +400,7 @@ mod pool_builder_tests {
     #[cfg(feature = "ollama")]
     #[test]
     fn test_builder_with_multiple_providers() {
-        use ares::llm::client::{ModelParams, Provider};
+        use ares_server::llm::client::{ModelParams, Provider};
 
         let pool = ClientPoolBuilder::new()
             .provider(

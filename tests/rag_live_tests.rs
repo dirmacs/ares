@@ -33,7 +33,7 @@
 
 #![cfg(all(feature = "ares-vector", feature = "local-embeddings"))]
 
-use ares::{
+use ares_server::{
     db::{AresVectorStore, VectorStore},
     rag::{
         chunker::TextChunker,

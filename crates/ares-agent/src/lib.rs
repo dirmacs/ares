@@ -23,7 +23,7 @@
 //! use ares::agents::{Agent, AgentRegistry};
 //!
 //! // Create registry from configuration
-//! let registry = AgentRegistry::from_config(&config, provider_registry, tool_registry);
+//! let registry = AgentRegistry::from_config(config.agents, provider_registry, tools);
 //!
 //! // Get an agent instance
 //! let agent = registry.get_agent("product")?;
@@ -31,6 +31,19 @@
 //! // Execute with context
 //! let response = agent.execute("Help me with my order", &context).await?;
 //! ```
+
+pub mod config;
+pub mod workflows_config;
+pub use config::AgentConfig;
+pub use workflows_config::{SkillsTomlConfig, WorkflowConfig};
+
+/// Live TOON agent lookup used by [`AgentRegistry`] without depending on Overlay.
+pub trait ToonAgents: Send + Sync {
+    /// Agent config by name, already converted from TOON.
+    fn get(&self, name: &str) -> Option<AgentConfig>;
+    /// Names present in the TOON set.
+    fn names(&self) -> Vec<String>;
+}
 
 pub mod configurable;
 /// External context injection trait (OSS: NoOp, Managed: Eruka/custom).
@@ -55,9 +68,25 @@ pub mod research;
 pub(crate) mod resolver;
 pub mod external_context;
 pub mod execution;
+pub mod plugins;
+pub mod admit;
+pub mod emergency_stop;
+pub use emergency_stop::EmergencyStop;
+#[cfg(feature = "scheduler")]
+pub mod scheduler;
+#[cfg(feature = "pipeline")]
+pub mod pipeline;
+#[cfg(feature = "trigger")]
+pub mod trigger;
+#[cfg(any(feature = "postgres", feature = "skills"))]
+pub mod skills;
+#[cfg(feature = "workflows")]
+pub mod workflows;
 pub use execution::{
     tenant_scope, user_id_from_ctx, AgentRequest, AgentSource, Execute, ExecutionResult, RunTracker,
 };
+pub use admit::admit;
+pub use plugins::register_plugins;
 pub use external_context::ExternalContext;
 
 use ares_llm::client::TokenUsage;

@@ -10,13 +10,11 @@ description = "Core types and tenant models for ARES"
 
 [dependencies]
 cordis = { workspace = true }
-axum = { version = "0.8.7", features = ["macros", "multipart"] }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

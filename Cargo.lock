@@ -218,10 +218,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ares"
+version = "0.9.0"
+dependencies = [
+ "ares-agent",
+ "ares-cordis",
+ "ares-http",
+ "ares-llm",
+ "ares-store",
+ "ares-tools",
+ "ares-types",
+ "async-trait",
+ "futures",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ares-agent"
 version = "0.9.0"
 dependencies = [
- "ares-config",
  "ares-cordis",
  "ares-llm",
  "ares-store",
@@ -230,44 +246,22 @@ dependencies = [
  "async-trait",
  "axum 0.8.9",
  "chrono",
+ "cron",
  "dirs 6.0.0",
  "dotenvy",
  "futures",
+ "parking_lot",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sqlx",
  "tempfile",
+ "thulp-skill-files",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "uuid",
  "wiremock",
-]
-
-[[package]]
-name = "ares-config"
-version = "0.9.0"
-dependencies = [
- "aes-gcm",
- "arc-swap",
- "ares-cordis",
- "ares-types",
- "hex",
- "notify",
- "parking_lot",
- "rand 0.9.5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.20",
- "thulp-skill-files",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "toon-format",
- "tracing",
- "zeroize",
 ]
 
 [[package]]
@@ -290,11 +284,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "ares-http"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "ares-agent",
+ "ares-cordis",
+ "ares-llm",
+ "ares-mcp",
+ "ares-rag",
+ "ares-store",
+ "ares-tools",
+ "ares-types",
+ "ares-vector",
+ "argon2",
+ "async-stream",
+ "async-trait",
+ "axum 0.8.9",
+ "axum-test",
+ "chrono",
+ "dotenvy",
+ "futures",
+ "hex",
+ "inventory",
+ "jsonwebtoken",
+ "notify",
+ "parking_lot",
+ "rand 0.9.5",
+ "reqwest 0.12.28",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.20",
+ "thulp-skill-files",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "toon-format",
+ "tower 0.5.3",
+ "tower-http 0.6.11",
+ "tracing",
+ "utoipa",
+ "utoipa-swagger-ui",
+ "uuid",
+]
+
+[[package]]
 name = "ares-llm"
 version = "0.9.0"
 dependencies = [
  "arc-swap",
- "ares-config",
  "ares-cordis",
  "ares-store",
  "ares-tools",
@@ -313,6 +355,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "uuid",
@@ -372,9 +415,10 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "ares",
  "ares-agent",
- "ares-config",
  "ares-cordis",
+ "ares-http",
  "ares-llm",
  "ares-mcp",
  "ares-rag",
@@ -442,8 +486,9 @@ dependencies = [
 name = "ares-store"
 version = "0.9.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
- "ares-config",
+ "arc-swap",
  "ares-cordis",
  "ares-types",
  "ares-vector",
@@ -468,9 +513,11 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -478,7 +525,6 @@ name = "ares-tools"
 version = "0.9.0"
 dependencies = [
  "arc-swap",
- "ares-config",
  "ares-cordis",
  "ares-mcp",
  "ares-store",
@@ -507,13 +553,11 @@ name = "ares-types"
 version = "0.9.0"
 dependencies = [
  "ares-cordis",
- "axum 0.8.9",
  "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tracing",
- "utoipa",
 ]
 
 [[package]]

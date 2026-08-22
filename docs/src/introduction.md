@@ -2,7 +2,7 @@
 
 ARES is a multi-provider LLM platform that provides one API to route requests to Groq, Anthropic, NVIDIA DeepSeek, and Ollama. It handles tool calling, retrieval-augmented generation (RAG), multi-step workflows, streaming, usage metering, and multi-tenant isolation, so you can build your application instead of wiring provider SDKs together.
 
-> **0.8.0 Cordis redesign (2026-08-21):** The runtime is now Cordis-informed. It uses a unified `Context{store+isolate+intercept+fiber+parent+root}` with witnessed LIFO effects, a `TypeId`-keyed coherent table, Fiber states with `:uid` epoch watch, 5 Events modes, Loader `EntryTree` reconcile, and 8-plugin wiring `root_ctx.plugin(ConfigService).plugin(CatalogService).plugin(ProviderRegistryService).plugin(AuthServiceWrapper).plugin(AgentServiceWrapper).plugin(ToolServiceWrapper).plugin(SchedulerService).plugin(HealthJobService)` (plus `PipelineService`/`TriggerService`/`SkillsService`/`WorkflowService`). 177 handlers moved to `State<AppState> -> State<Arc<Context>>` with `ctx.get::<Service>()`, `admin.rs` 3059 to 165 thin shards (15 files), and `cfg(feature)` removed from handlers.
+> **0.9.0 (2026-08-22):** Service-based architecture with dependency injection. Components register into a typed `Context`, handlers pull deps with `ctx.get::<T>()`. Unified `AgentExecutionService` handles all execution paths. Hot-reload via file-watch. Circuit breaker on LLM providers.
 
 ## Key capabilities
 

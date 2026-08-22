@@ -39,11 +39,12 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 - Web search: built-in via [daedra](https://github.com/dirmacs/daedra)
 - OpenAPI: automatic documentation generation
 - Config validation: circular reference detection and unused config warnings
-- Loop detection: 3-tier escalation (warn → force alternative → halt) for repetitive outputs
+- Loop detection: 3-tier escalation (warn, force alternative, halt) for repetitive outputs
 - Crash recovery: checkpoint serialization, save agent state at each step, restore on restart
-- Cordis primitives (0.8.0): unified `Context{store+isolate+intercept+fiber+parent+root}` with witnessed effects (LIFO `Disposable` accumulator), `TypeId`-keyed coherent table (`HashMap<TypeId, Box<dyn Any>>`), Fiber states `Inactive/Active/Reloading/Unloading` with inertia `Mutex` + epoch `:uid` watch fan-out, Events 5 dispatch modes (`Emit/Parallel/Serial/Bail/Waterfall`), Loader `EntryTree` reconcile
-- Unified services: `ToolService` precedence `tenant runtime → fleet runtime → MCP bridge → static` with `ctx.isolate(tenant)`, `LlmService` circuit breaker `Closed/Open/HalfOpen` + per-request `ModelOverride` via `ctx.intercept`, `AgentResolverService` ordered `tenant DB → community → system`; single `AgentExecutionService` for all 5 call sites; `SchedulerService`/`PipelineService`/`TriggerService`/`SkillsService`/`WorkflowService`
-- Handler migration (0.8.0): 177 handlers `State<AppState> → State<Arc<Context>>` with `ctx.get::<Service>()`, `admin.rs` 3059→165 thin shards (15 files), `v1.rs` 1074→161 thin shards (5 files), `cfg(feature)` 0 in handlers via `Service::check()`, HMR file-watch 500ms debounce
+- Service-based architecture (0.9.0): dependency injection via typed `Context`, services register with `ctx.plugin()` or `ctx.provide()`, handlers pull deps with `ctx.get::<T>()`
+- Unified execution: single `AgentExecutionService` handles resolve, create, and execute for all call sites (chat, v1 API, scheduler, pipeline, trigger)
+- Hot-reload: file-watch triggers automatic service refresh without restart
+- Circuit breaker: LLM provider health tracked per-endpoint with automatic failover
 
 ## Installation
 
@@ -51,10 +52,10 @@ A.R.E.S can be used as a **standalone server** or as a **library** in your Rust 
 
 ### As a library
 
-Add to your project (0.8.0 Cordis):
+Add to your project (0.9.0):
 
 ```bash
-cargo add ares-server --version 0.8.0
+cargo add ares-server --version 0.9.0
 ```
 
 Basic usage:
@@ -82,11 +83,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### As a binary
 
 ```bash
-# Install from crates.io (0.8.0 Cordis)
-cargo install ares-server --version 0.8.0
+# Install from crates.io
+cargo install ares-server --version 0.9.0
 
 # Install with embedded Web UI
-cargo install ares-server --version 0.8.0 --features ui
+cargo install ares-server --version 0.9.0 --features ui
 
 # Initialize a new project (creates ares.toml and config files)
 ares-server init
@@ -513,27 +514,25 @@ system_prompt: |
 
 ## Extending ARES
 
-ARES is designed as a library that extension crates can build upon. Core extension is the Cordis `Context` (0.8.0). Legacy `base_router(AppState)`/`ContextProvider` remain as deprecated shims for one release, new code uses `build_router(ctx: Arc<Context>)` + `ctx.get::<Service>()`.
+ARES is designed as a library. Build on it by adding routes to the context-based router or injecting services.
 
-### `build_router(ctx)`, Cordis Context Router (0.8.0)
+### Custom routes
 
 ```rust
 use std::sync::Arc;
 use ares_cordis_core::Context;
 use ares::build_router;
 
-let ctx: Arc<Context> = /* root_ctx after plugin wiring, see Architecture */;
+let ctx: Arc<Context> = /* your configured context */;
 let app = build_router(ctx.clone())
     .merge(my_custom_routes(ctx.clone()))
     .layer(my_custom_middleware());
 axum::serve(listener, app).await?;
 ```
 
-Legacy alias: `pub type AppState = Arc<Context>; pub fn base_router(ctx: AppState) -> Router { build_router(ctx) }`, migrates 177 handlers `State<AppState> → State<Arc<Context>>`.
+### Custom context provider
 
-### `ContextProvider`, Pluggable Context Injection (legacy)
-
-Inject external context into every agent call before LLM invocation:
+Inject external context into agent calls before LLM invocation:
 
 ```rust
 use ares::agents::context_provider::ContextProvider;
@@ -544,160 +543,55 @@ struct MyContextProvider { /* your state */ }
 #[async_trait]
 impl ContextProvider for MyContextProvider {
     async fn get_context(&self, agent_name: &str, tenant_id: &str) -> Option<String> {
-        // Fetch context from your knowledge base, vector DB, etc.
         Some("Relevant context for this agent...".to_string())
     }
 }
-// 0.8.0: wire via Context service instead of AppState field
-// root_ctx.provide::<ContextProviderService>(Arc::new(MyContextProvider{...}));
 ```
 
-By default, ARES uses `NoOpContextProvider` (returns `None`). New services use `ctx.get::<dyn ToolService>()` / `ctx.get::<AgentResolverService>()` etc. (see `docs/cordis-mapping.md`).
+By default, ARES uses `NoOpContextProvider` (returns `None`).
 
-## Architecture (Cordis), 0.8.0
+## Architecture
 
-**Cordis primitives**, see `docs/cordis-mapping.md` + `ARCHITECTURE.md` (synced from `docs/cordis-redesign.md`) for full spec (Γ^∞ = μΓ. Γ × (Γ→Γ) × Σ, Thm 61 temporal, Thm 63 spatial, Thm 73 confluence).
+ARES uses a service-based architecture. Components register into a typed `Context` and handlers pull what they need at request time.
 
-#### Context, Γ^∞
-
-```rust
-pub struct Context {
-    store:     RwLock<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>, // Σ coherent table
-    isolate:   RwLock<HashMap<TypeId, Symbol>>,                     // realm label
-    intercept: RwLock<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>, // prototype override
-    fiber:     Arc<Fiber>,
-    parent:    Option<Arc<Context>>,
-    root:      Weak<Context>,
-}
-impl Context {
-    pub fn new_root() -> Arc<Context>;
-    pub fn extend(&self) -> Arc<Context>;                 // child with parent link
-    pub fn isolate<T: Service>(&self, label: &str) -> Arc<Context>;
-    pub fn intercept<T: Service>(&self, val: T) -> Arc<Context>;
-    pub fn provide<T: Service>(&self, svc: T) -> Arc<T>;  // witnessed effect → fiber.acc LIFO
-    pub fn get<T: Service>(&self) -> Option<Arc<T>>;      // intercept → store → parent walk
-}
-pub trait Service: Send + Sync + 'static {
-    fn name(&self) -> &'static str;
-    fn init(&self, ctx: &Arc<Context>) -> ServiceInitFuture<'_> { Box::pin(async { Ok(None) }) }
-    fn check(&self) -> bool { true }                      // runtime cfg barrier, no #[cfg] in handlers
-}
+```
+HTTP request -> Router -> Handler -> ctx.get::<AgentExecutionService>()
+                                  -> resolve agent (tenant DB -> community -> system)
+                                  -> create agent via registry
+                                  -> agent.execute(message, context)
+                                  -> tool calling loop
+                                  -> response
 ```
 
-*Store* is the `TypeId`-keyed coherent table (Cordis Σ). *Isolate* creates tenant realms (`ctx.isolate::<dyn ToolService>("tenant:acme")` → disjoint tools). *Intercept* creates prototype-chain overrides (`ctx.intercept(ModelOverride{model:"gpt-4o-mini"})` → per-request pin without mutating provider).
+### Key services
 
-#### Witnessed effects, LIFO disposable
+| Service | What it does |
+|---------|-------------|
+| `AgentExecutionService` | Single entry point for running agents. All 5 call sites delegate here. |
+| `AgentResolverService` | 3-tier agent resolution: tenant DB, community, system config. |
+| `LlmService` | Provider management with circuit breaker and per-request model override. |
+| `UnifiedToolService` | Merges static, runtime DB, and MCP tools. Tenant isolation built in. |
+| `ReflectService` | Hot-reload coordination. File changes propagate without restart. |
 
-```rust
-pub trait Disposable: Send + 'static { fn dispose(self: Box<Self>); }
-impl<F: FnOnce() + Send + 'static> Disposable for F { fn dispose(self: Box<Self>) { (self)() } }
-// provide pushes undo onto fiber.acc: Vec<Box<dyn FnOnce() + Send>>
-```
-
-Temporal composability (Thm 61): `ctx.plugin(Foo)..` → `ctx.provide(Bar(42))` → `fiber.dispose().await` → `ctx.get::<Bar>().is_none()` and context recovered (LIFO reverse). `EffectGuard` drops in reverse order.
-
-#### Fiber, state machine + epoch :uid watch
+### Adding a service
 
 ```rust
-pub enum FiberState { Inactive{error: Option<CordisError>}, Active{epoch: String}, Reloading, Unloading }
-pub struct Fiber {
-    state: RwLock<FiberState>,
-    inertia: Arc<tokio::sync::Mutex<()>>,          // serializes transitions
-    acc: Mutex<Vec<Box<dyn FnOnce() + Send>>>,     // undo stack
-    injects: RwLock<HashMap<TypeId, Symbol>>,
-    epoch: RwLock<String>,                        // ":uid:ver:..."
-}
-impl Fiber {
-    pub fn declare_inject<T: Service>(&self, label: Symbol);
-    pub fn compute_epoch(&self, ctx: &Context) -> String; // sorted ":uid1:uid2:..." monoid, ctx.get_version(TypeId)
-    pub async fn refresh(&self, ctx: &Context);           // recompute epoch → Active/Inactive, reload if changed
-    pub async fn dispose(&self);                          // LIFO drain acc
+// Register in main.rs
+root_ctx.provide(AgentExecutionService::new()
+    .with_db(db)
+    .with_agent_registry(registry)
+    .with_run_tracker(active_runs));
+
+// Use in any handler
+async fn my_handler(State(ctx): State<Arc<Context>>) -> Result<Response> {
+    let exec = ctx.get::<AgentExecutionService>().expect("not provided");
+    let result = exec.execute_agent(&req, &ctx).await?;
+    Ok(Json(result.response).into_response())
 }
 ```
 
-`ReflectService{notifiers: HashMap<TypeId, watch::Sender<()>>, dependents: HashMap<TypeId, Vec<FiberId>>}`, `notify(tid)` BFS walks dependents + `tokio::sync::watch` fan-out → `Fiber::refresh`. Replaces 60s `ArcSwap` polls (`runtime_registry.rs` `start_background_reload`, `provider_registry.rs`, `catalog.rs`).
+See `ARCHITECTURE.md` for full details.
 
-#### Events, 5 dispatch modes
-
-```rust
-pub enum Dispatch { Emit, Parallel/*JoinSet*/, Serial, Bail/*first ok*/, Waterfall/*tower::Service chain*/ }
-impl EventsService {
-    pub fn on(&self, event: EventId, handler: Handler) -> Box<dyn Disposable>;
-    pub async fn dispatch(&self, event: EventId, payload: Value, mode: Dispatch);
-}
-// broadcast + HashMap<EventId, Vec<Handler>> fan-out; waterfall via tower::Service
-```
-
-#### Loader, EntryTree reconcile (HMR)
-
-```rust
-pub struct Entry { id: String, plugin: String, config: Value, disabled: bool, isolate: Option<String>, intercept: HashMap<String, Value> }
-pub struct EntryTree(pub Vec<Entry>);
-pub enum LoaderAction { RebuildFiber{ id }, UpdateConfig{ id }, Retire{ id }, Begin{ id } }
-pub fn reconcile(current: &EntryTree, desired: &EntryTree) -> Vec<LoaderAction>;
-```
-
-Per-field diff: `id/plugin` change → `RebuildFiber`, `config` change → `UpdateConfig`, `disabled` toggle → `Retire/Begin`. Persists `config/entries.json` / `config/cordis-entries.toon` (`toon-format 0.4.1`), never `ares.toml` symlink (`/opt/ares-config/ares.toml`). Confluence (Thm 73): quiescent context equals static assembly regardless of entry order. File-watch `crates/ares-cordis-core/src/watcher.rs` `watch_many` 500 ms debounce + 100 ms settle → `ReflectService::notify` → `Fiber::refresh` (90% HMR value, `libloading` `dlopen` deferred behind `#[cfg(feature="hmr")]`).
-
-#### 8-plugin wiring via `Context::plugin`
-
-`run_server` 17 sequential `let` steps → 8 `root_ctx.plugin(...).await` (Thm 63 single-source `duplicate provider for <TypeId>` guard):
-
-```rust
-let root_ctx = Context::new_root();
-root_ctx.provide(Arc::new(RegistryService::new()));
-root_ctx.provide(Arc::new(EventsService::new()));
-root_ctx.plugin(ConfigService(config_manager.clone())).await?;
-root_ctx.plugin(CatalogService(catalog.clone())).await?;
-root_ctx.plugin(ProviderRegistryService(provider_registry.clone())).await?;
-root_ctx.plugin(AuthServiceWrapper(auth_service.clone())).await?;
-root_ctx.plugin(AgentServiceWrapper{ registry: agent_registry.clone(), /* … */ }).await?;
-root_ctx.plugin(ToolServiceWrapper{ registry: tool_registry.clone(), runtime_registry: runtime_tool_registry.clone() }).await?;
-root_ctx.plugin(SchedulerService::new(db.clone(), execution.clone(), 60_000)).await?;
-root_ctx.plugin(HealthJobService::default()).await?;
-// + PipelineService / TriggerService / SkillsService / WorkflowService (downstream-triggered, no tick)
-let app = build_router(root_ctx);
-```
-
-Inventory static registration (`inventory::submit!{CordisInventory{name:"ConfigService"}}` etc., `linkme` fallback) preferred over `libloading` dev HMR.
-
-> **Wiring command:** `root_ctx.plugin(ConfigService).plugin(CatalogService).plugin(ProviderRegistryService).plugin(AuthServiceWrapper).plugin(AgentServiceWrapper).plugin(ToolServiceWrapper).plugin(SchedulerService).plugin(HealthJobService)`
-
-#### Unified ToolService precedence
-
-Single `ToolService: Service` composing `static HashMap<String, Arc<dyn Tool>>` + `RuntimeToolRegistry` (`ArcSwap<HashMap>` + DB) + `McpRegistry` bridge, precedence `tenant runtime → fleet runtime → MCP bridge → static`.
-```rust
-trait ToolService: Service {
-    fn resolve(&self, name: &str, tenant: Option<TenantId>) -> Option<Arc<dyn Tool>>;
-    fn list(&self, tenant: Option<TenantId>) -> Vec<ToolDefinition>;
-}
-```
-Agents `ctx.get::<dyn ToolService>().resolve(name)` + `ctx.isolate("tool_service", tenant_label)` → disjoint sets. `execute_for_tenant` branching deleted.
-
-#### LlmService breaker + AgentResolverService ordered
-
-`LlmService` wraps `ClientPool` with `Breaker{Closed/Open{until: Instant}/HalfOpen}` (threshold 5, cooldown 30s) tracked as `Service::check()` (guarded withdrawal Thm 63), plus `ctx.intercept(ModelOverride{model})` per-request pin. `AgentResolverService` ordered `tenant DB tenant_agents → community public → system AgentRegistry TOML/TOON` with `ctx.isolate("agent", tenant_label)`.
-
-#### Handler migration, 177 `State<Arc<Context>>`
-
-`src/lib.rs` deleted `pub struct AppState{17-22 fields}` + `base_router` shim + `3× #![allow(deprecated)]` → `pub type AppState = Arc<Context>; pub type CordisAppState = AppState; pub fn build_router(ctx: AppState) -> Router`. Every handler `State<AppState> → State<Arc<Context>>` + `ctx.get::<ConfigService>()`/`TenantDbService`/`ToolRegistryService`/etc. via `src/context_services.rs` 18 wrappers. `grep -R State<AppState` 0, `grep pub struct AppState` 0, `grep base_router` 0 (deprecated shim kept one release via `pub use` alias).
-
-#### Admin thin shards + cfg 0
-
-`src/api/handlers/admin.rs` 3059 → 165 (thin `pub mod` + `#[path]`) + `admin/*.rs` 15 files 2905 lines (tenants, agents, providers, tools, schedules, triggers, pipelines, billing, mcp, fleet_secrets, connectors, health, audit, shared helpers), `v1.rs` 1074→161 thin shards 5 files. `routes.rs` `fn build_routes(ctx:&Context)->Router` merges `RouteSet`s via `ctx.get`. `crates/ares-agents/src/configurable.rs` 6 `#[cfg(postgres)]` fields → `PostgresService/McpService/SkillsService::check()`, handlers `if ctx.get::<PostgresService>().is_some()` not `#[cfg]`, `cargo check --no-default-features` and `--features openai,postgres,mcp` both pass, `grep -R #\[cfg\(feature src/api/handlers` 0, `grep -R execute_for_tenant` 0.
-
-#### Scheduler HMR + pipeline/trigger/skill/workflow services
-
-`SchedulerService` (361 lines) owns 60s tick with catch-up `NEXT_RUN_AT` cron (`cron` crate) + `agent_schedules`/`missed_runs` DB, `Service::init` `select! tick+watch` + `NOTIFY`/`LISTEN` fallback, `SharedFix` `shared_execution = Arc<AgentExecutionService>` injected into both `SchedulerService` and downstream `PipelineService`/`TriggerService`. File-watch HMR `notify::RecommendedWatcher` proof `Configuration hot-reloaded successfully via Cordis watch` (random-port 39476/39120 E2E `curl /health` OK, `curl /api/auth/login` 200). `PipelineService` owns `agent_pipelines` conditional propagation, `TriggerService` owns webhook/document_upload/field_change dispatch, `SkillsService` sequential `ToolCall/LlmCall/SkillCall/Condition` depth 8 with `SkillStep` + `SkillId`, `WorkflowService` router delegation, all `ctx.get::<AgentExecutionService>().execute(req,&ctx)` single site (phase 6).
-
-### Key components (0.8.0 Cordis)
-
-- **Context/Fiber/Registry/Events/Loader/Reflect** (`crates/ares-cordis-core` leaf, zero ARES deps): Γ^∞ store+isolate+intercept, witnessed LIFO, epoch :uid, 5-mode bus, EntryTree reconcile, file-watch HMR
-- ConfigService/CatalogService/ProviderRegistryService: replace `AresConfigManager`/`NvidiaCatalogCache` 60s polls with `Service::check` + `Fiber::refresh`
-- ToolService/ToolServiceWrapper: unified `tenant→fleet→MCP→static` precedence, `ctx.isolate` tenant realms
-- AgentResolverService/AgentServiceWrapper/LlmService: ordered tenant→community→system, breaker + intercept
-- AgentExecutionService: single `execute(req,ctx)` for chat/v1/scheduler/pipeline/trigger (observability/cost/usage/budget/loop)
-- SchedulerService/PipelineService/TriggerService/SkillsService/WorkflowService: own their DB tables + inject `AgentExecutionService`, `build_routes(ctx)` merges RouteSets
 
 ## API documentation
 

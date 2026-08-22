@@ -3,6 +3,7 @@ use ares_config::AresConfigManager;
 use ares_llm::LLMClient;
 use ares_types::types::{AgentContext, AgentType, AppError, Result};
 use async_trait::async_trait;
+use std::future::Future;
 use std::sync::Arc;
 
 /// Orchestrator agent that coordinates multiple specialized agents.
@@ -92,6 +93,17 @@ Only respond with valid JSON."#,
     }
 }
 
+/// Join fallible subtask futures concurrently, preserving input order.
+/// Returns the first error via `try_join_all`.
+pub(crate) async fn join_subtask_results<T, E, Fut>(
+    futs: Vec<Fut>,
+) -> std::result::Result<Vec<T>, E>
+where
+    Fut: Future<Output = std::result::Result<T, E>>,
+{
+    futures::future::try_join_all(futs).await
+}
+
 #[async_trait]
 impl Agent for OrchestratorAgent {
     async fn execute(&self, input: &str, context: &AgentContext) -> Result<AgentResponse> {
@@ -103,12 +115,15 @@ impl Agent for OrchestratorAgent {
             return Ok(AgentResponse { content, usage: None, metadata: None });
         }
 
-        // Execute subtasks sequentially (could be parallelized in future)
-        let mut results = Vec::new();
-        for (agent_name, task) in subtasks {
-            let result = self.execute_subtask(&agent_name, &task, context).await?;
-            results.push(format!("[{}] {}", agent_name, result));
-        }
+        // Execute subtasks concurrently via try_join_all
+        let futs = subtasks
+            .into_iter()
+            .map(|(agent_name, task)| async move {
+                let result = self.execute_subtask(&agent_name, &task, context).await?;
+                Ok::<_, AppError>(format!("[{}] {}", agent_name, result))
+            })
+            .collect();
+        let results = join_subtask_results(futs).await?;
 
         // Synthesize results into final response
         let synthesis_prompt = format!(
@@ -279,9 +294,9 @@ mod tests {
         let mut registry = ProviderRegistry::new();
         registry.register_provider(
             "ollama-local",
-            ProviderConfig::OpenAI {
+            ProviderConfig::Ollama {
                 api_key_env: "TEST_KEY".to_string(),
-                api_base: "https://test.example.com/v1".to_string(),
+                base_url: "https://test.example.com".to_string(),
                 default_model: "ministral-3:3b".to_string(),
             },
         );
@@ -302,9 +317,9 @@ mod tests {
         let mut registry = ProviderRegistry::new();
         registry.register_provider(
             "ollama-local",
-            ProviderConfig::OpenAI {
+            ProviderConfig::Ollama {
                 api_key_env: "TEST_KEY".to_string(),
-                api_base: "https://test.example.com/v1".to_string(),
+                base_url: base_url.to_string(),
                 default_model: "ministral-3:3b".to_string(),
             },
         );
@@ -419,6 +434,27 @@ mod tests {
         );
         let resp = orch.execute("simple question", &test_context()).await.expect("execute");
         assert_eq!(resp.content, "direct-answer");
+    }
+
+    #[tokio::test]
+    async fn test_execute_subtasks_run_concurrently() {
+        use std::time::{Duration, Instant};
+
+        async fn sleep_ok(label: &'static str) -> std::result::Result<&'static str, &'static str> {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            Ok(label)
+        }
+
+        let start = Instant::now();
+        let results = join_subtask_results(vec![sleep_ok("a"), sleep_ok("b")])
+            .await
+            .expect("join");
+        let elapsed = start.elapsed();
+        assert_eq!(results, vec!["a", "b"]);
+        assert!(
+            elapsed < Duration::from_millis(140),
+            "expected concurrent join under 140ms, got {elapsed:?}"
+        );
     }
 
     #[test]

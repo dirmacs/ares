@@ -45,7 +45,7 @@ pub async fn sandbox_run_agent(
     let started = Utc::now();
     let tools = resolved_agent.agent.get_filtered_tool_definitions();
     let tool_trace_specs =
-        sandbox_tool_trace_specs(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.as_ref(), &tc.tenant_id, &tools);
+        sandbox_tool_trace_specs_from_ctx(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.as_ref(), &state_ctx, &tools);
     let tool_names = tools
         .iter()
         .map(|tool| tool.name.clone())
@@ -137,6 +137,12 @@ pub(crate) struct SandboxToolTraceSpec {
     pub(crate) tool_type: String,
 }
 
+fn tenant_id_for_sandbox(ctx: &Arc<Context>) -> String {
+    ctx.get::<TenantContext>()
+        .map(|tc| tc.tenant_id.clone())
+        .unwrap_or_default()
+}
+
 fn sandbox_tool_trace_specs(
     runtime_registry: &ares_tools::runtime_registry::RuntimeToolRegistry,
     tenant_id: &str,
@@ -151,6 +157,14 @@ fn sandbox_tool_trace_specs(
                 .unwrap_or_else(|| "mcp".to_string()),
         })
         .collect()
+}
+
+fn sandbox_tool_trace_specs_from_ctx(
+    runtime_registry: &ares_tools::runtime_registry::RuntimeToolRegistry,
+    ctx: &Arc<Context>,
+    tools: &[ToolDefinition],
+) -> Vec<SandboxToolTraceSpec> {
+    sandbox_tool_trace_specs(runtime_registry, &tenant_id_for_sandbox(ctx), tools)
 }
 
 pub(crate) fn sandbox_tool_call_requests(
@@ -230,3 +244,18 @@ pub fn routes() -> axum::Router<crate::AppState> {
 use ares_cordis_core::Service;
 pub struct V1StreamService;
 impl Service for V1StreamService {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::TenantTier;
+
+    #[test]
+    fn sandbox_tool_trace_specs_from_ctx_reads_intercept() {
+        let root = Context::new_root();
+        assert_eq!(tenant_id_for_sandbox(&root), "");
+
+        let scoped = root.with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
+        assert_eq!(tenant_id_for_sandbox(&scoped), "acme");
+    }
+}

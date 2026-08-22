@@ -256,8 +256,26 @@ impl Context {
     }
 
     /// Wait until `T` is provided on this context (or a parent). Returns the service.
-    /// Polls with a short sleep so a concurrent `provide` unblocks this call.
+    ///
+    /// If [`ReflectService`] is on the context, wait on its `TypeId` notifier
+    /// (`ensure_notifier` + `changed`) so `provide` → `notify` unblocks without
+    /// polling. If the sender is dropped, or ReflectService is absent, fall
+    /// through to a 5ms poll loop so tests without Reflect still complete.
     pub async fn inject<T: Service>(self: &Arc<Self>) -> Arc<T> {
+        if let Some(value) = self.get::<T>() {
+            return value;
+        }
+        if let Some(reflect) = self.get::<ReflectService>() {
+            let mut rx = reflect.ensure_notifier(TypeId::of::<T>());
+            loop {
+                if let Some(value) = self.get::<T>() {
+                    return value;
+                }
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
         loop {
             if let Some(value) = self.get::<T>() {
                 return value;

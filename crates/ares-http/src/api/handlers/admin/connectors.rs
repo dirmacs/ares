@@ -155,7 +155,7 @@ pub async fn run_skill(
     });
     let start = std::time::Instant::now();
     let result = ctx.get::<ares_agent::skills::SkillEngine>().expect("not provided")
-        .execute_skill(&skill_id, &tenant_id, req.input, &run_id)
+        .execute_skill(&skill_id, &tenant_id, req.input, &run_id, &ctx)
         .await;
     let duration_ms = start.elapsed().as_millis() as i64;
     let status = if result.is_ok() {

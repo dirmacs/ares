@@ -812,6 +812,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inject_unblocks_via_reflect_notify() {
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        let reflect = ctx.get::<ReflectService>().unwrap();
+        reflect.set_context(&ctx);
+
+        let waiter = ctx.clone();
+        let handle = tokio::spawn(async move { waiter.inject::<FooService>().await });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        ctx.provide(FooService(7));
+        let got = tokio::time::timeout(std::time::Duration::from_millis(200), handle)
+            .await
+            .expect("inject should complete within 200ms via reflect notify")
+            .expect("inject task should not panic");
+        assert_eq!(got.0, 7);
+    }
+
+    #[tokio::test]
     async fn test_production_style_reactive_cycle() {
         #[derive(Debug)]
         struct Probe;

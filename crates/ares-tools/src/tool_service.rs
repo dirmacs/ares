@@ -6,10 +6,12 @@
 
 use std::any::TypeId;
 use std::collections::HashSet;
+use std::future::Future;
 use std::sync::Arc;
 
 use ares_types::types::{Result, ToolDefinition};
-use cordis::Service;
+use cordis::{CordisError, EventsService, Service};
+use serde_json::{json, Value};
 
 use crate::registry::{Tool, ToolRegistry};
 
@@ -23,6 +25,16 @@ pub struct Tools {
     static_registry: Arc<ToolRegistry>,
     #[cfg(any(feature = "postgres", test))]
     runtime: Option<Arc<RuntimeToolRegistry>>,
+}
+
+impl Clone for Tools {
+    fn clone(&self) -> Self {
+        Self {
+            static_registry: Arc::clone(&self.static_registry),
+            #[cfg(any(feature = "postgres", test))]
+            runtime: self.runtime.clone(),
+        }
+    }
 }
 
 impl Tools {
@@ -57,13 +69,103 @@ impl Tools {
     /// Resolve a tool using the tenant derived from `ctx` (isolate, then intercept).
     pub fn resolve(&self, ctx: &Arc<cordis::Context>, name: &str) -> Option<Arc<dyn Tool>> {
         let tenant = tenant_id_from_tool_ctx(ctx);
-        self.resolve_named(name, tenant.as_deref())
+        let Some(events) = ctx.get::<EventsService>() else {
+            return self.resolve_named(name, tenant.as_deref());
+        };
+        let payload = json!({ "name": name, "tenant": tenant });
+        let this = self.clone();
+        let out = match run_waterfall(&events, "tools.resolve", payload, move |p| {
+            async move {
+                let n = p.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                let tenant = p.get("tenant").and_then(Value::as_str).map(str::to_string);
+                let found = this.resolve_named(&n, tenant.as_deref()).is_some();
+                Ok(json!({
+                    "name": n,
+                    "tenant": p.get("tenant").cloned().unwrap_or(Value::Null),
+                    "found": found,
+                }))
+            }
+        }) {
+            Ok(v) => v,
+            Err(_) => return self.resolve_named(name, tenant.as_deref()),
+        };
+        if out.get("deny").and_then(Value::as_bool) == Some(true) {
+            return None;
+        }
+        out.get("found")?;
+        let resolved_name = out
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(name);
+        self.resolve_named(resolved_name, tenant.as_deref())
     }
 
     /// List tools using the tenant derived from `ctx` (isolate, then intercept).
     pub fn list(&self, ctx: &Arc<cordis::Context>) -> Vec<ToolDefinition> {
         let tenant = tenant_id_from_tool_ctx(ctx);
-        self.list_named(tenant.as_deref())
+        let Some(events) = ctx.get::<EventsService>() else {
+            return self.list_named(tenant.as_deref());
+        };
+        let payload = json!({ "tenant": tenant });
+        let this = self.clone();
+        let out = match run_waterfall(&events, "tools.list", payload, move |p| {
+            async move {
+                let tenant = p.get("tenant").and_then(Value::as_str).map(str::to_string);
+                let tools = this.list_named(tenant.as_deref());
+                Ok(json!({
+                    "tenant": p.get("tenant").cloned().unwrap_or(Value::Null),
+                    "tools": tools,
+                }))
+            }
+        }) {
+            Ok(v) => v,
+            Err(_) => return self.list_named(tenant.as_deref()),
+        };
+        match out
+            .get("tools")
+            .cloned()
+            .and_then(|t| serde_json::from_value::<Vec<ToolDefinition>>(t).ok())
+        {
+            Some(defs) => defs,
+            None => self.list_named(tenant.as_deref()),
+        }
+    }
+
+    /// Execute a named tool, wrapping the call in `tools.execute` around-middleware
+    /// when [`EventsService`] is on `ctx`.
+    pub async fn execute(
+        &self,
+        ctx: &Arc<cordis::Context>,
+        name: &str,
+        args: Value,
+    ) -> Result<Value> {
+        let tool = self.resolve(ctx, name).ok_or_else(|| {
+            ares_types::AppError::NotFound(format!("Tool not found: {name}"))
+        })?;
+        let Some(events) = ctx.get::<EventsService>() else {
+            return tool.execute(args).await;
+        };
+        let payload = json!({ "name": name, "args": args });
+        let out = events
+            .waterfall_around("tools.execute".into(), payload, move |p| {
+                async move {
+                    let exec_args = p.get("args").cloned().unwrap_or(Value::Null);
+                    let result = tool
+                        .execute(exec_args)
+                        .await
+                        .map_err(|e| CordisError::Fiber(e.to_string()))?;
+                    let mut out = p;
+                    if let Some(obj) = out.as_object_mut() {
+                        obj.insert("result".into(), result);
+                    } else {
+                        out = json!({ "result": result });
+                    }
+                    Ok(out)
+                }
+            })
+            .await
+            .map_err(|e| ares_types::AppError::Internal(e.to_string()))?;
+        Ok(out.get("result").cloned().unwrap_or(Value::Null))
     }
 
     /// Reload runtime tools from the database when a runtime registry is attached.
@@ -86,10 +188,10 @@ impl Tools {
         #[cfg(any(feature = "postgres", test))]
         {
             let tenant = tenant_id_from_tool_ctx(ctx);
-            return self
+            self
                 .runtime
                 .as_ref()
-                .and_then(|rt| rt.tool_type_for_tenant(name, tenant.as_deref()));
+                .and_then(|rt| rt.tool_type_for_tenant(name, tenant.as_deref()))
         }
         #[cfg(not(any(feature = "postgres", test)))]
         {
@@ -183,11 +285,64 @@ fn tenant_id_from_tool_ctx(ctx: &Arc<cordis::Context>) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
+fn run_waterfall<F, Fut>(
+    events: &EventsService,
+    event: &str,
+    payload: Value,
+    core: F,
+) -> std::result::Result<Value, CordisError>
+where
+    F: FnOnce(Value) -> Fut + Send + 'static,
+    Fut: Future<Output = std::result::Result<Value, CordisError>> + Send + 'static,
+{
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return Err(CordisError::Fiber("no tokio runtime".into()));
+    };
+    tokio::task::block_in_place(|| {
+        handle.block_on(events.waterfall_around(event.into(), payload, core))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ares_types::models::{TenantContext, TenantTier};
+    use async_trait::async_trait;
     use cordis::Context;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct ProbeTool {
+        name: String,
+        ran: Option<Arc<AtomicBool>>,
+    }
+
+    impl ProbeTool {
+        fn new(name: impl Into<String>) -> Self {
+            Self {
+                name: name.into(),
+                ran: None,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for ProbeTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "probe"
+        }
+        fn parameters_schema(&self) -> Value {
+            json!({})
+        }
+        async fn execute(&self, _args: Value) -> Result<Value> {
+            if let Some(ran) = &self.ran {
+                ran.store(true, Ordering::SeqCst);
+            }
+            Ok(json!({ "ok": self.name }))
+        }
+    }
 
     #[test]
     fn unlabeled_root_yields_no_tenant() {
@@ -234,5 +389,79 @@ mod tests {
         let svc = Tools::from_static([Arc::new(crate::calculator::Calculator) as Arc<dyn Tool>]);
         let ctx = Context::new_root();
         assert!(svc.resolve(&ctx, "calculator").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tools_list_waterfall_filters_tool() {
+        let svc = Tools::from_static([
+            Arc::new(ProbeTool::new("a")) as Arc<dyn Tool>,
+            Arc::new(ProbeTool::new("b")) as Arc<dyn Tool>,
+        ]);
+        let ctx = Context::new_root();
+        ctx.provide(EventsService::new());
+        let names: Vec<_> = svc.list(&ctx).into_iter().map(|d| d.name).collect();
+        assert!(names.contains(&"a".to_string()));
+        assert!(names.contains(&"b".to_string()));
+
+        let events = ctx.get::<EventsService>().expect("events");
+        events.on_waterfall("tools.list".into(), |payload, next| async move {
+            let mut out = next(payload).await?;
+            if let Some(arr) = out.get_mut("tools").and_then(Value::as_array_mut) {
+                arr.retain(|t| t.get("name").and_then(Value::as_str) != Some("b"));
+            }
+            Ok(out)
+        });
+        let names: Vec<_> = svc.list(&ctx).into_iter().map(|d| d.name).collect();
+        assert!(names.contains(&"a".to_string()));
+        assert!(!names.contains(&"b".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tools_resolve_waterfall_deny() {
+        let svc = Tools::from_static([Arc::new(ProbeTool::new("a")) as Arc<dyn Tool>]);
+        let ctx = Context::new_root();
+        ctx.provide(EventsService::new());
+        assert!(svc.resolve(&ctx, "a").is_some());
+        let events = ctx.get::<EventsService>().expect("events");
+        events.on_waterfall("tools.resolve".into(), |payload, _next| async move {
+            Ok(payload)
+        });
+        assert!(svc.resolve(&ctx, "a").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tools_execute_core_runs() {
+        let svc = Tools::from_static([Arc::new(ProbeTool::new("probe")) as Arc<dyn Tool>]);
+        let ctx = Context::new_root();
+        ctx.provide(EventsService::new());
+        let out = svc
+            .execute(&ctx, "probe", json!({}))
+            .await
+            .expect("execute");
+        assert_eq!(out, json!({ "ok": "probe" }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tools_execute_short_circuit_skips_tool() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let svc = Tools::from_static([Arc::new(ProbeTool {
+            name: "probe".into(),
+            ran: Some(Arc::clone(&ran)),
+        }) as Arc<dyn Tool>]);
+        let ctx = Context::new_root();
+        ctx.provide(EventsService::new());
+        let events = ctx.get::<EventsService>().expect("events");
+        events.on_waterfall("tools.execute".into(), |_payload, _next| async move {
+            Ok(json!({ "result": { "short": true } }))
+        });
+        let out = svc
+            .execute(&ctx, "probe", json!({}))
+            .await
+            .expect("execute");
+        assert_eq!(out, json!({ "short": true }));
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "tool.execute must not run when handler short-circuits"
+        );
     }
 }

@@ -165,7 +165,7 @@ pub use engine::SkillEngine;
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc;
-use cordis::{Context, Plugin, Service};
+use cordis::{Context,  Service};
 use crate::execution::Execute;
 use ares_tools::Tools;
 
@@ -179,6 +179,29 @@ fn resolve_skill_tool(
 ) -> Option<Arc<dyn ares_tools::Tool>> {
     let scoped = ctx.isolate::<Tools>(tenant_id.to_string());
     scoped.get::<Tools>()?.resolve(&scoped, name)
+}
+
+/// Run a skill tool step through `Tools::execute` (`tools.execute` waterfall).
+///
+/// Isolates the request ctx for the tenant. Missing `Tools` or an unknown
+/// name is `"Tool {name} not found"`.
+pub(crate) async fn execute_skill_tool(
+    ctx: &Arc<Context>,
+    tenant_id: &str,
+    name: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let scoped = ctx.isolate::<Tools>(tenant_id.to_string());
+    let tools = scoped
+        .get::<Tools>()
+        .ok_or_else(|| format!("Tool {name} not found"))?;
+    tools
+        .execute(&scoped, name, args)
+        .await
+        .map_err(|e| match e {
+            ares_types::AppError::NotFound(_) => format!("Tool {name} not found"),
+            e => format!("Tool {name} execution error: {e}"),
+        })
 }
 
 fn default_step_input() -> serde_json::Value {
@@ -232,6 +255,42 @@ pub fn validate_skill_call_depth(depth: usize) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Generate skill LLM text via `Llm::complete` (`llm.complete` waterfall).
+///
+/// Missing `Llm` is an error. There is no factory `generate_with_history` path.
+pub(crate) async fn skill_llm_content(ctx: &Arc<Context>, prompt: &str) -> Result<String, String> {
+    let Some(llm) = ctx.get::<ares_llm::Llm>() else {
+        return Err("LLM service not available via Context".into());
+    };
+    llm.complete(ctx, prompt).await.map_err(|e| e.to_string())
+}
+
+/// Map a skill `LlmCall` to [`ares_llm::LLMResponse`] through `Llm::complete`.
+///
+/// Pins `model_name` with `ModelOverride` intercept when none is already set.
+#[cfg(feature = "postgres")]
+async fn skill_llm_response(
+    ctx: &Arc<Context>,
+    prompt: &str,
+    model_name: &str,
+    _provider_name: &str,
+) -> Result<ares_llm::LLMResponse, String> {
+    let ctx = if model_name.is_empty() || ctx.get::<ares_llm::ModelOverride>().is_some() {
+        Arc::clone(ctx)
+    } else {
+        ctx.with_intercept(ares_llm::ModelOverride {
+            model: model_name.to_string(),
+        })
+    };
+    let content = skill_llm_content(&ctx, prompt).await?;
+    Ok(ares_llm::LLMResponse {
+        content,
+        tool_calls: vec![],
+        finish_reason: "stop".into(),
+        usage: None,
+    })
 }
 
 /// One step inside a skill workflow — mirrors `crate::skill_engine::SkillStep`
@@ -357,9 +416,10 @@ impl SkillsService {
 
     /// Execute a skill by id with JSON input via `ctx` (Cordis provider-agnostic).
     ///
-    /// Steps are run sequentially: ToolCall via `Tools` (`ctx.get`), LlmCall via
-    /// `Llm` (`ctx.get`) or fallback `LlmFactoryService`, SkillCall via recursion with
-    /// depth limiting, Condition via expression evaluation. Uses `run_history` when DB is available.
+    /// Steps are run sequentially: ToolCall via `Tools::execute` (`tools.execute`
+    /// waterfall on a tenant isolate), LlmCall via `Llm::complete` (`ctx.get::<Llm>()`)
+    /// or factory last-resort, SkillCall via recursion with depth limiting, Condition
+    /// via expression evaluation. Uses `run_history` when DB is available.
     /// Resolves services via `ctx.get` — no HTTP state alias.
     pub async fn execute_skill(
         &self,
@@ -447,14 +507,7 @@ impl SkillsService {
                     SkillStep::ToolCall { tool_name, args } => {
                         tracing::info!("Step {}: tool_call {}", step_index, tool_name);
                         let start = std::time::Instant::now();
-                        let result = {
-                            let Some(tool) = resolve_skill_tool(ctx, &tenant_id, &tool_name) else {
-                                return Err(format!("Tool {} not found", tool_name));
-                            };
-                            tool.execute(args.clone())
-                                .await
-                                .map_err(|e| format!("Tool {} execution error: {}", tool_name, e))?
-                        };
+                        let result = execute_skill_tool(ctx, &tenant_id, &tool_name, args.clone()).await?;
                         let latency_ms = start.elapsed().as_millis() as i64;
                         context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
                         // Log to run_history when pool available
@@ -479,37 +532,8 @@ impl SkillsService {
                     SkillStep::LlmCall { prompt, model_tier } => {
                         tracing::info!("Step {}: llm_call tier={}", step_index, model_tier);
                         let start = std::time::Instant::now();
-                        // Resolve model via AresConfigManager + token budget via pool
                         let (provider_name, model_name) = ("default".to_string(), model_tier.clone());
-
-                        // Prefer Llm via ctx.get
-                        let response: ares_llm::LLMResponse = if let Some(llm) = ctx.get::<ares_llm::Llm>() {
-                            // Use Llm::get_client with empty capability
-                            let cap = ares_llm::CapabilityRequirements::default();
-                            // Need Arc<Context> for get_client; reconstruct from &Context via unsafe? Instead fallback to direct factory
-                            // For now use provider_registry path via LlmFactoryService fallback
-                            let _ = (llm, cap);
-                            // Fallback to factory
-                            if let Some(factory) = ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>() {
-                                let registry = factory.registry();
-                                let client = match registry.create_client_for_model(&model_name).await {
-                                    Ok(c) => c,
-                                    Err(_) => registry.create_client_for_provider(&provider_name).await.map_err(|e| format!("LLM client creation failed: {}", e))?,
-                                };
-                                client.generate_with_history(&[("user".to_string(), prompt.clone())]).await.map_err(|e| format!("LLM generation failed: {}", e))?
-                            } else {
-                                return Err("LLM service not available via Context".to_string());
-                            }
-                        } else if let Some(factory) = ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>() {
-                            let registry = factory.registry();
-                            let client = match registry.create_client_for_model(&model_name).await {
-                                Ok(c) => c,
-                                Err(_) => registry.create_client_for_provider(&provider_name).await.map_err(|e| format!("LLM client creation failed: {}", e))?,
-                            };
-                            client.generate_with_history(&[("user".to_string(), prompt.clone())]).await.map_err(|e| format!("LLM generation failed: {}", e))?
-                        } else {
-                            return Err("LLM service not available via Context".to_string());
-                        };
+                        let response = skill_llm_response(ctx, &prompt, &model_name, &provider_name).await?;
 
                         let latency_ms = start.elapsed().as_millis() as i64;
                         let result = serde_json::json!({"content": response.content, "usage": response.usage});
@@ -573,10 +597,7 @@ impl SkillsService {
         match step {
             SkillStep::ToolCall { tool_name, args } => {
                 let start = std::time::Instant::now();
-                let Some(tool) = resolve_skill_tool(ctx, tenant_id, tool_name) else {
-                    return Err(format!("Tool {} not found", tool_name));
-                };
-                let result = tool.execute(args.clone()).await.map_err(|e| format!("Tool {} execution error: {}", tool_name, e))?;
+                let result = execute_skill_tool(ctx, tenant_id, tool_name, args.clone()).await?;
                 let latency_ms = start.elapsed().as_millis() as i64;
                 context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
                 let store = ares_store::run_history::RunHistoryStore::new(pool);
@@ -601,16 +622,7 @@ impl SkillsService {
             SkillStep::LlmCall { prompt, model_tier } => {
                 let start = std::time::Instant::now();
                 let (provider_name, model_name) = ("default".to_string(), model_tier.clone());
-                let response = if let Some(factory) = ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>() {
-                    let registry = factory.registry();
-                    let client = match registry.create_client_for_model(&model_name).await {
-                        Ok(c) => c,
-                        Err(_) => registry.create_client_for_provider(&provider_name).await.map_err(|e| format!("LLM client creation failed: {}", e))?,
-                    };
-                    client.generate_with_history(&[("user".to_string(), prompt.clone())]).await.map_err(|e| format!("LLM generation failed: {}", e))?
-                } else {
-                    return Err("LLM service not available".to_string());
-                };
+                let response = skill_llm_response(ctx, prompt, &model_name, &provider_name).await?;
                 let latency_ms = start.elapsed().as_millis() as i64;
                 let result = serde_json::json!({"content": response.content, "usage": response.usage});
                 context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
@@ -926,5 +938,169 @@ mod tests {
         assert_eq!(config.project_dir, Some(PathBuf::from("/tmp/project")));
         assert_eq!(config.personal_dir, Some(PathBuf::from("/tmp/personal")));
         assert_eq!(config.plugin_dirs.len(), 2);
+    }
+}
+
+
+#[cfg(test)]
+mod llm_call_tests {
+    use super::skill_llm_content;
+    #[cfg(feature = "postgres")]
+    use super::skill_llm_response;
+
+    use ares_llm::{ClientPool, Llm, ModelConfig, ProviderConfig, ProviderRegistry};
+    use cordis::{Context, EventsService};
+    use std::sync::Arc;
+
+    /// Registry with a local Ollama stub so `Llm::complete` can reach the
+    /// `"llm.complete"` waterfall without a live provider. Generate is not
+    /// invoked when the handler skips `next`.
+    fn stub_llm() -> Arc<Llm> {
+        let providers: std::collections::HashMap<String, ProviderConfig> =
+            serde_json::from_value(serde_json::json!({
+                "ollama": {
+                    "type": "ollama",
+                    "api_key_env": "UNUSED",
+                    "base_url": "http://127.0.0.1:1",
+                    "default_model": "stub"
+                }
+            }))
+            .expect("ollama provider config");
+        let models: std::collections::HashMap<String, ModelConfig> =
+            serde_json::from_value(serde_json::json!({
+                "stub": {
+                    "provider": "ollama",
+                    "model": "stub",
+                    "temperature": 0.0,
+                    "max_tokens": 16
+                }
+            }))
+            .expect("stub model config");
+        let mut registry = ProviderRegistry::from_config(providers, models, None);
+        registry.set_default_model("stub");
+        Arc::new(Llm::new(
+            Arc::new(registry),
+            Arc::new(ClientPool::with_defaults()),
+            None,
+        ))
+    }
+
+    #[tokio::test]
+    async fn skills_service_llm_call_uses_complete() {
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        ctx.provide_arc(stub_llm());
+        events.on_waterfall("llm.complete".into(), |payload, _next| async move {
+            let prompt = payload
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            Ok(serde_json::json!({ "content": format!("CACHED:{prompt}") }))
+        });
+        let out = skill_llm_content(&ctx, "hello-skill")
+            .await
+            .expect("Llm::complete waterfall");
+        assert!(
+            out.contains("CACHED"),
+            "waterfall short-circuit must supply content, got {out:?}"
+        );
+        assert!(
+            out.contains("hello-skill"),
+            "prompt must reach llm.complete payload, got {out:?}"
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn skills_service_llm_response_uses_complete() {
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        ctx.provide_arc(stub_llm());
+        events.on_waterfall("llm.complete".into(), |_payload, _next| async move {
+            Ok(serde_json::json!({ "content": "service-evented" }))
+        });
+        let response = skill_llm_response(&ctx, "skill-prompt", "stub", "default")
+            .await
+            .expect("Llm::complete waterfall");
+        assert_eq!(response.content, "service-evented");
+        assert!(response.tool_calls.is_empty());
+        assert_eq!(response.finish_reason, "stop");
+        assert!(response.usage.is_none());
+    }
+
+    #[tokio::test]
+    async fn skills_service_llm_call_uses_complete_absent_llm() {
+        let ctx = Context::new_root();
+        let err = skill_llm_content(&ctx, "x").await.expect_err("no Llm");
+        assert!(
+            err.contains("not available"),
+            "helper must Err when Llm is absent, got {err:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tool_call_tests {
+    use super::{execute_skill_tool, resolve_skill_tool};
+    use ares_tools::{Tool, Tools};
+    use cordis::{Context, EventsService};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    struct ProbeTool;
+
+    #[async_trait::async_trait]
+    impl Tool for ProbeTool {
+        fn name(&self) -> &str {
+            "probe"
+        }
+        fn description(&self) -> &str {
+            "parent-provided probe"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+        async fn execute(&self, _args: serde_json::Value) -> ares_types::Result<serde_json::Value> {
+            Ok(json!({"ok": true}))
+        }
+    }
+
+    #[tokio::test]
+    async fn skills_service_tool_call_uses_execute() {
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        ctx.provide(Tools::from_static([
+            Arc::new(ProbeTool) as Arc<dyn Tool>,
+        ]));
+        events.on_waterfall("tools.execute".into(), |payload, _next| async move {
+            let name = payload
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(json!({ "result": { "cached": true, "name": name } }))
+        });
+        let out = execute_skill_tool(&ctx, "acme", "probe", json!({"x": 1}))
+            .await
+            .expect("tools.execute waterfall");
+        assert_eq!(out.get("cached"), Some(&json!(true)));
+        assert_eq!(out.get("name"), Some(&json!("probe")));
+        assert!(
+            out.get("ok").is_none(),
+            "short-circuit must skip ProbeTool::execute, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn skills_service_resolve_isolates_tenant() {
+        let parent = Context::new_root();
+        parent.provide(Tools::from_static([
+            Arc::new(ProbeTool) as Arc<dyn Tool>,
+        ]));
+        let found = resolve_skill_tool(&parent, "acme", "probe");
+        assert!(
+            found.is_some(),
+            "Tools on parent must remain visible after isolate::<Tools>(acme)"
+        );
     }
 }

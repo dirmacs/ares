@@ -10,7 +10,13 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ### Added
 
-- `AgentExecutionService::execute_agent` with full resolve-create-execute pipeline and `RunTracker` observability
+- `Execute::run` with full resolve-create-execute pipeline and `RunTracker` observability
+- `EventsService::waterfall_around`: around-middleware waterfall that runs `core` at the end; skipping `next` skips core
+- `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`); if ReflectService is absent or the sender is dropped, it falls through to a 5ms poll
+- Product events: `tools.list` / `tools.resolve` / `tools.execute`, `llm.get_client` / `llm.complete`, `llm.generate` / `llm.generate_tools` (`ConfigurableAgent`), `agent.run` (waterfall), `agent.admit` (`Dispatch::Bail`), `agent.started` (`Dispatch::Parallel`)
+- Skills isolate the request `ctx` (`isolate::<Tools>(tenant_id)`) instead of opening a new root
+- Skill `LlmCall` steps strictly run `Llm::complete` through the `llm.complete` waterfall; `SkillEngine` and `SkillsService` have no direct provider `generate_with_history` fallback
+- Skill `ToolCall` steps run `Tools::execute` (`tools.execute` waterfall) on the tenant isolate
 - `ExecutionResult` return type with resolution metadata (source tier, run ID)
 - `RunTracker` trait extracted to `ares-agent` for decoupled run observability
 - `Service` impl directly on `AgentRegistry` and `ConfigBasedLLMFactory` (no wrappers needed)
@@ -18,8 +24,10 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ### Changed
 
-- All 5 execution sites (chat, v1, scheduler, trigger, pipeline) now delegate to `AgentExecutionService`
-- `resolve_agent` delegates to `AgentResolverService` when available (legacy fallback retained)
+- All 5 execution sites (chat, v1, scheduler, trigger, pipeline) now delegate to `Execute`
+- `Tools`, `Llm`, and `Execute` public methods run through Cordis `waterfall_around` when `EventsService` is on ctx
+- `SkillsService` and `SkillEngine` LLM/tool steps use those same events instead of calling the tool or client directly
+- `resolve_agent` delegates to crate-private `Resolver` when available (legacy fallback retained)
 - Removed `AgentRegistryService` and `LlmFactoryService` wrappers (consumers use types directly)
 - Deleted deprecated `start_background_reload` function and its test
 - Calculator tool registered via `ctx.plugin(CalculatorService)` in addition to legacy path

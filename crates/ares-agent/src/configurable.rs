@@ -14,8 +14,9 @@ use ares_llm::{LLMClient, LLMResponse};
 use ares_tools::Tools;
 use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
 use async_trait::async_trait;
+use std::future::Future;
 use std::sync::Arc;
-use cordis::Context;
+use cordis::{Context, CordisError, EventsService};
 
 // cordis Phase6: runtime postgres availability via Service::check() — replaces compile-time #[cfg(feature="postgres")] branching
 // Previously: `#[cfg(feature = "postgres")] token_budget_pool: Option<PgPool>`
@@ -101,6 +102,111 @@ fn is_prebuilt_connector_tool(name: &str) -> bool {
             | "slack_list_channels"
             | "slack_upload_file"
     )
+}
+
+fn history_messages_from_payload(payload: &serde_json::Value) -> Vec<(String, String)> {
+    payload
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    Some((
+                        m.get("role")?.as_str()?.to_string(),
+                        m.get("content")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn conversation_messages_from_payload(payload: &serde_json::Value) -> Vec<ConversationMessage> {
+    payload
+        .get("messages")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
+}
+
+fn tools_from_payload(payload: &serde_json::Value) -> Vec<ToolDefinition> {
+    let Some(v) = payload.get("tools") else {
+        return Vec::new();
+    };
+    if let Ok(defs) = serde_json::from_value::<Vec<ToolDefinition>>(v.clone()) {
+        return defs;
+    }
+    v.as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| {
+                    let name = t.as_str().or_else(|| t.get("name")?.as_str())?;
+                    Some(ToolDefinition {
+                        name: name.to_string(),
+                        description: String::new(),
+                        parameters: serde_json::json!({}),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn attempt_to_generate_json(attempt: &LlmAttemptResponse) -> serde_json::Value {
+    serde_json::json!({
+        "content": attempt.response.content,
+        "usage": attempt.response.usage,
+        "model_name": attempt.model_name,
+        "provider_name": attempt.provider_name,
+        "tool_calls": attempt.response.tool_calls,
+        "finish_reason": attempt.response.finish_reason,
+    })
+}
+
+fn generate_denied(out: &serde_json::Value) -> bool {
+    match out.get("deny") {
+        Some(serde_json::Value::Bool(true)) => true,
+        Some(serde_json::Value::String(s)) if !s.is_empty() => true,
+        _ => false,
+    }
+}
+
+/// Drive `waterfall_around` without capturing `Box<dyn LLMClient>` in the `'static`
+/// core: the terminal core only shuttles the (possibly rewritten) payload back to
+/// the caller, which runs generate on `&self.llm` and returns the JSON result.
+async fn run_events_waterfall<F, Fut>(
+    events: &EventsService,
+    event: &str,
+    payload: serde_json::Value,
+    core: F,
+) -> std::result::Result<serde_json::Value, CordisError>
+where
+    F: FnOnce(serde_json::Value) -> Fut,
+    Fut: Future<Output = std::result::Result<serde_json::Value, CordisError>>,
+{
+    let (req_tx, req_rx) = tokio::sync::oneshot::channel();
+    let (res_tx, res_rx) = tokio::sync::oneshot::channel();
+    let wf = events.waterfall_around(event.to_string(), payload, move |p| async move {
+        let _ = req_tx.send(p);
+        match res_rx.await {
+            Ok(r) => r,
+            Err(_) => Err(CordisError::Fiber("llm generate core dropped".into())),
+        }
+    });
+    tokio::pin!(wf);
+    tokio::select! {
+        wf_res = &mut wf => wf_res,
+        req = req_rx => {
+            match req {
+                Ok(p) => {
+                    let out = core(p).await;
+                    let _ = res_tx.send(out);
+                    wf.await
+                }
+                Err(_) => wf.await,
+            }
+        }
+    }
 }
 
 impl ConfigurableAgent {
@@ -500,6 +606,33 @@ Handle employee info, policies, and benefits."#
         &self,
         messages: &[(String, String)],
     ) -> Result<LlmAttemptResponse> {
+        let ctx = self.cordis_ctx.clone().unwrap_or_else(Context::new_root);
+        let Some(events) = ctx.get::<EventsService>() else {
+            return self.generate_with_history_direct(messages).await;
+        };
+        let orig: Vec<(String, String)> = messages.to_vec();
+        let payload = serde_json::json!({
+            "messages": orig.iter().map(|(role, content)| {
+                serde_json::json!({ "role": role, "content": content })
+            }).collect::<Vec<_>>(),
+        });
+        let out = run_events_waterfall(&events, "llm.generate", payload, |payload| async move {
+            let parsed = history_messages_from_payload(&payload);
+            let msgs = if parsed.is_empty() { orig } else { parsed };
+            match self.generate_with_history_direct(&msgs).await {
+                Ok(attempt) => Ok(attempt_to_generate_json(&attempt)),
+                Err(e) => Err(CordisError::Fiber(e.to_string())),
+            }
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+        self.generate_attempt_from_payload(out, "llm.generate")
+    }
+
+    async fn generate_with_history_direct(
+        &self,
+        messages: &[(String, String)],
+    ) -> Result<LlmAttemptResponse> {
         match self.llm.generate_with_history(messages).await {
             Ok(response) => Ok(LlmAttemptResponse {
                 response,
@@ -550,6 +683,47 @@ Handle employee info, policies, and benefits."#
 
     /// Try the primary LLM with tools, then each fallback in order.
     async fn try_generate_with_tools_and_history(
+        &self,
+        messages: &[ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<LlmAttemptResponse> {
+        let ctx = self.cordis_ctx.clone().unwrap_or_else(Context::new_root);
+        let Some(events) = ctx.get::<EventsService>() else {
+            return self.generate_with_tools_and_history_direct(messages, tools).await;
+        };
+        let orig_messages = messages.to_vec();
+        let orig_tools = tools.to_vec();
+        let payload = serde_json::json!({
+            "messages": orig_messages,
+            "tools": orig_tools,
+        });
+        let out = run_events_waterfall(&events, "llm.generate_tools", payload, |payload| async move {
+            let parsed_msgs = conversation_messages_from_payload(&payload);
+            let msgs = if parsed_msgs.is_empty() {
+                orig_messages
+            } else {
+                parsed_msgs
+            };
+            let parsed_tools = tools_from_payload(&payload);
+            let tool_defs = if parsed_tools.is_empty() && payload.get("tools").is_none() {
+                orig_tools
+            } else {
+                parsed_tools
+            };
+            match self
+                .generate_with_tools_and_history_direct(&msgs, &tool_defs)
+                .await
+            {
+                Ok(attempt) => Ok(attempt_to_generate_json(&attempt)),
+                Err(e) => Err(CordisError::Fiber(e.to_string())),
+            }
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+        self.generate_attempt_from_payload(out, "llm.generate_tools")
+    }
+
+    async fn generate_with_tools_and_history_direct(
         &self,
         messages: &[ConversationMessage],
         tools: &[ToolDefinition],
@@ -608,6 +782,59 @@ Handle employee info, policies, and benefits."#
                 }
             }
         }
+    }
+
+    fn generate_attempt_from_payload(
+        &self,
+        out: serde_json::Value,
+        event: &str,
+    ) -> Result<LlmAttemptResponse> {
+        if generate_denied(&out) {
+            let reason = out
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("denied");
+            return Err(AppError::InvalidInput(format!("{event} {reason}")));
+        }
+        let content = out
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let usage = out
+            .get("usage")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok());
+        let model_name = out
+            .get("model_name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.llm.model_name().to_string());
+        let provider_name = out
+            .get("provider_name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.provider_name.clone());
+        let tool_calls = out
+            .get("tool_calls")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        let finish_reason = out
+            .get("finish_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("stop")
+            .to_string();
+        Ok(LlmAttemptResponse {
+            response: LLMResponse {
+                content,
+                tool_calls,
+                finish_reason,
+                usage,
+            },
+            provider_name,
+            model_name,
+        })
     }
 
     /// Get tool definitions for this agent.
@@ -695,11 +922,8 @@ Handle employee info, policies, and benefits."#
             return Err(AppError::NotFound(format!("Tool not found: {name}")));
         };
         let ctx = self.cordis_ctx.clone().unwrap_or_else(Context::new_root);
-        if let Some(tool) = tools.resolve(&ctx, name) {
-            let args = self.tenant_scoped_builtin_args(name, args)?;
-            return tool.execute(args).await;
-        }
-        Err(AppError::NotFound(format!("Tool not found: {name}")))
+        let args = self.tenant_scoped_builtin_args(name, args)?;
+        tools.execute(&ctx, name, args).await
     }
 
     fn observed_tool_type(&self, name: &str, is_builtin: bool) -> String {
@@ -1150,6 +1374,7 @@ mod tests {
     use ares_types::types::{Message, MessageRole, Preference, ToolCall, UserMemory};
     use chrono::Utc;
     use std::collections::{HashMap, VecDeque};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     // ============== Shared MockLLM ==============
@@ -1162,6 +1387,8 @@ mod tests {
     struct MockLLM {
         content: String,
         tool_responses: Arc<Mutex<VecDeque<LLMResponse>>>,
+        generated: Arc<AtomicBool>,
+        echo_last: bool,
     }
 
     impl MockLLM {
@@ -1173,6 +1400,8 @@ mod tests {
             Self {
                 content: content.to_string(),
                 tool_responses: Arc::new(Mutex::new(VecDeque::new())),
+                generated: Arc::new(AtomicBool::new(false)),
+                echo_last: false,
             }
         }
 
@@ -1182,7 +1411,28 @@ mod tests {
             Self {
                 content: "mock".to_string(),
                 tool_responses: Arc::new(Mutex::new(responses.into())),
+                generated: Arc::new(AtomicBool::new(false)),
+                echo_last: false,
             }
+        }
+
+        fn echo_last() -> Self {
+            let mut llm = Self::new();
+            llm.echo_last = true;
+            llm
+        }
+
+        fn with_generated_flag() -> (Self, Arc<AtomicBool>) {
+            let generated = Arc::new(AtomicBool::new(false));
+            (
+                Self {
+                    content: "should-not-appear".to_string(),
+                    tool_responses: Arc::new(Mutex::new(VecDeque::new())),
+                    generated: Arc::clone(&generated),
+                    echo_last: false,
+                },
+                generated,
+            )
         }
     }
 
@@ -1194,9 +1444,18 @@ mod tests {
         async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
             Ok(self.content.clone())
         }
-        async fn generate_with_history(&self, _: &[(String, String)]) -> Result<LLMResponse> {
+        async fn generate_with_history(&self, messages: &[(String, String)]) -> Result<LLMResponse> {
+            self.generated.store(true, Ordering::SeqCst);
+            let content = if self.echo_last {
+                messages
+                    .last()
+                    .map(|(_, c)| c.clone())
+                    .unwrap_or_else(|| self.content.clone())
+            } else {
+                self.content.clone()
+            };
             Ok(LLMResponse {
-                content: self.content.clone(),
+                content,
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
@@ -2390,5 +2649,59 @@ mod tests {
             root.with_intercept(TenantContext::new("from-intercept".into(), TenantTier::Pro));
         let isolated = crate::tenant_scope(&intercepted, "from-isolate");
         assert_eq!(crate::user_id_from_ctx(&isolated, "anon"), "from-isolate");
+    }
+
+    #[tokio::test]
+    async fn configurable_generate_waterfall_rewrites_last_message() {
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall("llm.generate".into(), |mut payload, next| async move {
+            if let Some(arr) = payload.get_mut("messages").and_then(|v| v.as_array_mut()) {
+                if let Some(last) = arr.last_mut() {
+                    last["content"] = serde_json::json!("rewritten-hello");
+                }
+            }
+            next(payload).await
+        });
+
+        let mut agent = ConfigurableAgent::new(
+            "router",
+            &make_config(vec![], Some("system")),
+            Box::new(MockLLM::echo_last()),
+            None,
+        );
+        agent.bind_request_ctx(ctx);
+
+        let resp = Agent::execute(&agent, "original", &make_context())
+            .await
+            .expect("execute");
+        assert_eq!(resp.content, "rewritten-hello");
+    }
+
+    #[tokio::test]
+    async fn configurable_generate_short_circuit_skips_llm() {
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall("llm.generate".into(), |_payload, _next| async move {
+            Ok(serde_json::json!({ "content": "cached" }))
+        });
+
+        let (llm, generated) = MockLLM::with_generated_flag();
+        let mut agent = ConfigurableAgent::new(
+            "router",
+            &make_config(vec![], Some("system")),
+            Box::new(llm),
+            None,
+        );
+        agent.bind_request_ctx(ctx);
+
+        let resp = Agent::execute(&agent, "would-call-llm", &make_context())
+            .await
+            .expect("execute");
+        assert_eq!(resp.content, "cached");
+        assert!(
+            !generated.load(Ordering::SeqCst),
+            "dummy generate must stay false when handler skips next"
+        );
     }
 }

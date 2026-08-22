@@ -368,6 +368,10 @@ The `dispatch` implementation follows the five modes exactly:
 - `Bail`: stops at the first handler that returns a non-null result and returns that value without running later handlers; a null result means not bailing and the chain continues with the original payload.
 - `Waterfall`: each handler transforms the payload and passes the result to the next; a handler short-circuits by returning an object whose `waterfall_stop` field is `true`. This is the Rust static-dispatch analogue of the TS `next()` closure: instead of passing a `next` function, a handler opts out by returning the sentinel.
 
+### Event-first skill execution (0.9.0)
+
+Each skill receives the request `Context`. Tool steps run on a tenant-scoped context created with `ctx.isolate::<Tools>(tenant_id)` and invoke `Tools::execute` through `tools.execute`. Every Skill `LlmCall` step uses strict `Llm::complete` through `llm.complete`; `SkillEngine` and `SkillsService` do not call providers directly or fall back to `generate_with_history`. When `EventsService` is present, `waterfall_around` wraps these capability calls.
+
 ---
 
 ## 9. Loader & config reconciliation (declarative)

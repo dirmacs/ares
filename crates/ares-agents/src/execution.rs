@@ -245,8 +245,8 @@ impl AgentExecutionService {
         // Resolve agent config
         let resolver = ctx.get::<crate::resolver::AgentResolverService>()
             .ok_or_else(|| AppError::Configuration("AgentResolverService not provided".into()))?;
-        let user_id = req.tenant.as_deref().unwrap_or("");
-        let (user_agent, source) = resolver.resolve_async(&req.agent_name, user_id).await?;
+        let user_id = crate::resolver::user_id_from_ctx(ctx, req.tenant.as_deref().unwrap_or(""));
+        let (user_agent, source) = resolver.resolve_async(&req.agent_name, &user_id).await?;
 
         // Build AgentConfig from resolved UserAgent
         let mut config = crate::configurable::agent_config_from_user_agent(&user_agent);
@@ -274,7 +274,7 @@ impl AgentExecutionService {
             .create_agent_from_config_with_fallbacks(
                 &req.agent_name,
                 &config,
-                user_id,
+                &user_id,
                 tenant_db.pool(),
                 fleet_secrets,
             )
@@ -283,7 +283,7 @@ impl AgentExecutionService {
         // Track run start
         let run_id = uuid::Uuid::new_v4().to_string();
         if let Some(tracker) = &self.run_tracker {
-            tracker.start_run(&run_id, user_id, &req.agent_name, Some("execution_service"));
+            tracker.start_run(&run_id, &user_id, &req.agent_name, Some("execution_service"));
         }
 
         // Emit agent execution event via Cordis EventsService (Parallel — join-all

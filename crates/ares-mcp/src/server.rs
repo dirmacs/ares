@@ -213,6 +213,15 @@ pub fn tier_limits(tier: &str) -> (u64, u32, u64) {
     }
 }
 
+/// In-process agent execution, used to skip the HTTP loopback to POST /api/chat.
+#[async_trait::async_trait]
+pub trait AgentRunner: Send + Sync {
+    async fn run_agent(
+        &self,
+        input: &crate::tools::RunAgentInput,
+    ) -> Result<crate::tools::RunAgentOutput, String>;
+}
+
 /// The ARES MCP Server.
 ///
 /// This struct implements `ServerHandler` from rmcp, which means rmcp
@@ -237,6 +246,8 @@ pub struct AresMcpServer {
     ares_api_url: String,
     /// HTTP client for calling ARES's own HTTP API
     http: reqwest::Client,
+    /// Optional in-process runner; when set, `run_agent` skips HTTP POST /api/chat.
+    agent_runner: Option<Arc<dyn AgentRunner>>,
     /// When true, `enforce_quota` is a no-op (unit tests only).
     #[cfg(test)]
     skip_quota_check: bool,
@@ -267,8 +278,17 @@ impl AresMcpServer {
             extensions,
             ares_api_url: ares_api_url.trim_end_matches('/').to_string(),
             http,
+            agent_runner: None,
             #[cfg(test)]
             skip_quota_check: false,
+        }
+    }
+
+    /// Inject an in-process agent runner, skipping the HTTP loopback to POST /api/chat.
+    pub fn with_agent_runner(self, runner: Arc<dyn AgentRunner>) -> Self {
+        Self {
+            agent_runner: Some(runner),
+            ..self
         }
     }
 
@@ -394,6 +414,23 @@ impl AresMcpServer {
         let start = std::time::Instant::now();
         let session = self.get_session().await?;
         self.enforce_quota(&session).await?;
+
+        if let Some(runner) = &self.agent_runner {
+            let output = runner.run_agent(&input).await?;
+            let estimated_tokens = (output.response.len() / 4) as u64;
+            let duration = start.elapsed().as_millis() as u64;
+            self.track_usage(
+                session.tenant_id(),
+                McpOperation::RunAgent,
+                estimated_tokens,
+                true,
+                duration,
+            )
+            .await;
+            let output_json =
+                serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
+            return Ok(CallToolResult::success(vec![ContentBlock::text(output_json)]));
+        }
 
         // Call ARES HTTP API: POST /api/chat
         let url = format!("{}/api/chat", self.ares_api_url);
@@ -995,6 +1032,12 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_defaults_agent_runner_to_none() {
+        let server = test_server().await;
+        assert!(server.agent_runner.is_none());
+    }
+
+    #[tokio::test]
     async fn get_tools_returns_five_with_correct_names() {
         let server = test_server().await;
         let tools = server.get_tools();
@@ -1495,6 +1538,62 @@ mod tests {
         assert_eq!(server.ares_api_url, "https://api.test.com");
         let url = format!("{}/api/chat", server.ares_api_url);
         assert_eq!(url, "https://api.test.com/api/chat");
+    }
+
+    struct RecordingRunner {
+        calls: std::sync::Mutex<Vec<(String, String, Option<String>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentRunner for RecordingRunner {
+        async fn run_agent(
+            &self,
+            input: &crate::tools::RunAgentInput,
+        ) -> Result<crate::tools::RunAgentOutput, String> {
+            self.calls.lock().expect("recorder lock").push((
+                input.agent_name.clone(),
+                input.message.clone(),
+                input.context_id.clone(),
+            ));
+            Ok(RunAgentOutput {
+                response: "from-runner".into(),
+                agent: input.agent_name.clone(),
+                context_id: input.context_id.clone().unwrap_or_default(),
+                sources: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn run_agent_uses_injected_runner() {
+        let recorder = Arc::new(RecordingRunner {
+            calls: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut server = test_server_with_session().await;
+        server.skip_quota_check = true;
+        let server = server.with_agent_runner(recorder.clone());
+
+        let result = server
+            .run_agent(RunAgentInput {
+                agent_name: "bot".into(),
+                message: "hi".into(),
+                context_id: Some("ctx-1".into()),
+            })
+            .await
+            .expect("run_agent");
+
+        assert_ne!(result.is_error, Some(true));
+        let text = result.content.first().unwrap().as_text().unwrap().text.as_str();
+        assert!(
+            text.contains("from-runner"),
+            "expected runner JSON in tool result, got {text}"
+        );
+
+        let calls = recorder.calls.lock().expect("recorder lock");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "bot");
+        assert_eq!(calls[0].1, "hi");
+        assert_eq!(calls[0].2.as_deref(), Some("ctx-1"));
     }
 
     #[tokio::test]

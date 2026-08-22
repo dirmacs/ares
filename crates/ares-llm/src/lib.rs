@@ -58,8 +58,12 @@
 //! ```ignore
 //! use ares::llm::coordinator::{ToolCoordinator, ToolCallingConfig};
 //!
-//! let coordinator = ToolCoordinator::new(client, registry, ToolCallingConfig::default());
-//! let result = coordinator.execute(Some("System prompt"), "User query").await?;
+//! let tools = std::sync::Arc::new(ares_tools::Tools::from_static(
+//!     Vec::<std::sync::Arc<dyn ares_tools::Tool>>::new(),
+//! ));
+//! let coordinator = ToolCoordinator::new(client, tools, ToolCallingConfig::default());
+//! let ctx = cordis::Context::new_root();
+//! let result = coordinator.execute(Some("System prompt"), "User query", &ctx).await?;
 //! ```
 //!
 //! # Streaming
@@ -79,7 +83,7 @@ pub mod observability;
 pub mod pool;
 /// Registry for managing multiple LLM provider instances.
 pub mod provider_registry;
-/// Unified LLM service (Cordis Phase 5).
+/// Unified LLM capability (Cordis Phase 3).
 pub mod llm_service;
 
 #[cfg(feature = "openai")]
@@ -104,7 +108,7 @@ pub use coordinator::{
 pub use observability::{LlmCallRecord, ObservabilitySink};
 pub use pool::{ClientPool, ClientPoolBuilder, PoolConfig, PoolStats, PooledClientGuard};
 pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
-pub use llm_service::{Breaker, LlmService, ModelOverride, TenantModelPolicy};
+pub use llm_service::{Breaker, Llm, ModelOverride, TenantModelPolicy};
 
 // Re-export NVIDIA catalog types from ares-config so callers can construct caches.
 pub use ares_config::nvidia_catalog::{CatalogEntry, NvidiaCatalogCache, NvidiaConfig};

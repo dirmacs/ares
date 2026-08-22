@@ -19,14 +19,14 @@ anthropic = ["dep:claude-sdk"]
 llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]
 llamacpp-metal = ["llamacpp", "llama-cpp-2/metal"]
 llamacpp-vulkan = ["llamacpp", "llama-cpp-2/vulkan"]
-postgres = ["dep:sqlx", "ares-db/postgres"]
+postgres = ["dep:sqlx", "ares-store/postgres"]
 
 [dependencies]
 ares-types = { workspace = true }
 ares-config = { workspace = true }
 ares-tools = { workspace = true }
-ares-db = { workspace = true, optional = true }
-ares-cordis-core = { workspace = true }
+ares-store = { workspace = true, optional = true }
+cordis = { workspace = true }
 chrono = { workspace = true }
 sqlx = { workspace = true, optional = true }
 async-stream = "0.3.6"

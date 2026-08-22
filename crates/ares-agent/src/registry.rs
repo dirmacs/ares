@@ -257,7 +257,7 @@ impl AgentRegistry {
             .resolve_with_fallback(&config.model, tenant_id, pool, fleet_secrets)
             .await?;
 
-        let allowlist_store = ares_db::tenant_allowlist::TenantAllowlistStore::new(pool);
+        let allowlist_store = ares_store::tenant_allowlist::TenantAllowlistStore::new(pool);
         for resolved in &chain {
             if !allowlist_store
                 .is_model_allowed(tenant_id, &resolved.model_name)
@@ -316,7 +316,6 @@ impl AgentRegistry {
             primary_provider_name,
         );
         agent.set_fallback_llms_with_providers(fallback_llms);
-        agent.set_token_budget_pool(pool.clone());
 
         // --- tenant allowlist enforcement ---
         // Tool enforcement: intersect config allowed_tools with tenant allowlist.
@@ -1177,9 +1176,9 @@ mod tests {
 }
 
 // Cordis Service impl — allows direct ctx.get::<AgentRegistry>() without wrapper
-impl ares_cordis_core::Service for AgentRegistry {
+impl cordis::Service for AgentRegistry {
     fn name(&self) -> &'static str { "agent_registry" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }

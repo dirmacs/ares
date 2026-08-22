@@ -10,7 +10,7 @@
 //! - JSONB columns bind directly to `serde_json::Value` via sqlx.
 //! - Timestamps read as `chrono::DateTime<chrono::Utc>`.
 //! - All UUID columns are stored/transferred as `String` (matches the rest of
-//!   the `ares-db` crate).
+//!   the `ares-store` crate).
 //! - `update` automatically snapshots the previous state into
 //!   `runtime_tool_versions` before mutating the main row.
 

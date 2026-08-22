@@ -9,7 +9,7 @@ publish = true
 description = "Core types and tenant models for ARES"
 
 [dependencies]
-ares-cordis-core = { workspace = true }
+cordis = { workspace = true }
 axum = { version = "0.8.7", features = ["macros", "multipart"] }
 chrono = { workspace = true }
 serde = { workspace = true }

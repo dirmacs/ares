@@ -39,7 +39,7 @@ pub fn validate_api_key_format(api_key: &str) -> Result<(), McpAuthError> {
 #[cfg(feature = "postgres")]
 /// Validates an API key against the tenant database and returns `TenantContext`.
 pub async fn validate_mcp_api_key(
-    tenant_db: &ares_db::tenants::TenantDb,
+    tenant_db: &ares_store::tenants::TenantDb,
     api_key: &str,
 ) -> Result<TenantContext, McpAuthError> {
     validate_api_key_format(api_key)?;
@@ -419,11 +419,11 @@ mod tests {
     #[cfg(feature = "postgres")]
     mod validate_mcp_api_key_tests {
         use super::*;
-        use ares_db::PostgresClient;
+        use ares_store::PostgresClient;
         use std::sync::Arc;
 
-        fn test_tenant_db() -> ares_db::TenantDb {
-            ares_db::TenantDb::new(Arc::new(PostgresClient::new_test()))
+        fn test_tenant_db() -> ares_store::TenantDb {
+            ares_store::TenantDb::new(Arc::new(PostgresClient::new_test()))
         }
 
         #[tokio::test]

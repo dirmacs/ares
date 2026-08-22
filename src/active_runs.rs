@@ -114,14 +114,14 @@ impl Default for ActiveRuns {
     }
 }
 
-impl ares_cordis_core::Service for ActiveRuns {
+impl cordis::Service for ActiveRuns {
     fn name(&self) -> &'static str {
         "active_runs"
     }
     fn init(
         &self,
-        _ctx: &std::sync::Arc<ares_cordis_core::Context>,
-    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        _ctx: &std::sync::Arc<cordis::Context>,
+    ) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool {
@@ -219,7 +219,7 @@ mod tests {
     }
 }
 
-impl ares_agents::execution::RunTracker for ActiveRuns {
+impl ares_agent::execution::RunTracker for ActiveRuns {
     fn start_run(&self, run_id: &str, tenant_id: &str, agent_name: &str, source: Option<&str>) {
         self.start(ActiveRun {
             run_id: run_id.to_string(),

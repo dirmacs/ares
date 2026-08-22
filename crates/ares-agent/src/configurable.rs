@@ -12,18 +12,18 @@ use ares_llm::coordinator::ConversationMessage;
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use ares_llm::{LLMClient, LLMResponse};
 use ares_tools::registry::ToolRegistry;
-use ares_tools::ToolService;
+use ares_tools::Tools;
 use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
 use async_trait::async_trait;
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 
 // cordis Phase6: runtime postgres availability via Service::check() — replaces compile-time #[cfg(feature="postgres")] branching
 // Previously: `#[cfg(feature = "postgres")] token_budget_pool: Option<PgPool>`
 // Now: always-present field guarded by `ctx.get::<PostgresService>().is_some()` / `PostgresService::check()`
 // Handler example: `if ctx.get::<PostgresService>().is_some() { /* use token_budget_pool */ } else { /* fallback */ }`
 // TODO: if ctx.get::<PostgresService>().is_some() { use db } else { fallback }
-use ares_cordis_core::Service;
+use cordis::Service;
 
 /// Postgres availability as a Cordis Service — runtime check, not compile-time cfg.
 ///
@@ -60,18 +60,12 @@ pub struct ConfigurableAgent {
     provider_name: String,
     /// The system prompt from configuration
     system_prompt: String,
-    /// Tools available to this agent
+    /// Built-in tools available to this agent.
     tool_registry: Option<Arc<ToolRegistry>>,
-    /// Unified tool service (Cordis DI). Keep alongside `tool_registry` for one
-    /// commit to keep `cargo check` green. Next migration: consumers will use
-    /// `ctx.get::<dyn ToolService>()` / `ctx.get::<UnifiedToolService>()` (see
-    /// `ares_tools::ToolService` and `ares_cordis_core::Context::get`) instead of
-    /// passing `Arc<ToolRegistry>`. `ToolService` is dyn-compatible (`Service`
-    /// is implemented for `dyn ToolService` with `Pin<Box<dyn Future>>`); we
-    /// store `Arc<dyn ToolService>` (re-exported via `crate::execution::ToolService`)
-    /// so `inject_tool_service` can accept both concrete `UnifiedToolService`
-    /// and trait objects. Both paths are kept for one commit.
-    tool_service: Option<Arc<dyn ToolService>>,
+    /// Unified tools capability. Prefer `set_tools` + request ctx.
+    tools: Option<Arc<Tools>>,
+    /// Request Cordis context bound for this execution (Tools isolate + ExternalContext).
+    cordis_ctx: Option<Arc<Context>>,
     /// Optional whitelist of tool names this agent is allowed to use.
     /// `None` means no tools are permitted.
     allowed_tools: Option<Vec<String>>,
@@ -83,21 +77,8 @@ pub struct ConfigurableAgent {
     observability: Option<Arc<dyn ObservabilitySink>>,
     /// Optional fallback LLM clients to try if primary fails
     fallback_llms: Vec<ProviderLlm>,
-    /// Optional DB pool for token-budget tracking.
-    #[cfg(feature = "postgres")]
-    token_budget_pool: Option<sqlx::PgPool>,
     /// Optional run id to associate with token usage records.
-    #[cfg(feature = "postgres")]
     run_id: Option<String>,
-    /// Optional runtime (DB-defined) tool registry — http/mcp/sql/script tools.
-    /// Tenant-scoped: tool definitions and execution are filtered by
-    /// `runtime_tenant_id` so an agent never sees another tenant's tools.
-    #[cfg(feature = "postgres")]
-    runtime_tool_registry: Option<Arc<ares_tools::runtime_registry::RuntimeToolRegistry>>,
-    /// The tenant whose runtime tools this agent may use. Required for runtime
-    /// tool visibility/execution; `None` disables runtime tools entirely.
-    #[cfg(feature = "postgres")]
-    runtime_tenant_id: Option<String>,
 }
 
 fn is_prebuilt_connector_tool(name: &str) -> bool {
@@ -186,20 +167,14 @@ impl ConfigurableAgent {
             provider_name,
             system_prompt,
             tool_registry,
-            tool_service: None,
+            tools: None,
+            cordis_ctx: None,
             allowed_tools,
             max_tool_iterations: config.max_tool_iterations,
             parallel_tools: config.parallel_tools,
             observability: None,
             fallback_llms: Vec::new(),
-            #[cfg(feature = "postgres")]
-            token_budget_pool: None,
-            #[cfg(feature = "postgres")]
             run_id: None,
-            #[cfg(feature = "postgres")]
-            runtime_tool_registry: None,
-            #[cfg(feature = "postgres")]
-            runtime_tenant_id: None,
         }
     }
 
@@ -225,20 +200,14 @@ impl ConfigurableAgent {
             provider_name: "unknown".to_string(),
             system_prompt,
             tool_registry,
-            tool_service: None,
+            tools: None,
+            cordis_ctx: None,
             allowed_tools,
             max_tool_iterations,
             parallel_tools,
             observability: None,
             fallback_llms: Vec::new(),
-            #[cfg(feature = "postgres")]
-            token_budget_pool: None,
-            #[cfg(feature = "postgres")]
             run_id: None,
-            #[cfg(feature = "postgres")]
-            runtime_tool_registry: None,
-            #[cfg(feature = "postgres")]
-            runtime_tenant_id: None,
         }
     }
 
@@ -255,9 +224,9 @@ impl ConfigurableAgent {
         name: &str,
         config: &AgentConfig,
         llm: Box<dyn LLMClient>,
-        tool_service: Option<Arc<dyn ToolService>>,
+        _tool_service: Option<Arc<Tools>>,
     ) -> Self {
-        Self::new_with_provider_and_tool_service(name, config, llm, tool_service, config.model.clone())
+        Self::new_with_provider_and_tool_service(name, config, llm, None, config.model.clone())
     }
 
     /// Create an agent with provider metadata and a unified ToolService.
@@ -265,7 +234,7 @@ impl ConfigurableAgent {
         name: &str,
         config: &AgentConfig,
         llm: Box<dyn LLMClient>,
-        tool_service: Option<Arc<dyn ToolService>>,
+        _tool_service: Option<Arc<Tools>>,
         provider_name: String,
     ) -> Self {
         let (agent_type, system_prompt, allowed_tools) =
@@ -277,20 +246,14 @@ impl ConfigurableAgent {
             provider_name,
             system_prompt,
             tool_registry: None,
-            tool_service,
+            tools: None,
+            cordis_ctx: None,
             allowed_tools,
             max_tool_iterations: config.max_tool_iterations,
             parallel_tools: config.parallel_tools,
             observability: None,
             fallback_llms: Vec::new(),
-            #[cfg(feature = "postgres")]
-            token_budget_pool: None,
-            #[cfg(feature = "postgres")]
             run_id: None,
-            #[cfg(feature = "postgres")]
-            runtime_tool_registry: None,
-            #[cfg(feature = "postgres")]
-            runtime_tenant_id: None,
         }
     }
 
@@ -301,7 +264,7 @@ impl ConfigurableAgent {
         agent_type: AgentType,
         llm: Box<dyn LLMClient>,
         system_prompt: String,
-        tool_service: Option<Arc<dyn ToolService>>,
+        _tool_service: Option<Arc<Tools>>,
         allowed_tools: Option<Vec<String>>,
         max_tool_iterations: usize,
         parallel_tools: bool,
@@ -313,20 +276,14 @@ impl ConfigurableAgent {
             provider_name: "unknown".to_string(),
             system_prompt,
             tool_registry: None,
-            tool_service,
+            tools: None,
+            cordis_ctx: None,
             allowed_tools,
             max_tool_iterations,
             parallel_tools,
             observability: None,
             fallback_llms: Vec::new(),
-            #[cfg(feature = "postgres")]
-            token_budget_pool: None,
-            #[cfg(feature = "postgres")]
             run_id: None,
-            #[cfg(feature = "postgres")]
-            runtime_tool_registry: None,
-            #[cfg(feature = "postgres")]
-            runtime_tenant_id: None,
         }
     }
 
@@ -339,10 +296,12 @@ impl ConfigurableAgent {
         config: &AgentConfig,
         llm: Box<dyn LLMClient>,
     ) -> Self {
-        let tool_service = ctx
-            .get::<ares_tools::UnifiedToolService>()
-            .map(|svc| svc as Arc<dyn ToolService>);
-        Self::new_with_tool_service(name, config, llm, tool_service)
+        let mut agent = Self::new_with_tool_service(name, config, llm, None);
+        if let Some(tools) = ctx.get::<Tools>() {
+            agent.set_tools(tools);
+        }
+        agent.bind_request_ctx(ctx.clone());
+        agent
     }
 
     /// Same as `new_from_context` but with explicit provider name.
@@ -353,10 +312,12 @@ impl ConfigurableAgent {
         llm: Box<dyn LLMClient>,
         provider_name: String,
     ) -> Self {
-        let tool_service = ctx
-            .get::<ares_tools::UnifiedToolService>()
-            .map(|svc| svc as Arc<dyn ToolService>);
-        Self::new_with_provider_and_tool_service(name, config, llm, tool_service, provider_name)
+        let mut agent = Self::new_with_provider_and_tool_service(name, config, llm, None, provider_name);
+        if let Some(tools) = ctx.get::<Tools>() {
+            agent.set_tools(tools);
+        }
+        agent.bind_request_ctx(ctx.clone());
+        agent
     }
 
     /// Convert agent name to AgentType
@@ -421,13 +382,7 @@ Handle employee info, policies, and benefits."#
         if self.tool_registry.is_some() {
             return true;
         }
-        // Cordis shim: unified service also counts as tools available.
-        // Future: `ctx.get::<dyn ToolService>().is_some()` will be the check.
-        if self.tool_service.is_some() {
-            return true;
-        }
-        #[cfg(feature = "postgres")]
-        if self.runtime_tool_registry.is_some() && self.runtime_tenant_id.is_some() {
+        if self.tools.is_some() {
             return true;
         }
         false
@@ -438,33 +393,18 @@ Handle employee info, policies, and benefits."#
         self.tool_registry.as_ref()
     }
 
-    /// Inject unified `ToolService` (Cordis DI shim).
-    ///
-    /// Stored alongside `tool_registry` for one commit to keep `cargo check`
-    /// green. Next migration: handlers will `ctx.get::<dyn ToolService>()` or
-    /// `ctx.get::<UnifiedToolService>()` (via `ares_cordis_core::Context::provide`
-    /// / `Context::get`) instead of constructing `Arc<ToolRegistry>` directly.
-    /// See `ares_tools::ToolService` (re-exported as `crate::execution::ToolService`).
-    /// Accepts `Arc<dyn ToolService>`; callers with a concrete
-    /// `UnifiedToolService` can coerce via `svc as Arc<dyn ToolService>`.
-    pub fn inject_tool_service(&mut self, svc: Arc<dyn ToolService>) {
-        self.tool_service = Some(svc);
+    /// Store the unified `Tools` capability used for list/resolve/dispatch.
+    pub fn set_tools(&mut self, tools: Arc<Tools>) {
+        self.tools = Some(tools);
     }
 
-    /// Inject a concrete `UnifiedToolService` (deprecated shim kept for one
-    /// commit so existing `Arc<UnifiedToolService>` call sites still compile).
-    /// Prefer `inject_tool_service` with `Arc<dyn ToolService>`.
-    #[deprecated(note = "use inject_tool_service with Arc<dyn ToolService>")]
-    pub fn inject_unified_tool_service(&mut self, svc: Arc<ares_tools::UnifiedToolService>) {
-        self.tool_service = Some(svc as Arc<dyn ToolService>);
-    }
-
-    /// Get the unified tool service (if injected via `inject_tool_service`).
-    ///
-    /// Future path: `ctx.get::<dyn ToolService>()` / `ctx.get::<UnifiedToolService>()`
-    /// will replace this accessor. Keep both fields for one commit.
-    pub fn tool_service(&self) -> Option<&Arc<dyn ToolService>> {
-        self.tool_service.as_ref()
+    /// Bind the request Cordis context so tool isolate labels and
+    /// `ExternalContext` are visible during `execute`.
+    pub fn bind_request_ctx(&mut self, ctx: Arc<Context>) {
+        if let Some(tools) = ctx.get::<Tools>() {
+            self.tools = Some(tools);
+        }
+        self.cordis_ctx = Some(ctx);
     }
 
     /// Get the list of allowed tool names for this agent.
@@ -506,80 +446,18 @@ Handle employee info, policies, and benefits."#
             .collect();
     }
 
-    /// Attach a DB pool for token-budget tracking.
-    #[cfg(feature = "postgres")]
-    pub fn set_token_budget_pool(&mut self, pool: sqlx::PgPool) {
-        self.token_budget_pool = Some(pool);
-    }
-
     /// Set the run id to associate with token usage records.
-    #[cfg(feature = "postgres")]
     pub fn set_run_id(&mut self, run_id: String) {
         self.run_id = Some(run_id);
     }
 
-    /// Wire in the runtime (DB-defined) tool registry, scoped to `tenant_id`.
-    ///
-    /// After this call the agent can see and execute the tenant's runtime
-    /// `http`/`mcp`/`sql`/`script` tools whose names are in `allowed_tools`.
-    /// All visibility and execution is filtered by `tenant_id`, so the agent
-    /// can never reach another tenant's tools.
-    #[cfg(feature = "postgres")]
-    pub(crate) fn set_runtime_tools(
-        &mut self,
-        registry: Arc<ares_tools::runtime_registry::RuntimeToolRegistry>,
-        tenant_id: String,
-    ) {
-        self.runtime_tool_registry = Some(registry);
-        self.runtime_tenant_id = Some(tenant_id);
-    }
-
-    #[cfg(not(feature = "postgres"))]
-    /// Stub when `postgres` feature is disabled — no-op.
-    /// Cordis P1: `PostgresService::check()` (i.e. `cfg!(feature = "postgres")`) is the runtime gate.
-    /// `set_runtime_tools_from_ctx` is the public API; this crate-private method exists in both
-    /// builds so the from_ctx wrapper compiles without `#[cfg]`.
-    /// Uses `Arc<()>` to avoid depending on `RuntimeToolRegistry` which is `#[cfg(any(postgres, test))]` in `ares-tools`.
-    pub(crate) fn set_runtime_tools(&mut self, _registry: Arc<()>, _tenant_id: String) {}
-
-    fn runtime_tenant_from_ctx(ctx: &Arc<Context>) -> Option<String> {
-        #[cfg(feature = "postgres")]
-        {
-            let id = crate::resolver::user_id_from_ctx(ctx, "");
-            if id.is_empty() {
-                None
-            } else {
-                Some(id)
-            }
-        }
-        #[cfg(not(feature = "postgres"))]
-        {
-            ctx.get::<ares_types::models::TenantContext>()
-                .map(|tc| tc.tenant_id.clone())
-                .filter(|s| !s.is_empty())
-        }
-    }
-
-    #[cfg(feature = "postgres")]
-    pub fn set_runtime_tools_from_ctx(
-        &mut self,
-        registry: Arc<ares_tools::runtime_registry::RuntimeToolRegistry>,
-        ctx: &Arc<Context>,
-    ) {
-        if let Some(tenant_id) = Self::runtime_tenant_from_ctx(ctx) {
-            self.set_runtime_tools(registry, tenant_id);
-        }
-    }
-
-    #[cfg(not(feature = "postgres"))]
-    pub fn set_runtime_tools_from_ctx(&mut self, _registry: Arc<()>, _ctx: &Arc<Context>) {}
-
-    /// Pre-flight check: reject the call if the tenant has already exhausted
-    /// their token budget.
-    #[cfg(feature = "postgres")]
     async fn preflight_budget_check(&self, tenant_id: &str) -> Result<()> {
-        if let Some(pool) = &self.token_budget_pool {
-            let store = ares_db::token_budgets::TokenBudgetStore::new(pool);
+        let Some(ctx) = self.cordis_ctx.as_ref() else {
+            return Ok(());
+        };
+        #[cfg(feature = "postgres")]
+        if let Some(db) = ctx.get::<ares_store::TenantDb>() {
+            let store = ares_store::token_budgets::TokenBudgetStore::new(db.pool());
             let status = store.check_budget(tenant_id).await?;
             if status.would_exceed {
                 return Err(AppError::RateLimited(format!(
@@ -591,16 +469,18 @@ Handle employee info, policies, and benefits."#
         Ok(())
     }
 
-    /// Record actual token usage and log alerts when thresholds are crossed.
-    #[cfg(feature = "postgres")]
     async fn record_and_check_budget(
         &self,
         tenant_id: &str,
         prompt_tokens: i64,
         completion_tokens: i64,
     ) -> Result<()> {
-        if let Some(pool) = &self.token_budget_pool {
-            let store = ares_db::token_budgets::TokenBudgetStore::new(pool);
+        let Some(ctx) = self.cordis_ctx.as_ref() else {
+            return Ok(());
+        };
+        #[cfg(feature = "postgres")]
+        if let Some(db) = ctx.get::<ares_store::TenantDb>() {
+            let store = ares_store::token_budgets::TokenBudgetStore::new(db.pool());
             store
                 .record_usage(
                     tenant_id,
@@ -759,40 +639,11 @@ Handle employee info, policies, and benefits."#
             _ => Vec::new(),
         };
 
-        // Append runtime (DB-defined) tools the agent is allowed to use,
-        // scoped to its tenant. Built-in tools take precedence on name clashes.
-        #[cfg(feature = "postgres")]
-        if let (Some(rt), Some(tid), Some(allowed)) = (
-            &self.runtime_tool_registry,
-            &self.runtime_tenant_id,
-            &self.allowed_tools,
-        ) {
+        if let (Some(tools), Some(ctx), Some(allowed)) =
+            (&self.tools, &self.cordis_ctx, &self.allowed_tools)
+        {
             let existing: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
-            for def in rt.get_tool_definitions_for_tenant(Some(tid)) {
-                if allowed.iter().any(|a| a == &def.name) && !existing.contains(&def.name) {
-                    defs.push(def);
-                }
-            }
-        }
-
-        // Cordis Phase 5: also merge tools visible via unified `ToolService`
-        // (precedence: tenant runtime → fleet runtime → MCP bridge → static).
-        // Keep the existing `tool_registry` / `runtime_tool_registry` paths for
-        // one commit alongside the new `ToolService` path so `cargo check`
-        // stays green while handlers migrate to `ctx.get::<dyn ToolService>()`.
-        if let (Some(svc), Some(allowed)) = (&self.tool_service, &self.allowed_tools) {
-            let tid = {
-                #[cfg(feature = "postgres")]
-                {
-                    self.runtime_tenant_id.clone()
-                }
-                #[cfg(not(feature = "postgres"))]
-                {
-                    None::<String>
-                }
-            };
-            let existing: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
-            for def in svc.list(tid) {
+            for def in tools.list(ctx) {
                 if allowed.iter().any(|a| a == &def.name) && !existing.contains(&def.name) {
                     defs.push(def);
                 }
@@ -820,30 +671,8 @@ Handle employee info, policies, and benefits."#
         if builtin {
             return true;
         }
-        // A runtime tool counts as usable only if it is visible to this agent's
-        // tenant (tenant-scoped lookup — never cross-tenant).
-        #[cfg(feature = "postgres")]
-        if let (Some(rt), Some(tid)) = (&self.runtime_tool_registry, &self.runtime_tenant_id) {
-            if rt.get_for_tenant(tool_name, Some(tid)).is_some() {
-                return true;
-            }
-        }
-        // Unified `ToolService` probe — keeps both `runtime_tool_registry`
-        // and `ctx.get::<dyn ToolService>().resolve(name, tenant)` paths for
-        // one commit so existing `get_for_tenant` shim still works while
-        // new code migrates to `ToolService::resolve`.
-        if let Some(svc) = &self.tool_service {
-            let tid = {
-                #[cfg(feature = "postgres")]
-                {
-                    self.runtime_tenant_id.clone()
-                }
-                #[cfg(not(feature = "postgres"))]
-                {
-                    None::<String>
-                }
-            };
-            if svc.resolve(tool_name, tid).is_some() {
+        if let (Some(tools), Some(ctx)) = (&self.tools, &self.cordis_ctx) {
+            if tools.resolve(ctx, tool_name).is_some() {
                 return true;
             }
         }
@@ -877,30 +706,22 @@ Handle employee info, policies, and benefits."#
         }
         map.insert(
             "tenant_id".to_string(),
-            serde_json::Value::String(tenant_id.to_string()),
+            serde_json::Value::String(tenant_id),
         );
         Ok(args)
     }
 
-    fn connector_tenant_id(&self) -> Option<&str> {
-        #[cfg(feature = "postgres")]
-        {
-            self.runtime_tenant_id.as_deref()
-        }
-        #[cfg(not(feature = "postgres"))]
-        {
+    fn connector_tenant_id(&self) -> Option<String> {
+        let ctx = self.cordis_ctx.as_ref()?;
+        let id = crate::user_id_from_ctx(ctx, "");
+        if id.is_empty() {
             None
+        } else {
+            Some(id)
         }
     }
 
-    /// Execute a single tool call, routing to the correct registry.
-    ///
-    /// Built-in tools (in-process `ToolRegistry`) are tried first. If the tool
-    /// is not built-in, it is dispatched via the unified `ToolService`
-    /// (`resolve` + `execute`) when available, otherwise via the tenant-scoped
-    /// runtime registry (`get_for_tenant`) — the latter is kept as a
-    /// deprecated shim for one commit so both paths compile while handlers
-    /// migrate to `ctx.get::<dyn ToolService>().resolve(name, tenant)`.
+    /// Execute a single tool call. Built-in `ToolRegistry` first, then `Tools::resolve(ctx, name)`.
     async fn dispatch_tool(
         &self,
         name: &str,
@@ -912,31 +733,9 @@ Handle employee info, policies, and benefits."#
                 return reg.execute(name, args).await;
             }
         }
-        // Prefer unified `ToolService` (tenant runtime → fleet → MCP → static).
-        // Keep both `tool_service.resolve` and `runtime_tool_registry.get_for_tenant`
-        // for one commit — do not break `cargo check` while `RealToolService` keeps
-        // the deprecated `get_for_tenant` shim in `runtime_registry.rs`.
-        if let Some(svc) = &self.tool_service {
-            let tid = {
-                #[cfg(feature = "postgres")]
-                {
-                    self.runtime_tenant_id.clone()
-                }
-                #[cfg(not(feature = "postgres"))]
-                {
-                    None::<String>
-                }
-            };
-            if let Some(tool) = svc.resolve(name, tid.clone()) {
+        if let (Some(tools), Some(ctx)) = (&self.tools, &self.cordis_ctx) {
+            if let Some(tool) = tools.resolve(ctx, name) {
                 let args = self.tenant_scoped_builtin_args(name, args)?;
-                return tool.execute(args).await;
-            }
-            // Also try the deprecated `get_for_tenant` shape via ToolService if needed:
-            // keep fallback to runtime registry below so both compile.
-        }
-        #[cfg(feature = "postgres")]
-        if let (Some(rt), Some(tid)) = (&self.runtime_tool_registry, &self.runtime_tenant_id) {
-            if let Some(tool) = rt.get_for_tenant(name, Some(tid)) {
                 return tool.execute(args).await;
             }
         }
@@ -947,13 +746,31 @@ Handle employee info, policies, and benefits."#
         if is_builtin {
             return "builtin".to_string();
         }
-        #[cfg(feature = "postgres")]
-        if let (Some(rt), Some(tid)) = (&self.runtime_tool_registry, &self.runtime_tenant_id) {
-            if let Some(tool_type) = rt.tool_type_for_tenant(name, Some(tid)) {
-                return tool_type;
+        let _ = name;
+        "runtime".to_string()
+    }
+
+    fn effective_system_prompt(&self) -> String {
+        if let Some(ctx) = &self.cordis_ctx {
+            if let Some(ext) = ctx.get::<crate::external_context::ExternalContext>() {
+                if !ext.0.is_empty() {
+                    tracing::debug!(
+                        agent = %self.name,
+                        ctx_len = ext.0.len(),
+                        "External context injected into system prompt"
+                    );
+                    return format!(
+                        "{}
+
+{}
+
+When referencing facts above, cite [E1], [E2] etc.",
+                        ext.0, self.system_prompt
+                    );
+                }
             }
         }
-        "runtime".to_string()
+        self.system_prompt.clone()
     }
 
     /// Execute the agent with tool-calling support (multi-turn loop).
@@ -976,19 +793,7 @@ Handle employee info, policies, and benefits."#
 
         // Inject external context if a ContextProvider is configured
         // OSS: NoOpContextProvider returns None. Managed: ErukaContextProvider returns knowledge states.
-        #[cfg(feature = "eruka-context")]
-        let effective_prompt = match crate::external_context::get_current_eruka_context() {
-            Some(eruka_ctx) if !eruka_ctx.is_empty() => {
-                tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "External context injected into system prompt");
-                format!(
-                    "{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.",
-                    eruka_ctx, self.system_prompt
-                )
-            }
-            _ => self.system_prompt.clone(),
-        };
-        #[cfg(not(feature = "eruka-context"))]
-        let effective_prompt = self.system_prompt.clone();
+        let effective_prompt = self.effective_system_prompt();
         messages.push(ConversationMessage::system(&effective_prompt));
 
         // Add recent conversation history (last 5 messages)
@@ -1010,7 +815,6 @@ Handle employee info, policies, and benefits."#
         let mut last_model_name = self.llm.model_name().to_string();
 
         for iteration in 0..self.max_tool_iterations {
-            #[cfg(feature = "postgres")]
             self.preflight_budget_check(&context.user_id).await?;
 
             let llm_start = std::time::Instant::now();
@@ -1022,7 +826,6 @@ Handle employee info, policies, and benefits."#
             last_model_name = attempt.model_name;
             let response = attempt.response;
 
-            #[cfg(feature = "postgres")]
             {
                 let prompt_tok = response
                     .usage
@@ -1147,7 +950,6 @@ Handle employee info, policies, and benefits."#
             "Max tool iterations ({}) reached — making final synthesis call",
             self.max_tool_iterations
         );
-        #[cfg(feature = "postgres")]
         self.preflight_budget_check(&context.user_id).await?;
 
         let synth_start = std::time::Instant::now();
@@ -1160,7 +962,6 @@ Handle employee info, policies, and benefits."#
             last_model_name = attempt.model_name.clone();
         }
 
-        #[cfg(feature = "postgres")]
         if let Ok(attempt) = &final_response {
             let prompt_tok = attempt
                 .response
@@ -1265,19 +1066,7 @@ impl Agent for ConfigurableAgent {
 
         // Build context with conversation history if available
         // Inject external context if a ContextProvider is configured
-        #[cfg(feature = "eruka-context")]
-        let effective_prompt = match crate::external_context::get_current_eruka_context() {
-            Some(eruka_ctx) if !eruka_ctx.is_empty() => {
-                tracing::debug!(agent = %self.name, ctx_len = eruka_ctx.len(), "External context injected into system prompt (simple path)");
-                format!(
-                    "{}\n\n{}\n\nWhen referencing facts above, cite [E1], [E2] etc.",
-                    eruka_ctx, self.system_prompt
-                )
-            }
-            _ => self.system_prompt.clone(),
-        };
-        #[cfg(not(feature = "eruka-context"))]
-        let effective_prompt = self.system_prompt.clone();
+        let effective_prompt = self.effective_system_prompt();
         let mut messages = vec![("system".to_string(), effective_prompt)];
 
         // Add user memory if available
@@ -1306,7 +1095,6 @@ impl Agent for ConfigurableAgent {
 
         messages.push(("user".to_string(), input.to_string()));
 
-        #[cfg(feature = "postgres")]
         self.preflight_budget_check(&context.user_id).await?;
 
         let llm_start = std::time::Instant::now();
@@ -1316,7 +1104,6 @@ impl Agent for ConfigurableAgent {
         let model_name = attempt.model_name;
         let llm_response = attempt.response;
 
-        #[cfg(feature = "postgres")]
         {
             let prompt_tok = llm_response
                 .usage
@@ -1377,9 +1164,9 @@ impl Agent for ConfigurableAgent {
 
 /// Convert a resolved [`UserAgent`] row into an [`AgentConfig`] for agent creation.
 ///
-/// Used by `AgentExecutionService` and handlers to bridge DB resolution → agent instantiation.
+/// Used by `Execute` and handlers to bridge DB resolution → agent instantiation.
 #[cfg(feature = "postgres")]
-pub fn agent_config_from_user_agent(user_agent: &ares_db::postgres::UserAgent) -> AgentConfig {
+pub fn agent_config_from_user_agent(user_agent: &ares_store::postgres::UserAgent) -> AgentConfig {
     AgentConfig {
         model: user_agent.model.clone(),
         system_prompt: user_agent.system_prompt.clone(),
@@ -2236,7 +2023,6 @@ mod tests {
         assert!(!is_prebuilt_connector_tool("calculator"));
     }
 
-    #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn dispatch_prebuilt_connector_injects_runtime_tenant() {
         let reg = make_registry_with_echo_tool("slack_send_message");
@@ -2250,7 +2036,8 @@ mod tests {
             3,
             false,
         );
-        agent.runtime_tenant_id = Some("tenant-a".to_string());
+        let ctx = crate::tenant_scope(&cordis::Context::new_root(), "tenant-a");
+        agent.bind_request_ctx(ctx);
 
         let result = agent
             .dispatch_tool("slack_send_message", serde_json::json!({"channel":"ops"}))
@@ -2261,7 +2048,6 @@ mod tests {
         assert_eq!(result["channel"], "ops");
     }
 
-    #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn dispatch_prebuilt_connector_rejects_cross_tenant_arg() {
         let reg = make_registry_with_echo_tool("slack_send_message");
@@ -2275,7 +2061,8 @@ mod tests {
             3,
             false,
         );
-        agent.runtime_tenant_id = Some("tenant-a".to_string());
+        let ctx = crate::tenant_scope(&cordis::Context::new_root(), "tenant-a");
+        agent.bind_request_ctx(ctx);
 
         let err = agent
             .dispatch_tool(
@@ -2622,32 +2409,24 @@ mod tests {
     }
 
     #[test]
-    fn runtime_tenant_from_ctx_reads_intercept() {
+    fn user_id_from_ctx_reads_intercept() {
         use ares_types::models::{TenantContext, TenantTier};
 
-        let root: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
-        assert_eq!(ConfigurableAgent::runtime_tenant_from_ctx(&root), None);
+        let root: Arc<cordis::Context> = cordis::Context::new_root();
+        assert_eq!(crate::user_id_from_ctx(&root, ""), "");
 
         let ctx = root.with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
-        assert_eq!(
-            ConfigurableAgent::runtime_tenant_from_ctx(&ctx).as_deref(),
-            Some("acme")
-        );
+        assert_eq!(crate::user_id_from_ctx(&ctx, "anon"), "acme");
     }
 
-    #[cfg(feature = "postgres")]
     #[test]
-    fn runtime_tenant_from_ctx_isolate_wins_over_intercept() {
+    fn user_id_from_ctx_isolate_wins_over_intercept() {
         use ares_types::models::{TenantContext, TenantTier};
 
-        let root: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let root: Arc<cordis::Context> = cordis::Context::new_root();
         let intercepted =
             root.with_intercept(TenantContext::new("from-intercept".into(), TenantTier::Pro));
-        let isolated =
-            intercepted.isolate::<crate::resolver::AgentResolverService>("tenant:from-isolate");
-        assert_eq!(
-            ConfigurableAgent::runtime_tenant_from_ctx(&isolated).as_deref(),
-            Some("from-isolate")
-        );
+        let isolated = crate::tenant_scope(&intercepted, "from-isolate");
+        assert_eq!(crate::user_id_from_ctx(&isolated, "anon"), "from-isolate");
     }
 }

@@ -431,9 +431,9 @@ impl PostgresClient {
     }
 }
 
-impl ares_cordis_core::Service for PostgresClient {
+impl cordis::Service for PostgresClient {
     fn name(&self) -> &'static str { "postgres_client" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }
@@ -524,8 +524,8 @@ mod tests {
 
     #[tokio::test]
     async fn postgres_client_readable_via_cordis() {
-        use ares_cordis_core::Service;
-        let ctx = ares_cordis_core::Context::new_root();
+        use cordis::Service;
+        let ctx = cordis::Context::new_root();
         let client = PostgresClient::new_memory().await.expect("memory");
         ctx.provide(client);
         let got = ctx.get::<PostgresClient>().expect("provided");

@@ -1,5 +1,5 @@
 [package]
-name = "ares-db"
+name = "ares-store"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,7 +20,7 @@ pgvector = ["postgres"]
 [dependencies]
 ares-types = { workspace = true }
 ares-config = { workspace = true }
-ares-cordis-core = { workspace = true }
+cordis = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

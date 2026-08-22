@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::api::handlers::deploy;
 use crate::api::handlers::loops;
-use ares_cordis_core::Context;
+use cordis::Context;
 
 /// Creates the main API router with all routes configured.
 ///
@@ -850,7 +850,7 @@ mod tests {
     };
     use crate::{
         AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
-        ProviderRegistry, ToolRegistry,
+        ProviderRegistry,
     };
     use axum::http::StatusCode;
     use axum_test::TestServer;
@@ -914,7 +914,7 @@ mod tests {
     }
 
     fn test_app_state() -> AppState {
-        let ctx = ares_cordis_core::Context::new_root();
+        let ctx = cordis::Context::new_root();
         let config = minimal_config();
         let config_manager = Arc::new(AresConfigManager::from_config(config));
         ctx.provide_arc(config_manager.clone());
@@ -1185,9 +1185,9 @@ mod tests {
     #[tokio::test]
     async fn cordis_service_lifecycle_end_to_end_over_http() {
         let ctx = Context::new_root();
-        ctx.provide(ares_cordis_core::ReflectService::new());
-        ctx.provide_arc(std::sync::Arc::new(ares_tools::ToolRegistry::new()));
-        ctx.provide(ares_cordis_core::EventsService::new());
+        ctx.provide(cordis::ReflectService::new());
+        ctx.provide(ares_tools::Tools::from_static(Vec::<std::sync::Arc<dyn ares_tools::Tool>>::new()));
+        ctx.provide(cordis::EventsService::new());
 
         let app = crate::api::handlers::admin::cordis::routes()
             .with_state(ctx.clone());
@@ -1201,13 +1201,13 @@ mod tests {
         let response = server.post("/cordis/services/events_service/retire").await;
         assert_eq!(response.status_code(), StatusCode::OK);
         assert_eq!(response.json::<serde_json::Value>()["retired"], serde_json::json!(true));
-        assert!(ctx.get::<ares_cordis_core::EventsService>().is_none());
+        assert!(ctx.get::<cordis::EventsService>().is_none());
 
         // Companion endpoint re-registers it so the cycle repeats.
         let response = server.post("/cordis/services/events_service/provide").await;
         assert_eq!(response.status_code(), StatusCode::OK);
         assert_eq!(response.json::<serde_json::Value>()["provided"], serde_json::json!(true));
-        assert!(ctx.get::<ares_cordis_core::EventsService>().is_some());
+        assert!(ctx.get::<cordis::EventsService>().is_some());
     }
 
     #[tokio::test]

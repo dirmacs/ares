@@ -24,7 +24,7 @@ use crate::{
 use axum::{extract::State, Json};
 use chrono::Utc;
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -144,7 +144,7 @@ async fn construct_embedding_service() -> Result<Arc<EmbeddingService>> {
 /// Construction (model download) happens on first RAG request, not at boot.
 /// Context is the singleton; there is no process-global cache.
 pub async fn embedding_service_from_ctx(
-    ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    ctx: &std::sync::Arc<cordis::Context>,
 ) -> Result<Arc<EmbeddingService>> {
     if let Some(existing) = ctx.get::<EmbeddingService>() {
         return Ok(existing);
@@ -157,7 +157,7 @@ pub async fn embedding_service_from_ctx(
 /// Resolve AresVectorStore from Context, constructing on miss.
 /// Context is the singleton; there is no process-global cache.
 pub async fn vector_store_from_ctx(
-    ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    ctx: &std::sync::Arc<cordis::Context>,
     vector_path: &str,
 ) -> Result<Arc<AresVectorStore>> {
     if let Some(existing) = ctx.get::<AresVectorStore>() {
@@ -731,26 +731,26 @@ mod tests {
 
     #[tokio::test]
     async fn embedding_service_from_ctx_none_without_provide() {
-        let ctx = ares_cordis_core::Context::new_root();
+        let ctx = cordis::Context::new_root();
         // Reuse is ctx.get / provide_arc; do not construct here (model init is heavy).
         assert!(ctx.get::<EmbeddingService>().is_none());
     }
 
     #[tokio::test]
     async fn vector_store_from_ctx_none_without_provide() {
-        let ctx = ares_cordis_core::Context::new_root();
+        let ctx = cordis::Context::new_root();
         assert!(ctx.get::<AresVectorStore>().is_none());
     }
 
     #[test]
     fn ares_vector_store_impls_cordis_service() {
-        fn assert_service<T: ares_cordis_core::Service>() {}
+        fn assert_service<T: cordis::Service>() {}
         assert_service::<AresVectorStore>();
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn embedding_service_from_ctx_reuses_provided_instance() {
-        let ctx = ares_cordis_core::Context::new_root();
+        let ctx = cordis::Context::new_root();
         let service = Arc::new(EmbeddingService::with_default_model().expect("default model"));
         ctx.provide_arc(service.clone());
         let got = embedding_service_from_ctx(&ctx).await.expect("from ctx");
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn embedding_service_impls_cordis_service() {
-        fn assert_service<T: ares_cordis_core::Service>() {}
+        fn assert_service<T: cordis::Service>() {}
         assert_service::<EmbeddingService>();
     }
 }

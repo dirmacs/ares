@@ -2,7 +2,7 @@
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use ::cordis::Context;
 use super::*;
 
 
@@ -17,7 +17,7 @@ use sha2::Digest;
 
 pub async fn list_runtime_tools(
     State(ctx): State<Arc<Context>>,
-) -> Result<Json<Vec<ares_db::runtime_tools::RuntimeTool>>> {
+) -> Result<Json<Vec<ares_store::runtime_tools::RuntimeTool>>> {
     let __pool_1 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RuntimeToolStore::new(&__pool_1);
     let tools = store.get_all().await?;
@@ -28,7 +28,7 @@ pub async fn list_runtime_tools(
 pub async fn get_runtime_tool(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
-) -> Result<Json<ares_db::runtime_tools::RuntimeTool>> {
+) -> Result<Json<ares_store::runtime_tools::RuntimeTool>> {
     let __pool_2 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RuntimeToolStore::new(&__pool_2);
     let tool = store
@@ -248,7 +248,7 @@ pub async fn test_runtime_tool(
 pub async fn list_runtime_tool_versions(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<ares_db::runtime_tools::RuntimeToolVersion>>> {
+) -> Result<Json<Vec<ares_store::runtime_tools::RuntimeToolVersion>>> {
     let __pool_7 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RuntimeToolStore::new(&__pool_7);
     // Verify the tool exists before returning versions.
@@ -344,6 +344,6 @@ pub fn routes() -> axum::Router<crate::AppState> {
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
-use ares_cordis_core::Service;
+use ::cordis::Service;
 pub struct AdminToolsService;
 impl Service for AdminToolsService {}

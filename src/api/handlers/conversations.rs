@@ -3,7 +3,7 @@
 //! This module provides CRUD operations for user conversations.
 
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 
 use crate::{
     auth::middleware::AuthUser,

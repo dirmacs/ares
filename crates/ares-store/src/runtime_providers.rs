@@ -8,7 +8,7 @@
 //!   `FleetProviderSecretsStore` and `RuntimeToolStore`).
 //! - JSONB columns bind directly to `serde_json::Value` via sqlx.
 //! - Timestamps stored as `BIGINT` (Unix epoch seconds), matching the rest of
-//!   the `ares-db` crate.
+//!   the `ares-store` crate.
 //! - All UUID columns are stored/transferred as `String`.
 
 use ares_types::types::{AppError, Result};

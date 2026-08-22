@@ -23,8 +23,12 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, args: Value) -> Result<Value>;
 }
 
-/// Registry for managing tools with configuration support
-pub struct ToolRegistry {
+/// Registry for managing tools with configuration support.
+///
+/// Not a Cordis Service. Handlers resolve tools through [`crate::Tools`]
+/// (`ctx.get::<Tools>()`, `ctx.isolate::<Tools>(tenant_id)`), not by
+/// providing this type on `Context`.
+pub(crate) struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
     configs: HashMap<String, ToolConfig>,
 }
@@ -162,22 +166,12 @@ impl ToolRegistry {
             ))),
         }
     }
-
-    // removed: unified via UnifiedToolService; call ctx.get::<dyn ToolService>().resolve
 }
 
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
     }
-}
-
-impl ares_cordis_core::Service for ToolRegistry {
-    fn name(&self) -> &'static str { "tool_registry" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
-        Box::pin(async { Ok(None) })
-    }
-    fn check(&self) -> bool { true }
 }
 
 #[cfg(test)]
@@ -607,9 +601,13 @@ description = "Calc tool"
 
 
     #[test]
-    fn tool_registry_readable_via_cordis_provide() {
-        let ctx = ares_cordis_core::Context::new_root();
-        ctx.provide(ToolRegistry::new());
-        assert!(ctx.get::<ToolRegistry>().is_some());
+    fn tools_readable_via_cordis_provide() {
+        let ctx = cordis::Context::new_root();
+        ctx.provide(crate::Tools::new(Arc::new(ToolRegistry::new())));
+        assert!(ctx.get::<crate::Tools>().is_some());
+        let isolated = ctx.isolate::<crate::Tools>("tenant:acme");
+        let tools = isolated.get::<crate::Tools>().expect("Tools on isolated ctx");
+        assert!(tools.list(&isolated).is_empty());
+        assert!(tools.resolve(&isolated, "missing").is_none());
     }
 }

@@ -13,7 +13,7 @@ use axum::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 
 /// Simulated S3 event payload.
 #[derive(Debug, Deserialize)]
@@ -47,7 +47,7 @@ pub async fn handle_document_upload(
 ) -> crate::types::Result<StatusCode> {
     verify_webhook_secret(&headers)?;
 
-    // Prefer TriggerService (Cordis DI) — owns DB + AgentExecutionService.
+    // Prefer TriggerService (Cordis DI) — owns DB + Execute.
     // Falls back to direct store + execute_triggered_agent if service absent (tests).
     if let Some(svc) = ctx.get::<crate::trigger_engine::TriggerService>() {
         svc.dispatch_document_upload(

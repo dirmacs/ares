@@ -38,9 +38,9 @@ Tests: `crates/ares-tools/src/rhai_tool.rs` 10 tests `cargo test -p ares-tools -
 
 ## Cordis bridge
 
-`crates/ares-cordis-core/src/rhai_service.rs` `#[cfg(feature="rhai")]` `RhaiService{engine Arc<Engine>, ast AST}` `impl Service { name/init/check via call_fn }` + `RhaiPlugin: Plugin<Config=RhaiServiceConfig, Provides=RhaiService>` `apply: ctx.provide(service)`.
+`crates/cordis/src/rhai_service.rs` `#[cfg(feature="rhai")]` `RhaiService{engine Arc<Engine>, ast AST}` `impl Service { name/init/check via call_fn }` + `RhaiPlugin: Plugin<Config=RhaiServiceConfig, Provides=RhaiService>` `apply: ctx.provide(service)`.
 
-Feature: `ares-cordis-core/rhai = ["dep:rhai"]` optional, default `inventory`. `cargo check --features rhai` and `cargo test --features rhai` 27 tests `hmd`.
+Feature: `cordis/rhai = ["dep:rhai"]` optional, default `inventory`. `cargo check --features rhai` and `cargo test --features rhai` 27 tests `hmd`.
 
 Loader: `Entry{plugin:"rhai:my_tool", config: Value::String(script)}`, `Loader::reconcile` hashes `script`, `Fiber::refresh` epoch `:uid` changes → `reload()` without `libloading`.
 

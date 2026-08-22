@@ -95,9 +95,9 @@ impl McpRegistry {
     }
 }
 
-impl ares_cordis_core::Service for McpRegistry {
+impl cordis::Service for McpRegistry {
     fn name(&self) -> &'static str { "mcp_registry" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }
@@ -553,8 +553,8 @@ timeout_secs = 10
 
     #[test]
     fn mcp_registry_readable_via_cordis() {
-        use ares_cordis_core::Service;
-        let ctx = std::sync::Arc::new(ares_cordis_core::Context::new_root());
+        use cordis::Service;
+        let ctx = std::sync::Arc::new(cordis::Context::new_root());
         ctx.provide(McpRegistry::new());
         let got = ctx.get::<McpRegistry>().expect("provided");
         assert_eq!(got.name(), "mcp_registry");

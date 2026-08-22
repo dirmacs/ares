@@ -218,13 +218,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "ares-agents"
+name = "ares-agent"
 version = "0.9.0"
 dependencies = [
  "ares-config",
- "ares-cordis-core",
- "ares-db",
+ "ares-cordis",
  "ares-llm",
+ "ares-store",
  "ares-tools",
  "ares-types",
  "async-trait",
@@ -250,7 +250,7 @@ version = "0.9.0"
 dependencies = [
  "aes-gcm",
  "arc-swap",
- "ares-cordis-core",
+ "ares-cordis",
  "ares-types",
  "hex",
  "notify",
@@ -271,7 +271,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ares-cordis-core"
+name = "ares-cordis"
 version = "0.9.0"
 dependencies = [
  "inventory",
@@ -290,48 +290,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "ares-db"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "ares-config",
- "ares-cordis-core",
- "ares-types",
- "ares-vector",
- "async-trait",
- "chromadb",
- "chrono",
- "chrono-tz",
- "cron",
- "futures",
- "hex",
- "lancedb",
- "libsql",
- "matches",
- "parking_lot",
- "pinecone-sdk",
- "qdrant-client",
- "rand 0.9.5",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "ares-llm"
 version = "0.9.0"
 dependencies = [
  "arc-swap",
  "ares-config",
- "ares-cordis-core",
- "ares-db",
+ "ares-cordis",
+ "ares-store",
  "ares-tools",
  "ares-types",
  "async-openai",
@@ -358,8 +323,8 @@ dependencies = [
 name = "ares-mcp"
 version = "0.9.0"
 dependencies = [
- "ares-cordis-core",
- "ares-db",
+ "ares-cordis",
+ "ares-store",
  "ares-types",
  "async-trait",
  "chrono",
@@ -383,7 +348,7 @@ dependencies = [
 name = "ares-rag"
 version = "0.9.0"
 dependencies = [
- "ares-cordis-core",
+ "ares-cordis",
  "ares-types",
  "base64 0.22.1",
  "fastembed",
@@ -407,13 +372,13 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "arc-swap",
- "ares-agents",
+ "ares-agent",
  "ares-config",
- "ares-cordis-core",
- "ares-db",
+ "ares-cordis",
  "ares-llm",
  "ares-mcp",
  "ares-rag",
+ "ares-store",
  "ares-tools",
  "ares-types",
  "ares-vector",
@@ -474,14 +439,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "ares-store"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "ares-config",
+ "ares-cordis",
+ "ares-types",
+ "ares-vector",
+ "async-trait",
+ "chromadb",
+ "chrono",
+ "chrono-tz",
+ "cron",
+ "futures",
+ "hex",
+ "lancedb",
+ "libsql",
+ "matches",
+ "parking_lot",
+ "pinecone-sdk",
+ "qdrant-client",
+ "rand 0.9.5",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ares-tools"
 version = "0.9.0"
 dependencies = [
  "arc-swap",
  "ares-config",
- "ares-cordis-core",
- "ares-db",
+ "ares-cordis",
  "ares-mcp",
+ "ares-store",
  "ares-types",
  "async-trait",
  "base64 0.22.1",
@@ -506,7 +506,7 @@ dependencies = [
 name = "ares-types"
 version = "0.9.0"
 dependencies = [
- "ares-cordis-core",
+ "ares-cordis",
  "axum 0.8.9",
  "chrono",
  "serde",

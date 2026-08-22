@@ -81,15 +81,31 @@ impl RegistryService {
                 )));
             }
         }
-        let provides = plugin.apply(ctx, config)?;
+        let fid = self.next_fiber_id();
+        let fiber = Arc::new(Fiber::new());
+        // The fiber that represents this registration is tracked from the
+        // moment it starts Loading so a later failure is observable as Failed
+        // (guarded withdrawal per Cordis). A failure keeps the fiber in the
+        // registry but never records a provider mapping.
+        fiber.set_state(crate::FiberState::Loading);
+        self.fibers.write().insert(fid, fiber.clone());
+        let provides = match plugin.apply(ctx, config) {
+            Ok(p) => p,
+            Err(e) => {
+                fiber.set_state(crate::FiberState::Failed {
+                    error: Some(e.to_string()),
+                });
+                return Err(e);
+            }
+        };
+        fiber.set_state(crate::FiberState::Active {
+            epoch: String::new(),
+        });
         // Insert the service into the context. The context tracks its own
         // version and undo on its fiber, while the registry tracks the fiber
         // that represents this registration.
         ctx.provide_arc(provides);
 
-        let fid = self.next_fiber_id();
-        let fiber = Arc::new(Fiber::new());
-        self.fibers.write().insert(fid, fiber);
         self.provided.write().insert(key, fid);
         Ok(fid)
     }
@@ -222,6 +238,63 @@ mod tests {
         // Service still retrievable through context.
         let svc = ctx.get::<FooService>().expect("service should be present");
         assert_eq!(svc.0, 1);
+    }
+
+    struct FailingPlugin;
+    impl Plugin for FailingPlugin {
+        type Config = ();
+        type Provides = FooService;
+        fn apply(
+            &self,
+            _ctx: &Arc<Context>,
+            _cfg: Self::Config,
+        ) -> Result<Arc<Self::Provides>, CordisError> {
+            Err(CordisError::Configuration("intentional failure".into()))
+        }
+    }
+
+    #[test]
+    fn failed_plugin_transitions_tracked_fiber_to_failed_with_error() {
+        use crate::FiberState;
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+        // A failing plugin is rejected, but the registry still tracked a fiber
+        // in the Failed state carrying the error.
+        let err = registry
+            .register(&ctx, FailingPlugin, ())
+            .expect_err("failing plugin should be rejected");
+        assert!(err.to_string().contains("intentional failure"));
+        let existing = registry.get_fiber(1).expect("failed fiber should be tracked");
+        match existing.state() {
+            FiberState::Failed { error } => {
+                assert!(error.as_deref().unwrap_or("").contains("intentional failure"));
+            }
+            other => panic!("expected Failed state, got {other:?}"),
+        }
+        // No service was provided for the failing plugin.
+        assert!(ctx.get::<FooService>().is_none());
+    }
+
+    #[test]
+    fn re_registered_good_plugin_moves_fiber_to_active() {
+        use crate::FiberState;
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+        let _ = registry
+            .register(&ctx, FailingPlugin, ())
+            .expect_err("failing plugin should be rejected");
+        let original = registry.get_fiber(1).unwrap();
+        assert!(matches!(original.state(), FiberState::Failed { .. }));
+
+        // A subsequent good registration (different type) is a new fiber, Active.
+        let fid_ok = registry
+            .register(&ctx, BarPlugin, ())
+            .expect("good plugin should register");
+        let ok = registry.get_fiber(fid_ok).expect("good fiber");
+        match ok.state() {
+            FiberState::Active { .. } => {}
+            other => panic!("expected Active state, got {other:?}"),
+        }
     }
 
     #[test]

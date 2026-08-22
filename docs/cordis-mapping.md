@@ -239,6 +239,8 @@ impl Fiber {
 - `CommittedView` is `HashMap<TypeId, Arc<dyn Any>>` snapshot taken at `Active` entry; used for rollback on failure.
 - `notify` (see §7) triggers `Fiber::refresh()` via BFS over dependent fibers.
 
+The fiber lifecycle adds `Loading` and `Failed`: `Loading` marks a fiber mid-instantiation and `Failed` records a terminal error from a plugin activation. A failed fiber remains observable via the registry so a loader or admin tool can report why a registration did not become `Active`; a later successful re-registration starts a fresh fiber that reaches `Active`.
+
 File placement: `crates/ares-cordis-core/src/fiber.rs` (spike) → later `crates/ares-context/src/fiber.rs`.
 
 ---
@@ -346,6 +348,16 @@ impl EventsService {
 
 Mapping from TS Harness (12 layers, ~60 packages), in Rust, one crate suffices; do not replicate layering ceremony. `EventsService` is a `Service` itself (`ctx.provide(EventsService::new())`), so any fiber can `ctx.get::<EventsService>().unwrap().on(...)`.
 
+### Dispatcher parity (shipped)
+
+The `dispatch` implementation follows the five modes exactly:
+
+- `Emit`: every handler is spawned and not awaited (fire-and-forget); `dispatch` returns immediately after broadcasting the event and payload on the bus. A caller that needs completion should listen on the bus or use a oneshot channel, not await this.
+- `Parallel`: handlers run concurrently via `tokio::task::JoinSet`; the first error observed is propagated (a joined panic surfaces as `CordisError::Fiber`).
+- `Serial`: the payload is threaded through each handler in order; a handler error aborts the chain and propagates.
+- `Bail`: stops at the first handler that returns a non-null result and returns that value without running later handlers; a null result means not bailing and the chain continues with the original payload.
+- `Waterfall`: each handler transforms the payload and passes the result to the next; a handler short-circuits by returning an object whose `waterfall_stop` field is `true`. This is the Rust static-dispatch analogue of the TS `next()` closure: instead of passing a `next` function, a handler opts out by returning the sentinel.
+
 ---
 
 ## 9. Loader & config reconciliation (declarative)
@@ -377,6 +389,16 @@ impl Loader {
 ```
 
 Persistence: `config/entries.json` (or `config/cordis-entries.toon`) separate from `ares.toml` symlink (`/opt/ares-config/ares.toml`), do not conflict (see Assumptions in plan). Reuse `toon-format` serialization.
+
+### Loader journal (shipped)
+
+`LoaderJournal` makes the `UpdateConfig` and `Retire` arms real. It stores a `JournalRecord` per entry: the plugin label owning the entry, the last applied config, the live fiber id when known, and a monotonically increasing generation counter (every mutation bumps it). It is the single source of truth for "is this entry live, with which fiber, at what config/version".
+
+- `Loader::instantiate` and the `RebuildFiber` arm call `journal.upsert(id, plugin, config, Some(fid))` after a successful factory invocation.
+- `UpdateConfig` reads the recorded fiber id, resolves it via `RegistryService::get_fiber`, and calls `Fiber::update` when a live fiber is known (running `block_in_place` on a multi-thread runtime, journal-only on a current-thread runtime or no runtime); it then calls `journal.update_config(id, new_config, recorded)`, bumping generation.
+- `Retire` calls `journal.retire(id)`, clearing the record.
+
+It is provided as a service with `ctx.provide(LoaderJournal::new())`, so `Context::get::<LoaderJournal>` returns the shared handle. When absent, `Loader::execute_action` and `Loader::instantiate` degrade to log-only.
 
 ---
 

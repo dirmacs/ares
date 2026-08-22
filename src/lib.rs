@@ -247,11 +247,15 @@ use std::sync::Arc;
 #[cfg(feature = "postgres")]
 use crate::auth::jwt::AuthService;
 
+/// Cordis context type. `AppState` is `Arc<Context>`; tests and callers
+/// construct a root via `Context::new_root()` then `provide` services.
+pub use ares_cordis_core::Context;
+
 #[cfg(not(feature = "postgres"))]
-pub type AppState = std::sync::Arc<ares_cordis_core::Context>;
+pub type AppState = std::sync::Arc<Context>;
 
 #[cfg(feature = "postgres")]
-pub type AppState = std::sync::Arc<ares_cordis_core::Context>;
+pub type AppState = std::sync::Arc<Context>;
 
 #[cfg(feature = "postgres")]
 pub type CordisAppState = AppState;

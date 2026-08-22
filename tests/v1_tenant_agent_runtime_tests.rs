@@ -23,8 +23,8 @@ use ares::{
         DatabaseConfig as TomlDatabaseConfig, DynamicConfigPaths, ModelConfig, ProviderConfig,
         RagConfig, ServerConfig as TomlServerConfig,
     },
-    AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
-    ProviderRegistry, ToolRegistry,
+    AgentRegistry, AppState, AresConfigManager, ConfigBasedLLMFactory, Context,
+    DynamicConfigManager, ProviderRegistry, ToolRegistry,
 };
 
 mod common;
@@ -163,7 +163,6 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
         billing: BillingConfig {
             model_pricing: HashMap::new(),
         },
-        #[cfg(feature = "skills")]
         skills: None,
     };
 
@@ -202,39 +201,62 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
 
     let db = Arc::new(db);
     let tenant_db = Arc::new(ares::db::TenantDb::new(db.clone()));
-    let state = AppState {
-        config_manager: config_manager.clone(),
-        db: db.clone(),
-        tenant_db: tenant_db.clone(),
-        llm_factory: llm_factory.clone(),
-        provider_registry: provider_registry.clone(),
-        agent_registry,
-        tool_registry: tool_registry.clone(),
-        auth_service: Arc::new(auth_service),
-        dynamic_config,
-        deploy_registry: ares::api::handlers::deploy::DeployRegistry::default(),
-        loop_registry: ares::api::handlers::loops::LoopRegistry::new(),
-        emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        context_provider: Arc::new(ares::agents::context_provider::NoOpContextProvider),
-        #[cfg(feature = "mcp")]
-        mcp_registry: None,
-        fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
-        runtime_tool_registry: Arc::new(ares::RuntimeToolRegistry::new(tenant_db.pool().clone())),
-        active_runs: Arc::new(ares::active_runs::ActiveRuns::new()),
-        skill_engine: Arc::new(ares::skill_engine::SkillEngine::new(
-            tenant_db.pool().clone(),
-            tool_registry,
-            Arc::new(ares::RuntimeToolRegistry::new(tenant_db.pool().clone())),
-            llm_factory,
-            config_manager,
-        )),
-    };
+    let auth_service = Arc::new(auth_service);
+    let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(tenant_db.pool().clone()));
+    let skill_engine = Arc::new(ares::skill_engine::SkillEngine::new(
+        tenant_db.pool().clone(),
+        tool_registry.clone(),
+        Arc::new(ares::RuntimeToolRegistry::new(tenant_db.pool().clone())),
+        llm_factory.clone(),
+        config_manager.clone(),
+    ));
+
+    let state: AppState = Context::new_root();
+    state.provide(ares::context_services::ConfigManagerService(config_manager.clone()));
+    state.provide(ares::context_services::DynamicConfigService(dynamic_config));
+    state.provide(ares::context_services::DbService(
+        db.clone() as std::sync::Arc<dyn ares::db::traits::DatabaseClient>,
+    ));
+    state.provide(ares::context_services::TenantDbService(tenant_db.clone()));
+    state.provide_arc(llm_factory.clone());
+    state.provide(ares::context_services::ProviderRegistryService(
+        provider_registry.clone(),
+    ));
+    state.provide_arc(agent_registry);
+    state.provide(ares::context_services::ToolRegistryService(
+        tool_registry.clone(),
+    ));
+    state.provide(ares::context_services::AuthServiceWrapper(auth_service.clone()));
+    #[cfg(feature = "mcp")]
+    state.provide(ares::context_services::McpRegistryService(None));
+    state.provide(ares::context_services::DeployRegistryService(
+        ares::api::handlers::deploy::DeployRegistry::default(),
+    ));
+    state.provide(ares::context_services::LoopRegistryService(
+        ares::api::handlers::loops::LoopRegistry::new(),
+    ));
+    state.provide(ares::context_services::EmergencyStopService(std::sync::Arc::new(
+        std::sync::atomic::AtomicBool::new(false),
+    )));
+    state.provide(ares::context_services::ContextProviderService(
+        std::sync::Arc::new(ares::agents::context_provider::NoOpContextProvider),
+    ));
+    state.provide(ares::context_services::FleetSecretsService(
+        ares_config::fleet_secrets::FleetSecrets::new(),
+    ));
+    state.provide(ares::context_services::RuntimeToolRegistryService(
+        runtime_tool_registry.clone(),
+    ));
+    state.provide(ares::context_services::ActiveRunsService(std::sync::Arc::new(
+        ares::active_runs::ActiveRuns::new(),
+    )));
+    state.provide(ares::context_services::SkillEngineService(skill_engine));
 
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))
         .nest(
             "/api",
-            ares::api::routes::create_router(state.auth_service.clone(), state.tenant_db.clone()),
+            ares::api::routes::create_router(auth_service.clone(), tenant_db.clone()),
         )
         .with_state(state);
 

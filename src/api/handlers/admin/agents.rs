@@ -398,7 +398,8 @@ pub async fn test_tenant_agent_handler(
         pool: __pool_25,
     });
     draft_agent.set_observability(obs.clone());
-    draft_agent.set_runtime_tools(ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), tenant_id.clone());
+    let ctx = ctx.isolate::<ares_agents::AgentResolverService>(&format!("tenant:{tenant_id}"));
+    draft_agent.set_runtime_tools_from_ctx(ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), &ctx);
     draft_agent.set_run_id(run_id.clone());
 
     ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {

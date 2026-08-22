@@ -249,6 +249,44 @@ pub async fn resolve_agent_for_tenant(
     })
 }
 
+/// Tenant id from Cordis isolate (AgentResolverService) then TenantContext intercept.
+pub fn tenant_id_from_agent_ctx(
+    ctx: &std::sync::Arc<ares_cordis_core::Context>,
+) -> Option<String> {
+    let id = crate::resolver::user_id_from_ctx(ctx, "");
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+pub async fn resolve_agent_from_ctx(
+    pool: &PgPool,
+    agent_registry: &AgentRegistry,
+    ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    agent_name: &str,
+    fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
+) -> Result<ResolvedAgent> {
+    let tenant_id = tenant_id_from_agent_ctx(ctx).ok_or_else(|| {
+        AppError::Auth("Missing tenant context".to_string())
+    })?;
+    resolve_agent_for_tenant(pool, agent_registry, &tenant_id, agent_name, fleet_secrets).await
+}
+
+pub async fn resolve_required_tenant_agent_from_ctx(
+    pool: &PgPool,
+    agent_registry: &AgentRegistry,
+    ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    agent_name: &str,
+    fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
+) -> Result<ResolvedAgent> {
+    let tenant_id = tenant_id_from_agent_ctx(ctx).ok_or_else(|| {
+        AppError::Auth("Missing tenant context".to_string())
+    })?;
+    resolve_required_tenant_agent(pool, agent_registry, &tenant_id, agent_name, fleet_secrets).await
+}
+
 pub async fn resolve_required_tenant_agent(
     pool: &PgPool,
     agent_registry: &AgentRegistry,
@@ -315,7 +353,7 @@ mod tests {
     use super::{
         agent_config_from_json, legacy_create_should_use_tenant_config,
         tenant_agent_disabled_error, tenant_agent_not_found_error, tenant_config_version,
-        AgentConfigSource,
+        tenant_id_from_agent_ctx, AgentConfigSource,
     };
     use ares_config::toml_config::AgentConfig;
     use ares_types::types::{AppError, Result as AresResult};
@@ -654,6 +692,35 @@ mod tests {
         assert!(err
             .to_string()
             .contains("'max_tool_iterations' must be a non-negative integer"));
+    }
+
+    #[test]
+    fn tenant_id_from_agent_ctx_reads_intercept() {
+        use ares_types::models::{TenantContext, TenantTier};
+
+        let root = ares_cordis_core::Context::new_root();
+        assert_eq!(tenant_id_from_agent_ctx(&root), None);
+
+        let ctx = root.with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
+        assert_eq!(
+            tenant_id_from_agent_ctx(&ctx).as_deref(),
+            Some("acme")
+        );
+    }
+
+    #[test]
+    fn tenant_id_from_agent_ctx_isolate_wins_over_intercept() {
+        use ares_types::models::{TenantContext, TenantTier};
+
+        let root = ares_cordis_core::Context::new_root();
+        let intercepted =
+            root.with_intercept(TenantContext::new("from-intercept".into(), TenantTier::Pro));
+        let isolated = intercepted
+            .isolate::<crate::resolver::AgentResolverService>("tenant:from-isolate");
+        assert_eq!(
+            tenant_id_from_agent_ctx(&isolated).as_deref(),
+            Some("from-isolate")
+        );
     }
 
     #[cfg(feature = "postgres")]

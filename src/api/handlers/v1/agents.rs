@@ -91,9 +91,9 @@ pub async fn run_agent(
     // Execute agent with timing
     let start = std::time::Instant::now();
     use crate::agents::Agent;
-    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
-        &tc.tenant_id,
+        &state_ctx,
         &name,
         &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
@@ -102,7 +102,7 @@ pub async fn run_agent(
     // Skill-based agent execution
     resolved_agent
         .agent
-        .set_runtime_tools(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), tc.tenant_id.clone());
+        .set_runtime_tools_from_ctx(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), &state_ctx);
 
     if let Some(config) = &resolved_agent.config {
         if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {

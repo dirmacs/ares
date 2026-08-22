@@ -541,6 +541,38 @@ Handle employee info, policies, and benefits."#
     /// Uses `Arc<()>` to avoid depending on `RuntimeToolRegistry` which is `#[cfg(any(postgres, test))]` in `ares-tools`.
     pub fn set_runtime_tools(&mut self, _registry: Arc<()>, _tenant_id: String) {}
 
+    fn runtime_tenant_from_ctx(ctx: &Arc<Context>) -> Option<String> {
+        #[cfg(feature = "postgres")]
+        {
+            let id = crate::resolver::user_id_from_ctx(ctx, "");
+            if id.is_empty() {
+                None
+            } else {
+                Some(id)
+            }
+        }
+        #[cfg(not(feature = "postgres"))]
+        {
+            ctx.get::<ares_types::models::TenantContext>()
+                .map(|tc| tc.tenant_id.clone())
+                .filter(|s| !s.is_empty())
+        }
+    }
+
+    #[cfg(feature = "postgres")]
+    pub fn set_runtime_tools_from_ctx(
+        &mut self,
+        registry: Arc<ares_tools::runtime_registry::RuntimeToolRegistry>,
+        ctx: &Arc<Context>,
+    ) {
+        if let Some(tenant_id) = Self::runtime_tenant_from_ctx(ctx) {
+            self.set_runtime_tools(registry, tenant_id);
+        }
+    }
+
+    #[cfg(not(feature = "postgres"))]
+    pub fn set_runtime_tools_from_ctx(&mut self, _registry: Arc<()>, _ctx: &Arc<Context>) {}
+
     /// Pre-flight check: reject the call if the tenant has already exhausted
     /// their token budget.
     #[cfg(feature = "postgres")]
@@ -2586,5 +2618,35 @@ mod tests {
         assert!(err.contains("fallback-0 failed"), "got: {err}");
         assert!(err.contains("fallback[1]"), "got: {err}");
         assert!(err.contains("fallback-1 failed"), "got: {err}");
+    }
+
+    #[test]
+    fn runtime_tenant_from_ctx_reads_intercept() {
+        use ares_types::models::{TenantContext, TenantTier};
+
+        let root: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        assert_eq!(ConfigurableAgent::runtime_tenant_from_ctx(&root), None);
+
+        let ctx = root.with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
+        assert_eq!(
+            ConfigurableAgent::runtime_tenant_from_ctx(&ctx).as_deref(),
+            Some("acme")
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn runtime_tenant_from_ctx_isolate_wins_over_intercept() {
+        use ares_types::models::{TenantContext, TenantTier};
+
+        let root: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let intercepted =
+            root.with_intercept(TenantContext::new("from-intercept".into(), TenantTier::Pro));
+        let isolated =
+            intercepted.isolate::<crate::resolver::AgentResolverService>("tenant:from-isolate");
+        assert_eq!(
+            ConfigurableAgent::runtime_tenant_from_ctx(&isolated).as_deref(),
+            Some("from-isolate")
+        );
     }
 }

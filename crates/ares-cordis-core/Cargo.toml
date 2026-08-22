@@ -9,9 +9,8 @@ publish = true
 description = "Cordis primitives for ARES: context, fiber, effect, and events. Leaf crate with no other ARES dependencies"
 
 [features]
-# HMR via libloading — deferred per docs/cordis-mapping.md §11, off by default.
-# When enabled, `hmr` module dlopens a .so and calls Plugin::apply via extern "C".
-# ABI fragility forces fallback to file-watch + full fiber reload (90% value).
+# HMR via libloading — off by default. Enables dlopen of plugin .so files
+# (same toolchain as the server) and retains them in HmrRegistry.
 hmr = ["dep:libloading"]
 inventory = ["dep:inventory"]
 linkme = ["dep:linkme"]

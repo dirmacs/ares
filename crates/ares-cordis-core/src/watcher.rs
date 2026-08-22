@@ -123,6 +123,16 @@ pub fn watch_many(
             // integration re-reads `EntryTree` / `DynamicConfigManager` before
             // notifying, then logs success.
             tracing::info!(path = %path.display(), tid = ?tid, "Cordis config change detected, notifying dependents");
+            #[cfg(feature = "hmr")]
+            match crate::hmr::apply_plugin_so_if_dylib(&ctx_clone, &path) {
+                Ok(true) => {
+                    tracing::info!(path = %path.display(), "HMR dylib applied via libloading");
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::error!(error = %e, path = %path.display(), "HMR dylib apply failed");
+                }
+            }
             // Ensure reflect knows ctx for BFS async refresh (spawned internally)
             reflect_clone.set_context(&ctx_clone);
             reflect_clone.notify(tid);

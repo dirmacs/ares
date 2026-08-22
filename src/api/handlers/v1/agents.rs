@@ -31,6 +31,8 @@ pub async fn list_agents(
     Query(q): Query<PaginationQuery>,
 ) -> Result<Json<Paginated<V1Agent>>> {
     let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
     let page = normalize_page(q.page);
     let per_page = normalize_per_page(q.per_page, 20);
 
@@ -47,6 +49,8 @@ pub async fn get_agent(
     Path(name): Path<String>,
 ) -> Result<Json<V1Agent>> {
     let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
     let agent =
         tenant_agents::get_tenant_agent(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tc.tenant_id, &name).await?;
     Ok(Json(V1Agent::from(agent)))
@@ -60,6 +64,8 @@ pub async fn run_agent(
     Json(input): Json<serde_json::Value>,
 ) -> Result<Response> {
     let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
 
     // Emergency stop
     if state_ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
@@ -514,6 +520,8 @@ pub async fn list_agent_runs(
     Query(q): Query<PaginationQuery>,
 ) -> Result<Json<Paginated<V1AgentRun>>> {
     let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
     let page = normalize_page(q.page);
     let per_page = normalize_per_page(q.per_page, 25);
     let offset = list_runs_offset(page, per_page);
@@ -544,6 +552,8 @@ pub async fn get_usage(
     ctx: Option<Extension<TenantContext>>,
 ) -> Result<Json<V1Usage>> {
     let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
     let summary = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.get_usage_summary(&tc.tenant_id).await?;
 
     let now = Utc::now();
@@ -571,6 +581,8 @@ pub async fn list_api_keys(
     ctx: Option<Extension<TenantContext>>,
 ) -> Result<Json<Vec<V1ApiKey>>> {
     let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
     let keys = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.list_api_keys(&tc.tenant_id).await?;
 
     let response: Vec<V1ApiKey> = keys
@@ -596,6 +608,8 @@ pub async fn create_api_key(
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
     let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
     let (api_key, raw_key) = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
         .create_api_key(&tc.tenant_id, payload.name)
         .await?;
@@ -620,6 +634,8 @@ pub async fn revoke_api_key(
     Path(key_id): Path<String>,
 ) -> Result<StatusCode> {
     let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
     state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
         .revoke_api_key(&tc.tenant_id, &key_id)
         .await?;
@@ -633,6 +649,8 @@ pub async fn delete_tenant_data(
     ctx: Option<Extension<TenantContext>>,
 ) -> Result<Json<serde_json::Value>> {
     let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
     let tid = &tc.tenant_id;
 
     let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();

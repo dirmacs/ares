@@ -212,7 +212,10 @@ pub fn usage_response<T: Serialize>(
     response
 }
 
-pub(crate) async fn enforce_quota(state: &AppState, tc: &TenantContext) -> Result<()> {
+pub(crate) async fn enforce_quota(state: &AppState) -> Result<()> {
+    let tc = state.get::<TenantContext>().ok_or_else(|| {
+        AppError::Auth("Missing tenant context".to_string())
+    })?;
     if tc.tier == TenantTier::Enterprise {
         return Ok(());
     }
@@ -224,7 +227,7 @@ pub(crate) async fn enforce_quota(state: &AppState, tc: &TenantContext) -> Resul
         .get_daily_requests(&tc.tenant_id)
         .await
         .unwrap_or(0);
-    check_tenant_request_quota(tc, monthly, daily)
+    check_tenant_request_quota(&tc, monthly, daily)
 }
 
 
@@ -638,6 +641,26 @@ mod tests {
     fn check_tenant_request_quota_allows_under_limit() {
         let tc = TenantContext::new("free".into(), TenantTier::Free);
         check_tenant_request_quota(&tc, 0, 0).expect("under quota");
+    }
+
+    #[tokio::test]
+    async fn enforce_quota_reads_tenant_from_cordis_intercept() {
+        let root: AppState = ares_cordis_core::Context::new_root();
+        let tc = TenantContext::new("acme".into(), TenantTier::Enterprise);
+        let scoped = root.with_intercept(tc);
+        enforce_quota(&scoped)
+            .await
+            .expect("enterprise bypass via intercept");
+    }
+
+    #[tokio::test]
+    async fn enforce_quota_missing_intercept_is_auth_error() {
+        let root: AppState = ares_cordis_core::Context::new_root();
+        let err = enforce_quota(&root).await.unwrap_err();
+        match err {
+            AppError::Auth(msg) => assert!(msg.contains("Missing tenant context")),
+            other => panic!("expected Auth, got {other:?}"),
+        }
     }
 
     #[test]

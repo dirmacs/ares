@@ -55,11 +55,16 @@ fn inject_tenant_tool_service(
 pub async fn v1_chat(
     State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
+    usage: Option<Extension<crate::middleware::usage::UsageContext>>,
     Json(payload): Json<ChatRequest>,
 ) -> Result<axum::response::Response> {
     let tc = extract_tenant(ctx)?;
     // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
     let state_ctx = state_ctx.with_intercept(tc.clone());
+    let state_ctx = match usage {
+        Some(Extension(u)) => state_ctx.with_intercept(u),
+        None => state_ctx,
+    };
     // Per-request model override is implemented via ModelOverride + Cordis intercept
     // (see the DI path below: state_ctx.with_intercept(ModelOverride { .. })).
 
@@ -367,11 +372,16 @@ pub(crate) fn research_model_allowlist_decision(is_allowed: bool, model_name: &s
 pub async fn v1_research(
     State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
+    usage: Option<Extension<crate::middleware::usage::UsageContext>>,
     Json(payload): Json<ResearchRequest>,
 ) -> Result<Response> {
     let tc = extract_tenant(ctx)?;
     // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
     let state_ctx = state_ctx.with_intercept(tc.clone());
+    let state_ctx = match usage {
+        Some(Extension(u)) => state_ctx.with_intercept(u),
+        None => state_ctx,
+    };
     enforce_quota(&state_ctx).await?;
 
     if state_ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0

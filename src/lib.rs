@@ -186,6 +186,9 @@ pub mod llm;
 /// Model Context Protocol (MCP) server integration.
 #[cfg(feature = "mcp")]
 pub mod mcp { pub use ares_mcp::*; }
+/// In-process MCP [`AgentRunner`](ares_mcp::AgentRunner) over [`AgentExecutionService`](ares_agents::execution::AgentExecutionService).
+#[cfg(all(feature = "postgres", feature = "mcp"))]
+pub mod mcp_agent_runner;
 /// Conversation memory and context management.
 pub mod memory { pub use ares_agents::memory::*; }
 /// Middleware for API key auth and usage tracking.
@@ -215,6 +218,8 @@ pub mod context_services;
 
 // Re-export commonly used types
 pub use agents::{AgentRegistry, AgentRegistryBuilder};
+#[cfg(all(feature = "postgres", feature = "mcp"))]
+pub use mcp_agent_runner::ExecutionAgentRunner;
 #[cfg(feature = "postgres")]
 pub use db::tenants::TenantDb;
 #[cfg(feature = "postgres")]

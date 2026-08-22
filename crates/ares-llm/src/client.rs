@@ -1,5 +1,5 @@
 use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
-use ares_config::toml_config::{ModelConfig, ProviderConfig};
+use crate::config::{ModelConfig, ProviderConfig};
 use async_trait::async_trait;
 
 /// Generic LLM client trait for provider abstraction

@@ -42,7 +42,7 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 - Loop detection: 3-tier escalation (warn, force alternative, halt) for repetitive outputs
 - Crash recovery: checkpoint serialization, save agent state at each step, restore on restart
 - Service-based architecture (0.9.0): dependency injection via typed `Context`, services register with `ctx.plugin()` or `ctx.provide()`, handlers pull deps with `ctx.get::<T>()`
-- Unified execution: single `AgentExecutionService` handles resolve, create, and execute for all call sites (chat, v1 API, scheduler, pipeline, trigger)
+- Unified execution: single `Execute` handles resolve, create, and execute for all call sites (chat, v1 API, scheduler, pipeline, trigger)
 - Hot-reload: file-watch triggers automatic service refresh without restart
 - Circuit breaker: LLM provider health tracked per-endpoint with automatic failover
 
@@ -54,30 +54,15 @@ A.R.E.S can be used as a **standalone server** or as a **library** in your Rust 
 
 Add to your project (0.9.0):
 
-```bash
-cargo add ares-server --version 0.9.0
+```toml
+[dependencies]
+ares = "0.9"
 ```
 
 Basic usage:
 
 ```rust
-use ares::{Provider, LLMClient};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create an Ollama provider
-    let provider = Provider::Ollama {
-        base_url: "http://localhost:11434".to_string(),
-        model: "llama3.2:3b".to_string(),
-    };
-
-    // Create a client and generate a response
-    let client = provider.create_client().await?;
-    let response = client.generate("Hello, world!").await?;
-    println!("{}", response);
-
-    Ok(())
-}
+use ares::{Context, Execute, Tools, Llm};
 ```
 
 ### As a binary

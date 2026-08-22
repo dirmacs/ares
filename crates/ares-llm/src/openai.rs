@@ -1114,7 +1114,7 @@ mod tests {
 
     #[test]
     fn test_openai_provider_config_serde_roundtrip() {
-        use ares_config::toml_config::ProviderConfig;
+        use crate::ProviderConfig;
 
         let original = ProviderConfig::OpenAI {
             api_key_env: "OPENAI_API_KEY".to_string(),
@@ -1128,7 +1128,7 @@ mod tests {
 
     #[test]
     fn test_openai_from_config_missing_api_key_env() {
-        use ares_config::toml_config::ProviderConfig;
+        use crate::ProviderConfig;
         use crate::client::Provider;
 
         std::env::remove_var("TEST_OPENAI_MISSING_KEY_OPENAI_RS");
@@ -1545,7 +1545,7 @@ mod tests {
 
     #[test]
     fn test_openai_from_config_reads_api_key_from_env() {
-        use ares_config::toml_config::ProviderConfig;
+        use crate::ProviderConfig;
         use crate::client::Provider;
 
         std::env::set_var("TEST_OPENAI_KEY_PRESENT_OPENAI_RS", "sk-test-value");

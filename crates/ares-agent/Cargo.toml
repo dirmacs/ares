@@ -12,10 +12,14 @@ description = "Agent orchestration for ARES"
 default = []
 postgres = ["dep:sqlx", "dep:ares-store", "ares-store/postgres", "ares-llm/postgres", "ares-llm/ollama", "ares-tools/postgres"]
 eruka-context = []
+scheduler = ["postgres", "dep:cron"]
+pipeline = ["postgres"]
+trigger = ["postgres"]
+skills = ["dep:thulp-skill-files"]
+workflows = ["postgres"]
 
 [dependencies]
 ares-types = { workspace = true }
-ares-config = { workspace = true }
 ares-llm = { workspace = true, features = ["ollama"] }
 ares-tools = { workspace = true }
 ares-store = { workspace = true, optional = true }
@@ -31,6 +35,10 @@ toml = { workspace = true }
 dirs = { workspace = true }
 futures = "0.3.31"
 uuid = { workspace = true }
+cron = { version = "0.15", optional = true }
+parking_lot = { workspace = true }
+rust_decimal = { workspace = true }
+thulp-skill-files = { version = "0.3", optional = true }
 
 [dev-dependencies]
 wiremock = "0.6.5"

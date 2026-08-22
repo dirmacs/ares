@@ -12,10 +12,9 @@
 //! This allows TOML to override TOON configs for specific deployments.
 
 use crate::configurable::ConfigurableAgent;
-use ares_config::toml_config::{AgentConfig, AresConfig};
-use ares_config::toon_config::{DynamicConfigManager, ToonAgentConfig};
+use crate::{AgentConfig, ToonAgents};
 use ares_llm::ProviderRegistry;
-use ares_tools::registry::ToolRegistry;
+use ares_tools::Tools;
 use ares_types::types::{AgentType, AppError, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,10 +28,10 @@ pub struct AgentRegistry {
     configs: HashMap<String, AgentConfig>,
     /// Provider registry for creating LLM clients
     provider_registry: Arc<ProviderRegistry>,
-    /// Tool registry shared across agents
-    tool_registry: Arc<ToolRegistry>,
-    /// Optional TOON-based dynamic config manager for hot-reloadable agents
-    dynamic_config: Option<Arc<DynamicConfigManager>>,
+    /// Tools capability shared across agents
+    tools: Arc<Tools>,
+    /// Optional TOON-based dynamic agent lookup (Overlay keeps this live)
+    dynamic_config: Option<Arc<dyn ToonAgents>>,
 }
 
 fn intersect_agent_tools_with_tenant_allowlist(
@@ -49,46 +48,46 @@ fn intersect_agent_tools_with_tenant_allowlist(
 
 impl AgentRegistry {
     /// Create a new agent registry
-    pub fn new(provider_registry: Arc<ProviderRegistry>, tool_registry: Arc<ToolRegistry>) -> Self {
+    pub fn new(provider_registry: Arc<ProviderRegistry>, tools: Arc<Tools>) -> Self {
         Self {
             configs: HashMap::new(),
             provider_registry,
-            tool_registry,
+            tools,
             dynamic_config: None,
         }
     }
 
-    /// Create an agent registry from TOML configuration
+    /// Create an agent registry from TOML agent configs
     pub fn from_config(
-        config: &AresConfig,
+        agents: HashMap<String, AgentConfig>,
         provider_registry: Arc<ProviderRegistry>,
-        tool_registry: Arc<ToolRegistry>,
+        tools: Arc<Tools>,
     ) -> Self {
         Self {
-            configs: config.agents.clone(),
+            configs: agents,
             provider_registry,
-            tool_registry,
+            tools,
             dynamic_config: None,
         }
     }
 
     /// Create an agent registry with both TOML and TOON config support
     pub fn with_dynamic_config(
-        config: &AresConfig,
+        agents: HashMap<String, AgentConfig>,
         provider_registry: Arc<ProviderRegistry>,
-        tool_registry: Arc<ToolRegistry>,
-        dynamic_config: Arc<DynamicConfigManager>,
+        tools: Arc<Tools>,
+        dynamic_config: Arc<dyn ToonAgents>,
     ) -> Self {
         Self {
-            configs: config.agents.clone(),
+            configs: agents,
             provider_registry,
-            tool_registry,
+            tools,
             dynamic_config: Some(dynamic_config),
         }
     }
 
-    /// Set the dynamic config manager for TOON support
-    pub fn set_dynamic_config(&mut self, dynamic_config: Arc<DynamicConfigManager>) {
+    /// Set the dynamic TOON agent lookup
+    pub fn set_dynamic_config(&mut self, dynamic_config: Arc<dyn ToonAgents>) {
         self.dynamic_config = Some(dynamic_config);
     }
 
@@ -106,15 +105,12 @@ impl AgentRegistry {
 
     /// Get an agent configuration by name from TOML or TOON.
     pub fn get_config_any(&self, name: &str) -> Option<AgentConfig> {
-        self.configs.get(name).cloned().or_else(|| {
-            self.get_toon_config(name)
-                .map(|toon| Self::toon_to_agent_config(&toon))
-        })
+        self.configs.get(name).cloned().or_else(|| self.get_toon_config(name))
     }
 
-    /// Get TOON agent config by name
-    pub fn get_toon_config(&self, name: &str) -> Option<ToonAgentConfig> {
-        self.dynamic_config.as_ref().and_then(|dc| dc.agent(name))
+    /// Get TOON agent config by name (already converted to AgentConfig)
+    pub fn get_toon_config(&self, name: &str) -> Option<AgentConfig> {
+        self.dynamic_config.as_ref().and_then(|dc| dc.get(name))
     }
 
     /// Check if an agent exists in TOML config
@@ -126,7 +122,7 @@ impl AgentRegistry {
     fn has_toon_agent(&self, name: &str) -> bool {
         self.dynamic_config
             .as_ref()
-            .map(|dc| dc.agent(name).is_some())
+            .map(|dc| dc.get(name).is_some())
             .unwrap_or(false)
     }
 
@@ -136,7 +132,7 @@ impl AgentRegistry {
 
         // Add TOON agent names that aren't already in TOML
         if let Some(dc) = &self.dynamic_config {
-            for name in dc.agent_names() {
+            for name in dc.names() {
                 if !names.contains(&name) {
                     names.push(name);
                 }
@@ -149,41 +145,6 @@ impl AgentRegistry {
     /// Check if an agent exists (in either TOML or TOON config)
     pub fn has_agent(&self, name: &str) -> bool {
         self.has_toml_agent(name) || self.has_toon_agent(name)
-    }
-
-    /// Convert ToonAgentConfig to AgentConfig for unified handling
-    fn toon_to_agent_config(toon: &ToonAgentConfig) -> AgentConfig {
-        AgentConfig {
-            model: toon.model.clone(),
-            system_prompt: toon.system_prompt.clone(),
-            tools: toon.tools.clone(),
-            allowed_tools: toon.allowed_tools.clone(),
-            max_tool_iterations: toon.max_tool_iterations,
-            parallel_tools: toon.parallel_tools,
-            // Convert serde_json::Value to toml::Value
-            // For extra fields we just convert to string representation
-            extra: toon
-                .extra
-                .iter()
-                .filter_map(|(k, v)| {
-                    // Convert JSON value to TOML value
-                    match v {
-                        serde_json::Value::String(s) => {
-                            Some((k.clone(), toml::Value::String(s.clone())))
-                        }
-                        serde_json::Value::Number(n) => n
-                            .as_i64()
-                            .map(|i| (k.clone(), toml::Value::Integer(i)))
-                            .or_else(|| n.as_f64().map(|f| (k.clone(), toml::Value::Float(f)))),
-                        serde_json::Value::Bool(b) => Some((k.clone(), toml::Value::Boolean(*b))),
-                        _ => {
-                            // For arrays/objects, convert to string
-                            Some((k.clone(), toml::Value::String(v.to_string())))
-                        }
-                    }
-                })
-                .collect(),
-        }
     }
 
     /// Create an agent instance by name
@@ -201,8 +162,7 @@ impl AgentRegistry {
         }
 
         // Then check TOON config
-        if let Some(toon_config) = self.get_toon_config(name) {
-            let config = Self::toon_to_agent_config(&toon_config);
+        if let Some(config) = self.get_toon_config(name) {
             return self.create_agent_from_config(name, &config).await;
         }
 
@@ -229,16 +189,15 @@ impl AgentRegistry {
             .map(|model| model.provider.clone())
             .unwrap_or_else(|| config.model.clone());
 
-        // Pass the full tool registry; the agent will filter based on allowed_tools
-        let agent_tool_registry = Some(Arc::clone(&self.tool_registry));
-
-        Ok(ConfigurableAgent::new_with_provider(
+        let mut agent = ConfigurableAgent::new_with_provider(
             name,
             config,
             llm,
-            agent_tool_registry,
+            None,
             provider_name,
-        ))
+        );
+        agent.set_tools(Arc::clone(&self.tools));
+        Ok(agent)
     }
 
     /// Create an agent instance from an explicit configuration with tier
@@ -250,7 +209,7 @@ impl AgentRegistry {
         config: &AgentConfig,
         tenant_id: &str,
         pool: &sqlx::PgPool,
-        fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
+        fleet_secrets: &ares_store::FleetSecrets,
     ) -> Result<ConfigurableAgent> {
         let chain = self
             .provider_registry
@@ -312,9 +271,10 @@ impl AgentRegistry {
             name,
             config,
             llm,
-            Some(Arc::clone(&self.tool_registry)),
+            None,
             primary_provider_name,
         );
+        agent.set_tools(Arc::clone(&self.tools));
         agent.set_fallback_llms_with_providers(fallback_llms);
 
         // --- tenant allowlist enforcement ---
@@ -386,8 +346,8 @@ impl AgentRegistry {
 pub struct AgentRegistryBuilder {
     configs: HashMap<String, AgentConfig>,
     provider_registry: Option<Arc<ProviderRegistry>>,
-    tool_registry: Option<Arc<ToolRegistry>>,
-    dynamic_config: Option<Arc<DynamicConfigManager>>,
+    tools: Option<Arc<Tools>>,
+    dynamic_config: Option<Arc<dyn ToonAgents>>,
 }
 
 impl AgentRegistryBuilder {
@@ -396,7 +356,7 @@ impl AgentRegistryBuilder {
         Self {
             configs: HashMap::new(),
             provider_registry: None,
-            tool_registry: None,
+            tools: None,
             dynamic_config: None,
         }
     }
@@ -407,14 +367,14 @@ impl AgentRegistryBuilder {
         self
     }
 
-    /// Set the tool registry
-    pub fn with_tool_registry(mut self, registry: Arc<ToolRegistry>) -> Self {
-        self.tool_registry = Some(registry);
+    /// Set the unified tools capability
+    pub fn with_tools(mut self, tools: Arc<Tools>) -> Self {
+        self.tools = Some(tools);
         self
     }
 
     /// Set the dynamic config manager for TOON support
-    pub fn with_dynamic_config(mut self, dynamic_config: Arc<DynamicConfigManager>) -> Self {
+    pub fn with_dynamic_config(mut self, dynamic_config: Arc<dyn ToonAgents>) -> Self {
         self.dynamic_config = Some(dynamic_config);
         self
     }
@@ -425,9 +385,9 @@ impl AgentRegistryBuilder {
         self
     }
 
-    /// Load agent configurations from TOML config
-    pub fn from_config(mut self, config: &AresConfig) -> Self {
-        self.configs = config.agents.clone();
+    /// Load agent configurations from TOML agent map
+    pub fn from_config(mut self, agents: HashMap<String, AgentConfig>) -> Self {
+        self.configs = agents;
         self
     }
 
@@ -437,14 +397,14 @@ impl AgentRegistryBuilder {
             AppError::Configuration("ProviderRegistry is required for AgentRegistry".into())
         })?;
 
-        let tool_registry = self
-            .tool_registry
-            .unwrap_or_else(|| Arc::new(ToolRegistry::new()));
+        let tools = self.tools.unwrap_or_else(|| {
+            Arc::new(Tools::from_static(std::iter::empty::<Arc<dyn ares_tools::Tool>>()))
+        });
 
         Ok(AgentRegistry {
             configs: self.configs,
             provider_registry,
-            tool_registry,
+            tools,
             dynamic_config: self.dynamic_config,
         })
     }
@@ -459,34 +419,26 @@ impl Default for AgentRegistryBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_config::toml_config::{
-        AuthConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths, ProviderConfig, RagConfig,
-        ServerConfig,
-    };
+    use ares_llm::ProviderConfig;
+    use ares_tools::Tool;
     use std::collections::HashMap;
 
-    fn create_test_ares_config() -> AresConfig {
-        AresConfig {
-            server: ServerConfig::default(),
-            auth: AuthConfig::default(),
-            database: DatabaseConfig::default(),
-            nvidia: None,
-            providers: HashMap::new(),
-            models: HashMap::new(),
-            tools: HashMap::new(),
-            agents: HashMap::new(),
-            workflows: HashMap::new(),
-            rag: RagConfig::default(),
-            billing: BillingConfig::default(),
-            skills: None,
-            config: DynamicConfigPaths::default(),
+    struct MapToon(HashMap<String, AgentConfig>);
+    impl ToonAgents for MapToon {
+        fn get(&self, name: &str) -> Option<AgentConfig> {
+            self.0.get(name).cloned()
+        }
+        fn names(&self) -> Vec<String> {
+            self.0.keys().cloned().collect()
         }
     }
 
-    fn create_test_ares_config_with_agents(agents: HashMap<String, AgentConfig>) -> AresConfig {
-        let mut cfg = create_test_ares_config();
-        cfg.agents = agents;
-        cfg
+    fn empty_tools() -> Arc<Tools> {
+        Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()))
+    }
+
+    fn create_test_agent_map() -> HashMap<String, AgentConfig> {
+        HashMap::new()
     }
 
     fn create_test_provider_registry() -> Arc<ProviderRegistry> {
@@ -501,7 +453,7 @@ mod tests {
         );
         registry.register_model(
             "default",
-            ares_config::toml_config::ModelConfig {
+            ares_llm::ModelConfig {
                 provider: "ollama-local".to_string(),
                 model: "ministral-3:3b".to_string(),
                 temperature: 0.7,
@@ -544,8 +496,8 @@ mod tests {
     #[test]
     fn test_registry_register_and_get() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let mut registry = AgentRegistry::new(provider_registry, tool_registry);
+        let tools = empty_tools();
+        let mut registry = AgentRegistry::new(provider_registry, tools);
 
         let config = AgentConfig {
             model: "default".to_string(),
@@ -568,8 +520,8 @@ mod tests {
     #[test]
     fn test_registry_agent_names() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let mut registry = AgentRegistry::new(provider_registry, tool_registry);
+        let tools = empty_tools();
+        let mut registry = AgentRegistry::new(provider_registry, tools);
 
         registry.register(
             "agent1",
@@ -606,8 +558,8 @@ mod tests {
     #[test]
     fn test_registry_get_agent_model() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let mut registry = AgentRegistry::new(provider_registry, tool_registry);
+        let tools = empty_tools();
+        let mut registry = AgentRegistry::new(provider_registry, tools);
 
         registry.register(
             "test",
@@ -632,8 +584,8 @@ mod tests {
     #[test]
     fn test_registry_get_agent_tools() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let mut registry = AgentRegistry::new(provider_registry, tool_registry);
+        let tools = empty_tools();
+        let mut registry = AgentRegistry::new(provider_registry, tools);
 
         registry.register(
             "with_tools",
@@ -672,7 +624,7 @@ mod tests {
     #[test]
     fn test_builder_build_without_provider_registry() {
         let result = AgentRegistryBuilder::new()
-            .with_tool_registry(Arc::new(ToolRegistry::new()))
+            .with_tools(empty_tools())
             .build();
 
         assert!(result.is_err());
@@ -721,9 +673,9 @@ mod tests {
     #[test]
     fn test_registry_from_config() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
+        let tools = empty_tools();
 
-        let ares_config = create_test_ares_config_with_agents({
+        let overlay_config = {
             let mut map = HashMap::new();
             map.insert(
                 "toml-agent".to_string(),
@@ -738,9 +690,9 @@ mod tests {
                 },
             );
             map
-        });
+        };
 
-        let registry = AgentRegistry::from_config(&ares_config, provider_registry, tool_registry);
+        let registry = AgentRegistry::from_config(overlay_config, provider_registry, tools);
 
         assert!(registry.has_agent("toml-agent"));
         assert!(registry.get_config("toml-agent").is_some());
@@ -758,7 +710,7 @@ mod tests {
     fn test_builder_from_config_with_provider() {
         let provider_registry = create_test_provider_registry();
 
-        let ares_config = create_test_ares_config_with_agents({
+        let overlay_config = {
             let mut map = HashMap::new();
             map.insert(
                 "builder-agent".to_string(),
@@ -773,10 +725,10 @@ mod tests {
                 },
             );
             map
-        });
+        };
 
         let result = AgentRegistryBuilder::new()
-            .from_config(&ares_config)
+            .from_config(overlay_config)
             .with_provider_registry(provider_registry)
             .build();
 
@@ -786,17 +738,17 @@ mod tests {
     }
 
     // ============================================================
-    //  AgentRegistryBuilder::with_tool_registry(...) and default tool registry
+    //  AgentRegistryBuilder::with_tools(...) and default tools
     // ============================================================
 
     #[test]
-    fn test_builder_with_tool_registry_explicit() {
+    fn test_builder_with_tools_explicit() {
         let provider_registry = create_test_provider_registry();
-        let custom_tool_registry = Arc::new(ToolRegistry::new());
+        let custom_tools = empty_tools();
 
         let result = AgentRegistryBuilder::new()
             .with_provider_registry(provider_registry)
-            .with_tool_registry(custom_tool_registry.clone())
+            .with_tools(custom_tools.clone())
             .with_agent(
                 "tool-agent",
                 AgentConfig {
@@ -817,10 +769,10 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_default_tool_registry() {
+    fn test_builder_default_tools() {
         let provider_registry = create_test_provider_registry();
 
-        // Build without calling with_tool_registry - should use default ToolRegistry
+        // Build without calling with_tools - should use default empty Tools
         let result = AgentRegistryBuilder::new()
             .with_provider_registry(provider_registry)
             .with_agent(
@@ -863,8 +815,8 @@ mod tests {
     #[test]
     fn test_get_agent_system_prompt_toml_some() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let mut registry = AgentRegistry::new(provider_registry, tool_registry);
+        let tools = empty_tools();
+        let mut registry = AgentRegistry::new(provider_registry, tools);
 
         registry.register(
             "has-prompt",
@@ -888,8 +840,8 @@ mod tests {
     #[test]
     fn test_get_agent_system_prompt_toml_none() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let mut registry = AgentRegistry::new(provider_registry, tool_registry);
+        let tools = empty_tools();
+        let mut registry = AgentRegistry::new(provider_registry, tools);
 
         registry.register(
             "no-prompt",
@@ -915,8 +867,8 @@ mod tests {
     #[tokio::test]
     async fn test_create_agent_not_found() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let registry = AgentRegistry::new(provider_registry, tool_registry);
+        let tools = empty_tools();
+        let registry = AgentRegistry::new(provider_registry, tools);
 
         let result = registry.create_agent("nonexistent-agent").await;
 
@@ -936,8 +888,8 @@ mod tests {
     #[tokio::test]
     async fn test_create_agent_by_type_not_registered() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let registry = AgentRegistry::new(provider_registry, tool_registry);
+        let tools = empty_tools();
+        let registry = AgentRegistry::new(provider_registry, tools);
 
         // AgentType::Custom("custom-unregistered".to_string()) returns name "custom-unregistered"
         let result = registry
@@ -956,40 +908,33 @@ mod tests {
     //  TOON-backed tests
     // ============================================================
 
-    fn create_test_dynamic_config_manager() -> Arc<DynamicConfigManager> {
-        let dir = tempfile::tempdir().unwrap();
-        let agents = dir.path().join("agents");
-        std::fs::create_dir_all(&agents).unwrap();
-
-        let toon_cfg = ToonAgentConfig::new("toon-only-agent", "default")
-            .with_system_prompt("TOON system prompt")
-            .with_tools(vec!["calculator".to_string()]);
-        let content = toon_cfg.to_toon().unwrap();
-        std::fs::write(agents.join("a.toon"), content).unwrap();
-
-        Arc::new(
-            DynamicConfigManager::new(
-                agents,
-                dir.path().join("models"),
-                dir.path().join("tools"),
-                dir.path().join("workflows"),
-                dir.path().join("mcps"),
-                false, // hot_reload = false
-            )
-            .unwrap(),
-        )
+    fn create_test_dynamic_config_manager() -> Arc<dyn ToonAgents> {
+        let mut agents = HashMap::new();
+        agents.insert(
+            "toon-only-agent".to_string(),
+            AgentConfig {
+                model: "default".to_string(),
+                system_prompt: Some("TOON system prompt".to_string()),
+                tools: vec!["calculator".to_string()],
+                allowed_tools: None,
+                max_tool_iterations: 10,
+                parallel_tools: false,
+                extra: HashMap::new(),
+            },
+        );
+        Arc::new(MapToon(agents))
     }
 
     #[test]
     fn test_with_dynamic_config() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
+        let tools = empty_tools();
         let dcm = create_test_dynamic_config_manager();
 
         let registry = AgentRegistry::with_dynamic_config(
-            &create_test_ares_config(),
+            create_test_agent_map(),
             provider_registry,
-            tool_registry,
+            tools,
             dcm.clone(),
         );
 
@@ -1000,10 +945,10 @@ mod tests {
     #[test]
     fn test_set_dynamic_config() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
+        let tools = empty_tools();
         let dcm = create_test_dynamic_config_manager();
 
-        let mut registry = AgentRegistry::new(provider_registry, tool_registry);
+        let mut registry = AgentRegistry::new(provider_registry, tools);
         assert!(!registry.has_agent("toon-only-agent")); // Not set yet
 
         registry.set_dynamic_config(dcm);
@@ -1014,10 +959,10 @@ mod tests {
     #[test]
     fn test_toon_merge_agent_names_no_duplicates() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
+        let tools = empty_tools();
         let dcm = create_test_dynamic_config_manager();
 
-        let mut registry = AgentRegistry::new(provider_registry, tool_registry);
+        let mut registry = AgentRegistry::new(provider_registry, tools);
         registry.set_dynamic_config(dcm);
 
         // Register a TOML agent with the same name as TOON - TOML should take precedence
@@ -1043,13 +988,13 @@ mod tests {
     #[test]
     fn test_get_agent_model_toon() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
+        let tools = empty_tools();
         let dcm = create_test_dynamic_config_manager();
 
         let registry = AgentRegistry::with_dynamic_config(
-            &create_test_ares_config(),
+            create_test_agent_map(),
             provider_registry,
-            tool_registry,
+            tools,
             dcm,
         );
 
@@ -1063,13 +1008,13 @@ mod tests {
     #[test]
     fn test_get_agent_tools_toon() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
+        let tools = empty_tools();
         let dcm = create_test_dynamic_config_manager();
 
         let registry = AgentRegistry::with_dynamic_config(
-            &create_test_ares_config(),
+            create_test_agent_map(),
             provider_registry,
-            tool_registry,
+            tools,
             dcm,
         );
 
@@ -1081,13 +1026,13 @@ mod tests {
     #[test]
     fn test_get_agent_system_prompt_toon() {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
+        let tools = empty_tools();
         let dcm = create_test_dynamic_config_manager();
 
         let registry = AgentRegistry::with_dynamic_config(
-            &create_test_ares_config(),
+            create_test_agent_map(),
             provider_registry,
-            tool_registry,
+            tools,
             dcm,
         );
 
@@ -1097,85 +1042,8 @@ mod tests {
             Some("TOON system prompt".to_string())
         );
     }
-
-    // ============================================================
-    //  toon_to_agent_config - JSON value to TOML value conversion
-    // ============================================================
-
-    #[test]
-    fn test_toon_to_agent_config_extra_conversion() {
-        // Test String extra
-        let toon_string = ToonAgentConfig::new("agent", "default").with_system_prompt("test");
-        let mut toon_string = toon_string;
-        toon_string.extra.insert(
-            "string_key".to_string(),
-            serde_json::Value::String("value".to_string()),
-        );
-        let agent_config = AgentRegistry::toon_to_agent_config(&toon_string);
-        assert_eq!(
-            agent_config.extra.get("string_key"),
-            Some(&toml::Value::String("value".to_string()))
-        );
-
-        // Test Number (i64) extra
-        let mut toon_i64 = ToonAgentConfig::new("agent", "default");
-        toon_i64
-            .extra
-            .insert("int_key".to_string(), serde_json::json!(42));
-        let agent_config = AgentRegistry::toon_to_agent_config(&toon_i64);
-        assert_eq!(
-            agent_config.extra.get("int_key"),
-            Some(&toml::Value::Integer(42))
-        );
-
-        // Test Number (f64) extra
-        let mut toon_f64 = ToonAgentConfig::new("agent", "default");
-        toon_f64
-            .extra
-            .insert("float_key".to_string(), serde_json::json!(3.14159));
-        let agent_config = AgentRegistry::toon_to_agent_config(&toon_f64);
-        assert_eq!(
-            agent_config.extra.get("float_key"),
-            Some(&toml::Value::Float(3.14159))
-        );
-
-        // Test Bool extra
-        let mut toon_bool = ToonAgentConfig::new("agent", "default");
-        toon_bool
-            .extra
-            .insert("bool_key".to_string(), serde_json::Value::Bool(true));
-        let agent_config = AgentRegistry::toon_to_agent_config(&toon_bool);
-        assert_eq!(
-            agent_config.extra.get("bool_key"),
-            Some(&toml::Value::Boolean(true))
-        );
-
-        // Test Array/Object extra (converts to String)
-        let mut toon_array = ToonAgentConfig::new("agent", "default");
-        toon_array
-            .extra
-            .insert("array_key".to_string(), serde_json::json!(vec![1, 2, 3]));
-        let agent_config = AgentRegistry::toon_to_agent_config(&toon_array);
-        assert_eq!(
-            agent_config.extra.get("array_key"),
-            Some(&toml::Value::String("[1,2,3]".to_string()))
-        );
-
-        // Test Object extra (converts to String)
-        let mut toon_object = ToonAgentConfig::new("agent", "default");
-        toon_object.extra.insert(
-            "object_key".to_string(),
-            serde_json::json!({"key": "value"}),
-        );
-        let agent_config = AgentRegistry::toon_to_agent_config(&toon_object);
-        assert_eq!(
-            agent_config.extra.get("object_key"),
-            Some(&toml::Value::String("{\"key\":\"value\"}".to_string()))
-        );
-    }
 }
 
-// Cordis Service impl — allows direct ctx.get::<AgentRegistry>() without wrapper
 impl cordis::Service for AgentRegistry {
     fn name(&self) -> &'static str { "agent_registry" }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
@@ -1183,3 +1051,4 @@ impl cordis::Service for AgentRegistry {
     }
     fn check(&self) -> bool { true }
 }
+

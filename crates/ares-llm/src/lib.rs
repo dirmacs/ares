@@ -85,6 +85,8 @@ pub mod pool;
 pub mod provider_registry;
 /// Unified LLM capability (Cordis Phase 3).
 pub mod llm_service;
+/// Declarative Cordis loader factories for this crate.
+pub mod plugins;
 
 #[cfg(feature = "openai")]
 pub mod openai;
@@ -109,9 +111,12 @@ pub use observability::{LlmCallRecord, ObservabilitySink};
 pub use pool::{ClientPool, ClientPoolBuilder, PoolConfig, PoolStats, PooledClientGuard};
 pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
 pub use llm_service::{Breaker, Llm, ModelOverride, TenantModelPolicy};
+pub use plugins::register_plugins;
 
-// Re-export NVIDIA catalog types from ares-config so callers can construct caches.
-pub use ares_config::nvidia_catalog::{CatalogEntry, NvidiaCatalogCache, NvidiaConfig};
+pub mod config;
+pub mod nvidia_catalog;
+pub use config::{ModelConfig, ProviderConfig};
+pub use nvidia_catalog::{CatalogEntry, NvidiaCatalogCache, NvidiaConfig};
 
 #[cfg(test)]
 mod lib_tests {

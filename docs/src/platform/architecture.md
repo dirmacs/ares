@@ -31,8 +31,7 @@ HTTP request
 | Crate | Purpose |
 |-------|---------|
 | `ares-types` | Shared types, error definitions |
-| `ares-config` | TOML/TOON configuration, fleet secrets |
-| `ares-store` | PostgreSQL client, migrations, tenant DB |
+| `ares-store` | PostgreSQL client, migrations, tenant DB, fleet secrets |
 | `ares-llm` | Provider registry, LLM clients (OpenAI, Anthropic, Ollama, Nvidia) |
 | `ares-agent` | Agent trait, ConfigurableAgent, AgentExecutionService, AgentResolverService |
 | `ares-tools` | Tool trait, built-in tools, runtime tool registry |

@@ -43,7 +43,7 @@ No schema or behavior change, only compile-time check removed to unblock downstr
 
 ### Added
 
-- **Compliance auditor agent** (`compliance-auditor.toon`) in ares-config, audits projects against Dirmacs Engineering Standards
+- **Compliance auditor agent** (`compliance-auditor.toon`) in overlay, audits projects against Dirmacs Engineering Standards
 - **Dirmacs Engineering Standards SOP**, covers repo structure, config architecture, deployment, security, agent quality, and scaling
 
 ## [0.6.3] - 2026-03-13

@@ -1,5 +1,4 @@
-use crate::{Agent, AgentRegistry, AgentResponse};
-use ares_config::AresConfigManager;
+use crate::{Agent, AgentConfig, AgentRegistry, AgentResponse};
 use ares_llm::LLMClient;
 use ares_types::types::{AgentContext, AgentType, AppError, Result};
 use async_trait::async_trait;
@@ -12,7 +11,7 @@ use std::sync::Arc;
 /// them to appropriate specialized agents via the AgentRegistry.
 pub struct OrchestratorAgent {
     llm: Box<dyn LLMClient>,
-    config_manager: Arc<AresConfigManager>,
+    agents: Arc<std::collections::HashMap<String, AgentConfig>>,
     agent_registry: Arc<AgentRegistry>,
 }
 
@@ -20,12 +19,12 @@ impl OrchestratorAgent {
     /// Creates a new OrchestratorAgent with the given dependencies.
     pub fn new(
         llm: Box<dyn LLMClient>,
-        config_manager: Arc<AresConfigManager>,
+        agents: Arc<std::collections::HashMap<String, AgentConfig>>,
         agent_registry: Arc<AgentRegistry>,
     ) -> Self {
         Self {
             llm,
-            config_manager,
+            agents,
             agent_registry,
         }
     }
@@ -138,9 +137,8 @@ impl Agent for OrchestratorAgent {
 
     fn system_prompt(&self) -> String {
         // Get system prompt from config if available
-        let config = self.config_manager.config();
-        config
-            .get_agent("orchestrator")
+        self.agents
+            .get("orchestrator")
             .and_then(|a| a.system_prompt.clone())
             .unwrap_or_else(|| {
                 "You are an orchestrator agent that coordinates multiple specialized agents to answer complex queries.".to_string()
@@ -155,12 +153,9 @@ impl Agent for OrchestratorAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_config::toml_config::{
-        AgentConfig, AuthConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths, ModelConfig,
-        ProviderConfig, RagConfig, ServerConfig, AresConfig,
-    };
-    use ares_llm::{LLMClient, LLMResponse, ProviderRegistry};
-    use ares_tools::registry::ToolRegistry;
+    use crate::AgentConfig;
+    use ares_llm::{LLMClient, LLMResponse, ModelConfig, ProviderConfig, ProviderRegistry};
+    use ares_tools::{Tool, Tools};
     use ares_types::types::ToolDefinition;
     use async_trait::async_trait;
     use std::collections::{HashMap, VecDeque};
@@ -272,22 +267,8 @@ mod tests {
         }
     }
 
-    fn create_test_ares_config(agents: HashMap<String, AgentConfig>) -> AresConfig {
-        AresConfig {
-            server: ServerConfig::default(),
-            auth: AuthConfig::default(),
-            database: DatabaseConfig::default(),
-            nvidia: None,
-            providers: HashMap::new(),
-            models: HashMap::new(),
-            tools: HashMap::new(),
-            agents,
-            workflows: HashMap::new(),
-            rag: RagConfig::default(),
-            billing: BillingConfig::default(),
-            skills: None,
-            config: DynamicConfigPaths::default(),
-        }
+    fn create_test_agent_map(agents: HashMap<String, AgentConfig>) -> HashMap<String, AgentConfig> {
+        agents
     }
 
     fn create_test_provider_registry() -> Arc<ProviderRegistry> {
@@ -337,8 +318,8 @@ mod tests {
 
     fn build_registry_with_provider(agent_names: &[&str], base_url: &str) -> Arc<AgentRegistry> {
         let provider_registry = create_test_provider_registry_with_base_url(base_url);
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let mut registry = AgentRegistry::new(provider_registry, tool_registry);
+        let tools = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
+        let mut registry = AgentRegistry::new(provider_registry, tools);
         for name in agent_names {
             registry.register(name, sample_agent_config());
         }
@@ -359,8 +340,8 @@ mod tests {
 
     fn build_registry(agent_names: &[&str]) -> Arc<AgentRegistry> {
         let provider_registry = create_test_provider_registry();
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let mut registry = AgentRegistry::new(provider_registry, tool_registry);
+        let tools = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
+        let mut registry = AgentRegistry::new(provider_registry, tools);
         for name in agent_names {
             registry.register(name, sample_agent_config());
         }
@@ -369,10 +350,10 @@ mod tests {
         Arc::new(registry)
     }
 
-    fn build_orchestrator(llm: ScriptedLlm, agents: &[&str], config: AresConfig) -> OrchestratorAgent {
+    fn build_orchestrator(llm: ScriptedLlm, agents: &[&str], config: HashMap<String, AgentConfig>) -> OrchestratorAgent {
         OrchestratorAgent::new(
             Box::new(llm),
-            Arc::new(AresConfigManager::from_config(config)),
+            Arc::new(config),
             build_registry(agents),
         )
     }
@@ -382,7 +363,7 @@ mod tests {
         let orch = build_orchestrator(
             ScriptedLlm::new(vec![r#"[{"agent":"sales","task":"Get Q1 revenue"},{"agent":"product","task":"Top SKUs"}]"#]),
             &["sales", "product"],
-            create_test_ares_config(HashMap::new()),
+            create_test_agent_map(HashMap::new()),
         );
         let tasks = orch.decompose_task("Quarterly business review").await.expect("decompose");
         assert_eq!(tasks.len(), 2);
@@ -395,7 +376,7 @@ mod tests {
         let orch = build_orchestrator(
             ScriptedLlm::new(vec![r#"[{"agent":"unknown-agent","task":"Do something"}]"#]),
             &["product"],
-            create_test_ares_config(HashMap::new()),
+            create_test_agent_map(HashMap::new()),
         );
         let tasks = orch.decompose_task("task").await.expect("decompose");
         assert_eq!(tasks, vec![("product".to_string(), "Do something".to_string())]);
@@ -406,7 +387,7 @@ mod tests {
         let orch = build_orchestrator(
             ScriptedLlm::new(vec!["not-json"]),
             &["product"],
-            create_test_ares_config(HashMap::new()),
+            create_test_agent_map(HashMap::new()),
         );
         let err = orch.decompose_task("task").await.unwrap_err();
         assert!(matches!(err, AppError::LLM(_)));
@@ -416,7 +397,7 @@ mod tests {
     async fn test_decompose_task_excludes_orchestrator_and_router_from_prompt() {
         let llm = ScriptedLlm::new(vec![r#"[]"#]);
         let llm_clone = llm.clone();
-        let orch = build_orchestrator(llm, &["sales", "product"], create_test_ares_config(HashMap::new()));
+        let orch = build_orchestrator(llm, &["sales", "product"], create_test_agent_map(HashMap::new()));
         orch.decompose_task("plan").await.expect("decompose");
         let system = llm_clone.system_prompts().into_iter().next().expect("system prompt");
         assert!(system.contains("sales"));
@@ -430,7 +411,7 @@ mod tests {
         let orch = build_orchestrator(
             ScriptedLlm::new(vec![r#"[]"#, "direct-answer"]),
             &["product"],
-            create_test_ares_config(HashMap::new()),
+            create_test_agent_map(HashMap::new()),
         );
         let resp = orch.execute("simple question", &test_context()).await.expect("execute");
         assert_eq!(resp.content, "direct-answer");
@@ -472,19 +453,19 @@ mod tests {
             extra: HashMap::new(),
             },
         );
-        let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_ares_config(agents));
+        let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_agent_map(agents));
         assert_eq!(orch.system_prompt(), "Custom orchestrator prompt");
     }
 
     #[test]
     fn test_system_prompt_default_when_missing() {
-        let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_ares_config(HashMap::new()));
+        let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_agent_map(HashMap::new()));
         assert!(orch.system_prompt().contains("orchestrator agent"));
     }
 
     #[test]
     fn test_agent_type_is_orchestrator() {
-        let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_ares_config(HashMap::new()));
+        let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_agent_map(HashMap::new()));
         assert_eq!(orch.agent_type(), AgentType::Orchestrator);
     }
 
@@ -509,7 +490,7 @@ mod tests {
         let registry = build_registry_with_provider(&["sales"], &server.uri());
         let orch = OrchestratorAgent::new(
             Box::new(llm),
-            Arc::new(AresConfigManager::from_config(create_test_ares_config(HashMap::new()))),
+            Arc::new(create_test_agent_map(HashMap::new())),
             registry,
         );
 
@@ -525,7 +506,7 @@ mod tests {
         let orch = build_orchestrator(
             ScriptedLlm::new(vec![r#"[{"task":"task-only"},{"agent":"sales"}]"#]),
             &["sales", "product"],
-            create_test_ares_config(HashMap::new()),
+            create_test_agent_map(HashMap::new()),
         );
         let tasks = orch.decompose_task("plan").await.expect("decompose");
         assert_eq!(
@@ -544,7 +525,7 @@ mod tests {
                 r#"[{"agent":"sales","task":"Revenue"},{"agent":"ghost","task":"Haunt"},{"agent":"finance","task":"Budget"}]"#,
             ]),
             &["sales", "finance", "product"],
-            create_test_ares_config(HashMap::new()),
+            create_test_agent_map(HashMap::new()),
         );
         let tasks = orch.decompose_task("mixed").await.expect("decompose");
         assert_eq!(
@@ -561,7 +542,7 @@ mod tests {
     async fn test_decompose_task_only_orchestrator_router_yields_empty_agent_list() {
         let llm = ScriptedLlm::new(vec![r#"[]"#]);
         let llm_clone = llm.clone();
-        let orch = build_orchestrator(llm, &[], create_test_ares_config(HashMap::new()));
+        let orch = build_orchestrator(llm, &[], create_test_agent_map(HashMap::new()));
         orch.decompose_task("plan").await.expect("decompose");
         let system = llm_clone.system_prompts().into_iter().next().expect("system prompt");
         assert!(system.contains("Available agents: "));
@@ -583,7 +564,7 @@ mod tests {
 
         let orch = OrchestratorAgent::new(
             Box::new(ScriptedLlm::new(vec![])),
-            Arc::new(AresConfigManager::from_config(create_test_ares_config(HashMap::new()))),
+            Arc::new(create_test_agent_map(HashMap::new())),
             build_registry_with_provider(&["sales"], &server.uri()),
         );
         let content = orch
@@ -598,7 +579,7 @@ mod tests {
         let orch = build_orchestrator(
             ScriptedLlm::new(vec![]),
             &["product"],
-            create_test_ares_config(HashMap::new()),
+            create_test_agent_map(HashMap::new()),
         );
         let err = orch
             .execute_subtask("missing-agent", "task", &test_context())
@@ -626,7 +607,7 @@ mod tests {
         let llm_clone = llm.clone();
         let orch = OrchestratorAgent::new(
             Box::new(llm),
-            Arc::new(AresConfigManager::from_config(create_test_ares_config(HashMap::new()))),
+            Arc::new(create_test_agent_map(HashMap::new())),
             build_registry_with_provider(&["sales", "finance"], &server.uri()),
         );
 

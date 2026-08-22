@@ -51,6 +51,16 @@
 #![allow(clippy::map_flatten)]
 #![allow(clippy::for_kv_map)]
 
+pub mod config;
+pub mod billing_config;
+pub mod fleet_secrets;
+pub use config::{DatabaseConfig, QdrantConfig, default_qdrant_url};
+pub use billing_config::{BillingConfig, ModelPricingConfig};
+pub use fleet_secrets::{
+    decrypt_api_key, encrypt_api_key, last_n_visible, EncryptedPayload, FleetSecrets,
+    FleetSecretsError, MasterKey, ProviderOverride,
+};
+
 // Vector store abstraction layer
 pub mod vectorstore;
 
@@ -90,6 +100,11 @@ pub mod tenant_agents;
 #[cfg(feature = "postgres")]
 /// Multi-tenant tenant management.
 pub mod tenants;
+#[cfg(feature = "postgres")]
+/// Per-tenant Cordis child contexts (temporal tenancy).
+pub mod realms;
+#[cfg(feature = "postgres")]
+pub use realms::TenantRealms;
 /// Database traits and common types shared across providers.
 #[cfg(feature = "postgres")]
 pub mod traits;
@@ -99,6 +114,8 @@ pub mod turso;
 #[cfg(feature = "postgres")]
 /// Agent config version history (Sprint 11).
 pub mod agent_versions;
+#[cfg(feature = "postgres")]
+pub use agent_versions::AgentVersionInput;
 #[cfg(feature = "postgres")]
 /// Fleet-wide, tenant-agnostic provider API key & config storage.
 pub mod fleet_provider_secrets;
@@ -148,6 +165,12 @@ pub use turso::TursoClient;
 pub use qdrant::QdrantVectorStore;
 #[cfg(feature = "postgres")]
 pub use tenants::{TenantDb, UsageSummary};
+
+#[cfg(feature = "postgres")]
+pub type Store = TenantDb;
+
+mod plugins;
+pub use plugins::register_plugins;
 
 /// Cordis Service for postgres availability — runtime check replaces `#[cfg(feature = "postgres")]` in handlers.
 ///

@@ -24,14 +24,14 @@ pub(crate) fn estimated_cost_usd(prompt_tokens: i64, completion_tokens: i64) -> 
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RunCostAggregationRequest {
-    pub(crate) run_id: String,
-    pub(crate) tenant_id: String,
-    pub(crate) agent_name: String,
-    pub(crate) duration_ms: i64,
+pub struct RunCostAggregationRequest {
+    pub run_id: String,
+    pub tenant_id: String,
+    pub agent_name: String,
+    pub duration_ms: i64,
 }
 
-pub(crate) fn run_cost_aggregation_request(
+pub fn run_cost_aggregation_request(
     run_id: &str,
     tenant_id: &str,
     agent_name: &str,
@@ -45,7 +45,7 @@ pub(crate) fn run_cost_aggregation_request(
     }
 }
 
-pub(crate) fn spawn_run_cost_aggregation(pool: PgPool, request: RunCostAggregationRequest) {
+pub fn spawn_run_cost_aggregation(pool: PgPool, request: RunCostAggregationRequest) {
     let obs = RunObservability {
         run_id: request.run_id,
         tenant_id: request.tenant_id,

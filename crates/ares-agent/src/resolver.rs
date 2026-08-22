@@ -1,6 +1,6 @@
 //! Tenant agent runtime resolver — 3-tier hierarchy: user → community → system config.
 
-use ares_config::toml_config::{AgentConfig, AresConfig};
+use crate::AgentConfig;
 use ares_store::postgres::UserAgent;
 use ares_store::traits::DatabaseClient;
 use ares_types::models::TenantContext;
@@ -76,7 +76,7 @@ pub(crate) struct Resolver {
     /// System registry (TOML/TOON) fallback.
     pub agent_registry: Arc<AgentRegistry>,
     /// Static config for system-tier fallback (optional when built from ctx).
-    pub config: Option<Arc<AresConfig>>,
+    pub config: Option<Arc<std::collections::HashMap<String, AgentConfig>>>,
 }
 
 impl Resolver {
@@ -84,7 +84,7 @@ impl Resolver {
     pub fn new(
         tenant_db: Arc<TenantDb>,
         agent_registry: Arc<AgentRegistry>,
-        config: Arc<AresConfig>,
+        config: Arc<std::collections::HashMap<String, AgentConfig>>,
     ) -> Self {
         Self {
             tenant_db,
@@ -133,7 +133,7 @@ impl Resolver {
         let system_config = self
             .config
             .as_ref()
-            .and_then(|c| c.get_agent(name))
+            .and_then(|c| c.get(name))
             .or(system_config_owned.as_ref());
         resolve_from_candidates(
             user_agent,
@@ -193,7 +193,7 @@ pub fn user_id_from_ctx(ctx: &Arc<cordis::Context>, fallback: &str) -> String {
 /// Resolve an agent for a user using the 3-tier hierarchy.
 pub async fn resolve_agent(
     db: &dyn DatabaseClient,
-    config: &AresConfig,
+    config: &std::collections::HashMap<String, AgentConfig>,
     user_id: &str,
     agent_name: String,
 ) -> Result<(UserAgent, String)> {
@@ -201,7 +201,7 @@ pub async fn resolve_agent(
         .get_user_agent_by_name(user_id, &agent_name)
         .await?;
     let public_agent = db.get_public_agent_by_name(&agent_name).await?;
-    let system_config = config.get_agent(&agent_name);
+    let system_config = config.get(&agent_name);
 
     let (agent, source) = resolve_from_candidates(
         user_agent,
@@ -216,7 +216,7 @@ pub async fn resolve_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_config::toml_config::AgentConfig;
+    use crate::AgentConfig;
     use ares_store::traits::{ConversationSummary, DatabaseClient};
     use ares_types::types::{MemoryFact, Message, MessageRole, Preference};
     use async_trait::async_trait;
@@ -258,23 +258,9 @@ mod tests {
         }
 }
 
-    fn minimal_ares_config(agent_name: &str, cfg: AgentConfig) -> AresConfig {
-        let mut config: AresConfig = toml::from_str(
-            r#"
-[server]
-host = "127.0.0.1"
-port = 3000
-
-[auth]
-jwt_secret_env = "TEST_JWT_SECRET"
-api_key_env = "TEST_API_KEY"
-
-[database]
-url = "postgres://localhost/ares"
-"#,
-        )
-        .expect("parse minimal config");
-        config.agents.insert(agent_name.to_string(), cfg);
+    fn minimal_overlay_config(agent_name: &str, cfg: AgentConfig) -> std::collections::HashMap<String, AgentConfig> {
+        let mut config = std::collections::HashMap::new();
+        config.insert(agent_name.to_string(), cfg);
         config
     }
 
@@ -354,8 +340,8 @@ url = "postgres://localhost/ares"
 
     #[test]
     fn config_get_agent_matches_system_resolution() {
-        let config = minimal_ares_config("router", agent_config());
-        let cfg = config.get_agent("router").expect("agent in config");
+        let config = minimal_overlay_config("router", agent_config());
+        let cfg = config.get("router").expect("agent in config");
         let (from_pure, _) =
             resolve_from_candidates(None, None, Some(cfg), "router", FIXED_NOW).unwrap();
         let from_helper = system_agent_from_config("router", cfg, FIXED_NOW);
@@ -365,8 +351,8 @@ url = "postgres://localhost/ares"
 
     #[test]
     fn config_get_agent_returns_none_for_unknown_name() {
-        let config = minimal_ares_config("router", agent_config());
-        assert!(config.get_agent("ghost").is_none());
+        let config = minimal_overlay_config("router", agent_config());
+        assert!(config.get("ghost").is_none());
     }
 
     // ── Serde roundtrips ──────────────────────────────────────────────────
@@ -528,7 +514,7 @@ url = "postgres://localhost/ares"
             user: Some(user_agent("router", "u1")),
             public: Some(user_agent("router", "")),
         };
-        let config = minimal_ares_config("router", agent_config());
+        let config = minimal_overlay_config("router", agent_config());
         let (agent, source) = resolve_agent(&db, &config, "u1", "router".into())
             .await
             .unwrap();
@@ -542,7 +528,7 @@ url = "postgres://localhost/ares"
             user: None,
             public: None,
         };
-        let config = minimal_ares_config("router", agent_config());
+        let config = minimal_overlay_config("router", agent_config());
         let (agent, source) = resolve_agent(&db, &config, "u1", "router".into())
             .await
             .unwrap();
@@ -556,7 +542,7 @@ url = "postgres://localhost/ares"
             user: None,
             public: None,
         };
-        let config = minimal_ares_config("other", agent_config());
+        let config = minimal_overlay_config("other", agent_config());
         let err = resolve_agent(&db, &config, "u1", "missing".into())
             .await
             .unwrap_err();

@@ -81,6 +81,7 @@ pub async fn list_audit_log(pool: &PgPool, limit: i64, offset: i64) -> Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::postgres::PgPoolOptions;
 
     // ---- helpers --------------------------------------------------------
 

@@ -11,7 +11,6 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 /// Default datetime for serde deserialization
 fn default_datetime() -> DateTime<Utc> {
@@ -21,7 +20,7 @@ fn default_datetime() -> DateTime<Utc> {
 // ============= API Request/Response Types =============
 
 /// Request payload for chat endpoints.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChatRequest {
     /// The user's message to send to the agent.
     pub message: String,
@@ -41,7 +40,7 @@ pub struct ChatRequest {
 }
 
 /// Response from chat endpoints.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChatResponse {
     /// The agent's response text.
     pub response: String,
@@ -54,7 +53,7 @@ pub struct ChatResponse {
 }
 
 /// A source reference used in responses.
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Source {
     /// Title of the source document or webpage.
     pub title: String,
@@ -65,7 +64,7 @@ pub struct Source {
 }
 
 /// Request payload for deep research endpoints.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ResearchRequest {
     /// The research query or question.
     pub query: String,
@@ -76,7 +75,7 @@ pub struct ResearchRequest {
 }
 
 /// Response from deep research endpoints.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ResearchResponse {
     /// The compiled research findings.
     pub findings: String,
@@ -89,7 +88,7 @@ pub struct ResearchResponse {
 // ============= RAG API Types =============
 
 /// Request to ingest a document into the RAG system.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RagIngestRequest {
     /// Collection name to ingest into.
     pub collection: String,
@@ -108,7 +107,7 @@ pub struct RagIngestRequest {
 }
 
 /// Response from document ingestion.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RagIngestResponse {
     /// Number of chunks created.
     pub chunks_created: usize,
@@ -119,7 +118,7 @@ pub struct RagIngestResponse {
 }
 
 /// Request to search the RAG system.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RagSearchRequest {
     /// Collection to search.
     pub collection: String,
@@ -151,7 +150,7 @@ fn default_search_threshold() -> f32 {
 }
 
 /// Single search result.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RagSearchResult {
     /// Document ID.
     pub id: String,
@@ -164,7 +163,7 @@ pub struct RagSearchResult {
 }
 
 /// Response from RAG search.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RagSearchResponse {
     /// Search results.
     pub results: Vec<RagSearchResult>,
@@ -179,14 +178,14 @@ pub struct RagSearchResponse {
 }
 
 /// Request to delete a collection.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RagDeleteCollectionRequest {
     /// Collection name to delete.
     pub collection: String,
 }
 
 /// Response from collection deletion.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RagDeleteCollectionResponse {
     /// Whether deletion was successful.
     pub success: bool,
@@ -202,7 +201,7 @@ pub struct RagDeleteCollectionResponse {
 
 /// Request for semantic document search.
 /// Available only when `ares-vector` feature is enabled.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SemanticSearchRequest {
     /// Collection to search (tenant-scoped).
     pub collection: String,
@@ -217,7 +216,7 @@ pub struct SemanticSearchRequest {
 }
 
 /// Single semantic search result.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SemanticSearchResult {
     /// Document ID.
     pub id: String,
@@ -230,7 +229,7 @@ pub struct SemanticSearchResult {
 }
 
 /// Response from semantic search.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SemanticSearchResponse {
     /// Search results.
     pub results: Vec<SemanticSearchResult>,
@@ -241,7 +240,7 @@ pub struct SemanticSearchResponse {
 }
 
 /// Request payload for workflow execution endpoints.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WorkflowRequest {
     /// The query to process through the workflow.
     pub query: String,
@@ -256,7 +255,7 @@ pub struct WorkflowRequest {
 ///
 /// This enum supports both built-in agent types and custom user-defined agents.
 /// The `Custom` variant allows for extensibility without modifying this enum.
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum AgentType {
@@ -454,7 +453,7 @@ pub struct Document {
 }
 
 /// Metadata associated with a document.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DocumentMetadata {
     /// Title of the document.
     #[serde(default)]
@@ -504,7 +503,7 @@ pub struct SearchResult {
 // ============= Authentication Types =============
 
 /// Request payload for user login.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LoginRequest {
     /// User's email address.
     pub email: String,
@@ -513,7 +512,7 @@ pub struct LoginRequest {
 }
 
 /// Request payload for user registration.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RegisterRequest {
     /// Email address for the new account.
     pub email: String,
@@ -524,7 +523,7 @@ pub struct RegisterRequest {
 }
 
 /// Response containing authentication tokens.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TokenResponse {
     /// JWT access token for API authentication.
     pub access_token: String,
@@ -548,6 +547,9 @@ pub struct Claims {
     /// JWT ID — unique per token (present on refresh tokens).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub jti: String,
+    /// Tenant that issued or owns this session, when the token is tenant-scoped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
 }
 
 // ============= Error Types =============
@@ -661,6 +663,23 @@ AppError::FeatureDisabled(_) => ErrorCode::InternalError,
             AppError::External(_) | AppError::Unavailable(_) | AppError::RateLimited(_)
         )
     }
+
+    /// HTTP status code as u16 (no axum dependency).
+    pub fn status_code(&self) -> u16 {
+        match self {
+            AppError::Database(_) => 500,
+            AppError::LLM(_) => 500,
+            AppError::Auth(_) => 401,
+            AppError::NotFound(_) => 404,
+            AppError::InvalidInput(_) => 400,
+            AppError::Configuration(_) => 500,
+            AppError::External(_) => 502,
+            AppError::Internal(_) => 500,
+            AppError::Unavailable(_) => 503,
+            AppError::RateLimited(_) => 429,
+            AppError::FeatureDisabled(_) => 400,
+        }
+    }
 }
 
 // ============= Error Conversions =============
@@ -674,38 +693,6 @@ impl From<std::io::Error> for AppError {
 impl From<serde_json::Error> for AppError {
     fn from(err: serde_json::Error) -> Self {
         AppError::InvalidInput(format!("JSON error: {}", err))
-    }
-}
-
-impl axum::response::IntoResponse for AppError {
-    fn into_response(self) -> axum::response::Response {
-        // Log internal errors before returning
-        if self.is_internal() {
-            tracing::error!(error = %self, code = ?self.code(), "Internal error occurred");
-        }
-
-        let (status, message) = match &self {
-            AppError::Database(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
-            AppError::LLM(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
-            AppError::Auth(msg) => (axum::http::StatusCode::UNAUTHORIZED, msg.clone()),
-            AppError::NotFound(msg) => (axum::http::StatusCode::NOT_FOUND, msg.clone()),
-            AppError::InvalidInput(msg) => (axum::http::StatusCode::BAD_REQUEST, msg.clone()),
-            AppError::Configuration(msg) => {
-                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
-            }
-            AppError::External(msg) => (axum::http::StatusCode::BAD_GATEWAY, msg.clone()),
-            AppError::Internal(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
-            AppError::Unavailable(msg) => (axum::http::StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
-AppError::RateLimited(msg) => (axum::http::StatusCode::TOO_MANY_REQUESTS, msg.clone()),
-AppError::FeatureDisabled(msg) => (axum::http::StatusCode::BAD_REQUEST, msg.clone()),
-    };
-
-        let body = serde_json::json!({
-            "error": message,
-            "code": self.code()
-        });
-
-        (status, axum::Json(body)).into_response()
     }
 }
 
@@ -1223,6 +1210,7 @@ mod tests {
             exp: usize::MAX,
             iat: 0,
             jti: String::new(),
+            tenant_id: None,
         };
         let json = serde_json::to_string(&claims).unwrap();
         assert!(!json.contains("jti"));
@@ -1349,27 +1337,18 @@ mod tests {
 
     #[test]
     fn test_app_error_into_response_status_codes() {
-        use axum::http::StatusCode;
-        use axum::response::IntoResponse;
-
         let cases = [
-            (AppError::Auth("denied".into()), StatusCode::UNAUTHORIZED),
-            (AppError::NotFound("gone".into()), StatusCode::NOT_FOUND),
-            (AppError::InvalidInput("bad".into()), StatusCode::BAD_REQUEST),
-            (AppError::External("upstream".into()), StatusCode::BAD_GATEWAY),
-            (
-                AppError::Unavailable("maintenance".into()),
-                StatusCode::SERVICE_UNAVAILABLE,
-            ),
-            (AppError::RateLimited("slow".into()), StatusCode::TOO_MANY_REQUESTS),
-            (AppError::FeatureDisabled("off".into()), StatusCode::BAD_REQUEST),
-            (
-                AppError::Database("db".into()),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            ),
+            (AppError::Auth("denied".into()), 401u16),
+            (AppError::NotFound("gone".into()), 404),
+            (AppError::InvalidInput("bad".into()), 400),
+            (AppError::External("upstream".into()), 502),
+            (AppError::Unavailable("maintenance".into()), 503),
+            (AppError::RateLimited("slow".into()), 429),
+            (AppError::FeatureDisabled("off".into()), 400),
+            (AppError::Database("db".into()), 500),
         ];
         for (err, expected) in cases {
-            assert_eq!(err.into_response().status(), expected);
+            assert_eq!(err.status_code(), expected);
         }
     }
 

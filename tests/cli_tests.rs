@@ -442,7 +442,7 @@ fn test_no_color_flag() {
 
 #[cfg(test)]
 mod output_tests {
-    use ares::cli::output::Output;
+    use ares_server::cli::output::Output;
 
     #[test]
     fn test_output_new() {
@@ -469,7 +469,7 @@ mod output_tests {
 
 #[cfg(test)]
 mod init_tests {
-    use ares::cli::init::{InitConfig, InitResult};
+    use ares_server::cli::init::{InitConfig, InitResult};
     use std::path::PathBuf;
 
     #[test]

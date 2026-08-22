@@ -16,84 +16,17 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ares-server = "0.5"
+//! ares = "0.9"
 //! ```
 //!
 //! ### Basic Example
 //!
 //! ```rust,ignore
-//! use ares::{Provider, LLMClient};
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Create an Ollama provider
-//!     let provider = Provider::Ollama {
-//!         base_url: "http://localhost:11434".to_string(),
-//!         model: "llama3.2:3b".to_string(),
-//!     };
-//!
-//!     // Create a client and generate a response
-//!     let client = provider.create_client().await?;
-//!     let response = client.generate("Hello, world!").await?;
-//!     println!("{}", response);
-//!
-//!     Ok(())
-//! }
+//! use ares::{Context, Execute, Tools, Llm};
 //! ```
 //!
-//! ### Using Tools
-//!
-//! ```rust,ignore
-//! use ares::tools::{Tool, Tools, calculator::Calculator};
-//! use cordis::Context;
-//! use std::sync::Arc;
-//!
-//! let tools = Tools::from_static([Arc::new(Calculator) as Arc<dyn Tool>]);
-//! let ctx = Context::new_root();
-//! ctx.provide(tools);
-//! let tools = ctx.get::<Tools>().expect("Tools provided");
-//! let tool_definitions = tools.list(&ctx);
-//! ```
-//!
-//! ### Multi-Turn Tool Calling with ToolCoordinator
-//!
-//! ```rust,ignore
-//! use ares::llm::{Provider, ToolCoordinator, ToolCallingConfig};
-//! use ares::tools::{Tool, Tools};
-//! use cordis::Context;
-//! use std::sync::Arc;
-//!
-//! let provider = Provider::from_env()?;
-//! let client = provider.create_client().await?;
-//! let tools = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
-//! let ctx = Context::new_root();
-//!
-//! // Create a unified coordinator that works with any LLM provider
-//! let coordinator = ToolCoordinator::new(client, tools, ToolCallingConfig::default());
-//!
-//! // Execute a tool-calling conversation
-//! let result = coordinator.execute(Some("You are a helpful assistant."), "What is 25 * 4?", &ctx).await?;
-//! println!("Response: {}", result.content);
-//! println!("Tool calls made: {}", result.tool_calls.len());
-//! ```
-//!
-//! ### Configuration-Driven Setup
-//!
-//! ```rust,ignore
-//! use ares::{AresConfigManager, ProviderRegistry};
-//! use ares::tools::{Tool, Tools};
-//! use cordis::Context;
-//! use std::sync::Arc;
-//!
-//! // Load configuration from ares.toml
-//! let config_manager = AresConfigManager::new("ares.toml")?;
-//! let config = config_manager.config();
-//!
-//! let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
-//! let ctx = Context::new_root();
-//! ctx.provide_arc(provider_registry);
-//! ctx.provide(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
-//! ```
+//! Run the `ares-server` binary for the HTTP product. The `ares` crate is the
+//! library facade (no axum on the default graph).
 //!
 //! ## Feature Flags
 //!
@@ -154,30 +87,34 @@
 pub mod agents { pub use ares_agent::*; }
 /// HTTP API handlers and routes.
 #[cfg(feature = "postgres")]
-pub mod api;
+pub use ares_http::api;
 /// Run observability and cost tracking.
 #[cfg(feature = "postgres")]
-pub mod active_runs;
+pub use ares_http::active_runs;
 #[cfg(feature = "postgres")]
-pub mod observability;
+pub use ares_http::observability;
 /// Periodic health metrics aggregation job.
 #[cfg(feature = "postgres")]
 pub mod health_metrics_job;
 /// Background cron scheduler for agent schedules.
 #[cfg(feature = "postgres")]
-pub mod scheduler;
+pub use ares_agent::scheduler;
 /// Unified trigger execution engine.
 #[cfg(feature = "postgres")]
-pub mod trigger_engine;
+pub use ares_agent::trigger;
 /// Skill execution engine.
 #[cfg(feature = "postgres")]
-pub mod skill_engine;
+pub use ares_agent::skills;
+#[cfg(feature = "postgres")]
+pub use ares_agent::skills as skill_engine;
+#[cfg(feature = "postgres")]
+pub use ares_agent::skills::SkillEngine;
 /// Inter-agent pipeline execution engine.
 #[cfg(feature = "postgres")]
-pub mod pipeline_engine;
+pub use ares_agent::pipeline;
 /// JWT authentication and middleware.
 #[cfg(feature = "postgres")]
-pub mod auth;
+pub use ares_http::auth;
 /// Command-line interface and scaffolding.
 pub mod cli;
 /// Database clients (Turso/SQLite, Qdrant).
@@ -196,7 +133,7 @@ pub mod execution_stack;
 pub mod memory { pub use ares_agent::memory::*; }
 /// Middleware for API key auth and usage tracking.
 #[cfg(feature = "postgres")]
-pub mod middleware;
+pub use ares_http::middleware;
 /// Multi-tenant models (Tenant, ApiKey, Quota).
 pub mod models;
 /// Retrieval Augmented Generation (RAG) components.
@@ -204,20 +141,31 @@ pub mod rag;
 /// Multi-agent research coordination.
 #[cfg(feature = "postgres")]
 pub mod research { pub use ares_agent::research::*; }
-/// SKILL.md file discovery and loading — runtime-gated via `SkillsService::check()` (was `#[cfg(feature = "skills")]`).
-pub mod skills;
+/// SKILL.md file discovery and loading — runtime-gated via `SkillsService::check()`.
+#[cfg(any(feature = "postgres", feature = "skills"))]
+pub use ares_agent::skills as skill_files;
+/// Server Cordis loader factories (Overlay, Auth, engines, probe, Execute extras).
+#[cfg(feature = "postgres")]
+pub mod plugins;
+#[cfg(feature = "postgres")]
+pub use plugins::register_plugins;
 /// Built-in tools (calculator, web search).
 pub mod tools;
 /// Core types (requests, responses, errors).
 pub mod types;
+/// Configuration overlay (`ares.toml` + TOON watches).
+pub use ares_http::overlay;
+/// TOON dynamic configuration loaded by Overlay.
+pub use ares_http::toon_config;
+/// HTTP auth/server config.
+pub use ares_http::config as config_http;
 /// Configuration utilities (TOML, TOON).
 pub mod utils;
 /// Workflow engine for agent orchestration.
 #[cfg(feature = "postgres")]
-pub mod workflows;
-/// Cordis context services that live in the server crate (`EmergencyStop`).
-#[cfg(feature = "postgres")]
-pub mod context_services;
+pub use ares_agent::workflows;
+/// Cordis context services (`EmergencyStop`).
+pub use ares_agent::EmergencyStop;
 
 // Re-export commonly used types
 pub use agents::{AgentRegistry, AgentRegistryBuilder};
@@ -234,59 +182,27 @@ pub use llm::{
     ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, NvidiaCatalogCache,
     Provider, ProviderRegistry,
 };
-pub use models::{ApiKey, Tenant, TenantContext, TenantQuota, TenantTier};
-pub use ares_config::fleet_secrets::{FleetSecrets, MasterKey};
+pub use models::{ApiKey, QuotaExceeded, Tenant, TenantContext, TenantQuota, TenantTier};
+pub use ares_store::{FleetSecrets, MasterKey};
 #[cfg(feature = "postgres")]
 pub use observability::RunObservability;
-pub use tools::{Tool, Tools};
-pub use types::{AppError, ErrorCode, Result};
-pub use utils::toml_config::{AresConfig, AresConfigManager};
-pub use utils::toon_config::DynamicConfigManager;
+pub use tools::{Tool, ToolRegistry, Tools};
 #[cfg(feature = "postgres")]
-pub use workflows::{WorkflowEngine, WorkflowOutput, WorkflowStep};
+pub use tools::RuntimeToolRegistry;
+pub use types::{AppError, ErrorCode, Result};
+pub use overlay::{AresConfig, AresConfigManager, Overlay, OverlayPlugin};
+pub use overlay as toml_config;
+pub use toon_config::DynamicConfigManager;
+#[cfg(feature = "postgres")]
+#[cfg(feature = "postgres")]
+pub use ares_agent::workflows::{WorkflowEngine, WorkflowOutput, WorkflowStep};
 
 #[cfg(feature = "postgres")]
 use sqlx::PgPool;
-use std::sync::Arc;
 
-/// Application state shared across handlers (requires postgres feature for full server)
-#[cfg(feature = "postgres")]
-use crate::auth::jwt::AuthService;
-
-/// Cordis context type. `AppState` is `Arc<Context>`; tests and callers
-/// construct a root via `Context::new_root()` then `provide` services.
+/// Cordis context type.
 pub use cordis::Context;
-
-#[cfg(not(feature = "postgres"))]
-pub type AppState = std::sync::Arc<Context>;
-
-#[cfg(feature = "postgres")]
-pub type AppState = std::sync::Arc<Context>;
-
-#[cfg(feature = "postgres")]
-pub type CordisAppState = AppState;
-
-/// Cordis routes that still need `AppState` (applied by [`build_router`] or `main`).
-#[cfg(feature = "postgres")]
-pub fn cordis_routes() -> axum::Router<AppState> {
-    axum::Router::new()
-        .route("/health", axum::routing::get(|| async { "OK" }))
-        .route(
-            "/health/context",
-            axum::routing::get(crate::api::handlers::health_context::health_context),
-        )
-}
-
-/// Build router from Cordis `Context` — primary entry (Phase 2 step 12).
-/// Reads services via `ctx.get::<...>()` + `State<Arc<Context>>` handlers.
-#[cfg(feature = "postgres")]
-pub fn build_router(ctx: AppState) -> axum::Router {
-    let _events = ctx.get::<cordis::EventsService>();
-    let _registry = ctx.get::<cordis::RegistryService>();
-    let _exec = ctx.get::<ares_agent::Execute>();
-    let _tool_svc = ctx.get::<ares_tools::Tools>();
-    cordis_routes().with_state(ctx)
-}
+pub use ares_http::{Http, HttpPlugin, build_router, cordis_routes};
 
 /// Resolve an abstract model tier to a concrete `(provider_name, model_name)` pair.
 ///
@@ -314,133 +230,18 @@ pub async fn resolve_model_tier(
 /// downstream agents whose source agent matches.
 #[cfg(feature = "postgres")]
 pub async fn trigger_pipelines(
-    app_state: &AppState,
+    app_state: &std::sync::Arc<Context>,
     tenant_id: &str,
     source_agent: &str,
     source_output: &str,
 ) -> Result<Vec<String>> {
-    crate::pipeline_engine::execute_pipeline(source_agent, source_output, tenant_id, app_state)
+    ares_agent::pipeline::execute_pipeline(source_agent, source_output, tenant_id, app_state)
         .await
         .map_err(crate::types::AppError::Internal)
 }
 
-#[cfg(all(test, feature = "postgres"))]
+#[cfg(all(test, feature = "postgres", feature = "hmr"))]
 mod lib_tests {
-    use super::*;
-    use crate::agents::context_provider::NoOpContextProvider;
-    use crate::api::handlers::{deploy, loops};
-    use crate::auth::jwt::AuthService;
-    use crate::db::tenants::TenantDb;
-    use crate::utils::toml_config::{
-        AgentConfig, AresConfig, AuthConfig, BillingConfig, DatabaseConfig,
-        DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig, ServerConfig,
-    };
-    use crate::{
-        AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
-    };
-    use std::collections::HashMap;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
-
-    fn minimal_config() -> AresConfig {
-        let mut providers = HashMap::new();
-        providers.insert(
-            "p".into(),
-            ProviderConfig::OpenAI {
-                api_key_env: "TEST_KEY".into(),
-                api_base: "https://test.example.com/v1".into(),
-                default_model: "m".into(),
-            },
-        );
-        let mut models = HashMap::new();
-        models.insert(
-            "default".into(),
-            ModelConfig {
-                provider: "p".into(),
-                model: "m".into(),
-                temperature: 0.7,
-                max_tokens: 512,
-            },
-        );
-        let mut agents = HashMap::new();
-        agents.insert(
-            "a".into(),
-            AgentConfig {
-                model: "default".into(),
-                system_prompt: None,
-                tools: vec![],
-                allowed_tools: None,
-                max_tool_iterations: 1,
-                parallel_tools: false,
-                extra: HashMap::new(),
-            },
-        );
-        AresConfig {
-            server: ServerConfig::default(),
-            auth: AuthConfig {
-                jwt_secret_env: "JWT_SECRET".into(),
-                jwt_access_expiry: 900,
-                jwt_refresh_expiry: 604800,
-                api_key_env: "API_KEY".into(),
-            },
-            database: DatabaseConfig::default(),
-            nvidia: None,
-            config: DynamicConfigPaths::default(),
-            providers,
-            models,
-            tools: HashMap::new(),
-            agents,
-            workflows: HashMap::new(),
-            rag: RagConfig::default(),
-            billing: BillingConfig::default(),
-            skills: None,
-        }
-    }
-
-    fn test_ctx() -> AppState {
-        let config = minimal_config();
-        let config_manager = Arc::new(AresConfigManager::from_config(config));
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let base = temp_dir.path();
-        for sub in ["agents", "models", "tools", "workflows", "mcps"] {
-            std::fs::create_dir_all(base.join(sub)).expect("mkdir");
-        }
-        let _dynamic_config = Arc::new(
-            DynamicConfigManager::new(
-                base.join("agents"),
-                base.join("models"),
-                base.join("tools"),
-                base.join("workflows"),
-                base.join("mcps"),
-                false,
-            )
-            .expect("dynamic config"),
-        );
-        std::mem::forget(temp_dir);
-
-        let ctx = cordis::Context::new_root();
-        ctx.provide_arc(config_manager);
-        ctx
-    }
-
-    #[tokio::test]
-    async fn build_router_serves_health_check() {
-        let server =
-            axum_test::TestServer::new(build_router(test_ctx())).expect("test server");
-        let response = server.get("/health").await;
-        response.assert_status_ok();
-        response.assert_text("OK");
-    }
-
-    #[tokio::test]
-    async fn build_router_serves_health_context() {
-        let server =
-            axum_test::TestServer::new(build_router(test_ctx())).expect("test server");
-        let response = server.get("/health/context").await;
-        response.assert_status_ok();
-    }
-
-    #[cfg(feature = "hmr")]
     #[test]
     fn ares_server_hmr_feature_forwards_to_cordis_core() {
         // apply_plugin_so_if_dylib is reachable when the feature is on
@@ -449,4 +250,3 @@ mod lib_tests {
         assert!(!applied);
     }
 }
-

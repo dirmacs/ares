@@ -23,7 +23,7 @@ use ares_store::tenants::TenantDb;
 use crate::auth::{extract_api_key_from_env, validate_mcp_api_key, McpSession};
 use crate::extension::{dispatch_extensions, McpToolExtension};
 use crate::tools::*;
-use crate::usage::{check_quota, record_mcp_usage, McpOperation};
+use crate::usage::{record_mcp_usage, McpOperation};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, CallToolResponse, ContentBlock, ListToolsResult,
     PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
@@ -125,12 +125,12 @@ pub enum ToolDispatch {
 
 /// Lightweight auth/quota snapshot for pure integration tests.
 #[derive(Debug, Clone)]
-pub struct AppState {
+pub struct McpSessionState {
     pub session: Option<McpSession>,
     pub quota_within_limit: bool,
 }
 
-impl AppState {
+impl McpSessionState {
     pub fn unauthenticated() -> Self {
         Self { session: None, quota_within_limit: true }
     }
@@ -335,18 +335,18 @@ impl AresMcpServer {
             return Ok(());
         }
 
-        let within_quota = check_quota(&self.pool, session.tenant_id(), session.tier())
+        let monthly = self
+            .tenant_db
+            .get_monthly_requests(session.tenant_id())
+            .await
+            .map_err(|e| format!("Quota check failed: {}", e))?;
+        let daily = self
+            .tenant_db
+            .get_daily_requests(session.tenant_id())
             .await
             .map_err(|e| format!("Quota check failed: {}", e))?;
 
-        if !within_quota {
-            return Err(format!(
-                "Usage quota exceeded for tier '{}'. Contact your administrator to upgrade.",
-                session.tier()
-            ));
-        }
-
-        Ok(())
+        session.tenant.admit(monthly, daily).map_err(|e| e.message().to_string())
     }
 
     /// Records usage after a tool call completes.
@@ -2186,7 +2186,7 @@ mod tests {
     }
 
     // =========================================================================
-    // JSON-RPC helpers, session wire types, and AppState (R38)
+    // JSON-RPC helpers, session wire types, and McpSessionState (R38)
     // =========================================================================
 
     #[test]
@@ -2309,17 +2309,17 @@ mod tests {
     #[test]
     fn tier_limits_unknown_defaults_to_free() { assert_eq!(tier_limits("trial"), (1_000, 3, 10_000)); }
     #[test]
-    fn app_state_require_session_unauthenticated() { assert!(AppState::unauthenticated().require_session().unwrap_err().contains("Not authenticated")); }
+    fn app_state_require_session_unauthenticated() { assert!(McpSessionState::unauthenticated().require_session().unwrap_err().contains("Not authenticated")); }
     #[test]
     fn app_state_enforce_quota_blocks_when_exceeded() {
         let session = McpSession::new(ares_types::TenantContext::new("t".into(), ares_types::TenantTier::Pro), "ares_testkey12345678".into());
-        let err = AppState::authenticated(session, false).enforce_quota("pro").unwrap_err();
+        let err = McpSessionState::authenticated(session, false).enforce_quota("pro").unwrap_err();
         assert!(err.contains("Usage quota exceeded") && err.contains("pro"));
     }
     #[test]
     fn app_state_auth_and_quota_ok() {
         let session = McpSession::new(ares_types::TenantContext::new("t".into(), ares_types::TenantTier::Dev), "ares_testkey12345678".into());
-        let state = AppState::authenticated(session, true);
+        let state = McpSessionState::authenticated(session, true);
         let session = state.require_session().unwrap();
         assert_eq!(session.tier(), "dev");
         assert!(state.enforce_quota(session.tier()).is_ok());

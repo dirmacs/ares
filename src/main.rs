@@ -148,9 +148,10 @@ impl ares_cordis_core::Service for HealthJobService {
         ctx: &Arc<ares_cordis_core::Context>,
     ) -> ares_cordis_core::ServiceInitFuture<'_> {
         let interval_ms = self.interval_ms;
-        let ctx_clone = ctx.clone();
+        let ctx = ctx.clone();
         Box::pin(async move {
             // Health loop spawns without blocking init; iterates inventory::iter + ctx.get check + ReflectService::notify (Thm 63 guarded withdrawal)
+            let ctx_clone = ctx.clone();
             let handle = tokio::spawn(async move {
                 let ctx_for_task = ctx_clone.clone();
                 let mut interval =
@@ -223,6 +224,10 @@ impl ares_cordis_core::Service for HealthJobService {
             });
             // Detach: init must not block; store handle weakly for drop safety (optional)
             std::mem::drop(handle);
+            #[cfg(feature = "postgres")]
+            if let Some(db) = ctx.get::<ares::TenantDb>() {
+                ares::health_metrics_job::spawn(db.pool().clone());
+            }
             Ok(None)
         })
     }
@@ -1330,14 +1335,6 @@ async fn run_server(
         tracing::warn!("Failed to preload runtime providers on startup: {}", e);
     }
 
-    ares::health_metrics_job::spawn(
-        state
-            .get::<ares::TenantDb>()
-            .expect("not provided")
-            .pool()
-            .clone(),
-    );
-
     // Cordis reactive-fiber demo: a fiber depending on EventsService that flips
     // Active/Inactive as the service is retired/re-provided via admin endpoints.
     // A second dependent fiber on ToolRegistryService registers a distinct
@@ -1938,7 +1935,7 @@ fn ui_routes() -> axum::Router<AppState> {
 mod tests {
     use super::*;
     use ares_cordis_core::loader::Loader;
-    use ares_cordis_core::{Context, PluginRegistry};
+    use ares_cordis_core::{Context, PluginRegistry, Service};
     use ares_tools::ToolService;
     use serde_json::json;
 
@@ -2006,5 +2003,15 @@ disabled = false
             names.iter().any(|name| name == "ProviderRegistry"),
             "ProviderRegistry factory missing from {names:?}"
         );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn health_job_service_init_spawns_without_blocking() {
+        let ctx = Context::new_root();
+        let svc = HealthJobService::new(60_000);
+        let start = std::time::Instant::now();
+        let _ = svc.init(&ctx).await.unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_millis(200));
     }
 }

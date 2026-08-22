@@ -88,7 +88,17 @@ impl AresVectorStore {
 
         Ok(store)
     }
+}
 
+impl ares_cordis_core::Service for AresVectorStore {
+    fn name(&self) -> &'static str { "ares_vector_store" }
+    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool { true }
+}
+
+impl AresVectorStore {
     /// Load document metadata from disk.
     async fn load_documents(&self, path: &Path) -> Result<()> {
         let docs_path = path.join("documents.json");

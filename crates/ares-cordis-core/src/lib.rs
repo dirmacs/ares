@@ -567,6 +567,17 @@ impl Context {
         self.intercept(val)
     }
 
+    /// Wait until `T` is provided on this context (or a parent). Returns the service.
+    /// Polls with a short sleep so a concurrent `provide` unblocks this call.
+    pub async fn inject<T: Service>(self: &Arc<Self>) -> Arc<T> {
+        loop {
+            if let Some(value) = self.get::<T>() {
+                return value;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
     pub fn provide_arc<T: Service>(self: &Arc<Self>, svc: Arc<T>) -> Arc<T> {
         let tid = TypeId::of::<T>();
         let any: Arc<dyn Any + Send + Sync> = svc.clone();
@@ -1610,6 +1621,29 @@ mod tests {
         assert_eq!(inner_ctx.get::<ModelSvc>().unwrap().model, "o1-preview");
         // Outer still sees its own override
         assert_eq!(req_ctx.get::<ModelSvc>().unwrap().model, "gpt-4o-mini");
+    }
+
+    #[tokio::test]
+    async fn inject_returns_immediately_when_already_provided() {
+        let ctx = Context::new_root();
+        ctx.provide(FooService(1));
+        let got = ctx.inject::<FooService>().await;
+        assert_eq!(got.name(), FooService(1).name());
+        assert_eq!(got.0, 1);
+    }
+
+    #[tokio::test]
+    async fn inject_waits_until_service_is_provided() {
+        let ctx = Context::new_root();
+        let waiter = ctx.clone();
+        let handle = tokio::spawn(async move { waiter.inject::<FooService>().await });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        ctx.provide(FooService(42));
+        let got = tokio::time::timeout(std::time::Duration::from_millis(200), handle)
+            .await
+            .expect("inject should complete within 200ms")
+            .expect("inject task should not panic");
+        assert_eq!(got.0, 42);
     }
 
     #[tokio::test]

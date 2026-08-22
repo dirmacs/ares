@@ -26,7 +26,6 @@ use chrono::Utc;
 use std::sync::Arc;
 use ares_cordis_core::Context;
 use std::time::Instant;
-use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 // ============================================================================
@@ -155,20 +154,18 @@ pub async fn embedding_service_from_ctx(
     Ok(created)
 }
 
-/// Global vector store (lazy initialized).
-/// Uses a Mutex to allow late initialization with config-driven path.
-static VECTOR_STORE: OnceCell<Arc<AresVectorStore>> = OnceCell::const_new();
-
-/// Get or create the vector store with the configured path.
-/// The path is read from config on first initialization.
-pub async fn get_vector_store(vector_path: &str) -> Result<Arc<AresVectorStore>> {
-    VECTOR_STORE
-        .get_or_try_init(|| async {
-            let store = AresVectorStore::new(Some(vector_path.to_string())).await?;
-            Ok::<_, AppError>(Arc::new(store))
-        })
-        .await
-        .cloned()
+/// Resolve AresVectorStore from Context, constructing on miss.
+/// Context is the singleton; there is no process-global cache.
+pub async fn vector_store_from_ctx(
+    ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    vector_path: &str,
+) -> Result<Arc<AresVectorStore>> {
+    if let Some(existing) = ctx.get::<AresVectorStore>() {
+        return Ok(existing);
+    }
+    let store = Arc::new(AresVectorStore::new(Some(vector_path.to_string())).await?);
+    ctx.provide_arc(store.clone());
+    Ok(store)
 }
 
 // ============================================================================
@@ -225,7 +222,7 @@ pub async fn ingest(
     let embedding_service = embedding_service_from_ctx(&ctx).await?;
     let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
     let vector_path = &config.rag.vector.vector_path;
-    let vector_store = get_vector_store(vector_path).await?;
+    let vector_store = vector_store_from_ctx(&ctx, vector_path).await?;
 
     // Parse chunking strategy
     let strategy: ChunkingStrategy = payload
@@ -356,7 +353,7 @@ pub async fn search(
     let embedding_service = embedding_service_from_ctx(&ctx).await?;
     let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
     let vector_path = &config.rag.vector.vector_path;
-    let vector_store = get_vector_store(vector_path).await?;
+    let vector_store = vector_store_from_ctx(&ctx, vector_path).await?;
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
@@ -567,7 +564,7 @@ pub async fn delete_collection(
 
     let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
     let vector_path = &config.rag.vector.vector_path;
-    let vector_store = get_vector_store(vector_path).await?;
+    let vector_store = vector_store_from_ctx(&ctx, vector_path).await?;
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
@@ -620,7 +617,7 @@ pub async fn list_collections(
 ) -> Result<Json<Vec<crate::db::CollectionInfo>>> {
     let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
     let vector_path = &config.rag.vector.vector_path;
-    let vector_store = get_vector_store(vector_path).await?;
+    let vector_store = vector_store_from_ctx(&ctx, vector_path).await?;
     let all_collections = vector_store.list_collections().await?;
 
     // Filter to only collections belonging to this user and unscope names
@@ -737,6 +734,18 @@ mod tests {
         let ctx = ares_cordis_core::Context::new_root();
         // Reuse is ctx.get / provide_arc; do not construct here (model init is heavy).
         assert!(ctx.get::<EmbeddingService>().is_none());
+    }
+
+    #[tokio::test]
+    async fn vector_store_from_ctx_none_without_provide() {
+        let ctx = ares_cordis_core::Context::new_root();
+        assert!(ctx.get::<AresVectorStore>().is_none());
+    }
+
+    #[test]
+    fn ares_vector_store_impls_cordis_service() {
+        fn assert_service<T: ares_cordis_core::Service>() {}
+        assert_service::<AresVectorStore>();
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -459,19 +459,27 @@ impl AgentExecutionService {
             .or_else(|| self.tool_service.clone());
         // Keep trait-object probe for future `ctx.get::<dyn ToolService>()` migration (do not break compile while `Context::get` gains `?Sized`).
         let _dyn_tool_probe: Option<Arc<dyn ToolService>> = self.tool_service.clone();
-        let tool_definitions = resolved_tool_service
-            .as_ref()
-            .map(|svc| svc.list(tenant.clone()))
-            .unwrap_or_default();
+        let tool_definitions = if let Some(unified) = ctx.get::<UnifiedToolService>() {
+            unified.list_for_ctx(ctx)
+        } else {
+            resolved_tool_service
+                .as_ref()
+                .map(|svc| svc.list(tenant.clone()))
+                .unwrap_or_default()
+        };
         tracing::debug!(
             count = tool_definitions.len(),
             has_service = resolved_tool_service.is_some(),
             "tools resolved via ToolService / UnifiedToolService precedence"
         );
         // Keep a handle for direct resolve fallbacks
-        let _resolve_probe = resolved_tool_service
-            .as_ref()
-            .and_then(|svc| svc.resolve("__probe__", tenant.clone()));
+        let _resolve_probe = if let Some(unified) = ctx.get::<UnifiedToolService>() {
+            unified.resolve_for_ctx(ctx, "__probe__")
+        } else {
+            resolved_tool_service
+                .as_ref()
+                .and_then(|svc| svc.resolve("__probe__", tenant.clone()))
+        };
 
         // Build system prompt with injected memory
         let system_prompt = if let Some(extra) = injected_context.clone() {
@@ -879,6 +887,34 @@ mod tests {
     #[tokio::test]
     async fn execute_lists_tools_using_tenant_context_intercept() {
         execute_with_tenant_context_intercept("acme").await;
+    }
+
+    /// When `UnifiedToolService` is on ctx, execute must call `list_for_ctx` /
+    /// `resolve_for_ctx` (isolate+intercept) and skip injected `ToolService::list`.
+    #[tokio::test]
+    async fn execute_lists_tools_via_unified_list_for_ctx() {
+        let recorder = Arc::new(RecordingToolService {
+            last: std::sync::Mutex::new(None),
+        });
+        let svc = AgentExecutionService::new().with_tool_service(recorder.clone());
+        let ctx = Context::new_root().with_intercept(ares_types::models::TenantContext::new(
+            "acme".into(),
+            ares_types::models::TenantTier::Pro,
+        ));
+        let _unified = ctx.provide(UnifiedToolService::new(Arc::new(
+            ares_tools::ToolRegistry::new(),
+        )));
+        let req = AgentRequest {
+            agent_name: "echo".into(),
+            message: "hi".into(),
+            ..Default::default()
+        };
+        svc.execute(req, &ctx).await.expect("echo fallback");
+        assert_eq!(
+            *recorder.last.lock().unwrap(),
+            None,
+            "injected RecordingToolService must not list/resolve when UnifiedToolService is on ctx"
+        );
     }
 
     /// Intercept path without an `AgentRequest` tenant field (aliases the listing test).

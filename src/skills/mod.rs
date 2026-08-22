@@ -394,10 +394,10 @@ impl SkillsService {
             // Prove execution is wired (observability path) — touch it
             let _exec = &self.execution;
 
-            // Resolve PgPool via Cordis context — prefer PostgresClientService, fallback to DbService
+            // Resolve PgPool via Cordis context — prefer PostgresClient, fallback to DbService
             let pool: sqlx::PgPool = {
-                if let Some(svc) = ctx.get::<crate::context_services::PostgresClientService>() {
-                    svc.0.pool.clone()
+                if let Some(svc) = ctx.get::<crate::PostgresClient>() {
+                    svc.pool.clone()
                 } else if let Some(svc) = ctx.get::<crate::context_services::DbService>() {
                     // DbService holds trait object; try to downcast via runtime tool pool fallback
                     // If we cannot get a PgPool, return error

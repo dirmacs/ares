@@ -105,6 +105,14 @@ impl LoopRegistry {
     }
 }
 
+impl ares_cordis_core::Service for LoopRegistry {
+    fn name(&self) -> &'static str { "loop_registry" }
+    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool { true }
+}
+
 // ---------------------------------------------------------------------------
 // Request / response types
 // ---------------------------------------------------------------------------
@@ -168,10 +176,10 @@ pub async fn start_loop(
         finish_reason: None,
     };
 
-    ctx.get::<crate::context_services::LoopRegistryService>().expect("not provided").0.insert(entry).await;
+    ctx.get::<LoopRegistry>().expect("not provided").insert(entry).await;
 
     // Clone handles needed by the background task.
-    let registry = ctx.get::<crate::context_services::LoopRegistryService>().expect("not provided").0.clone();
+    let registry = ctx.get::<LoopRegistry>().expect("not provided").clone();
     let loop_id = id.clone();
     let agent_name = req.agent.clone();
     let prompt = req.prompt.clone();
@@ -206,7 +214,7 @@ pub async fn start_loop(
 
 /// GET /loops — list all loops with their current state summaries.
 pub async fn list_loops(State(ctx): State<Arc<Context>>) -> Json<Vec<LoopSummary>> {
-    Json(ctx.get::<crate::context_services::LoopRegistryService>().expect("not provided").0.list().await)
+    Json(ctx.get::<LoopRegistry>().expect("not provided").list().await)
 }
 
 /// DELETE /loops/{id} — set the stop flag; the runner will halt after the current tick.
@@ -214,7 +222,7 @@ pub async fn stop_loop(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    if ctx.get::<crate::context_services::LoopRegistryService>().expect("not provided").0.stop(&id).await {
+    if ctx.get::<LoopRegistry>().expect("not provided").stop(&id).await {
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound(format!("Loop '{}' not found", id)))
@@ -479,5 +487,15 @@ mod tests {
     async fn build_tick_executes_successfully() {
         let tick = build_tick("agent".into(), "prompt".into());
         assert!(tick().await.is_ok());
+    }
+
+    #[test]
+    fn loop_registry_readable_via_cordis() {
+        use ares_cordis_core::Service;
+        let ctx = ares_cordis_core::Context::new_root();
+        ctx.provide(LoopRegistry::new());
+        let got = ctx.get::<LoopRegistry>().expect("provided");
+        assert_eq!(got.name(), "loop_registry");
+        assert!(got.check());
     }
 }

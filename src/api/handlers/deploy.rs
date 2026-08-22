@@ -57,10 +57,26 @@ pub struct ServiceHealth {
 // Deploy registry — in-memory store for deploy status
 // ---------------------------------------------------------------------------
 
-pub type DeployRegistry = Arc<RwLock<HashMap<String, DeployStatus>>>;
+#[derive(Clone, Default)]
+pub struct DeployRegistry(Arc<RwLock<HashMap<String, DeployStatus>>>);
+
+impl std::ops::Deref for DeployRegistry {
+    type Target = RwLock<HashMap<String, DeployStatus>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ares_cordis_core::Service for DeployRegistry {
+    fn name(&self) -> &'static str { "deploy_registry" }
+    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool { true }
+}
 
 pub fn new_deploy_registry() -> DeployRegistry {
-    Arc::new(RwLock::new(HashMap::new()))
+    DeployRegistry::default()
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +105,7 @@ pub async fn trigger_deploy(
         )));
     }
 
-    let registry = &ctx.get::<crate::context_services::DeployRegistryService>().expect("not provided").0;
+    let registry = ctx.get::<DeployRegistry>().expect("not provided");
 
     // Check if there's already a running deploy for this target
     {
@@ -181,7 +197,7 @@ pub async fn get_deploy_status(
     State(ctx): State<Arc<Context>>,
     Path(deploy_id): Path<String>,
 ) -> Result<Json<DeployStatus>> {
-    let registry = ctx.get::<crate::context_services::DeployRegistryService>().expect("not provided").0.clone();
+    let registry = ctx.get::<DeployRegistry>().expect("not provided");
     let deploys = registry.read().await;
     deploys
         .get(&deploy_id)
@@ -192,7 +208,7 @@ pub async fn get_deploy_status(
 
 /// GET /api/admin/deploys — list recent deploys
 pub async fn list_deploys(State(ctx): State<Arc<Context>>) -> Json<Vec<DeployStatus>> {
-    let registry = ctx.get::<crate::context_services::DeployRegistryService>().expect("not provided").0.clone();
+    let registry = ctx.get::<DeployRegistry>().expect("not provided");
     let deploys = registry.read().await;
     let mut list: Vec<DeployStatus> = deploys.values().cloned().collect();
     list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
@@ -395,14 +411,14 @@ use ares_cordis_core::Context;
 
         fn test_app_state(deploy_registry: DeployRegistry) -> AppState {
             let ctx = ares_cordis_core::Context::new_root();
-            ctx.provide(crate::context_services::DeployRegistryService(deploy_registry));
+            ctx.provide(deploy_registry);
             // Provide minimal other services needed for handler to avoid panic on expect
             let config = minimal_config();
             let config_manager = Arc::new(AresConfigManager::from_config(config));
-            ctx.provide(crate::context_services::ConfigManagerService(config_manager.clone()));
+            ctx.provide_arc(config_manager.clone());
             let db = Arc::new(PostgresClient::new_test());
             ctx.provide(crate::context_services::DbService(db.clone() as Arc<dyn crate::db::traits::DatabaseClient>));
-            ctx.provide(crate::context_services::LoopRegistryService(crate::api::handlers::loops::LoopRegistry::new()));
+            ctx.provide(crate::api::handlers::loops::LoopRegistry::new());
             ctx
         }
 
@@ -578,6 +594,16 @@ use ares_cordis_core::Context;
                 .await
                 .unwrap_err();
             assert!(matches!(err, AppError::InvalidInput(_)));
+        }
+
+        #[test]
+        fn deploy_registry_readable_via_cordis() {
+            use ares_cordis_core::Service;
+            let ctx = ares_cordis_core::Context::new_root();
+            ctx.provide(new_deploy_registry());
+            let got = ctx.get::<DeployRegistry>().expect("provided");
+            assert_eq!(got.name(), "deploy_registry");
+            assert!(got.check());
         }
     }
 }

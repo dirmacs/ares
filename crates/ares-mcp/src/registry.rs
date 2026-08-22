@@ -95,6 +95,14 @@ impl McpRegistry {
     }
 }
 
+impl ares_cordis_core::Service for McpRegistry {
+    fn name(&self) -> &'static str { "mcp_registry" }
+    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool { true }
+}
+
 fn is_mcp_config_file(path: &Path) -> bool {
     if path.extension().and_then(|s| s.to_str()) != Some("toon") {
         return false;
@@ -541,6 +549,16 @@ timeout_secs = 10
         bad.input_schema = serde_json::from_value(json!({"type":"array"})).unwrap_or_default();
         assert!(matches!(register_tool(&mut tools, bad).unwrap_err(), RegistryError::InvalidSchema(_)));
         assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn mcp_registry_readable_via_cordis() {
+        use ares_cordis_core::Service;
+        let ctx = std::sync::Arc::new(ares_cordis_core::Context::new_root());
+        ctx.provide(McpRegistry::new());
+        let got = ctx.get::<McpRegistry>().expect("provided");
+        assert_eq!(got.name(), "mcp_registry");
+        assert!(got.check());
     }
 
 }

@@ -1,6 +1,7 @@
 # Cordis plugin entries loaded at startup.
 # Each entry names a plugin to instantiate with optional config.
 # The Loader reconciles this file against running state on startup and hot-reload.
+# Order matters: later factories read earlier services from Context.
 
 [[entry]]
 id = "calculator"
@@ -19,6 +20,104 @@ disabled = false
 [[entry]]
 id = "probe"
 plugin = "noop_probe"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "catalog"
+plugin = "CatalogService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "providers"
+plugin = "ProviderRegistry"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "llm"
+plugin = "LlmFactory"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "auth"
+plugin = "AuthService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "dynamic-config"
+plugin = "DynamicConfig"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "tools"
+plugin = "ToolRegistry"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "runtime-tools"
+plugin = "RuntimeToolRegistry"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "agents"
+plugin = "AgentRegistry"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "app-state"
+plugin = "AppStateServices"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "execution"
+plugin = "ExecutionStack"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "scheduler"
+plugin = "SchedulerService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "pipeline"
+plugin = "PipelineService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "trigger"
+plugin = "TriggerService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "health"
+plugin = "HealthJobService"
 disabled = false
 
 [entry.config]

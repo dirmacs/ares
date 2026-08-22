@@ -24,7 +24,6 @@ use crate::{
 use axum::{extract::State, Json};
 use chrono::Utc;
 use std::sync::Arc;
-use crate::AppState;
 use ares_cordis_core::Context;
 use std::time::Instant;
 use tokio::sync::OnceCell;
@@ -149,6 +148,19 @@ pub async fn get_embedding_service() -> Result<Arc<EmbeddingService>> {
         .cloned()
 }
 
+/// Resolve EmbeddingService from Context, lazily constructing via OnceCell on miss.
+/// Construction (model download) happens on first RAG request, not at boot.
+pub async fn embedding_service_from_ctx(
+    ctx: &std::sync::Arc<ares_cordis_core::Context>,
+) -> Result<Arc<EmbeddingService>> {
+    if let Some(existing) = ctx.get::<EmbeddingService>() {
+        return Ok(existing);
+    }
+    let created = get_embedding_service().await?;
+    ctx.provide_arc(created.clone());
+    Ok(created)
+}
+
 /// Global vector store (lazy initialized).
 /// Uses a Mutex to allow late initialization with config-driven path.
 static VECTOR_STORE: OnceCell<Arc<AresVectorStore>> = OnceCell::const_new();
@@ -200,7 +212,7 @@ pub async fn ingest(
         return Err(AppError::InvalidInput("Content required".into()));
     }
 
-    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::TenantDb>().expect("not provided").pool().clone());
     if !allowlist_store
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
@@ -215,8 +227,9 @@ pub async fn ingest(
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
     // Get services
-    let embedding_service = get_embedding_service().await?;
-    let vector_path = &ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config().rag.vector.vector_path;
+    let embedding_service = embedding_service_from_ctx(&ctx).await?;
+    let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
+    let vector_path = &config.rag.vector.vector_path;
     let vector_store = get_vector_store(vector_path).await?;
 
     // Parse chunking strategy
@@ -322,13 +335,13 @@ pub async fn search(
 ) -> Result<Json<RagSearchResponse>> {
     let start = Instant::now();
     // Respect RAG feature flag
-    if !ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config().rag.vector.enabled {
+    if !ctx.get::<crate::AresConfigManager>().expect("not provided").config().rag.vector.enabled {
         return Err(AppError::FeatureDisabled(
             "RAG feature is disabled. Set `[rag.vector] enabled = true` in ares.toml".into(),
         ));
     }
 
-    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::TenantDb>().expect("not provided").pool().clone());
     if !allowlist_store
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
@@ -344,8 +357,9 @@ pub async fn search(
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
     // Get services
-    let embedding_service = get_embedding_service().await?;
-    let vector_path = &ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config().rag.vector.vector_path;
+    let embedding_service = embedding_service_from_ctx(&ctx).await?;
+    let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
+    let vector_path = &config.rag.vector.vector_path;
     let vector_store = get_vector_store(vector_path).await?;
 
     // Check collection exists
@@ -540,7 +554,7 @@ pub async fn delete_collection(
         return Err(AppError::InvalidInput("Collection name required".into()));
     }
 
-    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::TenantDb>().expect("not provided").pool().clone());
     if !allowlist_store
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
@@ -554,7 +568,8 @@ pub async fn delete_collection(
     // Scope collection to user for isolation
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
-    let vector_path = &ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config().rag.vector.vector_path;
+    let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
+    let vector_path = &config.rag.vector.vector_path;
     let vector_store = get_vector_store(vector_path).await?;
 
     // Check collection exists
@@ -606,7 +621,8 @@ pub async fn list_collections(
     State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<Vec<crate::db::CollectionInfo>>> {
-    let vector_path = &ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config().rag.vector.vector_path;
+    let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
+    let vector_path = &config.rag.vector.vector_path;
     let vector_store = get_vector_store(vector_path).await?;
     let all_collections = vector_store.list_collections().await?;
 
@@ -621,7 +637,7 @@ pub async fn list_collections(
         })
         .collect();
 
-    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone());
+    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::TenantDb>().expect("not provided").pool().clone());
     let db_sources = allowlist_store.list_rag_sources(&claims.sub).await?;
     let user_collections = filter_collections_by_allowed_sources(user_collections, &db_sources);
 
@@ -716,5 +732,11 @@ mod tests {
 
         let filtered = filter_collections_by_allowed_sources(collections, &[]);
         assert!(filtered.is_empty());
+    }
+
+    #[tokio::test]
+    async fn embedding_service_from_ctx_none_without_provide() {
+        let ctx = ares_cordis_core::Context::new_root();
+        assert!(ctx.get::<EmbeddingService>().is_none());
     }
 }

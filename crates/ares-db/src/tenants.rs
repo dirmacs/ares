@@ -418,6 +418,14 @@ impl TenantDb {
     }
 }
 
+impl ares_cordis_core::Service for TenantDb {
+    fn name(&self) -> &'static str { "tenant_db" }
+    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool { true }
+}
+
 fn generate_api_key() -> String {
     let bytes: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
     format!("ares_{}", hex::encode(bytes))

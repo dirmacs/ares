@@ -41,7 +41,7 @@ pub async fn list_agents(
     let page = normalize_page(q.page);
     let per_page = normalize_per_page(q.per_page, 20);
 
-    let agents = tenant_agents::list_tenant_agents(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tc.tenant_id).await?;
+    let agents = tenant_agents::list_tenant_agents(&state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(), &tc.tenant_id).await?;
     let items: Vec<V1Agent> = agents.into_iter().map(V1Agent::from).collect();
 
     Ok(Json(paginate_vec(items, page, per_page)))
@@ -62,7 +62,7 @@ pub async fn get_agent(
         None => state_ctx,
     };
     let agent =
-        tenant_agents::get_tenant_agent(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(), &tc.tenant_id, &name).await?;
+        tenant_agents::get_tenant_agent(&state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(), &tc.tenant_id, &name).await?;
     Ok(Json(V1Agent::from(agent)))
 }
 
@@ -106,7 +106,7 @@ pub async fn run_agent(
     // Execute agent with timing
     let start = std::time::Instant::now();
     use crate::agents::Agent;
-    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(&state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &state_ctx,
         &name,
@@ -152,7 +152,7 @@ pub async fn run_agent(
 
             // Record agent run
             {
-                let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+                let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
                 let tid = tc.tenant_id.clone();
                 let aname = resolved_agent.agent_name.clone();
                 let dur = duration_ms as i64;
@@ -281,7 +281,7 @@ pub async fn run_agent(
         run_id: run_id.clone(),
         tenant_id: tc.tenant_id.clone(),
         agent_name: name.clone(),
-        pool: state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+        pool: state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
     });
     resolved_agent.agent.set_observability(obs.clone());
 
@@ -331,7 +331,7 @@ pub async fn run_agent(
 
     // Aggregate run costs (fire-and-forget)
     let dur_i64 = duration_ms as i64;
-    let _pool_clone = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let _pool_clone = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let obs_for_spawn = obs.clone();
     tokio::spawn(async move {
         obs_for_spawn.aggregate_run_cost(dur_i64).await;
@@ -361,7 +361,7 @@ pub async fn run_agent(
             // Record agent run
             {
                 let run_id_for_insert = run_id.clone();
-                let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+                let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
                 let tid = tc.tenant_id.clone();
                 let aname = resolved_agent.agent_name.clone();
                 let itok = input_tokens as i64;
@@ -452,7 +452,7 @@ pub async fn run_agent(
             state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
             // Record failed run
             {
-                let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+                let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
                 let tid = tc.tenant_id.clone();
                 let aname = resolved_agent.agent_name.clone();
                 let err_msg = e.to_string();
@@ -546,7 +546,7 @@ pub async fn list_agent_runs(
     let per_page = normalize_per_page(q.per_page, 25);
     let offset = list_runs_offset(page, per_page);
 
-    let runs = agent_runs::list_agent_runs(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+    let runs = agent_runs::list_agent_runs(&state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
         &tc.tenant_id,
         Some(&name),
         per_page as i64,
@@ -579,7 +579,7 @@ pub async fn get_usage(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    let summary = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.get_usage_summary(&tc.tenant_id).await?;
+    let summary = state_ctx.get::<crate::TenantDb>().expect("not provided").get_usage_summary(&tc.tenant_id).await?;
 
     let now = Utc::now();
     let period_start = usage_period_start(now);
@@ -613,7 +613,7 @@ pub async fn list_api_keys(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    let keys = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.list_api_keys(&tc.tenant_id).await?;
+    let keys = state_ctx.get::<crate::TenantDb>().expect("not provided").list_api_keys(&tc.tenant_id).await?;
 
     let response: Vec<V1ApiKey> = keys
         .into_iter()
@@ -645,7 +645,7 @@ pub async fn create_api_key(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    let (api_key, raw_key) = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
+    let (api_key, raw_key) = state_ctx.get::<crate::TenantDb>().expect("not provided")
         .create_api_key(&tc.tenant_id, payload.name)
         .await?;
 
@@ -676,7 +676,7 @@ pub async fn revoke_api_key(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0
+    state_ctx.get::<crate::TenantDb>().expect("not provided")
         .revoke_api_key(&tc.tenant_id, &key_id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -698,7 +698,7 @@ pub async fn delete_tenant_data(
     };
     let tid = &tc.tenant_id;
 
-    let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
 
     let usage_rows: Vec<i64> =
         sqlx::query_scalar("DELETE FROM usage_events WHERE tenant_id = $1 RETURNING 1")

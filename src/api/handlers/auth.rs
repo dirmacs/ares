@@ -100,7 +100,7 @@ pub async fn register(
     }
 
     // Hash password
-    let password_hash = ctx.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0.hash_password(&payload.password)?;
+    let password_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_password(&payload.password)?;
 
     // Create user
     let user_id = Uuid::new_v4().to_string();
@@ -109,11 +109,11 @@ pub async fn register(
         .await?;
 
     // Generate tokens
-    let tokens = ctx.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0
+    let tokens = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided")
         .generate_tokens(&user_id, &payload.email)?;
 
     // Store refresh token
-    let token_hash = ctx.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0.hash_token(&tokens.refresh_token);
+    let token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
     ctx.get::<crate::context_services::DbService>().expect("not provided").0
         .create_session(
@@ -151,17 +151,17 @@ pub async fn login(
         .ok_or_else(invalid_credentials_error)?;
 
     // Verify password
-    if !ctx.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0
+    if !ctx.get::<crate::auth::jwt::AuthService>().expect("not provided")
         .verify_password(&payload.password, &user.password_hash)?
     {
         return Err(invalid_credentials_error());
     }
 
     // Generate tokens
-    let tokens = ctx.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0.generate_tokens(&user.id, &user.email)?;
+    let tokens = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").generate_tokens(&user.id, &user.email)?;
 
     // Store refresh token
-    let token_hash = ctx.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0.hash_token(&tokens.refresh_token);
+    let token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
     ctx.get::<crate::context_services::DbService>().expect("not provided").0
         .create_session(
@@ -205,7 +205,7 @@ pub async fn logout(
     Json(payload): Json<LogoutRequest>,
 ) -> Result<Json<LogoutResponse>> {
     // Hash the refresh token and delete the session
-    let token_hash = ctx.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0.hash_token(&payload.refresh_token);
+    let token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(&payload.refresh_token);
 
     // Attempt to delete the session - we don't error if it doesn't exist
     // (token may already be expired/revoked, which is fine for logout)
@@ -232,10 +232,10 @@ pub async fn refresh_token(
     let refresh_token = refresh_token_from_request(&payload);
 
     // Verify refresh token JWT signature and expiry
-    let claims = ctx.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0.verify_token(refresh_token)?;
+    let claims = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").verify_token(refresh_token)?;
 
     // Hash the refresh token and validate it exists in the database
-    let token_hash = ctx.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0.hash_token(refresh_token);
+    let token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(refresh_token);
     let user_id = ctx.get::<crate::context_services::DbService>().expect("not provided").0
         .validate_session(&token_hash)
         .await?
@@ -247,11 +247,11 @@ pub async fn refresh_token(
     ctx.get::<crate::context_services::DbService>().expect("not provided").0.delete_session_by_token_hash(&token_hash).await?;
 
     // Generate new tokens
-    let tokens = ctx.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0
+    let tokens = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided")
         .generate_tokens(&claims.sub, &claims.email)?;
 
     // Store the new refresh token in a new session
-    let new_token_hash = ctx.get::<crate::context_services::AuthServiceWrapper>().expect("not provided").0.hash_token(&tokens.refresh_token);
+    let new_token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
     ctx.get::<crate::context_services::DbService>().expect("not provided").0
         .create_session(

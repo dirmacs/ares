@@ -1000,6 +1000,14 @@ impl EmbeddingService {
     }
 }
 
+impl ares_cordis_core::Service for EmbeddingService {
+    fn name(&self) -> &'static str { "embedding_service" }
+    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool { true }
+}
+
 // ============================================================================
 // Cached Embedding Service
 // ============================================================================

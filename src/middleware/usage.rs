@@ -19,21 +19,16 @@ pub async fn track_usage(mut req: Request, next: Next) -> Response {
     let response = next.run(req).await;
 
     if should_record_usage(tenant_id.as_deref(), tenant_db.is_some()) {
-        let tid = tenant_id.expect("checked above");
-        let db = tenant_db.expect("checked above");
-        let pool = db.pool().clone();
         if let Some(snapshot) = usage.as_ref().and_then(|u| u.snapshot()) {
+            let tid = tenant_id.expect("checked above");
+            let db = tenant_db.expect("checked above");
+            let pool = db.pool().clone();
             let tenant_id = usage
                 .as_ref()
                 .map(|u| u.tenant_id.clone())
                 .unwrap_or(tid);
             tokio::spawn(async move {
                 let _ = record_usage_params(&tenant_id, &snapshot, &pool).await;
-            });
-        } else {
-            let headers = response.headers().clone();
-            tokio::spawn(async move {
-                let _ = crate::middleware::usage::record_usage(&tid, &headers, &pool).await;
             });
         }
     }
@@ -223,17 +218,6 @@ async fn record_usage_params(
     .execute(pool)
     .await?;
     Ok(())
-}
-
-async fn record_usage(
-    tenant_id: &str,
-    headers: &axum::http::HeaderMap,
-    pool: &sqlx::PgPool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(snapshot) = parse_metering_headers(headers) else {
-        return Ok(());
-    };
-    record_usage_params(tenant_id, &snapshot, pool).await
 }
 
 #[cfg(test)]
@@ -496,5 +480,21 @@ mod tests {
         let params = usage_event_params_from_ctx(&child).expect("intercepted clone sees record");
         assert_eq!(params.tenant_id, "acme");
         assert_eq!(params.token_count, 10);
+    }
+
+    #[test]
+    fn track_usage_records_only_from_shared_snapshot() {
+        let usage = UsageContext::new("acme");
+        assert!(usage.snapshot().is_none());
+        usage.record(MeteringSnapshot {
+            input_tokens: 1,
+            output_tokens: 2,
+            token_count: 3,
+            model_name: None,
+            agent_name: None,
+            provider_name: None,
+        });
+        let clone = usage.clone();
+        assert_eq!(clone.snapshot().map(|s| s.token_count), Some(3));
     }
 }

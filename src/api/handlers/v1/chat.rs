@@ -140,9 +140,8 @@ pub async fn v1_chat(
         // then attach the tenant's current allowlist without mutating root state.
         let req_ctx = if let Some(m) = &payload.model {
             let pool = state_ctx
-                .get::<crate::context_services::TenantDbService>()
-                .expect("TenantDbService not provided")
-                .0
+                .get::<crate::TenantDb>()
+                .expect("not provided")
                 .pool()
                 .clone();
             let allowed_models = crate::db::tenant_allowlist::TenantAllowlistStore::new(&pool)
@@ -168,7 +167,7 @@ pub async fn v1_chat(
 
         // Record agent run with metadata from ExecutionResult
         {
-            let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+            let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
             let tid = tc.tenant_id.clone();
             let aname = exec_result.agent_name.clone();
             let itok = input_tokens as i64;
@@ -229,7 +228,7 @@ pub async fn v1_chat(
     };
 
     let mut resolved_agent = tenant_agent::resolve_agent_from_ctx(
-        state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool(),
+        state_ctx.get::<crate::TenantDb>().expect("not provided").pool(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &state_ctx,
         &agent_name,
@@ -260,7 +259,7 @@ pub async fn v1_chat(
 
     // Record agent run with real model/provider
     {
-        let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+        let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
         let tid = tc.tenant_id.clone();
         let aname = resolved_agent.agent_name.clone();
         let itok = input_tokens as i64;
@@ -348,7 +347,7 @@ async fn ensure_research_model_allowed(
     tenant_id: &str,
     model_name: &str,
 ) -> Result<()> {
-    let pool = state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let allowlist_store = crate::db::tenant_allowlist::TenantAllowlistStore::new(&pool);
     research_model_allowlist_decision(
         allowlist_store
@@ -393,7 +392,7 @@ pub async fn v1_research(
     }
 
     let start = std::time::Instant::now();
-    let config = state_ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
+    let config = state_ctx.get::<crate::AresConfigManager>().expect("not provided").config();
     let workflow = config.get_workflow("research");
     let (depth, max_iterations) = research_depth_and_iterations(
         payload.depth,
@@ -411,7 +410,7 @@ pub async fn v1_research(
         .map(|m| m.provider.clone())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let llm_client = match state_ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0
+    let llm_client = match state_ctx.get::<crate::ProviderRegistry>().expect("not provided")
         .create_client_for_model_ctx(&state_ctx, model_key)
         .await
     {

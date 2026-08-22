@@ -78,7 +78,7 @@ pub async fn get_skill(
 
 /// Build SkillsConfig from AppState config manager.
 fn skills_config_from_state(ctx: &AppState) -> crate::skills::SkillsConfig {
-    let config = ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
+    let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
     match &config.skills {
         Some(skills_toml) => crate::skills::SkillsConfig {
             project_dir: skills_toml.project_dir.clone(),

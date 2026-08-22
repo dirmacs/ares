@@ -752,7 +752,7 @@ async fn execute_scheduled_agent(
         }
     }
 
-    let pool = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = app_state.get::<crate::TenantDb>().expect("not provided").pool().clone();
 
     let tenant_agent_record =
         crate::db::tenant_agents::get_tenant_agent(&pool, &sched.tenant_id, &sched.agent_name)

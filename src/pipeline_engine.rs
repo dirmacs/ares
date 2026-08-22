@@ -292,7 +292,7 @@ pub(crate) async fn execute_pipeline_with_origin(
     origin: Option<PipelineOrigin>,
     app_state: &AppState,
 ) -> Result<Vec<String>, String> {
-    let __pool_1 = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_1 = app_state.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = PipelineStore::new(&__pool_1);
     let pipelines = store
         .get_pipelines_for_source(tenant_id, source_agent_name)
@@ -349,7 +349,7 @@ async fn execute_target_agent(
         run_cost_aggregation_request, spawn_run_cost_aggregation, RunObservability,
     };
 
-    let pool = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = app_state.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let scoped = tenant_scoped_ctx(app_state, tenant_id);
 
     let mut resolved_agent = tenant_agent::resolve_agent_from_ctx(&pool,

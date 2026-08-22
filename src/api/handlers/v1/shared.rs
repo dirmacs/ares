@@ -219,11 +219,11 @@ pub(crate) async fn enforce_quota(state: &AppState) -> Result<()> {
     if tc.tier == TenantTier::Enterprise {
         return Ok(());
     }
-    let monthly = state.get::<crate::context_services::TenantDbService>().expect("not provided").0
+    let monthly = state.get::<crate::TenantDb>().expect("not provided")
         .get_monthly_requests(&tc.tenant_id)
         .await
         .unwrap_or(0);
-    let daily = state.get::<crate::context_services::TenantDbService>().expect("not provided").0
+    let daily = state.get::<crate::TenantDb>().expect("not provided")
         .get_daily_requests(&tc.tenant_id)
         .await
         .unwrap_or(0);

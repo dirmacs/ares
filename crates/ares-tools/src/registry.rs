@@ -172,6 +172,14 @@ impl Default for ToolRegistry {
     }
 }
 
+impl ares_cordis_core::Service for ToolRegistry {
+    fn name(&self) -> &'static str { "tool_registry" }
+    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool { true }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,4 +605,11 @@ description = "Calc tool"
         ));
     }
 
+
+    #[test]
+    fn tool_registry_readable_via_cordis_provide() {
+        let ctx = ares_cordis_core::Context::new_root();
+        ctx.provide(ToolRegistry::new());
+        assert!(ctx.get::<ToolRegistry>().is_some());
+    }
 }

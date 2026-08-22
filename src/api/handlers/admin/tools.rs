@@ -18,7 +18,7 @@ use sha2::Digest;
 pub async fn list_runtime_tools(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<ares_db::runtime_tools::RuntimeTool>>> {
-    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_1 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RuntimeToolStore::new(&__pool_1);
     let tools = store.get_all().await?;
     Ok(Json(tools))
@@ -29,7 +29,7 @@ pub async fn get_runtime_tool(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<Json<ares_db::runtime_tools::RuntimeTool>> {
-    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_2 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RuntimeToolStore::new(&__pool_2);
     let tool = store
         .get_by_id(&id)
@@ -46,7 +46,7 @@ pub async fn create_runtime_tool(
 ) -> Result<Json<serde_json::Value>> {
     validate_runtime_tool_execution_config(&req.tool_type, &req.execution_config)?;
 
-    let __pool_3 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_3 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RuntimeToolStore::new(&__pool_3);
     let tool = store.create(&req).await?;
 
@@ -54,7 +54,7 @@ pub async fn create_runtime_tool(
         tracing::warn!("Failed to hot-reload runtime tools after create: {}", e);
     }
 
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let tool_id = tool.id.clone();
     let tool_name = tool.name.clone();
     let tool_type = tool.tool_type.clone();
@@ -92,7 +92,7 @@ pub async fn update_runtime_tool(
     Json(req): Json<UpdateRuntimeToolRequest>,
 ) -> Result<Json<serde_json::Value>> {
     validate_runtime_tool_update_scope_preflight(&req)?;
-    let __pool_4 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_4 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RuntimeToolStore::new(&__pool_4);
     if let Some(execution_config) = &req.execution_config {
         let existing = store
@@ -107,7 +107,7 @@ pub async fn update_runtime_tool(
         tracing::warn!("Failed to hot-reload runtime tools after update: {}", e);
     }
 
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let tool_id = id.clone();
     let new_version = tool.version;
     tokio::spawn(async move {
@@ -136,7 +136,7 @@ pub async fn delete_runtime_tool(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let __pool_5 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_5 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RuntimeToolStore::new(&__pool_5);
     let affected = store.delete(&id).await?;
     if affected == 0 {
@@ -147,7 +147,7 @@ pub async fn delete_runtime_tool(
         tracing::warn!("Failed to hot-reload runtime tools after delete: {}", e);
     }
 
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let tool_id = id.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
@@ -173,7 +173,7 @@ pub async fn test_runtime_tool(
     Path(id): Path<String>,
     Json(req): Json<TestRuntimeToolRequest>,
 ) -> Result<Json<TestRuntimeToolResponse>> {
-    let __pool_6 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_6 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RuntimeToolStore::new(&__pool_6);
     let tool = store
         .get_by_id(&id)
@@ -217,7 +217,7 @@ pub async fn test_runtime_tool(
         tracing::warn!("Failed to log runtime tool test execution: {}", e);
     }
 
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let tool_id = id.clone();
     tokio::spawn(async move {
         let details = serde_json::json!({
@@ -249,7 +249,7 @@ pub async fn list_runtime_tool_versions(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ares_db::runtime_tools::RuntimeToolVersion>>> {
-    let __pool_7 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_7 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RuntimeToolStore::new(&__pool_7);
     // Verify the tool exists before returning versions.
     let _ = store
@@ -270,7 +270,7 @@ pub async fn rollback_runtime_tool(
     State(ctx): State<Arc<Context>>,
     Path((id, version)): Path<(String, i32)>,
 ) -> Result<Json<serde_json::Value>> {
-    let __pool_8 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_8 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = RuntimeToolStore::new(&__pool_8);
 
     let _ = store
@@ -301,7 +301,7 @@ pub async fn rollback_runtime_tool(
         tracing::warn!("Failed to hot-reload runtime tools after rollback: {}", e);
     }
 
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let tool_id = id.clone();
     let new_version = updated.version;
     tokio::spawn(async move {

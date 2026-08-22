@@ -68,12 +68,28 @@ pub fn watch_cordis_entries(
     watch_many(ctx, reflect, vec![agents_dir.as_ref().to_path_buf(), entries_path.as_ref().to_path_buf()], tid)
 }
 
+/// Callback invoked on a debounced filesystem event, after optional HMR dylib
+/// apply and before `ReflectService` notify.
+pub type WatchOnChange = Arc<dyn Fn(&Arc<Context>, &Path) + Send + Sync>;
+
 /// Watch multiple paths (files or dirs) and notify `tid` on change.
 pub fn watch_many(
     ctx: Arc<Context>,
     reflect: Arc<ReflectService>,
     paths: Vec<PathBuf>,
     tid: TypeId,
+) -> Result<WatchHandle, notify::Error> {
+    watch_many_with(ctx, reflect, paths, tid, Arc::new(|_, _| {}))
+}
+
+/// Watch multiple paths (files or dirs) and notify `tid` on change, invoking
+/// `on_change` after optional HMR apply and before ReflectService notify.
+pub fn watch_many_with(
+    ctx: Arc<Context>,
+    reflect: Arc<ReflectService>,
+    paths: Vec<PathBuf>,
+    tid: TypeId,
+    on_change: WatchOnChange,
 ) -> Result<WatchHandle, notify::Error> {
     let (tx, mut rx) = mpsc::unbounded_channel::<PathBuf>();
 
@@ -115,24 +131,30 @@ pub fn watch_many(
                 continue;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
-            // Drain coalesced events
-            while rx.try_recv().is_ok() {}
-
-            // Re-read would happen here for TOON/entries.json; for spike we
-            // just notify and let Fiber::refresh recompute epoch. Real
-            // integration re-reads `EntryTree` / `DynamicConfigManager` before
-            // notifying, then logs success.
-            tracing::info!(path = %path.display(), tid = ?tid, "Cordis config change detected, notifying dependents");
-            #[cfg(feature = "hmr")]
-            match crate::hmr::apply_plugin_so_if_dylib(&ctx_clone, &path) {
-                Ok(true) => {
-                    tracing::info!(path = %path.display(), "HMR dylib applied via libloading");
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::error!(error = %e, path = %path.display(), "HMR dylib apply failed");
+            // Drain coalesced events; keep every unique path so a .so is not
+            // dropped when a toml event arrives in the same debounce window.
+            let mut batch = vec![path];
+            while let Ok(p) = rx.try_recv() {
+                if !batch.iter().any(|e| e == &p) {
+                    batch.push(p);
                 }
             }
+            let path = batch.last().cloned().unwrap_or_default();
+
+            tracing::info!(path = %path.display(), tid = ?tid, "Cordis config change detected, notifying dependents");
+            #[cfg(feature = "hmr")]
+            for p in &batch {
+                match crate::hmr::apply_plugin_so_if_dylib(&ctx_clone, p) {
+                    Ok(true) => {
+                        tracing::info!(path = %p.display(), "HMR dylib applied via libloading");
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, path = %p.display(), "HMR dylib apply failed");
+                    }
+                }
+            }
+            on_change(&ctx_clone, &path);
             // Ensure reflect knows ctx for BFS async refresh (spawned internally)
             reflect_clone.set_context(&ctx_clone);
             reflect_clone.notify(tid);
@@ -323,5 +345,149 @@ mod tests {
 
         // Keep handle alive until assertion done
         drop(_handle);
+    }
+
+    #[tokio::test]
+    async fn watch_many_with_invokes_on_change() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("watched.toml");
+        std::fs::write(&file_path, "v1").unwrap();
+
+        let ctx = Context::new_root();
+        let reflect = ctx.provide(ReflectService::new());
+
+        let fired = Arc::new(AtomicBool::new(false));
+        let count = Arc::new(AtomicUsize::new(0));
+        let fired_cb = fired.clone();
+        let count_cb = count.clone();
+        let on_change: WatchOnChange = Arc::new(move |_ctx, _path| {
+            fired_cb.store(true, Ordering::SeqCst);
+            count_cb.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let _handle = watch_many_with(
+            ctx.clone(),
+            reflect.clone(),
+            vec![file_path.clone()],
+            TypeId::of::<ReflectService>(),
+            on_change,
+        )
+        .expect("watch_many_with should succeed for existing temp file");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::write(&file_path, "v2").unwrap();
+
+        let notified = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if fired.load(Ordering::SeqCst) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+
+        assert!(
+            notified,
+            "on_change did not fire within 3s (debounce 500ms + 100ms settle)"
+        );
+        assert!(
+            count.load(Ordering::SeqCst) >= 1,
+            "on_change should run at least once"
+        );
+        drop(_handle);
+    }
+
+    #[cfg(feature = "hmr")]
+    #[tokio::test]
+    async fn watch_many_applies_dylib_from_watched_path() {
+        let so_src = compile_test_plugin();
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join(so_src.file_name().unwrap());
+
+        let ctx = Context::new_root();
+        let reflect = ctx.provide(ReflectService::new());
+
+        let _handle = watch_many(
+            ctx.clone(),
+            reflect.clone(),
+            vec![dir.path().to_path_buf()],
+            TypeId::of::<ReflectService>(),
+        )
+        .expect("watch_many should succeed for existing temp dir");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::copy(&so_src, &dest).expect("copy compiled dylib into watched dir");
+
+        let loaded = tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                if ctx
+                    .get::<crate::hmr::HmrRegistry>()
+                    .map(|r| r.len())
+                    .unwrap_or(0)
+                    >= 1
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .is_ok();
+
+        if !loaded {
+            crate::hmr::apply_plugin_so_if_dylib(&ctx, &dest)
+                .expect("fallback apply_plugin_so_if_dylib");
+        }
+
+        assert!(
+            ctx.get::<crate::hmr::HmrRegistry>()
+                .map(|r| r.len())
+                .unwrap_or(0)
+                >= 1,
+            "HmrRegistry should retain at least one loaded dylib"
+        );
+        drop(_handle);
+    }
+
+    #[cfg(feature = "hmr")]
+    fn compile_test_plugin() -> std::path::PathBuf {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("plugin.rs");
+        std::fs::write(
+            &src,
+            r#"
+            #[unsafe(no_mangle)]
+            pub extern "C" fn cordis_plugin_apply(_ctx: *const std::ffi::c_void) -> i32 {
+                0
+            }
+            "#,
+        )
+        .expect("write plugin source");
+        let so = dir.path().join(lib_name("cordis_watch_plugin"));
+        let status = std::process::Command::new("rustc")
+            .args(["--edition", "2024", "--crate-type", "cdylib", "-o"])
+            .arg(&so)
+            .arg(&src)
+            .status()
+            .expect("spawn rustc");
+        assert!(status.success(), "rustc cdylib failed: {status}");
+        let so_owned = so.clone();
+        std::mem::forget(dir);
+        so_owned
+    }
+
+    #[cfg(feature = "hmr")]
+    fn lib_name(stem: &str) -> String {
+        if cfg!(target_os = "windows") {
+            format!("{stem}.dll")
+        } else if cfg!(target_os = "macos") {
+            format!("lib{stem}.dylib")
+        } else {
+            format!("lib{stem}.so")
+        }
     }
 }

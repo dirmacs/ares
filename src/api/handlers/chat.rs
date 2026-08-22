@@ -247,7 +247,7 @@ pub async fn chat(
             .unwrap_or("fast");
 
         let router_llm = match ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0
-            .create_client_for_model(router_model)
+            .create_client_for_model_ctx(&ctx, router_model)
             .await
         {
             Ok(client) => client,
@@ -659,7 +659,7 @@ fn chat_stream_response(
                 .unwrap_or("fast");
 
             let router_llm = match provider_registry
-                .create_client_for_model(router_model)
+                .create_client_for_model_ctx(&state_clone, router_model)
                 .await
             {
                 Ok(client) => client,
@@ -732,7 +732,7 @@ fn chat_stream_response(
 
         // Get LLM client for streaming
         let llm = match provider_registry
-            .create_client_for_model(&user_agent.model)
+            .create_client_for_model_ctx(&state_clone, &user_agent.model)
             .await
         {
             Ok(c) => c,

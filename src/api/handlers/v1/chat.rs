@@ -379,7 +379,7 @@ pub async fn v1_research(
         .unwrap_or_else(|| "unknown".to_string());
 
     let llm_client = match state_ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0
-        .create_client_for_model(model_key)
+        .create_client_for_model_ctx(&state_ctx, model_key)
         .await
     {
         Ok(client) => client,

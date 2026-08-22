@@ -190,7 +190,7 @@ async fn create_test_app() -> Router {
     state.provide_arc(llm_factory.clone());
     state.provide_arc(provider_registry.clone());
     state.provide_arc(agent_registry);
-    state.provide(ares::context_services::ToolRegistryService(tool_registry.clone()));
+    state.provide_arc(tool_registry.clone());
     state.provide_arc(auth_service.clone());
     #[cfg(feature = "mcp")]
     state.provide(ares::api::handlers::deploy::DeployRegistry::default());

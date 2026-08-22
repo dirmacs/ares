@@ -46,7 +46,7 @@ pub async fn create_tenant_agent_handler(
 ) -> Result<Json<TenantAgent>> {
     validate_agent_config_tools(
         &req.config,
-        &ctx.get::<crate::context_services::ToolRegistryService>().expect("not provided").0,
+        &ctx.get::<crate::ToolRegistry>().expect("not provided"),
         &ctx.get::<crate::RuntimeToolRegistry>().expect("not provided"),
         &tenant_id,
     )?;
@@ -71,7 +71,7 @@ pub async fn update_tenant_agent_handler(
     if let Some(cfg) = &req.config {
         validate_agent_config_tools(
             cfg,
-            &ctx.get::<crate::context_services::ToolRegistryService>().expect("not provided").0,
+            &ctx.get::<crate::ToolRegistry>().expect("not provided"),
             &ctx.get::<crate::RuntimeToolRegistry>().expect("not provided"),
             &tenant_id,
         )?;
@@ -185,7 +185,7 @@ pub async fn create_agent(
 
     validate_agent_config_tools(
         &config,
-        &ctx.get::<crate::context_services::ToolRegistryService>().expect("not provided").0,
+        &ctx.get::<crate::ToolRegistry>().expect("not provided"),
         &ctx.get::<crate::RuntimeToolRegistry>().expect("not provided"),
         &req.tenant_id,
     )?;
@@ -217,7 +217,7 @@ pub async fn update_agent(
     if let Some(cfg) = &req.config {
         validate_agent_config_tools(
             cfg,
-            &ctx.get::<crate::context_services::ToolRegistryService>().expect("not provided").0,
+            &ctx.get::<crate::ToolRegistry>().expect("not provided"),
             &ctx.get::<crate::RuntimeToolRegistry>().expect("not provided"),
             &tenant_id,
         )?;

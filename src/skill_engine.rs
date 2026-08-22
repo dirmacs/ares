@@ -661,6 +661,21 @@ fn evaluate_condition(expression: &str, context: &serde_json::Value) -> bool {
     }
 }
 
+impl ares_cordis_core::Service for SkillEngine {
+    fn name(&self) -> &'static str {
+        "skill_engine"
+    }
+    fn init(
+        &self,
+        _ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

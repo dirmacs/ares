@@ -64,7 +64,7 @@ pub async fn upsert_fleet_provider(
     // Reload + atomically swap the in-memory map. The store gives us the
     // encrypted form; we need the decrypted form for the in-memory cache.
     let map = store.load_all(master.as_ref()).await?;
-    ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0.store(map);
+    ctx.get::<crate::FleetSecrets>().expect("not provided").store(map);
 
     // Audit log — redact the raw key, only emit the boolean + last-4.
     let details = serde_json::json!({
@@ -119,7 +119,7 @@ pub async fn delete_fleet_provider(
     // Reload + atomically swap the in-memory map.
     let master = MasterKey::from_env();
     let map = store.load_all(master.as_ref()).await?;
-    ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0.store(map);
+    ctx.get::<crate::FleetSecrets>().expect("not provided").store(map);
 
     let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let name = provider_name.clone();
@@ -153,7 +153,7 @@ pub async fn verify_fleet_provider(
     let start = std::time::Instant::now();
 
     // Look up the in-memory override (decrypted).
-    let entry = ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0.get(&provider_name);
+    let entry = ctx.get::<crate::FleetSecrets>().expect("not provided").get(&provider_name);
     let override_ = entry.clone();
 
     // Fall back to the registry's ProviderConfig for the base URL when the

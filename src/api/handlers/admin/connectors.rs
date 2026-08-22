@@ -124,7 +124,7 @@ pub async fn run_skill(
     let tenant_id = normalized_run_skill_tenant_id(&req.tenant_id)?.to_string();
     let skill_id = req.skill_id;
     let agent_name = admin_skill_agent_name(&skill_id);
-    ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0
+    ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided")
         .start(admin_skill_active_run(&run_id, &tenant_id, &skill_id));
 
     let metadata = admin_skill_run_metadata(&run_id);
@@ -154,7 +154,7 @@ pub async fn run_skill(
         pool: __pool_7,
     });
     let start = std::time::Instant::now();
-    let result = ctx.get::<crate::context_services::SkillEngineService>().expect("not provided").0
+    let result = ctx.get::<crate::skill_engine::SkillEngine>().expect("not provided")
         .execute_skill(&skill_id, &tenant_id, req.input, &run_id)
         .await;
     let duration_ms = start.elapsed().as_millis() as i64;
@@ -164,7 +164,7 @@ pub async fn run_skill(
         "failed"
     };
     let active_status = if result.is_ok() { "completed" } else { "error" };
-    ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, active_status);
+    ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, active_status);
 
     let (input_tokens, output_tokens) = result
         .as_ref()

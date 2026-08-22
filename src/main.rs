@@ -846,9 +846,7 @@ fn factory_runtime_tool_registry(
     if let Err(e) = block_on_async(runtime_tool_registry.reload()) {
         tracing::warn!("Failed to preload runtime tools on startup: {}", e);
     }
-    ctx.provide(ares::context_services::RuntimeToolRegistryService(
-        runtime_tool_registry.clone(),
-    ));
+    ctx.provide_arc(runtime_tool_registry.clone());
     block_on_plugin(
         ctx,
         ToolServiceWrapper {
@@ -879,8 +877,8 @@ fn factory_execution_stack(
         .get::<AgentRegistry>()
         .ok_or_else(|| missing("AgentRegistry"))?;
     let active_runs = ctx
-        .get::<ares::context_services::ActiveRunsService>()
-        .map(|s| s.0.clone() as Arc<dyn ares_agents::RunTracker>)
+        .get::<ares::active_runs::ActiveRuns>()
+        .map(|s| s as Arc<dyn ares_agents::RunTracker>)
         .ok_or_else(|| missing("ActiveRuns"))?;
     let shared_execution = ares::execution_stack::new_shared_execution(
         db,
@@ -965,11 +963,7 @@ fn factory_app_state_services(
 ) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
     let pg = postgres_from_ctx(ctx)?;
 
-    let active_runs = Arc::new(ares::active_runs::ActiveRuns::new());
-    let fid = block_on_plugin(
-        ctx,
-        ares::context_services::ActiveRunsService(active_runs),
-    )?;
+    let fid = block_on_plugin(ctx, ares::active_runs::ActiveRuns::new())?;
 
     let fleet_secrets = ares::FleetSecrets::new();
     let fleet_provider_store =
@@ -985,14 +979,13 @@ fn factory_app_state_services(
             tracing::warn!(error = %e, "Failed to load fleet provider secrets on startup");
         }
     }
-    ctx.provide(ares::context_services::FleetSecretsService(fleet_secrets));
+    ctx.provide(fleet_secrets);
 
     let deploy_registry = ares::api::handlers::deploy::new_deploy_registry();
     ctx.provide(ares::context_services::DeployRegistryService(deploy_registry));
     let loop_registry = ares::api::handlers::loops::LoopRegistry::new();
     ctx.provide(ares::context_services::LoopRegistryService(loop_registry));
-    let emergency_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    ctx.provide(ares::context_services::EmergencyStopService(emergency_stop));
+    ctx.provide(ares::context_services::EmergencyStop::new(false));
     let context_provider: Arc<dyn ares::agents::context_provider::ContextProvider> =
         Arc::new(ares::agents::NoOpContextProvider);
     ctx.provide(ares::context_services::ContextProviderService(
@@ -1028,7 +1021,7 @@ fn factory_app_state_services(
         })
         .ok_or_else(|| missing("ToolRegistry"))?;
     let runtime = ctx
-        .get::<ares::context_services::RuntimeToolRegistryService>()
+        .get::<ares::RuntimeToolRegistry>()
         .ok_or_else(|| missing("RuntimeToolRegistry"))?;
     let llm_factory = ctx
         .get::<ConfigBasedLLMFactory>()
@@ -1037,11 +1030,11 @@ fn factory_app_state_services(
     let skill_engine = Arc::new(ares::skill_engine::SkillEngine::new(
         pg.pool.clone(),
         tools,
-        runtime.0.clone(),
+        runtime.clone(),
         llm_factory,
         mgr.clone(),
     ));
-    ctx.provide(ares::context_services::SkillEngineService(skill_engine));
+    ctx.provide_arc(skill_engine);
 
     if let Some(tenant_db) = ctx.get::<ares::context_services::TenantDbService>() {
         if let Some(agent_registry) = ctx.get::<AgentRegistry>() {

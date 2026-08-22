@@ -72,8 +72,8 @@ pub async fn v1_chat(
     enforce_quota(&state_ctx).await?;
 
     // Emergency stop — kill switch for all agents
-    if state_ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
-        .load(std::sync::atomic::Ordering::Relaxed)
+    if state_ctx.get::<crate::context_services::EmergencyStop>().expect("not provided")
+        .is_active()
     {
         return Err(crate::types::AppError::Unavailable(
             "All agents are currently under human review. Please try again later.".to_string(),
@@ -232,7 +232,7 @@ pub async fn v1_chat(
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &state_ctx,
         &agent_name,
-        &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
+        &state_ctx.get::<crate::FleetSecrets>().expect("not provided"),
     )
     .await?;
     inject_tenant_tool_service(&tenant_ctx, &mut resolved_agent.agent);
@@ -242,7 +242,7 @@ pub async fn v1_chat(
     if cfg!(feature = "postgres") {
         resolved_agent
             .agent
-            .set_runtime_tools_from_ctx(tenant_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), &state_ctx);
+            .set_runtime_tools_from_ctx(tenant_ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(), &state_ctx);
     }
     let response = resolved_agent
         .agent
@@ -383,8 +383,8 @@ pub async fn v1_research(
     };
     enforce_quota(&state_ctx).await?;
 
-    if state_ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
-        .load(std::sync::atomic::Ordering::Relaxed)
+    if state_ctx.get::<crate::context_services::EmergencyStop>().expect("not provided")
+        .is_active()
     {
         return Err(AppError::Unavailable(
             "All agents are currently under human review. Please try again later.".to_string(),

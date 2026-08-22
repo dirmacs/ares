@@ -66,8 +66,8 @@ pub(crate) fn emergency_stop_message() -> &'static str {
     "All agents are currently under human review. Please try again later."
 }
 
-fn ensure_emergency_stop_inactive(active: &std::sync::atomic::AtomicBool) -> Result<()> {
-    if active.load(std::sync::atomic::Ordering::Relaxed) {
+fn ensure_emergency_stop_inactive(stop: &crate::context_services::EmergencyStop) -> Result<()> {
+    if stop.is_active() {
         return Err(AppError::Unavailable(emergency_stop_message().to_string()));
     }
     Ok(())
@@ -217,7 +217,7 @@ pub async fn chat(
         None => ctx,
     };
     validate_chat_request(&payload)?;
-    ensure_emergency_stop_inactive(&ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0)?;
+    ensure_emergency_stop_inactive(&ctx.get::<crate::context_services::EmergencyStop>().expect("not provided"))?;
 
     // Get or create conversation
     let context_id = resolve_context_id(payload.context_id.as_ref());
@@ -396,7 +396,7 @@ async fn execute_agent(
             agent_name,
             &config,
             &context.user_id, &ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
-            &ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
+            &ctx.get::<crate::FleetSecrets>().expect("not provided"),
         )
         .await?;
 
@@ -411,7 +411,7 @@ async fn execute_agent(
     agent.set_observability(obs.clone());
     agent.set_run_id(run_id.clone());
 
-    ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
+    ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),
         tenant_id: context.user_id.clone(),
         agent_name: agent_name.to_string(),
@@ -433,11 +433,11 @@ async fn execute_agent(
     let start = std::time::Instant::now();
     let agent_resp = match agent.execute(message, context).await {
         Ok(resp) => {
-            ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "completed");
+            ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "completed");
             resp
         }
         Err(e) => {
-            ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
+            ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "error");
             return Err(e);
         }
     };
@@ -593,7 +593,7 @@ fn chat_stream_response(
     use axum::response::sse::{Event, Sse};
 
     let validation_error = validate_chat_request(&payload)
-        .and_then(|_| ensure_emergency_stop_inactive(&ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0))
+        .and_then(|_| ensure_emergency_stop_inactive(&ctx.get::<crate::context_services::EmergencyStop>().expect("not provided")))
         .err();
 
     // Get or create conversation
@@ -606,7 +606,7 @@ fn chat_stream_response(
     let agent_type_req = payload.agent_type;
     let runtime_workspace_id = payload.workspace_id.clone();
     let context_id_clone = context_id.clone();
-    let active_runs = Arc::clone(&ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0);
+    let active_runs = Arc::clone(&ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided"));
 
     let stream = async_stream::stream! {
         // Cordis: hold Context-derived services for stream (avoid temp dropped)
@@ -1019,7 +1019,7 @@ mod tests {
 
     #[test]
     fn ensure_emergency_stop_inactive_rejects_active_stop() {
-        let active = std::sync::atomic::AtomicBool::new(true);
+        let active = crate::context_services::EmergencyStop::new(true);
         let err = ensure_emergency_stop_inactive(&active).unwrap_err();
         match err {
             AppError::Unavailable(msg) => assert_eq!(msg, emergency_stop_message()),
@@ -1029,7 +1029,7 @@ mod tests {
 
     #[test]
     fn ensure_emergency_stop_inactive_allows_clear_stop() {
-        let active = std::sync::atomic::AtomicBool::new(false);
+        let active = crate::context_services::EmergencyStop::new(false);
         assert!(ensure_emergency_stop_inactive(&active).is_ok());
     }
 

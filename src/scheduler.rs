@@ -151,6 +151,19 @@ impl Service for SchedulerService {
         let _execution = self.execution.clone();
         let tick_ms = self.tick_ms;
 
+        // Cordis Events: subscribe to agent.completed for observability (live path —
+        // the legacy start_scheduler shim is never called).
+        if let Some(events) = ctx.get::<ares_cordis_core::EventsService>() {
+            events.on("agent.completed".into(), |payload| {
+                Box::pin(async move {
+                    if let Some(agent) = payload.get("agent_name").and_then(|v| v.as_str()) {
+                        tracing::debug!(agent = %agent, status = ?payload.get("status"), "scheduler observed agent completion via Cordis event bus");
+                    }
+                    Ok(payload)
+                })
+            });
+        }
+
         // ReflectService watch notifier: ensure channel exists for DB NOTIFY / polling fallback.
         let reflect_opt = ctx.get::<ReflectService>();
         let watch_rx: Option<watch::Receiver<()>> = reflect_opt.as_ref().map(|r| {

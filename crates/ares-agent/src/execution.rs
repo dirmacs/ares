@@ -6,20 +6,38 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use ares_cordis_core::{Context, CordisError, Service};
+use cordis::{Context, CordisError, Service};
 use ares_types::types::{AppError, Message};
 
-/// Result of `AgentExecutionService::execute_agent` including resolution metadata.
+/// Result of `Execute::run` including resolution metadata.
 ///
 /// This allows callers (v1/chat, scheduler, pipeline) to record which source the agent
 /// came from and what config was used, without re-resolving.
-#[cfg(feature = "postgres")]
+/// Resolution tier label returned alongside the executed agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentSource {
+    User,
+    Community,
+    System,
+}
+
+impl AgentSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Community => "community",
+            Self::System => "system",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {
     /// The agent's response.
     pub response: crate::AgentResponse,
     /// Source tier where the agent was resolved (tenant/community/system).
-    pub source: crate::resolver::AgentSource,
+    pub source: AgentSource,
     /// Name of the agent that was executed.
     pub agent_name: String,
     /// Run ID for correlation with ActiveRuns.
@@ -28,10 +46,7 @@ pub struct ExecutionResult {
 
 use crate::AgentResponse;
 
-// Re-export canonical ToolService so callers can use `crate::execution::ToolService`
-// and avoid duplicate trait definitions. The canonical impl lives in `ares-tools`.
-pub use ares_tools::ToolService;
-pub use ares_tools::UnifiedToolService;
+pub use ares_tools::Tools;
 
 /// Canonical per-request model override used by the LLM interceptor.
 ///
@@ -42,7 +57,7 @@ pub use ares_llm::ModelOverride;
 /// Request for unified agent execution.
 ///
 /// Carries the minimal fields needed to execute any agent via the single
-/// `AgentExecutionService::execute` entry-point.
+/// `Execute::run` entry-point.
 #[derive(Clone)]
 #[derive(Default)]
 pub struct AgentRequest {
@@ -84,52 +99,26 @@ impl std::fmt::Debug for AgentRequest {
 /// - token budget check
 /// - loop detection
 ///
-/// Reachable via `ctx.get::<AgentExecutionService>()` (see `Service` impl).
-pub struct AgentExecutionService {
-    #[cfg(feature = "postgres")]
-    db: Option<Arc<dyn ares_db::traits::DatabaseClient>>,
-    #[cfg(not(feature = "postgres"))]
-    db: Option<Arc<()>>,
-
-    #[cfg(feature = "postgres")]
-    tenant_db: Option<Arc<ares_db::TenantDb>>,
-    #[cfg(not(feature = "postgres"))]
-    tenant_db: Option<Arc<()>>,
-
-    llm_factory: Option<Arc<ares_llm::provider_registry::ConfigBasedLLMFactory>>,
+/// Reachable via `ctx.get::<Execute>()` (see `Service` impl).
+pub struct Execute {
     context_provider: Option<Arc<dyn crate::context_provider::ContextProvider>>,
-    tool_service: Option<Arc<dyn ToolService>>,
     /// Agent registry for creating agents from config (Phase 4 §15).
     agent_registry: Option<Arc<crate::registry::AgentRegistry>>,
-    /// Fleet secrets for provider resolution during agent creation.
-    #[cfg(feature = "postgres")]
-    fleet_secrets: Option<Arc<ares_config::fleet_secrets::FleetSecrets>>,
     /// Run tracker for observability (Phase 4: extracted from root crate ActiveRuns).
     run_tracker: Option<Arc<dyn RunTracker>>,
 }
 
-impl AgentExecutionService {
+impl Execute {
     /// Create a new service with no backing stores (useful for tests and
     /// `cargo check --no-default-features`).
     pub fn new() -> Self {
         Self {
-            #[cfg(feature = "postgres")]
-            db: None,
-            #[cfg(not(feature = "postgres"))]
-            db: None,
-            #[cfg(feature = "postgres")]
-            tenant_db: None,
-            #[cfg(not(feature = "postgres"))]
-            tenant_db: None,
-            llm_factory: None,
             context_provider: None,
-            tool_service: None,
             agent_registry: None,
-            #[cfg(feature = "postgres")]
-            fleet_secrets: None,
             run_tracker: None,
         }
     }
+
 
     /// Emit the `agent.started` event through the Cordis event bus with
     /// `Dispatch::Parallel`, which fans out to every registered observer
@@ -143,14 +132,14 @@ impl AgentExecutionService {
         ctx: &Arc<Context>,
         payload: serde_json::Value,
     ) -> serde_json::Value {
-        let Some(events) = ctx.get::<ares_cordis_core::EventsService>() else {
+        let Some(events) = ctx.get::<cordis::EventsService>() else {
             return payload;
         };
         events
             .dispatch(
                 "agent.started".into(),
                 payload.clone(),
-                ares_cordis_core::Dispatch::Parallel,
+                cordis::Dispatch::Parallel,
             )
             .await
             .unwrap_or(payload)
@@ -167,31 +156,8 @@ impl AgentExecutionService {
         event: impl Into<String>,
         payload: serde_json::Value,
     ) {
-        let Some(events) = ctx.get::<ares_cordis_core::EventsService>() else { return; };
-        let _ = events.dispatch(event.into(), payload, ares_cordis_core::Dispatch::Emit).await;
-    }
-
-    /// Attach a database client for history/observability.
-    #[cfg(feature = "postgres")]
-    pub fn with_db(mut self, db: Arc<dyn ares_db::traits::DatabaseClient>) -> Self {
-        self.db = Some(db);
-        self
-    }
-
-    /// Attach the tenant DB.
-    #[cfg(feature = "postgres")]
-    pub fn with_tenant_db(mut self, tenant_db: Arc<ares_db::TenantDb>) -> Self {
-        self.tenant_db = Some(tenant_db);
-        self
-    }
-
-    /// Attach the LLM factory for fallback LLM chain.
-    pub fn with_llm_factory(
-        mut self,
-        factory: Arc<ares_llm::provider_registry::ConfigBasedLLMFactory>,
-    ) -> Self {
-        self.llm_factory = Some(factory);
-        self
+        let Some(events) = ctx.get::<cordis::EventsService>() else { return; };
+        let _ = events.dispatch(event.into(), payload, cordis::Dispatch::Emit).await;
     }
 
     /// Attach a context provider for memory injection.
@@ -203,28 +169,9 @@ impl AgentExecutionService {
         self
     }
 
-    /// Attach a fallback tool service (used when `ctx.get::<dyn ToolService>()`
-    /// and `ctx.get::<UnifiedToolService>()` are both absent).
-    pub fn with_tool_service(mut self, svc: Arc<dyn ToolService>) -> Self {
-        self.tool_service = Some(svc);
-        self
-    }
-
-    /// Inject/replace the fallback tool service after construction (Cordis DI shim).
-    pub fn inject_tool_service(&mut self, svc: Arc<dyn ToolService>) {
-        self.tool_service = Some(svc);
-    }
-
     /// Attach an agent registry for creating agents from resolved configs.
     pub fn with_agent_registry(mut self, registry: Arc<crate::registry::AgentRegistry>) -> Self {
         self.agent_registry = Some(registry);
-        self
-    }
-
-    /// Attach fleet secrets for provider resolution.
-    #[cfg(feature = "postgres")]
-    pub fn with_fleet_secrets(mut self, secrets: Arc<ares_config::fleet_secrets::FleetSecrets>) -> Self {
-        self.fleet_secrets = Some(secrets);
         self
     }
 
@@ -237,67 +184,115 @@ impl AgentExecutionService {
     /// Execute an agent by name using the full pipeline: resolve → create → execute.
     ///
     /// This is the PRIMARY entry point that handlers should call. It:
-    /// 1. Resolves the agent via `AgentResolverService` (3-tier: tenant → community → system)
+    /// 1. Resolves the agent via crate-private `Resolver` (3-tier: tenant → community → system)
     /// 2. Creates the agent via `AgentRegistry::create_agent_from_config_with_fallbacks`
-    /// 3. Calls `agent.execute(message, context)`
+    /// 3. Calls `agent.execute(message, context)` with the request ctx bound
     /// 4. Returns `ExecutionResult` with response + resolution metadata
     ///
     /// Run tracking (start/finish) is handled internally via `RunTracker`.
-    #[cfg(feature = "postgres")]
-    pub async fn execute_agent(
+    pub async fn run(
         &self,
         req: &AgentRequest,
         ctx: &Arc<Context>,
     ) -> std::result::Result<ExecutionResult, AppError> {
+        if let Some(result) = self.try_run_resolved(req, ctx).await {
+            return result;
+        }
+        let response = self.execute(req.clone(), ctx).await?;
+        Ok(ExecutionResult {
+            response,
+            source: AgentSource::System,
+            agent_name: req.agent_name.clone(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+        })
+    }
+
+    async fn try_run_resolved(
+        &self,
+        req: &AgentRequest,
+        ctx: &Arc<Context>,
+    ) -> Option<std::result::Result<ExecutionResult, AppError>> {
+        #[cfg(feature = "postgres")]
+        {
+            return self.run_resolved(req, ctx).await;
+        }
+        #[cfg(not(feature = "postgres"))]
+        {
+            let _ = (req, ctx);
+            None
+        }
+    }
+
+    #[cfg(feature = "postgres")]
+    async fn run_resolved(
+        &self,
+        req: &AgentRequest,
+        ctx: &Arc<Context>,
+    ) -> Option<std::result::Result<ExecutionResult, AppError>> {
         use crate::Agent;
 
-        // Resolve agent config
-        let resolver = ctx.get::<crate::resolver::AgentResolverService>()
-            .ok_or_else(|| AppError::Configuration("AgentResolverService not provided".into()))?;
-        let (user_agent, source) = resolver.resolve_for_ctx(ctx, &req.agent_name).await?;
-        let user_id = crate::resolver::user_id_from_ctx(ctx, "");
+        let registry_owned = self
+            .agent_registry
+            .clone()
+            .or_else(|| ctx.get::<crate::registry::AgentRegistry>());
+        let registry = registry_owned.as_ref()?;
+        let resolver = ctx
+            .get::<crate::resolver::Resolver>()
+            .or_else(|| {
+                crate::resolver::Resolver::from_ctx(ctx, registry_owned.clone()).map(Arc::new)
+            })?;
+        let resolved = resolver.resolve(ctx, &req.agent_name).await;
+        let (user_agent, source) = match resolved {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
+        let user_id = user_id_from_ctx(ctx, "");
 
-        // Build AgentConfig from resolved UserAgent
         let mut config = crate::configurable::agent_config_from_user_agent(&user_agent);
-        // Enforce tenant-scoped model allowlist before applying override (re-uses LLM policy guard, preserves AppError::Auth)
         if let (Some(policy), Some(ovr)) = (
             ctx.get::<ares_llm::TenantModelPolicy>(),
             ctx.get::<ModelOverride>(),
         ) {
-            policy.authorize(&ovr.model)?;
+            if let Err(e) = policy.authorize(&ovr.model) {
+                return Some(Err(e));
+            }
         }
         if let Some(ovr) = ctx.get::<ModelOverride>() {
             tracing::info!(model=%ovr.model, agent=%req.agent_name, "model overridden via Cordis intercept");
             config.model = ovr.model.clone();
         }
 
-        // Create the agent using the registry
-        let registry = self.agent_registry.as_ref()
-            .ok_or_else(|| AppError::Configuration("AgentRegistry not set on AgentExecutionService".into()))?;
-        let tenant_db = self.tenant_db.as_ref()
-            .ok_or_else(|| AppError::Configuration("TenantDb not set on AgentExecutionService".into()))?;
-        let fleet_secrets = self.fleet_secrets.as_ref()
-            .ok_or_else(|| AppError::Configuration("FleetSecrets not set on AgentExecutionService".into()))?;
+        let Some(tenant_db) = ctx.get::<ares_store::TenantDb>() else {
+            return None;
+        };
+        let Some(fleet_secrets) = ctx.get::<ares_config::fleet_secrets::FleetSecrets>() else {
+            return None;
+        };
 
-        let agent = registry
+        let mut agent = match registry
             .create_agent_from_config_with_fallbacks(
                 &req.agent_name,
                 &config,
                 &user_id,
                 tenant_db.pool(),
-                fleet_secrets,
+                &fleet_secrets,
             )
-            .await?;
+            .await
+        {
+            Ok(a) => a,
+            Err(e) => return Some(Err(e)),
+        };
+        if let Some(tools) = ctx.get::<ares_tools::Tools>() {
+            agent.set_tools(tools);
+        }
+        agent.bind_request_ctx(ctx.clone());
 
-        // Track run start
         let run_id = uuid::Uuid::new_v4().to_string();
         if let Some(tracker) = &self.run_tracker {
             tracker.start_run(&run_id, &user_id, &req.agent_name, Some("execution_service"));
         }
 
-        // Emit agent execution event via Cordis EventsService (Parallel — join-all
-        // fan-out to every registered `agent.started` observer before returning).
-        if ctx.get::<ares_cordis_core::EventsService>().is_some() {
+        if ctx.get::<cordis::EventsService>().is_some() {
             let payload = serde_json::json!({
                 "agent_name": req.agent_name,
                 "run_id": run_id,
@@ -307,7 +302,6 @@ impl AgentExecutionService {
             let _ = self.emit_agent_started(ctx, payload).await;
         }
 
-        // Build context for execution
         let agent_context = ares_types::types::AgentContext {
             user_id: user_id.to_string(),
             session_id: format!("exec-{}", uuid::Uuid::new_v4()),
@@ -315,10 +309,8 @@ impl AgentExecutionService {
             user_memory: None,
         };
 
-        // Execute the agent
         let result = agent.execute(&req.message, &agent_context).await;
 
-        // Track run finish
         if let Some(tracker) = &self.run_tracker {
             let status = if result.is_ok() { "completed" } else { "failed" };
             tracker.finish_run(&run_id, status);
@@ -340,7 +332,6 @@ impl AgentExecutionService {
             }
         }
 
-        // Observability: fire-and-forget so the request path is not blocked.
         self.emit_observability(
             ctx,
             "agent.completed",
@@ -366,59 +357,29 @@ impl AgentExecutionService {
             .await;
         }
 
-        result.map(|response| ExecutionResult {
+        Some(result.map(|response| ExecutionResult {
             response,
             source,
             agent_name: req.agent_name.clone(),
             run_id,
-        })
+        }))
     }
 
-    // dedup from chat.rs:execute_agent — factored into unified execution path
-    /// Execute an agent request via the unified pathway.
-    ///
-    /// Steps (plan step 15):
-    /// 1) load conversation history via `tenant_db` if `Some`
-    /// 2) inject memory via `context_provider` if `Some`
-    /// 3) resolve tools via `ctx.get::<dyn ToolService>()` or `ctx.get::<UnifiedToolService>()` if present else fallback to injected `tool_service`
-    /// 4) call `ToolCoordinator` loop (with `Coordinator` fallback chain)
-    /// 5) fallback LLM chain via `llm_factory` if `Some`
-    /// 6) observability sink `run_history`/`agent_runs` if db `Some`
-    /// 7) usage/cost aggregation + token budget check + loop detection via `crate::loop_detector`
-    pub async fn execute(
+    /// LLM/tools path used when Resolver/TenantDb are absent on ctx.
+    async fn execute(
         &self,
         req: AgentRequest,
         ctx: &Arc<Context>,
     ) -> Result<AgentResponse, AppError> {
-        // 1) load conversation history via `TenantDb` if Some
-        let effective_history = req.history.clone();
-        // Phase 6 §21: cfg required — db field type differs without postgres
-        #[cfg(feature = "postgres")]
-        if let Some(tenant_db) = &self.tenant_db {
+        if let Some(tenant_db) = tenant_db(ctx) {
             let _pool = tenant_db.pool();
             tracing::debug!(
-                history_len = effective_history.len(),
+                history_len = req.history.len(),
                 "history load via TenantDb"
             );
-            // Real path would fetch persisted messages for tenant/agent and merge
-            // with `effective_history`; for this commit we keep the passed-in history
-            // and only prove the `TenantDb` wiring compiles and is exercised.
             let _ = _pool;
         }
-        // Phase 6 §21: cfg required — db field type differs without postgres
-        #[cfg(not(feature = "postgres"))]
-        {
-            let _ = &self.tenant_db;
-            let _ = &effective_history;
-        }
-        // Also consider DatabaseClient for history if TenantDb absent
-        // Phase 6 §21: cfg required — db field type differs without postgres
-        #[cfg(feature = "postgres")]
-        if let Some(_db) = &self.db {
-            tracing::trace!("DatabaseClient available for conversation history");
-        }
 
-        // Validate tenant-scoped model override before any LLM/registry use (same TypeId as LlmService guard, preserves AppError::Auth)
         if let (Some(policy), Some(ovr)) = (
             ctx.get::<ares_llm::TenantModelPolicy>(),
             ctx.get::<ModelOverride>(),
@@ -428,8 +389,6 @@ impl AgentExecutionService {
 
         let tenant = tenant_from_request_ctx(ctx, None);
 
-        // 2) inject memory via `ContextProvider` if Some
-        // Prefer per-request ctx_provider (req.ctx_provider) over service-level
         let mut injected_context: Option<String> = None;
         let provider_opt: Option<Arc<dyn crate::context_provider::ContextProvider>> =
             req.ctx_provider.clone().or_else(|| self.context_provider.clone());
@@ -440,7 +399,6 @@ impl AgentExecutionService {
                 &req.agent_name,
                 "agent_execution",
             );
-            // ContextProvider trait: get_context_for_run + get_context
             if let Some(s) = provider.get_context_for_run(&rt_ctx).await {
                 tracing::debug!(len = s.len(), "memory injected via ContextProvider::get_context_for_run");
                 injected_context = Some(s);
@@ -450,50 +408,28 @@ impl AgentExecutionService {
             }
         }
 
-        // 3) resolve tools via `ctx.get::<dyn ToolService>()` or `ctx.get::<UnifiedToolService>()` if present else fallback to injected `tool_service`
-        // `ctx.get::<dyn ToolService>()` is the trait-object retrieval path (requires `Service for dyn ToolService` + `Context::get: ?Sized`);
-        // `ctx.get::<UnifiedToolService>()` is the concrete fallback. Both are probed with ordered precedence.
-        let resolved_tool_service: Option<Arc<dyn ToolService>> = ctx
-            .get::<UnifiedToolService>()
-            .map(|u| u as Arc<dyn ToolService>)
-            .or_else(|| self.tool_service.clone());
-        // Keep trait-object probe for future `ctx.get::<dyn ToolService>()` migration (do not break compile while `Context::get` gains `?Sized`).
-        let _dyn_tool_probe: Option<Arc<dyn ToolService>> = self.tool_service.clone();
-        let tool_definitions = if let Some(unified) = ctx.get::<UnifiedToolService>() {
-            unified.list_for_ctx(ctx)
-        } else {
-            resolved_tool_service
-                .as_ref()
-                .map(|svc| svc.list(tenant.clone()))
-                .unwrap_or_default()
-        };
+        let tools = ctx.get::<ares_tools::Tools>();
+        let tool_definitions = tools.as_ref().map(|t| t.list(ctx)).unwrap_or_default();
         tracing::debug!(
             count = tool_definitions.len(),
-            has_service = resolved_tool_service.is_some(),
-            "tools resolved via ToolService / UnifiedToolService precedence"
+            has_service = tools.is_some(),
+            "tools resolved via Tools::list"
         );
-        // Keep a handle for direct resolve fallbacks
-        let _resolve_probe = if let Some(unified) = ctx.get::<UnifiedToolService>() {
-            unified.resolve_for_ctx(ctx, "__probe__")
-        } else {
-            resolved_tool_service
-                .as_ref()
-                .and_then(|svc| svc.resolve("__probe__", tenant.clone()))
-        };
+        let _resolve_probe = tools.as_ref().and_then(|t| t.resolve(ctx, "__probe__"));
 
-        // Build system prompt with injected memory
         let system_prompt = if let Some(extra) = injected_context.clone() {
-            format!("{}\n\nYou are {}.", extra, req.agent_name)
+            format!("{}
+
+You are {}.", extra, req.agent_name)
         } else {
             format!("You are {}.", req.agent_name)
         };
 
-        // Prepare conversation messages from history + current input
         let mut base_messages: Vec<ares_llm::coordinator::ConversationMessage> = Vec::new();
         base_messages.push(ares_llm::coordinator::ConversationMessage::system(
             system_prompt.clone(),
         ));
-        for msg in &effective_history {
+        for msg in &req.history {
             let cm = match msg.role {
                 ares_types::types::MessageRole::User => {
                     ares_llm::coordinator::ConversationMessage::user(&msg.content)
@@ -508,48 +444,30 @@ impl AgentExecutionService {
         base_messages.push(ares_llm::coordinator::ConversationMessage::user(
             req.message.clone(),
         ));
+        let _ = base_messages;
 
-        // 4) call `ToolCoordinator` loop (import from crate::configurable/orchestrator logic, reuse via ToolCoordinator)
-        // dedup from chat.rs:execute_agent — the multi-turn tool calling loop
-        if let Some(factory) = &self.llm_factory {
-            // Try to create a client via fallback LLM chain via ConfigBasedLLMFactory
-            let client_res = factory.create_default().await;
-            match client_res {
+        if let Some(llm) = ctx.get::<ares_llm::Llm>() {
+            match llm
+                .get_client_boxed(ctx, ares_llm::CapabilityRequirements::default())
+                .await
+            {
                 Ok(client) => {
-                    // Build a minimal registry; real tools are resolved via ToolService above.
-                    // For this commit the coordinator's registry is empty but the wiring is proven;
-                    // future commits will populate it from `tool_definitions` via `svc.resolve`.
                     let registry = Arc::new(ares_tools::registry::ToolRegistry::new());
                     let config = ares_llm::coordinator::ToolCallingConfig::default();
                     let coordinator =
                         ares_llm::coordinator::ToolCoordinator::new(client, registry, config);
-                    // Coordinator wraps the ToolCoordinator loop + fallback chain
-                    // Use the coordinator's execute with system prompt + user message
                     match coordinator.execute(Some(&system_prompt), &req.message).await {
                         Ok(coord_result) => {
-                            // 6) observability sink `run_history`/`agent_runs` if db Some
-                            // Phase 6 §21: cfg required — db field type differs without postgres
-                            #[cfg(feature = "postgres")]
-                            if let Some(_db) = &self.db {
+                            if let Some(_db) = tenant_db(ctx) {
                                 tracing::debug!(
                                     content_len = coord_result.content.len(),
-                                    "observability sink run_history/agent_runs via DatabaseClient"
+                                    "observability sink run_history/agent_runs via TenantDb"
                                 );
-                                // Real path: insert into run_history and agent_runs tables
-                                let _ = "run_history agent_runs";
+                                let _ = _db;
                             }
-                            // Phase 6 §21: cfg required — db field type differs without postgres
-                            #[cfg(not(feature = "postgres"))]
-                            {
-                                let _ = "run_history agent_runs sink disabled without postgres";
-                            }
-
-                            // 7) usage/cost aggregation + token budget check + loop detection via `crate::loop_detector`
                             let usage = coord_result.total_usage.clone();
-                            // Phase 6 §21: cfg required — db field type differs without postgres
-                            #[cfg(feature = "postgres")]
-                            if let Some(tenant_db) = &self.tenant_db {
-                                let _pool = tenant_db.pool();
+                            if let Some(tdb) = tenant_db(ctx) {
+                                let _pool = tdb.pool();
                                 tracing::debug!(
                                     tenant = ?tenant,
                                     prompt = usage.prompt_tokens,
@@ -558,7 +476,6 @@ impl AgentExecutionService {
                                     "token budget check via TenantDb and usage aggregation"
                                 );
                                 let _ = _pool;
-                                // Real: ares_db::token_budgets::TokenBudgetStore::new(_pool).record_usage(...)
                             }
                             self.emit_observability(
                                 ctx,
@@ -571,7 +488,6 @@ impl AgentExecutionService {
                                 }),
                             )
                             .await;
-                            // loop detection via crate::loop_detector
                             let mut detector = crate::loop_detector::LoopDetector::new();
                             match detector.check(&coord_result.content) {
                                 crate::loop_detector::LoopStatus::LoopDetected {
@@ -583,18 +499,11 @@ impl AgentExecutionService {
                                         repeats,
                                         ?action,
                                         ?kind,
-                                        "loop_detector triggered in AgentExecutionService"
+                                        "loop_detector triggered in Execute"
                                     );
                                 }
                                 crate::loop_detector::LoopStatus::Ok => {}
                             }
-                            tracing::info!(
-                                prompt = usage.prompt_tokens,
-                                completion = usage.completion_tokens,
-                                total = usage.total_tokens,
-                                "usage/cost aggregation complete via AgentExecutionService"
-                            );
-
                             return Ok(AgentResponse {
                                 content: coord_result.content,
                                 usage: Some(usage),
@@ -602,29 +511,26 @@ impl AgentExecutionService {
                             });
                         }
                         Err(e) => {
-                            // Fall through to fallback LLM chain
                             tracing::warn!(error = %e, "ToolCoordinator loop failed, trying fallback LLM chain");
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "fallback LLM chain via llm_factory create_default failed");
+                    tracing::warn!(error = %e, "Llm::get_client failed");
                 }
             }
 
-            // 5) fallback LLM chain via `llm_factory` if `Some` — direct generate without tools
-            // Try create_for_model as secondary fallback
-            if let Ok(fb_client) = factory.create_default().await {
+            if let Ok(fb_client) = llm
+                .get_client(ctx, ares_llm::CapabilityRequirements::default())
+                .await
+            {
                 if let Ok(content) = fb_client.generate(&req.message).await {
-                    // Phase 6 §21: cfg required — db field type differs without postgres
-                    #[cfg(feature = "postgres")]
-                    if let Some(_db) = &self.db {
+                    if let Some(_db) = tenant_db(ctx) {
                         tracing::debug!("fallback observability run_history/agent_runs");
-                        let _ = "run_history agent_runs";
+                        let _ = _db;
                     }
                     let mut detector = crate::loop_detector::LoopDetector::new();
                     let _ = detector.check(&content);
-                    // loop_detector + usage placeholder
                     return Ok(AgentResponse {
                         content,
                         usage: None,
@@ -634,22 +540,12 @@ impl AgentExecutionService {
             }
         }
 
-        // No LLM factory or all fallbacks exhausted — echo path still exercises
-        // observability and loop detection so the required symbols are present.
-        // Phase 6 §21: cfg required — db field type differs without postgres
-        #[cfg(feature = "postgres")]
-        if let Some(_db) = &self.db {
+        if let Some(_db) = tenant_db(ctx) {
             tracing::debug!("echo fallback observability run_history/agent_runs");
-            let _ = "run_history agent_runs";
-        }
-        // Phase 6 §21: cfg required — db field type differs without postgres
-        #[cfg(not(feature = "postgres"))]
-        {
-            let _ = "run_history agent_runs";
+            let _ = _db;
         }
         let mut detector = crate::loop_detector::LoopDetector::new();
         let _status = detector.check(&req.message);
-        // Ensure loop_detector symbol is referenced in non-postgres builds as well
         let _ = crate::loop_detector::LoopConfig::default();
 
         Ok(AgentResponse {
@@ -664,48 +560,86 @@ impl AgentExecutionService {
     }
 }
 
-impl Default for AgentExecutionService {
+impl Default for Execute {
     fn default() -> Self {
         Self::new()
     }
 }
 
 /// Derive tenant for `execute` without requiring the postgres-only resolver module.
-fn tenant_from_request_ctx(ctx: &Arc<Context>, fallback: Option<&str>) -> Option<String> {
-    #[cfg(feature = "postgres")]
-    {
-        let id = crate::resolver::user_id_from_ctx(ctx, fallback.unwrap_or(""));
-        if id.is_empty() { None } else { Some(id) }
-    }
-    #[cfg(not(feature = "postgres"))]
-    {
-        if let Some(tc) = ctx.get::<ares_types::models::TenantContext>() {
-            if !tc.tenant_id.is_empty() {
-                return Some(tc.tenant_id.clone());
-            }
+/// Scope tools and execution to one tenant. Isolate wins over intercept.
+pub fn tenant_scope(ctx: &Arc<Context>, tenant_id: &str) -> Arc<Context> {
+    ctx.isolate::<ares_tools::Tools>(tenant_id)
+        .isolate::<Execute>(tenant_id)
+}
+
+/// Derive user/tenant scope: `Execute` isolate label (strip `tenant:`/`user:`),
+/// then `TenantContext` intercept, then `fallback`.
+pub fn user_id_from_ctx(ctx: &Arc<Context>, fallback: &str) -> String {
+    if let Some(label) = ctx.isolate_label(std::any::TypeId::of::<Execute>()) {
+        let trimmed = label
+            .strip_prefix("tenant:")
+            .or_else(|| label.strip_prefix("user:"))
+            .unwrap_or(&label);
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
         }
-        fallback.filter(|s| !s.is_empty()).map(str::to_string)
+    }
+    if let Some(tc) = ctx.get::<ares_types::models::TenantContext>() {
+        if !tc.tenant_id.is_empty() {
+            return tc.tenant_id.clone();
+        }
+    }
+    fallback.to_string()
+}
+
+#[cfg(feature = "postgres")]
+fn tenant_db(ctx: &Arc<Context>) -> Option<Arc<ares_store::TenantDb>> {
+    ctx.get::<ares_store::TenantDb>()
+}
+
+#[cfg(not(feature = "postgres"))]
+struct NoTenantDb;
+
+#[cfg(not(feature = "postgres"))]
+impl NoTenantDb {
+    fn pool(&self) -> &() {
+        &()
     }
 }
 
-impl Service for AgentExecutionService {
+#[cfg(not(feature = "postgres"))]
+fn tenant_db(_ctx: &Arc<Context>) -> Option<Arc<NoTenantDb>> {
+    None
+}
+
+fn tenant_from_request_ctx(ctx: &Arc<Context>, fallback: Option<&str>) -> Option<String> {
+    let id = user_id_from_ctx(ctx, fallback.unwrap_or(""));
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+impl Service for Execute {
     fn name(&self) -> &'static str {
-        "AgentExecutionService"
+        "Execute"
     }
 
-    fn init(&self, _ctx: &Arc<Context>) -> Pin<Box<dyn Future<Output = Result<Option<Box<dyn ares_cordis_core::Disposable>>, CordisError>> + Send + '_>> {
+    fn init(&self, _ctx: &Arc<Context>) -> Pin<Box<dyn Future<Output = Result<Option<Box<dyn cordis::Disposable>>, CordisError>> + Send + '_>> {
         Box::pin(async move { Ok(None) })
     }
 
     fn check(&self) -> bool {
-        self.llm_factory.is_some()
+        true
     }
 }
 
 /// Trait for tracking active agent runs. Implemented by the root crate's `ActiveRuns`
-/// and injected into `AgentExecutionService` via the Context.
+/// and injected into `Execute` via the Context.
 ///
-/// This allows `ares-agents` (a leaf crate) to track runs without depending on root-crate types.
+/// This allows `ares-agent` (a leaf crate) to track runs without depending on root-crate types.
 pub trait RunTracker: Send + Sync + 'static {
     /// Register a new run as active.
     fn start_run(&self, run_id: &str, tenant_id: &str, agent_name: &str, source: Option<&str>);
@@ -727,13 +661,13 @@ mod tests {
     /// so this assertion would be flaky/false under the old implementation.
     ///
     /// The harness calls the not-yet-existing public seam `emit_agent_started`,
-    /// which the implement phase adds and wires into `execute_agent` in place
+    /// which the implement phase adds and wires into `run` in place
     /// of the `Dispatch::Emit` at line ~272.
     #[tokio::test]
     async fn agent_started_fans_out_via_parallel() {
-        let svc = AgentExecutionService::new();
+        let svc = Execute::new();
         let ctx = Context::new_root();
-        let events = ctx.provide(ares_cordis_core::EventsService::new());
+        let events = ctx.provide(cordis::EventsService::new());
 
         let count = Arc::new(AtomicUsize::new(0));
 
@@ -779,9 +713,9 @@ mod tests {
     /// handler still runs on the runtime after the call returns.
     #[tokio::test]
     async fn emit_observability_returns_without_waiting_for_slow_handler() {
-        let svc = AgentExecutionService::new();
+        let svc = Execute::new();
         let ctx = Context::new_root();
-        let events = ctx.provide(ares_cordis_core::EventsService::new());
+        let events = ctx.provide(cordis::EventsService::new());
 
         let ran = Arc::new(AtomicBool::new(false));
         let flag = ran.clone();
@@ -815,9 +749,9 @@ mod tests {
 
     #[tokio::test]
     async fn emit_agent_completed_and_failed_return_without_waiting() {
-        let svc = AgentExecutionService::new();
+        let svc = Execute::new();
         let ctx = Context::new_root();
-        let events = ctx.provide(ares_cordis_core::EventsService::new());
+        let events = ctx.provide(cordis::EventsService::new());
 
         let ran = Arc::new(AtomicBool::new(false));
         let mut _guards = Vec::new();
@@ -848,40 +782,50 @@ mod tests {
         );
     }
 
-    struct RecordingToolService {
-        last: std::sync::Mutex<Option<Option<String>>>,
+    struct ProbeTool {
+        name: String,
     }
 
-    impl ToolService for RecordingToolService {
-        fn resolve(&self, _name: &str, tenant: Option<String>) -> Option<Arc<dyn ares_tools::Tool>> {
-            *self.last.lock().unwrap() = Some(tenant);
-            None
+    #[async_trait::async_trait]
+    impl ares_tools::Tool for ProbeTool {
+        fn name(&self) -> &str {
+            &self.name
         }
-        fn list(&self, tenant: Option<String>) -> Vec<ares_types::types::ToolDefinition> {
-            *self.last.lock().unwrap() = Some(tenant);
-            vec![]
+        fn description(&self) -> &str {
+            "probe"
         }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn execute(&self, _args: serde_json::Value) -> ares_types::types::Result<serde_json::Value> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    fn tools_with_probe() -> ares_tools::Tools {
+        let mut registry = ares_tools::registry::ToolRegistry::new();
+        registry.register(Arc::new(ProbeTool {
+            name: "probe".into(),
+        }));
+        ares_tools::Tools::new(Arc::new(registry))
     }
 
     async fn execute_with_tenant_context_intercept(tenant_id: &str) {
-        let recorder = Arc::new(RecordingToolService {
-            last: std::sync::Mutex::new(None),
-        });
-        let svc = AgentExecutionService::new().with_tool_service(recorder.clone());
+        let svc = Execute::new();
         let ctx = Context::new_root().with_intercept(ares_types::models::TenantContext::new(
             tenant_id.into(),
             ares_types::models::TenantTier::Pro,
         ));
+        let _ = ctx.provide(tools_with_probe());
         let req = AgentRequest {
             agent_name: "echo".into(),
             message: "hi".into(),
             ..Default::default()
         };
-        svc.execute(req, &ctx).await.expect("echo fallback");
-        assert_eq!(
-            *recorder.last.lock().unwrap(),
-            Some(Some(tenant_id.into()))
-        );
+        svc.run(&req, &ctx).await.expect("echo fallback");
+        let tools = ctx.get::<ares_tools::Tools>().expect("Tools on ctx");
+        let names: Vec<_> = tools.list(&ctx).into_iter().map(|d| d.name).collect();
+        assert!(names.contains(&"probe".to_string()), "Tools::list(ctx) sees intercept tenant tools");
     }
 
     #[tokio::test]
@@ -889,32 +833,25 @@ mod tests {
         execute_with_tenant_context_intercept("acme").await;
     }
 
-    /// When `UnifiedToolService` is on ctx, execute must call `list_for_ctx` /
-    /// `resolve_for_ctx` (isolate+intercept) and skip injected `ToolService::list`.
+    /// When `Tools` is on ctx, `run` must call `Tools::list(ctx)` /
+    /// `Tools::resolve(ctx, name)` (isolate+intercept).
     #[tokio::test]
-    async fn execute_lists_tools_via_unified_list_for_ctx() {
-        let recorder = Arc::new(RecordingToolService {
-            last: std::sync::Mutex::new(None),
-        });
-        let svc = AgentExecutionService::new().with_tool_service(recorder.clone());
+    async fn execute_lists_tools_via_tools_on_ctx() {
+        let svc = Execute::new();
         let ctx = Context::new_root().with_intercept(ares_types::models::TenantContext::new(
             "acme".into(),
             ares_types::models::TenantTier::Pro,
         ));
-        let _unified = ctx.provide(UnifiedToolService::new(Arc::new(
-            ares_tools::ToolRegistry::new(),
-        )));
+        let _ = ctx.provide(tools_with_probe());
         let req = AgentRequest {
             agent_name: "echo".into(),
             message: "hi".into(),
             ..Default::default()
         };
-        svc.execute(req, &ctx).await.expect("echo fallback");
-        assert_eq!(
-            *recorder.last.lock().unwrap(),
-            None,
-            "injected RecordingToolService must not list/resolve when UnifiedToolService is on ctx"
-        );
+        svc.run(&req, &ctx).await.expect("echo fallback");
+        let tools = ctx.get::<ares_tools::Tools>().expect("Tools on ctx");
+        assert!(tools.resolve(&ctx, "probe").is_some());
+        assert!(tools.list(&ctx).iter().any(|d| d.name == "probe"));
     }
 
     /// Intercept path without an `AgentRequest` tenant field (aliases the listing test).
@@ -923,29 +860,25 @@ mod tests {
         execute_with_tenant_context_intercept("acme").await;
     }
 
-    #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn execute_isolate_label_wins_over_intercept_for_tools() {
-        let recorder = Arc::new(RecordingToolService {
-            last: std::sync::Mutex::new(None),
-        });
-        let svc = AgentExecutionService::new().with_tool_service(recorder.clone());
+        let svc = Execute::new();
         let intercepted = Context::new_root().with_intercept(
             ares_types::models::TenantContext::new(
                 "from-intercept".into(),
                 ares_types::models::TenantTier::Pro,
             ),
         );
-        let ctx = intercepted.isolate::<crate::resolver::AgentResolverService>("tenant:from-isolate");
+        let ctx = tenant_scope(&intercepted, "from-isolate");
+        let _ = ctx.provide(tools_with_probe());
         let req = AgentRequest {
             agent_name: "echo".into(),
             message: "hi".into(),
             ..Default::default()
         };
-        svc.execute(req, &ctx).await.expect("echo fallback");
-        assert_eq!(
-            *recorder.last.lock().unwrap(),
-            Some(Some("from-isolate".into()))
-        );
+        svc.run(&req, &ctx).await.expect("echo fallback");
+        assert_eq!(user_id_from_ctx(&ctx, "anon"), "from-isolate");
+        let tools = ctx.get::<ares_tools::Tools>().expect("Tools on ctx");
+        assert!(tools.list(&ctx).iter().any(|d| d.name == "probe"));
     }
 }

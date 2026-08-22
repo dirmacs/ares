@@ -4,7 +4,6 @@
 use super::*;
 
 use crate::agents::context_provider::AgentRuntimeContext;
-use crate::agents::tenant_agent;
 use crate::db::agent_runs;
 use crate::db::tenant_agents::{self};
 use crate::models::TenantContext;
@@ -13,7 +12,6 @@ use crate::types::{
     AgentContext, Result,
 };
 use crate::AppState;
-use ares_agents::Agent;
 use axum::{
     extract::{Extension, Path, Query, State},
     http::StatusCode,
@@ -22,7 +20,7 @@ use axum::{
 };
 use chrono::{TimeZone, Utc};
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 
 /// GET /v1/agents — list all agents for this tenant
 pub async fn list_agents(
@@ -105,22 +103,24 @@ pub async fn run_agent(
 
     // Execute agent with timing
     let start = std::time::Instant::now();
-    use crate::agents::Agent;
-    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(&state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
-        &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
-        &state_ctx,
+    let state_ctx = ares_agent::tenant_scope(&state_ctx, &tc.tenant_id);
+    let tenant_row = tenant_agents::get_tenant_agent(
+        &state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
+        &tc.tenant_id,
         &name,
-        &state_ctx.get::<crate::FleetSecrets>().expect("not provided"),
     )
-    .await?;
+    .await
+    .ok();
+    let config_source = if tenant_row.is_some() { "tenant-db" } else { "system" };
+    let config_version = tenant_row
+        .as_ref()
+        .map(|row| format!("tenant-db:{}", row.updated_at));
 
     // Skill-based agent execution
-    resolved_agent
-        .agent
-        .set_runtime_tools_from_ctx(state_ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(), &state_ctx);
-
-    if let Some(config) = &resolved_agent.config {
-        if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {
+    if let Some(skill_id) = tenant_row
+        .as_ref()
+        .and_then(|row| row.config.get("skill_id").and_then(|v| v.as_str()))
+    {
             let run_id = uuid::Uuid::new_v4().to_string();
             state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
                 run_id: run_id.clone(),
@@ -154,15 +154,15 @@ pub async fn run_agent(
             {
                 let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
                 let tid = tc.tenant_id.clone();
-                let aname = resolved_agent.agent_name.clone();
+                let aname = name.clone();
                 let dur = duration_ms as i64;
                 let metadata = agent_runs::AgentRunMetadata {
                     workspace_id: runtime_workspace_id.clone(),
                     session_id: Some(agent_context.session_id.clone()),
                     request_source: Some("api_v1_agent_run".to_string()),
                     product: None,
-                    agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-                    agent_config_version: resolved_agent.config_version.clone(),
+                    agent_config_source: Some(config_source.to_string()),
+                    agent_config_version: config_version.clone(),
                     eruka_binding_id: None,
                     eruka_context_hit: false,
                     eruka_read_count: 0,
@@ -203,7 +203,7 @@ pub async fn run_agent(
                 });
             }
 
-            let response_agent_id = resolved_agent.agent_name.clone();
+            let response_agent_id = name.clone();
             let (response, input_tokens, output_tokens) = match skill_result {
                 Ok(context) => {
                     let (input_tokens, output_tokens) =
@@ -255,9 +255,9 @@ pub async fn run_agent(
             set_header(
                 response.headers_mut(),
                 "x-agent-config-source",
-                resolved_agent.source.as_str(),
+                config_source,
             );
-            if let Some(config_version) = &resolved_agent.config_version {
+            if let Some(config_version) = &config_version {
                 set_header(
                     response.headers_mut(),
                     "x-agent-config-version",
@@ -272,7 +272,6 @@ pub async fn run_agent(
                 );
             }
             return Ok(response);
-        }
     }
 
     // Run observability
@@ -283,8 +282,6 @@ pub async fn run_agent(
         agent_name: name.clone(),
         pool: state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
     });
-    resolved_agent.agent.set_observability(obs.clone());
-
     let mut runtime_context =
         AgentRuntimeContext::new(tc.tenant_id.clone(), name.clone(), "api_v1_agent_run");
     runtime_context.workspace_id = runtime_workspace_id.clone();
@@ -323,10 +320,19 @@ pub async fn run_agent(
         schedule_id: None,
         trigger_id: None,
     });
-    let result = resolved_agent
-        .agent
-        .execute(&effective_message, &agent_context)
-        .await;
+    let exec = state_ctx
+        .get::<ares_agent::Execute>()
+        .ok_or_else(|| crate::types::AppError::Unavailable("Execute not provided".into()))?;
+    let req = ares_agent::AgentRequest {
+        agent_name: name.clone(),
+        message: effective_message.clone(),
+        history: agent_context.conversation_history.clone(),
+        ctx_provider: None,
+    };
+    let result = exec
+        .run(&req, &state_ctx)
+        .await
+        .map(|exec_result| exec_result.response);
     let duration_ms = start.elapsed().as_millis() as u64;
 
     // Aggregate run costs (fire-and-forget)
@@ -363,7 +369,7 @@ pub async fn run_agent(
                 let run_id_for_insert = run_id.clone();
                 let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
                 let tid = tc.tenant_id.clone();
-                let aname = resolved_agent.agent_name.clone();
+                let aname = name.clone();
                 let itok = input_tokens as i64;
                 let otok = output_tokens as i64;
                 let dur = duration_ms as i64;
@@ -374,8 +380,8 @@ pub async fn run_agent(
                     session_id: Some(agent_context.session_id.clone()),
                     request_source: Some("api_v1_agent_run".to_string()),
                     product: None,
-                    agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-                    agent_config_version: resolved_agent.config_version.clone(),
+                    agent_config_source: Some(config_source.to_string()),
+                    agent_config_version: config_version.clone(),
                     eruka_binding_id: None,
                     eruka_context_hit,
                     eruka_read_count: if eruka_context_hit { 1 } else { 0 },
@@ -405,7 +411,7 @@ pub async fn run_agent(
                 });
             }
 
-            let response_agent_id = resolved_agent.agent_name.clone();
+            let response_agent_id = name.clone();
             let response = V1AgentRun {
                 id: run_id,
                 agent_id: response_agent_id.clone(),
@@ -430,9 +436,9 @@ pub async fn run_agent(
             set_header(
                 response.headers_mut(),
                 "x-agent-config-source",
-                resolved_agent.source.as_str(),
+                config_source,
             );
-            if let Some(config_version) = &resolved_agent.config_version {
+            if let Some(config_version) = &config_version {
                 set_header(
                     response.headers_mut(),
                     "x-agent-config-version",
@@ -454,7 +460,7 @@ pub async fn run_agent(
             {
                 let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
                 let tid = tc.tenant_id.clone();
-                let aname = resolved_agent.agent_name.clone();
+                let aname = name.clone();
                 let err_msg = e.to_string();
                 let dur = duration_ms as i64;
                 let metadata = agent_runs::AgentRunMetadata {
@@ -462,8 +468,8 @@ pub async fn run_agent(
                     session_id: Some(agent_context.session_id.clone()),
                     request_source: Some("api_v1_agent_run".to_string()),
                     product: None,
-                    agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-                    agent_config_version: resolved_agent.config_version.clone(),
+                    agent_config_source: Some(config_source.to_string()),
+                    agent_config_version: config_version.clone(),
                     eruka_binding_id: None,
                     eruka_context_hit,
                     eruka_read_count: if eruka_context_hit { 1 } else { 0 },
@@ -494,7 +500,7 @@ pub async fn run_agent(
                 });
             }
 
-            let response_agent_id = resolved_agent.agent_name.clone();
+            let response_agent_id = name.clone();
             let response = V1AgentRun {
                 id: run_id,
                 agent_id: response_agent_id.clone(),
@@ -513,7 +519,7 @@ pub async fn run_agent(
             set_header(
                 response.headers_mut(),
                 "x-agent-config-source",
-                resolved_agent.source.as_str(),
+                config_source,
             );
             if let Some(workspace_id) = &runtime_workspace_id {
                 set_header(
@@ -756,6 +762,6 @@ pub fn routes() -> axum::Router<crate::AppState> {
 }
 
 // cordis Phase6: RouteSet Service
-use ares_cordis_core::Service;
+use cordis::Service;
 pub struct V1AgentsService;
 impl Service for V1AgentsService {}

@@ -1,10 +1,10 @@
 //! Run observability implementation for ARES.
 //!
-//! Bridges `ares-llm`'s `ObservabilitySink` trait to `ares-db`'s
+//! Bridges `ares-llm`'s `ObservabilitySink` trait to `ares-store`'s
 //! `RunHistoryStore`, enabling LLM/tool call logging, budget checks,
 //! and run cost aggregation.
 
-use ares_db::run_history::{
+use ares_store::run_history::{
     BudgetAlert, LogLlmCallRequest, LogToolCallRequest, RunCost, RunHistoryStore,
 };
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};

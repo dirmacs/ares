@@ -19,7 +19,7 @@
 //! - ares_deploy_agent — deploy a .toon config
 //! - ares_get_usage    — check usage/quota
 
-use ares_db::tenants::TenantDb;
+use ares_store::tenants::TenantDb;
 use crate::auth::{extract_api_key_from_env, validate_mcp_api_key, McpSession};
 use crate::extension::{dispatch_extensions, McpToolExtension};
 use crate::tools::*;
@@ -1011,8 +1011,8 @@ pub async fn start_mcp_server(
 mod tests {
     use super::*;
     use crate::extension::NoOpMcpExtension;
-    use ares_db::postgres::PostgresClient;
-    use ares_db::tenants::TenantDb;
+    use ares_store::postgres::PostgresClient;
+    use ares_store::tenants::TenantDb;
     // TenantContext and TenantTier are available via super::* (server.rs uses them)
     use rmcp::ServerHandler;
     use std::sync::Arc;

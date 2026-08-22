@@ -86,14 +86,14 @@ impl ContextProvider for NoOpContextProvider {
 #[derive(Clone)]
 pub struct ContextProviderHandle(pub std::sync::Arc<dyn ContextProvider>);
 
-impl ares_cordis_core::Service for ContextProviderHandle {
+impl cordis::Service for ContextProviderHandle {
     fn name(&self) -> &'static str {
         "context_provider"
     }
     fn init(
         &self,
-        _ctx: &std::sync::Arc<ares_cordis_core::Context>,
-    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        _ctx: &std::sync::Arc<cordis::Context>,
+    ) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool {
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn context_provider_handle_readable_via_cordis() {
-        let ctx = ares_cordis_core::Context::new_root();
+        let ctx = cordis::Context::new_root();
         ctx.provide(ContextProviderHandle::new(std::sync::Arc::new(
             NoOpContextProvider,
         )));

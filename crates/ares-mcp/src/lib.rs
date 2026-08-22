@@ -20,7 +20,7 @@ pub mod server;
 #[cfg(feature = "mcp")]
 pub mod tools;
 
-// auth.rs uses ares_db::tenants::TenantDb (postgres-only), so the whole
+// auth.rs uses ares_store::tenants::TenantDb (postgres-only), so the whole
 // module is gated alongside the server. Its only consumer is mcp::server.
 #[cfg(feature = "mcp")]
 pub mod auth;
@@ -51,7 +51,7 @@ pub use registry::{
 /// `check()` returns `cfg!(feature = "mcp")` so both builds compile; handlers branch via
 /// `McpService::check()` or `ctx.get::<McpService>().check()`. Keep Cargo.toml `mcp` feature for dep selection only.
 pub struct McpService;
-impl ares_cordis_core::Service for McpService {
+impl cordis::Service for McpService {
     fn name(&self) -> &'static str {
         "mcp"
     }

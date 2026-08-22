@@ -5,7 +5,7 @@
 //! (`oauth_credentials` table) and encrypt/decrypt using the fleet master key.
 
 use ares_config::fleet_secrets::{decrypt_api_key, MasterKey};
-use ares_db::oauth_credentials::{OAuthCredential, OAuthCredentialStore};
+use ares_store::oauth_credentials::{OAuthCredential, OAuthCredentialStore};
 use ares_types::types::{AppError, Result};
 use serde::Deserialize;
 use sqlx::PgPool;

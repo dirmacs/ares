@@ -431,7 +431,7 @@ mod tests {
     #[cfg(feature = "postgres")]
     mod postgres_usage_tests {
         use super::*;
-        use ares_db::PostgresClient;
+        use ares_store::PostgresClient;
 
         #[tokio::test]
         async fn record_mcp_usage_does_not_fail_when_database_unavailable() {

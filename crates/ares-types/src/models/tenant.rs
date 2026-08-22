@@ -195,9 +195,9 @@ impl TenantContext {
 
 // Cordis Service impl — makes TenantContext a valid intercept key so per-request
 // tenant scope flows through the Cordis context via ctx.with_intercept(tenant_ctx).
-impl ares_cordis_core::Service for TenantContext {
+impl cordis::Service for TenantContext {
     fn name(&self) -> &'static str { "tenant_context" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }
@@ -583,7 +583,7 @@ mod tests {
         // from the context (ctx.get::<TenantContext>()) instead of Axum
         // request extensions.
         use std::sync::Arc;
-        let root: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let root: Arc<cordis::Context> = cordis::Context::new_root();
 
         // Before intercept — no TenantContext in context.
         assert!(root.get::<TenantContext>().is_none());

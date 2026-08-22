@@ -52,12 +52,13 @@ pub mod tenant_agent;
 pub mod memory;
 pub mod research;
 #[cfg(feature = "postgres")]
-pub mod resolver;
+pub(crate) mod resolver;
 pub mod external_context;
 pub mod execution;
-pub use execution::{AgentExecutionService, AgentRequest, RunTracker};
-#[cfg(feature = "postgres")]
-pub use execution::ExecutionResult;
+pub use execution::{
+    tenant_scope, user_id_from_ctx, AgentRequest, AgentSource, Execute, ExecutionResult, RunTracker,
+};
+pub use external_context::ExternalContext;
 
 use ares_llm::client::TokenUsage;
 use ares_types::types::{AgentContext, AgentType, Result};
@@ -68,7 +69,7 @@ pub use configurable::ConfigurableAgent;
 pub use context_provider::{ContextProvider, ContextProviderHandle, NoOpContextProvider};
 pub use registry::{AgentRegistry, AgentRegistryBuilder};
 #[cfg(feature = "postgres")]
-pub use resolver::{AgentResolverService, AgentSource, TenantId};
+pub use resolver::TenantId;
 
 /// Response from agent execution, including content and optional token usage
 #[derive(Debug, Clone, Default)]

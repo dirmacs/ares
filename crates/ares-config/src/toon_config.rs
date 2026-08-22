@@ -1106,9 +1106,9 @@ impl DynamicConfigManager {
     }
 }
 
-impl ares_cordis_core::Service for DynamicConfigManager {
+impl cordis::Service for DynamicConfigManager {
     fn name(&self) -> &'static str { "dynamic_config_manager" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }
@@ -1740,7 +1740,7 @@ model: fast
 
     #[test]
     fn dynamic_config_manager_readable_via_cordis() {
-        use ares_cordis_core::Service;
+        use cordis::Service;
         let dir = TempDir::new().unwrap();
         let manager = DynamicConfigManager::new(
             dir.path().join("agents"),
@@ -1751,7 +1751,7 @@ model: fast
             false,
         )
         .expect("empty dynamic config");
-        let ctx = std::sync::Arc::new(ares_cordis_core::Context::new_root());
+        let ctx = std::sync::Arc::new(cordis::Context::new_root());
         ctx.provide(manager);
         let got = ctx.get::<DynamicConfigManager>().expect("provided");
         assert_eq!(got.name(), "dynamic_config_manager");

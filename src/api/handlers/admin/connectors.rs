@@ -18,7 +18,7 @@ use axum::{
 use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use ::cordis::Context;
 
 pub async fn list_skills(
     State(ctx): State<Arc<Context>>,
@@ -338,7 +338,7 @@ pub async fn oauth_authorize(
 
     let provider = oauth_provider_config(&query.connector_type)?;
     let __pool_14 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(&__pool_14);
+    let store = ares_store::oauth_credentials::OAuthCredentialStore::new(&__pool_14);
     let credential = store
         .get(&query.tenant_id, provider.provider, &query.connector_type)
         .await?
@@ -376,7 +376,7 @@ pub async fn oauth_callback(
     let oauth_state = decode_oauth_state(&query.state)?;
     let provider = oauth_provider_config(&oauth_state.connector_type)?;
     let __pool_15 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(&__pool_15);
+    let store = ares_store::oauth_credentials::OAuthCredentialStore::new(&__pool_15);
     let credential = store
         .get(
             &oauth_state.tenant_id,
@@ -446,7 +446,7 @@ pub async fn list_oauth_credentials(
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<OAuthCredentialResponse>>> {
     let __pool_16 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(&__pool_16);
+    let store = ares_store::oauth_credentials::OAuthCredentialStore::new(&__pool_16);
     let credentials = store
         .list_by_tenant(&tenant_id)
         .await?
@@ -459,11 +459,11 @@ pub async fn list_oauth_credentials(
 pub async fn create_oauth_credential(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
-    Json(mut req): Json<ares_db::oauth_credentials::CreateOAuthCredentialRequest>,
+    Json(mut req): Json<ares_store::oauth_credentials::CreateOAuthCredentialRequest>,
 ) -> Result<Json<OAuthCredentialResponse>> {
     normalize_oauth_credential_request(tenant_id, &mut req)?;
     let __pool_17 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(&__pool_17);
+    let store = ares_store::oauth_credentials::OAuthCredentialStore::new(&__pool_17);
     let credential = store.create(&req).await?;
 
     let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
@@ -489,7 +489,7 @@ pub async fn delete_oauth_credential(
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
     let __pool_18 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
-    let store = ares_db::oauth_credentials::OAuthCredentialStore::new(&__pool_18);
+    let store = ares_store::oauth_credentials::OAuthCredentialStore::new(&__pool_18);
     let rows = store.delete_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
         return Err(AppError::NotFound(format!(
@@ -535,6 +535,6 @@ pub fn routes() -> axum::Router<crate::AppState> {
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
-use ares_cordis_core::Service;
+use ::cordis::Service;
 pub struct AdminConnectorsService;
 impl Service for AdminConnectorsService {}

@@ -1,5 +1,5 @@
 use crate::registry::Tool;
-use ares_cordis_core::Service;
+use cordis::Service;
 use ares_types::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -89,8 +89,8 @@ impl Service for CalculatorService {
 
     fn init(
         &self,
-        _ctx: &std::sync::Arc<ares_cordis_core::Context>,
-    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        _ctx: &std::sync::Arc<cordis::Context>,
+    ) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async move { Ok(None) })
     }
 }
@@ -134,28 +134,6 @@ impl Tool for CalculatorService {
         };
 
         Ok(json!({ "result": result }))
-    }
-}
-
-impl crate::tool_service::ToolService for CalculatorService {
-    fn resolve(
-        &self,
-        name: &str,
-        _tenant: Option<String>,
-    ) -> Option<std::sync::Arc<dyn crate::registry::Tool>> {
-        if name == "calculator" {
-            Some(std::sync::Arc::new(CalculatorService))
-        } else {
-            None
-        }
-    }
-
-    fn list(&self, _tenant: Option<String>) -> Vec<ares_types::types::ToolDefinition> {
-        vec![ares_types::types::ToolDefinition {
-            name: "calculator".to_string(),
-            description: "Perform basic arithmetic operations".to_string(),
-            parameters: self.parameters_schema(),
-        }]
     }
 }
 
@@ -258,46 +236,51 @@ mod tests {
         assert!(out["result"].is_null());
     }
 
-    // Verify CalculatorService is exposed via Context and ToolService.
+    // Verify Calculator is resolved through Tools on Context.
 
     #[test]
     fn test_calculator_service_via_context() {
-        use ares_cordis_core::Context;
-        use crate::tool_service::ToolService as _;
+        use crate::registry::ToolRegistry;
+        use crate::Tools;
+        use cordis::Context;
         use std::sync::Arc;
 
-        let ctx = Arc::new(Context::new_root());
-        let svc = Arc::new(CalculatorService);
-        ctx.provide_arc(svc.clone());
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(CalculatorService));
+        let tools = Arc::new(Tools::new(Arc::new(registry)));
+        let ctx = Context::new_root();
+        ctx.provide_arc(Arc::clone(&tools));
 
-        let resolved = ctx
-            .get::<CalculatorService>()
-            .expect("tool service should be in context");
-        assert_eq!(crate::registry::Tool::name(&*resolved), "calculator");
-
+        let resolved = ctx.get::<Tools>().expect("Tools should be in context");
         let tool = resolved
-            .resolve("calculator", None)
+            .resolve(&ctx, "calculator")
             .expect("calculator should resolve");
         assert_eq!(tool.name(), "calculator");
 
-        let list = resolved.list(None);
+        let list = resolved.list(&ctx);
         assert!(list.iter().any(|d| d.name == "calculator"));
-        assert!(resolved.resolve("unknown", None).is_none());
+        assert!(resolved.resolve(&ctx, "unknown").is_none());
 
-        // Also verify trait object coercion works for handlers that use dyn ToolService.
-        let dyn_svc: Arc<dyn crate::tool_service::ToolService> =
-            resolved as Arc<dyn crate::tool_service::ToolService>;
-        assert!(dyn_svc.resolve("calculator", None).is_some());
+        let isolated = ctx.isolate::<Tools>("tenant:acme");
+        assert!(resolved.resolve(&isolated, "calculator").is_some());
+        assert!(resolved.list(&isolated).iter().any(|d| d.name == "calculator"));
     }
 
     #[test]
-    fn test_calculator_service_direct_tool_service() {
-        use crate::tool_service::ToolService as _;
-        let svc = CalculatorService;
-        let tool = svc.resolve("calculator", None).unwrap();
+    fn test_calculator_via_tools_list_resolve() {
+        use crate::registry::ToolRegistry;
+        use crate::Tools;
+        use cordis::Context;
+        use std::sync::Arc;
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(CalculatorService));
+        let svc = Tools::new(Arc::new(registry));
+        let ctx = Context::new_root().isolate::<Tools>("tenant:acme");
+        let tool = svc.resolve(&ctx, "calculator").unwrap();
         assert_eq!(tool.name(), "calculator");
         assert_eq!(tool.description(), "Perform basic arithmetic operations");
-        let defs = svc.list(None);
+        let defs = svc.list(&ctx);
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "calculator");
     }

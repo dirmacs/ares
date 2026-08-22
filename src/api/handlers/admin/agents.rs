@@ -28,7 +28,7 @@ use axum::{
 use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use ::cordis::Context;
 
 pub async fn list_tenant_agents_handler(
     State(ctx): State<Arc<Context>>,
@@ -378,7 +378,7 @@ pub async fn test_tenant_agent_handler(
     db_get_tenant_agent(&__pool_23, &tenant_id, &agent_name).await?;
     let agent_config = tenant_agent::agent_config_from_json(&req.config)?;
     let __pool_24 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
-    let mut draft_agent = ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided")
+    let mut draft_agent = ctx.get::<ares_agent::AgentRegistry>().expect("AgentRegistry not provided")
         .create_agent_from_config_with_fallbacks(
             &agent_name,
             &agent_config,
@@ -398,8 +398,11 @@ pub async fn test_tenant_agent_handler(
         pool: __pool_25,
     });
     draft_agent.set_observability(obs.clone());
-    let ctx = ctx.isolate::<ares_agents::AgentResolverService>(&format!("tenant:{tenant_id}"));
-    draft_agent.set_runtime_tools_from_ctx(ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(), &ctx);
+    let ctx = ares_agent::tenant_scope(&ctx, &tenant_id);
+    if let Some(tools) = ctx.get::<ares_tools::Tools>() {
+        draft_agent.set_tools(tools);
+    }
+    draft_agent.bind_request_ctx(ctx.clone());
     draft_agent.set_run_id(run_id.clone());
 
     ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
@@ -607,6 +610,6 @@ pub fn routes() -> axum::Router<crate::AppState> {
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
-use ares_cordis_core::Service;
+use ::cordis::Service;
 pub struct AdminAgentsService;
 impl Service for AdminAgentsService {}

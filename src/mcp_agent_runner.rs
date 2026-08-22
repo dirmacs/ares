@@ -1,29 +1,29 @@
-//! Adapter from [`AgentExecutionService`](ares_agents::execution::AgentExecutionService)
+//! Adapter from [`Execute`](ares_agent::execution::Execute)
 //! to [`ares_mcp::AgentRunner`].
 
 use std::sync::Arc;
 
-use ares_cordis_core::Context;
+use cordis::Context;
 
-/// Runs MCP `ares_run_agent` through Cordis `AgentExecutionService`.
+/// Runs MCP `ares_run_agent` through Cordis `Execute`.
 pub struct ExecutionAgentRunner {
     pub ctx: Arc<Context>,
 }
 
 impl ExecutionAgentRunner {
-    /// Context already holding AgentExecutionService.
+    /// Context already holding Execute.
     pub fn new(ctx: Arc<Context>) -> Self {
         Self { ctx }
     }
 
-    /// Provide AgentExecutionService::new() if missing, then wrap.
+    /// Provide Execute::new() if missing, then wrap.
     pub fn attach(ctx: Arc<Context>) -> Self {
         if ctx
-            .get::<ares_agents::execution::AgentExecutionService>()
+            .get::<ares_agent::execution::Execute>()
             .is_none()
         {
             ctx.provide_arc(Arc::new(
-                ares_agents::execution::AgentExecutionService::new(),
+                ares_agent::execution::Execute::new(),
             ));
         }
         Self { ctx }
@@ -33,10 +33,8 @@ impl ExecutionAgentRunner {
     #[cfg(feature = "postgres")]
     pub fn with_tenant_db(tenant_db: Arc<crate::TenantDb>) -> Self {
         let ctx = Context::new_root();
-        let exec = Arc::new(
-            ares_agents::execution::AgentExecutionService::new().with_tenant_db(tenant_db),
-        );
-        ctx.provide_arc(exec);
+        ctx.provide_arc(tenant_db);
+        ctx.provide_arc(Arc::new(ares_agent::execution::Execute::new()));
         Self { ctx }
     }
 
@@ -54,20 +52,20 @@ impl ares_mcp::AgentRunner for ExecutionAgentRunner {
     ) -> Result<ares_mcp::tools::RunAgentOutput, String> {
         let exec = self
             .ctx
-            .get::<ares_agents::execution::AgentExecutionService>()
-            .ok_or_else(|| "AgentExecutionService not provided".to_string())?;
-        let req = ares_agents::execution::AgentRequest {
+            .get::<ares_agent::execution::Execute>()
+            .ok_or_else(|| "Execute not provided".to_string())?;
+        let req = ares_agent::execution::AgentRequest {
             agent_name: input.agent_name.clone(),
             message: input.message.clone(),
             history: vec![],
             ctx_provider: None,
         };
-        let resp = exec
-            .execute(req, &self.ctx)
+        let exec_result = exec
+            .run(&req, &self.ctx)
             .await
             .map_err(|e| e.to_string())?;
         Ok(ares_mcp::tools::RunAgentOutput {
-            response: resp.content,
+            response: exec_result.response.content,
             agent: input.agent_name.clone(),
             context_id: input.context_id.clone().unwrap_or_default(),
             sources: None,
@@ -84,7 +82,7 @@ mod tests {
 
     #[tokio::test]
     async fn execution_agent_runner_errors_without_service() {
-        let ctx = ares_cordis_core::Context::new_root();
+        let ctx = cordis::Context::new_root();
         let runner = ExecutionAgentRunner { ctx };
         let err = runner
             .run_agent(&ares_mcp::tools::RunAgentInput {
@@ -94,27 +92,27 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(err.contains("AgentExecutionService"));
+        assert!(err.contains("Execute"));
     }
 
     #[test]
     fn attach_provides_execution_service() {
-        let runner = ExecutionAgentRunner::attach(ares_cordis_core::Context::new_root());
+        let runner = ExecutionAgentRunner::attach(cordis::Context::new_root());
         assert!(runner
             .context()
-            .get::<ares_agents::execution::AgentExecutionService>()
+            .get::<ares_agent::execution::Execute>()
             .is_some());
     }
 
     #[test]
     fn attach_keeps_existing_service() {
-        let ctx = ares_cordis_core::Context::new_root();
-        let existing = Arc::new(ares_agents::execution::AgentExecutionService::new());
+        let ctx = cordis::Context::new_root();
+        let existing = Arc::new(ares_agent::execution::Execute::new());
         ctx.provide_arc(existing.clone());
         let runner = ExecutionAgentRunner::attach(ctx);
         let got = runner
             .context()
-            .get::<ares_agents::execution::AgentExecutionService>()
+            .get::<ares_agent::execution::Execute>()
             .expect("existing service kept");
         assert!(Arc::ptr_eq(&existing, &got));
     }

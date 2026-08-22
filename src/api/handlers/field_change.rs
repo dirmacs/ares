@@ -13,7 +13,7 @@ use axum::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 
 /// Simulated database field-change payload.
 #[derive(Debug, Deserialize)]

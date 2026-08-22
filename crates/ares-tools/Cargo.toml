@@ -12,15 +12,15 @@ description = "Built-in tools for ARES agents"
 default = []
 search-tools = ["dep:daedra", "dep:scraper"]
 mcp = ["dep:ares-mcp", "ares-mcp/mcp", "dep:tracing"]
-postgres = ["dep:sqlx", "dep:ares-db", "ares-db/postgres"]
+postgres = ["dep:sqlx", "dep:ares-store", "ares-store/postgres"]
 
 [dependencies]
 ares-types = { workspace = true }
 ares-config = { workspace = true }
 base64 = "0.22"
 urlencoding = "2.1"
-ares-db = { workspace = true, optional = true }
-ares-cordis-core = { workspace = true }
+ares-store = { workspace = true, optional = true }
+cordis = { workspace = true }
 arc-swap = "1.7.1"
 ares-mcp = { workspace = true, optional = true }
 async-trait = { workspace = true }
@@ -39,7 +39,7 @@ sqlx = { workspace = true, optional = true }
 
 [dev-dependencies]
 ares-mcp = { workspace = true, features = ["mcp"] }
-ares-db = { workspace = true, features = ["postgres"] }
+ares-store = { workspace = true, features = ["postgres"] }
 tracing = { workspace = true }
 chrono = { workspace = true }
 daedra = { version = "0.1.4" }

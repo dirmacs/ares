@@ -154,12 +154,7 @@ impl Service for RegistryService {}
 // CordisInventory entries at link time, while linkme offers a similar
 // distributed slice. Both are optional and off by default for the core crate,
 // and the registry itself is the real runtime surface that enforces
-// single-source discipline.
-
-#[cfg(feature = "inventory")]
-inventory::submit! {
-    crate::CordisInventory { name: "RegistryService" }
-}
+// single-source discipline. RegistryService is submitted once from lib.rs.
 
 #[cfg(feature = "linkme")]
 #[linkme::distributed_slice]

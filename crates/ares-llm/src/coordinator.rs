@@ -13,16 +13,19 @@
 //! ```rust,ignore
 //! use ares::llm::coordinator::{ToolCoordinator, ToolCallingConfig};
 //! use ares::llm::Provider;
-//! use ares::tools::ToolRegistry;
+//! use ares_tools::{Tools, Tool};
+//! use cordis::Context;
 //! use std::sync::Arc;
 //!
 //! let client = Provider::from_env()?.create_client().await?;
-//! let registry = Arc::new(ToolRegistry::new());
-//! let coordinator = ToolCoordinator::new(client, registry, ToolCallingConfig::default());
+//! let tools = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
+//! let coordinator = ToolCoordinator::new(client, tools, ToolCallingConfig::default());
+//! let ctx = Context::new_root();
 //!
 //! let result = coordinator.execute(
 //!     Some("You are a helpful assistant."),
-//!     "What's 2 + 2?"
+//!     "What's 2 + 2?",
+//!     &ctx,
 //! ).await?;
 //!
 //! println!("Response: {}", result.content);
@@ -31,7 +34,8 @@
 
 use crate::capabilities::{CapabilityRequirements, ModelCapabilities};
 use crate::client::{LLMClient, TokenUsage};
-use ares_tools::ToolRegistry;
+use ares_tools::{Tool, Tools};
+use cordis::Context;
 use ares_types::types::{Result, ToolCall};
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -592,43 +596,43 @@ pub struct ToolCoordinator {
     /// the primary fails with a retryable error.
     #[allow(dead_code)]
     fallback_chain: Vec<(String, Box<dyn LLMClient>)>,
-    registry: Arc<ToolRegistry>,
+    tools: Arc<Tools>,
     config: ToolCallingConfig,
     observability: Option<Arc<dyn crate::observability::ObservabilitySink>>,
 }
 
 impl ToolCoordinator {
-    /// Create a new ToolCoordinator with the given client, registry, and config.
+    /// Create a new ToolCoordinator with the given client, tools, and config.
     pub fn new(
         client: Box<dyn LLMClient>,
-        registry: Arc<ToolRegistry>,
+        tools: Arc<Tools>,
         config: ToolCallingConfig,
     ) -> Self {
         Self {
             client,
             fallback_chain: Vec::new(),
-            registry,
+            tools,
             config,
             observability: None,
         }
     }
 
     /// Create a new ToolCoordinator with default configuration.
-    pub fn with_defaults(client: Box<dyn LLMClient>, registry: Arc<ToolRegistry>) -> Self {
-        Self::new(client, registry, ToolCallingConfig::default())
+    pub fn with_defaults(client: Box<dyn LLMClient>, tools: Arc<Tools>) -> Self {
+        Self::new(client, tools, ToolCallingConfig::default())
     }
 
     /// Create a new ToolCoordinator with a fallback chain.
     pub fn with_fallbacks(
         client: Box<dyn LLMClient>,
         fallback_chain: Vec<(String, Box<dyn LLMClient>)>,
-        registry: Arc<ToolRegistry>,
+        tools: Arc<Tools>,
         config: ToolCallingConfig,
     ) -> Self {
         Self {
             client,
             fallback_chain,
-            registry,
+            tools,
             config,
             observability: None,
         }
@@ -655,13 +659,19 @@ impl ToolCoordinator {
     ///
     /// * `system` - Optional system prompt
     /// * `prompt` - The user's prompt
+    /// * `ctx` - Cordis context for `Tools::list` / `Tools::resolve` tenant derivation
     ///
     /// # Returns
     ///
     /// A `CoordinatorResult` containing the final response, all tool calls made,
     /// and execution metadata.
-    pub async fn execute(&self, system: Option<&str>, prompt: &str) -> Result<CoordinatorResult> {
-        let tools = self.registry.get_tool_definitions();
+    pub async fn execute(
+        &self,
+        system: Option<&str>,
+        prompt: &str,
+        ctx: &Arc<Context>,
+    ) -> Result<CoordinatorResult> {
+        let tools = self.tools.list(ctx);
         let mut messages: Vec<ConversationMessage> = Vec::new();
         let mut all_tool_calls: Vec<ToolCallRecord> = Vec::new();
         let mut total_usage = TokenUsage::default();
@@ -735,7 +745,7 @@ impl ToolCoordinator {
 
             // Validate that all requested tools exist
             for tool_call in &response.tool_calls {
-                if !self.registry.has_tool(&tool_call.name) {
+                if self.tools.resolve(ctx, &tool_call.name).is_none() {
                     return Ok(CoordinatorResult {
                         content: response.content,
                         tool_calls: all_tool_calls,
@@ -749,7 +759,7 @@ impl ToolCoordinator {
 
             // Execute tool calls
             let tool_start = Instant::now();
-            let tool_results = self.execute_tool_calls(&response.tool_calls).await?;
+            let tool_results = self.execute_tool_calls(ctx, &response.tool_calls).await?;
             let tool_latency = tool_start.elapsed().as_millis() as i64;
 
             // Record tool calls and add results to message history
@@ -794,17 +804,25 @@ impl ToolCoordinator {
     }
 
     /// Execute tool calls, either in parallel or sequentially based on config.
-    async fn execute_tool_calls(&self, calls: &[ToolCall]) -> Result<Vec<ToolCallRecord>> {
+    async fn execute_tool_calls(
+        &self,
+        ctx: &Arc<Context>,
+        calls: &[ToolCall],
+    ) -> Result<Vec<ToolCallRecord>> {
         if self.config.parallel_execution {
-            self.execute_parallel(calls).await
+            self.execute_parallel(ctx, calls).await
         } else {
-            self.execute_sequential(calls).await
+            self.execute_sequential(ctx, calls).await
         }
     }
 
     /// Execute tool calls in parallel.
-    async fn execute_parallel(&self, calls: &[ToolCall]) -> Result<Vec<ToolCallRecord>> {
-        let futures = calls.iter().map(|call| self.execute_single_tool(call));
+    async fn execute_parallel(
+        &self,
+        ctx: &Arc<Context>,
+        calls: &[ToolCall],
+    ) -> Result<Vec<ToolCallRecord>> {
+        let futures = calls.iter().map(|call| self.execute_single_tool(ctx, call));
         let results = join_all(futures).await;
 
         let mut records = Vec::with_capacity(results.len());
@@ -830,10 +848,14 @@ impl ToolCoordinator {
     }
 
     /// Execute tool calls sequentially.
-    async fn execute_sequential(&self, calls: &[ToolCall]) -> Result<Vec<ToolCallRecord>> {
+    async fn execute_sequential(
+        &self,
+        ctx: &Arc<Context>,
+        calls: &[ToolCall],
+    ) -> Result<Vec<ToolCallRecord>> {
         let mut records = Vec::with_capacity(calls.len());
         for call in calls {
-            match self.execute_single_tool(call).await {
+            match self.execute_single_tool(ctx, call).await {
                 Ok(record) => records.push(record),
                 Err(e) if self.config.stop_on_error => return Err(e),
                 Err(e) => {
@@ -853,12 +875,28 @@ impl ToolCoordinator {
     }
 
     /// Execute a single tool call with timeout.
-    async fn execute_single_tool(&self, call: &ToolCall) -> Result<ToolCallRecord> {
+    async fn execute_single_tool(
+        &self,
+        ctx: &Arc<Context>,
+        call: &ToolCall,
+    ) -> Result<ToolCallRecord> {
         let start = Instant::now();
+
+        let Some(tool) = self.tools.resolve(ctx, &call.name) else {
+            return Ok(ToolCallRecord {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+                result: serde_json::json!({"error": format!("Tool not found: {}", call.name)}),
+                success: false,
+                duration_ms: 0,
+                error: Some(format!("Tool not found: {}", call.name)),
+            });
+        };
 
         let result = timeout(
             self.config.tool_timeout,
-            self.registry.execute(&call.name, call.arguments.clone()),
+            Tool::execute(tool.as_ref(), call.arguments.clone()),
         )
         .await;
 
@@ -900,9 +938,9 @@ impl ToolCoordinator {
         self.client.as_ref()
     }
 
-    /// Get a reference to the tool registry.
-    pub fn registry(&self) -> &Arc<ToolRegistry> {
-        &self.registry
+    /// Get a reference to the Tools capability.
+    pub fn tools(&self) -> &Arc<Tools> {
+        &self.tools
     }
 
     /// Get a reference to the configuration.
@@ -1240,17 +1278,19 @@ mod tests {
         use ares_tools::calculator::Calculator;
         use std::sync::Arc;
 
-        let mut registry = ToolRegistry::new();
-        registry.register(Arc::new(Calculator));
+        let tools = Arc::new(Tools::from_static([
+            Arc::new(Calculator) as Arc<dyn Tool>,
+        ]));
+        let ctx = Context::new_root();
 
         let coordinator = ToolCoordinator::new(
             Box::new(MockToolFlowClient::new()),
-            Arc::new(registry),
+            tools,
             ToolCallingConfig::default(),
         );
 
         let result = coordinator
-            .execute(None, "What is 2 + 2?")
+            .execute(None, "What is 2 + 2?", &ctx)
             .await
             .expect("coordinator should succeed");
 
@@ -1337,13 +1377,14 @@ mod tests {
             }
         }
 
-        let registry = Arc::new(ToolRegistry::new());
+        let tools = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
+        let ctx = Context::new_root();
         let coordinator = ToolCoordinator::new(
             Box::new(UnknownToolClient),
-            registry,
+            tools,
             ToolCallingConfig::default(),
         );
-        let result = coordinator.execute(None, "go").await.unwrap();
+        let result = coordinator.execute(None, "go", &ctx).await.unwrap();
         assert!(matches!(result.finish_reason, FinishReason::UnknownTool(_)));
     }
 

@@ -90,9 +90,9 @@ impl AresVectorStore {
     }
 }
 
-impl ares_cordis_core::Service for AresVectorStore {
+impl cordis::Service for AresVectorStore {
     fn name(&self) -> &'static str { "ares_vector_store" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }

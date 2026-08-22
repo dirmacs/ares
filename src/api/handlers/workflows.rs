@@ -3,7 +3,7 @@
 //! Handles HTTP requests for executing declarative workflows defined in ares.toml.
 
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 
 use crate::{
     auth::middleware::AuthUser,

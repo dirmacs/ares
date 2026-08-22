@@ -19,7 +19,7 @@ use axum::{
     Extension, Json,
 };
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 use uuid::Uuid;
 
 /// Validates chat request payload before routing.
@@ -364,23 +364,20 @@ async fn execute_agent(
 
     ensure_not_direct_router(&agent_type)?;
 
-    // Cordis DI path: delegate core execution to AgentExecutionService (Phase 4 §15)
-    if let Some(exec_svc) = ctx.get::<ares_agents::execution::AgentExecutionService>() {
-        let req = ares_agents::execution::AgentRequest {
+    // Cordis DI path: delegate core execution to Execute (Phase 4 §15)
+    if let Some(exec_svc) = ctx.get::<ares_agent::execution::Execute>() {
+        let req = ares_agent::execution::AgentRequest {
             agent_name: agent_name.to_string(),
             message: message.to_string(),
             history: context.conversation_history.clone(),
             ctx_provider: None,
         };
-        let exec_ctx = if ctx.get::<crate::models::TenantContext>().is_none() {
-            ctx.isolate::<ares_agents::resolver::AgentResolverService>(format!(
-                "user:{}",
-                context.user_id
-            ))
+        let exec_ctx = if let Some(tc) = ctx.get::<crate::models::TenantContext>() {
+            ares_agent::tenant_scope(ctx, &tc.tenant_id)
         } else {
-            ctx.clone()
+            ctx.isolate::<ares_agent::Execute>(format!("user:{}", context.user_id))
         };
-        let exec_result = exec_svc.execute_agent(&req, &exec_ctx).await?;
+        let exec_result = exec_svc.run(&req, &exec_ctx).await?;
         return Ok((
             chat_response_from_agent_output(agent_type, exec_result.source.as_str(), &context.session_id, exec_result.response.content),
             exec_result.response.usage.map(|u| crate::llm::client::TokenUsage {
@@ -398,7 +395,7 @@ async fn execute_agent(
     let config = agent_config_from_user_agent(&user_agent);
 
     // Create agent from registry using the resolved config
-    let mut agent = ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided")
+    let mut agent = ctx.get::<ares_agent::AgentRegistry>().expect("AgentRegistry not provided")
         .create_agent_from_config_with_fallbacks(
             agent_name,
             &config,

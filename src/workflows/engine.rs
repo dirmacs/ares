@@ -7,7 +7,7 @@ use crate::agents::Agent;
 use crate::api::handlers::user_agents::resolve_agent;
 use crate::types::{AgentContext, AgentType, AppError, Result};
 use crate::utils::toml_config::{AgentConfig, WorkflowConfig};
-use ares_cordis_core::{Context, Service};
+use cordis::{Context, Service};
 use crate::AppState;
 use std::sync::Arc;
 use chrono::Utc;
@@ -56,8 +56,8 @@ const VALID_AGENTS: &[&str] = &[
 
 /// Workflow engine that orchestrates agent execution
 ///
-/// Cordis service — owns router delegation via `AgentResolverService` +
-/// `AgentExecutionService` injected via `ctx.get`. Migrated from `AppState` to
+/// Cordis service — owns router delegation via
+/// `Execute` injected via `ctx.get`. Migrated from `AppState` to
 /// `Arc<Context>` per Phase 4 step 16.
 pub struct WorkflowEngine {
     /// Cordis context for resolving agents (replaces `AppState` god-struct)
@@ -137,9 +137,8 @@ impl WorkflowEngine {
         user_input: &str,
         context: &AgentContext,
     ) -> Result<WorkflowOutput> {
-        // Prove AgentResolverService + AgentExecutionService injection via ctx.get (provider-agnostic)
-        let _resolver = self.ctx.get::<ares_agents::resolver::AgentResolverService>();
-        let _execution = self.ctx.get::<ares_agents::execution::AgentExecutionService>();
+        // Prove Execute injection via ctx.get (provider-agnostic)
+        let _execution = self.ctx.get::<ares_agent::execution::Execute>();
         // Get workflow configuration via Context (migrated from AppState)
         let config = self.ctx.get::<crate::AresConfigManager>().expect("not provided").config();
         let workflow = config.get_workflow(workflow_name).ok_or_else(|| {
@@ -160,7 +159,7 @@ impl WorkflowEngine {
             let step_start = std::time::Instant::now();
             let timestamp = Utc::now().timestamp();
 
-            // Resolve agent using the 3-tier hierarchy via Context (AgentResolverService precedence)
+            // Resolve agent using the 3-tier hierarchy via Context (Execute::run)
             let (user_agent, _source) = match resolve_agent(
                 &self.ctx,
                 &context.user_id,
@@ -197,7 +196,7 @@ impl WorkflowEngine {
             };
 
             // Create the agent via AgentRegistryService via Context
-            let mut agent = self.ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided")
+            let mut agent = self.ctx.get::<ares_agent::AgentRegistry>().expect("AgentRegistry not provided")
                 .create_agent_from_config_with_fallbacks(
                     &current_agent_name,
                     &agent_config,
@@ -464,7 +463,7 @@ mod tests {
 
         // Create a dummy AppState for testing
         let state: AppState = {
-            let ctx = ares_cordis_core::Context::new_root();
+            let ctx = cordis::Context::new_root();
             let config_manager = Arc::new(AresConfigManager::from_config((*config).clone()));
             ctx.provide_arc(config_manager.clone());
             ctx.provide(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap());
@@ -509,7 +508,7 @@ mod tests {
 
         // Create a dummy AppState for testing
         let state: AppState = {
-            let ctx = ares_cordis_core::Context::new_root();
+            let ctx = cordis::Context::new_root();
             let config_manager = Arc::new(AresConfigManager::from_config((*config).clone()));
             ctx.provide_arc(config_manager.clone());
             ctx.provide(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap());
@@ -554,7 +553,7 @@ mod tests {
 
         // Create a dummy AppState for testing
         let state: AppState = {
-            let ctx = ares_cordis_core::Context::new_root();
+            let ctx = cordis::Context::new_root();
             let config_manager = Arc::new(AresConfigManager::from_config((*config).clone()));
             ctx.provide_arc(config_manager.clone());
             ctx.provide(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap());
@@ -657,7 +656,7 @@ mod tests {
         ));
 
         let state: AppState = {
-            let ctx = ares_cordis_core::Context::new_root();
+            let ctx = cordis::Context::new_root();
             let config_manager = Arc::new(AresConfigManager::from_config((*config).clone()));
             ctx.provide_arc(config_manager.clone());
             ctx.provide(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap());

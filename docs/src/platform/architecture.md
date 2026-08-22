@@ -32,26 +32,26 @@ HTTP request
 |-------|---------|
 | `ares-types` | Shared types, error definitions |
 | `ares-config` | TOML/TOON configuration, fleet secrets |
-| `ares-db` | PostgreSQL client, migrations, tenant DB |
+| `ares-store` | PostgreSQL client, migrations, tenant DB |
 | `ares-llm` | Provider registry, LLM clients (OpenAI, Anthropic, Ollama, Nvidia) |
-| `ares-agents` | Agent trait, ConfigurableAgent, AgentExecutionService, AgentResolverService |
+| `ares-agent` | Agent trait, ConfigurableAgent, AgentExecutionService, AgentResolverService |
 | `ares-tools` | Tool trait, built-in tools, runtime tool registry |
 | `ares-mcp` | MCP client integration |
 | `ares-rag` | Vector search, BM25, hybrid retrieval |
 | `ares-vector` | Pure-Rust vector store |
-| `ares-cordis-core` | Context, Fiber, Service, Registry, Loader, Events, ReflectService |
+| `cordis` | Context, Fiber, Service, Registry, Loader, Events, ReflectService |
 
 ## Key services
 
-**AgentExecutionService** (in `ares-agents`): The single entry point for running agents. Resolves the agent config, creates the agent, tracks the run via `RunTracker`, and executes. All five call sites (chat, v1 API, scheduler, pipeline, trigger) delegate here.
+**AgentExecutionService** (in `ares-agent`): The single entry point for running agents. Resolves the agent config, creates the agent, tracks the run via `RunTracker`, and executes. All five call sites (chat, v1 API, scheduler, pipeline, trigger) delegate here.
 
-**AgentResolverService** (in `ares-agents`): 3-tier agent resolution. Queries tenant DB first, then community agents, then system config. Returns the resolved agent config and source tier.
+**AgentResolverService** (in `ares-agent`): 3-tier agent resolution. Queries tenant DB first, then community agents, then system config. Returns the resolved agent config and source tier.
 
 **LlmService** (in `ares-llm`): LLM provider management with circuit breaker (closed/open/half-open). Supports per-request model override without mutating global state.
 
 **UnifiedToolService** (in `ares-tools`): Merges static tools, runtime DB tools, and MCP tools behind one interface. Precedence: tenant runtime, fleet runtime, MCP bridge, static.
 
-**ReflectService** (in `ares-cordis-core`): Coordinates hot-reload. When a file changes or DB row updates, `notify(type_id)` walks dependent fibers and triggers refresh.
+**ReflectService** (in `cordis`): Coordinates hot-reload. When a file changes or DB row updates, `notify(type_id)` walks dependent fibers and triggers refresh.
 
 ## Server bootstrap
 

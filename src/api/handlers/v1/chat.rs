@@ -2,11 +2,10 @@
 //! Bodies moved from v1.rs
 
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 use super::*;
 
 use crate::agents::context_provider::AgentRuntimeContext;
-use crate::agents::tenant_agent;
 use crate::db::agent_runs;
 use crate::models::TenantContext;
 use crate::research::coordinator::ResearchCoordinator;
@@ -15,39 +14,11 @@ use crate::types::{
     ResearchResponse, Result,
 };
 use crate::AppState;
-use ares_agents::Agent;
 use axum::{
     extract::{Extension, State},
     response::Response,
     Json,
 };
-
-/// Resolve the tenant-isolated static tool service and inject it into the
-/// legacy agent. The child context is intentionally request-local: the
-/// resolved service cannot be observed by another tenant's request.
-fn inject_tenant_tool_service(
-    state_ctx: &Arc<Context>,
-    agent: &mut ares_agents::ConfigurableAgent,
-) {
-    let Some(tc) = state_ctx.get::<crate::models::TenantContext>() else {
-        return;
-    };
-    let tenant_id = tc.tenant_id.as_str();
-    let tenant_ctx = state_ctx.isolate::<crate::ToolRegistry>(tenant_id);
-    let base_tools = state_ctx
-        .get::<crate::ToolRegistry>()
-        .expect("ToolRegistry missing");
-    tenant_ctx.provide_arc(base_tools.clone());
-    let scoped_tools = tenant_ctx
-        .get_isolated::<crate::ToolRegistry>(tenant_id)
-        .expect("isolated ToolRegistry missing");
-
-    // ConfigurableAgent uses this service for definitions and dispatch, rather
-    // than merely resolving it for logging. Runtime tools remain filtered by
-    // the existing tenant_id path below.
-    let service = ares_tools::UnifiedToolService::new(scoped_tools.clone());
-    agent.inject_tool_service(Arc::new(service));
-}
 
 /// POST /v1/chat — tenant-scoped chat (API key auth, no conversation history)
 pub async fn v1_chat(
@@ -63,6 +34,7 @@ pub async fn v1_chat(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
+    let state_ctx = state_ctx.isolate::<ares_tools::Tools>(&tc.tenant_id);
     // Per-request model override is implemented via ModelOverride + Cordis intercept
     // (see the DI path below: state_ctx.with_intercept(ModelOverride { .. })).
 
@@ -123,11 +95,11 @@ pub async fn v1_chat(
     };
 
     use crate::agents::Agent;
-    // Phase 4 §15: v1/chat delegates to AgentExecutionService for resolve+create+execute.
+    // Phase 4 §15: v1/chat delegates to Execute for resolve+create+execute.
     // Observability (agent_runs recording) remains local since it needs v1-specific metadata
     // (workspace_id, eruka_context_hit, request_source).
-    if let Some(exec_svc) = state_ctx.get::<ares_agents::execution::AgentExecutionService>() {
-        let req = ares_agents::execution::AgentRequest {
+    if let Some(exec_svc) = state_ctx.get::<ares_agent::execution::Execute>() {
+        let req = ares_agent::execution::AgentRequest {
             agent_name: agent_name.clone(),
             message: effective_message.clone(),
             history: agent_context.conversation_history.clone(),
@@ -144,7 +116,7 @@ pub async fn v1_chat(
             let allowed_models = crate::db::tenant_allowlist::TenantAllowlistStore::new(&pool)
                 .list_models(&tc.tenant_id)
                 .await?;
-            let child = state_ctx.with_intercept(ares_agents::execution::ModelOverride {
+            let child = state_ctx.with_intercept(ares_agent::execution::ModelOverride {
                 model: m.clone(),
             });
             child.provide(ares_llm::TenantModelPolicy::new(
@@ -155,7 +127,12 @@ pub async fn v1_chat(
         } else {
             state_ctx.clone()
         };
-        let exec_result = exec_svc.execute_agent(&req, &req_ctx).await?;
+        let req_ctx = req_ctx.isolate::<ares_tools::Tools>(&tc.tenant_id);
+        let req_ctx = ares_agent::tenant_scope(&req_ctx, &tc.tenant_id);
+        if let Some(ext) = eruka_context.clone() {
+            req_ctx.provide(ares_agent::ExternalContext(ext));
+        }
+        let exec_result = exec_svc.run(&req, &req_ctx).await?;
         let duration_ms = start.elapsed().as_millis() as i64;
         let response_text = exec_result.response.content;
         let (model_name, provider_name) = execution_metadata_names(exec_result.response.metadata.as_ref());
@@ -207,136 +184,9 @@ pub async fn v1_chat(
         })).into_response());
     }
 
-    // Legacy fallback: resolve_agent_from_ctx + inline execution
-    // Cordis isolate: tenant-scoped tool resolution
-    let tenant_ctx = state_ctx.isolate::<crate::ToolRegistry>(&tc.tenant_id);
-    tracing::debug!(
-        tenant = %tc.tenant_id,
-        "v1/chat: using Cordis-isolated context for tenant tool scoping"
-    );
-    // Cordis intercept: per-request model override without mutating global state
-    let tenant_ctx = if let Some(ref model) = payload.model {
-        tracing::debug!(model = %model, "v1/chat: Cordis intercept for model override");
-        tenant_ctx.intercept(ares_agents::execution::ModelOverride {
-            model: model.clone(),
-        })
-    } else {
-        tenant_ctx
-    };
-
-    let mut resolved_agent = tenant_agent::resolve_agent_from_ctx(
-        state_ctx.get::<crate::TenantDb>().expect("not provided").pool(),
-        &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
-        &state_ctx,
-        &agent_name,
-        &state_ctx.get::<crate::FleetSecrets>().expect("not provided"),
-    )
-    .await?;
-    inject_tenant_tool_service(&tenant_ctx, &mut resolved_agent.agent);
-    // Give the agent access to its tenant's runtime (DB-defined) tools so the
-    // LLM can actually call them. Tenant-scoped — never cross-tenant.
-    // cordis Phase6: runtime gating via PostgresService::check (was cfg feature postgres)
-    if cfg!(feature = "postgres") {
-        resolved_agent
-            .agent
-            .set_runtime_tools_from_ctx(tenant_ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(), &state_ctx);
-    }
-    let response = resolved_agent
-        .agent
-        .execute(&effective_message, &agent_context)
-        .await?;
-    let duration_ms = start.elapsed().as_millis() as i64;
-
-    let response_text = response.content;
-    let (model_name, provider_name) = execution_metadata_names(response.metadata.as_ref());
-
-    // Use actual LLM token counts; fall back to heuristic estimates if unavailable
-    let (input_tokens, output_tokens) =
-        llm_token_counts_u32(response.usage.as_ref(), &effective_message, &response_text);
-
-    // Record agent run with real model/provider
-    {
-        let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
-        let tid = tc.tenant_id.clone();
-        let aname = resolved_agent.agent_name.clone();
-        let itok = input_tokens as i64;
-        let otok = output_tokens as i64;
-        let mname = model_name.clone();
-        let pname = provider_name.clone();
-        let metadata = agent_runs::AgentRunMetadata {
-            workspace_id: payload.workspace_id.clone(),
-            session_id: Some(agent_context.session_id.clone()),
-            request_source: Some("api_v1_chat".to_string()),
-            product: None,
-            agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-            agent_config_version: resolved_agent.config_version.clone(),
-            eruka_binding_id: None,
-            eruka_context_hit,
-            eruka_read_count: if eruka_context_hit { 1 } else { 0 },
-            eruka_write_count: 0,
-            pipeline_id: None,
-            schedule_id: None,
-            trigger_id: None,
-        };
-        tokio::spawn(async move {
-            let _ = agent_runs::insert_agent_run_with_metadata(
-                &pool,
-                &tid,
-                &aname,
-                None,
-                "completed",
-                itok,
-                otok,
-                duration_ms,
-                None,
-                &mname,
-                &pname,
-                false,
-                Some(&metadata),
-            )
-            .await;
-        });
-    }
-
-    let chat_response = ChatResponse {
-        response: response_text,
-        agent: format!(
-            "{} ({})",
-            resolved_agent.agent_name,
-            resolved_agent.source.as_str()
-        ),
-        context_id: agent_context.session_id,
-        sources: None,
-    };
-
-    let mut response = usage_response(
-        chat_response,
-        input_tokens as u64,
-        output_tokens as u64,
-        &model_name,
-        &provider_name,
-        &resolved_agent.agent_name,
-    );
-    set_header(
-        response.headers_mut(),
-        "x-agent-config-source",
-        resolved_agent.source.as_str(),
-    );
-    if let Some(config_version) = &resolved_agent.config_version {
-        set_header(
-            response.headers_mut(),
-            "x-agent-config-version",
-            config_version,
-        );
-    }
-    if let Some(workspace_id) = &payload.workspace_id {
-        set_header(
-            response.headers_mut(),
-            "x-runtime-workspace-id",
-            workspace_id,
-        );
-    }
-    Ok(response)
+    Err(AppError::Unavailable(
+        "Execute is not provided on the request context".into(),
+    ))
 }
 
 async fn ensure_research_model_allowed(
@@ -378,6 +228,7 @@ pub async fn v1_research(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
+    let state_ctx = state_ctx.isolate::<ares_tools::Tools>(&tc.tenant_id);
     enforce_quota(&state_ctx).await?;
 
     if state_ctx.get::<crate::context_services::EmergencyStop>().expect("not provided")
@@ -444,15 +295,14 @@ pub fn routes() -> axum::Router<crate::AppState> {
 }
 
 // cordis Phase6: RouteSet Service
-use ares_cordis_core::Service;
+use cordis::Service;
 pub struct V1ChatService;
 impl Service for V1ChatService {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::TenantTier;
-    use ares_agents::ConfigurableAgent;
+    use ares_agent::ConfigurableAgent;
     use ares_config::toml_config::AgentConfig;
     use ares_llm::{LLMClient, LLMResponse};
     use ares_tools::registry::{Tool, ToolRegistry};
@@ -562,7 +412,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(TestTool("tenant_a_tool")));
         registry.register(Arc::new(TestTool("tenant_b_tool")));
-        root.provide_arc(Arc::new(registry));
+        root.provide(ares_tools::Tools::new(Arc::new(registry)));
 
         let config = AgentConfig {
             model: "test".to_string(),
@@ -580,8 +430,9 @@ mod tests {
             None,
         );
 
-        let scoped = root.with_intercept(TenantContext::new("tenant-a".into(), TenantTier::Free));
-        inject_tenant_tool_service(&scoped, &mut agent);
+        let scoped = root.isolate::<ares_tools::Tools>("tenant-a");
+        agent.set_tools(scoped.get::<ares_tools::Tools>().expect("Tools"));
+        agent.bind_request_ctx(scoped);
 
         let definitions = agent.get_filtered_tool_definitions();
         assert_eq!(definitions.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["tenant_a_tool"]);

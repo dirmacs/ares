@@ -1,10 +1,10 @@
 //! Inter-agent pipeline execution engine.
 
-use ares_cordis_core::{Context, CordisError, Disposable, Service};
-use ares_db::agent_runs::{self, AgentRunMetadata};
-use ares_db::schedules::{AgentPipeline, PipelineStore};
-use ares_db::PostgresClient;
-use ares_agents::execution::{AgentExecutionService, AgentRequest};
+use cordis::{Context, CordisError, Disposable, Service};
+use ares_store::agent_runs::{self, AgentRunMetadata};
+use ares_store::schedules::{AgentPipeline, PipelineStore};
+use ares_store::PostgresClient;
+use ares_agent::execution::{Execute, AgentRequest};
 use ares_types::types::AgentContext;
 use serde_json::Value;
 use std::sync::Arc;
@@ -12,20 +12,20 @@ use tokio::task::JoinHandle;
 use crate::AppState;
 
 /// Cordis service owning `agent_pipelines` lookup and conditional evaluation,
-/// injecting `AgentExecutionService` for downstream execution.
+/// injecting `Execute` for downstream execution.
 ///
 /// Pipelines are triggered downstream (no tick loop); `Service::init` merely
 /// proves `ReflectService` wiring and returns no guard (pipelines are
 /// event-driven via `execute_pipeline` / `execute_pipeline_with_origin`).
 pub struct PipelineService {
     pub db: Arc<PostgresClient>,
-    pub execution: Arc<AgentExecutionService>,
+    pub execution: Arc<Execute>,
     _handle: parking_lot::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl PipelineService {
     /// Create a new service with explicit dependencies.
-    pub fn new(db: Arc<PostgresClient>, execution: Arc<AgentExecutionService>) -> Self {
+    pub fn new(db: Arc<PostgresClient>, execution: Arc<Execute>) -> Self {
         Self {
             db,
             execution,
@@ -35,7 +35,7 @@ impl PipelineService {
 
     /// Execute a single pipeline by id for a tenant, applying conditional
     /// evaluation against `input` and then delegating to
-    /// `ctx.get::<AgentExecutionService>().execute` (fallback: `self.execution`).
+    /// `ctx.get::<Execute>().execute` (fallback: `self.execution`).
     ///
     /// Lookup: `agent_pipelines` where `tenant_id=$1 AND id=$2` (enabled check
     /// enforced — disabled pipelines return `Err`).
@@ -90,8 +90,8 @@ impl PipelineService {
         }
 
         // Prefer Context-provided execution (DI), fallback to injected `self.execution`.
-        let exec: Arc<AgentExecutionService> = ctx
-            .get::<AgentExecutionService>()
+        let exec: Arc<Execute> = ctx
+            .get::<Execute>()
             .unwrap_or_else(|| self.execution.clone());
 
         let req = AgentRequest {
@@ -103,10 +103,11 @@ impl PipelineService {
 
         // Isolate on scoped ctx is the tenant source.
         let scoped = tenant_scoped_ctx(ctx, tenant);
-        let resp = match exec.execute_agent(&req, &scoped).await {
-            Ok(result) => result.response,
-            Err(_) => exec.execute(req, &scoped).await.map_err(|e| e.to_string())?,
-        };
+        let resp = exec
+            .run(&req, &scoped)
+            .await
+            .map_err(|e| e.to_string())?
+            .response;
 
         // Surface as JSON Value for caller uniformity.
         Ok(serde_json::json!({
@@ -136,10 +137,10 @@ impl Service for PipelineService {
         "PipelineService"
     }
 
-    fn init(&self, ctx: &Arc<Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, ctx: &Arc<Context>) -> cordis::ServiceInitFuture<'_> {
         // Prove ReflectService wiring (no tick loop needed — pipelines are downstream-triggered).
         // Mirror SchedulerService's ensure_notifier/register_dependent pattern so wiring is uniform.
-        if let Some(reflect) = ctx.get::<ares_cordis_core::ReflectService>() {
+        if let Some(reflect) = ctx.get::<cordis::ReflectService>() {
             use std::any::TypeId;
             let tid = TypeId::of::<PipelineService>();
             let _rx = reflect.ensure_notifier(tid);
@@ -154,7 +155,7 @@ impl Service for PipelineService {
 pub(crate) const PIPELINE_REQUEST_SOURCE: &str = "pipeline";
 
 pub(crate) fn tenant_scoped_ctx(ctx: &Arc<Context>, tenant_id: &str) -> Arc<Context> {
-    ctx.isolate::<ares_agents::AgentResolverService>(&format!("tenant:{tenant_id}"))
+    ares_agent::tenant_scope(ctx, tenant_id)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,7 +353,7 @@ async fn execute_target_agent(
     let scoped = tenant_scoped_ctx(app_state, tenant_id);
 
     let mut resolved_agent = tenant_agent::resolve_agent_from_ctx(&pool,
-        &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
+        &app_state.get::<ares_agent::AgentRegistry>().expect("AgentRegistry not provided"),
         &scoped,
         &pipeline.target_agent,
         &app_state.get::<crate::FleetSecrets>().expect("not provided"),
@@ -485,10 +486,10 @@ async fn execute_target_agent(
         pool: pool.clone(),
     });
     resolved_agent.agent.set_observability(obs.clone());
-    resolved_agent.agent.set_runtime_tools_from_ctx(
-        app_state.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(),
-        &scoped,
-    );
+    if let Some(tools) = scoped.get::<ares_tools::Tools>() {
+        resolved_agent.agent.set_tools(tools);
+    }
+    resolved_agent.agent.bind_request_ctx(scoped.clone());
 
     let mut runtime_context = AgentRuntimeContext::new(
         tenant_id.to_string(),
@@ -697,10 +698,14 @@ mod tests {
         let root = Context::new_root();
         let scoped = tenant_scoped_ctx(&root, "acme");
         assert_eq!(
-            scoped.isolate_label(TypeId::of::<ares_agents::AgentResolverService>()).as_deref(),
-            Some("tenant:acme"),
+            scoped.isolate_label(TypeId::of::<ares_agent::Execute>()).as_deref(),
+            Some("acme"),
         );
-        assert!(root.isolate_label(TypeId::of::<ares_agents::AgentResolverService>()).is_none());
+        assert_eq!(
+            scoped.isolate_label(TypeId::of::<ares_tools::Tools>()).as_deref(),
+            Some("acme"),
+        );
+        assert!(root.isolate_label(TypeId::of::<ares_agent::Execute>()).is_none());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Fleet-wide, tenant-agnostic provider API key & config storage.
 //!
 //! Stores encrypted-at-rest provider overrides in PostgreSQL (loaded by
-//! `ares-db::fleet_provider_secrets`), decrypts into an in-memory
+//! `ares-store::fleet_provider_secrets`), decrypts into an in-memory
 //! `Arc<ArcSwap<FleetSecrets>>` map for lock-free hot-swap reads.
 //!
 //! Encryption: AES-256-GCM (RustCrypto `aes-gcm`) with a 96-bit nonce from
@@ -128,14 +128,14 @@ impl FleetSecrets {
     }
 }
 
-impl ares_cordis_core::Service for FleetSecrets {
+impl cordis::Service for FleetSecrets {
     fn name(&self) -> &'static str {
         "fleet_secrets"
     }
     fn init(
         &self,
-        _ctx: &std::sync::Arc<ares_cordis_core::Context>,
-    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        _ctx: &std::sync::Arc<cordis::Context>,
+    ) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool {

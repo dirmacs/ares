@@ -1,15 +1,15 @@
 //! Observability callbacks for LLM and tool call logging.
 //!
 //! Provides a lightweight, dependency-free trait that downstream crates
-//! (e.g. `ares` or `ares-agents`) can implement to persist run history.
+//! (e.g. `ares` or `ares-agent`) can implement to persist run history.
 //!
 //! # Design
 //!
 //! - `ares-llm` defines the trait and record shapes.
 //! - Consumers provide an `Arc<dyn ObservabilitySink>` to `ToolCoordinator`
-//!   (or `ConfigurableAgent` in `ares-agents`).
+//!   (or `ConfigurableAgent` in `ares-agent`).
 //! - The consumer's implementation writes to `run_history` tables via
-//!   `ares-db::RunHistoryStore`.
+//!   `ares-store::RunHistoryStore`.
 
 use serde_json::Value;
 

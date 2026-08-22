@@ -1,5 +1,5 @@
 [package]
-name = "ares-cordis-core"
+name = "ares-cordis"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,6 +7,9 @@ repository.workspace = true
 authors.workspace = true
 publish = true
 description = "Cordis primitives for ARES: context, fiber, effect, and events. Leaf crate with no other ARES dependencies"
+
+[lib]
+name = "cordis"
 
 [features]
 # HMR via libloading — off by default. Enables dlopen of plugin .so files

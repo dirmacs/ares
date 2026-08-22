@@ -2,7 +2,7 @@
 //! Bodies moved from v1.rs
 
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 use super::*;
 
 use crate::agents::tenant_agent;
@@ -11,7 +11,7 @@ use crate::db::run_history::{LogToolCallRequest, RunHistoryStore};
 use crate::models::TenantContext;
 use crate::types::Result;
 use crate::AppState;
-use ares_agents::Agent;
+use ares_agent::Agent;
 use ares_types::types::ToolDefinition;
 use axum::{
     extract::{Extension, Path, Query, State},
@@ -36,7 +36,7 @@ pub async fn sandbox_run_agent(
     };
 
     let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(&state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
-        &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
+        &state_ctx.get::<ares_agent::AgentRegistry>().expect("AgentRegistry not provided"),
         &state_ctx,
         &name,
         &state_ctx.get::<crate::FleetSecrets>().expect("not provided"),
@@ -44,7 +44,8 @@ pub async fn sandbox_run_agent(
     .await?;
     resolved_agent
         .agent
-        .set_runtime_tools_from_ctx(state_ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(), &state_ctx);
+        .set_tools(state_ctx.get::<ares_tools::Tools>().expect("Tools not provided"));
+    resolved_agent.agent.bind_request_ctx(state_ctx.clone());
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let started = Utc::now();
@@ -256,7 +257,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
 }
 
 // cordis Phase6: RouteSet Service
-use ares_cordis_core::Service;
+use cordis::Service;
 pub struct V1StreamService;
 impl Service for V1StreamService {}
 

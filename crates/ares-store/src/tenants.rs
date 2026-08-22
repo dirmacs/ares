@@ -418,9 +418,9 @@ impl TenantDb {
     }
 }
 
-impl ares_cordis_core::Service for TenantDb {
+impl cordis::Service for TenantDb {
     fn name(&self) -> &'static str { "tenant_db" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }

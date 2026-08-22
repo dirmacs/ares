@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use ::cordis::Context;
 pub use crate::AppState;
 pub use crate::db::agent_runs;
 pub use crate::db::agent_versions;
@@ -571,8 +571,8 @@ mod tests {
     #[test]
     fn draft_test_agent_runtime_tools_must_be_attached() {
         let source = include_str!("agents.rs");
-        assert!(source.contains("draft_agent.set_runtime_tools_from_ctx("));
-        assert!(source.contains("ctx.get::<crate::RuntimeToolRegistry>()"));
+        assert!(source.contains("draft_agent.set_tools("));
+        assert!(source.contains("ares_agent::tenant_scope"));
     }
 
     #[tokio::test]
@@ -695,12 +695,12 @@ mod tests {
         assert!(!active.is_catchup);
     }
 
-    fn oauth_credential_fixture() -> ares_db::oauth_credentials::OAuthCredential {
+    fn oauth_credential_fixture() -> ares_store::oauth_credentials::OAuthCredential {
         let encrypted = ares_config::fleet_secrets::EncryptedPayload {
             ciphertext: vec![1, 2, 3],
             nonce: vec![4, 5, 6],
         };
-        ares_db::oauth_credentials::OAuthCredential {
+        ares_store::oauth_credentials::OAuthCredential {
             id: "oauth-1".to_string(),
             tenant_id: "tenant-1".to_string(),
             provider: "google".to_string(),
@@ -778,7 +778,7 @@ mod tests {
 
     #[test]
     fn normalize_oauth_credential_request_forces_path_tenant_and_connector_provider() {
-        let mut req = ares_db::oauth_credentials::CreateOAuthCredentialRequest {
+        let mut req = ares_store::oauth_credentials::CreateOAuthCredentialRequest {
             tenant_id: "body-tenant".to_string(),
             provider: "wrong-provider".to_string(),
             connector_type: "gmail".to_string(),
@@ -798,7 +798,7 @@ mod tests {
 
     #[test]
     fn normalize_oauth_credential_request_rejects_unknown_connector() {
-        let mut req = ares_db::oauth_credentials::CreateOAuthCredentialRequest {
+        let mut req = ares_store::oauth_credentials::CreateOAuthCredentialRequest {
             tenant_id: "body-tenant".to_string(),
             provider: "provider".to_string(),
             connector_type: "unknown".to_string(),
@@ -1545,7 +1545,7 @@ mod tests {
 
     #[test]
     fn runtime_provider_response_redacts_direct_api_key() {
-        let provider = ares_db::runtime_providers::RuntimeProvider {
+        let provider = ares_store::runtime_providers::RuntimeProvider {
             id: "test-id".into(),
             tenant_id: None,
             name: "test-provider".into(),
@@ -1845,7 +1845,7 @@ pub fn resolve_env_key(pc: &ProviderConfig) -> Option<String> {
 // Runtime Tools (CRUD + versions + rollback + test)
 // =============================================================================
 
-pub use ares_db::runtime_tools::{
+pub use ares_store::runtime_tools::{
     CreateRuntimeToolRequest, RuntimeToolStore, UpdateRuntimeToolRequest,
     validate_runtime_tool_update_scope_preflight,
 };
@@ -1887,7 +1887,7 @@ pub struct TestRuntimeToolResponse {
 // Runtime Providers
 // =============================================================================
 
-pub use ares_db::runtime_providers::{CreateRuntimeProviderRequest, RuntimeProviderStore};
+pub use ares_store::runtime_providers::{CreateRuntimeProviderRequest, RuntimeProviderStore};
 
 const RUNTIME_PROVIDER_SECRET_REDACTION: &str = "********";
 
@@ -1915,8 +1915,8 @@ pub struct RuntimeProviderResponse {
     pub updated_at: i64,
 }
 
-impl From<ares_db::runtime_providers::RuntimeProvider> for RuntimeProviderResponse {
-    fn from(p: ares_db::runtime_providers::RuntimeProvider) -> Self {
+impl From<ares_store::runtime_providers::RuntimeProvider> for RuntimeProviderResponse {
+    fn from(p: ares_store::runtime_providers::RuntimeProvider) -> Self {
         Self {
             id: p.id,
             tenant_id: p.tenant_id,
@@ -2429,8 +2429,8 @@ pub struct OAuthCredentialResponse {
     pub updated_at: i64,
 }
 
-impl From<ares_db::oauth_credentials::OAuthCredential> for OAuthCredentialResponse {
-    fn from(value: ares_db::oauth_credentials::OAuthCredential) -> Self {
+impl From<ares_store::oauth_credentials::OAuthCredential> for OAuthCredentialResponse {
+    fn from(value: ares_store::oauth_credentials::OAuthCredential) -> Self {
         Self {
             id: value.id,
             tenant_id: value.tenant_id,
@@ -2803,7 +2803,7 @@ pub struct OAuthTokenResponse {
 
 pub fn normalize_oauth_credential_request(
     tenant_id: String,
-    req: &mut ares_db::oauth_credentials::CreateOAuthCredentialRequest,
+    req: &mut ares_store::oauth_credentials::CreateOAuthCredentialRequest,
 ) -> Result<()> {
     let provider = oauth_provider_config(&req.connector_type)?;
     req.tenant_id = tenant_id;
@@ -2861,7 +2861,7 @@ pub async fn receive_webhook(
     State(ctx): State<Arc<Context>>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
-    // Prefer TriggerService via Cordis DI (owns DB + AgentExecutionService).
+    // Prefer TriggerService via Cordis DI (owns DB + Execute).
     if let Some(svc) = ctx.get::<crate::trigger_engine::TriggerService>() {
         match svc
             .dispatch_webhook(&trigger_id, payload.clone(), &ctx)

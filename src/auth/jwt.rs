@@ -326,9 +326,9 @@ impl AuthService {
     }
 }
 
-impl ares_cordis_core::Service for AuthService {
+impl cordis::Service for AuthService {
     fn name(&self) -> &'static str { "auth_service" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }

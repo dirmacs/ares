@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
-use ares_cordis_core::{Context, EventsService, ReflectService};
+use ::cordis::{Context, EventsService, ReflectService};
 use axum::{
     Json,
     extract::{Path, State},
@@ -133,7 +133,7 @@ pub fn routes() -> axum::Router<crate::AppState> {
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
-use ares_cordis_core::Service;
+use ::cordis::Service;
 pub struct AdminCordisService;
 impl Service for AdminCordisService {}
 
@@ -206,13 +206,13 @@ mod tests {
         reflect.ensure_notifier_for::<EventsService>();
         ctx.provide(EventsService::new());
 
-        let fiber = Arc::new(ares_cordis_core::Fiber::new());
+        let fiber = Arc::new(::cordis::Fiber::new());
         fiber.declare_inject::<EventsService>();
         let fid: u64 = 990_002;
         reflect.register_dependent(TypeId::of::<EventsService>(), fid);
         reflect.register_fiber(fid, fiber.clone(), TypeId::of::<EventsService>());
         fiber.refresh(&ctx).await;
-        assert!(matches!(fiber.state(), ares_cordis_core::FiberState::Active { .. }));
+        assert!(matches!(fiber.state(), ::cordis::FiberState::Active { .. }));
 
         retire_cordis_service(State(ctx.clone()), Path("events_service".into()))
             .await
@@ -221,13 +221,13 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(matches!(
             fiber.state(),
-            ares_cordis_core::FiberState::Inactive { .. }
+            ::cordis::FiberState::Inactive { .. }
         ));
 
         provide_cordis_service(State(ctx.clone()), Path("events_service".into()))
             .await
             .expect("handler");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(matches!(fiber.state(), ares_cordis_core::FiberState::Active { .. }));
+        assert!(matches!(fiber.state(), ::cordis::FiberState::Active { .. }));
     }
 }

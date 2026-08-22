@@ -10,11 +10,11 @@ description = "Model Context Protocol client and server for ARES"
 [features]
 default = ["mcp", "postgres"]
 mcp = ["dep:rmcp","dep:reqwest","dep:serde","dep:serde_json","dep:thiserror","dep:tokio","dep:tracing","dep:toml","dep:toon-format"]
-postgres = ["dep:sqlx","dep:ares-db","ares-db/postgres"]
+postgres = ["dep:sqlx","dep:ares-store","ares-store/postgres"]
 [dependencies]
 ares-types = { workspace = true }
-ares-db = { workspace = true, optional = true }
-ares-cordis-core = { workspace = true }
+ares-store = { workspace = true, optional = true }
+cordis = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true, optional = true }

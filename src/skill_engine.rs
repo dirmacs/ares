@@ -427,7 +427,7 @@ impl SkillEngine {
     }
 
     async fn enforce_token_budget_before_llm_call(&self, tenant_id: &str) -> Result<(), String> {
-        let store = ares_db::token_budgets::TokenBudgetStore::new(&self.pool);
+        let store = ares_store::token_budgets::TokenBudgetStore::new(&self.pool);
         let status = store
             .check_budget(tenant_id)
             .await
@@ -451,7 +451,7 @@ impl SkillEngine {
         let Some(usage) = response.usage.as_ref() else {
             return Ok(());
         };
-        let store = ares_db::token_budgets::TokenBudgetStore::new(&self.pool);
+        let store = ares_store::token_budgets::TokenBudgetStore::new(&self.pool);
         store
             .record_usage(
                 tenant_id,
@@ -661,14 +661,14 @@ fn evaluate_condition(expression: &str, context: &serde_json::Value) -> bool {
     }
 }
 
-impl ares_cordis_core::Service for SkillEngine {
+impl cordis::Service for SkillEngine {
     fn name(&self) -> &'static str {
         "skill_engine"
     }
     fn init(
         &self,
-        _ctx: &std::sync::Arc<ares_cordis_core::Context>,
-    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        _ctx: &std::sync::Arc<cordis::Context>,
+    ) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool {

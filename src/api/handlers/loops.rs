@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -105,9 +105,9 @@ impl LoopRegistry {
     }
 }
 
-impl ares_cordis_core::Service for LoopRegistry {
+impl cordis::Service for LoopRegistry {
     fn name(&self) -> &'static str { "loop_registry" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }
@@ -491,8 +491,8 @@ mod tests {
 
     #[test]
     fn loop_registry_readable_via_cordis() {
-        use ares_cordis_core::Service;
-        let ctx = ares_cordis_core::Context::new_root();
+        use cordis::Service;
+        let ctx = cordis::Context::new_root();
         ctx.provide(LoopRegistry::new());
         let got = ctx.get::<LoopRegistry>().expect("provided");
         assert_eq!(got.name(), "loop_registry");

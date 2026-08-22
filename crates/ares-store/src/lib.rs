@@ -154,7 +154,7 @@ pub use tenants::{TenantDb, UsageSummary};
 /// `check()` returns `cfg!(feature = "postgres")` so both `cargo check --no-default-features` and
 /// `cargo check --features postgres` compile; handlers branch via `PostgresService::check()` or `cfg!`.
 pub struct PostgresService;
-impl ares_cordis_core::Service for PostgresService {
+impl cordis::Service for PostgresService {
     fn name(&self) -> &'static str {
         "postgres"
     }

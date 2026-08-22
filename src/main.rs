@@ -36,7 +36,7 @@ use axum::routing::get;
 #[cfg(feature = "postgres")]
 use std::sync::Arc;
 #[cfg(feature = "postgres")]
-use ares_cordis_core::Context;
+use cordis::Context;
 #[cfg(feature = "postgres")]
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 #[cfg(feature = "postgres")]
@@ -49,16 +49,16 @@ use utoipa_swagger_ui::SwaggerUi;
 // ---------------------------------------------------------------------------
 // Cordis wiring services — Phase 2 step 7 / Phase 4 step 16
 // Each service is a thin wrapper around an existing ARES type that implements
-// `ares_cordis_core::Service` with `check()` guarded withdrawal (Thm 63).
+// `cordis::Service` with `check()` guarded withdrawal (Thm 63).
 // The 8 `root_ctx.plugin(...).await` calls in `run_server` replace the 17
 // sequential `let` steps. Inventory compile-time registration is via
-// `ares_cordis_core::CordisInventory` (see `crates/ares-cordis-core/src/lib.rs`).
+// `cordis::CordisInventory` (see `crates/cordis/src/lib.rs`).
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "postgres")]
 struct ConfigService(pub Arc<AresConfigManager>);
 #[cfg(feature = "postgres")]
-impl ares_cordis_core::Service for ConfigService {
+impl cordis::Service for ConfigService {
     fn name(&self) -> &'static str {
         "ConfigService"
     }
@@ -70,7 +70,7 @@ impl ares_cordis_core::Service for ConfigService {
 #[cfg(feature = "postgres")]
 struct CatalogService(pub Arc<NvidiaCatalogCache>);
 #[cfg(feature = "postgres")]
-impl ares_cordis_core::Service for CatalogService {
+impl cordis::Service for CatalogService {
     fn name(&self) -> &'static str {
         "CatalogService"
     }
@@ -80,18 +80,49 @@ impl ares_cordis_core::Service for CatalogService {
 }
 
 #[cfg(feature = "postgres")]
-struct ToolServiceWrapper {
-    pub static_registry: Arc<ToolRegistry>,
-    pub runtime: Arc<ares::RuntimeToolRegistry>,
-    pub unified: Option<Arc<ares_tools::UnifiedToolService>>,
-}
+struct BootToolRegistry(pub Arc<ToolRegistry>);
 #[cfg(feature = "postgres")]
-impl ares_cordis_core::Service for ToolServiceWrapper {
+impl cordis::Service for BootToolRegistry {
     fn name(&self) -> &'static str {
-        "ToolServiceWrapper"
+        "BootToolRegistry"
     }
     fn check(&self) -> bool {
-        // Always healthy; withdrawal handled by higher-level LlmService breaker
+        true
+    }
+}
+
+#[cfg(feature = "postgres")]
+struct BootLlmFactory(pub Arc<ConfigBasedLLMFactory>);
+#[cfg(feature = "postgres")]
+impl cordis::Service for BootLlmFactory {
+    fn name(&self) -> &'static str {
+        "BootLlmFactory"
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "postgres")]
+struct LlmProvisioned;
+#[cfg(feature = "postgres")]
+impl cordis::Service for LlmProvisioned {
+    fn name(&self) -> &'static str {
+        "LlmProvisioned"
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "postgres")]
+struct RuntimeProvisioned;
+#[cfg(feature = "postgres")]
+impl cordis::Service for RuntimeProvisioned {
+    fn name(&self) -> &'static str {
+        "RuntimeProvisioned"
+    }
+    fn check(&self) -> bool {
         true
     }
 }
@@ -102,7 +133,7 @@ struct AgentServiceWrapper {
     pub dynamic: Arc<DynamicConfigManager>,
 }
 #[cfg(feature = "postgres")]
-impl ares_cordis_core::Service for AgentServiceWrapper {
+impl cordis::Service for AgentServiceWrapper {
     fn name(&self) -> &'static str {
         "AgentServiceWrapper"
     }
@@ -136,7 +167,7 @@ impl Default for HealthJobService {
     }
 }
 #[cfg(feature = "postgres")]
-impl ares_cordis_core::Service for HealthJobService {
+impl cordis::Service for HealthJobService {
     fn name(&self) -> &'static str {
         "HealthJobService"
     }
@@ -145,8 +176,8 @@ impl ares_cordis_core::Service for HealthJobService {
     }
     fn init(
         &self,
-        ctx: &Arc<ares_cordis_core::Context>,
-    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        ctx: &Arc<cordis::Context>,
+    ) -> cordis::ServiceInitFuture<'_> {
         let interval_ms = self.interval_ms;
         let ctx = ctx.clone();
         Box::pin(async move {
@@ -164,7 +195,7 @@ impl ares_cordis_core::Service for HealthJobService {
                     {
                         let mut total = 0usize;
                         let mut healthy = 0usize;
-                        for entry in inventory::iter::<ares_cordis_core::CordisInventory> {
+                        for entry in inventory::iter::<cordis::CordisInventory> {
                             total += 1;
                             let is_healthy = match entry.name {
                                 "ConfigService" => ctx_for_task
@@ -175,12 +206,12 @@ impl ares_cordis_core::Service for HealthJobService {
                                     .get::<CatalogService>()
                                     .map(|s| s.check())
                                     .unwrap_or(true),
-                                "ProviderRegistryService" => ctx_for_task
-                                    .get::<ProviderRegistry>()
+                                "Llm" => ctx_for_task
+                                    .get::<ares_llm::Llm>()
                                     .map(|s| s.check())
                                     .unwrap_or(true),
-                                "ToolServiceWrapper" => ctx_for_task
-                                    .get::<ToolServiceWrapper>()
+                                "Tools" => ctx_for_task
+                                    .get::<ares_tools::Tools>()
                                     .map(|s| s.check())
                                     .unwrap_or(true),
                                 "AgentServiceWrapper" => ctx_for_task
@@ -200,14 +231,14 @@ impl ares_cordis_core::Service for HealthJobService {
                                     .map(|s| s.check())
                                     .unwrap_or(true),
                                 _ => ctx_for_task
-                                    .get::<ares_cordis_core::ReflectService>()
+                                    .get::<cordis::ReflectService>()
                                     .map(|s| s.check())
                                     .unwrap_or(true),
                             };
                             if is_healthy {
                                 healthy += 1;
                             } else if let Some(reflect) =
-                                ctx_for_task.get::<ares_cordis_core::ReflectService>()
+                                ctx_for_task.get::<cordis::ReflectService>()
                             {
                                 reflect.notify(std::any::TypeId::of::<ConfigService>());
                                 tracing::warn!("Health check failed for service: {}", entry.name);
@@ -235,25 +266,25 @@ impl ares_cordis_core::Service for HealthJobService {
 
 // Inventory compile-time static registration for wiring services (preferred over linkme).
 #[cfg(all(feature = "postgres", feature = "inventory"))]
-inventory::submit! { ares_cordis_core::CordisInventory { name: "ConfigService" } }
+inventory::submit! { cordis::CordisInventory { name: "ConfigService" } }
 #[cfg(all(feature = "postgres", feature = "inventory"))]
-inventory::submit! { ares_cordis_core::CordisInventory { name: "CatalogService" } }
+inventory::submit! { cordis::CordisInventory { name: "CatalogService" } }
 #[cfg(all(feature = "postgres", feature = "inventory"))]
-inventory::submit! { ares_cordis_core::CordisInventory { name: "ProviderRegistryService" } }
+inventory::submit! { cordis::CordisInventory { name: "Llm" } }
 #[cfg(all(feature = "postgres", feature = "inventory"))]
-inventory::submit! { ares_cordis_core::CordisInventory { name: "ToolServiceWrapper" } }
+inventory::submit! { cordis::CordisInventory { name: "Tools" } }
 #[cfg(all(feature = "postgres", feature = "inventory"))]
-inventory::submit! { ares_cordis_core::CordisInventory { name: "AgentServiceWrapper" } }
+inventory::submit! { cordis::CordisInventory { name: "AgentServiceWrapper" } }
 #[cfg(all(feature = "postgres", feature = "inventory"))]
-inventory::submit! { ares_cordis_core::CordisInventory { name: "AuthServiceWrapper" } }
+inventory::submit! { cordis::CordisInventory { name: "AuthServiceWrapper" } }
 #[cfg(all(feature = "postgres", feature = "inventory"))]
-inventory::submit! { ares_cordis_core::CordisInventory { name: "SchedulerService" } }
+inventory::submit! { cordis::CordisInventory { name: "SchedulerService" } }
 #[cfg(all(feature = "postgres", feature = "inventory"))]
-inventory::submit! { ares_cordis_core::CordisInventory { name: "PipelineService" } }
+inventory::submit! { cordis::CordisInventory { name: "PipelineService" } }
 #[cfg(all(feature = "postgres", feature = "inventory"))]
-inventory::submit! { ares_cordis_core::CordisInventory { name: "TriggerService" } }
+inventory::submit! { cordis::CordisInventory { name: "TriggerService" } }
 #[cfg(all(feature = "postgres", feature = "inventory"))]
-inventory::submit! { ares_cordis_core::CordisInventory { name: "HealthJobService" } }
+inventory::submit! { cordis::CordisInventory { name: "HealthJobService" } }
 
 /// Stub main for builds without the `postgres` feature.
 ///
@@ -516,15 +547,15 @@ struct LoaderProbeService {
 }
 
 #[cfg(feature = "postgres")]
-impl ares_cordis_core::Service for LoaderProbeService {}
+impl cordis::Service for LoaderProbeService {}
 
 /// Marker fiber for the ExecutionStack loader entry (the live service is
-/// `AgentExecutionService` via `provide_shared_execution`).
+/// `Execute` via `provide_shared_execution`).
 #[cfg(feature = "postgres")]
 struct ExecutionStackService;
 
 #[cfg(feature = "postgres")]
-impl ares_cordis_core::Service for ExecutionStackService {
+impl cordis::Service for ExecutionStackService {
     fn name(&self) -> &'static str {
         "ExecutionStack"
     }
@@ -539,21 +570,21 @@ fn block_on_async<F: std::future::Future>(fut: F) -> F::Output {
 }
 
 #[cfg(feature = "postgres")]
-fn inject_sync<T: ares_cordis_core::Service>(ctx: &Arc<Context>) -> Arc<T> {
+fn inject_sync<T: cordis::Service>(ctx: &Arc<Context>) -> Arc<T> {
     block_on_async(ctx.inject::<T>())
 }
 
 #[cfg(feature = "postgres")]
-fn block_on_plugin<S: ares_cordis_core::Service + 'static>(
+fn block_on_plugin<S: cordis::Service + 'static>(
     ctx: &Arc<Context>,
     svc: S,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
     block_on_async(ctx.plugin(svc))
 }
 
 #[cfg(feature = "postgres")]
-fn missing(what: &str) -> ares_cordis_core::CordisError {
-    ares_cordis_core::CordisError::Configuration(format!(
+fn missing(what: &str) -> cordis::CordisError {
+    cordis::CordisError::Configuration(format!(
         "{what} is not on context; prelude or an earlier loader entry must provide it"
     ))
 }
@@ -561,7 +592,7 @@ fn missing(what: &str) -> ares_cordis_core::CordisError {
 #[cfg(feature = "postgres")]
 fn config_manager_from_ctx(
     ctx: &Arc<Context>,
-) -> Result<Arc<AresConfigManager>, ares_cordis_core::CordisError> {
+) -> Result<Arc<AresConfigManager>, cordis::CordisError> {
     if let Some(cs) = ctx.get::<ConfigService>() {
         return Ok(cs.0.clone());
     }
@@ -571,7 +602,7 @@ fn config_manager_from_ctx(
 #[cfg(feature = "postgres")]
 fn postgres_from_ctx(
     ctx: &Arc<Context>,
-) -> Result<Arc<PostgresClient>, ares_cordis_core::CordisError> {
+) -> Result<Arc<PostgresClient>, cordis::CordisError> {
     Ok(inject_sync::<PostgresClient>(ctx))
 }
 
@@ -579,7 +610,7 @@ fn postgres_from_ctx(
 fn factory_catalog(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
     let mgr = config_manager_from_ctx(ctx)?;
     let config = mgr.config();
     let nvidia_cfg = config.nvidia.clone().unwrap_or_default();
@@ -600,42 +631,49 @@ fn factory_catalog(
 #[cfg(feature = "postgres")]
 fn factory_provider_registry(
     ctx: &Arc<Context>,
-    _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
-    let mgr = config_manager_from_ctx(ctx)?;
-    let config = mgr.config();
-    let mut registry = ProviderRegistry::from_config(&config);
-    if let Some(catalog) = ctx.get::<CatalogService>() {
-        registry = registry.with_catalog(catalog.0.clone());
-    }
-    block_on_plugin(ctx, registry)
+    config: &serde_json::Value,
+) -> Result<cordis::FiberId, cordis::CordisError> {
+    factory_llm(ctx, config)
 }
 
 #[cfg(feature = "postgres")]
 fn factory_llm(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
+    if ctx.get::<ares_llm::Llm>().is_some() {
+        return block_on_plugin(ctx, LlmProvisioned);
+    }
     let mgr = config_manager_from_ctx(ctx)?;
-    let factory = ConfigBasedLLMFactory::from_config(&mgr.config()).map_err(|e| {
-        ares_cordis_core::CordisError::Configuration(format!("LLM factory: {e}"))
+    let config = mgr.config();
+    let mut registry = ProviderRegistry::from_config(&config);
+    if let Some(catalog) = ctx.get::<CatalogService>() {
+        registry = registry.with_catalog(catalog.0.clone());
+    }
+    let factory = ConfigBasedLLMFactory::from_config(&config).map_err(|e| {
+        cordis::CordisError::Configuration(format!("LLM factory: {e}"))
     })?;
     tracing::info!(
         "LLM factory initialized with default model: {}",
         factory.default_model()
     );
-    block_on_plugin(ctx, factory)
+    let factory = Arc::new(factory);
+    ctx.provide(BootLlmFactory(factory.clone()));
+    let pool = Arc::new(ares_llm::ClientPool::with_defaults());
+    let catalog = ctx.get::<CatalogService>().map(|c| c.0.clone());
+    let llm = ares_llm::Llm::new(Arc::new(registry), pool, catalog).with_factory(factory);
+    block_on_plugin(ctx, llm)
 }
 
 #[cfg(feature = "postgres")]
 fn factory_auth(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
     let mgr = config_manager_from_ctx(ctx)?;
     let config = mgr.config();
     let jwt_secret = config.jwt_secret().map_err(|e| {
-        ares_cordis_core::CordisError::Configuration(format!(
+        cordis::CordisError::Configuration(format!(
             "JWT_SECRET environment variable must be set: {e}"
         ))
     })?;
@@ -652,7 +690,7 @@ fn factory_auth(
 fn factory_tool_registry(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
     let mgr = config_manager_from_ctx(ctx)?;
     let config = mgr.config();
     let mut tool_registry = ToolRegistry::with_config(&config);
@@ -698,16 +736,29 @@ fn factory_tool_registry(
         "Tool registry initialized with {} tools",
         tool_registry.enabled_tool_names().len()
     );
-    // Plugin owned ToolRegistry (Service, not Clone). plugin() provides it;
-    // a second provide_arc of the same TypeId would fail duplicate-provider.
-    block_on_plugin(ctx, tool_registry)
+    let static_reg = Arc::new(tool_registry);
+    ctx.provide(BootToolRegistry(static_reg.clone()));
+    let runtime = if let Some(rt) = ctx.get::<ares::RuntimeToolRegistry>() {
+        Some(rt)
+    } else if let Some(pg) = ctx.get::<PostgresClient>() {
+        let runtime_tool_registry = ares::RuntimeToolRegistry::new(pg.pool.clone());
+        if let Err(e) = block_on_async(runtime_tool_registry.reload()) {
+            tracing::warn!("Failed to preload runtime tools on startup: {}", e);
+        }
+        block_on_plugin(ctx, runtime_tool_registry)?;
+        ctx.get::<ares::RuntimeToolRegistry>()
+    } else {
+        None
+    };
+    let tools = ares_tools::Tools::with_runtime(static_reg, runtime);
+    block_on_plugin(ctx, tools)
 }
 
 #[cfg(feature = "postgres")]
 fn factory_dynamic_config(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
     let mgr = config_manager_from_ctx(ctx)?;
     let config = mgr.config();
     let dynamic_config = match DynamicConfigManager::from_config(&config) {
@@ -743,14 +794,22 @@ fn factory_dynamic_config(
 fn factory_agent_registry(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
     let mgr = config_manager_from_ctx(ctx)?;
-    let providers = inject_sync::<ProviderRegistry>(ctx);
-    let tools = inject_sync::<ToolRegistry>(ctx);
+    let config = mgr.config();
+    let mut providers = ProviderRegistry::from_config(&config);
+    if let Some(catalog) = ctx.get::<CatalogService>() {
+        providers = providers.with_catalog(catalog.0.clone());
+    }
+    let tools = ctx
+        .get::<BootToolRegistry>()
+        .ok_or_else(|| missing("BootToolRegistry"))?
+        .0
+        .clone();
     let dynamic = inject_sync::<DynamicConfigManager>(ctx);
     let agent_registry = Arc::new(AgentRegistry::with_dynamic_config(
-        &mgr.config(),
-        providers,
+        &config,
+        Arc::new(providers),
         tools,
         dynamic.clone(),
     ));
@@ -772,13 +831,15 @@ fn factory_agent_registry(
 fn factory_runtime_tool_registry(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
+    if ctx.get::<ares::RuntimeToolRegistry>().is_some() {
+        return block_on_plugin(ctx, RuntimeProvisioned);
+    }
     let pg = postgres_from_ctx(ctx)?;
-    let tools = inject_sync::<ToolRegistry>(ctx);
-    let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(pg.pool.clone()));
+    let runtime_tool_registry = ares::RuntimeToolRegistry::new(pg.pool.clone());
     {
         use std::any::TypeId;
-        if let Some(reflect) = ctx.get::<ares_cordis_core::ReflectService>() {
+        if let Some(reflect) = ctx.get::<cordis::ReflectService>() {
             let tid = TypeId::of::<ares::RuntimeToolRegistry>();
             let _rx = reflect.ensure_notifier(tid);
             reflect.register_dependent(tid, 1);
@@ -787,32 +848,18 @@ fn factory_runtime_tool_registry(
     if let Err(e) = block_on_async(runtime_tool_registry.reload()) {
         tracing::warn!("Failed to preload runtime tools on startup: {}", e);
     }
-    ctx.provide_arc(runtime_tool_registry.clone());
-    block_on_plugin(
-        ctx,
-        ToolServiceWrapper {
-            static_registry: tools,
-            runtime: runtime_tool_registry,
-            unified: None,
-        },
-    )
+    block_on_plugin(ctx, runtime_tool_registry)
 }
 
 #[cfg(feature = "postgres")]
 fn factory_execution_stack(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
-    let db = inject_sync::<PostgresClient>(ctx);
-    let tenant_db = inject_sync::<ares::TenantDb>(ctx);
-    let llm_factory = inject_sync::<ConfigBasedLLMFactory>(ctx);
+) -> Result<cordis::FiberId, cordis::CordisError> {
     let agent_registry = inject_sync::<AgentRegistry>(ctx);
     let active_runs = inject_sync::<ares::active_runs::ActiveRuns>(ctx)
-        as Arc<dyn ares_agents::RunTracker>;
+        as Arc<dyn ares_agent::RunTracker>;
     let shared_execution = ares::execution_stack::new_shared_execution(
-        db.clone() as Arc<dyn ares::db::traits::DatabaseClient>,
-        tenant_db,
-        llm_factory,
         agent_registry,
         active_runs,
     );
@@ -824,9 +871,9 @@ fn factory_execution_stack(
 fn factory_scheduler(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
     let db = postgres_from_ctx(ctx)?;
-    let execution = inject_sync::<ares_agents::execution::AgentExecutionService>(ctx);
+    let execution = inject_sync::<ares_agent::execution::Execute>(ctx);
     let fid = block_on_plugin(
         ctx,
         ares::scheduler::SchedulerService::new(db, execution, 60_000),
@@ -841,9 +888,9 @@ fn factory_scheduler(
 fn factory_pipeline(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
     let db = postgres_from_ctx(ctx)?;
-    let execution = inject_sync::<ares_agents::execution::AgentExecutionService>(ctx);
+    let execution = inject_sync::<ares_agent::execution::Execute>(ctx);
     let fid = block_on_plugin(
         ctx,
         ares::pipeline_engine::PipelineService::new(db, execution),
@@ -858,9 +905,9 @@ fn factory_pipeline(
 fn factory_trigger(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
     let db = postgres_from_ctx(ctx)?;
-    let execution = inject_sync::<ares_agents::execution::AgentExecutionService>(ctx);
+    let execution = inject_sync::<ares_agent::execution::Execute>(ctx);
     let fid = block_on_plugin(
         ctx,
         ares::trigger_engine::TriggerService::new(db, execution),
@@ -875,7 +922,7 @@ fn factory_trigger(
 fn factory_health_job(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
     block_on_plugin(ctx, HealthJobService::default())
 }
 
@@ -883,7 +930,7 @@ fn factory_health_job(
 fn factory_app_state_services(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
-) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+) -> Result<cordis::FiberId, cordis::CordisError> {
     let pg = postgres_from_ctx(ctx)?;
 
     let fid = block_on_plugin(ctx, ares::active_runs::ActiveRuns::new())?;
@@ -932,14 +979,18 @@ fn factory_app_state_services(
     }
 
     let tools = ctx
-        .get::<ToolRegistry>()
-        .ok_or_else(|| missing("ToolRegistry"))?;
+        .get::<BootToolRegistry>()
+        .ok_or_else(|| missing("BootToolRegistry"))?
+        .0
+        .clone();
     let runtime = ctx
         .get::<ares::RuntimeToolRegistry>()
         .ok_or_else(|| missing("RuntimeToolRegistry"))?;
     let llm_factory = ctx
-        .get::<ConfigBasedLLMFactory>()
-        .ok_or_else(|| missing("ConfigBasedLLMFactory"))?;
+        .get::<BootLlmFactory>()
+        .ok_or_else(|| missing("BootLlmFactory"))?
+        .0
+        .clone();
     let mgr = config_manager_from_ctx(ctx)?;
     let skill_engine = Arc::new(ares::skill_engine::SkillEngine::new(
         pg.pool.clone(),
@@ -950,16 +1001,6 @@ fn factory_app_state_services(
     ));
     ctx.provide_arc(skill_engine);
 
-    if let Some(tenant_db) = ctx.get::<ares::TenantDb>() {
-        if let Some(agent_registry) = ctx.get::<AgentRegistry>() {
-            ctx.provide(ares_agents::resolver::AgentResolverService::new(
-                tenant_db,
-                agent_registry,
-                mgr.config(),
-            ));
-        }
-    }
-
     Ok(fid)
 }
 
@@ -969,7 +1010,7 @@ fn factory_app_state_services(
 /// context's duplicate-provider checks instead of taking a log-only path.
 #[cfg(feature = "postgres")]
 fn register_loader_factories(root_ctx: &Arc<Context>) {
-    use ares_cordis_core::PluginRegistry;
+    use cordis::PluginRegistry;
 
     if root_ctx.get::<PluginRegistry>().is_none() {
         root_ctx.provide(PluginRegistry::new());
@@ -997,7 +1038,7 @@ fn register_loader_factories(root_ctx: &Arc<Context>) {
             ares_tools::CalculatorConfig
         } else {
             serde_json::from_value::<ares_tools::CalculatorConfig>(config.clone()).map_err(|error| {
-                ares_cordis_core::CordisError::Configuration(format!(
+                cordis::CordisError::Configuration(format!(
                     "invalid CalculatorService config: {error}"
                 ))
             })?
@@ -1011,7 +1052,7 @@ fn register_loader_factories(root_ctx: &Arc<Context>) {
     // using the same block_in_place pattern as the other factories. The
     // duplicate-provider check in `Context::plugin` keeps this single-source.
     registry.register("EventsService", Arc::new(|ctx, _config| {
-        let future = ctx.plugin(ares_cordis_core::EventsService::new());
+        let future = ctx.plugin(cordis::EventsService::new());
         tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
     }));
 
@@ -1019,9 +1060,9 @@ fn register_loader_factories(root_ctx: &Arc<Context>) {
     registry.register("ProviderRegistry", Arc::new(factory_provider_registry));
     registry.register("LlmFactory", Arc::new(factory_llm));
     registry.register("AuthService", Arc::new(factory_auth));
+    registry.register("RuntimeToolRegistry", Arc::new(factory_runtime_tool_registry));
     registry.register("ToolRegistry", Arc::new(factory_tool_registry));
     registry.register("AgentRegistry", Arc::new(factory_agent_registry));
-    registry.register("RuntimeToolRegistry", Arc::new(factory_runtime_tool_registry));
     registry.register("DynamicConfig", Arc::new(factory_dynamic_config));
     registry.register("ExecutionStack", Arc::new(factory_execution_stack));
     registry.register("SchedulerService", Arc::new(factory_scheduler));
@@ -1035,7 +1076,7 @@ fn register_loader_factories(root_ctx: &Arc<Context>) {
 /// Returns true when at least one reconcile action ran.
 #[cfg(feature = "postgres")]
 fn reload_cordis_entries(ctx: &Arc<Context>, path: &std::path::Path) -> bool {
-    use ares_cordis_core::loader::{EntryTree, Loader};
+    use cordis::loader::{EntryTree, Loader};
     match Loader::load_from_file(path) {
         Ok(desired) => {
             let current = EntryTree(vec![]);
@@ -1065,17 +1106,17 @@ fn reload_cordis_entries(ctx: &Arc<Context>, path: &std::path::Path) -> bool {
 fn start_cordis_entries_watch(
     ctx: &Arc<Context>,
     entries_path: &std::path::Path,
-) -> Option<ares_cordis_core::watcher::WatchHandle> {
-    let reflect = ctx.get::<ares_cordis_core::ReflectService>()?;
+) -> Option<cordis::watcher::WatchHandle> {
+    let reflect = ctx.get::<cordis::ReflectService>()?;
     let entries = entries_path.to_path_buf();
-    let on_change: ares_cordis_core::watcher::WatchOnChange = std::sync::Arc::new(move |c, _p| {
+    let on_change: cordis::watcher::WatchOnChange = std::sync::Arc::new(move |c, _p| {
         let _ = reload_cordis_entries(c, &entries);
     });
-    ares_cordis_core::watcher::watch_many_with(
+    cordis::watcher::watch_many_with(
         ctx.clone(),
         reflect,
         vec![entries_path.to_path_buf()],
-        std::any::TypeId::of::<ares_cordis_core::ReflectService>(),
+        std::any::TypeId::of::<cordis::ReflectService>(),
         on_change,
     )
     .ok()
@@ -1094,18 +1135,18 @@ async fn run_server(
     tracing::info!("Starting A.R.E.S - Agentic Retrieval Enhanced Server");
 
     // 2. Context::new_root + ReflectService (needed before watchers)
-    let root_ctx = ares_cordis_core::Context::new_root();
+    let root_ctx = cordis::Context::new_root();
     let _reflect = {
         use std::any::TypeId;
         root_ctx
-            .plugin(ares_cordis_core::ReflectService::new())
+            .plugin(cordis::ReflectService::new())
             .await
             .expect("ReflectService plugin failed");
         let reflect = root_ctx
-            .get::<ares_cordis_core::ReflectService>()
+            .get::<cordis::ReflectService>()
             .expect("ReflectService missing");
         let tid_tool = TypeId::of::<ares::RuntimeToolRegistry>();
-        let tid_provider = TypeId::of::<ares::ProviderRegistry>();
+        let tid_provider = TypeId::of::<ares_llm::Llm>();
         let _rx_tool = reflect.ensure_notifier(tid_tool);
         let _rx_provider = reflect.ensure_notifier(tid_provider);
         reflect.register_dependent(tid_tool, 1);
@@ -1114,7 +1155,7 @@ async fn run_server(
         reflect.notify(tid_tool);
         reflect
     };
-    let _inv_len = ares_cordis_core::inventory_len();
+    let _inv_len = cordis::inventory_len();
 
     // 3. Load AresConfigManager from config_path, start ares.toml watcher
     if !config_path.exists() {
@@ -1180,7 +1221,7 @@ async fn run_server(
 
     // 6–7. register factories + Loader::load_from_file + instantiate every enabled entry
     {
-        use ares_cordis_core::loader::{EntryTree, Loader};
+        use cordis::loader::{EntryTree, Loader};
         register_loader_factories(&root_ctx);
 
         let entries_path = std::path::Path::new("config/cordis-entries.toml");
@@ -1272,38 +1313,38 @@ async fn run_server(
     {
         use std::any::TypeId;
         let reflect = root_ctx
-            .get::<ares_cordis_core::ReflectService>()
+            .get::<cordis::ReflectService>()
             .expect("reflect");
 
         // Dependents on EventsService (admin retire/provide flow).
-        let fiber_events = std::sync::Arc::new(ares_cordis_core::Fiber::new());
-        fiber_events.declare_inject::<ares_cordis_core::EventsService>();
+        let fiber_events = std::sync::Arc::new(cordis::Fiber::new());
+        fiber_events.declare_inject::<cordis::EventsService>();
         let fid_events = 990_001u64;
-        reflect.register_dependent(TypeId::of::<ares_cordis_core::EventsService>(), fid_events);
+        reflect.register_dependent(TypeId::of::<cordis::EventsService>(), fid_events);
         reflect.register_fiber(
             fid_events,
             fiber_events.clone(),
-            TypeId::of::<ares_cordis_core::EventsService>(),
+            TypeId::of::<cordis::EventsService>(),
         );
         fiber_events.refresh(&root_ctx).await; // initial: Active (EventsService provided earlier)
         tracing::info!(state=?fiber_events.state(), "reactive demo fiber initialized (expect Active)");
 
-        // Dependents on ToolRegistry — second service so the reflect BFS
-        // walk covers two services. ToolRegistry is provided via
-        // `plugin(ToolRegistry)` in factory_tool_registry, so initial refresh is Active.
-        let fiber_tools = std::sync::Arc::new(ares_cordis_core::Fiber::new());
-        fiber_tools.declare_inject::<ToolRegistry>();
+        // Dependents on Tools — second service so the reflect BFS walk covers
+        // two services. Tools is provided via `plugin(Tools)` in
+        // factory_tool_registry, so initial refresh is Active.
+        let fiber_tools = std::sync::Arc::new(cordis::Fiber::new());
+        fiber_tools.declare_inject::<ares_tools::Tools>();
         let fid_tools = 990_002u64;
         reflect.register_dependent(
-            TypeId::of::<ToolRegistry>(),
+            TypeId::of::<ares_tools::Tools>(),
             fid_tools,
         );
         reflect.register_fiber(
             fid_tools,
             fiber_tools.clone(),
-            TypeId::of::<ToolRegistry>(),
+            TypeId::of::<ares_tools::Tools>(),
         );
-        fiber_tools.refresh(&root_ctx).await; // initial: Active (ToolRegistry provided)
+        fiber_tools.refresh(&root_ctx).await; // initial: Active (Tools provided)
         tracing::info!(state=?fiber_tools.state(), "reactive demo fiber (tools) initialized (expect Active)");
     }
 
@@ -1863,8 +1904,8 @@ fn ui_routes() -> axum::Router<AppState> {
 #[cfg(all(test, feature = "postgres"))]
 mod tests {
     use super::*;
-    use ares_cordis_core::loader::Loader;
-    use ares_cordis_core::{Context, PluginRegistry, Service};
+    use cordis::loader::Loader;
+    use cordis::{Context, PluginRegistry, Service};
     use ares_tools::ToolService;
     use serde_json::json;
 
@@ -1948,8 +1989,8 @@ disabled = false
     #[tokio::test(flavor = "multi_thread")]
     async fn inject_sync_returns_already_provided_service() {
         let ctx = Context::new_root();
-        ctx.provide(ares_cordis_core::EventsService::new());
-        let got = inject_sync::<ares_cordis_core::EventsService>(&ctx);
+        ctx.provide(cordis::EventsService::new());
+        let got = inject_sync::<cordis::EventsService>(&ctx);
         assert!(got.check());
     }
 
@@ -1959,12 +2000,12 @@ disabled = false
         let ctx = Context::new_root();
         let waiter = ctx.clone();
         let handle = tokio::spawn(async move {
-            tokio::task::spawn_blocking(move || inject_sync::<ares_cordis_core::EventsService>(&waiter))
+            tokio::task::spawn_blocking(move || inject_sync::<cordis::EventsService>(&waiter))
                 .await
                 .expect("join")
         });
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        ctx.provide(ares_cordis_core::EventsService::new());
+        ctx.provide(cordis::EventsService::new());
         let got = tokio::time::timeout(std::time::Duration::from_millis(500), handle)
             .await
             .expect("timed out")
@@ -1988,7 +2029,7 @@ disabled = false
         .expect("write toml");
 
         let ctx = Context::new_root();
-        ctx.provide(ares_cordis_core::ReflectService::new());
+        ctx.provide(cordis::ReflectService::new());
         let handle = start_cordis_entries_watch(&ctx, &path);
         assert!(
             handle.is_some(),

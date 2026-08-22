@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "ares-agents"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ares-config",
  "ares-cordis-core",
@@ -265,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "ares-auth"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ares-types",
  "argon2",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "ares-config"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aes-gcm",
  "arc-swap",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "ares-cordis-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "inventory",
  "libloading",
@@ -318,12 +318,13 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
 ]
 
 [[package]]
 name = "ares-db"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "ares-config",
@@ -358,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "ares-llm"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "arc-swap",
  "ares-config",
@@ -388,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "ares-mcp"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ares-cordis-core",
  "ares-db",
@@ -413,7 +414,7 @@ dependencies = [
 
 [[package]]
 name = "ares-memory"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ares-types",
  "chrono",
@@ -423,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "ares-rag"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ares-types",
  "base64 0.22.1",
@@ -444,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "ares-server"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -518,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "ares-tools"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "arc-swap",
  "ares-config",
@@ -547,7 +548,7 @@ dependencies = [
 
 [[package]]
 name = "ares-types"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum 0.8.8",
  "chrono",

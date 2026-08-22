@@ -370,6 +370,10 @@ impl Context {
             let e = versions.entry(tid).or_insert(0);
             *e += 1;
         }
+        // Notify dependents that T was provided/updated (reactive cascade)
+        if let Some(reflect) = self.get::<ReflectService>() {
+            reflect.notify(tid);
+        }
         // push undo
         let weak = Arc::downgrade(self);
         let fiber = self.fiber.clone();
@@ -393,6 +397,49 @@ impl Context {
         });
         fiber.push_undo(undo);
         arc
+    }
+
+    /// Remove a service from the store and trigger deactivation cascade.
+    /// Pushes the inverse (re-provide) onto the fiber's accumulator for LIFO reversal.
+    pub fn remove<T: Service>(self: &Arc<Self>) -> Option<Arc<T>> {
+        let tid = TypeId::of::<T>();
+        let removed = {
+            let mut store = self.store.write();
+            store.remove(&tid)
+        };
+        if let Some(any) = removed {
+            // Adjust version down (or remove entirely)
+            {
+                let mut versions = self.versions.write();
+                if let Some(v) = versions.get_mut(&tid) {
+                    *v = v.saturating_sub(1);
+                    if *v == 0 {
+                        versions.remove(&tid);
+                    }
+                }
+            }
+            // Notify dependents to deactivate
+            if let Some(reflect) = self.get::<ReflectService>() {
+                reflect.notify(tid);
+            }
+            // Push undo (re-provide) for LIFO reversal
+            let weak = Arc::downgrade(self);
+            let fiber = self.fiber.clone();
+            let any_clone = any.clone();
+            let undo: Box<dyn FnOnce() + Send> = Box::new(move || {
+                if let Some(ctx) = weak.upgrade() {
+                    ctx.store.write().insert(tid, any_clone);
+                    let mut versions = ctx.versions.write();
+                    let e = versions.entry(tid).or_insert(0);
+                    *e += 1;
+                }
+            });
+            fiber.push_undo(undo);
+            // Downcast to the concrete type
+            any.downcast::<T>().ok()
+        } else {
+            None
+        }
     }
 
     pub fn get<T: Service>(&self) -> Option<Arc<T>> {
@@ -433,6 +480,46 @@ impl Context {
         None
     }
 
+    /// Retrieve a service only if it was provided in a context whose isolate
+    /// namespace for `T` matches `label`. Walks the context chain but skips
+    /// any frame whose isolate label for `T` differs from the requested one.
+    pub fn get_isolated<T: Service>(&self, label: &str) -> Option<Arc<T>> {
+        let tid = TypeId::of::<T>();
+        let my_label = self.isolate.read().get(&tid).cloned();
+        match my_label.as_deref() {
+            Some(l) if l == label => {
+                // Matching namespace — check this context's store
+                if let Some(any) = self.store.read().get(&tid) {
+                    if let Ok(arc) = any.clone().downcast::<T>() {
+                        return Some(arc);
+                    }
+                }
+                // Continue up the chain
+                if let Some(parent) = &self.parent {
+                    return parent.get_isolated::<T>(label);
+                }
+                None
+            }
+            Some(_) => {
+                // Different namespace — do not look here or in parent
+                None
+            }
+            None => {
+                // No isolate entry for T in this frame — skip to parent
+                if let Some(parent) = &self.parent {
+                    return parent.get_isolated::<T>(label);
+                }
+                None
+            }
+        }
+    }
+
+    /// Create a child context where `get::<T>()` returns `val` as an override.
+    /// Alias for `intercept` — explicitly named for per-request model pinning.
+    pub fn with_intercept<T: Service>(self: &Arc<Self>, val: T) -> Arc<Self> {
+        self.intercept(val)
+    }
+
     pub fn provide_arc<T: Service>(self: &Arc<Self>, svc: Arc<T>) -> Arc<T> {
         let tid = TypeId::of::<T>();
         let any: Arc<dyn Any + Send + Sync> = svc.clone();
@@ -441,6 +528,10 @@ impl Context {
             let mut versions = self.versions.write();
             let e = versions.entry(tid).or_insert(0);
             *e += 1;
+        }
+        // Notify dependents that T was provided/updated (reactive cascade)
+        if let Some(reflect) = self.get::<ReflectService>() {
+            reflect.notify(tid);
         }
         let weak = Arc::downgrade(self);
         let fiber = self.fiber.clone();
@@ -751,6 +842,20 @@ impl ReflectService {
     pub fn notify(&self, tid: TypeId) {
         // Snapshot context weakly; if no context, still notify watch channels
         let ctx_opt = self.ctx.read().as_ref().and_then(|w| w.upgrade());
+
+        // Emit service.changed event via EventsService (fire-and-forget)
+        if let Some(ctx) = &ctx_opt {
+            if let Some(events) = ctx.get::<EventsService>() {
+                let payload = serde_json::json!({
+                    "type_id": format!("{:?}", tid),
+                    "event": "service.changed"
+                });
+                tokio::spawn(async move {
+                    let _ = events.dispatch("service.changed".into(), payload, Dispatch::Emit).await;
+                });
+            }
+        }
+
         let mut queue = VecDeque::new();
         let mut visited_type = HashSet::new();
         let mut visited_fiber = HashSet::new();
@@ -1026,5 +1131,144 @@ mod tests {
         assert!(err.to_string().contains("duplicate provider"));
         // original still present
         assert!(registry.get_fiber(fid1).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_event_bus_dispatch_received() {
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+
+        // Register a listener
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = received.clone();
+        events.on("test.event".into(), move |payload| {
+            let r = received_clone.clone();
+            async move {
+                r.lock().push(payload.clone());
+                Ok(payload)
+            }
+        });
+
+        // Dispatch
+        let payload = serde_json::json!({"key": "value"});
+        events
+            .dispatch("test.event".into(), payload.clone(), Dispatch::Serial)
+            .await
+            .unwrap();
+
+        // Verify received
+        let msgs = received.lock();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["key"], "value");
+    }
+
+    #[tokio::test]
+    async fn test_reactive_activation_deactivation() {
+        // Service A that fiber depends on
+        struct DepService;
+        impl Service for DepService {}
+
+        // Create root context with ReflectService
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        let reflect = ctx.get::<ReflectService>().unwrap();
+        reflect.set_context(&ctx);
+
+        // Create fiber that injects DepService
+        let fiber = Arc::new(Fiber::new());
+        fiber.declare_inject::<DepService>();
+        let fid: FiberId = 100;
+        reflect.register_dependent(TypeId::of::<DepService>(), fid);
+        reflect.register_fiber(fid, fiber.clone(), TypeId::of::<DepService>());
+
+        // Initially Inactive (dep not provided)
+        fiber.refresh(&ctx).await;
+        assert!(matches!(*fiber.state.read(), FiberState::Inactive { .. }));
+
+        // Provide DepService -> fiber should activate via notify cascade
+        ctx.provide(DepService);
+        // Give tokio a chance to run the spawned refresh
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            matches!(*fiber.state.read(), FiberState::Active { .. }),
+            "fiber should be Active after provide, got: {:?}",
+            fiber.state()
+        );
+
+        // Remove DepService -> fiber should deactivate via notify cascade
+        ctx.remove::<DepService>();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            matches!(*fiber.state.read(), FiberState::Inactive { .. }),
+            "fiber should be Inactive after remove, got: {:?}",
+            fiber.state()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_isolate_disjoint_namespaces() {
+        #[derive(Debug)]
+        struct ToolSvc(String);
+        impl Service for ToolSvc {}
+
+        let root = Context::new_root();
+
+        // Create two isolated contexts for different tenants
+        let ctx_a = root.isolate::<ToolSvc>("tenant_a");
+        ctx_a.provide(ToolSvc("tool_for_a".into()));
+
+        let ctx_b = root.isolate::<ToolSvc>("tenant_b");
+        ctx_b.provide(ToolSvc("tool_for_b".into()));
+
+        // Each tenant sees only its own service via get_isolated
+        let svc_a = ctx_a.get_isolated::<ToolSvc>("tenant_a");
+        assert!(svc_a.is_some());
+        assert_eq!(svc_a.unwrap().0, "tool_for_a");
+
+        let svc_b = ctx_b.get_isolated::<ToolSvc>("tenant_b");
+        assert!(svc_b.is_some());
+        assert_eq!(svc_b.unwrap().0, "tool_for_b");
+
+        // Cross-tenant access returns None
+        assert!(ctx_a.get_isolated::<ToolSvc>("tenant_b").is_none());
+        assert!(ctx_b.get_isolated::<ToolSvc>("tenant_a").is_none());
+
+        // Root has no isolated service
+        assert!(root.get_isolated::<ToolSvc>("tenant_a").is_none());
+        assert!(root.get_isolated::<ToolSvc>("tenant_b").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_intercept_overrides_get() {
+        #[derive(Debug)]
+        struct ModelSvc {
+            model: String,
+        }
+        impl Service for ModelSvc {}
+
+        let root = Context::new_root();
+        root.provide(ModelSvc {
+            model: "gpt-4".into(),
+        });
+
+        // Root returns the original
+        assert_eq!(root.get::<ModelSvc>().unwrap().model, "gpt-4");
+
+        // with_intercept creates a child context where get returns the override
+        let req_ctx = root.with_intercept(ModelSvc {
+            model: "gpt-4o-mini".into(),
+        });
+        assert_eq!(req_ctx.get::<ModelSvc>().unwrap().model, "gpt-4o-mini");
+
+        // Root remains unaffected
+        assert_eq!(root.get::<ModelSvc>().unwrap().model, "gpt-4");
+
+        // Stacking intercepts: innermost wins
+        let inner_ctx = req_ctx.intercept(ModelSvc {
+            model: "o1-preview".into(),
+        });
+        assert_eq!(inner_ctx.get::<ModelSvc>().unwrap().model, "o1-preview");
+        // Outer still sees its own override
+        assert_eq!(req_ctx.get::<ModelSvc>().unwrap().model, "gpt-4o-mini");
     }
 }

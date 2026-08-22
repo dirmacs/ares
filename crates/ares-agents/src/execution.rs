@@ -244,6 +244,17 @@ impl AgentExecutionService {
             tracker.start_run(&run_id, user_id, &req.agent_name, Some("execution_service"));
         }
 
+        // Emit agent execution event via Cordis EventsService
+        if let Some(events) = ctx.get::<ares_cordis_core::EventsService>() {
+            let payload = serde_json::json!({
+                "agent_name": req.agent_name,
+                "run_id": run_id,
+                "tenant": user_id,
+                "event": "agent.started"
+            });
+            let _ = events.dispatch("agent.started".into(), payload, ares_cordis_core::Dispatch::Emit).await;
+        }
+
         // Build context for execution
         let agent_context = ares_types::types::AgentContext {
             user_id: user_id.to_string(),
@@ -259,6 +270,17 @@ impl AgentExecutionService {
         if let Some(tracker) = &self.run_tracker {
             let status = if result.is_ok() { "completed" } else { "failed" };
             tracker.finish_run(&run_id, status);
+        }
+
+        // Emit agent completion event via Cordis EventsService
+        if let Some(events) = ctx.get::<ares_cordis_core::EventsService>() {
+            let payload = serde_json::json!({
+                "agent_name": req.agent_name,
+                "run_id": run_id,
+                "status": if result.is_ok() { "completed" } else { "failed" },
+                "event": "agent.completed"
+            });
+            let _ = events.dispatch("agent.completed".into(), payload, ares_cordis_core::Dispatch::Emit).await;
         }
 
         result.map(|response| ExecutionResult {

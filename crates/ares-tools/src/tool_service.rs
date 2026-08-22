@@ -13,6 +13,7 @@
 //! two tenants sharing a process see disjoint tool sets.
 //! Per-request overrides can use `ctx.intercept(...)`.
 
+use std::any::TypeId;
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
@@ -175,6 +176,44 @@ impl UnifiedToolService {
             mcp,
         }
     }
+
+    /// Resolve a tool using the tenant derived from `ctx` (isolate, then intercept).
+    pub fn resolve_for_ctx(
+        &self,
+        ctx: &std::sync::Arc<ares_cordis_core::Context>,
+        name: &str,
+    ) -> Option<Arc<dyn Tool>> {
+        self.resolve(name, tenant_id_from_tool_ctx(ctx))
+    }
+
+    /// List tools using the tenant derived from `ctx` (isolate, then intercept).
+    pub fn list_for_ctx(
+        &self,
+        ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    ) -> Vec<ToolDefinition> {
+        self.list(tenant_id_from_tool_ctx(ctx))
+    }
+}
+
+/// Derive the tenant id for tool resolution from `ctx`.
+///
+/// Isolate labels on `UnifiedToolService` win. A leading `tenant:` or `user:`
+/// prefix is stripped; a non-empty remainder is the tenant. If the isolate
+/// label is missing or empty after stripping, fall back to a
+/// `TenantContext` intercept. Unlabeled contexts with no intercept yield `None`.
+fn tenant_id_from_tool_ctx(ctx: &std::sync::Arc<ares_cordis_core::Context>) -> Option<String> {
+    if let Some(label) = ctx.isolate_label(TypeId::of::<UnifiedToolService>()) {
+        let trimmed = label
+            .strip_prefix("tenant:")
+            .or_else(|| label.strip_prefix("user:"))
+            .unwrap_or(&label);
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    ctx.get::<ares_types::models::TenantContext>()
+        .map(|tc| tc.tenant_id.clone())
+        .filter(|id| !id.is_empty())
 }
 
 impl Service for UnifiedToolService {
@@ -348,3 +387,38 @@ impl ToolService for UnifiedToolService {
 // `Service` is implemented for `dyn ToolService` above so
 // `ctx.get::<dyn ToolService>()` works when the service is provided as
 // `Arc<dyn ToolService>` via `Context::provide`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ares_cordis_core::Context;
+    use ares_types::models::{TenantContext, TenantTier};
+
+    #[test]
+    fn unlabeled_root_yields_no_tenant() {
+        let ctx = Context::new_root();
+        assert_eq!(tenant_id_from_tool_ctx(&ctx), None);
+    }
+
+    #[test]
+    fn intercept_tenant_context_yields_acme() {
+        let ctx = Context::new_root()
+            .with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
+        assert_eq!(tenant_id_from_tool_ctx(&ctx).as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn isolate_wins_over_intercept() {
+        let ctx = Context::new_root()
+            .with_intercept(TenantContext::new("acme".into(), TenantTier::Pro))
+            .isolate::<UnifiedToolService>("tenant:iso");
+        assert_eq!(tenant_id_from_tool_ctx(&ctx).as_deref(), Some("iso"));
+    }
+
+    #[test]
+    fn resolve_for_ctx_missing_tool_is_none() {
+        let svc = UnifiedToolService::new(Arc::new(ToolRegistry::new()));
+        let ctx = Context::new_root();
+        assert!(svc.resolve_for_ctx(&ctx, "missing").is_none());
+    }
+}

@@ -4,7 +4,7 @@ use crate::db::run_history::{LogLlmCallRequest, LogToolCallRequest, RunHistorySt
 use crate::db::skills::SkillStore;
 use crate::db::tenant_allowlist::TenantAllowlistStore;
 use crate::{AresConfigManager, ConfigBasedLLMFactory, RuntimeToolRegistry, ToolRegistry};
-use ares_llm::LLMResponse;
+use ares_llm::{LLMResponse, TenantModelPolicy};
 use ares_types::AppError;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -572,10 +572,7 @@ async fn ensure_tenant_model_allowed(
     let store = TenantAllowlistStore::new(pool);
     match store.is_model_allowed(tenant_id, model_name).await {
         Ok(true) => Ok(()),
-        Ok(false) => Err(format!(
-            "Model '{}' is not allowed for tenant '{}'",
-            model_name, tenant_id
-        )),
+        Ok(false) => Err(TenantModelPolicy::denial_message(tenant_id, model_name)),
         Err(e) => Err(format!("Failed to check model allowlist: {}", e)),
     }
 }

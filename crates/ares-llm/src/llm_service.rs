@@ -16,16 +16,17 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
-use cordis::{Context, CordisError, Service};
+use async_trait::async_trait;
+use cordis::{Context, CordisError, EventsService, Service};
 use crate::nvidia_catalog::NvidiaCatalogCache;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 
 use crate::capabilities::CapabilityRequirements;
-use crate::client::LLMClient;
+use crate::client::{LLMClient, LLMResponse};
 use crate::pool::ClientPool;
 use crate::provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
-use ares_types::types::AppError;
+use ares_types::types::{AppError, ToolDefinition};
 
 /// Per-request model override for `ctx.intercept`.
 ///
@@ -211,6 +212,9 @@ pub struct Llm {
     breaker: RwLock<Breaker>,
     /// Consecutive failure count for thresholded transition.
     failures: RwLock<u32>,
+    /// Test-only client used by `complete` / `get_client_inner` when set.
+    #[cfg(test)]
+    test_client: Option<Arc<dyn LLMClient>>,
 }
 
 impl Llm {
@@ -227,6 +231,8 @@ impl Llm {
             factory: None,
             breaker: RwLock::new(Breaker::Closed),
             failures: RwLock::new(0),
+            #[cfg(test)]
+            test_client: None,
         }
     }
 
@@ -234,6 +240,18 @@ impl Llm {
     pub fn with_factory(mut self, factory: Arc<ConfigBasedLLMFactory>) -> Self {
         self.factory = Some(factory);
         self
+    }
+
+    /// Test helper: pin a client used by `complete` / `get_client_inner`.
+    #[cfg(test)]
+    pub(crate) fn for_test(client: Arc<dyn LLMClient>) -> Self {
+        let mut llm = Self::new(
+            Arc::new(ProviderRegistry::new()),
+            Arc::new(ClientPool::with_defaults()),
+            None,
+        );
+        llm.test_client = Some(client);
+        llm
     }
 
     /// Clone the provider registry for named-provider lookup.
@@ -260,6 +278,8 @@ impl Llm {
             factory: None,
             breaker: RwLock::new(breaker),
             failures: RwLock::new(0),
+            #[cfg(test)]
+            test_client: None,
         }
     }
 
@@ -347,19 +367,51 @@ impl Llm {
     ///
     /// Public API: `Llm::get_client(&self, ctx: &Arc<cordis::Context>, capability)`.
     ///
-    /// 1. If `ctx.get::<ModelOverride>()` is present, attempt to create a client for
-    ///    that exact model (via `ProviderRegistry::create_client_for_model_ctx`). On
-    ///    success return immediately. Also opportunistically try the `ClientPool`
-    ///    fast-path `pool.try_get(&ov.model)` if the model name matches a
-    ///    registered provider.
-    /// 2. Otherwise, use `catalog` + `provider_registry.find_best_model` for
-    ///    capability-based selection when present.
-    /// 3. Fallback through the coordinator chain via `provider_registry.resolve_with_fallback`.
+    /// When `EventsService` is on `ctx`, runs waterfall `"llm.get_client"` first.
+    /// Core is identity so handlers can set `"deny": true` or `"model"`.
+    /// If the result has a `model` string and no intercept `ModelOverride`,
+    /// `get_client_inner` runs on `ctx.with_intercept(ModelOverride { model })`.
     pub async fn get_client(
         &self,
         ctx: &Arc<Context>,
         capability: CapabilityRequirements,
     ) -> Result<Arc<dyn LLMClient>, AppError> {
+        let Some(events) = ctx.get::<EventsService>() else {
+            return self.get_client_inner(ctx, capability).await;
+        };
+        let payload = serde_json::json!({
+            "capability": format!("{:?}", capability),
+        });
+        let result = events
+            .waterfall_around("llm.get_client".into(), payload, |payload| async move {
+                Ok(payload)
+            })
+            .await
+            .map_err(map_cordis)?;
+        if result.get("deny").and_then(|v| v.as_bool()) == Some(true) {
+            return Err(AppError::InvalidInput("llm.get_client denied".into()));
+        }
+        if let Some(model) = result.get("model").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            if ctx.get::<ModelOverride>().is_none() {
+                let intercepted = ctx.with_intercept(ModelOverride {
+                    model: model.to_string(),
+                });
+                return self.get_client_inner(&intercepted, capability).await;
+            }
+        }
+        self.get_client_inner(ctx, capability).await
+    }
+
+    /// Existing get_client body (no events). Extracted so public `get_client` can wrap it.
+    async fn get_client_inner(
+        &self,
+        ctx: &Arc<Context>,
+        capability: CapabilityRequirements,
+    ) -> Result<Arc<dyn LLMClient>, AppError> {
+        #[cfg(test)]
+        if let Some(c) = &self.test_client {
+            return Ok(Arc::clone(c));
+        }
         // Authorize before touching the pool or provider registry.
         self.validate_model_override(ctx)?;
         // 1. Per-request pinning via `ctx.get::<ModelOverride>()` (intercept realm).
@@ -419,36 +471,128 @@ impl Llm {
         ctx: &Arc<Context>,
         capability: CapabilityRequirements,
     ) -> Result<Box<dyn LLMClient>, AppError> {
-        // Keep the boxed and Arc paths subject to the same request policy.
-        self.validate_model_override(ctx)?;
-        if let Some(ov) = ctx.get::<ModelOverride>() {
-            if let Ok(guard) = self.pool.try_get(&ov.model).await {
-                return Ok(guard.take());
-            }
-            if let Ok(client) = self.provider_registry.create_client_for_model_ctx(ctx, &ov.model).await {
-                return Ok(client);
-            }
-        }
-        if let Some(catalog) = &self.catalog {
-            let _snap = catalog.snapshot();
-            if let Some(best) = self.provider_registry.find_best_model(&capability) {
-                if let Ok(client) = self.provider_registry.create_client_for_model_ctx(ctx, &best.name).await {
-                    return Ok(client);
+        let client = self.get_client(ctx, capability).await?;
+        Ok(Box::new(BoxedArcClient(client)))
+    }
+
+    /// Generate a completion, optionally through waterfall `"llm.complete"`.
+    ///
+    /// Without `EventsService`, this is `get_client` then `generate`. With events,
+    /// handlers wrap payload `{"prompt"}`; core generates using `payload["prompt"]`
+    /// and returns `{"prompt", "content"}`.
+    pub async fn complete(
+        &self,
+        ctx: &Arc<Context>,
+        prompt: &str,
+    ) -> Result<String, AppError> {
+        let client = self
+            .get_client(ctx, CapabilityRequirements::default())
+            .await?;
+        let Some(events) = ctx.get::<EventsService>() else {
+            return client.generate(prompt).await;
+        };
+        let payload = serde_json::json!({ "prompt": prompt });
+        let out = events
+            .waterfall_around("llm.complete".into(), payload, move |payload| {
+                let client = Arc::clone(&client);
+                async move {
+                    let prompt = payload
+                        .get("prompt")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let text = client
+                        .generate(&prompt)
+                        .await
+                        .map_err(|e| CordisError::Fiber(e.to_string()))?;
+                    Ok(serde_json::json!({ "prompt": prompt, "content": text }))
                 }
-            }
-        } else if let Some(best) = self.provider_registry.find_best_model(&capability) {
-            if let Ok(client) = self.provider_registry.create_client_for_model_ctx(ctx, &best.name).await {
-                return Ok(client);
-            }
-        }
-        self.provider_registry
-            .resolve_with_capability_fallback(Some(capability))
+            })
             .await
+            .map_err(map_cordis)?;
+        Ok(out
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
     }
 
     /// Stub for capability-based model selection (delegates to registry).
     pub fn find_model_stub(&self, _capability: &str) -> Option<String> {
         None
+    }
+}
+
+fn map_cordis(err: CordisError) -> AppError {
+    AppError::Internal(err.to_string())
+}
+
+/// `Box<dyn LLMClient>` adapter around the Arc returned by [`Llm::get_client`].
+struct BoxedArcClient(Arc<dyn LLMClient>);
+
+#[async_trait]
+impl LLMClient for BoxedArcClient {
+    async fn generate(&self, prompt: &str) -> ares_types::types::Result<String> {
+        self.0.generate(prompt).await
+    }
+
+    async fn generate_with_system(
+        &self,
+        system: &str,
+        prompt: &str,
+    ) -> ares_types::types::Result<String> {
+        self.0.generate_with_system(system, prompt).await
+    }
+
+    async fn generate_with_history(
+        &self,
+        messages: &[(String, String)],
+    ) -> ares_types::types::Result<LLMResponse> {
+        self.0.generate_with_history(messages).await
+    }
+
+    async fn generate_with_tools(
+        &self,
+        prompt: &str,
+        tools: &[ToolDefinition],
+    ) -> ares_types::types::Result<LLMResponse> {
+        self.0.generate_with_tools(prompt, tools).await
+    }
+
+    async fn generate_with_tools_and_history(
+        &self,
+        messages: &[crate::coordinator::ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> ares_types::types::Result<LLMResponse> {
+        self.0
+            .generate_with_tools_and_history(messages, tools)
+            .await
+    }
+
+    async fn stream(
+        &self,
+        prompt: &str,
+    ) -> ares_types::types::Result<Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>> {
+        self.0.stream(prompt).await
+    }
+
+    async fn stream_with_system(
+        &self,
+        system: &str,
+        prompt: &str,
+    ) -> ares_types::types::Result<Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>> {
+        self.0.stream_with_system(system, prompt).await
+    }
+
+    async fn stream_with_history(
+        &self,
+        messages: &[(String, String)],
+    ) -> ares_types::types::Result<Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>> {
+        self.0.stream_with_history(messages).await
+    }
+
+    fn model_name(&self) -> &str {
+        self.0.model_name()
     }
 }
 
@@ -720,5 +864,163 @@ mod tests {
             "unlabeled root with ModelOverride should construct a client from the fleet global runtime entry: {:?}",
             fleet_client.as_ref().err()
         );
+
+    }
+
+    struct EchoClient {
+        generated: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl EchoClient {
+        fn new() -> (Self, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+            let generated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            (
+                Self {
+                    generated: std::sync::Arc::clone(&generated),
+                },
+                generated,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl LLMClient for EchoClient {
+        async fn generate(&self, prompt: &str) -> ares_types::types::Result<String> {
+            self.generated
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(format!("echo:{prompt}"))
+        }
+        async fn generate_with_system(
+            &self,
+            _system: &str,
+            prompt: &str,
+        ) -> ares_types::types::Result<String> {
+            self.generate(prompt).await
+        }
+        async fn generate_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> ares_types::types::Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: String::new(),
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+            })
+        }
+        async fn generate_with_tools(
+            &self,
+            _prompt: &str,
+            _tools: &[ToolDefinition],
+        ) -> ares_types::types::Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: String::new(),
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+            })
+        }
+        async fn generate_with_tools_and_history(
+            &self,
+            _messages: &[crate::coordinator::ConversationMessage],
+            _tools: &[ToolDefinition],
+        ) -> ares_types::types::Result<LLMResponse> {
+            Ok(LLMResponse {
+                content: String::new(),
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+            })
+        }
+        async fn stream(
+            &self,
+            _prompt: &str,
+        ) -> ares_types::types::Result<
+            Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("echo stream not implemented".into()))
+        }
+        async fn stream_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> ares_types::types::Result<
+            Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("echo stream not implemented".into()))
+        }
+        async fn stream_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> ares_types::types::Result<
+            Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("echo stream not implemented".into()))
+        }
+        fn model_name(&self) -> &str {
+            "echo"
+        }
+    }
+
+    #[tokio::test]
+    async fn llm_complete_runs_generate_without_events() {
+        let (client, generated) = EchoClient::new();
+        let llm = Llm::for_test(std::sync::Arc::new(client));
+        let ctx = Context::new_root();
+        let out = llm.complete(&ctx, "hi").await.expect("complete");
+        assert_eq!(out, "echo:hi");
+        assert!(generated.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn llm_complete_waterfall_rewrites_prompt() {
+        let (client, _) = EchoClient::new();
+        let llm = Llm::for_test(std::sync::Arc::new(client));
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall("llm.complete".into(), |mut payload, next| async move {
+            if let Some(p) = payload.get("prompt").and_then(|v| v.as_str()) {
+                payload["prompt"] = serde_json::json!(format!("WRAP:{p}"));
+            }
+            next(payload).await
+        });
+        let out = llm.complete(&ctx, "hi").await.expect("complete");
+        assert_eq!(out, "echo:WRAP:hi");
+    }
+
+    #[tokio::test]
+    async fn llm_complete_short_circuit_skips_generate() {
+        let (client, generated) = EchoClient::new();
+        let llm = Llm::for_test(std::sync::Arc::new(client));
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall("llm.complete".into(), |_payload, _next| async move {
+            Ok(serde_json::json!({ "content": "cached" }))
+        });
+        let out = llm.complete(&ctx, "hi").await.expect("complete");
+        assert_eq!(out, "cached");
+        assert!(
+            !generated.load(std::sync::atomic::Ordering::SeqCst),
+            "dummy generate must stay false when handler skips next"
+        );
+    }
+
+    #[tokio::test]
+    async fn llm_get_client_waterfall_deny() {
+        let (client, _) = EchoClient::new();
+        let llm = Llm::for_test(std::sync::Arc::new(client));
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall("llm.get_client".into(), |_payload, _next| async move {
+            Ok(serde_json::json!({ "deny": true }))
+        });
+        let err = match llm
+            .get_client(&ctx, CapabilityRequirements::default())
+            .await
+        {
+            Ok(_) => panic!("deny"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, AppError::InvalidInput(msg) if msg == "llm.get_client denied"));
     }
 }

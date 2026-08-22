@@ -179,7 +179,7 @@ impl EventsService {
                 if wf_handlers.is_empty() {
                     return Ok(payload);
                 }
-                run_waterfall_chain(wf_handlers, 0, payload).await
+                run_waterfall_chain(wf_handlers, 0, payload, None).await
             }
             _ if handlers.is_empty() => Ok(payload),
             // Cordis `emit`: fire-and-forget. Every handler is spawned and NOT
@@ -241,6 +241,34 @@ impl EventsService {
             }
         }
     }
+
+    /// Around-middleware waterfall whose terminal `next` is `core` rather than identity.
+    ///
+    /// Snapshot active waterfall handlers for `event`. With none registered, `core`
+    /// runs immediately. Otherwise the same chain as [`dispatch`] with
+    /// [`Dispatch::Waterfall`], except `index >= handlers.len()` invokes `core`
+    /// instead of returning the payload unchanged. [`dispatch`] Waterfall stays
+    /// identity-at-end.
+    pub async fn waterfall_around<F, Fut>(
+        &self,
+        event: EventId,
+        payload: serde_json::Value,
+        core: F,
+    ) -> Result<serde_json::Value, CordisError>
+    where
+        F: FnOnce(serde_json::Value) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
+    {
+        let handlers = self.active_waterfall(&event);
+        if handlers.is_empty() {
+            return core(payload).await;
+        }
+        let core: WaterfallCore = Box::new(move |p| {
+            Box::pin(core(p))
+                as Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
+        });
+        run_waterfall_chain(handlers, 0, payload, Some(core)).await
+    }
 }
 
 impl Default for EventsService {
@@ -281,28 +309,43 @@ fn default_agent_admit(payload: serde_json::Value) -> serde_json::Value {
 
 impl Service for EventsService {}
 
+/// Optional terminal `next` for [`EventsService::waterfall_around`]. `None` is
+/// identity (used by [`Dispatch::Waterfall`]).
+type WaterfallCore = Box<
+    dyn FnOnce(
+            serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
+        + Send,
+>;
+
 /// Run a Cordis `waterfall` around-middleware chain starting at `index`.
 ///
 /// Each handler receives the current payload and a `next` continuation.  The `next`
-/// closure, when invoked, advances to `index + 1` (running the rest of the chain)
-/// or returns the given payload unchanged when the chain is exhausted.  A handler
-/// that does not call `next` short-circuits: its own return value is the final
-/// result and later handlers never run.  Errors propagate.
+/// closure, when invoked, advances to `index + 1` (running the rest of the chain).
+/// When the chain is exhausted, `core` runs if `Some`, otherwise the payload is
+/// returned unchanged.  A handler that does not call `next` short-circuits: its
+/// own return value is the final result, later handlers never run, and `core` is
+/// dropped uncalled.  Errors propagate.
 fn run_waterfall_chain(
     handlers: Vec<WaterfallHandler>,
     index: usize,
     payload: serde_json::Value,
+    core: Option<WaterfallCore>,
 ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>> {
     Box::pin(async move {
         if index >= handlers.len() {
-            return Ok(payload);
+            return match core {
+                Some(core) => core(payload).await,
+                None => Ok(payload),
+            };
         }
         let handler = handlers[index].clone();
         // Build the continuation.  Because `next` is `FnOnce` and captures `index`,
-        // each handler sees exactly one downstream step.
+        // each handler sees exactly one downstream step. `core` moves into `next`
+        // so a short-circuit (unused `next`) skips the terminal function.
         let next = move |p: serde_json::Value| {
             let remaining = handlers.clone();
-            Box::pin(async move { run_waterfall_chain(remaining, index + 1, p).await })
+            Box::pin(async move { run_waterfall_chain(remaining, index + 1, p, core).await })
                 as Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
         };
         handler(payload, Box::new(next)).await
@@ -399,5 +442,71 @@ mod tests {
             .await
             .unwrap();
         assert!(out.get("deny").is_none(), "under-quota must not deny, got {out}");
+    }
+
+    #[tokio::test]
+    async fn waterfall_around_no_handlers_runs_core() {
+        let svc = EventsService::new();
+        let out = svc
+            .waterfall_around("around.empty".into(), serde_json::json!({}), |mut payload| async move {
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert("core".into(), serde_json::json!(true));
+                }
+                Ok(payload)
+            })
+            .await
+            .unwrap();
+        assert_eq!(out["core"], true);
+    }
+
+    #[tokio::test]
+    async fn waterfall_around_handler_calls_next_then_core() {
+        let svc = EventsService::new();
+        svc.on_waterfall("around.wrap".into(), |mut payload, next| async move {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("wrap".into(), serde_json::json!(true));
+            }
+            next(payload).await
+        });
+        let out = svc
+            .waterfall_around("around.wrap".into(), serde_json::json!({}), |mut payload| async move {
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert("core".into(), serde_json::json!(true));
+                }
+                Ok(payload)
+            })
+            .await
+            .unwrap();
+        assert_eq!(out["wrap"], true);
+        assert_eq!(out["core"], true);
+    }
+
+    #[tokio::test]
+    async fn waterfall_around_short_circuit_skips_core() {
+        let svc = EventsService::new();
+        let flag = Arc::new(AtomicBool::new(false));
+        svc.on_waterfall("around.short".into(), |payload, _next| async move {
+            Ok(payload)
+        });
+        let f = flag.clone();
+        let out = svc
+            .waterfall_around(
+                "around.short".into(),
+                serde_json::json!({ "ok": true }),
+                move |payload| {
+                    let f = f.clone();
+                    async move {
+                        f.store(true, Ordering::SeqCst);
+                        Ok(payload)
+                    }
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["ok"], true);
+        assert!(
+            !flag.load(Ordering::SeqCst),
+            "core must not run when handler short-circuits"
+        );
     }
 }

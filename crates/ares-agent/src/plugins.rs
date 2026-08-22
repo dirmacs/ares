@@ -11,6 +11,7 @@ use serde_json::Value;
 use crate::config::AgentConfig;
 use crate::execution::Execute;
 use crate::registry::AgentRegistry;
+#[cfg(feature = "pipeline")]
 use cordis::Plugin;
 
 fn block_on_plugin<S: cordis::Service + 'static>(

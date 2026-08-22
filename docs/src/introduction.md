@@ -2,7 +2,7 @@
 
 ARES is a multi-provider LLM platform that provides one API to route requests to Groq, Anthropic, NVIDIA DeepSeek, and Ollama. It handles tool calling, retrieval-augmented generation (RAG), multi-step workflows, streaming, usage metering, and multi-tenant isolation, so you can build your application instead of wiring provider SDKs together.
 
-> **0.9.0 (2026-08-22):** Service-based architecture with dependency injection. Components register into a typed `Context`, handlers pull deps with `ctx.get::<T>()`. Unified `AgentExecutionService` handles all execution paths. Hot-reload via file-watch. Circuit breaker on LLM providers.
+> **0.9.0 (2026-08-22):** Service-based architecture with dependency injection. Components register into a typed `Context`, handlers pull deps with `ctx.get::<T>()`. Unified `Execute` handles all execution paths through event-first around-middleware (`EventsService::waterfall_around` on `tools.*`, `llm.*`, and `agent.run`). Skills keep the request `Context`, isolate tools per tenant with `ctx.isolate::<Tools>(tenant_id)`, and run tool steps through `Tools::execute`. Skill `LlmCall` steps use the strict evented `Llm::complete` (`llm.complete`) path, with no direct provider `generate_with_history` fallback. Hot-reload via file-watch. Circuit breaker on LLM providers.
 
 ## Key capabilities
 

@@ -11,8 +11,8 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ares::llm::coordinator::{ToolCoordinator, ToolCallingConfig};
-//! use ares::llm::Provider;
+//! use ares_llm::coordinator::{ToolCoordinator, ToolCallingConfig};
+//! use ares_llm::Provider;
 //! use ares_tools::{Tools, Tool};
 //! use cordis::Context;
 //! use std::sync::Arc;
@@ -34,7 +34,9 @@
 
 use crate::capabilities::{CapabilityRequirements, ModelCapabilities};
 use crate::client::{LLMClient, TokenUsage};
-use ares_tools::{Tool, Tools};
+use ares_tools::Tools;
+#[cfg(test)]
+use ares_tools::Tool;
 use cordis::Context;
 use ares_types::types::{Result, ToolCall};
 use futures::future::join_all;
@@ -882,21 +884,10 @@ impl ToolCoordinator {
     ) -> Result<ToolCallRecord> {
         let start = Instant::now();
 
-        let Some(tool) = self.tools.resolve(ctx, &call.name) else {
-            return Ok(ToolCallRecord {
-                id: call.id.clone(),
-                name: call.name.clone(),
-                arguments: call.arguments.clone(),
-                result: serde_json::json!({"error": format!("Tool not found: {}", call.name)}),
-                success: false,
-                duration_ms: 0,
-                error: Some(format!("Tool not found: {}", call.name)),
-            });
-        };
-
         let result = timeout(
             self.config.tool_timeout,
-            Tool::execute(tool.as_ref(), call.arguments.clone()),
+            self.tools
+                .execute(ctx, &call.name, call.arguments.clone()),
         )
         .await;
 

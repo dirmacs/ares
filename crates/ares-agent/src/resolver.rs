@@ -3,7 +3,6 @@
 use crate::AgentConfig;
 use ares_store::postgres::UserAgent;
 use ares_store::traits::DatabaseClient;
-use ares_types::models::TenantContext;
 use ares_types::types::{AppError, Result};
 
 pub use crate::execution::AgentSource;

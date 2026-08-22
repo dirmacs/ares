@@ -6,7 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use cordis::{Context, CordisError, Service};
+use cordis::{Context, CordisError, EventsService, Service};
 use ares_types::types::{AppError, Message};
 
 /// Result of `Execute::run` including resolution metadata.
@@ -100,6 +100,7 @@ impl std::fmt::Debug for AgentRequest {
 /// - loop detection
 ///
 /// Reachable via `ctx.get::<Execute>()` (see `Service` impl).
+#[derive(Clone)]
 pub struct Execute {
     context_provider: Option<Arc<dyn crate::context_provider::ContextProvider>>,
     /// Agent registry for creating agents from config (Phase 4 §15).
@@ -201,6 +202,100 @@ impl Execute {
         ctx: &Arc<Context>,
     ) -> std::result::Result<ExecutionResult, AppError> {
         crate::admit(ctx).await?;
+        let Some(events) = ctx.get::<EventsService>() else {
+            return self.run_resolved_or_execute(req, ctx).await;
+        };
+        let payload = serde_json::json!({
+            "agent_name": req.agent_name,
+            "message": req.message,
+        });
+        let execute = self.clone();
+        let ctx_owned = Arc::clone(ctx);
+        let orig = req.clone();
+        let out = events
+            .waterfall_around("agent.run".into(), payload, move |payload| {
+                async move {
+                    let mut run_req = orig;
+                    if let Some(name) = payload.get("agent_name").and_then(|v| v.as_str()) {
+                        run_req.agent_name = name.to_string();
+                    }
+                    if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
+                        run_req.message = msg.to_string();
+                    }
+                    match execute.run_resolved_or_execute(&run_req, &ctx_owned).await {
+                        Ok(er) => Ok(serde_json::json!({
+                            "content": er.response.content,
+                            "usage": er.response.usage,
+                            "metadata": er.response.metadata.as_ref().map(|m| {
+                                serde_json::json!({
+                                    "model_name": m.model_name,
+                                    "provider_name": m.provider_name,
+                                })
+                            }),
+                            "source": er.source,
+                            "agent_name": er.agent_name,
+                            "run_id": er.run_id,
+                        })),
+                        Err(e) => Err(CordisError::Fiber(e.to_string())),
+                    }
+                }
+            })
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if out.get("deny").and_then(|v| v.as_bool()) == Some(true) {
+            let reason = out
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("agent.run denied");
+            return Err(AppError::InvalidInput(reason.to_string()));
+        }
+        let content = out
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let agent_name = out
+            .get("agent_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&req.agent_name)
+            .to_string();
+        let run_id = out
+            .get("run_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let source = out
+            .get("source")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or(AgentSource::System);
+        let usage = out
+            .get("usage")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok());
+        let metadata = out.get("metadata").and_then(|v| {
+            Some(crate::ExecutionMetadata {
+                model_name: v.get("model_name")?.as_str()?.to_string(),
+                provider_name: v.get("provider_name")?.as_str()?.to_string(),
+            })
+        });
+        Ok(ExecutionResult {
+            response: AgentResponse {
+                content,
+                usage,
+                metadata,
+            },
+            source,
+            agent_name,
+            run_id,
+        })
+    }
+
+    async fn run_resolved_or_execute(
+        &self,
+        req: &AgentRequest,
+        ctx: &Arc<Context>,
+    ) -> std::result::Result<ExecutionResult, AppError> {
         if let Some(result) = self.try_run_resolved(req, ctx).await {
             return result;
         }
@@ -268,12 +363,8 @@ impl Execute {
             config.model = ovr.model.clone();
         }
 
-        let Some(tenant_db) = ctx.get::<ares_store::TenantDb>() else {
-            return None;
-        };
-        let Some(fleet_secrets) = ctx.get::<ares_store::FleetSecrets>() else {
-            return None;
-        };
+        let tenant_db = ctx.get::<ares_store::TenantDb>()?;
+        let fleet_secrets = ctx.get::<ares_store::FleetSecrets>()?;
 
         let mut agent = match registry
             .create_agent_from_config_with_fallbacks(
@@ -930,5 +1021,54 @@ mod tests {
             }
             other => panic!("expected RateLimited, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_run_waterfall_rewrites_message() {
+        let svc = Execute::new();
+        let ctx = Context::new_root();
+        let events = ctx.provide(cordis::EventsService::new());
+        events.on_waterfall("agent.run".into(), |mut payload, next| async move {
+            payload["message"] = serde_json::json!("rewritten-hello");
+            next(payload).await
+        });
+        let req = AgentRequest {
+            agent_name: "echo".into(),
+            message: "original".into(),
+            ..Default::default()
+        };
+        let result = svc.run(&req, &ctx).await.expect("echo fallback");
+        assert!(
+            result.response.content.contains("rewritten-hello"),
+            "waterfall rewrite of message must reach echo execute, got {:?}",
+            result.response.content
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_run_short_circuit_skips_execute() {
+        let svc = Execute::new();
+        let ctx = Context::new_root();
+        let events = ctx.provide(cordis::EventsService::new());
+        events.on_waterfall("agent.run".into(), |_payload, _next| async move {
+            Ok(serde_json::json!({
+                "content": "short-circuit",
+                "source": "system",
+                "agent_name": "echo",
+                "run_id": "test-run",
+            }))
+        });
+        let req = AgentRequest {
+            agent_name: "echo".into(),
+            message: "would-echo-this-if-core-ran".into(),
+            ..Default::default()
+        };
+        let result = svc.run(&req, &ctx).await.expect("short-circuit");
+        assert_eq!(result.response.content, "short-circuit");
+        assert_eq!(result.run_id, "test-run");
+        assert_ne!(
+            result.response.content, req.message,
+            "skipping next must not run echo execute"
+        );
     }
 }

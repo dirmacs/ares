@@ -139,7 +139,7 @@ pub async fn run_agent(
                 trigger_id: None,
             });
             let skill_result = state_ctx.get::<ares_agent::skills::SkillEngine>().expect("not provided")
-                .execute_skill(skill_id, &tc.tenant_id, input.clone(), &run_id)
+                .execute_skill(skill_id, &tc.tenant_id, input.clone(), &run_id, &state_ctx)
                 .await;
             let duration_ms = start.elapsed().as_millis() as u64;
             let skill_status = if skill_result.is_ok() {

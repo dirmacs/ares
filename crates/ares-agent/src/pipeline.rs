@@ -1,6 +1,6 @@
 //! Inter-agent pipeline execution engine.
 
-use cordis::{Context, CordisError, Disposable, Service};
+use cordis::{Context, Disposable, Service};
 use ares_store::agent_runs::{self, AgentRunMetadata};
 use ares_store::schedules::{AgentPipeline, PipelineStore};
 use ares_store::PostgresClient;
@@ -472,6 +472,7 @@ async fn execute_target_agent(
                     tenant_id,
                     serde_json::json!({"message": source_output}),
                     &run_id,
+                    app_state,
                 )
                 .await;
 

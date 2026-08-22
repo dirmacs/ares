@@ -169,6 +169,23 @@ Embedding cache implemented - In-memory LRU cache for embeddings (commit c6c25dd
 
 *No major open issues at this time.*
 
+## Dependency security sweep (2026-08-22)
+
+Status: All open Dependabot alerts on the default branch were triaged in one pass. Every high, critical, and medium severity alert is resolved in the current `Cargo.lock` and `ui/` lockfiles.
+
+Resolved (verified against locked versions):
+- openssl @ 0.10.81 (was 0.10.76; CVE-2026-41676/41678/41898/42327/41681/41677/45784/44662)
+- rmcp @ 3.1.4 (was 0.12.0; DNS-rebinding in the Streamable HTTP server transport). ARES runs its MCP server on stdio only, so the vulnerable transport was never reachable, but the crate was migrated forward.
+- quinn-proto @ 0.11.17, lettre @ 0.11.23, serde_with @ 3.22.0, rand @ 0.8.7/0.9.5, time @ 0.3.47, bytes @ 1.11.1, aws-lc-sys @ 0.39.1, lz4_flex @ 0.11.6
+- rustls-webpki @ 0.103.15 (high-severity alert; the 0.101/0.102 lines below are the only residual)
+- thrift: removed entirely from the lockfile. The vulnerable chain was ares-server -> lance (direct) -> datafusion 50 -> parquet 56 -> thrift 0.17. The direct `lance` dependency was a redundant artifact (no code imports `lance::`); removing it and upgrading `lancedb` to 0.37.1 eliminated the chain.
+- postcss @ 8.5.26, nanoid @ 3.3.18 (ui), resolved via bun and npm lockfiles.
+
+Residual (low severity, accepted):
+- rustls-webpki 0.101.7 and 0.102.8 (alerts 19/20, GHSA-82j2-j2ch-gfr8 / -xgp8-3hg3-c2mh / -965h-392x-2mh5). These legacy TLS lines are reachable only through the optional `chromadb` (minreq 2.x pins rustls 0.21) and `anthropic` (`claude-sdk` 1.x pins reqwest 0.11) features, neither of which is in the production build (`postgres, openai, ares-vector, mcp, inventory`) or the verification matrix (`openai, postgres, mcp`). The `chromadb` path is unresolvable upstream: chromadb 2.3.0 (latest) pins `minreq ^2`, which pins `rustls ^0.21` -> `rustls-webpki ^0.101`. CRL revocation checking is opt-in in rustls-webpki; the default configuration is not affected.
+
+Note on the root-crate integration tests: `cargo test` on `ares-server` (tests/api_tests.rs, tests/integration_toml_tests.rs, tests/v1_tenant_agent_runtime_tests.rs) fails to compile because those files still construct the pre-redesign `AppState`-style `Context`/`AresConfig` literals. This predates the Cordis `Context` redesign (the files were last edited in commit 58ea725) and is unrelated to this dependency sweep. The package test suites (ares-cordis-core 46, ares-llm 237, ares-mcp 325, ares-db 49) and `cargo check`/`cargo clippy -D warnings` for both feature configs all pass.
+
 ---
 
 Last Updated: 2026-02-01 

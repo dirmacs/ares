@@ -9,7 +9,7 @@
     "watch:css": "tailwindcss -i ./input.css -o ./dist/output.css --watch"
   },
   "devDependencies": {
-    "postcss": "^8.5.6",
+    "postcss": "^8.5.26",
     "tailwindcss": "^3.4.19"
   }
 }

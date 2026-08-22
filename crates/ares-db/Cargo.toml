@@ -12,7 +12,7 @@ default = []
 postgres = ["dep:sqlx"]
 turso = ["dep:libsql"]
 ares-vector = ["dep:ares-vector"]
-lancedb = ["dep:lancedb", "dep:lance"]
+lancedb = ["dep:lancedb"]
 qdrant = ["dep:qdrant-client"]
 chromadb = ["dep:chromadb"]
 pinecone = ["dep:pinecone-sdk"]
@@ -29,6 +29,7 @@ cron = "0.15"
 hex = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }
+futures = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -40,7 +41,6 @@ uuid = { workspace = true }
 ares-vector = { workspace = true, features = ["serde"], optional = true }
 qdrant-client = { workspace = true, optional = true }
 lancedb = { workspace = true, optional = true }
-lance = { workspace = true, optional = true }
 chromadb = { workspace = true, optional = true }
 pinecone-sdk = { workspace = true, optional = true }
 rust_decimal = { workspace = true }

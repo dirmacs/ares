@@ -225,23 +225,45 @@ pub fn validate_tool_schema(tool: &Tool) -> Result<(), RegistryError> {
     }
 }
 
+fn build_tool(name: &str, description: &str, schema: serde_json::Value, title: &str) -> Tool {
+    let input_schema: rmcp::model::JsonObject =
+        serde_json::from_value(schema).unwrap_or_default();
+    Tool::new(name.to_string(), description.to_string(), input_schema)
+        .with_title(title.to_string())
+}
+
 pub fn builtin_ares_tools() -> Vec<Tool> {
     vec![
-        Tool { name: "ares_list_agents".into(), description: Some("List all agents available in your ARES account. Returns agent names, descriptions, types, and deployment status.".into()),
-            input_schema: serde_json::from_value(json!({"type":"object","properties":{},"required":[]})).unwrap_or_default(),
-            annotations: None, icons: None, meta: None, output_schema: None, title: Some("List ARES Agents".into()) },
-        Tool { name: "ares_run_agent".into(), description: Some("Run an ARES agent with a message. Specify the agent name and your message. Optionally pass a context_id to continue a conversation.".into()),
-            input_schema: serde_json::from_value(json!({"type":"object","properties":{"agent_name":{"type":"string"},"message":{"type":"string"},"context_id":{"type":"string"}},"required":["agent_name","message"]})).unwrap_or_default(),
-            annotations: None, icons: None, meta: None, output_schema: None, title: Some("Run ARES Agent".into()) },
-        Tool { name: "ares_get_status".into(), description: Some("Check the status of a previous agent run. Pass the context_id from an ares_run_agent call. Returns running/completed/failed status.".into()),
-            input_schema: serde_json::from_value(json!({"type":"object","properties":{"context_id":{"type":"string"}},"required":["context_id"]})).unwrap_or_default(),
-            annotations: None, icons: None, meta: None, output_schema: None, title: Some("Get Agent Status".into()) },
-        Tool { name: "ares_deploy_agent".into(), description: Some("Deploy a new agent to ARES by providing a .toon configuration (TOML format). The agent becomes immediately available for use.".into()),
-            input_schema: serde_json::from_value(json!({"type":"object","properties":{"toon_config":{"type":"string"},"name_override":{"type":"string"}},"required":["toon_config"]})).unwrap_or_default(),
-            annotations: None, icons: None, meta: None, output_schema: None, title: Some("Deploy Agent".into()) },
-        Tool { name: "ares_get_usage".into(), description: Some("Check your ARES account usage statistics and quota. Shows requests made, tokens consumed, and remaining quota for your tier.".into()),
-            input_schema: serde_json::from_value(json!({"type":"object","properties":{"from_date":{"type":"string"},"to_date":{"type":"string"}},"required":[]})).unwrap_or_default(),
-            annotations: None, icons: None, meta: None, output_schema: None, title: Some("Get Usage Stats".into()) },
+        build_tool(
+            "ares_list_agents",
+            "List all agents available in your ARES account. Returns agent names, descriptions, types, and deployment status.",
+            json!({"type":"object","properties":{},"required":[]}),
+            "List ARES Agents",
+        ),
+        build_tool(
+            "ares_run_agent",
+            "Run an ARES agent with a message. Specify the agent name and your message. Optionally pass a context_id to continue a conversation.",
+            json!({"type":"object","properties":{"agent_name":{"type":"string"},"message":{"type":"string"},"context_id":{"type":"string"}},"required":["agent_name","message"]}),
+            "Run ARES Agent",
+        ),
+        build_tool(
+            "ares_get_status",
+            "Check the status of a previous agent run. Pass the context_id from an ares_run_agent call. Returns running/completed/failed status.",
+            json!({"type":"object","properties":{"context_id":{"type":"string"}},"required":["context_id"]}),
+            "Get Agent Status",
+        ),
+        build_tool(
+            "ares_deploy_agent",
+            "Deploy a new agent to ARES by providing a .toon configuration (TOML format). The agent becomes immediately available for use.",
+            json!({"type":"object","properties":{"toon_config":{"type":"string"},"name_override":{"type":"string"}},"required":["toon_config"]}),
+            "Deploy Agent",
+        ),
+        build_tool(
+            "ares_get_usage",
+            "Check your ARES account usage statistics and quota. Shows requests made, tokens consumed, and remaining quota for your tier.",
+            json!({"type":"object","properties":{"from_date":{"type":"string"},"to_date":{"type":"string"}},"required":[]}),
+            "Get Usage Stats",
+        ),
     ]
 }
 
@@ -398,15 +420,11 @@ timeout_secs = 10
 
     use crate::extension::NoOpMcpExtension;
     use async_trait::async_trait;
-    use rmcp::model::Content;
+    use rmcp::model::ContentBlock;
 
     fn sample_tool(name: &str) -> Tool {
-        Tool {
-            name: std::borrow::Cow::Owned(name.to_string()),
-            description: Some(std::borrow::Cow::Owned(format!("{name} tool"))),
-            input_schema: serde_json::from_value(json!({"type":"object","properties":{},"required":[]})).unwrap_or_default(),
-            annotations: None, icons: None, meta: None, output_schema: None, title: None,
-        }
+        let input_schema: rmcp::model::JsonObject = serde_json::from_value(json!({"type":"object","properties":{},"required":[]})).unwrap_or_default();
+        Tool::new(name.to_string(), format!("{name} tool"), input_schema)
     }
 
     fn serde_roundtrip<T>(value: &T) -> T
@@ -509,7 +527,7 @@ timeout_secs = 10
         impl McpToolExtension for Echo {
             fn tools(&self) -> Vec<Tool> { vec![sample_tool("echo_ext")] }
             async fn execute(&self, n: &str, _: serde_json::Value, _: &str) -> Option<Result<CallToolResult, String>> {
-                if n == "echo_ext" { Some(Ok(CallToolResult::success(vec![Content::text("ok")]))) } else { None }
+                if n == "echo_ext" { Some(Ok(CallToolResult::success(vec![ContentBlock::text("ok")]))) } else { None }
             }
         }
         let mut r = ToolRegistry::new();

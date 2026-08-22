@@ -35,6 +35,9 @@ pub struct ChatRequest {
     /// When set, the Eruka context middleware queries this workspace instead of the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// Optional per-request model override (Cordis intercept payload).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Response from chat endpoints.
@@ -764,6 +767,7 @@ mod tests {
             agent_type: Some(AgentType::Router),
             context_id: Some("ctx-1".into()),
             workspace_id: None,
+            model: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: ChatRequest = serde_json::from_str(&json).unwrap();
@@ -1301,6 +1305,7 @@ mod tests {
             agent_type: None,
             context_id: None,
             workspace_id: Some("ws-éruka-42".into()),
+            model: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("workspace_id"));

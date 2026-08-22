@@ -36,6 +36,13 @@ pub use ares_tools::UnifiedToolService;
 /// Tenant identifier alias (plain String, `tenant:<id>` isolate label).
 pub type TenantId = String;
 
+/// Per-request LLM model override delivered via Cordis intercept.
+#[derive(Debug, Clone)]
+pub struct ModelOverride {
+    pub model: String,
+}
+impl ares_cordis_core::Service for ModelOverride {}
+
 /// Request for unified agent execution.
 ///
 /// Carries the minimal fields needed to execute any agent via the single
@@ -218,7 +225,11 @@ impl AgentExecutionService {
         let (user_agent, source) = resolver.resolve_async(&req.agent_name, user_id).await?;
 
         // Build AgentConfig from resolved UserAgent
-        let config = crate::configurable::agent_config_from_user_agent(&user_agent);
+        let mut config = crate::configurable::agent_config_from_user_agent(&user_agent);
+        if let Some(ovr) = ctx.get::<ModelOverride>() {
+            tracing::info!(model=%ovr.model, agent=%req.agent_name, "model overridden via Cordis intercept");
+            config.model = ovr.model.clone();
+        }
 
         // Create the agent using the registry
         let registry = self.agent_registry.as_ref()

@@ -511,6 +511,7 @@ impl From<ChatStreamQuery> for ChatRequest {
             agent_type: query.agent_type,
             context_id: query.context_id,
             workspace_id: query.workspace_id,
+            model: None,
         }
     }
 }
@@ -903,6 +904,7 @@ mod tests {
             agent_type: None,
             context_id: None,
             workspace_id: None,
+            model: None,
         };
         let err = validate_chat_request(&payload).unwrap_err();
         match err {
@@ -918,6 +920,7 @@ mod tests {
             agent_type: None,
             context_id: None,
             workspace_id: None,
+            model: None,
         };
         assert!(validate_chat_request(&payload).is_err());
     }
@@ -929,6 +932,7 @@ mod tests {
             agent_type: None,
             context_id: None,
             workspace_id: None,
+            model: None,
         };
         assert!(validate_chat_request(&payload).is_ok());
     }
@@ -940,6 +944,7 @@ mod tests {
             agent_type: None,
             context_id: None,
             workspace_id: None,
+            model: None,
         };
         assert!(validate_chat_request(&payload).is_ok());
     }
@@ -1153,6 +1158,7 @@ mod tests {
             agent_type: None,
             context_id: None,
             workspace_id: None,
+            model: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: ChatRequest = serde_json::from_str(&json).unwrap();
@@ -1169,6 +1175,7 @@ mod tests {
             agent_type: Some(AgentType::Sales),
             context_id: Some("ctx-1".into()),
             workspace_id: Some("ws-9".into()),
+            model: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: ChatRequest = serde_json::from_str(&json).unwrap();

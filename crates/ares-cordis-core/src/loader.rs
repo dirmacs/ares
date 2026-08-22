@@ -262,22 +262,79 @@ impl Loader {
         actions
     }
 
-    /// Execute a reconciliation action against the context (logs the action).
-    pub fn execute_action(action: &LoaderAction, _ctx: &std::sync::Arc<crate::Context>) {
+    /// Execute a reconciliation action against the context.
+    ///
+    /// `Begin` / `RebuildFiber` require the plugin factory from the
+    /// [`crate::PluginRegistry`]; when it is not provided (or no factory is
+    /// registered under the entry's `plugin` name) these arms fall back to
+    /// log-only. Startup instantiation of new entries goes through
+    /// [`Loader::instantiate`] instead, which reports per-entry results.
+    pub fn execute_action(action: &LoaderAction, ctx: &std::sync::Arc<crate::Context>) {
+        let Some(registry) = ctx.get::<crate::PluginRegistry>() else {
+            tracing::warn!("PluginRegistry not provided; loader actions are log-only");
+            return;
+        };
         match action {
             LoaderAction::RebuildFiber { id, plugin } => {
-                tracing::info!(id = %id, plugin = %plugin, "Loader: rebuilding fiber for entry");
+                match registry
+                    .get(plugin)
+                    .ok_or_else(|| {
+                        crate::CordisError::Configuration(format!(
+                            "no factory registered for plugin '{plugin}'"
+                        ))
+                    })
+                    .and_then(|factory| factory(ctx, &serde_json::Value::Null))
+                {
+                    Ok(_fid) => {
+                        tracing::info!(id = %id, plugin = %plugin, "Loader: rebuilt fiber for entry");
+                    }
+                    Err(e) => {
+                        tracing::warn!(id = %id, plugin = %plugin, error = %e, "Loader: rebuild failed");
+                    }
+                }
             }
             LoaderAction::UpdateConfig { id, .. } => {
+                // fiber.update(new_config) needs the live FiberId for `id`,
+                // which the loader does not track yet; stays log-only.
                 tracing::info!(id = %id, "Loader: updating fiber config for entry");
             }
             LoaderAction::Retire { id } => {
                 tracing::info!(id = %id, "Loader: retiring entry");
             }
             LoaderAction::Begin { id } => {
+                // `Entry.plugin` is not carried by this action; startup
+                // resolves plugin names via `Loader::instantiate` on the
+                // desired tree instead.
                 tracing::info!(id = %id, "Loader: beginning entry");
             }
         }
+    }
+
+    /// Instantiate one entry by plugin name through the [`crate::PluginRegistry`].
+    ///
+    /// Looks up the factory registered under `plugin_name`, invokes it with
+    /// `(ctx, config)` so the plugin lands via `Context::plugin` (single-source
+    /// discipline applies), and returns the resulting fiber id. Missing
+    /// registry or missing factory are `CordisError::Configuration`.
+    pub fn instantiate(
+        ctx: &std::sync::Arc<crate::Context>,
+        plugin_name: &str,
+        config: &serde_json::Value,
+        entry_id: &str,
+    ) -> Result<crate::FiberId, crate::CordisError> {
+        let Some(registry) = ctx.get::<crate::PluginRegistry>() else {
+            return Err(crate::CordisError::Configuration(
+                "PluginRegistry missing".into(),
+            ));
+        };
+        let Some(factory) = registry.get(plugin_name) else {
+            return Err(crate::CordisError::Configuration(format!(
+                "no factory registered for plugin '{plugin_name}'"
+            )));
+        };
+        let fid = factory(ctx, config)?;
+        tracing::info!(entry_id=%entry_id, plugin=%plugin_name, "Loader: instantiated plugin");
+        Ok(fid)
     }
 }
 

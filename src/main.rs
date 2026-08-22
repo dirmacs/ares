@@ -579,6 +579,16 @@ fn register_loader_factories(root_ctx: &Arc<Context>) {
         let future = ctx.plugin(ares_tools::CalculatorService::with_config(calculator_config));
         tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
     }));
+
+    // EventsService — the central event bus. Registered so a declarative entry
+    // (`plugin = "EventsService"`) can instantiate it at startup via the Loader,
+    // using the same block_in_place pattern as the other factories. The
+    // duplicate-provider check in `Context::plugin` and the guard at the
+    // direct-bootstrap provide (see run_server) keep this single-source.
+    registry.register("EventsService", Arc::new(|ctx, _config| {
+        let future = ctx.plugin(ares_cordis_core::EventsService::new());
+        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+    }));
 }
 
 /// Run the A.R.E.S server
@@ -709,36 +719,126 @@ async fn run_server(
     let config_manager = Arc::new(config_manager);
     let config = config_manager.config();
 
-    // Cordis hot-reload: watch cordis-entries.toml for changes and re-reconcile
+    // Cordis hot-reload: watch config/cordis-entries.toml via `notify`
+    // (RecommendedWatcher, parent dir non-recursive, 500 ms debounce) and
+    // re-reconcile declarative entries on change. A 30 s mtime poll remains as
+    // a fallback in case the watcher fails to start or the fs backend errors.
+    // Detached daemon task — graceful shutdown not required (live config reload
+    // is best-effort; the config_manager watcher owns its own handle).
     {
         let ctx_for_watch = root_ctx.clone();
-        tokio::spawn(async move {
-            let entries_path_str = "config/cordis-entries.toml".to_string();
+        let entries_path_str = "config/cordis-entries.toml".to_string();
+
+        // Reload closure shared by the notify path and the fallback poll.
+        // Returns true when at least one reconcile action was produced.
+        let reload = |ctx: &std::sync::Arc<Context>, path: &std::path::Path| -> bool {
             use ares_cordis_core::loader::{EntryTree, Loader};
+            match Loader::load_from_file(path) {
+                Ok(desired) => {
+                    let current = EntryTree(vec![]);
+                    let actions = Loader::new().reconcile(&current, &desired);
+                    for action in &actions {
+                        Loader::execute_action(action, ctx);
+                    }
+                    if !actions.is_empty() {
+                        tracing::info!(
+                            actions = actions.len(),
+                            "Cordis hot-reload: reconciled entries change"
+                        );
+                    }
+                    !actions.is_empty()
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Cordis hot-reload: parse failed");
+                    false
+                }
+            }
+        };
+
+        tokio::spawn(async move {
+            use notify::Watcher;
+            let entries_path = std::path::Path::new(&entries_path_str);
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+
+            let mut watcher = notify::recommended_watcher(
+                move |res: Result<notify::Event, notify::Error>| match res {
+                    Ok(event) if event.kind.is_modify() || event.kind.is_create() => {
+                        let _ = tx.send(());
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(error = ?e, "Cordis hot-reload watcher error"),
+                },
+            )
+            .ok();
+
+            // Watch the parent directory non-recursively (single-file target).
+            if let Some(w) = watcher.as_mut() {
+                let target = entries_path.parent().filter(|p| p.exists());
+                match target {
+                    Some(parent) => {
+                        if let Err(e) = w.watch(parent, notify::RecursiveMode::NonRecursive) {
+                            tracing::warn!(
+                                error = %e,
+                                path = %parent.display(),
+                                "Cordis hot-reload watcher failed to start; falling back to 30s poll"
+                            );
+                            watcher = None;
+                        } else {
+                            tracing::info!(
+                                path = %parent.display(),
+                                "Cordis hot-reload notify watcher started (500ms debounce)"
+                            );
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            path = %entries_path_str,
+                            "Cordis hot-reload watch target missing; falling back to 30s poll"
+                        );
+                        watcher = None;
+                    }
+                }
+            }
+
+            // Fallback mtime poll every 30s for when the watcher is unavailable.
             let mut last_modified =
                 std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
+            let mut watcher_active = watcher.is_some();
+            let mut fallback = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                let cur = std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
-                if cur != last_modified && cur.is_some() {
-                    last_modified = cur;
-                    let path = std::path::Path::new(&entries_path_str);
-                    if path.exists() {
-                        match Loader::load_from_file(path) {
-                            Ok(desired) => {
-                                let current = EntryTree(vec![]);
-                                let actions = Loader::new().reconcile(&current, &desired);
-                                for action in &actions {
-                                    Loader::execute_action(action, &ctx_for_watch);
-                                }
-                                if !actions.is_empty() {
-                                    tracing::info!(
-                                        actions = actions.len(),
-                                        "Cordis hot-reload: reconciled entries change"
-                                    );
+                if watcher_active {
+                    tokio::select! {
+                        maybe = rx.recv() => {
+                            if maybe.is_none() {
+                                // All senders dropped (watcher died/target missing) → poll only.
+                                watcher_active = false;
+                                continue;
+                            }
+                            // Debounce 500ms: coalesce bursts, then reload.
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            while rx.try_recv().is_ok() {}
+                            if entries_path.exists() {
+                                last_modified = std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
+                                reload(&ctx_for_watch, entries_path);
+                            }
+                        }
+                        _ = fallback.tick() => {
+                            let cur = std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
+                            if cur != last_modified && cur.is_some() {
+                                last_modified = cur;
+                                if entries_path.exists() {
+                                    reload(&ctx_for_watch, entries_path);
                                 }
                             }
-                            Err(e) => tracing::warn!(error = %e, "Cordis hot-reload: parse failed"),
+                        }
+                    }
+                } else {
+                    fallback.tick().await;
+                    let cur = std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
+                    if cur != last_modified && cur.is_some() {
+                        last_modified = cur;
+                        if entries_path.exists() {
+                            reload(&ctx_for_watch, entries_path);
                         }
                     }
                 }
@@ -1041,7 +1141,12 @@ async fn run_server(
     // dedicated services (AgentResolverService, AgentExecutionService, etc.), these
     // wrappers become unused and can be removed. Target: 0 context_services wrappers.
     // Cordis EventsService — central event bus for inter-service communication
-    root_ctx.provide(ares_cordis_core::EventsService::new());
+    // Guarded: the Loader may already have instantiated it from a declarative
+    // `config/cordis-entries.toml` entry (`plugin = "EventsService"`); a second
+    // provide here would trip the duplicate-provider check.
+    if root_ctx.get::<ares_cordis_core::EventsService>().is_none() {
+        root_ctx.provide(ares_cordis_core::EventsService::new());
+    }
     root_ctx.plugin(ares::context_services::ConfigManagerService(Arc::clone(&config_manager))).await.expect("ConfigManager plugin failed");
     root_ctx.provide(ares::context_services::DynamicConfigService(dynamic_config.clone()));
     root_ctx.provide(ares::context_services::DbService(db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>));
@@ -1142,22 +1247,45 @@ async fn run_server(
 
     // Cordis reactive-fiber demo: a fiber depending on EventsService that flips
     // Active/Inactive as the service is retired/re-provided via admin endpoints.
+    // A second dependent fiber on ToolRegistryService registers a distinct
+    // `TypeId` dependency so ReflectService's BFS dependency walk covers two
+    // services — prooving reactive recomputation fans out across both keys.
     {
         use std::any::TypeId;
-        let fiber = std::sync::Arc::new(ares_cordis_core::Fiber::new());
-        fiber.declare_inject::<ares_cordis_core::EventsService>();
         let reflect = root_ctx
             .get::<ares_cordis_core::ReflectService>()
             .expect("reflect");
-        let fid = 990_001u64;
-        reflect.register_dependent(TypeId::of::<ares_cordis_core::EventsService>(), fid);
+
+        // Dependents on EventsService (admin retire/provide flow).
+        let fiber_events = std::sync::Arc::new(ares_cordis_core::Fiber::new());
+        fiber_events.declare_inject::<ares_cordis_core::EventsService>();
+        let fid_events = 990_001u64;
+        reflect.register_dependent(TypeId::of::<ares_cordis_core::EventsService>(), fid_events);
         reflect.register_fiber(
-            fid,
-            fiber.clone(),
+            fid_events,
+            fiber_events.clone(),
             TypeId::of::<ares_cordis_core::EventsService>(),
         );
-        fiber.refresh(&root_ctx).await; // initial: Active (EventsService provided earlier)
-        tracing::info!(state=?fiber.state(), "reactive demo fiber initialized (expect Active)");
+        fiber_events.refresh(&root_ctx).await; // initial: Active (EventsService provided earlier)
+        tracing::info!(state=?fiber_events.state(), "reactive demo fiber initialized (expect Active)");
+
+        // Dependents on ToolRegistryService — second service so the reflect BFS
+        // walk covers two services. ToolRegistryService is provided at line
+        // ~1052 via `plugin(ToolRegistryService(...))`, so initial refresh is Active.
+        let fiber_tools = std::sync::Arc::new(ares_cordis_core::Fiber::new());
+        fiber_tools.declare_inject::<ares::context_services::ToolRegistryService>();
+        let fid_tools = 990_002u64;
+        reflect.register_dependent(
+            TypeId::of::<ares::context_services::ToolRegistryService>(),
+            fid_tools,
+        );
+        reflect.register_fiber(
+            fid_tools,
+            fiber_tools.clone(),
+            TypeId::of::<ares::context_services::ToolRegistryService>(),
+        );
+        fiber_tools.refresh(&root_ctx).await; // initial: Active (ToolRegistryService provided)
+        tracing::info!(state=?fiber_tools.state(), "reactive demo fiber (tools) initialized (expect Active)");
     }
 
     // =================================================================

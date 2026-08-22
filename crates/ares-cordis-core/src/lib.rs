@@ -186,6 +186,10 @@ pub trait Service: Send + Sync + 'static {
 pub enum FiberState {
     Inactive { error: Option<String> },
     Active { epoch: String },
+    /// A plugin activation is in flight (Cordis `LOADING`).
+    Loading,
+    /// Activation finished with an error; the plugin is not serving (Cordis `FAILED`).
+    Failed { error: Option<String> },
     Reloading,
     Unloading { error: Option<String> },
 }
@@ -218,6 +222,13 @@ impl Fiber {
 
     pub fn state(&self) -> FiberState {
         self.state.read().clone()
+    }
+
+    /// Record a lifecycle state transition (used by the registry while a plugin
+    /// is loading or after it fails). Kept `pub(crate)` so sibling modules can
+    /// drive the state machine without exposing write access publicly.
+    pub(crate) fn set_state(&self, state: FiberState) {
+        *self.state.write() = state;
     }
 
     pub fn epoch(&self) -> String {
@@ -290,6 +301,15 @@ impl Fiber {
         }
         *self.state.write() = FiberState::Inactive { error: None };
         *self.epoch.write() = String::new();
+    }
+
+    /// Apply a config change to a live fiber by recomputing its epoch and
+    /// re-running the dependency-satisfaction check against `ctx`.  This is the
+    /// synchronization point the Loader calls from its `UpdateConfig` arm; it
+    /// is additive and non-destructive (unlike `dispose`), so a config-only
+    /// change keeps the fiber's accumulator and committed view intact.
+    pub async fn update(&self, ctx: &Arc<Context>) {
+        self.refresh(ctx).await;
     }
 
     // Called by Context::provide to push undo onto this fiber's acc
@@ -593,17 +613,25 @@ impl Context {
                 tid
             )));
         }
-        let disposable = svc.init(self).await?;
+        let fiber = self.fiber.clone();
+        *fiber.state.write() = FiberState::Loading;
+        let disposable = match svc.init(self).await {
+            Ok(d) => d,
+            Err(e) => {
+                *fiber.state.write() = FiberState::Failed {
+                    error: Some(e.to_string()),
+                };
+                return Err(e);
+            }
+        };
         let svc_arc = self.provide(svc);
         let fid = NEXT_FIBER_ID.fetch_add(1, Ordering::SeqCst) as u64;
         if let Some(d) = disposable {
-            let fiber = self.fiber.clone();
             let undo: Box<dyn FnOnce() + Send> = Box::new(move || {
                 d.dispose();
             });
             fiber.push_undo(undo);
         }
-        let fiber = self.fiber.clone();
         if svc_arc.check() {
             let epoch = fiber.compute_epoch(self);
             *fiber.epoch.write() = epoch.clone();
@@ -632,8 +660,20 @@ impl Context {
                 tid
             )));
         }
-        let provides = plugin.apply(self, config)?;
+        *self.fiber.state.write() = FiberState::Loading;
+        let provides = match plugin.apply(self, config) {
+            Ok(p) => p,
+            Err(e) => {
+                *self.fiber.state.write() = FiberState::Failed {
+                    error: Some(e.to_string()),
+                };
+                return Err(e);
+            }
+        };
         self.provide_arc(provides);
+        *self.fiber.state.write() = FiberState::Active {
+            epoch: self.fiber.compute_epoch(self),
+        };
         let fid = NEXT_FIBER_ID.fetch_add(1, Ordering::SeqCst) as u64;
         Ok(fid)
     }
@@ -654,8 +694,27 @@ pub enum Dispatch {
 
 type Handler = Arc<dyn Fn(serde_json::Value) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>> + Send + Sync>;
 
+/// The `next` continuation handed to a [`WaterfallHandler`].  It advances to the
+/// next registered waterfall handler, or returns the passed payload unchanged once
+/// the chain is exhausted.  It is `FnOnce`: a handler may call `next` at most once,
+/// mirroring Cordis `next()` semantics.
+type WaterfallNext =
+    Box<dyn FnOnce(serde_json::Value) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>> + Send>;
+
+/// A Cordis `waterfall` around-middleware handler.  It receives the current payload
+/// plus a `next` continuation.  Calling `next(payload)` runs the downstream chain and
+/// yields its result for further transformation; choosing NOT to call `next`
+/// short-circuits the chain (any later handlers do not run).
+type WaterfallHandler = Arc<
+    dyn Fn(serde_json::Value, WaterfallNext)
+        -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
+        + Send
+        + Sync,
+>;
+
 pub struct EventsService {
     handlers: RwLock<HashMap<EventId, Vec<Handler>>>,
+    waterfall_handlers: RwLock<HashMap<EventId, Vec<WaterfallHandler>>>,
     bus: tokio::sync::broadcast::Sender<(EventId, serde_json::Value)>,
 }
 
@@ -664,6 +723,7 @@ impl EventsService {
         let (tx, _rx) = tokio::sync::broadcast::channel(32);
         Self {
             handlers: RwLock::new(HashMap::new()),
+            waterfall_handlers: RwLock::new(HashMap::new()),
             bus: tx,
         }
     }
@@ -684,6 +744,34 @@ impl EventsService {
         })
     }
 
+    /// Register a Cordis `waterfall` around-middleware handler.
+    ///
+    /// `handler` receives the current payload and a `next` continuation.  Calling
+    /// `next(payload)` runs the downstream chain and yields its (possibly
+    /// transformed) result; NOT calling `next` short-circuits the chain so later
+    /// handlers do not run.  Handlers registered here are only invoked by
+    /// [`dispatch`](EventsService::dispatch) with [`Dispatch::Waterfall`]; the plain
+    /// [`on`](EventsService::on) registry is used for emit/parallel/serial/bail.
+    pub fn on_waterfall<F, Fut>(
+        &self,
+        event: EventId,
+        handler: F,
+    ) -> Box<dyn Disposable>
+    where
+        F: Fn(serde_json::Value, WaterfallNext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
+    {
+        let h: WaterfallHandler = Arc::new(move |v, next| Box::pin(handler(v, next)));
+        let mut handlers = self.waterfall_handlers.write();
+        let entry = handlers.entry(event.clone()).or_default();
+        entry.push(h);
+        let _idx = entry.len() - 1;
+        let _event_clone = event;
+        Box::new(move || {
+            let _ = (_event_clone, _idx);
+        })
+    }
+
     pub async fn dispatch(
         &self,
         event: EventId,
@@ -691,14 +779,39 @@ impl EventsService {
         mode: Dispatch,
     ) -> Result<serde_json::Value, CordisError> {
         let handlers = self.handlers.read().get(&event).cloned().unwrap_or_default();
-        if handlers.is_empty() {
-            return Ok(payload);
-        }
         match mode {
+            // Cordis `waterfall` uses its own around-middleware registry, so it
+            // must not be short-circuited by the plain-handler emptiness check.
+            Dispatch::Waterfall => {
+                let wf_handlers = self
+                    .waterfall_handlers
+                    .read()
+                    .get(&event)
+                    .cloned()
+                    .unwrap_or_default();
+                if wf_handlers.is_empty() {
+                    return Ok(payload);
+                }
+                run_waterfall_chain(wf_handlers, 0, payload).await
+            }
+            _ if handlers.is_empty() => Ok(payload),
+            // Cordis `emit`: fire-and-forget. Every handler is spawned and NOT
+            // awaited, so `dispatch` returns immediately; the event+payload is
+            // also broadcast on the bus. Handlers still run to completion on the
+            // runtime (a caller that needs to observe completion should listen on
+            // the bus or use a oneshot/notify channel instead of awaiting this).
             Dispatch::Emit => {
-                let _ = self.bus.send((event, payload));
+                let _ = self.bus.send((event, payload.clone()));
+                for h in handlers {
+                    let p = payload.clone();
+                    tokio::spawn(async move {
+                        let _ = h(p).await;
+                    });
+                }
                 Ok(serde_json::Value::Null)
             }
+            // Cordis `parallel`: run every handler concurrently (fan-out); if any
+            // handler errors, propagate the first error we observe.
             Dispatch::Parallel => {
                 let mut set = tokio::task::JoinSet::new();
                 for h in handlers {
@@ -707,12 +820,17 @@ impl EventsService {
                 }
                 let mut last = serde_json::Value::Null;
                 while let Some(res) = set.join_next().await {
-                    if let Ok(Ok(v)) = res {
-                        last = v;
+                    match res {
+                        // Task panicked — surface as a fiber error.
+                        Err(join_err) => return Err(CordisError::Fiber(join_err.to_string())),
+                        Ok(Err(e)) => return Err(e),
+                        Ok(Ok(v)) => last = v,
                     }
                 }
                 Ok(last)
             }
+            // Cordis `serial`: thread the payload through each handler in order;
+            // a handler error aborts the chain and propagates.
             Dispatch::Serial => {
                 let mut cur = payload;
                 for h in handlers {
@@ -720,17 +838,17 @@ impl EventsService {
                 }
                 Ok(cur)
             }
+            // Cordis `bail`: stop at the first handler that returns a non-null
+            // result (`isBailed` analog) and return that value without running
+            // any later handlers. A null result means "not bailing" — the chain
+            // continues with the original payload.
             Dispatch::Bail => {
-                let mut cur = payload;
+                let cur = payload;
                 for h in handlers {
-                    cur = h(cur).await?;
-                }
-                Ok(cur)
-            }
-            Dispatch::Waterfall => {
-                let mut cur = payload;
-                for h in handlers {
-                    cur = h(cur).await?;
+                    let res = h(cur.clone()).await?;
+                    if !res.is_null() {
+                        return Ok(res);
+                    }
                 }
                 Ok(cur)
             }
@@ -745,6 +863,37 @@ impl Default for EventsService {
 }
 
 impl Service for EventsService {}
+
+/// Run a Cordis `waterfall` around-middleware chain starting at `index`.
+///
+/// Each handler receives the current payload and a `next` continuation.  The `next`
+/// closure, when invoked, advances to `index + 1` (running the rest of the chain)
+/// or returns the given payload unchanged when the chain is exhausted.  A handler
+/// that does not call `next` short-circuits: its own return value is the final
+/// result and later handlers never run.  Errors propagate.
+fn run_waterfall_chain(
+    handlers: Vec<WaterfallHandler>,
+    index: usize,
+    payload: serde_json::Value,
+) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>> {
+    Box::pin(async move {
+        if index >= handlers.len() {
+            return Ok(payload);
+        }
+        let handler = handlers[index].clone();
+        // Build the continuation.  Because `next` is `FnOnce` and captures `index`,
+        // each handler sees exactly one downstream step.
+        let next = move |p: serde_json::Value| {
+            let remaining = handlers.clone();
+            Box::pin(
+                async move { run_waterfall_chain(remaining, index + 1, p).await },
+            ) as Pin<
+                Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>,
+            >
+        };
+        handler(payload, Box::new(next)).await
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Epoch helper (free function per plan)
@@ -1010,6 +1159,103 @@ impl Service for ReflectService {}
 // Behind `#[cfg(feature = "hmr")]`, `libloading` would `dlopen` a `.so` and call `Plugin::apply`
 // via an `extern "C"` entry point; if ABI fragility blocks, fallback is file-watch + full fiber reload
 // (see docs/cordis-mapping.md §11 — 90% value without dynamic code).
+
+// ---------------------------------------------------------------------------
+// LoaderJournal — live bookkeeping for `Loader::execute_action` / `instantiate`
+// ---------------------------------------------------------------------------
+
+/// One record in the [`LoaderJournal`]: the plugin label owning an entry, the
+/// last applied config, the live fiber id when known, and a monotonically
+/// increasing generation counter.  `generation` lets reconciliation callers
+/// detect whether an entry's config actually changed (see
+/// [`Loader::execute_action`](crate::loader::Loader::execute_action)).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct JournalRecord {
+    pub plugin: String,
+    pub config: serde_json::Value,
+    pub fiber_id: Option<FiberId>,
+    pub generation: u64,
+}
+
+/// Optional journal that makes the loader lifecycle real for `UpdateConfig`
+/// and `Retire` arms.
+///
+/// Provide it as a `Service` (`ctx.provide(LoaderJournal::new())`) so
+/// [`Context::get::<LoaderJournal>`] returns the shared handle; when absent,
+/// [`Loader::execute_action`](crate::loader::Loader::execute_action) and
+/// [`Loader::instantiate`](crate::loader::Loader::instantiate) degrade to
+/// log-only.  Every mutation bumps `generation`; the journal is the single
+/// source of truth for "is this entry live, with which fiber, at what
+/// config/version".
+#[derive(Clone, Default)]
+pub struct LoaderJournal {
+    records: Arc<RwLock<HashMap<String, JournalRecord>>>,
+}
+
+impl LoaderJournal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert or replace a record, bumping generation by 1 from the prior value
+    /// (or from 0 for a fresh id).
+    pub fn upsert(
+        &self,
+        id: &str,
+        plugin: &str,
+        config: serde_json::Value,
+        fiber_id: Option<FiberId>,
+    ) {
+        let mut records = self.records.write();
+        let generation = records.get(id).map(|r| r.generation).unwrap_or(0) + 1;
+        records.insert(
+            id.to_string(),
+            JournalRecord {
+                plugin: plugin.to_string(),
+                config,
+                fiber_id,
+                generation,
+            },
+        );
+    }
+
+    /// Replace the stored config for `id`, bumping generation, and optionally
+    /// refresh the tracked fiber id.  Returns the prior record if present.
+    pub fn update_config(
+        &self,
+        id: &str,
+        new_config: serde_json::Value,
+        fiber_id: Option<FiberId>,
+    ) -> Option<JournalRecord> {
+        let mut records = self.records.write();
+        let record = records.get_mut(id)?;
+        record.config = new_config;
+        if let Some(fid) = fiber_id {
+            record.fiber_id = Some(fid);
+        }
+        record.generation += 1;
+        Some(record.clone())
+    }
+
+    /// Remove `id` from the journal (retirement).  Returns the removed record.
+    pub fn retire(&self, id: &str) -> Option<JournalRecord> {
+        self.records.write().remove(id)
+    }
+
+    pub fn get(&self, id: &str) -> Option<JournalRecord> {
+        self.records.read().get(id).cloned()
+    }
+
+    pub fn len(&self) -> usize {
+        self.records.read().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.read().is_empty()
+    }
+}
+
+impl Service for LoaderJournal {}
 
 // ---------------------------------------------------------------------------
 // Tests — the two theorems that must hold before Phase 2
@@ -1371,5 +1617,312 @@ mod tests {
             "expected Inactive after remove, got {:?}",
             f.state()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // EventsService dispatch parity with Cordis TS semantics
+    // -----------------------------------------------------------------------
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn events_emit_fire_and_forget_and_broadcast() {
+        let svc = EventsService::new();
+        // Each handler signals completion via an mpsc channel after doing work.
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<()>(16);
+        let mut bus_rx = svc.bus.subscribe();
+
+        for i in 0..3 {
+            let tx = done_tx.clone();
+            svc.on("emit.test".into(), move |payload| {
+                let tx = tx.clone();
+                async move {
+                    // simulate async work so dispatch must NOT await us
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    let _ = tx.send(()).await;
+                    Ok(serde_json::json!({ "handler": i, "seen": payload }))
+                }
+            });
+        }
+
+        let payload = serde_json::json!({ "n": 1 });
+        let start = std::time::Instant::now();
+        let out = svc
+            .dispatch("emit.test".into(), payload.clone(), Dispatch::Emit)
+            .await
+            .unwrap();
+        let dispatch_elapsed = start.elapsed();
+
+        // Emit returns immediately (fire-and-forget) with Null — it does NOT
+        // await handler completion.
+        assert_eq!(out, serde_json::Value::Null);
+        assert!(
+            dispatch_elapsed < std::time::Duration::from_millis(20),
+            "emit returned after {:?} — should return immediately",
+            dispatch_elapsed
+        );
+
+        // The raw event+payload was broadcast on the bus.
+        let (evt, bus_payload) = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            bus_rx.recv(),
+        )
+        .await
+        .expect("bus should broadcast")
+        .expect("bus recv should be a value");
+        assert_eq!(evt, "emit.test");
+        assert_eq!(bus_payload, payload);
+
+        // Even though emit is fire-and-forget, every handler must still run to
+        // completion before the test asserts.
+        for _ in 0..3 {
+            tokio::time::timeout(std::time::Duration::from_secs(1), done_rx.recv())
+                .await
+                .expect("handlers should complete")
+                .expect("handler completion signal");
+        }
+    }
+
+    #[tokio::test]
+    async fn events_emit_invokes_registered_handler_counter() {
+        // Spec: a handler registered via `on()` actually RUNS on `Emit`. Prove it
+        // with an `Arc<AtomicUsize>` counter that the handler increments, then poll
+        // (sleep loop) until it is > 0.
+        let svc = EventsService::new();
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        let c = counter.clone();
+        svc.on("emit.counter".into(), move |payload| {
+            let c = c.clone();
+            async move {
+                // Simulate a little async work so the spawn completes on the runtime.
+                let n = payload.as_i64().unwrap_or(0);
+                for _ in 0..n {
+                    tokio::task::yield_now().await;
+                }
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::Value::Null)
+            }
+        });
+
+        let out = svc
+            .dispatch("emit.counter".into(), serde_json::json!(5), Dispatch::Emit)
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::Value::Null);
+
+        // Poll until the spawned handler has actually run (fire-and-forget means we
+        // cannot await it directly).
+        for _ in 0..100 {
+            if counter.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            counter.load(Ordering::SeqCst) > 0,
+            "emit handler should have run and incremented the counter"
+        );
+    }
+
+    #[tokio::test]
+    async fn events_serial_threads_payload_in_order() {
+        // Spec: run handlers in order threading the payload through. Assert order and
+        // payload threading: each handler appends a tag and reports the payload it saw.
+        let svc = EventsService::new();
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        for tag in ["a", "b", "c"] {
+            let o = order.clone();
+            let tag = tag.to_string();
+            svc.on("serial.test".into(), move |payload| {
+                let o = o.clone();
+                let tag = tag.clone();
+                async move {
+                    // Record that we saw the previous payload and our tag.
+                    let mut prev = payload.as_i64().unwrap_or(0);
+                    o.lock().push(format!("{}:{}", tag, prev));
+                    // Propagate the payload forward: new value = previous + 10.
+                    prev += 10;
+                    Ok(serde_json::Value::Number(prev.into()))
+                }
+            });
+        }
+
+        let out = svc
+            .dispatch("serial.test".into(), serde_json::Value::Number(1.into()), Dispatch::Serial)
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::Value::Number(31.into()));
+        // Handlers ran in registration order and each saw the prior handler's output.
+        let seen = order.lock().clone();
+        assert_eq!(
+            seen,
+            vec!["a:1".to_string(), "b:11".to_string(), "c:21".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn events_bail_stops_at_first_non_null_and_skips_later_handlers() {
+        let svc = EventsService::new();
+        let ran = Arc::new(AtomicUsize::new(0));
+
+        // Handler 1 returns Null → does not bail, chain continues.
+        let h1 = ran.clone();
+        svc.on("bail.test".into(), move |_payload| {
+            let r = h1.clone();
+            async move {
+                r.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::Value::Null)
+            }
+        });
+        // Handler 2 returns a non-null value → bails.
+        let h2 = ran.clone();
+        svc.on("bail.test".into(), move |_payload| {
+            let r = h2.clone();
+            async move {
+                r.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({ "bailed": true }))
+            }
+        });
+        // Handler 3 must NOT run.
+        let h3 = ran.clone();
+        svc.on("bail.test".into(), move |_payload| {
+            let r = h3.clone();
+            async move {
+                r.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::Value::Null)
+            }
+        });
+
+        let payload = serde_json::json!({ "n": 1 });
+        let out = svc
+            .dispatch("bail.test".into(), payload.clone(), Dispatch::Bail)
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::json!({ "bailed": true }));
+        // Only the first two handlers ran; handler 3 was skipped.
+        assert_eq!(ran.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn events_waterfall_handler_calls_next_and_receives_downstream_result() {
+        let svc = EventsService::new();
+        // Chain: outer wraps inner. The inner handler runs first during `next`,
+        // then the outer transforms the downstream result.
+        svc.on_waterfall("wf.next".into(), |payload, next| {
+            let next = next;
+            async move {
+                let downstream = next(payload).await?;
+                // The outer transforms what came back from downstream.
+                let mut obj = downstream.as_object().cloned().unwrap_or_default();
+                obj.insert("outer".into(), serde_json::json!(true));
+                Ok(serde_json::Value::Object(obj))
+            }
+        });
+        svc.on_waterfall("wf.next".into(), |payload, _next| {
+            async move {
+                let mut obj = payload.as_object().cloned().unwrap_or_default();
+                obj.insert("inner_seen".into(), serde_json::json!(payload.get("value")));
+                Ok(serde_json::Value::Object(obj))
+            }
+        });
+
+        let payload = serde_json::json!({ "value": 42 });
+        let out = svc
+            .dispatch("wf.next".into(), payload, Dispatch::Waterfall)
+            .await
+            .unwrap();
+        let obj = out.as_object().expect("waterfall output should be an object");
+        // Inner ran (during next) and outer wrapped its result.
+        assert_eq!(obj["inner_seen"], serde_json::json!(42));
+        assert_eq!(obj["outer"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn events_waterfall_handler_short_circuits_skips_later_handlers() {
+        let svc = EventsService::new();
+        let ran = Arc::new(AtomicUsize::new(0));
+
+        // First handler short-circuits: does NOT call next.
+        let h1 = ran.clone();
+        svc.on_waterfall("wf.short".into(), move |_payload, _next| {
+            let r = h1.clone();
+            async move {
+                r.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({ "owned": true }))
+            }
+        });
+        // Later handler must NOT run.
+        let h2 = ran.clone();
+        svc.on_waterfall("wf.short".into(), move |payload, next| {
+            let r = h2.clone();
+            async move {
+                r.fetch_add(1, Ordering::SeqCst);
+                next(payload).await
+            }
+        });
+
+        let payload = serde_json::json!({ "n": 1 });
+        let out = svc
+            .dispatch("wf.short".into(), payload, Dispatch::Waterfall)
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::json!({ "owned": true }));
+        // The later handler never ran.
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn events_waterfall_empty_chain_returns_payload_unchanged() {
+        let svc = EventsService::new();
+        let payload = serde_json::json!({ "n": 7 });
+        let out = svc
+            .dispatch("wf.empty".into(), payload.clone(), Dispatch::Waterfall)
+            .await
+            .unwrap();
+        assert_eq!(out, payload);
+    }
+
+    #[tokio::test]
+    async fn events_parallel_propagates_aggregate_error() {
+        let svc = EventsService::new();
+        svc.on("par.test".into(), |_payload| async move {
+            Ok(serde_json::json!({ "ok": 1 }))
+        });
+        svc.on("par.test".into(), |_payload| async move {
+            Err(CordisError::Fiber("boom".into()))
+        });
+        svc.on("par.test".into(), |_payload| async move {
+            Ok(serde_json::json!({ "ok": 2 }))
+        });
+
+        let payload = serde_json::json!({ "n": 1 });
+        let err = svc
+            .dispatch("par.test".into(), payload, Dispatch::Parallel)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("boom"),
+            "parallel should propagate the handler error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn events_parallel_returns_a_value_when_no_handler_errors() {
+        let svc = EventsService::new();
+        svc.on("par2.test".into(), |_payload| async move {
+            Ok(serde_json::json!({ "h": 1 }))
+        });
+        svc.on("par2.test".into(), |_payload| async move {
+            Ok(serde_json::json!({ "h": 2 }))
+        });
+
+        let out = svc
+            .dispatch("par2.test".into(), serde_json::json!({}), Dispatch::Parallel)
+            .await
+            .unwrap();
+        // Execution order is non-deterministic; just require a non-error Ok value.
+        assert!(out == serde_json::json!({ "h": 1 }) || out == serde_json::json!({ "h": 2 }));
     }
 }

@@ -1,107 +1,112 @@
-# Architecture (Cordis) 0.8.0
+# Architecture
 
-ARES 0.8.0 is a Cordis-informed redesign (Γ^∞ = μΓ. Γ × (Γ→Γ) × Σ, *A Programming Paradigm for Spatiotemporal Composability*, Aug 2026). See `docs/cordis-mapping.md` + `ARCHITECTURE.md` (synced from `docs/cordis-redesign.md` 9d) and `docs/cordis-redesign.md` handoff for the full spec, dependency graph, request lifecycle, and verification logs.
+ARES is a multi-tenant AI agent runtime. It uses a service-based architecture where components register themselves into a shared `Context` and handlers pull what they need at request time.
 
-## Context, Γ^∞
+## Core concepts
 
-```rust
-pub struct Context {
-    store:     RwLock<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>, // Σ coherent table
-    isolate:   RwLock<HashMap<TypeId, Symbol>>,                     // realm label
-    intercept: RwLock<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>, // prototype override
-    fiber:     Arc<Fiber>,
-    parent:    Option<Arc<Context>>,
-    root:      Weak<Context>,
-}
-impl Context {
-    pub fn new_root() -> Arc<Context>;
-    pub fn extend(&self) -> Arc<Context>;
-    pub fn isolate<T: Service>(&self, label: &str) -> Arc<Context>;
-    pub fn intercept<T: Service>(&self, val: T) -> Arc<Context>;
-    pub fn provide<T: Service>(&self, svc: T) -> Arc<T>;  // witnessed effect → fiber.acc LIFO
-    pub fn get<T: Service>(&self) -> Option<Arc<T>>;      // intercept → store → parent walk
-}
-pub trait Service: Send + Sync + 'static {
-    fn name(&self) -> &'static str;
-    fn init(&self, ctx: &Arc<Context>) -> ServiceInitFuture<'_> { Box::pin(async { Ok(None) }) }
-    fn check(&self) -> bool { true }
-}
+| Concept | What it does |
+|---------|-------------|
+| Context | Typed service container. Holds all shared state. Handlers receive `Arc<Context>` and call `ctx.get::<T>()` to access services. |
+| Service | Any `Send + Sync + 'static` type registered in the context. Implements `name()`, `init()`, and `check()`. |
+| Fiber | Lifecycle state machine for a service instance. Tracks whether a service is active, reloading, or inactive. Epoch-based change detection triggers refresh when dependencies change. |
+| Plugin | Registers a service into the context. Returns a disposable that undoes registration on drop. |
+| Loader | Reads `config/entries.json` and reconciles desired state with current state (rebuild, update, retire, or begin). |
+
+## Request flow
+
+```
+HTTP request
+  -> Axum router
+  -> Handler extracts `State<Arc<Context>>`
+  -> Handler calls ctx.get::<AgentExecutionService>()
+  -> AgentExecutionService resolves agent (tenant DB -> community -> system)
+  -> Creates agent via AgentRegistry
+  -> Calls agent.execute(message, context)
+  -> Agent uses ToolCoordinator for multi-turn tool calling
+  -> Response returned
 ```
 
-The store is the `TypeId`-keyed coherent table (Cordis Σ). Isolate creates tenant realms (`ctx.isolate::<dyn ToolService>("tenant:acme")`), intercept creates prototype-chain overrides (`ctx.intercept(ModelOverride{model:"gpt-4o-mini"})`).
+## Workspace crates
 
-## Witnessed effects, LIFO disposable
+| Crate | Purpose |
+|-------|---------|
+| `ares-types` | Shared types, error definitions |
+| `ares-config` | TOML/TOON configuration, fleet secrets |
+| `ares-db` | PostgreSQL client, migrations, tenant DB |
+| `ares-llm` | Provider registry, LLM clients (OpenAI, Anthropic, Ollama, Nvidia) |
+| `ares-agents` | Agent trait, ConfigurableAgent, AgentExecutionService, AgentResolverService |
+| `ares-tools` | Tool trait, built-in tools, runtime tool registry |
+| `ares-mcp` | MCP client integration |
+| `ares-rag` | Vector search, BM25, hybrid retrieval |
+| `ares-vector` | Pure-Rust vector store |
+| `ares-cordis-core` | Context, Fiber, Service, Registry, Loader, Events, ReflectService |
 
-```rust
-pub trait Disposable: Send + 'static { fn dispose(self: Box<Self>); }
-```
+## Key services
 
-`provide` pushes undo onto `fiber.acc: Vec<Box<dyn FnOnce() + Send>>`. Temporal composability (Thm 61): `fiber.dispose()` reverses all effects LIFO and recovers the context snapshot.
+**AgentExecutionService** (in `ares-agents`): The single entry point for running agents. Resolves the agent config, creates the agent, tracks the run via `RunTracker`, and executes. All five call sites (chat, v1 API, scheduler, pipeline, trigger) delegate here.
 
-## Fiber, state machine and epoch :uid watch
+**AgentResolverService** (in `ares-agents`): 3-tier agent resolution. Queries tenant DB first, then community agents, then system config. Returns the resolved agent config and source tier.
 
-```rust
-pub enum FiberState { Inactive{error: Option<CordisError>}, Active{epoch: String}, Reloading, Unloading }
-pub struct Fiber {
-    state:   RwLock<FiberState>,
-    inertia: Arc<tokio::sync::Mutex<()>>,
-    acc:     Mutex<Vec<Box<dyn FnOnce() + Send>>>,
-    injects: RwLock<HashMap<TypeId, Symbol>>,
-    epoch:   RwLock<String>, // ":uid:ver:..."
-}
-```
+**LlmService** (in `ares-llm`): LLM provider management with circuit breaker (closed/open/half-open). Supports per-request model override without mutating global state.
 
-`Fiber::compute_epoch` sorts `HashMap<TypeId,Symbol>` into `":uid1:uid2:..."` monoid from `ctx.get_version(TypeId)`. `ReflectService{notifiers: HashMap<TypeId,watch::Sender<()>>, dependents: HashMap<TypeId,Vec<FiberId>>}` `notify(tid)` BFS walks dependents + `tokio::sync::watch` fan-out → `Fiber::refresh` (replaces 60 s `ArcSwap` polls).
+**UnifiedToolService** (in `ares-tools`): Merges static tools, runtime DB tools, and MCP tools behind one interface. Precedence: tenant runtime, fleet runtime, MCP bridge, static.
 
-## Events, 5 dispatch modes
+**ReflectService** (in `ares-cordis-core`): Coordinates hot-reload. When a file changes or DB row updates, `notify(type_id)` walks dependent fibers and triggers refresh.
 
-`Dispatch::Emit/Parallel(JoinSet)/Serial/Bail/Waterfall` via `HashMap<EventId,Vec<Handler>>` with `broadcast` and `tower::Service` for waterfall.
+## Server bootstrap
 
-## Loader, EntryTree reconcile (HMR)
-
-```rust
-pub struct Entry { id: String, plugin: String, config: Value, disabled: bool, isolate: Option<String>, intercept: HashMap<String, Value> }
-pub struct EntryTree(pub Vec<Entry>);
-pub enum LoaderAction { RebuildFiber{ id }, UpdateConfig{ id }, Retire{ id }, Begin{ id } }
-pub fn reconcile(current: &EntryTree, desired: &EntryTree) -> Vec<LoaderAction>;
-```
-
-The loader persists per-field diffs to `config/entries.json` or `config/cordis-entries.toon` (`toon-format 0.4.1`), never to the `ares.toml` symlink. Confluence (Thm 73) holds. File watching in `crates/ares-cordis-core/src/watcher.rs` uses 500 ms debounce and calls `ReflectService::notify` to trigger `Fiber::refresh` (covers 90 percent of HMR, `libloading` remains behind `#[cfg(feature="hmr")]`).
-
-## 8-plugin wiring via Context::plugin
-
-Seventeen sequential `run_server` steps become eight `root_ctx.plugin(...).await` calls (single-source guard `duplicate provider for <TypeId>`):
+`src/main.rs` creates a root context, registers services via `plugin()` and `provide()` calls, then builds the Axum router:
 
 ```rust
 let root_ctx = Context::new_root();
-root_ctx.provide(Arc::new(RegistryService::new()));
-root_ctx.provide(Arc::new(EventsService::new()));
-root_ctx.plugin(ConfigService(config_manager.clone())).await?;
-root_ctx.plugin(CatalogService(catalog.clone())).await?;
-root_ctx.plugin(ProviderRegistryService(provider_registry.clone())).await?;
-root_ctx.plugin(AuthServiceWrapper(auth_service.clone())).await?;
-root_ctx.plugin(AgentServiceWrapper{ registry: agent_registry.clone(), .. }).await?;
-root_ctx.plugin(ToolServiceWrapper{ registry: tool_registry.clone(), runtime_registry: runtime_tool_registry.clone() }).await?;
-root_ctx.plugin(SchedulerService::new(db.clone(), execution.clone(), 60_000)).await?;
-root_ctx.plugin(HealthJobService::default()).await?;
-// + PipelineService / TriggerService / SkillsService / WorkflowService (no tick, inject AgentExecutionService)
-let app = build_router(root_ctx);
+// Register plugins (services with lifecycle)
+root_ctx.plugin(ConfigService).await?;
+root_ctx.plugin(CalculatorService).await?;
+// ...
+// Provide data services
+root_ctx.provide_arc(agent_registry.clone());
+root_ctx.provide_arc(llm_factory.clone());
+root_ctx.provide(AgentResolverService::new(tenant_db, registry, config));
+root_ctx.provide(AgentExecutionService::new()
+    .with_db(db).with_tenant_db(tdb).with_agent_registry(reg)
+    .with_fleet_secrets(secrets).with_run_tracker(active_runs));
+// Build router
+let app = build_router(root_ctx.clone());
 ```
 
-`inventory::submit!{CordisInventory{name:"ConfigService"}}` static registration (preferred over `libloading` dev HMR).
+## Hot-reload
 
-## Unified services
+File changes are detected via `notify` crate with 500ms debounce. When a watched file changes:
+1. Watcher calls `ReflectService::notify(type_id)`
+2. ReflectService walks dependent fibers via BFS
+3. Each fiber recomputes its epoch from dependency versions
+4. If epoch changed, fiber reloads with new config
 
-- ToolService: `tenant runtime -> fleet runtime -> MCP bridge -> static`, `ctx.isolate(tenant)` gives disjoint sets.
-- LlmService: breaker `Closed/Open/HalfOpen` (5/30 s) + `ModelOverride` via `ctx.intercept`.
-- AgentResolverService: ordered `tenant DB -> community -> system`, `ctx.isolate`.
-- AgentExecutionService: single `execute(req,ctx)` for chat, v1, scheduler, pipeline, and trigger.
-- SchedulerService, PipelineService, TriggerService, SkillsService, and WorkflowService own their DB tables and inject `AgentExecutionService`; `build_routes(ctx)` merges `RouteSet`s.
+No polling loops. No 60-second stale windows.
 
-## Handler migration, 177 State<Arc<Context>>
+## Adding a new tool
 
-`src/lib.rs` removes `pub struct AppState{17-22 fields}` and replaces it with `pub type AppState = Arc<Context>`. Every handler moves from `State<AppState>` to `State<Arc<Context>>` and uses `ctx.get::<Service>()` via 18 wrappers in `src/context_services.rs`. `admin.rs` shrinks from 3059 to 165 lines in 15 files, `v1.rs` from 1074 to 161 in 5 files, and `cfg(feature)` is no longer used in handlers (replaced by `Service::check()`.
+1. Implement the `Tool` trait in `crates/ares-tools/src/tools/`
+2. Register in `tool_registry.register(Arc::new(MyTool))` in main.rs
+3. Optionally implement `Service` and register via `ctx.plugin(MyToolService)`
 
-## Scheduler HMR and verification
+## Adding a new LLM provider
 
-`SchedulerService` has 361 lines, a `60_000` ms tick with catch-up (`cron` crate), and `select! tick+watch` with `NOTIFY/LISTEN`. File-watch logs `Configuration hot-reloaded successfully via Cordis watch` on random-port E2E `39476`/`39120` (`curl /health` returns 200). See `ARCHITECTURE.md` sections 6 through 9d and `docs/cordis-baseline.md` for the full verification matrix (`cargo check` both, `clippy -D warnings`, `rust-doctor` 86 to 86 Great, `cargo test` 15/15 + 193/193).
+1. Implement `LLMClient` trait in `crates/ares-llm/src/`
+2. Add to provider registry in config
+3. The circuit breaker wraps it automatically
+
+## Build
+
+```bash
+# Development (all features)
+cargo build --features openai,postgres,mcp
+
+# Minimal (no external deps)
+cargo build --no-default-features
+
+# Release
+cargo build --release --features openai,postgres,mcp
+```
+
+Rust 1.98 required (`rust-toolchain.toml` pins it).

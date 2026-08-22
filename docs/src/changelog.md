@@ -4,30 +4,49 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
-## 0.8.0, 2026-08-21
+## 0.9.0, 2026-08-22
 
-**Cordis redesign, Context/Fiber/Service/Loader + handler migration.**
-
-Ground-up Rust redesign that adopts Cordis ideas (Γ^∞ = μΓ. Γ × (Γ→Γ) × Σ) for modularity, safe runtime reconfiguration, and tech-debt removal, while preserving all capabilities (multi-provider LLM, tool calling, RAG, MCP client+server, multi-tenant auth, scheduler/pipeline/trigger/skill/workflow engines, hot-reload).
+**Service architecture, unified execution, wrapper removal.**
 
 ### Added
 
-- **Cordis core** (`crates/ares-cordis-core` leaf, zero ARES deps): `Context{store+isolate+intercept+fiber+parent+root}`, witnessed effects LIFO `Disposable` + `EffectGuard`, `TypeId`-keyed coherent table, Fiber states `Inactive/Reloading/Active/Unloading` + inertia `Mutex` + epoch `:uid` watch fan-out, Events 5 modes `Emit/Parallel/Serial/Bail/Waterfall` (`broadcast`+`JoinSet`/`tower::Service`), Loader `EntryTree` reconcile (`RebuildFiber/UpdateConfig/Retire/Begin`), `ReflectService` `notify` BFS + `watch` fan-out, file-watch HMR `watch_many` 500 ms debounce (90% value, `libloading` deferred behind `hmr`).
-- **Service wiring**: 8 `root_ctx.plugin(...).await` calls replace 17 sequential `run_server` steps, `ConfigService` → `CatalogService` → `ProviderRegistryService` → `AuthServiceWrapper` → `AgentServiceWrapper` → `ToolServiceWrapper` → `SchedulerService` (60 000 ms tick + catch-up) → `HealthJobService` (inventory health loop), plus `PipelineService`/`TriggerService`/`SkillsService`/`WorkflowService` (downstream-triggered, inject `AgentExecutionService`). Command: `root_ctx.plugin(ConfigService).plugin(CatalogService).plugin(ProviderRegistryService).plugin(AuthServiceWrapper).plugin(AgentServiceWrapper).plugin(ToolServiceWrapper).plugin(SchedulerService).plugin(HealthJobService)`.
-- **Unified services**: `ToolService` precedence `tenant runtime → fleet runtime → MCP bridge → static` with `ctx.isolate`; `LlmService` breaker `Closed/Open/HalfOpen` (5/30 s) + `ModelOverride` via `ctx.intercept`; `AgentResolverService` ordered `tenant DB → community → system` with `ctx.isolate`; single `AgentExecutionService` for all 5 call sites; `SchedulerService` real tick via `cron` crate + `NOTIFY/LISTEN`.
-- **Handler migration**: 177 handlers `State<AppState> → State<Arc<Context>>` + `ctx.get::<Service>()`, `AppState` struct deleted (`src/lib.rs` → `pub type AppState = Arc<Context>` alias), `admin.rs` 3059→165 thin shards (15 files `admin/*`), `v1.rs` 1074→161 thin shards (5 files), `cfg(feature)` 0 in handlers via `Service::check()`.
+- `AgentExecutionService::execute_agent` with full resolve-create-execute pipeline and `RunTracker` observability
+- `ExecutionResult` return type with resolution metadata (source tier, run ID)
+- `RunTracker` trait extracted to `ares-agents` for decoupled run observability
+- `Service` impl directly on `AgentRegistry` and `ConfigBasedLLMFactory` (no wrappers needed)
+- `agent_config_from_user_agent` helper in `ares-agents::configurable`
 
 ### Changed
 
-- `src/lib.rs` god-struct eliminated; `build_router(ctx: Arc<Context>)` is primary, `base_router` deprecated shim retained one release.
-- `run_server` shrinks from 17 steps to ~8 `plugin` calls; `inventory` static registration replaces manual wiring.
-- `rust-version = "1.98"` stable, Axum 0.8 `:param` retained, `features` both `openai,postgres,mcp` and `no-default` must pass (`bkataru` + `ares.toml` symlink ignored).
-- Generic, provider-agnostic, zero client-specific code preserved.
+- All 5 execution sites (chat, v1, scheduler, trigger, pipeline) now delegate to `AgentExecutionService`
+- `resolve_agent` delegates to `AgentResolverService` when available (legacy fallback retained)
+- Removed `AgentRegistryService` and `LlmFactoryService` wrappers (consumers use types directly)
+- Deleted deprecated `start_background_reload` function and its test
+- Calculator tool registered via `ctx.plugin(CalculatorService)` in addition to legacy path
+- Version bump to 0.9.0
 
-### Docs
+---
 
-- `README.md` updated with Architecture (Cordis) section (Context/Fiber/Service/Loader, 8 plugin wiring, unified services, migration counts, HMR).
-- New `docs/src/platform/architecture.md` (synced from `ARCHITECTURE.md`/`docs/cordis-redesign.md` 9d).
+## 0.8.0, 2026-08-21
+
+**Service-based architecture with dependency injection.**
+
+### Added
+
+- `ares-cordis-core` crate: typed `Context` container, `Fiber` lifecycle, `Service` trait, `RegistryService` with plugin pattern, `Loader` with config reconciliation, `EventsService` with 5 dispatch modes, `ReflectService` for hot-reload coordination.
+- Unified services: `UnifiedToolService` (merges static, runtime, and MCP tools), `LlmService` (circuit breaker with failover), `AgentResolverService` (3-tier resolution: tenant, community, system).
+- Handler migration: 177 handlers moved from `State<AppState>` to `State<Arc<Context>>` with `ctx.get::<T>()`.
+- Admin API split from single 190KB file into 15 domain-specific modules.
+- V1 API split from 73KB file into 5 modules.
+- File-watch hot-reload with 500ms debounce (replaces 60s polling).
+- Rhai scripting support for custom tools and services.
+
+### Changed
+
+- `AppState` god-struct (17-22 fields) replaced by `pub type AppState = Arc<Context>`.
+- `build_router(ctx)` is the primary router constructor; `base_router` retained as deprecated shim.
+- Rust toolchain updated to 1.98.
+- All docs humanized (removed AI-sounding prose patterns).
 - `docs/src/SUMMARY.md` now includes Cordis chapters (mapping, remedies, capabilities, baseline, YAGNI, redesign) plus Architecture.
 - mdBook GH-pages rebuilt for 0.8.0 (`gh-pages` branch `docs: rebuild gh-pages book for 0.8.0 Cordis`).
 

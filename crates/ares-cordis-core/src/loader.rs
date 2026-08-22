@@ -17,11 +17,23 @@
 //! — the loader writes to `config/entries.json` / `config/cordis-entries.toon`
 //! separate from `ares.toml`.
 
-use std::collections::HashMap;
+use std::any::TypeId;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{CordisError, LoaderJournal, Service};
+
+/// JSON intercept overlay from [`Entry::intercept`], readable via `ctx.get`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryIntercept(pub HashMap<String, serde_json::Value>);
+
+impl Service for EntryIntercept {
+    fn name(&self) -> &'static str {
+        "entry_intercept"
+    }
+}
 
 /// TOML wrapper struct for `[[entry]]` array deserialization.
 #[derive(Debug, Deserialize)]
@@ -386,26 +398,60 @@ impl Loader {
     /// `UpdateConfig` / `Retire` actions can resolve the live fiber. Missing
     /// registry or missing factory are `CordisError::Configuration`.
     pub fn instantiate(
-        ctx: &std::sync::Arc<crate::Context>,
+        ctx: &Arc<crate::Context>,
         plugin_name: &str,
         config: &serde_json::Value,
         entry_id: &str,
     ) -> Result<crate::FiberId, crate::CordisError> {
+        Self::instantiate_entry(
+            ctx,
+            &Entry {
+                id: entry_id.to_string(),
+                plugin: plugin_name.to_string(),
+                config: config.clone(),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            },
+        )
+    }
+
+    /// Instantiate one [`Entry`], applying `isolate` / `intercept` onto `ctx`.
+    ///
+    /// `intercept` is bound first so the factory can read [`EntryIntercept`].
+    /// After the factory provides, newly inserted TypeIds are labeled with
+    /// `isolate` so `get_isolated` matches the entry's realm.
+    pub fn instantiate_entry(
+        ctx: &Arc<crate::Context>,
+        entry: &Entry,
+    ) -> Result<crate::FiberId, crate::CordisError> {
+        if !entry.intercept.is_empty() {
+            ctx.bind_intercept(EntryIntercept(entry.intercept.clone()));
+        }
+        let before: HashSet<TypeId> = ctx.provided_type_ids().into_iter().collect();
         let Some(registry) = ctx.get::<crate::PluginRegistry>() else {
             return Err(crate::CordisError::Configuration(
                 "PluginRegistry missing".into(),
             ));
         };
-        let Some(factory) = registry.get(plugin_name) else {
+        let Some(factory) = registry.get(&entry.plugin) else {
             return Err(crate::CordisError::Configuration(format!(
-                "no factory registered for plugin '{plugin_name}'"
+                "no factory registered for plugin '{}'",
+                entry.plugin
             )));
         };
-        let fid = factory(ctx, config)?;
-        if let Some(journal) = ctx.get::<LoaderJournal>() {
-            journal.upsert(entry_id, plugin_name, config.clone(), Some(fid));
+        let fid = factory(ctx, &entry.config)?;
+        if let Some(label) = entry.isolate.as_deref() {
+            for tid in ctx.provided_type_ids() {
+                if !before.contains(&tid) {
+                    ctx.bind_isolate(tid, label);
+                }
+            }
         }
-        tracing::info!(entry_id=%entry_id, plugin=%plugin_name, fiber_id=%fid, "Loader: instantiated plugin");
+        if let Some(journal) = ctx.get::<LoaderJournal>() {
+            journal.upsert(&entry.id, &entry.plugin, entry.config.clone(), Some(fid));
+        }
+        tracing::info!(entry_id=%entry.id, plugin=%entry.plugin, fiber_id=%fid, "Loader: instantiated plugin");
         Ok(fid)
     }
 }
@@ -745,5 +791,57 @@ disabled = false
         let rec = journal.get("svc:theta").expect("record retained");
         assert_eq!(rec.config, json!({"v": 2}));
         assert_eq!(rec.generation, 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn instantiate_entry_applies_isolate_and_intercept() {
+        use crate::RegistryService;
+        use std::any::TypeId;
+
+        let ctx = Context::new_root();
+        ctx.provide(LoaderJournal::new());
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        #[derive(Debug)]
+        struct Svc(String);
+        impl Service for Svc {}
+
+        plugin_registry.register(
+            "SvcFactory",
+            Arc::new(|ctx, config| {
+                let label = config
+                    .get("mark")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("none")
+                    .to_string();
+                let future = ctx.plugin(Svc(label));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+            }),
+        );
+
+        let mut intercept = HashMap::new();
+        intercept.insert("timeout".into(), json!(5));
+        let entry = Entry {
+            id: "svc:acme".into(),
+            plugin: "SvcFactory".into(),
+            config: json!({"mark": "acme"}),
+            disabled: false,
+            isolate: Some("tenant:acme".into()),
+            intercept,
+        };
+        Loader::instantiate_entry(&ctx, &entry).expect("instantiate_entry");
+
+        assert_eq!(
+            ctx.isolate_label(TypeId::of::<Svc>()).as_deref(),
+            Some("tenant:acme")
+        );
+        let isolated = ctx
+            .get_isolated::<Svc>("tenant:acme")
+            .expect("isolated Svc");
+        assert_eq!(isolated.0, "acme");
+        assert!(ctx.get::<Svc>().is_some(), "boot get still sees the plugin");
+        let overlay = ctx.get::<EntryIntercept>().expect("EntryIntercept bound");
+        assert_eq!(overlay.0.get("timeout"), Some(&json!(5)));
     }
 }

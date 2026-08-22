@@ -32,7 +32,7 @@ use ares::{
     MasterKey, NvidiaCatalogCache, ProviderRegistry, ToolRegistry,
 };
 #[cfg(feature = "postgres")]
-use axum::{routing::get, Router};
+use axum::routing::get;
 #[cfg(feature = "postgres")]
 use std::sync::Arc;
 #[cfg(feature = "postgres")]
@@ -1189,7 +1189,7 @@ async fn run_server(
                             tracing::info!(entry_id=%e.id, "Cordis Loader: skipping disabled entry");
                             continue;
                         }
-                        match Loader::instantiate(&root_ctx, &e.plugin, &e.config, &e.id) {
+                        match Loader::instantiate_entry(&root_ctx, e) {
                             Ok(_fid) => ok += 1,
                             Err(err) => {
                                 failed += 1;
@@ -1551,25 +1551,18 @@ async fn run_server(
     )]
     struct ApiDoc;
 
-    // Cordis final router — Phase 2 step 12: `build_router(root_ctx.clone())` is final builder
-    let app = ares::build_router(root_ctx.clone());
-    let _ = &app; // suppress unused while legacy AppState router still serves traffic (HOLD shim)
-
-    // =================================================================
-    // Build Router (legacy AppState — HOLD shim)
-    // =================================================================
+    // Cordis routes are the live base (`/health`, `/health/context`); extra
+    // routes attach before `with_state` so there is a single router tree.
     #[allow(unused_mut)]
-    let mut app = Router::new()
-        // Health check (simple - returns "OK")
-        .route("/health", get(health_check))
-        // Detailed health check with component status
+    let mut app = ares::cordis_routes()
         .route("/health/detailed", get(health_check_detailed))
-        // Configuration info endpoint
         .route("/config/info", get(config_info))
-        // API routes
         .nest(
             "/api",
-            api::routes::create_router(state.get::<AuthService>().expect("not provided").clone(), state.get::<ares::TenantDb>().expect("not provided").clone()),
+            api::routes::create_router(
+                state.get::<AuthService>().expect("not provided").clone(),
+                state.get::<ares::TenantDb>().expect("not provided").clone(),
+            ),
         );
 
     // Proprietary routes are registered by ares-dirmacs, not here.
@@ -1943,7 +1936,7 @@ mod ui {
 }
 
 #[cfg(all(feature = "postgres", feature = "ui"))]
-fn ui_routes() -> Router<AppState> {
+fn ui_routes() -> axum::Router<AppState> {
     ui::routes()
 }
 

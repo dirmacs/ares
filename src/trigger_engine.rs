@@ -317,7 +317,7 @@ impl TriggerService {
             .unwrap_or_else(|| self.execution.clone());
         let req = AgentRequest {
             agent_name: trigger.target_agent.clone(),
-            tenant: Some(trigger.tenant_id.clone()),
+            tenant: None, // isolate label on scoped ctx
             message: event_message.to_string(),
             history: Vec::new(),
             ctx_provider: None,

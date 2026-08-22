@@ -346,30 +346,30 @@ impl AgentExecutionService {
             }
         }
 
-        // Emit agent completion event via Cordis EventsService
-        if let Some(events) = ctx.get::<ares_cordis_core::EventsService>() {
-            let payload = serde_json::json!({
+        // Observability: fire-and-forget so the request path is not blocked.
+        self.emit_observability(
+            ctx,
+            "agent.completed",
+            serde_json::json!({
                 "agent_name": req.agent_name,
                 "run_id": run_id,
                 "status": if result.is_ok() { "completed" } else { "failed" },
                 "event": "agent.completed"
-            });
-            // Serial invokes registered Cordis subscribers; Emit only broadcasts.
-            let _ = events.dispatch("agent.completed".into(), payload, ares_cordis_core::Dispatch::Serial).await;
-            if result.is_err() {
-                let _ = events
-                    .dispatch(
-                        "agent.failed".into(),
-                        serde_json::json!({
-                            "agent_name": req.agent_name,
-                            "run_id": run_id,
-                            "tenant": user_id,
-                            "event": "agent.failed",
-                        }),
-                        ares_cordis_core::Dispatch::Serial,
-                    )
-                    .await;
-            }
+            }),
+        )
+        .await;
+        if result.is_err() {
+            self.emit_observability(
+                ctx,
+                "agent.failed",
+                serde_json::json!({
+                    "agent_name": req.agent_name,
+                    "run_id": run_id,
+                    "tenant": user_id,
+                    "event": "agent.failed",
+                }),
+            )
+            .await;
         }
 
         result.map(|response| ExecutionResult {
@@ -809,6 +809,41 @@ mod tests {
         assert!(
             ran.load(Ordering::SeqCst),
             "slow agent.usage handler must still run after emit returns"
+        );
+    }
+
+    #[tokio::test]
+    async fn emit_agent_completed_and_failed_return_without_waiting() {
+        let svc = AgentExecutionService::new();
+        let ctx = Context::new_root();
+        let events = ctx.provide(ares_cordis_core::EventsService::new());
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let mut _guards = Vec::new();
+        for event in ["agent.completed", "agent.failed"] {
+            let flag = ran.clone();
+            _guards.push(events.on(
+                event.into(),
+                move |payload: serde_json::Value| {
+                    let flag = flag.clone();
+                    async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                        flag.store(true, Ordering::SeqCst);
+                        Ok(payload)
+                    }
+                },
+            ));
+        }
+
+        let start = std::time::Instant::now();
+        svc.emit_observability(&ctx, "agent.completed", serde_json::json!({}))
+            .await;
+        svc.emit_observability(&ctx, "agent.failed", serde_json::json!({}))
+            .await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(40),
+            "completed/failed must Emit without awaiting handlers, elapsed {elapsed:?}"
         );
     }
 

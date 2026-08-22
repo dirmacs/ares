@@ -4,7 +4,7 @@ members = [
     ".", "crates/ares-vector", "crates/ares-types", "crates/ares-config",
     "crates/ares-rag", "crates/ares-tools", "crates/ares-llm",
     "crates/ares-db", "crates/ares-mcp", "crates/ares-agents",
-    "crates/ares-auth", "crates/ares-memory", "crates/ares-cordis-core",
+    "crates/ares-cordis-core",
 ]
 exclude = ["ui"]
 resolver = "2"
@@ -38,8 +38,6 @@ ares-llm = { version = "0.9.0", path = "crates/ares-llm" }
 ares-db = { version = "0.9.0", path = "crates/ares-db" }
 ares-mcp = { version = "0.9.0", path = "crates/ares-mcp" }
 ares-agents = { version = "0.9.0", path = "crates/ares-agents" }
-ares-auth = { version = "0.9.0", path = "crates/ares-auth" }
-ares-memory = { version = "0.9.0", path = "crates/ares-memory" }
 ares-cordis-core = { version = "0.9.0", path = "crates/ares-cordis-core" }
 anyhow = "1.0.100"
 hex = "0.4"
@@ -226,7 +224,6 @@ ares-llm = { workspace = true }
 ares-db = { workspace = true }
 ares-mcp = { workspace = true }
 ares-agents = { workspace = true }
-ares-auth = { workspace = true }
 ares-cordis-core = { version = "0.9.0", path = "crates/ares-cordis-core" }
 inventory = { workspace = true, optional = true }
 

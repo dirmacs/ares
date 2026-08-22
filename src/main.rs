@@ -1628,7 +1628,7 @@ async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std
     tracing::info!("ARES API URL: {}", ares_api_url);
 
     // Start MCP server (extensions like Eruka are registered by managed platform crates)
-    ares::mcp::start_mcp_server(tenant_db, pool, &ares_api_url).await?;
+    ares::mcp::start_mcp_server(tenant_db, pool, &ares_api_url, None).await?;
 
     Ok(())
 }

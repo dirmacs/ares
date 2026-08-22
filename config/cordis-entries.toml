@@ -1,0 +1,17 @@
+# Cordis plugin entries loaded at startup.
+# Each entry names a plugin to instantiate with optional config.
+# The Loader reconciles this file against running state on startup and hot-reload.
+
+[[entry]]
+id = "calculator"
+plugin = "CalculatorService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "events"
+plugin = "EventsService"
+disabled = false
+
+[entry.config]

@@ -558,6 +558,31 @@ async fn run_server(
 
     tracing::info!("Starting A.R.E.S - Agentic Retrieval Enhanced Server");
 
+    // Cordis Loader: reconcile plugin entries from config file
+    {
+        use ares_cordis_core::loader::{Loader, EntryTree};
+        let entries_path = std::path::Path::new("config/cordis-entries.toml");
+        if entries_path.exists() {
+            match Loader::load_from_file(entries_path) {
+                Ok(desired) => {
+                    let current = EntryTree(vec![]); // first boot: nothing loaded yet
+                    let loader = Loader::new();
+                    let actions = loader.reconcile(&current, &desired);
+                    tracing::info!(
+                        loader_actions = actions.len(),
+                        entries = desired.0.len(),
+                        "Cordis Loader: reconciled {} entries from {}",
+                        desired.0.len(),
+                        entries_path.display()
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Cordis Loader: failed to load entries, continuing without");
+                }
+            }
+        }
+    }
+
     // =================================================================
     // Load TOML Configuration
     // =================================================================

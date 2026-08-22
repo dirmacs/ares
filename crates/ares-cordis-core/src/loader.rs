@@ -23,6 +23,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CordisError, Service};
 
+/// TOML wrapper struct for `[[entry]]` array deserialization.
+#[derive(Debug, Deserialize)]
+struct TomlEntries {
+    entry: Vec<Entry>,
+}
+
 /// Canonical on-disk location for the declarative entry tree (JSON).
 pub const ENTRIES_PATH: &str = "config/entries.json";
 
@@ -41,9 +47,13 @@ pub const CORDIS_ENTRIES_TOON_PATH: &str = "config/cordis-entries.toon";
 pub struct Entry {
     pub id: String,
     pub plugin: String,
+    #[serde(default)]
     pub config: serde_json::Value,
+    #[serde(default)]
     pub disabled: bool,
+    #[serde(default)]
     pub isolate: Option<String>,
+    #[serde(default)]
     pub intercept: HashMap<String, serde_json::Value>,
 }
 
@@ -152,6 +162,25 @@ impl Loader {
     /// Alternative toon persistence path (`config/cordis-entries.toon`).
     pub fn toon_path() -> &'static str {
         CORDIS_ENTRIES_TOON_PATH
+    }
+
+    /// Load an [`EntryTree`] from a TOML file (`config/cordis-entries.toml`).
+    ///
+    /// Expected format:
+    /// ```toml
+    /// [[entry]]
+    /// id = "calculator"
+    /// plugin = "CalculatorService"
+    /// disabled = false
+    ///
+    /// [entry.config]
+    /// ```
+    pub fn load_from_file(path: &std::path::Path) -> Result<EntryTree, CordisError> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| CordisError::Configuration(format!("failed to read {}: {}", path.display(), e)))?;
+        let parsed: TomlEntries = toml::from_str(&content)
+            .map_err(|e| CordisError::Configuration(format!("failed to parse {}: {}", path.display(), e)))?;
+        Ok(EntryTree(parsed.entry))
     }
 
     /// Incremental diff `current → desired` producing ordered [`LoaderAction`]s.
@@ -358,5 +387,56 @@ mod tests {
             loader.reconcile(&cur, &des)[0],
             LoaderAction::RebuildFiber { .. }
         ));
+    }
+
+    #[test]
+    fn test_load_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entries.toml");
+        std::fs::write(&path, r#"
+[[entry]]
+id = "calc"
+plugin = "CalculatorService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "events"
+plugin = "EventsService"
+disabled = true
+
+[entry.config]
+"#).unwrap();
+
+        let tree = Loader::load_from_file(&path).unwrap();
+        assert_eq!(tree.0.len(), 2);
+        assert_eq!(tree.0[0].id, "calc");
+        assert_eq!(tree.0[0].plugin, "CalculatorService");
+        assert!(!tree.0[0].disabled);
+        assert_eq!(tree.0[1].id, "events");
+        assert!(tree.0[1].disabled);
+    }
+
+    #[test]
+    fn test_reconcile_from_loaded_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entries.toml");
+        std::fs::write(&path, r#"
+[[entry]]
+id = "svc1"
+plugin = "PluginA"
+disabled = false
+
+[entry.config]
+"#).unwrap();
+
+        let desired = Loader::load_from_file(&path).unwrap();
+        let current = EntryTree(vec![]);
+        let loader = Loader::new();
+        let actions = loader.reconcile(&current, &desired);
+        // New entry should produce a Begin action
+        assert!(!actions.is_empty());
+        assert!(matches!(actions[0], LoaderAction::Begin { .. }));
     }
 }

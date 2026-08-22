@@ -324,9 +324,10 @@ impl TriggerService {
             ctx_provider: None,
         };
         // Phase 4 §15: prefer execute_agent (full pipeline) with fallback to legacy execute
-        let resp = match exec.execute_agent(&req, ctx).await {
+        let scoped = tenant_scoped_ctx(ctx, &trigger.tenant_id);
+        let resp = match exec.execute_agent(&req, &scoped).await {
             Ok(result) => result.response,
-            Err(_) => exec.execute(req, ctx).await.map_err(|e| e.to_string())?,
+            Err(_) => exec.execute(req, &scoped).await.map_err(|e| e.to_string())?,
         };
         // Propagate to pipelines (downstream). AppState is Arc<Context>.
         let ctx_clone: AppState = ctx.clone();
@@ -435,6 +436,10 @@ fn triggered_agent_run_metadata(
         schedule_id: None,
         trigger_id: Some(trigger.id.clone()),
     }
+}
+
+pub(crate) fn tenant_scoped_ctx(ctx: &Arc<Context>, tenant_id: &str) -> Arc<Context> {
+    ctx.isolate::<ares_agents::AgentResolverService>(&format!("tenant:{tenant_id}"))
 }
 
 /// Execute an agent in response to an event trigger.
@@ -621,9 +626,11 @@ async fn execute_triggered_agent_legacy(
         return skill_result.map(|_| ());
     }
 
-    let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(&pool,
+    let scoped = tenant_scoped_ctx(app_state, &trigger.tenant_id);
+    let mut resolved_agent = tenant_agent::resolve_agent_from_ctx(
+        &pool,
         &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
-        &trigger.tenant_id,
+        &scoped,
         &trigger.target_agent,
         &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
@@ -638,9 +645,9 @@ async fn execute_triggered_agent_legacy(
         pool: pool.clone(),
     });
     resolved_agent.agent.set_observability(obs.clone());
-    resolved_agent.agent.set_runtime_tools(
+    resolved_agent.agent.set_runtime_tools_from_ctx(
         app_state.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(),
-        trigger.tenant_id.clone(),
+        &scoped,
     );
 
     let mut runtime_context = AgentRuntimeContext::new(
@@ -870,5 +877,16 @@ mod tests {
         assert_eq!(metadata.schedule_id, None);
         assert!(metadata.eruka_context_hit);
         assert_eq!(metadata.eruka_read_count, 1);
+    }
+
+    #[test]
+    fn tenant_scoped_ctx_sets_isolate_label() {
+        use std::any::TypeId;
+        let root = Context::new_root();
+        let scoped = tenant_scoped_ctx(&root, "acme");
+        assert_eq!(
+            scoped.isolate_label(TypeId::of::<ares_agents::AgentResolverService>()).as_deref(),
+            Some("tenant:acme"),
+        );
     }
 }

@@ -206,7 +206,7 @@ pub async fn v1_chat(
         })).into_response());
     }
 
-    // Legacy fallback: resolve_agent_for_tenant + inline execution
+    // Legacy fallback: resolve_agent_from_ctx + inline execution
     // Cordis isolate: tenant-scoped tool resolution
     let tenant_ctx = state_ctx.isolate::<crate::context_services::ToolRegistryService>(&tc.tenant_id);
     tracing::debug!(
@@ -223,10 +223,10 @@ pub async fn v1_chat(
         tenant_ctx
     };
 
-    let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
+    let mut resolved_agent = tenant_agent::resolve_agent_from_ctx(
         state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
-        &tc.tenant_id,
+        &state_ctx,
         &agent_name,
         &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
@@ -238,7 +238,7 @@ pub async fn v1_chat(
     if cfg!(feature = "postgres") {
         resolved_agent
             .agent
-            .set_runtime_tools(tenant_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), tc.tenant_id.clone());
+            .set_runtime_tools_from_ctx(tenant_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), &state_ctx);
     }
     let response = resolved_agent
         .agent

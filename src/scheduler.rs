@@ -254,7 +254,11 @@ impl Service for SchedulerService {
             events.on("agent.completed".into(), |payload| {
                 Box::pin(async move {
                     if let Some(agent) = payload.get("agent_name").and_then(|v| v.as_str()) {
-                        tracing::debug!(agent = %agent, status = ?payload.get("status"), "scheduler observed agent completion via Cordis event bus");
+                        tracing::debug!(
+                            agent = %agent,
+                            status = %payload.get("status").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                            "scheduler: observed agent completion via Cordis event bus"
+                        );
                     }
                     Ok(payload)
                 })
@@ -491,12 +495,16 @@ pub(crate) fn scheduled_pipeline_trigger<'a>(
 
 /// Start the background scheduler loop (legacy shim — prefer SchedulerService).
 pub async fn start_scheduler(pool: PgPool, app_state: AppState) {
-    // Cordis Events: subscribe to agent.completed for observability
+    // Cordis Events: subscribe to agent.completed for scheduler metrics
     if let Some(events) = app_state.get::<ares_cordis_core::EventsService>() {
         events.on("agent.completed".into(), |payload| {
             Box::pin(async move {
                 if let Some(agent) = payload.get("agent_name").and_then(|v| v.as_str()) {
-                    tracing::debug!(agent = %agent, status = ?payload.get("status"), "scheduler observed agent completion");
+                    tracing::debug!(
+                        agent = %agent,
+                        status = %payload.get("status").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                        "scheduler: observed agent completion via Cordis event bus"
+                    );
                 }
                 Ok(payload)
             })
@@ -695,6 +703,12 @@ fn scheduled_usage_source(is_catchup: bool) -> &'static str {
     if is_catchup { "catchup" } else { "scheduled" }
 }
 
+/// Scope a request context to one tenant so AgentExecutionService
+/// prefers isolate (`tenant:{id}`) over intercept and fallback.
+pub(crate) fn tenant_scoped_ctx(ctx: &Arc<Context>, tenant_id: &str) -> Arc<Context> {
+    ctx.isolate::<ares_agents::AgentResolverService>(&format!("tenant:{tenant_id}"))
+}
+
 async fn execute_scheduled_agent(
     sched: &AgentSchedule,
     app_state: &AppState,
@@ -716,7 +730,8 @@ async fn execute_scheduled_agent(
             history: Vec::new(),
             ctx_provider: None,
         };
-        match exec_svc.execute_agent(&req, app_state).await {
+        let scoped = tenant_scoped_ctx(app_state, &sched.tenant_id);
+        match exec_svc.execute_agent(&req, &scoped).await {
             Ok(_result) => {
                 tracing::info!(
                     agent = %sched.agent_name,
@@ -904,9 +919,14 @@ async fn execute_scheduled_agent(
     }
 
     // 2. Resolve and execute regular LLM-backed agents.
-    let mut resolved_agent = match tenant_agent::resolve_agent_for_tenant(&pool,
+    // Isolate is not in scope here: execute_agent's `scoped` lives inside the
+    // early-return block above. Recreate it so resolve/runtime tools read tenant
+    // from ctx rather than a leftover tenant_id argument.
+    let scoped = tenant_scoped_ctx(app_state, &sched.tenant_id);
+    let mut resolved_agent = match tenant_agent::resolve_agent_from_ctx(
+        &pool,
         &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
-        &sched.tenant_id,
+        &scoped,
         &sched.agent_name,
         &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
@@ -932,9 +952,9 @@ async fn execute_scheduled_agent(
         pool: pool.clone(),
     });
     resolved_agent.agent.set_observability(obs.clone());
-    resolved_agent.agent.set_runtime_tools(
+    resolved_agent.agent.set_runtime_tools_from_ctx(
         app_state.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(),
-        sched.tenant_id.clone(),
+        &scoped,
     );
 
     let mut runtime_context = AgentRuntimeContext::new(
@@ -1158,6 +1178,17 @@ async fn execute_scheduled_agent(
 mod tests {
     use super::*;
     use ares_db::schedules::AgentPipeline;
+
+    #[test]
+    fn tenant_scoped_ctx_sets_isolate_label() {
+        use std::any::TypeId;
+        let root = Context::new_root();
+        let scoped = tenant_scoped_ctx(&root, "acme");
+        assert_eq!(
+            scoped.isolate_label(TypeId::of::<ares_agents::AgentResolverService>()).as_deref(),
+            Some("tenant:acme"),
+        );
+    }
 
     #[test]
     fn compute_next_run_with_valid_cron() {

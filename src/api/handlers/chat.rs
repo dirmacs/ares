@@ -223,18 +223,18 @@ pub async fn chat(
     let context_id = resolve_context_id(payload.context_id.as_ref());
 
     // Check if conversation exists, create if not
-    if !ctx.get::<crate::context_services::DbService>().expect("not provided").0.conversation_exists(&context_id).await? {
-        ctx.get::<crate::context_services::DbService>().expect("not provided").0
+    if !ctx.get::<crate::db::PostgresClient>().expect("not provided").conversation_exists(&context_id).await? {
+        ctx.get::<crate::db::PostgresClient>().expect("not provided")
             .create_conversation(&context_id, &claims.sub, None)
             .await?;
     }
-    let history = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_conversation_history(&context_id).await?;
+    let history = ctx.get::<crate::db::PostgresClient>().expect("not provided").get_conversation_history(&context_id).await?;
     // Compute history token estimate in the same pass (before clone into AgentContext)
     let history_input_tokens: usize = history.iter().map(|m| estimate_tokens(&m.content)).sum();
 
     // Load user memory
-    let memory_facts = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_user_memory(&claims.sub).await?;
-    let preferences = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_user_preferences(&claims.sub).await?;
+    let memory_facts = ctx.get::<crate::db::PostgresClient>().expect("not provided").get_user_memory(&claims.sub).await?;
+    let preferences = ctx.get::<crate::db::PostgresClient>().expect("not provided").get_user_preferences(&claims.sub).await?;
     let user_memory = build_user_memory_if_present(&claims.sub, memory_facts, preferences);
 
     // Build agent context
@@ -277,12 +277,12 @@ pub async fn chat(
 
     // Store messages in conversation
     let msg_id = Uuid::new_v4().to_string();
-    ctx.get::<crate::context_services::DbService>().expect("not provided").0
+    ctx.get::<crate::db::PostgresClient>().expect("not provided")
         .add_message(&msg_id, &context_id, MessageRole::User, &payload.message)
         .await?;
 
     let resp_id = Uuid::new_v4().to_string();
-    ctx.get::<crate::context_services::DbService>().expect("not provided").0
+    ctx.get::<crate::db::PostgresClient>().expect("not provided")
         .add_message(
             &resp_id,
             &context_id,
@@ -481,8 +481,8 @@ pub async fn get_user_memory(
     State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<UserMemory>> {
-    let facts = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_user_memory(&claims.sub).await?;
-    let preferences = ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_user_preferences(&claims.sub).await?;
+    let facts = ctx.get::<crate::db::PostgresClient>().expect("not provided").get_user_memory(&claims.sub).await?;
+    let preferences = ctx.get::<crate::db::PostgresClient>().expect("not provided").get_user_preferences(&claims.sub).await?;
 
     Ok(Json(UserMemory {
         user_id: claims.sub,
@@ -617,7 +617,7 @@ fn chat_stream_response(
 
     let stream = async_stream::stream! {
         // Cordis: hold Context-derived services for stream (avoid temp dropped)
-        let db = state_clone.get::<crate::context_services::DbService>().expect("not provided").0.clone();
+        let db = state_clone.get::<crate::db::PostgresClient>().expect("not provided");
         let config_manager = state_clone.get::<crate::AresConfigManager>().expect("not provided").clone();
         let provider_registry = state_clone.get::<crate::ProviderRegistry>().expect("not provided").clone();
         let llm_factory = state_clone.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>().expect("LlmFactory not provided").clone();

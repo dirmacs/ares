@@ -95,7 +95,7 @@ pub async fn register(
     validate_register_input(&payload.email, &payload.password)?;
 
     // Check if user exists
-    if ctx.get::<crate::context_services::DbService>().expect("not provided").0.get_user_by_email(&payload.email).await?.is_some() {
+    if ctx.get::<crate::db::PostgresClient>().expect("not provided").get_user_by_email(&payload.email).await?.is_some() {
         return Err(user_already_exists_error());
     }
 
@@ -104,7 +104,7 @@ pub async fn register(
 
     // Create user
     let user_id = Uuid::new_v4().to_string();
-    ctx.get::<crate::context_services::DbService>().expect("not provided").0
+    ctx.get::<crate::db::PostgresClient>().expect("not provided")
         .create_user(&user_id, &payload.email, &password_hash, &payload.name)
         .await?;
 
@@ -115,7 +115,7 @@ pub async fn register(
     // Store refresh token
     let token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
-    ctx.get::<crate::context_services::DbService>().expect("not provided").0
+    ctx.get::<crate::db::PostgresClient>().expect("not provided")
         .create_session(
             &session_id,
             &user_id,
@@ -145,7 +145,7 @@ pub async fn login(
     validate_login_input(&payload.email, &payload.password)?;
 
     // Get user
-    let user = ctx.get::<crate::context_services::DbService>().expect("not provided").0
+    let user = ctx.get::<crate::db::PostgresClient>().expect("not provided")
         .get_user_by_email(&payload.email)
         .await?
         .ok_or_else(invalid_credentials_error)?;
@@ -163,7 +163,7 @@ pub async fn login(
     // Store refresh token
     let token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
-    ctx.get::<crate::context_services::DbService>().expect("not provided").0
+    ctx.get::<crate::db::PostgresClient>().expect("not provided")
         .create_session(
             &session_id,
             &user.id,
@@ -209,7 +209,7 @@ pub async fn logout(
 
     // Attempt to delete the session - we don't error if it doesn't exist
     // (token may already be expired/revoked, which is fine for logout)
-    ctx.get::<crate::context_services::DbService>().expect("not provided").0.delete_session_by_token_hash(&token_hash).await?;
+    ctx.get::<crate::db::PostgresClient>().expect("not provided").delete_session_by_token_hash(&token_hash).await?;
 
     Ok(Json(build_logout_response()))
 }
@@ -236,7 +236,7 @@ pub async fn refresh_token(
 
     // Hash the refresh token and validate it exists in the database
     let token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(refresh_token);
-    let user_id = ctx.get::<crate::context_services::DbService>().expect("not provided").0
+    let user_id = ctx.get::<crate::db::PostgresClient>().expect("not provided")
         .validate_session(&token_hash)
         .await?
         .ok_or_else(revoked_refresh_token_error)?;
@@ -244,7 +244,7 @@ pub async fn refresh_token(
     validate_token_user_match(&user_id, &claims.sub)?;
 
     // Invalidate the old refresh token (one-time use)
-    ctx.get::<crate::context_services::DbService>().expect("not provided").0.delete_session_by_token_hash(&token_hash).await?;
+    ctx.get::<crate::db::PostgresClient>().expect("not provided").delete_session_by_token_hash(&token_hash).await?;
 
     // Generate new tokens
     let tokens = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided")
@@ -253,7 +253,7 @@ pub async fn refresh_token(
     // Store the new refresh token in a new session
     let new_token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
-    ctx.get::<crate::context_services::DbService>().expect("not provided").0
+    ctx.get::<crate::db::PostgresClient>().expect("not provided")
         .create_session(
             &session_id,
             &claims.sub,

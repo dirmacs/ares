@@ -325,7 +325,7 @@ impl LlmService {
     /// Capability-aware client resolution with per-request `ModelOverride` pinning.
     ///
     /// 1. If `ctx.get::<ModelOverride>()` is present, attempt to create a client for
-    ///    that exact model (via `ProviderRegistry::create_client_for_model`). On
+    ///    that exact model (via `ProviderRegistry::create_client_for_model_ctx`). On
     ///    success return immediately. Also opportunistically try the `ClientPool`
     ///    fast-path `pool.try_get(&ov.model)` if the model name matches a
     ///    registered provider.
@@ -348,7 +348,7 @@ impl LlmService {
             }
             if let Ok(client) = self
                 .provider_registry
-                .create_client_for_model(&ov.model)
+                .create_client_for_model_ctx(ctx, &ov.model)
                 .await
             {
                 return Ok(Arc::from(client));
@@ -362,7 +362,7 @@ impl LlmService {
             if let Some(best) = self.provider_registry.find_best_model(&capability) {
                 if let Ok(client) = self
                     .provider_registry
-                    .create_client_for_model(&best.name)
+                    .create_client_for_model_ctx(ctx, &best.name)
                     .await
                 {
                     return Ok(Arc::from(client));
@@ -371,7 +371,7 @@ impl LlmService {
         } else if let Some(best) = self.provider_registry.find_best_model(&capability) {
             if let Ok(client) = self
                 .provider_registry
-                .create_client_for_model(&best.name)
+                .create_client_for_model_ctx(ctx, &best.name)
                 .await
             {
                 return Ok(Arc::from(client));
@@ -402,19 +402,19 @@ impl LlmService {
             if let Ok(guard) = self.pool.try_get(&ov.model).await {
                 return Ok(guard.take());
             }
-            if let Ok(client) = self.provider_registry.create_client_for_model(&ov.model).await {
+            if let Ok(client) = self.provider_registry.create_client_for_model_ctx(ctx, &ov.model).await {
                 return Ok(client);
             }
         }
         if let Some(catalog) = &self.catalog {
             let _snap = catalog.snapshot();
             if let Some(best) = self.provider_registry.find_best_model(&capability) {
-                if let Ok(client) = self.provider_registry.create_client_for_model(&best.name).await {
+                if let Ok(client) = self.provider_registry.create_client_for_model_ctx(ctx, &best.name).await {
                     return Ok(client);
                 }
             }
         } else if let Some(best) = self.provider_registry.find_best_model(&capability) {
-            if let Ok(client) = self.provider_registry.create_client_for_model(&best.name).await {
+            if let Ok(client) = self.provider_registry.create_client_for_model_ctx(ctx, &best.name).await {
                 return Ok(client);
             }
         }
@@ -452,8 +452,11 @@ impl Service for LlmService {
 mod tests {
     use super::*;
     use crate::capabilities::CapabilityRequirements;
+    use crate::provider_registry::RuntimeProviderEntry;
     use ares_cordis_core::Context;
+    use ares_types::models::{TenantContext, TenantTier};
     use chrono::Duration;
+    use std::collections::HashMap;
 
     #[test]
     fn breaker_closed_allows() {
@@ -610,5 +613,73 @@ mod tests {
         // Should attempt override then fallback; fallback will fail because no provider configured
         let res = svc.get_client(&req_ctx, req).await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_client_override_uses_tenant_context_intercept() {
+        let mut registry = ProviderRegistry::new();
+        registry.register_model(
+            "pinned-model",
+            ares_config::toml_config::ModelConfig {
+                provider: "shared-runtime".into(),
+                model: "tenant-model".into(),
+                temperature: 0.7,
+                max_tokens: 512,
+            },
+        );
+        let global = RuntimeProviderEntry {
+            tenant_id: None,
+            display_name: "Global Shared".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://global.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("global-model".to_string()),
+            headers: HashMap::new(),
+            api_key: Some("global-key".to_string()),
+            enabled: true,
+        };
+        let tenant = RuntimeProviderEntry {
+            tenant_id: Some("tenant-a".to_string()),
+            display_name: "Tenant Shared".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            api_base: "https://tenant.example.com/v1".to_string(),
+            auth_type: "api_key".to_string(),
+            default_model: Some("tenant-model".to_string()),
+            headers: HashMap::new(),
+            api_key: Some("tenant-key".to_string()),
+            enabled: true,
+        };
+        registry.reload_runtime_providers(
+            vec![global, tenant],
+            vec!["shared-runtime".to_string(), "shared-runtime".to_string()],
+        );
+        let registry = Arc::new(registry);
+        let svc = LlmService::new(registry, Arc::new(ClientPool::with_defaults()), None);
+        let root = Context::new_root();
+        let ctx = root
+            .with_intercept(TenantContext::new("tenant-a".into(), TenantTier::Pro))
+            .intercept(ModelOverride {
+                model: "pinned-model".into(),
+            });
+        let tenant_client = svc
+            .get_client(&ctx, CapabilityRequirements::default())
+            .await;
+        assert!(
+            tenant_client.is_ok(),
+            "tenant intercept should construct a client from the tenant runtime entry: {:?}",
+            tenant_client.as_ref().err()
+        );
+
+        let unlabeled = root.intercept(ModelOverride {
+            model: "pinned-model".into(),
+        });
+        let fleet_client = svc
+            .get_client(&unlabeled, CapabilityRequirements::default())
+            .await;
+        assert!(
+            fleet_client.is_ok(),
+            "unlabeled root with ModelOverride should construct a client from the fleet global runtime entry: {:?}",
+            fleet_client.as_ref().err()
+        );
     }
 }

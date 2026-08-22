@@ -1,22 +1,14 @@
-//! Remaining Cordis wrappers that cannot impl Service on the inner type:
-//! - [`ToolRegistryService`] — isolate TypeId for tenant tool realms
+//! Remaining Cordis context types that live in the server crate:
 //! - [`EmergencyStop`] — native Service (kill switch)
 //!
+//! Tenant tool isolation uses `ctx.isolate::<ToolRegistry>(tenant_id)`.
 //! `PostgresClient` and [`ares_agents::ContextProviderHandle`] are native Service
 //! types; handlers `ctx.get` them directly.
 
-use std::sync::Arc;
 use crate::AppState;
 use std::sync::atomic::AtomicBool;
 
-use crate::ToolRegistry;
 use ares_cordis_core::Service;
-
-// LLM — ConfigBasedLLMFactory now implements Service directly (ctx.get::<ConfigBasedLLMFactory>())
-// AgentRegistry now implements Service directly (ctx.get::<AgentRegistry>())
-
-pub struct ToolRegistryService(pub Arc<ToolRegistry>);
-impl Service for ToolRegistryService {}
 
 // Emergency stop
 /// Global agent-execution kill switch.

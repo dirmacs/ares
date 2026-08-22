@@ -475,7 +475,7 @@ mod tests {
             ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
             ctx.provide_arc(provider_registry.clone());
             ctx.provide_arc(agent_registry.clone());
-            ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
+            ctx.provide_arc(tool_registry.clone());
             let auth_service = Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800));
             ctx.provide_arc(auth_service.clone());
             ctx.provide(crate::api::handlers::deploy::new_deploy_registry());
@@ -520,7 +520,7 @@ mod tests {
             ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
             ctx.provide_arc(provider_registry.clone());
             ctx.provide_arc(agent_registry.clone());
-            ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
+            ctx.provide_arc(tool_registry.clone());
             let auth_service = Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800));
             ctx.provide_arc(auth_service.clone());
             ctx.provide(crate::api::handlers::deploy::new_deploy_registry());
@@ -565,7 +565,7 @@ mod tests {
             ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
             ctx.provide_arc(provider_registry.clone());
             ctx.provide_arc(agent_registry.clone());
-            ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
+            ctx.provide_arc(tool_registry.clone());
             let auth_service = Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800));
             ctx.provide_arc(auth_service.clone());
             ctx.provide(crate::api::handlers::deploy::new_deploy_registry());
@@ -668,7 +668,7 @@ mod tests {
             ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
             ctx.provide_arc(provider_registry.clone());
             ctx.provide_arc(agent_registry.clone());
-            ctx.provide(crate::context_services::ToolRegistryService(tool_registry.clone()));
+            ctx.provide_arc(tool_registry.clone());
             let auth_service = Arc::new(crate::auth::jwt::AuthService::new("secret".to_string(), 900, 604800));
             ctx.provide_arc(auth_service.clone());
             ctx.provide(crate::api::handlers::deploy::new_deploy_registry());

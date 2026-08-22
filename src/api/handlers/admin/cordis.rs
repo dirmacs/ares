@@ -61,7 +61,7 @@ pub async fn retire_cordis_service(
                 "error": format!(
                     "service {name} is not retirably supported: only direct Cordis \
                      services (concrete-type provides) can be retired; wrapper \
-                     services such as ToolRegistryService are not supported today"
+                     services are not supported today"
                 ),
                 "cascaded_notify": ctx.get::<ReflectService>().is_some(),
             })),

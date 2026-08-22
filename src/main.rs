@@ -694,16 +694,13 @@ fn factory_tool_registry(
         }
     }
 
-    let tool_registry = Arc::new(tool_registry);
     tracing::info!(
         "Tool registry initialized with {} tools",
         tool_registry.enabled_tool_names().len()
     );
-    ctx.provide_arc(tool_registry.clone());
-    block_on_plugin(
-        ctx,
-        ares::context_services::ToolRegistryService(tool_registry),
-    )
+    // Plugin owned ToolRegistry (Service, not Clone). plugin() provides it;
+    // a second provide_arc of the same TypeId would fail duplicate-provider.
+    block_on_plugin(ctx, tool_registry)
 }
 
 #[cfg(feature = "postgres")]
@@ -749,13 +746,7 @@ fn factory_agent_registry(
 ) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
     let mgr = config_manager_from_ctx(ctx)?;
     let providers = inject_sync::<ProviderRegistry>(ctx);
-    let tools = ctx
-        .get::<ToolRegistry>()
-        .or_else(|| {
-            ctx.get::<ares::context_services::ToolRegistryService>()
-                .map(|s| s.0.clone())
-        })
-        .unwrap_or_else(|| inject_sync::<ToolRegistry>(ctx));
+    let tools = inject_sync::<ToolRegistry>(ctx);
     let dynamic = inject_sync::<DynamicConfigManager>(ctx);
     let agent_registry = Arc::new(AgentRegistry::with_dynamic_config(
         &mgr.config(),
@@ -783,13 +774,7 @@ fn factory_runtime_tool_registry(
     _config: &serde_json::Value,
 ) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
     let pg = postgres_from_ctx(ctx)?;
-    let tools = ctx
-        .get::<ToolRegistry>()
-        .or_else(|| {
-            ctx.get::<ares::context_services::ToolRegistryService>()
-                .map(|s| s.0.clone())
-        })
-        .unwrap_or_else(|| inject_sync::<ToolRegistry>(ctx));
+    let tools = inject_sync::<ToolRegistry>(ctx);
     let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(pg.pool.clone()));
     {
         use std::any::TypeId;
@@ -948,10 +933,6 @@ fn factory_app_state_services(
 
     let tools = ctx
         .get::<ToolRegistry>()
-        .or_else(|| {
-            ctx.get::<ares::context_services::ToolRegistryService>()
-                .map(|s| s.0.clone())
-        })
         .ok_or_else(|| missing("ToolRegistry"))?;
     let runtime = ctx
         .get::<ares::RuntimeToolRegistry>()
@@ -1318,7 +1299,7 @@ async fn run_server(
 
     // Cordis reactive-fiber demo: a fiber depending on EventsService that flips
     // Active/Inactive as the service is retired/re-provided via admin endpoints.
-    // A second dependent fiber on ToolRegistryService registers a distinct
+    // A second dependent fiber on ToolRegistry registers a distinct
     // `TypeId` dependency so ReflectService's BFS dependency walk covers two
     // services — prooving reactive recomputation fans out across both keys.
     {
@@ -1340,22 +1321,22 @@ async fn run_server(
         fiber_events.refresh(&root_ctx).await; // initial: Active (EventsService provided earlier)
         tracing::info!(state=?fiber_events.state(), "reactive demo fiber initialized (expect Active)");
 
-        // Dependents on ToolRegistryService — second service so the reflect BFS
-        // walk covers two services. ToolRegistryService is provided at line
-        // ~1052 via `plugin(ToolRegistryService(...))`, so initial refresh is Active.
+        // Dependents on ToolRegistry — second service so the reflect BFS
+        // walk covers two services. ToolRegistry is provided via
+        // `plugin(ToolRegistry)` in factory_tool_registry, so initial refresh is Active.
         let fiber_tools = std::sync::Arc::new(ares_cordis_core::Fiber::new());
-        fiber_tools.declare_inject::<ares::context_services::ToolRegistryService>();
+        fiber_tools.declare_inject::<ToolRegistry>();
         let fid_tools = 990_002u64;
         reflect.register_dependent(
-            TypeId::of::<ares::context_services::ToolRegistryService>(),
+            TypeId::of::<ToolRegistry>(),
             fid_tools,
         );
         reflect.register_fiber(
             fid_tools,
             fiber_tools.clone(),
-            TypeId::of::<ares::context_services::ToolRegistryService>(),
+            TypeId::of::<ToolRegistry>(),
         );
-        fiber_tools.refresh(&root_ctx).await; // initial: Active (ToolRegistryService provided)
+        fiber_tools.refresh(&root_ctx).await; // initial: Active (ToolRegistry provided)
         tracing::info!(state=?fiber_tools.state(), "reactive demo fiber (tools) initialized (expect Active)");
     }
 

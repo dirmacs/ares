@@ -439,8 +439,8 @@ impl SkillsService {
                             let unified = ctx.get::<ares_tools::UnifiedToolService>();
                             let tool_opt = if let Some(svc) = unified.as_ref() {
                                 svc.resolve(&tool_name, Some(tenant_id.clone()))
-                            } else if let Some(reg) = ctx.get::<crate::context_services::ToolRegistryService>() {
-                                reg.0.get(&tool_name).map(|t| Arc::clone(t))
+                            } else if let Some(reg) = ctx.get::<crate::ToolRegistry>() {
+                                reg.get(&tool_name).map(|t| Arc::clone(t))
                             } else {
                                 None
                             };
@@ -580,8 +580,8 @@ impl SkillsService {
                 let unified = ctx.get::<ares_tools::UnifiedToolService>();
                 let tool_opt = if let Some(svc) = unified.as_ref() {
                     svc.resolve(tool_name, Some(tenant_id.to_string()))
-                } else if let Some(reg) = ctx.get::<crate::context_services::ToolRegistryService>() {
-                    reg.0.get(tool_name).map(|t| Arc::clone(t))
+                } else if let Some(reg) = ctx.get::<crate::ToolRegistry>() {
+                    reg.get(tool_name).map(|t| Arc::clone(t))
                 } else {
                     None
                 };

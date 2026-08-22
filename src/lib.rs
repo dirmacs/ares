@@ -214,7 +214,7 @@ pub mod utils;
 /// Workflow engine for agent orchestration.
 #[cfg(feature = "postgres")]
 pub mod workflows;
-/// Cordis Context service wrappers for legacy AppState fields.
+/// Cordis context services that live in the server crate (`EmergencyStop`).
 #[cfg(feature = "postgres")]
 pub mod context_services;
 

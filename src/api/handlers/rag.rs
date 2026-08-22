@@ -739,4 +739,10 @@ mod tests {
         let ctx = ares_cordis_core::Context::new_root();
         assert!(ctx.get::<EmbeddingService>().is_none());
     }
+
+    #[test]
+    fn embedding_service_impls_cordis_service() {
+        fn assert_service<T: ares_cordis_core::Service>() {}
+        assert_service::<EmbeddingService>();
+    }
 }

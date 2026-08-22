@@ -507,6 +507,26 @@ impl Context {
         None
     }
 
+    /// TypeIds currently provided in this context's store (not parent/intercept).
+    pub fn provided_type_ids(&self) -> Vec<TypeId> {
+        self.store.read().keys().copied().collect()
+    }
+
+    /// Record an isolate namespace on this context without forking a child.
+    ///
+    /// Loader uses this after a factory `provide`s so `get_isolated` can find
+    /// the new service under `Entry.isolate` while `get` still works on boot.
+    pub fn bind_isolate(&self, tid: TypeId, label: impl Into<Symbol>) {
+        self.isolate.write().insert(tid, label.into());
+    }
+
+    /// Record an intercept override on this context without forking a child.
+    pub fn bind_intercept<T: Service>(&self, val: T) {
+        let tid = TypeId::of::<T>();
+        let any: Arc<dyn Any + Send + Sync> = Arc::new(val);
+        self.intercept.write().insert(tid, any);
+    }
+
     /// Retrieve a service only if it was provided in a context whose isolate
     /// namespace for `T` matches `label`. Walks the context chain but skips
     /// any frame whose isolate label for `T` differs from the requested one.
@@ -1540,6 +1560,22 @@ mod tests {
         // Root has no isolated service
         assert!(root.get_isolated::<ToolSvc>("tenant_a").is_none());
         assert!(root.get_isolated::<ToolSvc>("tenant_b").is_none());
+    }
+
+    #[test]
+    fn bind_isolate_labels_provided_service_in_place() {
+        #[derive(Debug)]
+        struct ToolSvc(String);
+        impl Service for ToolSvc {}
+
+        let root = Context::new_root();
+        root.provide(ToolSvc("fleet".into()));
+        root.bind_isolate(TypeId::of::<ToolSvc>(), "tenant:acme");
+        let got = root
+            .get_isolated::<ToolSvc>("tenant:acme")
+            .expect("in-place isolate");
+        assert_eq!(got.0, "fleet");
+        assert!(root.get::<ToolSvc>().is_some());
     }
 
     #[tokio::test]

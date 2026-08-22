@@ -96,13 +96,13 @@ impl PipelineService {
 
         let req = AgentRequest {
             agent_name: pipeline.target_agent.clone(),
-            tenant: Some(tenant.to_string()),
+            tenant: None, // isolate label on scoped ctx
             message: input_str,
             history: Vec::new(),
             ctx_provider: None,
         };
 
-        // Isolate wins over intercept over fallback; keep req.tenant for execute fallback.
+        // Isolate on scoped ctx is the tenant source; AgentRequest.tenant stays unset.
         let scoped = tenant_scoped_ctx(ctx, tenant);
         let resp = match exec.execute_agent(&req, &scoped).await {
             Ok(result) => result.response,

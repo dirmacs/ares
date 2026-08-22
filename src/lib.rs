@@ -267,6 +267,17 @@ pub type AppState = std::sync::Arc<Context>;
 #[cfg(feature = "postgres")]
 pub type CordisAppState = AppState;
 
+/// Cordis routes that still need `AppState` (applied by [`build_router`] or `main`).
+#[cfg(feature = "postgres")]
+pub fn cordis_routes() -> axum::Router<AppState> {
+    axum::Router::new()
+        .route("/health", axum::routing::get(|| async { "OK" }))
+        .route(
+            "/health/context",
+            axum::routing::get(crate::api::handlers::health_context::health_context),
+        )
+}
+
 /// Build router from Cordis `Context` — primary entry (Phase 2 step 12).
 /// Reads services via `ctx.get::<...>()` + `State<Arc<Context>>` handlers.
 #[cfg(feature = "postgres")]
@@ -275,14 +286,7 @@ pub fn build_router(ctx: AppState) -> axum::Router {
     let _registry = ctx.get::<ares_cordis_core::RegistryService>();
     let _agent_resolver = ctx.get::<crate::agents::resolver::AgentResolverService>();
     let _tool_svc = ctx.get::<ares_tools::UnifiedToolService>();
-
-    axum::Router::new()
-        .route("/health", axum::routing::get(|| async { "OK" }))
-        .route(
-            "/health/context",
-            axum::routing::get(crate::api::handlers::health_context::health_context),
-        )
-        .with_state(ctx)
+    cordis_routes().with_state(ctx)
 }
 
 /// Resolve an abstract model tier to a concrete `(provider_name, model_name)` pair.
@@ -435,6 +439,14 @@ mod lib_tests {
         let response = server.get("/health").await;
         response.assert_status_ok();
         response.assert_text("OK");
+    }
+
+    #[tokio::test]
+    async fn build_router_serves_health_context() {
+        let server =
+            axum_test::TestServer::new(build_router(test_ctx())).expect("test server");
+        let response = server.get("/health/context").await;
+        response.assert_status_ok();
     }
 }
 

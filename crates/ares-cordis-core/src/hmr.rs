@@ -1,25 +1,16 @@
-//! HMR via `libloading` — deferred stub behind `#[cfg(feature = "hmr")]`.
+//! HMR via `libloading`, gated behind `#[cfg(feature = "hmr")]`.
 //!
-//! **Decision (YAGNI, plan Assumptions §Contingencies):** dynamic code swapping
-//! via `libloading` is **deferred** due to ABI fragility. A `.so` built with one
-//! Rust toolchain (`1.98`) cannot safely `dlopen` into a binary built with a
-//! different patch, `extern "C"` entry points require `unsafe` and a stable ABI
-//! boundary (`repr(C)`), and `libloading::Library::new` + `Symbol` (`unsafe`)
-//! introduces soundness surface that `rust-doctor` would flag. The fallback
-//! that already covers **90% of value** is file-watch + full `Fiber::reload`
-//! via re-reading TOON/JSON (`crate::watcher::watch_many`), not dynamic code.
+//! File-watch + `Fiber::reload` (`crate::watcher::watch_many`) remains the
+//! default production path. Enabling `--features hmr` additionally `dlopen`s a
+//! `.so`/`.dylib`/`.dll` on watcher events and calls `cordis_plugin_apply`.
 //!
-//! This module is `#[cfg(feature = "hmr")]` and **off by default** (`Cargo.toml`
-//! `hmr = ["dep:libloading"]`). Enabling it requires `cargo build --features hmr`
-//! and a `.so` built with the same compiler + same `libloading` version. When
-//! not enabled, hot-reload is still fully functional via `watcher` + `Loader` +
-//! `ReflectService::notify` + `Fiber::refresh` (epoch recompute).
-//!
-//! The stub below shows the intended `libloading` shape so future implementors
-//! can complete it without researching `libloading` API again. It is not
-//! invoked by `src/main.rs` or `ReflectService` — `watcher` is the production path.
+//! **ABI contract:** the `.so` must be built with the same Rust toolchain as
+//! the server. The entry point is `extern "C"` and must not store the `ctx`
+//! pointer after it returns. The loaded `Library` is retained in
+//! [`HmrRegistry`] until drop (`dlclose` via RAII, no leak).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::{Context, CordisError};
 
@@ -32,59 +23,99 @@ use crate::{Context, CordisError};
 /// ```
 pub type HmrEntryFn = unsafe extern "C" fn(*const std::ffi::c_void) -> i32;
 
-/// Load a Cordis plugin `.so` via `libloading` and call its `Plugin::apply`.
+/// Default exported symbol, NUL-terminated for `libloading::Library::get`.
+pub const DEFAULT_ENTRY_SYMBOL: &[u8] = b"cordis_plugin_apply\0";
+
+fn is_dynamic_library(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("so" | "dylib" | "dll")
+    )
+}
+
+/// Load a Cordis plugin `.so` via `libloading` and call its entry function.
 ///
 /// **Safety:** `Library::new` + `get` are `unsafe`; caller must ensure `so_path`
 /// was built with the same toolchain and that `entry_symbol` is a valid
-/// `extern "C"` function. The `Library` must be retained (e.g. in `HmrLibrary`
-/// below which frees on `Drop` / `Disposable::dispose`) so the `Symbol` remains
-/// valid for the lifetime of the fiber. A full implementation stores the
-/// `Library` in the fiber's `acc` and `dlclose`s on drop (via RAII, not leak).
-///
-/// Errors are mapped to `CordisError::Configuration` to preserve the
-/// single-source discipline (duplicate provider, etc.).
-///
-/// This function is **not** used by `watcher`; it is a forward-compatibility
-/// stub. File-watch + `Fiber::reload` via TOON re-read is the production path
-/// (see `crate::watcher`).
+/// `extern "C"` function. The returned [`HmrLibrary`] must be retained (store
+/// it in [`HmrRegistry`]) so the `Symbol` remains valid after this call.
 #[cfg(feature = "hmr")]
 pub fn load_plugin_so(
     so_path: impl AsRef<Path>,
-    _ctx: &Context,
+    ctx: &Context,
     entry_symbol: &[u8],
-) -> Result<(), CordisError> {
+) -> Result<HmrLibrary, CordisError> {
     use libloading::{Library, Symbol};
 
     let path = so_path.as_ref();
-    // SAFETY: caller guarantees ABI compatibility; documented above.
-    let lib = unsafe { Library::new(path).map_err(|e| CordisError::Configuration(format!("dlopen {} failed: {e}", path.display())))? };
-
-    // In a full impl, `lib` would be stored in the fiber's `Disposable` accumulator
-    // so it stays alive until `Fiber::dispose` drops it (which `dlclose`s). For
-    // this stub we just prove `dlopen` + `dlsym` compile and immediately drop
-    // `lib` (no leak); production must retain `Library` in an `Arc` or owned
-    // holder that frees on drop — see `HmrLibrary` below for the owned pattern.
-    unsafe {
-        let func: Symbol<HmrEntryFn> = lib
-            .get(entry_symbol)
-            .map_err(|e| CordisError::Configuration(format!("dlsym {} failed: {e}", String::from_utf8_lossy(entry_symbol))))?;
-        let rc = func(std::ptr::null());
-        if rc != 0 {
-            return Err(CordisError::Configuration(format!("HMR entry {rc} != 0")));
-        }
-        // `lib` drops here; full impl would move it into `HmrLibrary` instead.
+    if !is_dynamic_library(path) {
+        return Err(CordisError::Configuration(format!(
+            "HMR path is not a dynamic library: {}",
+            path.display()
+        )));
     }
-    tracing::info!(path = %path.display(), "HMR plugin loaded via libloading (stub, no Fiber::reload yet)");
+
+    // SAFETY: caller guarantees ABI compatibility; documented above.
+    let lib = unsafe {
+        Library::new(path).map_err(|e| {
+            CordisError::Configuration(format!("dlopen {} failed: {e}", path.display()))
+        })?
+    };
+
+    let rc = unsafe {
+        let func: Symbol<HmrEntryFn> = lib.get(entry_symbol).map_err(|e| {
+            CordisError::Configuration(format!(
+                "dlsym {} failed: {e}",
+                String::from_utf8_lossy(entry_symbol)
+            ))
+        })?;
+        func(ctx as *const Context as *const std::ffi::c_void)
+    };
+    if rc != 0 {
+        return Err(CordisError::Configuration(format!("HMR entry {rc} != 0")));
+    }
+
+    tracing::info!(path = %path.display(), "HMR plugin loaded via libloading");
+    Ok(HmrLibrary::new(lib))
+}
+
+/// `dlopen`, invoke the entry, and retain the library on `ctx`.
+#[cfg(feature = "hmr")]
+pub fn apply_plugin_so(
+    ctx: &Arc<Context>,
+    so_path: impl AsRef<Path>,
+    entry_symbol: &[u8],
+) -> Result<(), CordisError> {
+    let lib = load_plugin_so(so_path, ctx, entry_symbol)?;
+    let registry = match ctx.get::<HmrRegistry>() {
+        Some(existing) => existing,
+        None => ctx.provide(HmrRegistry::default()),
+    };
+    registry.push(lib);
     Ok(())
 }
 
+/// If `path` is a dylib, load it; otherwise return `Ok(false)`.
+#[cfg(feature = "hmr")]
+pub fn apply_plugin_so_if_dylib(ctx: &Arc<Context>, path: &Path) -> Result<bool, CordisError> {
+    if !is_dynamic_library(path) {
+        return Ok(false);
+    }
+    apply_plugin_so(ctx, path, DEFAULT_ENTRY_SYMBOL)?;
+    Ok(true)
+}
+
 /// Owned holder for an `hmr` dynamic library — RAII owner that frees on drop.
-///
-/// Use `Arc<HmrLibrary>` or store in the fiber's `Disposable` accumulator so
-/// the `.so` stays loaded until `Fiber::dispose`. No `Box::leak`.
 #[cfg(feature = "hmr")]
 pub struct HmrLibrary {
     _lib: libloading::Library,
+}
+
+#[cfg(feature = "hmr")]
+impl std::fmt::Debug for HmrLibrary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HmrLibrary").finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "hmr")]
@@ -92,6 +123,41 @@ impl HmrLibrary {
     /// Retain a loaded library so it is not unloaded until this holder drops.
     pub fn new(lib: libloading::Library) -> Self {
         Self { _lib: lib }
+    }
+}
+
+/// Retains loaded HMR libraries on Context so `dlclose` happens on dispose.
+#[cfg(feature = "hmr")]
+#[derive(Default)]
+pub struct HmrRegistry {
+    libs: parking_lot::Mutex<Vec<HmrLibrary>>,
+}
+
+#[cfg(feature = "hmr")]
+impl HmrRegistry {
+    pub fn push(&self, lib: HmrLibrary) {
+        self.libs.lock().push(lib);
+    }
+
+    pub fn len(&self) -> usize {
+        self.libs.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.libs.lock().is_empty()
+    }
+}
+
+#[cfg(feature = "hmr")]
+impl crate::Service for HmrRegistry {
+    fn name(&self) -> &'static str {
+        "hmr_registry"
+    }
+    fn init(&self, _ctx: &Arc<Context>) -> crate::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
     }
 }
 
@@ -107,6 +173,11 @@ pub fn load_plugin_so(
     ))
 }
 
+#[cfg(not(feature = "hmr"))]
+pub fn apply_plugin_so_if_dylib(_ctx: &Arc<Context>, _path: &Path) -> Result<bool, CordisError> {
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,7 +185,75 @@ mod tests {
     #[test]
     fn hmr_stub_documents_deferral() {
         let ctx = Context::new_root();
-        let err = load_plugin_so("/tmp/fake.so", &ctx, b"cordis_plugin_apply").unwrap_err();
-        assert!(err.to_string().contains("deferred") || err.to_string().contains("dlopen") || err.to_string().contains("HMR"));
+        let err = load_plugin_so("/tmp/fake.so", &ctx, b"cordis_plugin_apply\0").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("deferred") || msg.contains("dlopen") || msg.contains("HMR"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn apply_plugin_so_if_dylib_ignores_non_libraries() {
+        let ctx = Context::new_root();
+        let applied = apply_plugin_so_if_dylib(&ctx, Path::new("config/agents/test.toon"))
+            .expect("non-dylib should not error");
+        assert!(!applied);
+    }
+
+    #[cfg(feature = "hmr")]
+    #[test]
+    fn load_plugin_so_rejects_non_library_extension() {
+        let ctx = Context::new_root();
+        let err = load_plugin_so("/tmp/plugin.toon", &ctx, DEFAULT_ENTRY_SYMBOL).unwrap_err();
+        assert!(err.to_string().contains("not a dynamic library"));
+    }
+
+    #[cfg(feature = "hmr")]
+    #[test]
+    fn load_plugin_so_applies_test_cdylib_and_retains_library() {
+        let so = compile_test_plugin();
+        let ctx = Context::new_root();
+        apply_plugin_so(&ctx, &so, DEFAULT_ENTRY_SYMBOL).expect("test plugin should apply");
+        let registry = ctx.get::<HmrRegistry>().expect("HmrRegistry after apply");
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[cfg(feature = "hmr")]
+    fn compile_test_plugin() -> std::path::PathBuf {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("plugin.rs");
+        std::fs::write(
+            &src,
+            r#"
+            #[unsafe(no_mangle)]
+            pub extern "C" fn cordis_plugin_apply(_ctx: *const std::ffi::c_void) -> i32 {
+                0
+            }
+            "#,
+        )
+        .expect("write plugin source");
+        let so = dir.path().join(lib_name("cordis_test_plugin"));
+        let status = std::process::Command::new("rustc")
+            .args(["--edition", "2024", "--crate-type", "cdylib", "-o"])
+            .arg(&so)
+            .arg(&src)
+            .status()
+            .expect("spawn rustc");
+        assert!(status.success(), "rustc cdylib failed: {status}");
+        let so_owned = so.clone();
+        std::mem::forget(dir);
+        so_owned
+    }
+
+    #[cfg(feature = "hmr")]
+    fn lib_name(stem: &str) -> String {
+        if cfg!(target_os = "windows") {
+            format!("{stem}.dll")
+        } else if cfg!(target_os = "macos") {
+            format!("lib{stem}.dylib")
+        } else {
+            format!("lib{stem}.so")
+        }
     }
 }

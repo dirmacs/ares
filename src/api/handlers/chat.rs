@@ -206,6 +206,11 @@ pub async fn chat(
     tenant_ctx: Option<Extension<crate::models::TenantContext>>,
     Json(payload): Json<ChatRequest>,
 ) -> Result<Response> {
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let ctx = match &tenant_ctx {
+        Some(Extension(tc)) => ctx.with_intercept(tc.clone()),
+        None => ctx,
+    };
     validate_chat_request(&payload)?;
     ensure_emergency_stop_inactive(&ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0)?;
 

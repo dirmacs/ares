@@ -170,6 +170,9 @@ eruka-context = ["ares-agents/eruka-context"]
 # Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs instead.
 local-embeddings = ["ares-rag/local-embeddings"]
 
+# HMR via libloading — off by default. Forwards to ares-cordis-core/hmr (dlopen plugin .so).
+hmr = ["ares-cordis-core/hmr"]
+
 # Skills - SKILL.md file discovery and loading via thulp
 skills = ["dep:thulp-skill-files", "ares-config/skills"]
 

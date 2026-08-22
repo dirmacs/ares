@@ -59,7 +59,6 @@ impl ares_mcp::AgentRunner for ExecutionAgentRunner {
         let req = ares_agents::execution::AgentRequest {
             agent_name: input.agent_name.clone(),
             message: input.message.clone(),
-            tenant: None,
             history: vec![],
             ctx_provider: None,
         };

@@ -131,7 +131,6 @@ pub async fn v1_chat(
     if let Some(exec_svc) = state_ctx.get::<ares_agents::execution::AgentExecutionService>() {
         let req = ares_agents::execution::AgentRequest {
             agent_name: agent_name.clone(),
-            tenant: None, // TenantContext intercept already on req_ctx
             message: effective_message.clone(),
             history: agent_context.conversation_history.clone(),
             ctx_provider: None,

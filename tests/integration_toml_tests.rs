@@ -110,7 +110,6 @@ fn create_test_config() -> ares::utils::toml_config::AresConfig {
         billing: BillingConfig {
             model_pricing: HashMap::new(),
         },
-        #[cfg(feature = "skills")]
         skills: None,
     }
 }
@@ -196,7 +195,7 @@ async fn test_workflow_engine_from_config() {
     use ares::llm::ProviderRegistry;
     use ares::tools::registry::ToolRegistry;
     use ares::workflows::WorkflowEngine;
-    use ares::{AppState, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager};
+    use ares::{AppState, AresConfigManager, ConfigBasedLLMFactory, Context, DynamicConfigManager};
 
     let config = create_test_config();
 
@@ -217,50 +216,54 @@ async fn test_workflow_engine_from_config() {
     let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool");
     let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(pool.clone()));
 
-    // Create AppState
-    let state = AppState {
-        config_manager: config_manager.clone(),
-        dynamic_config: Arc::new(
-            DynamicConfigManager::new(
-                std::path::PathBuf::from("config/agents"),
-                std::path::PathBuf::from("config/models"),
-                std::path::PathBuf::from("config/tools"),
-                std::path::PathBuf::from("config/workflows"),
-                std::path::PathBuf::from("config/mcps"),
-                false,
-            )
-            .unwrap(),
-        ),
-        db: Arc::new(ares::db::PostgresClient::new_test()),
-        tenant_db: Arc::new(ares::db::TenantDb::new(Arc::new(
-            ares::db::PostgresClient::new_test(),
-        ))),
-        llm_factory: llm_factory.clone(),
-        provider_registry: provider_registry.clone(),
-        agent_registry,
-        tool_registry: tool_registry.clone(),
-        auth_service: Arc::new(ares::auth::jwt::AuthService::new(
-            "secret".to_string(),
-            900,
-            604800,
-        )),
-        deploy_registry: ares::api::handlers::deploy::DeployRegistry::default(),
-        loop_registry: ares::api::handlers::loops::LoopRegistry::new(),
-        emergency_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        context_provider: Arc::new(ares::agents::context_provider::NoOpContextProvider),
-        #[cfg(feature = "mcp")]
-        mcp_registry: None,
-        fleet_secrets: ares_config::fleet_secrets::FleetSecrets::new(),
-        runtime_tool_registry: runtime_tool_registry.clone(),
-        active_runs: Arc::new(ares::active_runs::ActiveRuns::new()),
-        skill_engine: Arc::new(ares::skill_engine::SkillEngine::new(
-            pool,
-            tool_registry,
-            runtime_tool_registry,
-            llm_factory,
-            config_manager,
-        )),
-    };
+    let dynamic_config = Arc::new(
+        DynamicConfigManager::new(
+            std::path::PathBuf::from("config/agents"),
+            std::path::PathBuf::from("config/models"),
+            std::path::PathBuf::from("config/tools"),
+            std::path::PathBuf::from("config/workflows"),
+            std::path::PathBuf::from("config/mcps"),
+            false,
+        )
+        .unwrap(),
+    );
+    let db = Arc::new(ares::db::PostgresClient::new_test());
+    let tenant_db = Arc::new(ares::db::TenantDb::new(Arc::new(
+        ares::db::PostgresClient::new_test(),
+    )));
+    let auth_service = Arc::new(ares::auth::jwt::AuthService::new(
+        "secret".to_string(),
+        900,
+        604800,
+    ));
+    let skill_engine = Arc::new(ares::skill_engine::SkillEngine::new(
+        pool,
+        tool_registry.clone(),
+        runtime_tool_registry.clone(),
+        llm_factory.clone(),
+        config_manager.clone(),
+    ));
+
+    let state: AppState = Context::new_root();
+    state.provide(ares::context_services::ConfigManagerService(config_manager.clone()));
+    state.provide(ares::context_services::DynamicConfigService(dynamic_config));
+    state.provide(ares::context_services::DbService(db.clone() as std::sync::Arc<dyn ares::db::traits::DatabaseClient>));
+    state.provide(ares::context_services::TenantDbService(tenant_db.clone()));
+    state.provide_arc(llm_factory.clone());
+    state.provide(ares::context_services::ProviderRegistryService(provider_registry.clone()));
+    state.provide_arc(agent_registry);
+    state.provide(ares::context_services::ToolRegistryService(tool_registry.clone()));
+    state.provide(ares::context_services::AuthServiceWrapper(auth_service.clone()));
+    #[cfg(feature = "mcp")]
+    state.provide(ares::context_services::McpRegistryService(None));
+    state.provide(ares::context_services::DeployRegistryService(ares::api::handlers::deploy::DeployRegistry::default()));
+    state.provide(ares::context_services::LoopRegistryService(ares::api::handlers::loops::LoopRegistry::new()));
+    state.provide(ares::context_services::EmergencyStopService(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))));
+    state.provide(ares::context_services::ContextProviderService(std::sync::Arc::new(ares::agents::context_provider::NoOpContextProvider)));
+    state.provide(ares::context_services::FleetSecretsService(ares_config::fleet_secrets::FleetSecrets::new()));
+    state.provide(ares::context_services::RuntimeToolRegistryService(runtime_tool_registry.clone()));
+    state.provide(ares::context_services::ActiveRunsService(std::sync::Arc::new(ares::active_runs::ActiveRuns::new())));
+    state.provide(ares::context_services::SkillEngineService(skill_engine));
 
     // Create workflow engine
     let engine = WorkflowEngine::new(state);

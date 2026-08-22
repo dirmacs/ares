@@ -189,9 +189,13 @@ impl Service for AgentResolverService {
 
     fn init(
         &self,
-        _ctx: &Arc<ares_cordis_core::Context>,
+        ctx: &Arc<ares_cordis_core::Context>,
     ) -> std::pin::Pin<Box<dyn Future<Output = std::result::Result<Option<Box<dyn ares_cordis_core::Disposable>>, CordisError>> + Send + '_>> {
-        Box::pin(async move { Ok(None) })
+        let ctx = ctx.clone();
+        Box::pin(async move {
+            let _ = ctx.inject::<crate::registry::AgentRegistry>().await;
+            Ok(None)
+        })
     }
 
     fn check(&self) -> bool {

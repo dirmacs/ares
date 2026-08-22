@@ -422,7 +422,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn mock_client(server_uri: &str) -> GoogleClient {
-        use ares_config::fleet_secrets::MasterKey;
+        use ares_store::MasterKey;
         use sqlx::PgPool;
         GoogleClient {
             config: crate::connectors::ConnectorConfig {

@@ -234,7 +234,10 @@ impl Tool for RuntimeMcpTool {
 ///
 /// Internally stores an `Arc<ArcSwap<HashMap<String, Arc<dyn Tool>>>>` so
 /// reads are lock-free and writes (reloads) are atomic.
-pub(crate) struct RuntimeToolRegistry {
+///
+/// Not a Cordis Service. Boot/factory construct this and pass it to
+/// [`crate::Tools::with_runtime`]. Do not provide it on `Context`.
+pub struct RuntimeToolRegistry {
     pool: sqlx::PgPool,
     /// The tool cache -- `ArcSwap` for lock-free hot-swap reads.
     tools: Arc<ArcSwap<HashMap<String, Arc<dyn Tool>>>>,
@@ -261,21 +264,6 @@ impl Clone for RuntimeToolRegistry {
             metadata: Arc::clone(&self.metadata),
             reload_interval_secs: self.reload_interval_secs,
         }
-    }
-}
-
-impl cordis::Service for RuntimeToolRegistry {
-    fn name(&self) -> &'static str {
-        "runtime_tool_registry"
-    }
-    fn init(
-        &self,
-        _ctx: &std::sync::Arc<cordis::Context>,
-    ) -> cordis::ServiceInitFuture<'_> {
-        Box::pin(async { Ok(None) })
-    }
-    fn check(&self) -> bool {
-        true
     }
 }
 

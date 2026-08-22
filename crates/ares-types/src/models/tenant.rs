@@ -159,6 +159,27 @@ impl ApiKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaExceeded {
+    Monthly,
+    Daily,
+}
+
+impl QuotaExceeded {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Monthly => "Monthly request quota exceeded",
+            Self::Daily => "Daily rate limit exceeded",
+        }
+    }
+}
+
+impl From<QuotaExceeded> for crate::types::AppError {
+    fn from(exceeded: QuotaExceeded) -> Self {
+        crate::types::AppError::RateLimited(exceeded.message().to_string())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TenantContext {
     pub tenant_id: String,
@@ -175,14 +196,18 @@ impl TenantContext {
         }
     }
 
-    pub fn can_make_request(&self, monthly_requests: u64, daily_requests: u64) -> bool {
+    pub fn admit(&self, monthly_requests: u64, daily_requests: u64) -> Result<(), QuotaExceeded> {
         if monthly_requests >= self.quota.requests_per_month {
-            return false;
+            return Err(QuotaExceeded::Monthly);
         }
         if daily_requests >= self.quota.requests_per_day {
-            return false;
+            return Err(QuotaExceeded::Daily);
         }
-        true
+        Ok(())
+    }
+
+    pub fn can_make_request(&self, monthly_requests: u64, daily_requests: u64) -> bool {
+        self.admit(monthly_requests, daily_requests).is_ok()
     }
 
     pub fn can_use_tokens(&self, monthly_tokens: u64, additional_tokens: u64) -> bool {
@@ -289,6 +314,46 @@ mod tests {
         assert!(ctx.can_make_request(0, 49));
         assert!(!ctx.can_make_request(1000, 0));
         assert!(!ctx.can_make_request(0, 50));
+    }
+
+    #[test]
+    fn test_tenant_context_admit_ok() {
+        let ctx = TenantContext::new("test".to_string(), TenantTier::Free);
+        assert!(ctx.admit(0, 0).is_ok());
+        assert!(ctx.admit(999, 49).is_ok());
+    }
+
+    #[test]
+    fn test_tenant_context_admit_monthly() {
+        let ctx = TenantContext::new("test".to_string(), TenantTier::Free);
+        assert_eq!(ctx.admit(1000, 0), Err(QuotaExceeded::Monthly));
+        assert_eq!(ctx.admit(1000, 50), Err(QuotaExceeded::Monthly));
+    }
+
+    #[test]
+    fn test_tenant_context_admit_daily() {
+        let ctx = TenantContext::new("test".to_string(), TenantTier::Free);
+        assert_eq!(ctx.admit(0, 50), Err(QuotaExceeded::Daily));
+    }
+
+    #[test]
+    fn test_tenant_context_admit_enterprise() {
+        let ctx = TenantContext::new("ent".to_string(), TenantTier::Enterprise);
+        assert!(ctx.admit(1_000_000, 1_000_000).is_ok());
+        let err: crate::types::AppError = QuotaExceeded::Monthly.into();
+        match err {
+            crate::types::AppError::RateLimited(msg) => {
+                assert_eq!(msg, "Monthly request quota exceeded");
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+        let err: crate::types::AppError = QuotaExceeded::Daily.into();
+        match err {
+            crate::types::AppError::RateLimited(msg) => {
+                assert_eq!(msg, "Daily rate limit exceeded");
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
     }
 
     #[test]

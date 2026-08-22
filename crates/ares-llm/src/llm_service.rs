@@ -17,7 +17,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use cordis::{Context, CordisError, Service};
-use ares_config::nvidia_catalog::NvidiaCatalogCache;
+use crate::nvidia_catalog::NvidiaCatalogCache;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 
@@ -234,6 +234,16 @@ impl Llm {
     pub fn with_factory(mut self, factory: Arc<ConfigBasedLLMFactory>) -> Self {
         self.factory = Some(factory);
         self
+    }
+
+    /// Clone the provider registry for named-provider lookup.
+    pub fn provider_registry(&self) -> Arc<ProviderRegistry> {
+        Arc::clone(&self.provider_registry)
+    }
+
+    /// Clone the config-based factory when one was attached at construction.
+    pub fn factory(&self) -> Option<Arc<ConfigBasedLLMFactory>> {
+        self.factory.clone()
     }
 
     /// Create with explicit breaker (e.g. `Open` for testing).
@@ -508,6 +518,22 @@ mod tests {
         assert_eq!(Breaker::COOLDOWN_SECS, 30);
     }
 
+    #[test]
+    fn provider_registry_and_factory_accessors() {
+        let registry = Arc::new(ProviderRegistry::new());
+        let pool = Arc::new(ClientPool::with_defaults());
+        let factory = Arc::new(
+            ConfigBasedLLMFactory::from_config(HashMap::new(), HashMap::new(), None)
+                .expect("empty factory config"),
+        );
+        let llm = Llm::new(Arc::clone(&registry), pool, None).with_factory(Arc::clone(&factory));
+        assert!(Arc::ptr_eq(&llm.provider_registry(), &registry));
+        assert!(Arc::ptr_eq(
+            &llm.factory().expect("factory attached"),
+            &factory
+        ));
+    }
+
     #[tokio::test]
     async fn llm_model_override_via_context() {
         let registry = Arc::new(ProviderRegistry::new());
@@ -633,7 +659,7 @@ mod tests {
         let mut registry = ProviderRegistry::new();
         registry.register_model(
             "pinned-model",
-            ares_config::toml_config::ModelConfig {
+            crate::config::ModelConfig {
                 provider: "shared-runtime".into(),
                 model: "tenant-model".into(),
                 temperature: 0.7,

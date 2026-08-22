@@ -1,5 +1,8 @@
 //! Built-in agent tools for A.R.E.S.
 
+pub mod config;
+pub use config::ToolConfig;
+
 pub mod tools;
 pub mod calculator;
 pub mod http_tool;
@@ -7,9 +10,10 @@ pub mod registry;
 pub mod rhai_tool;
 pub mod tool_service;
 pub mod script_tool;
+pub mod plugins;
 
 #[cfg(any(feature = "postgres", test))]
-pub(crate) mod runtime_registry;
+pub mod runtime_registry;
 
 #[cfg(any(feature = "postgres", test))]
 pub mod sql_tool;
@@ -27,9 +31,13 @@ pub mod mcp_bridge;
 pub mod connectors;
 
 pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
-pub use registry::Tool;
+pub use plugins::register_plugins;
+pub use registry::{Tool, ToolRegistry};
 pub use rhai_tool::{RhaiTool, RhaiToolConfig};
 pub use tool_service::Tools;
+
+#[cfg(any(feature = "postgres", test))]
+pub use runtime_registry::RuntimeToolRegistry;
 
 #[cfg(test)]
 mod tests {

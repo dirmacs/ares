@@ -8,7 +8,7 @@ use std::any::TypeId;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use ares_types::types::ToolDefinition;
+use ares_types::types::{Result, ToolDefinition};
 use cordis::Service;
 
 use crate::registry::{Tool, ToolRegistry};
@@ -26,7 +26,7 @@ pub struct Tools {
 }
 
 impl Tools {
-    pub(crate) fn new(static_registry: Arc<ToolRegistry>) -> Self {
+    pub fn new(static_registry: Arc<ToolRegistry>) -> Self {
         Self {
             static_registry,
             #[cfg(any(feature = "postgres", test))]
@@ -35,7 +35,7 @@ impl Tools {
     }
 
     #[cfg(any(feature = "postgres", test))]
-    pub(crate) fn with_runtime(
+    pub fn with_runtime(
         static_registry: Arc<ToolRegistry>,
         runtime: Option<Arc<RuntimeToolRegistry>>,
     ) -> Self {
@@ -64,6 +64,38 @@ impl Tools {
     pub fn list(&self, ctx: &Arc<cordis::Context>) -> Vec<ToolDefinition> {
         let tenant = tenant_id_from_tool_ctx(ctx);
         self.list_named(tenant.as_deref())
+    }
+
+    /// Reload runtime tools from the database when a runtime registry is attached.
+    pub async fn reload(&self) -> Result<()> {
+        #[cfg(any(feature = "postgres", test))]
+        if let Some(rt) = &self.runtime {
+            rt.reload().await?;
+        }
+        Ok(())
+    }
+
+    /// Runtime registry for admin mutation. Not a Service; do not `ctx.get` it.
+    #[cfg(any(feature = "postgres", test))]
+    pub fn runtime(&self) -> Option<Arc<RuntimeToolRegistry>> {
+        self.runtime.clone()
+    }
+
+    /// Concrete runtime tool type after tenant visibility checks.
+    pub fn tool_type(&self, ctx: &Arc<cordis::Context>, name: &str) -> Option<String> {
+        #[cfg(any(feature = "postgres", test))]
+        {
+            let tenant = tenant_id_from_tool_ctx(ctx);
+            return self
+                .runtime
+                .as_ref()
+                .and_then(|rt| rt.tool_type_for_tenant(name, tenant.as_deref()));
+        }
+        #[cfg(not(any(feature = "postgres", test)))]
+        {
+            let _ = (ctx, name);
+            None
+        }
     }
 
     fn resolve_named(&self, name: &str, tenant: Option<&str>) -> Option<Arc<dyn Tool>> {

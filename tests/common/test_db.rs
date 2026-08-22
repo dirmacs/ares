@@ -18,8 +18,8 @@
 //! let db = create_test_db().await; // connects, ensures schema, cleans once per binary
 //! ```
 
-use ares::db::PostgresClient;
-use ares::types::Result;
+use ares_server::db::PostgresClient;
+use ares_server::types::Result;
 use std::sync::Once;
 
 static LOAD_ENV: Once = Once::new();
@@ -96,6 +96,6 @@ pub async fn ensure_schema(db: &PostgresClient) -> Result<()> {
     sqlx::migrate!("./migrations")
         .run(&db.pool)
         .await
-        .map_err(|e| ares::types::AppError::Database(format!("Migration failed: {}", e)))?;
+        .map_err(|e| ares_server::types::AppError::Database(format!("Migration failed: {}", e)))?;
     Ok(())
 }

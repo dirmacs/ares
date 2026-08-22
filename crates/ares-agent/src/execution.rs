@@ -181,6 +181,11 @@ impl Execute {
         self
     }
 
+    /// Host-injected run tracker, if any.
+    pub fn run_tracker(&self) -> Option<&Arc<dyn RunTracker>> {
+        self.run_tracker.as_ref()
+    }
+
     /// Execute an agent by name using the full pipeline: resolve → create → execute.
     ///
     /// This is the PRIMARY entry point that handlers should call. It:
@@ -195,6 +200,7 @@ impl Execute {
         req: &AgentRequest,
         ctx: &Arc<Context>,
     ) -> std::result::Result<ExecutionResult, AppError> {
+        crate::admit(ctx).await?;
         if let Some(result) = self.try_run_resolved(req, ctx).await {
             return result;
         }
@@ -239,7 +245,7 @@ impl Execute {
         let resolver = ctx
             .get::<crate::resolver::Resolver>()
             .or_else(|| {
-                crate::resolver::Resolver::from_ctx(ctx, registry_owned.clone()).map(Arc::new)
+                crate::resolver::Resolver::from_ctx(ctx, Arc::clone(registry)).map(Arc::new)
             })?;
         let resolved = resolver.resolve(ctx, &req.agent_name).await;
         let (user_agent, source) = match resolved {
@@ -265,7 +271,7 @@ impl Execute {
         let Some(tenant_db) = ctx.get::<ares_store::TenantDb>() else {
             return None;
         };
-        let Some(fleet_secrets) = ctx.get::<ares_config::fleet_secrets::FleetSecrets>() else {
+        let Some(fleet_secrets) = ctx.get::<ares_store::FleetSecrets>() else {
             return None;
         };
 
@@ -408,14 +414,18 @@ impl Execute {
             }
         }
 
-        let tools = ctx.get::<ares_tools::Tools>();
-        let tool_definitions = tools.as_ref().map(|t| t.list(ctx)).unwrap_or_default();
+        let tools = ctx.get::<ares_tools::Tools>().unwrap_or_else(|| {
+            Arc::new(ares_tools::Tools::from_static(
+                std::iter::empty::<Arc<dyn ares_tools::Tool>>(),
+            ))
+        });
+        let tool_definitions = tools.list(ctx);
         tracing::debug!(
             count = tool_definitions.len(),
-            has_service = tools.is_some(),
+            has_service = true,
             "tools resolved via Tools::list"
         );
-        let _resolve_probe = tools.as_ref().and_then(|t| t.resolve(ctx, "__probe__"));
+        let _resolve_probe = tools.resolve(ctx, "__probe__");
 
         let system_prompt = if let Some(extra) = injected_context.clone() {
             format!("{}
@@ -452,11 +462,16 @@ You are {}.", extra, req.agent_name)
                 .await
             {
                 Ok(client) => {
-                    let registry = Arc::new(ares_tools::registry::ToolRegistry::new());
                     let config = ares_llm::coordinator::ToolCallingConfig::default();
-                    let coordinator =
-                        ares_llm::coordinator::ToolCoordinator::new(client, registry, config);
-                    match coordinator.execute(Some(&system_prompt), &req.message).await {
+                    let coordinator = ares_llm::coordinator::ToolCoordinator::new(
+                        client,
+                        Arc::clone(&tools),
+                        config,
+                    );
+                    match coordinator
+                        .execute(Some(&system_prompt), &req.message, ctx)
+                        .await
+                    {
                         Ok(coord_result) => {
                             if let Some(_db) = tenant_db(ctx) {
                                 tracing::debug!(
@@ -569,6 +584,10 @@ impl Default for Execute {
 /// Derive tenant for `execute` without requiring the postgres-only resolver module.
 /// Scope tools and execution to one tenant. Isolate wins over intercept.
 pub fn tenant_scope(ctx: &Arc<Context>, tenant_id: &str) -> Arc<Context> {
+    #[cfg(feature = "postgres")]
+    if let Some(realms) = ctx.get::<ares_store::TenantRealms>() {
+        return realms.open(ctx, tenant_id);
+    }
     ctx.isolate::<ares_tools::Tools>(tenant_id)
         .isolate::<Execute>(tenant_id)
 }
@@ -803,11 +822,11 @@ mod tests {
     }
 
     fn tools_with_probe() -> ares_tools::Tools {
-        let mut registry = ares_tools::registry::ToolRegistry::new();
-        registry.register(Arc::new(ProbeTool {
-            name: "probe".into(),
-        }));
-        ares_tools::Tools::new(Arc::new(registry))
+        ares_tools::Tools::from_static([
+            Arc::new(ProbeTool {
+                name: "probe".into(),
+            }) as Arc<dyn ares_tools::Tool>,
+        ])
     }
 
     async fn execute_with_tenant_context_intercept(tenant_id: &str) {
@@ -880,5 +899,36 @@ mod tests {
         assert_eq!(user_id_from_ctx(&ctx, "anon"), "from-isolate");
         let tools = ctx.get::<ares_tools::Tools>().expect("Tools on ctx");
         assert!(tools.list(&ctx).iter().any(|d| d.name == "probe"));
+    }
+
+    #[tokio::test]
+    async fn execute_admit_denies_without_http() {
+        let execute = Execute::new();
+        let quota = ares_types::models::TenantQuota {
+            tier: ares_types::models::TenantTier::Free,
+            requests_per_month: 0,
+            tokens_per_month: 0,
+            max_agents: 1,
+            requests_per_day: 0,
+        };
+        let tc = ares_types::models::TenantContext {
+            tenant_id: "capped".into(),
+            tier: ares_types::models::TenantTier::Free,
+            quota,
+        };
+        let ctx = Context::new_root().with_intercept(tc);
+        let _ = ctx.provide(cordis::EventsService::new());
+        let req = AgentRequest {
+            agent_name: "echo".into(),
+            message: "should not run".into(),
+            ..Default::default()
+        };
+        let err = execute.run(&req, &ctx).await.expect_err("quota deny");
+        match err {
+            AppError::RateLimited(msg) => {
+                assert_eq!(msg, "Monthly request quota exceeded");
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
     }
 }

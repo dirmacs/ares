@@ -138,6 +138,17 @@ impl Default for PluginRegistry {
 
 impl Service for PluginRegistry {}
 
+/// Register kernel string factories consumed by the declarative loader.
+pub fn register_plugins(reg: &PluginRegistry) {
+    reg.register(
+        "EventsService",
+        Arc::new(|ctx, _config| {
+            let future = ctx.plugin(EventsService::new());
+            tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+        }),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // ReflectService — Phase 3 unified hot-reload (watch + BFS via Fiber::refresh)
 // ---------------------------------------------------------------------------

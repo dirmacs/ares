@@ -21,7 +21,7 @@
 
 #![cfg(feature = "ollama")]
 
-use ares::llm::{LLMClient, Provider};
+use ares_server::llm::{LLMClient, Provider};
 use futures::StreamExt;
 
 // ============= Helper Functions =============
@@ -209,7 +209,7 @@ async fn test_live_ollama_generate_with_tools() {
 
     let client = create_live_client().await;
 
-    let tools = vec![ares::types::ToolDefinition {
+    let tools = vec![ares_server::types::ToolDefinition {
         name: "calculator".to_string(),
         description: "Performs basic arithmetic operations".to_string(),
         parameters: serde_json::json!({

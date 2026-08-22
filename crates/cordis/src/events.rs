@@ -63,11 +63,28 @@ pub struct EventsService {
 impl EventsService {
     pub fn new() -> Self {
         let (tx, _rx) = tokio::sync::broadcast::channel(32);
-        Self {
+        let svc = Self {
             handlers: RwLock::new(HashMap::new()),
             waterfall_handlers: RwLock::new(HashMap::new()),
             bus: tx,
-        }
+        };
+        svc.register_default_admit_handler();
+        svc
+    }
+
+    fn register_default_admit_handler(&self) {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let slot = HandlerSlot {
+            cancelled,
+            handler: Arc::new(|payload| {
+                Box::pin(async move { Ok(default_agent_admit(payload)) })
+            }),
+        };
+        self.handlers
+            .write()
+            .entry("agent.admit".into())
+            .or_default()
+            .push(slot);
     }
 
     /// Subscribe to the fire-and-forget emit broadcast bus.
@@ -232,6 +249,36 @@ impl Default for EventsService {
     }
 }
 
+fn json_u64(v: &serde_json::Value, key: &str) -> Option<u64> {
+    v.get(key).and_then(|x| {
+        x.as_u64()
+            .or_else(|| x.as_i64().and_then(|n| u64::try_from(n).ok()))
+    })
+}
+
+/// Default `"agent.admit"` Bail handler. Deny JSON when payload counts fail
+/// against payload quota fields. Enterprise (or missing quota fields) continues.
+fn default_agent_admit(payload: serde_json::Value) -> serde_json::Value {
+    if payload.get("tier").and_then(|v| v.as_str()) == Some("enterprise") {
+        return serde_json::Value::Null;
+    }
+    let monthly = json_u64(&payload, "monthly").unwrap_or(0);
+    let daily = json_u64(&payload, "daily").unwrap_or(0);
+    let Some(rpm) = json_u64(&payload, "requests_per_month") else {
+        return serde_json::Value::Null;
+    };
+    let Some(rpd) = json_u64(&payload, "requests_per_day") else {
+        return serde_json::Value::Null;
+    };
+    if monthly >= rpm {
+        return serde_json::json!({ "deny": "monthly" });
+    }
+    if daily >= rpd {
+        return serde_json::json!({ "deny": "daily" });
+    }
+    serde_json::Value::Null
+}
+
 impl Service for EventsService {}
 
 /// Run a Cordis `waterfall` around-middleware chain starting at `index`.
@@ -312,5 +359,45 @@ mod tests {
             !flag.load(Ordering::SeqCst),
             "disposed on_waterfall handler must not run"
         );
+    }
+
+    #[tokio::test]
+    async fn default_agent_admit_handler_denies_monthly() {
+        let svc = EventsService::new();
+        let out = svc
+            .dispatch(
+                "agent.admit".into(),
+                serde_json::json!({
+                    "monthly": 10,
+                    "daily": 0,
+                    "requests_per_month": 10,
+                    "requests_per_day": 50,
+                    "tier": "free"
+                }),
+                Dispatch::Bail,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["deny"], "monthly");
+    }
+
+    #[tokio::test]
+    async fn default_agent_admit_handler_allows_under_quota() {
+        let svc = EventsService::new();
+        let out = svc
+            .dispatch(
+                "agent.admit".into(),
+                serde_json::json!({
+                    "monthly": 0,
+                    "daily": 0,
+                    "requests_per_month": 10,
+                    "requests_per_day": 50,
+                    "tier": "free"
+                }),
+                Dispatch::Bail,
+            )
+            .await
+            .unwrap();
+        assert!(out.get("deny").is_none(), "under-quota must not deny, got {out}");
     }
 }

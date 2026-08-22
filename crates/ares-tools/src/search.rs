@@ -109,7 +109,7 @@ impl Tool for WebSearch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_config::toml_config::ToolConfig;
+    use crate::ToolConfig;
     use ares_types::AppError;
     use std::collections::HashMap;
     use std::sync::Arc;

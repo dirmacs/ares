@@ -416,6 +416,79 @@ impl TenantDb {
 
         Ok(())
     }
+
+    /// Delete a tenant and rows that would block `DELETE FROM tenants`.
+    ///
+    /// `api_keys`, `tenant_users`, and `tenant_model_tiers` cascade from tenants.
+    /// Other `tenant_id` tables have no `ON DELETE CASCADE` (or no FK) and are
+    /// deleted first. Missing tenant → `AppError::NotFound`.
+    pub async fn delete_tenant(&self, tenant_id: &str) -> Result<()> {
+        let existing = self.get_tenant(tenant_id).await?;
+        if existing.is_none() {
+            return Err(AppError::NotFound("Tenant not found".to_string()));
+        }
+
+        let mut tx = self
+            .postgres
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to start tenant delete: {}", e)))?;
+
+        // FK to tenants without CASCADE, plus tenant_id rows with no FK.
+        // runtime_tools CASCADE-deletes versions/executions; leftover FKs
+        // (changed_by / executions.tenant_id) are cleared next.
+        let stmts: &[&str] = &[
+            "DELETE FROM runtime_tool_executions WHERE tenant_id = $1 OR tool_id IN (SELECT id FROM runtime_tools WHERE tenant_id = $1 OR created_by = $1)",
+            "DELETE FROM runtime_tool_versions WHERE changed_by = $1 OR tool_id IN (SELECT id FROM runtime_tools WHERE tenant_id = $1 OR created_by = $1)",
+            "DELETE FROM runtime_tools WHERE tenant_id = $1 OR created_by = $1",
+            "DELETE FROM budget_alerts WHERE tenant_id = $1",
+            "DELETE FROM agent_run_feedback WHERE tenant_id = $1",
+            "DELETE FROM run_llm_calls WHERE tenant_id = $1",
+            "DELETE FROM run_tool_calls WHERE tenant_id = $1",
+            "DELETE FROM run_costs WHERE tenant_id = $1",
+            "DELETE FROM agent_runs WHERE tenant_id = $1",
+            "DELETE FROM usage_events WHERE tenant_id = $1",
+            "DELETE FROM monthly_usage_cache WHERE tenant_id = $1",
+            "DELETE FROM daily_rate_limits WHERE tenant_id = $1",
+            "DELETE FROM tenant_agents WHERE tenant_id = $1",
+            "DELETE FROM skills WHERE tenant_id = $1",
+            "DELETE FROM connectors WHERE tenant_id = $1",
+            "DELETE FROM agent_schedules WHERE tenant_id = $1",
+            "DELETE FROM event_triggers WHERE tenant_id = $1",
+            "DELETE FROM agent_pipelines WHERE tenant_id = $1",
+            "DELETE FROM oauth_credentials WHERE tenant_id = $1",
+            "DELETE FROM tenant_token_budgets WHERE tenant_id = $1",
+            "DELETE FROM token_usage_log WHERE tenant_id = $1",
+            "DELETE FROM tenant_tool_allowlist WHERE tenant_id = $1",
+            "DELETE FROM tenant_model_allowlist WHERE tenant_id = $1",
+            "DELETE FROM tenant_rag_allowlist WHERE tenant_id = $1",
+            "DELETE FROM tenant_budgets WHERE tenant_id = $1",
+            "DELETE FROM runtime_providers WHERE tenant_id = $1",
+            "DELETE FROM agent_health_metrics WHERE tenant_id = $1",
+            "DELETE FROM model_health_metrics WHERE tenant_id = $1",
+            "DELETE FROM tenants WHERE id = $1",
+        ];
+
+        for sql in stmts {
+            sqlx::query(sql)
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    AppError::Database(format!("Failed to delete tenant rows: {}", e))
+                })?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to commit tenant delete: {}", e)))?;
+
+        self.monthly_cache.write().await.remove(tenant_id);
+        self.daily_cache.write().await.remove(tenant_id);
+
+        Ok(())
+    }
 }
 
 impl cordis::Service for TenantDb {
@@ -456,7 +529,8 @@ pub struct UsageSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Timelike;
+    use ares_types::TenantQuota;
+    use chrono::{Timelike, TimeZone};
 
     // ── generate_api_key ──────────────────────────────────────────────
 

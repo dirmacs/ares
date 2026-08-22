@@ -10,9 +10,15 @@ use anyhow::Result;
 use sqlx::PgPool;
 use tracing::{info, instrument, warn};
 
-use ares_config::toon_config::ToonAgentConfig;
-
 use crate::query_builders::{agent_version_upsert_sql, AGENT_VERSION_HISTORY_SQL};
+
+/// Snapshot of an agent config recorded in `agent_config_versions`.
+#[derive(Debug, Clone)]
+pub struct AgentVersionInput {
+    pub name: String,
+    pub version: String,
+    pub config_json: serde_json::Value,
+}
 
 /// Record a batch of agent configs into `agent_config_versions`.
 /// Called on startup (change_source="startup") and on hot-reload (change_source="hot_reload").
@@ -22,14 +28,17 @@ use crate::query_builders::{agent_version_upsert_sql, AGENT_VERSION_HISTORY_SQL}
 #[instrument(skip(pool, agents), fields(count = agents.len()))]
 pub async fn record_agent_versions(
     pool: &PgPool,
-    agents: &[ToonAgentConfig],
+    agents: &[AgentVersionInput],
     change_source: &str,
 ) -> Result<()> {
     let mut recorded = 0usize;
 
     for agent in agents {
-        let config_json = serde_json::to_value(agent)
-            .unwrap_or_else(|_| serde_json::json!({"name": agent.name}));
+        let config_json = if agent.config_json.is_null() {
+            serde_json::json!({"name": agent.name})
+        } else {
+            agent.config_json.clone()
+        };
 
         // For rollback events we need the row to be updated even if the version
         // already exists (so the rollback is durably recorded). For startup /
@@ -105,10 +114,8 @@ pub struct AgentVersionRecord {
 
 #[cfg(test)]
 mod version_tests {
-    use super::{get_agent_version_history, record_agent_versions, AgentVersionRecord};
+    use super::{get_agent_version_history, record_agent_versions, AgentVersionInput, AgentVersionRecord};
 
-
-    use ares_config::toon_config::ToonAgentConfig;
     use sqlx::postgres::PgPoolOptions;
     use sqlx::PgPool;
 
@@ -119,10 +126,16 @@ mod version_tests {
             .expect("connect_lazy should not fail for malformed URLs")
     }
 
-    fn sample_agent(name: &str, version: &str) -> ToonAgentConfig {
-        let mut agent = ToonAgentConfig::new(name, "fast");
-        agent.version = version.into();
-        agent
+    fn sample_agent(name: &str, version: &str) -> AgentVersionInput {
+        AgentVersionInput {
+            name: name.into(),
+            version: version.into(),
+            config_json: serde_json::json!({
+                "name": name,
+                "version": version,
+                "model": "fast"
+            }),
+        }
     }
 
     // ---- SQL / query wiring (no live Postgres) ---------------------------

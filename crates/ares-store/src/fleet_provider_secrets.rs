@@ -5,7 +5,7 @@
 //! master key is unset (or `FLEET_SECRETS_KEY` is missing), `load_all` returns
 //! an empty map — the service does not refuse to start.
 
-use ares_config::fleet_secrets::{
+use crate::fleet_secrets::{
     decrypt_api_key, encrypt_api_key, EncryptedPayload, FleetSecretsError, MasterKey,
     ProviderOverride,
 };
@@ -309,7 +309,7 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_config::fleet_secrets::{last_n_visible, MasterKey};
+    use crate::fleet_secrets::{last_n_visible, MasterKey};
 
     // These tests do not require a live DB; they exercise the in-memory map
     // contract. Integration tests against a real Postgres instance should

@@ -100,7 +100,7 @@ services:
       - RUST_LOG=info,ares=debug
     volumes:
       - ares_data:/data
-      - ares_config:/app/config
+      - overlay_config:/app/config
       - ./models:/models
     depends_on:
       ollama:
@@ -126,7 +126,7 @@ services:
     container_name: ares-init
     volumes:
       - ares_data:/app/data
-      - ares_config:/app/config
+      - overlay_config:/app/config
     command: ["ares-server", "init", "--force"]
     profiles:
       - init
@@ -138,7 +138,7 @@ volumes:
     driver: local
   ares_data:
     driver: local
-  ares_config:
+  overlay_config:
     driver: local
 
 networks:

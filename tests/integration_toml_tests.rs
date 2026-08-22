@@ -258,12 +258,12 @@ async fn test_workflow_engine_from_config() {
     state.provide(ares::context_services::McpRegistryService(None));
     state.provide(ares::context_services::DeployRegistryService(ares::api::handlers::deploy::DeployRegistry::default()));
     state.provide(ares::context_services::LoopRegistryService(ares::api::handlers::loops::LoopRegistry::new()));
-    state.provide(ares::context_services::EmergencyStopService(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))));
+    state.provide(ares::context_services::EmergencyStop::new(false));
     state.provide(ares::context_services::ContextProviderService(std::sync::Arc::new(ares::agents::context_provider::NoOpContextProvider)));
-    state.provide(ares::context_services::FleetSecretsService(ares_config::fleet_secrets::FleetSecrets::new()));
-    state.provide(ares::context_services::RuntimeToolRegistryService(runtime_tool_registry.clone()));
-    state.provide(ares::context_services::ActiveRunsService(std::sync::Arc::new(ares::active_runs::ActiveRuns::new())));
-    state.provide(ares::context_services::SkillEngineService(skill_engine));
+    state.provide(ares_config::fleet_secrets::FleetSecrets::new());
+    state.provide_arc(runtime_tool_registry.clone());
+    state.provide(ares::active_runs::ActiveRuns::new());
+    state.provide_arc(skill_engine);
 
     // Create workflow engine
     let engine = WorkflowEngine::new(state);

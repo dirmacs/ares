@@ -128,6 +128,21 @@ impl FleetSecrets {
     }
 }
 
+impl ares_cordis_core::Service for FleetSecrets {
+    fn name(&self) -> &'static str {
+        "fleet_secrets"
+    }
+    fn init(
+        &self,
+        _ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
 /// AES-256-GCM ciphertext with its 96-bit nonce. Stored side-by-side so the
 /// loader does not have to track nonces separately.
 #[derive(Debug, Clone, Serialize, Deserialize)]

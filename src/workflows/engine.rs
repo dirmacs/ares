@@ -203,7 +203,7 @@ impl WorkflowEngine {
                     &agent_config,
                     &context.user_id,
                     &self.ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
-                    &self.ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
+                    &self.ctx.get::<crate::FleetSecrets>().expect("not provided"),
                 )
                 .await?;
             agent.set_run_id(uuid::Uuid::new_v4().to_string());
@@ -484,12 +484,12 @@ mod tests {
             ctx.provide(crate::context_services::AuthServiceWrapper(auth_service));
             ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));
             ctx.provide(crate::context_services::LoopRegistryService(crate::api::handlers::loops::LoopRegistry::new()));
-            ctx.provide(crate::context_services::EmergencyStopService(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            ctx.provide(crate::context_services::EmergencyStop::new(false));
             ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
-            ctx.provide(crate::context_services::FleetSecretsService(ares_config::fleet_secrets::FleetSecrets::new()));
-            ctx.provide(crate::context_services::RuntimeToolRegistryService(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone()))));
-            ctx.provide(crate::context_services::ActiveRunsService(Arc::new(crate::active_runs::ActiveRuns::new())));
-            ctx.provide(crate::context_services::SkillEngineService(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone()))))));
+            ctx.provide(ares_config::fleet_secrets::FleetSecrets::new());
+            ctx.provide_arc(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())));
+            ctx.provide_arc(Arc::new(crate::active_runs::ActiveRuns::new()));
+            ctx.provide_arc(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone())))));
             ctx
         };
 
@@ -533,12 +533,12 @@ mod tests {
             ctx.provide(crate::context_services::AuthServiceWrapper(auth_service));
             ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));
             ctx.provide(crate::context_services::LoopRegistryService(crate::api::handlers::loops::LoopRegistry::new()));
-            ctx.provide(crate::context_services::EmergencyStopService(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            ctx.provide(crate::context_services::EmergencyStop::new(false));
             ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
-            ctx.provide(crate::context_services::FleetSecretsService(ares_config::fleet_secrets::FleetSecrets::new()));
-            ctx.provide(crate::context_services::RuntimeToolRegistryService(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone()))));
-            ctx.provide(crate::context_services::ActiveRunsService(Arc::new(crate::active_runs::ActiveRuns::new())));
-            ctx.provide(crate::context_services::SkillEngineService(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone()))))));
+            ctx.provide(ares_config::fleet_secrets::FleetSecrets::new());
+            ctx.provide_arc(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())));
+            ctx.provide_arc(Arc::new(crate::active_runs::ActiveRuns::new()));
+            ctx.provide_arc(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone())))));
             ctx
         };
 
@@ -582,12 +582,12 @@ mod tests {
             ctx.provide(crate::context_services::AuthServiceWrapper(auth_service));
             ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));
             ctx.provide(crate::context_services::LoopRegistryService(crate::api::handlers::loops::LoopRegistry::new()));
-            ctx.provide(crate::context_services::EmergencyStopService(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            ctx.provide(crate::context_services::EmergencyStop::new(false));
             ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
-            ctx.provide(crate::context_services::FleetSecretsService(ares_config::fleet_secrets::FleetSecrets::new()));
-            ctx.provide(crate::context_services::RuntimeToolRegistryService(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone()))));
-            ctx.provide(crate::context_services::ActiveRunsService(Arc::new(crate::active_runs::ActiveRuns::new())));
-            ctx.provide(crate::context_services::SkillEngineService(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone()))))));
+            ctx.provide(ares_config::fleet_secrets::FleetSecrets::new());
+            ctx.provide_arc(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())));
+            ctx.provide_arc(Arc::new(crate::active_runs::ActiveRuns::new()));
+            ctx.provide_arc(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone())))));
             ctx
         };
 
@@ -689,12 +689,12 @@ mod tests {
             ctx.provide(crate::context_services::AuthServiceWrapper(auth_service));
             ctx.provide(crate::context_services::DeployRegistryService(crate::api::handlers::deploy::new_deploy_registry()));
             ctx.provide(crate::context_services::LoopRegistryService(crate::api::handlers::loops::LoopRegistry::new()));
-            ctx.provide(crate::context_services::EmergencyStopService(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            ctx.provide(crate::context_services::EmergencyStop::new(false));
             ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
-            ctx.provide(crate::context_services::FleetSecretsService(ares_config::fleet_secrets::FleetSecrets::new()));
-            ctx.provide(crate::context_services::RuntimeToolRegistryService(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone()))));
-            ctx.provide(crate::context_services::ActiveRunsService(Arc::new(crate::active_runs::ActiveRuns::new())));
-            ctx.provide(crate::context_services::SkillEngineService(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone()))))));
+            ctx.provide(ares_config::fleet_secrets::FleetSecrets::new());
+            ctx.provide_arc(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())));
+            ctx.provide_arc(Arc::new(crate::active_runs::ActiveRuns::new()));
+            ctx.provide_arc(Arc::new(crate::skill_engine::SkillEngine::new(db_tmp.pool.clone(), tool_registry.clone(), Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())), Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")), Arc::new(AresConfigManager::from_config((*config).clone())))));
             ctx
         };
 

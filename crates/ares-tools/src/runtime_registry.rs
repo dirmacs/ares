@@ -264,6 +264,21 @@ impl Clone for RuntimeToolRegistry {
     }
 }
 
+impl ares_cordis_core::Service for RuntimeToolRegistry {
+    fn name(&self) -> &'static str {
+        "runtime_tool_registry"
+    }
+    fn init(
+        &self,
+        _ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
 impl RuntimeToolRegistry {
     /// Create a new empty registry backed by `pool`.
     ///

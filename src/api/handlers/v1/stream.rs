@@ -39,18 +39,18 @@ pub async fn sandbox_run_agent(
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &state_ctx,
         &name,
-        &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
+        &state_ctx.get::<crate::FleetSecrets>().expect("not provided"),
     )
     .await?;
     resolved_agent
         .agent
-        .set_runtime_tools_from_ctx(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), &state_ctx);
+        .set_runtime_tools_from_ctx(state_ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(), &state_ctx);
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let started = Utc::now();
     let tools = resolved_agent.agent.get_filtered_tool_definitions();
     let tool_trace_specs =
-        sandbox_tool_trace_specs_from_ctx(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.as_ref(), &state_ctx, &tools);
+        sandbox_tool_trace_specs_from_ctx(state_ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").as_ref(), &state_ctx, &tools);
     let tool_names = tools
         .iter()
         .map(|tool| tool.name.clone())

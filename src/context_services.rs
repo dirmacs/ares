@@ -12,10 +12,7 @@ use crate::api::handlers::loops::LoopRegistry;
 use crate::auth::jwt::AuthService;
 use crate::db::tenants::TenantDb;
 use crate::db::traits::DatabaseClient;
-use crate::{
-    AgentRegistry, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager, FleetSecrets,
-    ProviderRegistry, RuntimeToolRegistry, ToolRegistry,
-};
+use crate::{AresConfigManager, DynamicConfigManager, ProviderRegistry, ToolRegistry};
 use ares_cordis_core::Service;
 
 // Config
@@ -59,28 +56,43 @@ pub struct LoopRegistryService(pub LoopRegistry);
 impl Service for LoopRegistryService {}
 
 // Emergency stop
-pub struct EmergencyStopService(pub Arc<AtomicBool>);
-impl Service for EmergencyStopService {}
+/// Global agent-execution kill switch.
+pub struct EmergencyStop {
+    flag: AtomicBool,
+}
+
+impl EmergencyStop {
+    pub fn new(active: bool) -> Self {
+        Self {
+            flag: AtomicBool::new(active),
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_active(&self, active: bool) {
+        self.flag
+            .store(active, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Service for EmergencyStop {
+    fn name(&self) -> &'static str {
+        "emergency_stop"
+    }
+    fn init(&self, _ctx: &AppState) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
 
 // Context provider
 pub struct ContextProviderService(pub Arc<dyn ContextProvider>);
 impl Service for ContextProviderService {}
-
-// Fleet secrets
-pub struct FleetSecretsService(pub FleetSecrets);
-impl Service for FleetSecretsService {}
-
-// Runtime tools
-pub struct RuntimeToolRegistryService(pub Arc<RuntimeToolRegistry>);
-impl Service for RuntimeToolRegistryService {}
-
-// Active runs
-pub struct ActiveRunsService(pub Arc<crate::active_runs::ActiveRuns>);
-impl Service for ActiveRunsService {}
-
-// Skill engine
-pub struct SkillEngineService(pub Arc<crate::skill_engine::SkillEngine>);
-impl Service for SkillEngineService {}
 
 // Postgres client direct (alternative for db)
 pub struct PostgresClientService(pub Arc<crate::db::PostgresClient>);

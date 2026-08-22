@@ -50,8 +50,10 @@ fn research_emergency_stop_message() -> &'static str {
     "All agents are currently under human review. Please try again later."
 }
 
-fn ensure_research_emergency_stop_inactive(active: &std::sync::atomic::AtomicBool) -> Result<()> {
-    if active.load(std::sync::atomic::Ordering::Relaxed) {
+fn ensure_research_emergency_stop_inactive(
+    stop: &crate::context_services::EmergencyStop,
+) -> Result<()> {
+    if stop.is_active() {
         return Err(crate::types::AppError::Unavailable(
             research_emergency_stop_message().to_string(),
         ));
@@ -91,7 +93,7 @@ pub async fn deep_research(
     Json(payload): Json<ResearchRequest>,
 ) -> Result<Json<ResearchResponse>> {
     let start = Instant::now();
-    ensure_research_emergency_stop_inactive(&ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0)?;
+    ensure_research_emergency_stop_inactive(&ctx.get::<crate::context_services::EmergencyStop>().expect("not provided"))?;
 
     let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
     let (depth, max_iterations, model_name) = plan_research_run(&config, &payload);
@@ -369,7 +371,7 @@ mod tests {
 
     #[test]
     fn ensure_research_emergency_stop_inactive_rejects_active_stop() {
-        let active = std::sync::atomic::AtomicBool::new(true);
+        let active = crate::context_services::EmergencyStop::new(true);
         let err = ensure_research_emergency_stop_inactive(&active).unwrap_err();
         match err {
             crate::types::AppError::Unavailable(msg) => {
@@ -381,7 +383,7 @@ mod tests {
 
     #[test]
     fn ensure_research_emergency_stop_inactive_allows_clear_stop() {
-        let active = std::sync::atomic::AtomicBool::new(false);
+        let active = crate::context_services::EmergencyStop::new(false);
         assert!(ensure_research_emergency_stop_inactive(&active).is_ok());
     }
 

@@ -340,7 +340,7 @@ pub async fn stream_active_runs(
     use std::time::Duration;
     use tokio::time::interval;
 
-    let active_runs = Arc::clone(&ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0);
+    let active_runs = Arc::clone(&ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided"));
     let stream = futures::stream::unfold(interval(Duration::from_secs(2)), move |mut interval| {
         let active_runs = Arc::clone(&active_runs);
         async move {

@@ -47,7 +47,7 @@ pub async fn create_tenant_agent_handler(
     validate_agent_config_tools(
         &req.config,
         &ctx.get::<crate::context_services::ToolRegistryService>().expect("not provided").0,
-        &ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0,
+        &ctx.get::<crate::RuntimeToolRegistry>().expect("not provided"),
         &tenant_id,
     )?;
 
@@ -72,7 +72,7 @@ pub async fn update_tenant_agent_handler(
         validate_agent_config_tools(
             cfg,
             &ctx.get::<crate::context_services::ToolRegistryService>().expect("not provided").0,
-            &ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0,
+            &ctx.get::<crate::RuntimeToolRegistry>().expect("not provided"),
             &tenant_id,
         )?;
     }
@@ -186,7 +186,7 @@ pub async fn create_agent(
     validate_agent_config_tools(
         &config,
         &ctx.get::<crate::context_services::ToolRegistryService>().expect("not provided").0,
-        &ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0,
+        &ctx.get::<crate::RuntimeToolRegistry>().expect("not provided"),
         &req.tenant_id,
     )?;
 
@@ -218,7 +218,7 @@ pub async fn update_agent(
         validate_agent_config_tools(
             cfg,
             &ctx.get::<crate::context_services::ToolRegistryService>().expect("not provided").0,
-            &ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0,
+            &ctx.get::<crate::RuntimeToolRegistry>().expect("not provided"),
             &tenant_id,
         )?;
     }
@@ -359,8 +359,8 @@ pub async fn test_tenant_agent_handler(
     Path((tenant_id, agent_name)): Path<(String, String)>,
     Json(req): Json<TestTenantAgentRequest>,
 ) -> Result<Json<TestTenantAgentResponse>> {
-    if ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
-        .load(std::sync::atomic::Ordering::Relaxed)
+    if ctx.get::<crate::context_services::EmergencyStop>().expect("not provided")
+        .is_active()
     {
         return Err(AppError::Unavailable(
             "All agents are currently under human review. Please try again later.".to_string(),
@@ -384,7 +384,7 @@ pub async fn test_tenant_agent_handler(
             &agent_config,
             &tenant_id,
             &__pool_24,
-            &ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
+            &ctx.get::<crate::FleetSecrets>().expect("not provided"),
         )
         .await?;
 
@@ -399,10 +399,10 @@ pub async fn test_tenant_agent_handler(
     });
     draft_agent.set_observability(obs.clone());
     let ctx = ctx.isolate::<ares_agents::AgentResolverService>(&format!("tenant:{tenant_id}"));
-    draft_agent.set_runtime_tools_from_ctx(ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), &ctx);
+    draft_agent.set_runtime_tools_from_ctx(ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(), &ctx);
     draft_agent.set_run_id(run_id.clone());
 
-    ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
+    ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),
         tenant_id: tenant_id.clone(),
         agent_name: agent_name.clone(),
@@ -476,7 +476,7 @@ pub async fn test_tenant_agent_handler(
 
     match result {
         Ok(response) => {
-            ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "completed");
+            ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "completed");
             let (input_tokens, output_tokens) = if let Some(ref usage) = response.usage {
                 (usage.prompt_tokens as u64, usage.completion_tokens as u64)
             } else {
@@ -510,7 +510,7 @@ pub async fn test_tenant_agent_handler(
             }))
         }
         Err(error) => {
-            ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
+            ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "error");
             Ok(Json(TestTenantAgentResponse {
                 status: "failed".to_string(),
                 response: None,
@@ -549,8 +549,8 @@ pub async fn get_emergency_stop_handler(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<EmergencyStopStatus>> {
     Ok(Json(emergency_stop_status(
-        ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
-            .load(std::sync::atomic::Ordering::Relaxed),
+        ctx.get::<crate::context_services::EmergencyStop>().expect("not provided")
+            .is_active(),
     )))
 }
 
@@ -561,8 +561,8 @@ pub async fn emergency_stop_handler(
     State(ctx): State<Arc<Context>>,
     Json(payload): Json<EmergencyStopRequest>,
 ) -> Result<Json<EmergencyStopStatus>> {
-    ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
-        .store(payload.active, std::sync::atomic::Ordering::Relaxed);
+    ctx.get::<crate::context_services::EmergencyStop>().expect("not provided")
+        .set_active(payload.active);
 
     let action = if payload.active {
         "emergency_stop_enabled"

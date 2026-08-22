@@ -114,6 +114,21 @@ impl Default for ActiveRuns {
     }
 }
 
+impl ares_cordis_core::Service for ActiveRuns {
+    fn name(&self) -> &'static str {
+        "active_runs"
+    }
+    fn init(
+        &self,
+        _ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

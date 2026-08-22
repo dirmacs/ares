@@ -571,8 +571,8 @@ mod tests {
     #[test]
     fn draft_test_agent_runtime_tools_must_be_attached() {
         let source = include_str!("agents.rs");
-        assert!(source.contains("draft_agent.set_runtime_tools("));
-        assert!(source.contains("ctx.get::<crate::context_services::RuntimeToolRegistryService>()"));
+        assert!(source.contains("draft_agent.set_runtime_tools_from_ctx("));
+        assert!(source.contains("ctx.get::<crate::RuntimeToolRegistry>()"));
     }
 
     #[tokio::test]

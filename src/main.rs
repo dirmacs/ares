@@ -539,6 +539,11 @@ fn block_on_async<F: std::future::Future>(fut: F) -> F::Output {
 }
 
 #[cfg(feature = "postgres")]
+fn inject_sync<T: ares_cordis_core::Service>(ctx: &Arc<Context>) -> Arc<T> {
+    block_on_async(ctx.inject::<T>())
+}
+
+#[cfg(feature = "postgres")]
 fn block_on_plugin<S: ares_cordis_core::Service + 'static>(
     ctx: &Arc<Context>,
     svc: S,
@@ -560,18 +565,14 @@ fn config_manager_from_ctx(
     if let Some(cs) = ctx.get::<ConfigService>() {
         return Ok(cs.0.clone());
     }
-    if let Some(mgr) = ctx.get::<AresConfigManager>() {
-        return Ok(mgr);
-    }
-    Err(missing("ConfigService"))
+    Ok(inject_sync::<AresConfigManager>(ctx))
 }
 
 #[cfg(feature = "postgres")]
 fn postgres_from_ctx(
     ctx: &Arc<Context>,
 ) -> Result<Arc<PostgresClient>, ares_cordis_core::CordisError> {
-    ctx.get::<PostgresClient>()
-        .ok_or_else(|| missing("PostgresClient"))
+    Ok(inject_sync::<PostgresClient>(ctx))
 }
 
 #[cfg(feature = "postgres")]
@@ -663,7 +664,7 @@ fn factory_tool_registry(
     tool_registry.register(Arc::new(ares::tools::web_scrape::WebScrape::new()));
 
     if let Some(master_key) = MasterKey::from_env() {
-        if let Ok(pg) = postgres_from_ctx(ctx) {
+        if let Some(pg) = ctx.get::<PostgresClient>() {
             ares::tools::connectors::register_prebuilt_connector_tools(
                 &mut tool_registry,
                 pg.pool.clone(),
@@ -747,19 +748,15 @@ fn factory_agent_registry(
     _config: &serde_json::Value,
 ) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
     let mgr = config_manager_from_ctx(ctx)?;
-    let providers = ctx
-        .get::<ProviderRegistry>()
-        .ok_or_else(|| missing("ProviderRegistry"))?;
+    let providers = inject_sync::<ProviderRegistry>(ctx);
     let tools = ctx
         .get::<ToolRegistry>()
         .or_else(|| {
             ctx.get::<ares::context_services::ToolRegistryService>()
                 .map(|s| s.0.clone())
         })
-        .ok_or_else(|| missing("ToolRegistry"))?;
-    let dynamic = ctx
-        .get::<DynamicConfigManager>()
-        .ok_or_else(|| missing("DynamicConfig"))?;
+        .unwrap_or_else(|| inject_sync::<ToolRegistry>(ctx));
+    let dynamic = inject_sync::<DynamicConfigManager>(ctx);
     let agent_registry = Arc::new(AgentRegistry::with_dynamic_config(
         &mgr.config(),
         providers,
@@ -792,7 +789,7 @@ fn factory_runtime_tool_registry(
             ctx.get::<ares::context_services::ToolRegistryService>()
                 .map(|s| s.0.clone())
         })
-        .ok_or_else(|| missing("ToolRegistry"))?;
+        .unwrap_or_else(|| inject_sync::<ToolRegistry>(ctx));
     let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(pg.pool.clone()));
     {
         use std::any::TypeId;
@@ -821,22 +818,12 @@ fn factory_execution_stack(
     ctx: &Arc<Context>,
     _config: &serde_json::Value,
 ) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
-    let db = ctx
-        .get::<PostgresClient>()
-        .ok_or_else(|| missing("PostgresClient"))?;
-    let tenant_db = ctx
-        .get::<ares::TenantDb>()
-        .ok_or_else(|| missing("TenantDb"))?;
-    let llm_factory = ctx
-        .get::<ConfigBasedLLMFactory>()
-        .ok_or_else(|| missing("ConfigBasedLLMFactory"))?;
-    let agent_registry = ctx
-        .get::<AgentRegistry>()
-        .ok_or_else(|| missing("AgentRegistry"))?;
-    let active_runs = ctx
-        .get::<ares::active_runs::ActiveRuns>()
-        .map(|s| s as Arc<dyn ares_agents::RunTracker>)
-        .ok_or_else(|| missing("ActiveRuns"))?;
+    let db = inject_sync::<PostgresClient>(ctx);
+    let tenant_db = inject_sync::<ares::TenantDb>(ctx);
+    let llm_factory = inject_sync::<ConfigBasedLLMFactory>(ctx);
+    let agent_registry = inject_sync::<AgentRegistry>(ctx);
+    let active_runs = inject_sync::<ares::active_runs::ActiveRuns>(ctx)
+        as Arc<dyn ares_agents::RunTracker>;
     let shared_execution = ares::execution_stack::new_shared_execution(
         db.clone() as Arc<dyn ares::db::traits::DatabaseClient>,
         tenant_db,
@@ -854,9 +841,7 @@ fn factory_scheduler(
     _config: &serde_json::Value,
 ) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
     let db = postgres_from_ctx(ctx)?;
-    let execution = ctx
-        .get::<ares_agents::execution::AgentExecutionService>()
-        .ok_or_else(|| missing("AgentExecutionService"))?;
+    let execution = inject_sync::<ares_agents::execution::AgentExecutionService>(ctx);
     let fid = block_on_plugin(
         ctx,
         ares::scheduler::SchedulerService::new(db, execution, 60_000),
@@ -873,9 +858,7 @@ fn factory_pipeline(
     _config: &serde_json::Value,
 ) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
     let db = postgres_from_ctx(ctx)?;
-    let execution = ctx
-        .get::<ares_agents::execution::AgentExecutionService>()
-        .ok_or_else(|| missing("AgentExecutionService"))?;
+    let execution = inject_sync::<ares_agents::execution::AgentExecutionService>(ctx);
     let fid = block_on_plugin(
         ctx,
         ares::pipeline_engine::PipelineService::new(db, execution),
@@ -892,9 +875,7 @@ fn factory_trigger(
     _config: &serde_json::Value,
 ) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
     let db = postgres_from_ctx(ctx)?;
-    let execution = ctx
-        .get::<ares_agents::execution::AgentExecutionService>()
-        .ok_or_else(|| missing("AgentExecutionService"))?;
+    let execution = inject_sync::<ares_agents::execution::AgentExecutionService>(ctx);
     let fid = block_on_plugin(
         ctx,
         ares::trigger_engine::TriggerService::new(db, execution),
@@ -2013,5 +1994,33 @@ disabled = false
         let start = std::time::Instant::now();
         let _ = svc.init(&ctx).await.unwrap();
         assert!(start.elapsed() < std::time::Duration::from_millis(200));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inject_sync_returns_already_provided_service() {
+        let ctx = Context::new_root();
+        ctx.provide(ares_cordis_core::EventsService::new());
+        let got = inject_sync::<ares_cordis_core::EventsService>(&ctx);
+        assert!(got.check());
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inject_sync_waits_until_service_is_provided() {
+        let ctx = Context::new_root();
+        let waiter = ctx.clone();
+        let handle = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || inject_sync::<ares_cordis_core::EventsService>(&waiter))
+                .await
+                .expect("join")
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        ctx.provide(ares_cordis_core::EventsService::new());
+        let got = tokio::time::timeout(std::time::Duration::from_millis(500), handle)
+            .await
+            .expect("timed out")
+            .expect("task");
+        assert!(got.check());
     }
 }

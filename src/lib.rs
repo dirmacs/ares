@@ -424,7 +424,7 @@ mod lib_tests {
         std::mem::forget(temp_dir);
 
         let ctx = ares_cordis_core::Context::new_root();
-        ctx.provide(crate::context_services::ConfigManagerService(config_manager));
+        ctx.provide_arc(config_manager);
         ctx
     }
 

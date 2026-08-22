@@ -7,7 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 use tokio::sync::RwLock;
 
 // ---------------------------------------------------------------------------
@@ -67,9 +67,9 @@ impl std::ops::Deref for DeployRegistry {
     }
 }
 
-impl ares_cordis_core::Service for DeployRegistry {
+impl cordis::Service for DeployRegistry {
     fn name(&self) -> &'static str { "deploy_registry" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }
@@ -352,7 +352,7 @@ mod tests {
         use std::collections::HashMap;
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 
         fn minimal_config() -> AresConfig {
             let mut providers = HashMap::new();
@@ -410,7 +410,7 @@ use ares_cordis_core::Context;
         }
 
         fn test_app_state(deploy_registry: DeployRegistry) -> AppState {
-            let ctx = ares_cordis_core::Context::new_root();
+            let ctx = cordis::Context::new_root();
             ctx.provide(deploy_registry);
             // Provide minimal other services needed for handler to avoid panic on expect
             let config = minimal_config();
@@ -598,8 +598,8 @@ use ares_cordis_core::Context;
 
         #[test]
         fn deploy_registry_readable_via_cordis() {
-            use ares_cordis_core::Service;
-            let ctx = ares_cordis_core::Context::new_root();
+            use cordis::Service;
+            let ctx = cordis::Context::new_root();
             ctx.provide(new_deploy_registry());
             let got = ctx.get::<DeployRegistry>().expect("provided");
             assert_eq!(got.name(), "deploy_registry");

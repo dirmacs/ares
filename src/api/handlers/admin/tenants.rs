@@ -2,7 +2,7 @@
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use ::cordis::Context;
 use super::*;
 
 
@@ -198,6 +198,6 @@ pub fn routes() -> axum::Router<crate::AppState> {
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
-use ares_cordis_core::Service;
+use ::cordis::Service;
 pub struct AdminTenantsService;
 impl Service for AdminTenantsService {}

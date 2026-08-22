@@ -3,7 +3,7 @@
 //! Requires the `skills` feature flag.
 
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 use axum::{
     extract::{Path, State},
     http::StatusCode,

@@ -14,7 +14,7 @@ local-embeddings = ["dep:fastembed"]
 
 [dependencies]
 ares-types = { workspace = true }
-ares-cordis-core = { workspace = true }
+cordis = { workspace = true }
 base64 = "0.22.1"
 lancor = "0.2"
 lru = "0.16.3"

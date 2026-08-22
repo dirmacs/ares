@@ -9,7 +9,7 @@ pub mod tool_service;
 pub mod script_tool;
 
 #[cfg(any(feature = "postgres", test))]
-pub mod runtime_registry;
+pub(crate) mod runtime_registry;
 
 #[cfg(any(feature = "postgres", test))]
 pub mod sql_tool;
@@ -27,9 +27,9 @@ pub mod mcp_bridge;
 pub mod connectors;
 
 pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
-pub use registry::{Tool, ToolRegistry};
+pub use registry::Tool;
 pub use rhai_tool::{RhaiTool, RhaiToolConfig};
-pub use tool_service::{ToolService, UnifiedToolService, TenantId};
+pub use tool_service::Tools;
 
 #[cfg(test)]
 mod tests {

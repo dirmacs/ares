@@ -1,5 +1,5 @@
 [package]
-name = "ares-agents"
+name = "ares-agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ description = "Agent orchestration for ARES"
 
 [features]
 default = []
-postgres = ["dep:sqlx", "dep:ares-db", "ares-db/postgres", "ares-llm/postgres", "ares-llm/ollama", "ares-tools/postgres"]
+postgres = ["dep:sqlx", "dep:ares-store", "ares-store/postgres", "ares-llm/postgres", "ares-llm/ollama", "ares-tools/postgres"]
 eruka-context = []
 
 [dependencies]
@@ -18,8 +18,8 @@ ares-types = { workspace = true }
 ares-config = { workspace = true }
 ares-llm = { workspace = true, features = ["ollama"] }
 ares-tools = { workspace = true }
-ares-db = { workspace = true, optional = true }
-ares-cordis-core = { workspace = true }
+ares-store = { workspace = true, optional = true }
+cordis = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }

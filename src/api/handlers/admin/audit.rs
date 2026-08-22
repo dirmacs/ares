@@ -18,7 +18,7 @@ use axum::{
 };
 use sha2::Digest;
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use ::cordis::Context;
 
 pub async fn list_alerts(
     State(ctx): State<Arc<Context>>,
@@ -390,6 +390,6 @@ pub fn routes() -> axum::Router<crate::AppState> {
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
-use ares_cordis_core::Service;
+use ::cordis::Service;
 pub struct AdminAuditService;
 impl Service for AdminAuditService {}

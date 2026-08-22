@@ -4,7 +4,7 @@ pub use crate::db::tenant_agents::TenantAgent;
 pub use crate::memory::estimate_tokens;
 pub use crate::models::{TenantContext, TenantTier};
 pub use crate::types::{AppError, Result};
-pub use ares_agents::Agent;
+pub use ares_agent::Agent;
 pub use axum::{
     extract::Extension,
     http::{HeaderName, HeaderValue},
@@ -645,7 +645,7 @@ mod tests {
 
     #[tokio::test]
     async fn enforce_quota_reads_tenant_from_cordis_intercept() {
-        let root: AppState = ares_cordis_core::Context::new_root();
+        let root: AppState = cordis::Context::new_root();
         let tc = TenantContext::new("acme".into(), TenantTier::Enterprise);
         let scoped = root.with_intercept(tc);
         enforce_quota(&scoped)
@@ -655,7 +655,7 @@ mod tests {
 
     #[tokio::test]
     async fn enforce_quota_missing_intercept_is_auth_error() {
-        let root: AppState = ares_cordis_core::Context::new_root();
+        let root: AppState = cordis::Context::new_root();
         let err = enforce_quota(&root).await.unwrap_err();
         match err {
             AppError::Auth(msg) => assert!(msg.contains("Missing tenant context")),

@@ -249,9 +249,9 @@ pub(crate) async fn resolve_agent_for_tenant(
     })
 }
 
-/// Tenant id from Cordis isolate (AgentResolverService) then TenantContext intercept.
+/// Tenant id from Cordis isolate (`Execute`) then TenantContext intercept.
 pub fn tenant_id_from_agent_ctx(
-    ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    ctx: &std::sync::Arc<cordis::Context>,
 ) -> Option<String> {
     let id = crate::resolver::user_id_from_ctx(ctx, "");
     if id.is_empty() {
@@ -264,7 +264,7 @@ pub fn tenant_id_from_agent_ctx(
 pub async fn resolve_agent_from_ctx(
     pool: &PgPool,
     agent_registry: &AgentRegistry,
-    ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    ctx: &std::sync::Arc<cordis::Context>,
     agent_name: &str,
     fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
 ) -> Result<ResolvedAgent> {
@@ -277,7 +277,7 @@ pub async fn resolve_agent_from_ctx(
 pub async fn resolve_required_tenant_agent_from_ctx(
     pool: &PgPool,
     agent_registry: &AgentRegistry,
-    ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    ctx: &std::sync::Arc<cordis::Context>,
     agent_name: &str,
     fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
 ) -> Result<ResolvedAgent> {
@@ -698,7 +698,7 @@ mod tests {
     fn tenant_id_from_agent_ctx_reads_intercept() {
         use ares_types::models::{TenantContext, TenantTier};
 
-        let root = ares_cordis_core::Context::new_root();
+        let root = cordis::Context::new_root();
         assert_eq!(tenant_id_from_agent_ctx(&root), None);
 
         let ctx = root.with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
@@ -712,11 +712,10 @@ mod tests {
     fn tenant_id_from_agent_ctx_isolate_wins_over_intercept() {
         use ares_types::models::{TenantContext, TenantTier};
 
-        let root = ares_cordis_core::Context::new_root();
+        let root = cordis::Context::new_root();
         let intercepted =
             root.with_intercept(TenantContext::new("from-intercept".into(), TenantTier::Pro));
-        let isolated = intercepted
-            .isolate::<crate::resolver::AgentResolverService>("tenant:from-isolate");
+        let isolated = crate::tenant_scope(&intercepted, "from-isolate");
         assert_eq!(
             tenant_id_from_agent_ctx(&isolated).as_deref(),
             Some("from-isolate")
@@ -732,12 +731,12 @@ mod tests {
         use crate::registry::AgentRegistry;
         use crate::Agent;
         use ares_config::toml_config::{AgentConfig, ModelConfig, ProviderConfig};
-        use ares_db::postgres::PostgresClient;
-        use ares_db::tenant_agents::{
+        use ares_store::postgres::PostgresClient;
+        use ares_store::tenant_agents::{
             create_tenant_agent as db_create_tenant_agent, update_tenant_agent,
             CreateTenantAgentRequest, UpdateTenantAgentRequest,
         };
-        use ares_db::tenant_allowlist::TenantAllowlistStore;
+        use ares_store::tenant_allowlist::TenantAllowlistStore;
         use ares_llm::ProviderRegistry;
         use ares_tools::registry::ToolRegistry;
         use ares_types::types::{AgentContext, AppError};

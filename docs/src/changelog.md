@@ -12,9 +12,9 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 - `AgentExecutionService::execute_agent` with full resolve-create-execute pipeline and `RunTracker` observability
 - `ExecutionResult` return type with resolution metadata (source tier, run ID)
-- `RunTracker` trait extracted to `ares-agents` for decoupled run observability
+- `RunTracker` trait extracted to `ares-agent` for decoupled run observability
 - `Service` impl directly on `AgentRegistry` and `ConfigBasedLLMFactory` (no wrappers needed)
-- `agent_config_from_user_agent` helper in `ares-agents::configurable`
+- `agent_config_from_user_agent` helper in `ares-agent::configurable`
 
 ### Changed
 
@@ -33,7 +33,7 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ### Added
 
-- `ares-cordis-core` crate: typed `Context` container, `Fiber` lifecycle, `Service` trait, `RegistryService` with plugin pattern, `Loader` with config reconciliation, `EventsService` with 5 dispatch modes, `ReflectService` for hot-reload coordination.
+- `cordis` crate: typed `Context` container, `Fiber` lifecycle, `Service` trait, `RegistryService` with plugin pattern, `Loader` with config reconciliation, `EventsService` with 5 dispatch modes, `ReflectService` for hot-reload coordination.
 - Unified services: `UnifiedToolService` (merges static, runtime, and MCP tools), `LlmService` (circuit breaker with failover), `AgentResolverService` (3-tier resolution: tenant, community, system).
 - Handler migration: 177 handlers moved from `State<AppState>` to `State<Arc<Context>>` with `ctx.get::<T>()`.
 - Admin API split from single 190KB file into 15 domain-specific modules.

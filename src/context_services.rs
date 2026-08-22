@@ -1,14 +1,14 @@
 //! Remaining Cordis context types that live in the server crate:
 //! - [`EmergencyStop`] — native Service (kill switch)
 //!
-//! Tenant tool isolation uses `ctx.isolate::<ToolRegistry>(tenant_id)`.
-//! `PostgresClient` and [`ares_agents::ContextProviderHandle`] are native Service
+//! Tenant tool isolation uses `ares_agent::tenant_scope(ctx, tenant_id)` (`Tools` + `Execute`).
+//! `PostgresClient` and [`ares_agent::ContextProviderHandle`] are native Service
 //! types; handlers `ctx.get` them directly.
 
 use crate::AppState;
 use std::sync::atomic::AtomicBool;
 
-use ares_cordis_core::Service;
+use cordis::Service;
 
 // Emergency stop
 /// Global agent-execution kill switch.
@@ -37,7 +37,7 @@ impl Service for EmergencyStop {
     fn name(&self) -> &'static str {
         "emergency_stop"
     }
-    fn init(&self, _ctx: &AppState) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &AppState) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool {
@@ -45,12 +45,12 @@ impl Service for EmergencyStop {
     }
 }
 
-// ContextProviderHandle (was ContextProviderService) lives in ares_agents::context_provider.
+// ContextProviderHandle (was ContextProviderService) lives in ares_agent::context_provider.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_cordis_core::Context;
+    use cordis::Context;
 
     #[test]
     fn emergency_stop_readable_via_cordis() {

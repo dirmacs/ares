@@ -1,29 +1,12 @@
 //! Tenant agent runtime resolver — 3-tier hierarchy: user → community → system config.
 
 use ares_config::toml_config::{AgentConfig, AresConfig};
-use ares_db::postgres::UserAgent;
-use ares_db::traits::DatabaseClient;
+use ares_store::postgres::UserAgent;
+use ares_store::traits::DatabaseClient;
 use ares_types::models::TenantContext;
 use ares_types::types::{AppError, Result};
 
-/// Resolution tier label returned alongside the resolved [`UserAgent`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentSource {
-    User,
-    Community,
-    System,
-}
-
-impl AgentSource {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Community => "community",
-            Self::System => "system",
-        }
-    }
-}
+pub use crate::execution::AgentSource;
 
 /// Build a synthetic system [`UserAgent`] from static TOML/TOON [`AgentConfig`].
 pub fn system_agent_from_config(agent_name: &str, cfg: &AgentConfig, now: i64) -> UserAgent {
@@ -77,28 +60,26 @@ pub type TenantId = String;
 use std::future::Future;
 use std::sync::Arc;
 
-use ares_cordis_core::{CordisError, Service};
-use ares_db::TenantDb;
+use cordis::{CordisError, Service};
+use ares_store::TenantDb;
 
 use crate::registry::AgentRegistry;
 
 /// Unified agent resolver — single place that resolves agents with ordered
 /// precedence `tenant_db tenant_agents → community public → system AgentRegistry`.
 ///
-/// Handlers obtain via `ctx.get::<AgentResolverService>()` and call `resolve`.
-/// Per-tenant isolation: `ctx.isolate::<AgentResolverService>("tenant:acme")`.
-/// Per-request model pinning (via `LlmService`) can be layered with
-/// `ctx.intercept(ModelOverride { ... })`.
-pub struct AgentResolverService {
+/// Crate-private resolver. Production callers go through `Execute::run`.
+/// Per-tenant isolation: `crate::tenant_scope(ctx, tenant_id)` (`Tools` + `Execute`).
+pub(crate) struct Resolver {
     /// Tenant DB handle for `tenant_agents` and `public` lookups.
     pub tenant_db: Arc<TenantDb>,
     /// System registry (TOML/TOON) fallback.
     pub agent_registry: Arc<AgentRegistry>,
-    /// Static config for system-tier fallback.
-    pub config: Arc<AresConfig>,
+    /// Static config for system-tier fallback (optional when built from ctx).
+    pub config: Option<Arc<AresConfig>>,
 }
 
-impl AgentResolverService {
+impl Resolver {
     /// Create a new resolver service.
     pub fn new(
         tenant_db: Arc<TenantDb>,
@@ -108,26 +89,20 @@ impl AgentResolverService {
         Self {
             tenant_db,
             agent_registry,
-            config,
+            config: Some(config),
         }
     }
 
-    /// Resolve an agent by name with optional tenant scoping — system-only, no DB I/O.
-    ///
-    /// Ordered precedence for the sync path is system-only:
-    /// uses `config.get_agent(name)` (and registry fallback) via
-    /// `system_agent_from_config` + `resolve_from_candidates`.
-    pub fn resolve(
-        &self,
-        name: &str,
-        _tenant: Option<TenantId>,
-    ) -> std::result::Result<(UserAgent, AgentSource), AppError> {
-        let system_config_owned = self.agent_registry.get_config_any(name);
-        let system_config = self
-            .config
-            .get_agent(name)
-            .or(system_config_owned.as_ref());
-        resolve_from_candidates(None, None, system_config, name, chrono::Utc::now().timestamp())
+    /// Build from `TenantDb` + `AgentRegistry` already on ctx (no factory provide).
+    pub(crate) fn from_ctx(
+        ctx: &Arc<cordis::Context>,
+        agent_registry: Arc<AgentRegistry>,
+    ) -> Option<Self> {
+        Some(Self {
+            tenant_db: ctx.get::<TenantDb>()?,
+            agent_registry,
+            config: None,
+        })
     }
 
     /// Async 3-tier resolution: `tenant_db` user → community public → system config.
@@ -157,7 +132,8 @@ impl AgentResolverService {
         let system_config_owned = self.agent_registry.get_config_any(name);
         let system_config = self
             .config
-            .get_agent(name)
+            .as_ref()
+            .and_then(|c| c.get_agent(name))
             .or(system_config_owned.as_ref());
         resolve_from_candidates(
             user_agent,
@@ -169,12 +145,12 @@ impl AgentResolverService {
     }
 
     /// Resolve an agent by name using the isolate realm of `ctx` to derive the
-    /// tenant label. Reads `ctx.isolate_label(TypeId::of::<AgentResolverService>())`
+    /// tenant label. Reads `ctx.isolate_label(TypeId::of::<crate::Execute>())`
     /// so per-tenant resolution flows through the Cordis isolate namespace rather
     /// than a throwaway method parameter.
-    pub async fn resolve_for_ctx(
+    pub async fn resolve(
         &self,
-        ctx: &Arc<ares_cordis_core::Context>,
+        ctx: &Arc<cordis::Context>,
         name: &str,
     ) -> std::result::Result<(UserAgent, AgentSource), AppError> {
         let user_id = user_id_from_ctx(ctx, "");
@@ -182,15 +158,15 @@ impl AgentResolverService {
     }
 }
 
-impl Service for AgentResolverService {
+impl Service for Resolver {
     fn name(&self) -> &'static str {
-        "AgentResolverService"
+        "Resolver"
     }
 
     fn init(
         &self,
-        ctx: &Arc<ares_cordis_core::Context>,
-    ) -> std::pin::Pin<Box<dyn Future<Output = std::result::Result<Option<Box<dyn ares_cordis_core::Disposable>>, CordisError>> + Send + '_>> {
+        ctx: &Arc<cordis::Context>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = std::result::Result<Option<Box<dyn cordis::Disposable>>, CordisError>> + Send + '_>> {
         let ctx = ctx.clone();
         Box::pin(async move {
             let _ = ctx.inject::<crate::registry::AgentRegistry>().await;
@@ -207,25 +183,11 @@ impl Service for AgentResolverService {
 
 /// Derive the effective user/tenant scope for agent resolution.
 ///
-/// Precedence: isolate label for `AgentResolverService` (with a leading
+/// Precedence: isolate label for `Execute` (with a leading
 /// `tenant:`/`user:` prefix stripped), then a non-empty
 /// `ctx.get::<TenantContext>()` intercept id, then `fallback`.
-pub fn user_id_from_ctx(ctx: &Arc<ares_cordis_core::Context>, fallback: &str) -> String {
-    if let Some(label) = ctx.isolate_label(std::any::TypeId::of::<AgentResolverService>()) {
-        let trimmed = label
-            .strip_prefix("tenant:")
-            .or_else(|| label.strip_prefix("user:"))
-            .unwrap_or(&label);
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    if let Some(tc) = ctx.get::<TenantContext>() {
-        if !tc.tenant_id.is_empty() {
-            return tc.tenant_id.clone();
-        }
-    }
-    fallback.to_string()
+pub fn user_id_from_ctx(ctx: &Arc<cordis::Context>, fallback: &str) -> String {
+    crate::execution::user_id_from_ctx(ctx, fallback)
 }
 
 /// Resolve an agent for a user using the 3-tier hierarchy.
@@ -255,7 +217,7 @@ pub async fn resolve_agent(
 mod tests {
     use super::*;
     use ares_config::toml_config::AgentConfig;
-    use ares_db::traits::{ConversationSummary, DatabaseClient};
+    use ares_store::traits::{ConversationSummary, DatabaseClient};
     use ares_types::types::{MemoryFact, Message, MessageRole, Preference};
     use async_trait::async_trait;
     use std::collections::HashMap;
@@ -465,10 +427,10 @@ url = "postgres://localhost/ares"
         ) -> Result<()> {
             Ok(())
         }
-        async fn get_user_by_email(&self, _: &str) -> Result<Option<ares_db::traits::User>> {
+        async fn get_user_by_email(&self, _: &str) -> Result<Option<ares_store::traits::User>> {
             Ok(None)
         }
-        async fn get_user_by_id(&self, _: &str) -> Result<Option<ares_db::traits::User>> {
+        async fn get_user_by_id(&self, _: &str) -> Result<Option<ares_store::traits::User>> {
             Ok(None)
         }
         async fn create_session(&self, _: &str, _: &str, _: &str, _: i64) -> Result<()> {
@@ -495,7 +457,7 @@ url = "postgres://localhost/ares"
         async fn get_conversation(
             &self,
             _: &str,
-        ) -> Result<ares_db::postgres::Conversation> {
+        ) -> Result<ares_store::postgres::Conversation> {
             Err(AppError::NotFound("conversation".into()))
         }
         async fn delete_conversation(&self, _: &str) -> Result<()> {
@@ -603,16 +565,16 @@ url = "postgres://localhost/ares"
 
     #[cfg(feature = "postgres")]
     #[tokio::test]
-    async fn resolve_for_ctx_uses_isolate_label_for_scope() {
+    async fn resolve_uses_isolate_label_for_scope() {
         // Cordis design (§4): the tenant scope for agent resolution is derived
         // from the context's isolate namespace, not a throwaway method param.
         // A tenant-isolated context ("tenant:acme") must make the resolver
         // resolve the user tier under that tenant label. The pure helper
         // `user_id_from_ctx` drives the DB-aware 3-tier resolution: it reads
-        // ctx.isolate_label(TypeId::of::<AgentResolverService>()) and strips the
+        // ctx.isolate_label(TypeId::of::<crate::Execute>()) and strips the
         // "tenant:" prefix to yield the effective user scope.
 
-        let ctx: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let ctx: Arc<cordis::Context> = cordis::Context::new_root();
         let fallback = "anon";
         // Untagged context -> falls back to the provided default.
         assert_eq!(
@@ -621,14 +583,14 @@ url = "postgres://localhost/ares"
             "no isolate label -> fallback scope"
         );
 
-        let tenant_ctx = ctx.isolate::<AgentResolverService>("tenant:acme");
+        let tenant_ctx = crate::tenant_scope(&ctx, "acme");
         assert_eq!(
             user_id_from_ctx(&tenant_ctx, fallback),
             "acme",
-            "isolate label 'tenant:acme' -> scope 'acme'"
+            "tenant_scope('acme') -> scope 'acme'"
         );
 
-        let user_ctx = ctx.isolate::<AgentResolverService>("user:u42");
+        let user_ctx = ctx.isolate::<crate::Execute>("user:u42");
         assert_eq!(
             user_id_from_ctx(&user_ctx, fallback),
             "u42",
@@ -640,7 +602,7 @@ url = "postgres://localhost/ares"
     fn user_id_from_ctx_reads_tenant_context_intercept() {
         use ares_types::models::{TenantContext, TenantTier};
 
-        let root: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let root: Arc<cordis::Context> = cordis::Context::new_root();
         let ctx = root.with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
         assert_eq!(user_id_from_ctx(&ctx, "anon"), "acme");
     }
@@ -649,10 +611,10 @@ url = "postgres://localhost/ares"
     fn user_id_from_ctx_isolate_label_wins_over_intercept() {
         use ares_types::models::{TenantContext, TenantTier};
 
-        let root: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let root: Arc<cordis::Context> = cordis::Context::new_root();
         let intercepted =
             root.with_intercept(TenantContext::new("from-intercept".into(), TenantTier::Pro));
-        let isolated = intercepted.isolate::<AgentResolverService>("tenant:from-isolate");
+        let isolated = crate::tenant_scope(&intercepted, "from-isolate");
         assert_eq!(user_id_from_ctx(&isolated, "anon"), "from-isolate");
     }
 }

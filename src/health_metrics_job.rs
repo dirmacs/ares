@@ -4,7 +4,7 @@
 //! hour and upserting aggregated per-tenant, per-agent health metrics into
 //! `agent_health_metrics`.
 
-use ares_db::run_history::{AgentHealthMetrics, ModelHealthMetrics, RunHistoryStore};
+use ares_store::run_history::{AgentHealthMetrics, ModelHealthMetrics, RunHistoryStore};
 use rust_decimal::Decimal;
 use sqlx::{PgPool, Row, postgres::PgRow};
 use std::time::Duration;

@@ -4,23 +4,23 @@
 //! field_change) with full observability, skill support, and pipeline
 //! propagation.
 
-use ares_cordis_core::Service;
-use ares_db::agent_runs::{self, AgentRunMetadata};
-use ares_db::schedules::EventTrigger;
+use cordis::Service;
+use ares_store::agent_runs::{self, AgentRunMetadata};
+use ares_store::schedules::EventTrigger;
 use ares_types::types::AgentContext;
 use std::sync::Arc;
 use crate::AppState;
 
 // ---------------------------------------------------------------------------
-// Service — owns DB access + injects AgentExecutionService
+// Service — owns DB access + injects Execute
 // ---------------------------------------------------------------------------
 
 // Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
-use ares_agents::execution::{AgentExecutionService, AgentRequest};
+use ares_agent::execution::{Execute, AgentRequest};
 // Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
-use ares_cordis_core::{Context, CordisError, Disposable};
+use cordis::{Context, CordisError, Disposable};
 // Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
 use crate::db::PostgresClient;
@@ -30,14 +30,14 @@ use tokio::task::JoinHandle;
 
 /// Cordis service owning webhook/document-upload/field-change dispatch.
 ///
-/// Owns `db` (EventTriggerStore) + `execution` (AgentExecutionService) and
+/// Owns `db` (EventTriggerStore) + `execution` (Execute) and
 /// exposes `dispatch_webhook` / `dispatch_document_upload` /
 /// `dispatch_field_change` that lookup triggers then call
-/// `AgentExecutionService::execute` (fallback to `self.execution`).
+/// `Execute::execute` (fallback to `self.execution`).
 #[cfg(feature = "postgres")]
 pub struct TriggerService {
     pub db: Arc<PostgresClient>,
-    pub execution: Arc<AgentExecutionService>,
+    pub execution: Arc<Execute>,
     _handle: parking_lot::Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -49,7 +49,7 @@ pub struct TriggerService;
 #[cfg(feature = "postgres")]
 impl TriggerService {
     /// Create a new service with explicit dependencies.
-    pub fn new(db: Arc<PostgresClient>, execution: Arc<AgentExecutionService>) -> Self {
+    pub fn new(db: Arc<PostgresClient>, execution: Arc<Execute>) -> Self {
         Self {
             db,
             execution,
@@ -61,14 +61,14 @@ impl TriggerService {
     ///
     /// Lookup: `event_triggers WHERE id=$1`, checks `event_type == "webhook"`
     /// and `enabled`, then calls [`Self::execute_trigger`] via
-    /// `AgentExecutionService`.
+    /// `Execute`.
     pub async fn dispatch_webhook(
         &self,
         trigger_id: &str,
         payload: serde_json::Value,
         ctx: &Arc<Context>,
     ) -> Result<serde_json::Value, String> {
-        let store = ares_db::schedules::EventTriggerStore::new(&self.db.pool);
+        let store = ares_store::schedules::EventTriggerStore::new(&self.db.pool);
         let trigger = store
             .get_trigger(trigger_id)
             .await
@@ -89,7 +89,7 @@ impl TriggerService {
     ///
     /// Lookup: `event_triggers WHERE tenant_id=$1 AND event_type='document_upload'`,
     /// filter by `event_config.bucket == event.bucket` + `enabled`, then
-    /// `execute_trigger` each match via `AgentExecutionService`.
+    /// `execute_trigger` each match via `Execute`.
     pub async fn dispatch_document_upload(
         &self,
         tenant_id: &str,
@@ -100,7 +100,7 @@ impl TriggerService {
         signed_url: &str,
         ctx: &Arc<Context>,
     ) -> Result<Vec<String>, String> {
-        let store = ares_db::schedules::EventTriggerStore::new(&self.db.pool);
+        let store = ares_store::schedules::EventTriggerStore::new(&self.db.pool);
         let triggers = store
             .list_by_event_type(tenant_id, "document_upload")
             .await
@@ -160,7 +160,7 @@ impl TriggerService {
         new_value: serde_json::Value,
         ctx: &Arc<Context>,
     ) -> Result<Vec<String>, String> {
-        let store = ares_db::schedules::EventTriggerStore::new(&self.db.pool);
+        let store = ares_store::schedules::EventTriggerStore::new(&self.db.pool);
         let triggers = store
             .list_by_event_type(tenant_id, "field_change")
             .await
@@ -203,7 +203,7 @@ impl TriggerService {
     }
 
     /// Common pathway: resolve tenant-agent, handle skill branch via
-    /// `SkillEngine`, otherwise delegate to `AgentExecutionService`,
+    /// `SkillEngine`, otherwise delegate to `Execute`,
     /// then propagate to downstream pipelines.
     async fn execute_trigger(
         &self,
@@ -311,9 +311,9 @@ impl TriggerService {
             }
         }
 
-        // Regular agent execution via AgentExecutionService (injected / ctx-provided).
-        let exec: Arc<AgentExecutionService> = ctx
-            .get::<AgentExecutionService>()
+        // Regular agent execution via Execute (injected / ctx-provided).
+        let exec: Arc<Execute> = ctx
+            .get::<Execute>()
             .unwrap_or_else(|| self.execution.clone());
         let req = AgentRequest {
             agent_name: trigger.target_agent.clone(),
@@ -321,12 +321,12 @@ impl TriggerService {
             history: Vec::new(),
             ctx_provider: None,
         };
-        // Phase 4 §15: prefer execute_agent (full pipeline) with fallback to legacy execute
         let scoped = tenant_scoped_ctx(ctx, &trigger.tenant_id);
-        let resp = match exec.execute_agent(&req, &scoped).await {
-            Ok(result) => result.response,
-            Err(_) => exec.execute(req, &scoped).await.map_err(|e| e.to_string())?,
-        };
+        let resp = exec
+            .run(&req, &scoped)
+            .await
+            .map_err(|e| e.to_string())?
+            .response;
         // Propagate to pipelines (downstream). AppState is Arc<Context>.
         let ctx_clone: AppState = ctx.clone();
         let _ = crate::pipeline_engine::execute_pipeline_with_origin(
@@ -361,8 +361,8 @@ impl Service for TriggerService {
         "TriggerService"
     }
 
-    fn init(&self, ctx: &Arc<Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
-        if let Some(reflect) = ctx.get::<ares_cordis_core::ReflectService>() {
+    fn init(&self, ctx: &Arc<Context>) -> cordis::ServiceInitFuture<'_> {
+        if let Some(reflect) = ctx.get::<cordis::ReflectService>() {
             use std::any::TypeId;
             let tid = TypeId::of::<TriggerService>();
             let _rx = reflect.ensure_notifier(tid);
@@ -382,7 +382,7 @@ impl TriggerService {
         &self,
         _trigger_id: &str,
         _payload: serde_json::Value,
-        _ctx: &Arc<ares_cordis_core::Context>,
+        _ctx: &Arc<cordis::Context>,
     ) -> Result<serde_json::Value, String> {
         Ok(serde_json::json!({"status":"ok"}))
     }
@@ -394,7 +394,7 @@ impl TriggerService {
         _size: i64,
         _content_type: &str,
         _signed_url: &str,
-        _ctx: &Arc<ares_cordis_core::Context>,
+        _ctx: &Arc<cordis::Context>,
     ) -> Result<Vec<String>, String> {
         Ok(Vec::new())
     }
@@ -406,7 +406,7 @@ impl TriggerService {
         _record_id: &str,
         _old_value: serde_json::Value,
         _new_value: serde_json::Value,
-        _ctx: &Arc<ares_cordis_core::Context>,
+        _ctx: &Arc<cordis::Context>,
     ) -> Result<Vec<String>, String> {
         Ok(Vec::new())
     }
@@ -437,7 +437,7 @@ fn triggered_agent_run_metadata(
 }
 
 pub(crate) fn tenant_scoped_ctx(ctx: &Arc<Context>, tenant_id: &str) -> Arc<Context> {
-    ctx.isolate::<ares_agents::AgentResolverService>(&format!("tenant:{tenant_id}"))
+    ares_agent::tenant_scope(ctx, tenant_id)
 }
 
 /// Execute an agent in response to an event trigger.
@@ -627,7 +627,7 @@ async fn execute_triggered_agent_legacy(
     let scoped = tenant_scoped_ctx(app_state, &trigger.tenant_id);
     let mut resolved_agent = tenant_agent::resolve_agent_from_ctx(
         &pool,
-        &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
+        &app_state.get::<ares_agent::AgentRegistry>().expect("AgentRegistry not provided"),
         &scoped,
         &trigger.target_agent,
         &app_state.get::<crate::FleetSecrets>().expect("not provided"),
@@ -643,10 +643,10 @@ async fn execute_triggered_agent_legacy(
         pool: pool.clone(),
     });
     resolved_agent.agent.set_observability(obs.clone());
-    resolved_agent.agent.set_runtime_tools_from_ctx(
-        app_state.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(),
-        &scoped,
-    );
+    if let Some(tools) = scoped.get::<ares_tools::Tools>() {
+        resolved_agent.agent.set_tools(tools);
+    }
+    resolved_agent.agent.bind_request_ctx(scoped.clone());
 
     let mut runtime_context = AgentRuntimeContext::new(
         trigger.tenant_id.clone(),
@@ -883,8 +883,12 @@ mod tests {
         let root = Context::new_root();
         let scoped = tenant_scoped_ctx(&root, "acme");
         assert_eq!(
-            scoped.isolate_label(TypeId::of::<ares_agents::AgentResolverService>()).as_deref(),
-            Some("tenant:acme"),
+            scoped.isolate_label(TypeId::of::<ares_agent::Execute>()).as_deref(),
+            Some("acme"),
+        );
+        assert_eq!(
+            scoped.isolate_label(TypeId::of::<ares_tools::Tools>()).as_deref(),
+            Some("acme"),
         );
     }
 }

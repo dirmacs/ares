@@ -3,12 +3,12 @@
 //! Periodically checks `agent_schedules` table for agents whose `next_run_at`
 //! is in the past, runs them, and updates `last_run_at` / `next_run_at`.
 
-use ares_db::agent_runs::{self, AgentRunMetadata};
-use ares_db::schedules::{AgentSchedule, MissedRunAudit, ScheduleStore, compute_next_run};
-use ares_db::PostgresClient;
+use ares_store::agent_runs::{self, AgentRunMetadata};
+use ares_store::schedules::{AgentSchedule, MissedRunAudit, ScheduleStore, compute_next_run};
+use ares_store::PostgresClient;
 use ares_types::types::AgentContext;
-use ares_cordis_core::{Context, CordisError, Disposable, ReflectService, Service};
-use ares_agents::execution::AgentExecutionService;
+use cordis::{Context, CordisError, Disposable, ReflectService, Service};
+use ares_agent::execution::Execute;
 use chrono::{DateTime, Utc};
 use cron::Schedule;
 use sqlx::PgPool;
@@ -89,7 +89,7 @@ impl SchedulerControl {
 
 pub struct SchedulerService {
     pub db: Arc<PostgresClient>,
-    pub execution: Arc<AgentExecutionService>,
+    pub execution: Arc<Execute>,
     pub tick_ms: u64,
     control: Arc<SchedulerControl>,
     _handle: parking_lot::Mutex<Option<JoinHandle<()>>>,
@@ -99,7 +99,7 @@ impl SchedulerService {
     /// Create a new service with explicit dependencies.
     pub fn new(
         db: Arc<PostgresClient>,
-        execution: Arc<AgentExecutionService>,
+        execution: Arc<Execute>,
         tick_ms: u64,
     ) -> Self {
         Self {
@@ -119,7 +119,7 @@ impl SchedulerService {
     /// Convenience for `SchedulerConfig { tick_ms }`.
     pub fn from_config(
         db: Arc<PostgresClient>,
-        execution: Arc<AgentExecutionService>,
+        execution: Arc<Execute>,
         config: SchedulerConfig,
     ) -> Self {
         Self::new(db, execution, config.tick_ms)
@@ -127,7 +127,7 @@ impl SchedulerService {
 
     /// Real cron evaluation — returns next `DateTime<Utc>` for a cron expression.
     ///
-    /// Uses `cron` crate (via `ares_db::schedules::compute_next_run`) with UTC
+    /// Uses `cron` crate (via `ares_store::schedules::compute_next_run`) with UTC
     /// timezone. Supports both 5-field (`* * * * *`) and 6-field
     /// (`* * * * * *` with seconds) expressions; 5-field is normalized by
     /// prefixing `0` seconds. On parse failure returns `Utc::now() + 60s` so
@@ -136,7 +136,7 @@ impl SchedulerService {
         crate::scheduler::next_run_at(cron)
     }
 
-    /// Wrapper around `ares_db::schedules::compute_next_run` for method-style call.
+    /// Wrapper around `ares_store::schedules::compute_next_run` for method-style call.
     pub fn compute_next_run(cron: &str, tz: &str) -> Result<i64, String> {
         compute_next_run(cron, tz)
     }
@@ -183,14 +183,14 @@ impl SchedulerService {
         ctx: &Arc<Context>,
         run: serde_json::Value,
     ) -> serde_json::Value {
-        let Some(events) = ctx.get::<ares_cordis_core::EventsService>() else {
+        let Some(events) = ctx.get::<cordis::EventsService>() else {
             return run;
         };
         events
             .dispatch(
                 "scheduler.before_run".into(),
                 run.clone(),
-                ares_cordis_core::Dispatch::Waterfall,
+                cordis::Dispatch::Waterfall,
             )
             .await
             .unwrap_or(run)
@@ -207,14 +207,14 @@ impl SchedulerService {
     /// unchanged run". When no `EventsService` is provided, or the dispatch
     /// errors, the run is admitted.
     pub async fn admit_run(&self, ctx: &Arc<Context>, run: serde_json::Value) -> bool {
-        let Some(events) = ctx.get::<ares_cordis_core::EventsService>() else {
+        let Some(events) = ctx.get::<cordis::EventsService>() else {
             return true;
         };
         let result = events
             .dispatch(
                 "scheduler.admit".into(),
                 run.clone(),
-                ares_cordis_core::Dispatch::Bail,
+                cordis::Dispatch::Bail,
             )
             .await
             .unwrap_or_else(|_| run.clone());
@@ -240,7 +240,7 @@ impl Service for SchedulerService {
         "SchedulerService"
     }
 
-    fn init(&self, ctx: &Arc<Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, ctx: &Arc<Context>) -> cordis::ServiceInitFuture<'_> {
         // Capture clones for the spawned task.
         let db = self.db.clone();
         let _execution = self.execution.clone();
@@ -250,7 +250,7 @@ impl Service for SchedulerService {
         // Cordis Events: subscribe to agent.completed for observability and
         // agent.failed for runtime control (the legacy start_scheduler shim is
         // never called by the live server).
-        if let Some(events) = ctx.get::<ares_cordis_core::EventsService>() {
+        if let Some(events) = ctx.get::<cordis::EventsService>() {
             events.on("agent.completed".into(), |payload| {
                 Box::pin(async move {
                     if let Some(agent) = payload.get("agent_name").and_then(|v| v.as_str()) {
@@ -496,7 +496,7 @@ pub(crate) fn scheduled_pipeline_trigger<'a>(
 /// Start the background scheduler loop (legacy shim — prefer SchedulerService).
 pub async fn start_scheduler(pool: PgPool, app_state: AppState) {
     // Cordis Events: subscribe to agent.completed for scheduler metrics
-    if let Some(events) = app_state.get::<ares_cordis_core::EventsService>() {
+    if let Some(events) = app_state.get::<cordis::EventsService>() {
         events.on("agent.completed".into(), |payload| {
             Box::pin(async move {
                 if let Some(agent) = payload.get("agent_name").and_then(|v| v.as_str()) {
@@ -703,10 +703,10 @@ fn scheduled_usage_source(is_catchup: bool) -> &'static str {
     if is_catchup { "catchup" } else { "scheduled" }
 }
 
-/// Scope a request context to one tenant so AgentExecutionService
-/// prefers isolate (`tenant:{id}`) over intercept and fallback.
+/// Scope a request context to one tenant so Execute
+/// prefers isolate (raw tenant id on Tools + Execute) over intercept and fallback.
 pub(crate) fn tenant_scoped_ctx(ctx: &Arc<Context>, tenant_id: &str) -> Arc<Context> {
-    ctx.isolate::<ares_agents::AgentResolverService>(&format!("tenant:{tenant_id}"))
+    ares_agent::tenant_scope(ctx, tenant_id)
 }
 
 async fn execute_scheduled_agent(
@@ -721,22 +721,22 @@ async fn execute_scheduled_agent(
         RunObservability, run_cost_aggregation_request, spawn_run_cost_aggregation,
     };
 
-    // Phase 4 §15: prefer AgentExecutionService for unified execution
-    if let Some(exec_svc) = app_state.get::<ares_agents::execution::AgentExecutionService>() {
-        let req = ares_agents::execution::AgentRequest {
+    // Phase 4 §15: prefer Execute for unified execution
+    if let Some(exec_svc) = app_state.get::<ares_agent::execution::Execute>() {
+        let req = ares_agent::execution::AgentRequest {
             agent_name: sched.agent_name.clone(),
             message: String::new(),
             history: Vec::new(),
             ctx_provider: None,
         };
         let scoped = tenant_scoped_ctx(app_state, &sched.tenant_id);
-        match exec_svc.execute_agent(&req, &scoped).await {
+        match exec_svc.run(&req, &scoped).await {
             Ok(_result) => {
                 tracing::info!(
                     agent = %sched.agent_name,
                     tenant = %sched.tenant_id,
                     source = %_result.source.as_str(),
-                    "scheduled agent executed via AgentExecutionService"
+                    "scheduled agent executed via Execute"
                 );
                 return Ok(());
             }
@@ -744,7 +744,7 @@ async fn execute_scheduled_agent(
                 tracing::debug!(
                     agent = %sched.agent_name,
                     error = %e,
-                    "AgentExecutionService fallback to legacy scheduler path"
+                    "Execute fallback to legacy scheduler path"
                 );
                 // Fall through to legacy path
             }
@@ -924,7 +924,7 @@ async fn execute_scheduled_agent(
     let scoped = tenant_scoped_ctx(app_state, &sched.tenant_id);
     let mut resolved_agent = match tenant_agent::resolve_agent_from_ctx(
         &pool,
-        &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
+        &app_state.get::<ares_agent::AgentRegistry>().expect("AgentRegistry not provided"),
         &scoped,
         &sched.agent_name,
         &app_state.get::<crate::FleetSecrets>().expect("not provided"),
@@ -951,10 +951,10 @@ async fn execute_scheduled_agent(
         pool: pool.clone(),
     });
     resolved_agent.agent.set_observability(obs.clone());
-    resolved_agent.agent.set_runtime_tools_from_ctx(
-        app_state.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(),
-        &scoped,
-    );
+    if let Some(tools) = scoped.get::<ares_tools::Tools>() {
+        resolved_agent.agent.set_tools(tools);
+    }
+    resolved_agent.agent.bind_request_ctx(scoped.clone());
 
     let mut runtime_context = AgentRuntimeContext::new(
         sched.tenant_id.clone(),
@@ -1176,7 +1176,7 @@ async fn execute_scheduled_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_db::schedules::AgentPipeline;
+    use ares_store::schedules::AgentPipeline;
 
     #[test]
     fn tenant_scoped_ctx_sets_isolate_label() {
@@ -1184,8 +1184,12 @@ mod tests {
         let root = Context::new_root();
         let scoped = tenant_scoped_ctx(&root, "acme");
         assert_eq!(
-            scoped.isolate_label(TypeId::of::<ares_agents::AgentResolverService>()).as_deref(),
-            Some("tenant:acme"),
+            scoped.isolate_label(TypeId::of::<ares_agent::Execute>()).as_deref(),
+            Some("acme"),
+        );
+        assert_eq!(
+            scoped.isolate_label(TypeId::of::<ares_tools::Tools>()).as_deref(),
+            Some("acme"),
         );
     }
 
@@ -1408,11 +1412,11 @@ mod tests {
     async fn agent_failed_event_updates_scheduler_control_state() {
         let service = SchedulerService::new(
             Arc::new(PostgresClient::new_test()),
-            Arc::new(AgentExecutionService::new()),
+            Arc::new(Execute::new()),
             60_000,
         );
         let ctx = Context::new_root();
-        let events = ctx.provide(ares_cordis_core::EventsService::new());
+        let events = ctx.provide(cordis::EventsService::new());
         let disposable = service
             .init(&ctx)
             .await
@@ -1431,7 +1435,7 @@ mod tests {
             .dispatch(
                 "agent.failed".into(),
                 payload,
-                ares_cordis_core::Dispatch::Serial,
+                cordis::Dispatch::Serial,
             )
             .await
             .expect("agent failure event should be handled");
@@ -1450,7 +1454,7 @@ mod tests {
                         "tenant": "tenant-a",
                         "event": "agent.failed",
                     }),
-                    ares_cordis_core::Dispatch::Serial,
+                    cordis::Dispatch::Serial,
                 )
                 .await
                 .expect("agent failure event should be handled");
@@ -1467,11 +1471,11 @@ mod tests {
     async fn scheduler_admit_bail_policy_denies_run() {
         let service = SchedulerService::new(
             Arc::new(PostgresClient::new_test()),
-            Arc::new(AgentExecutionService::new()),
+            Arc::new(Execute::new()),
             60_000,
         );
         let ctx = Context::new_root();
-        let events = ctx.provide(ares_cordis_core::EventsService::new());
+        let events = ctx.provide(cordis::EventsService::new());
 
         // A Cordis `Dispatch::Bail` admission policy on `scheduler.admit`: a
         // handler that returns a non-null value bails (denies) the run, while a
@@ -1535,11 +1539,11 @@ mod tests {
     async fn scheduler_before_run_waterfall_enriches_payload() {
         let service = SchedulerService::new(
             Arc::new(PostgresClient::new_test()),
-            Arc::new(AgentExecutionService::new()),
+            Arc::new(Execute::new()),
             60_000,
         );
         let ctx = Context::new_root();
-        let events = ctx.provide(ares_cordis_core::EventsService::new());
+        let events = ctx.provide(cordis::EventsService::new());
         events.on_waterfall("scheduler.before_run".into(), |payload, next| async move {
             let mut obj = payload.as_object().cloned().unwrap_or_default();
             obj.insert("enriched".into(), serde_json::json!(true));

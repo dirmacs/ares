@@ -160,8 +160,8 @@ pub use loader::*;
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc;
-use ares_cordis_core::{Context, Service};
-use ares_agents::execution::AgentExecutionService;
+use cordis::{Context, Service};
+use ares_agent::execution::Execute;
 use ares_tools::ToolService;
 
 /// Maximum skill call recursion depth.
@@ -317,19 +317,19 @@ fn ready_then_steps<'a>(
 
 /// Cordis Service for skills — owns SkillCall/ToolCall/LlmCall/Condition with depth limiting.
 ///
-/// `execution` is the unified `AgentExecutionService` (single place for observability/usage).
+/// `execution` is the unified `Execute` (single place for observability/usage).
 /// `max_depth` caps recursion (default 8 = `MAX_SKILL_CALL_DEPTH`).
 ///
 /// `check()` returns `cfg!(feature = "skills")` (runtime-guarded withdrawal) so handlers can branch:
 /// `if ctx.get::<SkillsService>().map(|s| s.check()).unwrap_or(false) { … }`
 pub struct SkillsService {
-    pub execution: Arc<AgentExecutionService>,
+    pub execution: Arc<Execute>,
     pub max_depth: usize,
 }
 
 impl SkillsService {
     /// Create with default depth 8.
-    pub fn new(execution: Arc<AgentExecutionService>) -> Self {
+    pub fn new(execution: Arc<Execute>) -> Self {
         Self {
             execution,
             max_depth: MAX_SKILL_CALL_DEPTH,
@@ -337,14 +337,14 @@ impl SkillsService {
     }
 
     /// Create with explicit max depth.
-    pub fn with_max_depth(execution: Arc<AgentExecutionService>, max_depth: usize) -> Self {
+    pub fn with_max_depth(execution: Arc<Execute>, max_depth: usize) -> Self {
         Self { execution, max_depth }
     }
 
     /// Execute a skill by id with JSON input via `ctx` (Cordis provider-agnostic).
     ///
-    /// Steps are run sequentially: ToolCall via `ToolService` (`ctx.get`), LlmCall via
-    /// `LlmService` (`ctx.get`) or fallback `LlmFactoryService`, SkillCall via recursion with
+    /// Steps are run sequentially: ToolCall via `Tools` (`ctx.get`), LlmCall via
+    /// `Llm` (`ctx.get`) or fallback `LlmFactoryService`, SkillCall via recursion with
     /// depth limiting, Condition via expression evaluation. Uses `run_history` when DB is available.
     /// Migrates AppState usage to `ctx.get` — no `AppState` field.
     pub async fn execute_skill(
@@ -415,7 +415,7 @@ impl SkillsService {
                 .to_string();
 
             // Load skill definition from DB
-            let skill_store = ares_db::skills::SkillStore::new(&pool);
+            let skill_store = ares_store::skills::SkillStore::new(&pool);
             let skill = skill_store
                 .get_skill_for_tenant(skill_id, &tenant_id)
                 .await
@@ -433,10 +433,10 @@ impl SkillsService {
                     SkillStep::ToolCall { tool_name, args } => {
                         tracing::info!("Step {}: tool_call {}", step_index, tool_name);
                         let start = std::time::Instant::now();
-                        // Resolve via UnifiedToolService via ctx.get — provider-agnostic
+                        // Resolve via Tools via ctx.get — provider-agnostic
                         let result = {
-                            // Prefer UnifiedToolService (dyn ToolService not supported by Context::get Sized bound)
-                            let unified = ctx.get::<ares_tools::UnifiedToolService>();
+                            // Prefer Tools (dyn ToolService not supported by Context::get Sized bound)
+                            let unified = ctx.get::<ares_tools::Tools>();
                             let tool_opt = if let Some(svc) = unified.as_ref() {
                                 svc.resolve(&tool_name, Some(tenant_id.clone()))
                             } else if let Some(reg) = ctx.get::<crate::ToolRegistry>() {
@@ -455,8 +455,8 @@ impl SkillsService {
                         let latency_ms = start.elapsed().as_millis() as i64;
                         context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
                         // Log to run_history when pool available
-                        let store = ares_db::run_history::RunHistoryStore::new(&pool);
-                        let req = ares_db::run_history::LogToolCallRequest {
+                        let store = ares_store::run_history::RunHistoryStore::new(&pool);
+                        let req = ares_store::run_history::LogToolCallRequest {
                             id: uuid::Uuid::new_v4().to_string(),
                             run_id: run_id.clone(),
                             tenant_id: tenant_id.clone(),
@@ -486,9 +486,9 @@ impl SkillsService {
                             ("default".to_string(), model_tier.clone())
                         };
 
-                        // Prefer LlmService via ctx.get
-                        let response: ares_llm::LLMResponse = if let Some(llm) = ctx.get::<ares_llm::LlmService>() {
-                            // Use LlmService::get_client with empty capability
+                        // Prefer Llm via ctx.get
+                        let response: ares_llm::LLMResponse = if let Some(llm) = ctx.get::<ares_llm::Llm>() {
+                            // Use Llm::get_client with empty capability
                             let cap = ares_llm::CapabilityRequirements::default();
                             // Need Arc<Context> for get_client; reconstruct from &Context via unsafe? Instead fallback to direct factory
                             // For now use provider_registry path via LlmFactoryService fallback
@@ -518,9 +518,9 @@ impl SkillsService {
                         let latency_ms = start.elapsed().as_millis() as i64;
                         let result = serde_json::json!({"content": response.content, "usage": response.usage});
                         context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
-                        let store = ares_db::run_history::RunHistoryStore::new(&pool);
+                        let store = ares_store::run_history::RunHistoryStore::new(&pool);
                         let usage = response.usage.unwrap_or_default();
-                        let req = ares_db::run_history::LogLlmCallRequest {
+                        let req = ares_store::run_history::LogLlmCallRequest {
                             id: uuid::Uuid::new_v4().to_string(),
                             run_id: run_id.clone(),
                             tenant_id: tenant_id.clone(),
@@ -577,7 +577,7 @@ impl SkillsService {
         match step {
             SkillStep::ToolCall { tool_name, args } => {
                 let start = std::time::Instant::now();
-                let unified = ctx.get::<ares_tools::UnifiedToolService>();
+                let unified = ctx.get::<ares_tools::Tools>();
                 let tool_opt = if let Some(svc) = unified.as_ref() {
                     svc.resolve(tool_name, Some(tenant_id.to_string()))
                 } else if let Some(reg) = ctx.get::<crate::ToolRegistry>() {
@@ -592,8 +592,8 @@ impl SkillsService {
                 };
                 let latency_ms = start.elapsed().as_millis() as i64;
                 context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
-                let store = ares_db::run_history::RunHistoryStore::new(pool);
-                let req = ares_db::run_history::LogToolCallRequest {
+                let store = ares_store::run_history::RunHistoryStore::new(pool);
+                let req = ares_store::run_history::LogToolCallRequest {
                     id: uuid::Uuid::new_v4().to_string(),
                     run_id: run_id.to_string(),
                     tenant_id: tenant_id.to_string(),
@@ -632,9 +632,9 @@ impl SkillsService {
                 let latency_ms = start.elapsed().as_millis() as i64;
                 let result = serde_json::json!({"content": response.content, "usage": response.usage});
                 context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
-                let store = ares_db::run_history::RunHistoryStore::new(pool);
+                let store = ares_store::run_history::RunHistoryStore::new(pool);
                 let usage = response.usage.unwrap_or_default();
-                let req = ares_db::run_history::LogLlmCallRequest {
+                let req = ares_store::run_history::LogLlmCallRequest {
                     id: uuid::Uuid::new_v4().to_string(),
                     run_id: run_id.to_string(),
                     tenant_id: tenant_id.to_string(),

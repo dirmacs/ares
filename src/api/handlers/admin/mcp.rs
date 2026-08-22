@@ -20,6 +20,6 @@ pub fn routes() -> axum::Router<crate::AppState> {
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
-use ares_cordis_core::Service;
+use ::cordis::Service;
 pub struct AdminMcpService;
 impl Service for AdminMcpService {}

@@ -137,15 +137,9 @@ pub async fn resolve_agent(
     user_id: &str,
     agent_name: String,
 ) -> Result<(UserAgent, String)> {
-    // Cordis DI path: delegate to AgentResolverService (Phase 5 §19)
-    if let Some(resolver) = state.get::<ares_agents::resolver::AgentResolverService>() {
-        let user_id = ares_agents::resolver::user_id_from_ctx(state, user_id);
-        let (agent, source) = resolver.resolve_async(&agent_name, &user_id).await?;
-        return Ok((agent, source.as_str().into()));
-    }
-    // Fallback: inline resolution (legacy path, to be removed)
+    let user_id = ares_agent::user_id_from_ctx(state, user_id);
     let user_agent = state.get::<crate::db::PostgresClient>().expect("not provided")
-        .get_user_agent_by_name(user_id, &agent_name)
+        .get_user_agent_by_name(&user_id, &agent_name)
         .await?;
     let public_agent = state.get::<crate::db::PostgresClient>().expect("not provided").get_public_agent_by_name(&agent_name).await?;
     let config = state.get::<crate::AresConfigManager>().expect("not provided").config();

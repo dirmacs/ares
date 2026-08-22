@@ -4,7 +4,7 @@
 
 
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use ::cordis::Context;
 use crate::AppState;
 use crate::db::audit_log;
 use crate::db::schedules as db_schedules;
@@ -194,6 +194,6 @@ pub fn routes() -> axum::Router<crate::AppState> {
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
-use ares_cordis_core::Service;
+use ::cordis::Service;
 pub struct AdminTriggersService;
 impl Service for AdminTriggersService {}

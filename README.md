@@ -520,7 +520,7 @@ ARES is designed as a library. Build on it by adding routes to the context-based
 
 ```rust
 use std::sync::Arc;
-use ares_cordis_core::Context;
+use cordis::Context;
 use ares::build_router;
 
 let ctx: Arc<Context> = /* your configured context */;

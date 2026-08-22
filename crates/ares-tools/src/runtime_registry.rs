@@ -1,6 +1,6 @@
 //! Runtime tool registry with hot-reload.
 //!
-//! Loads runtime tools from PostgreSQL via [`ares_db::runtime_tools::RuntimeToolStore`],
+//! Loads runtime tools from PostgreSQL via [`ares_store::runtime_tools::RuntimeToolStore`],
 //! materialises them as `Arc<dyn Tool>` instances, and caches them in an
 //! `ArcSwap<HashMap<String, Arc<dyn Tool>>>` for lock-free hot-swap reads.
 //!
@@ -22,7 +22,7 @@ use serde_json::Value;
 #[cfg(feature = "mcp")]
 use tracing;
 
-use ares_db::runtime_tools::{RuntimeTool, RuntimeToolStore};
+use ares_store::runtime_tools::{RuntimeTool, RuntimeToolStore};
 use ares_types::types::{AppError, Result, ToolDefinition};
 
 use crate::http_tool::HttpTool;
@@ -61,7 +61,7 @@ fn default_mcp_method() -> String {
 /// Runtime-configurable MCP bridge tool.
 #[cfg(any(feature = "mcp", test))]
 #[derive(Debug)]
-pub struct RuntimeMcpTool {
+pub(crate) struct RuntimeMcpTool {
     name: String,
     description: String,
     parameters_schema: Value,
@@ -234,7 +234,7 @@ impl Tool for RuntimeMcpTool {
 ///
 /// Internally stores an `Arc<ArcSwap<HashMap<String, Arc<dyn Tool>>>>` so
 /// reads are lock-free and writes (reloads) are atomic.
-pub struct RuntimeToolRegistry {
+pub(crate) struct RuntimeToolRegistry {
     pool: sqlx::PgPool,
     /// The tool cache -- `ArcSwap` for lock-free hot-swap reads.
     tools: Arc<ArcSwap<HashMap<String, Arc<dyn Tool>>>>,
@@ -264,14 +264,14 @@ impl Clone for RuntimeToolRegistry {
     }
 }
 
-impl ares_cordis_core::Service for RuntimeToolRegistry {
+impl cordis::Service for RuntimeToolRegistry {
     fn name(&self) -> &'static str {
         "runtime_tool_registry"
     }
     fn init(
         &self,
-        _ctx: &std::sync::Arc<ares_cordis_core::Context>,
-    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        _ctx: &std::sync::Arc<cordis::Context>,
+    ) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool {
@@ -311,7 +311,7 @@ impl RuntimeToolRegistry {
     }
 
     /// Reload only tools visible to a given tenant (owned + public).
-    pub async fn reload_for_tenant(&self, tenant_id: &str) -> Result<()> {
+    pub(crate) async fn reload_for_tenant(&self, tenant_id: &str) -> Result<()> {
         let store = RuntimeToolStore::new(&self.pool);
         let rows = store.get_by_tenant(tenant_id).await?;
         self.build_and_swap(rows).await
@@ -477,7 +477,7 @@ impl RuntimeToolRegistry {
     ///
     /// Returns `None` if the tool does not exist, is disabled, or the tenant
     /// does not have access to it.
-    pub fn get_for_tenant(&self, name: &str, tenant_id: Option<&str>) -> Option<Arc<dyn Tool>> {
+    pub(crate) fn get_for_tenant(&self, name: &str, tenant_id: Option<&str>) -> Option<Arc<dyn Tool>> {
         let tools = self.tools.load();
         let meta = self.metadata.load();
 
@@ -511,7 +511,7 @@ impl RuntimeToolRegistry {
     }
 
     /// Return the concrete runtime tool type after tenant visibility checks.
-    pub fn tool_type_for_tenant(&self, name: &str, tenant_id: Option<&str>) -> Option<String> {
+    pub(crate) fn tool_type_for_tenant(&self, name: &str, tenant_id: Option<&str>) -> Option<String> {
         let row = self.metadata.load().get(name)?.clone();
         if !row.enabled {
             return None;
@@ -546,7 +546,7 @@ impl RuntimeToolRegistry {
     }
 
     /// Get tool definitions scoped to a tenant.
-    pub fn get_tool_definitions_for_tenant(&self, tenant_id: Option<&str>) -> Vec<ToolDefinition> {
+    pub(crate) fn get_tool_definitions_for_tenant(&self, tenant_id: Option<&str>) -> Vec<ToolDefinition> {
         let tools = self.tools.load();
         let meta = self.metadata.load();
 
@@ -594,7 +594,7 @@ impl RuntimeToolRegistry {
     }
 
     /// Get all enabled tool names visible to a tenant.
-    pub fn enabled_tool_names(&self, tenant_id: Option<&str>) -> Vec<String> {
+    pub(crate) fn enabled_tool_names(&self, tenant_id: Option<&str>) -> Vec<String> {
         let meta = self.metadata.load();
 
         meta.values()
@@ -651,12 +651,12 @@ impl RuntimeToolRegistry {
 
 /// Phase 3 unified hot-reload demo — watch channel creation on provide.
 /// Compile-time proof that notifiers/dependents insertion compiles via ReflectService.
-pub fn reflect_notify_stub(ctx: &Arc<ares_cordis_core::Context>) {
+pub fn reflect_notify_stub(ctx: &Arc<cordis::Context>) {
     // Prove Loader integration still compiles
-    let _ = ctx.get::<ares_cordis_core::loader::Loader>();
+    let _ = ctx.get::<cordis::loader::Loader>();
     let tid = CordisTypeId::of::<RuntimeToolRegistry>();
     // Prove ReflectService watch channel creation on provide + dependents insertion + BFS notify compiles
-    if let Some(reflect) = ctx.get::<ares_cordis_core::ReflectService>() {
+    if let Some(reflect) = ctx.get::<cordis::ReflectService>() {
         let _rx = reflect.ensure_notifier(tid);
         // dependents insertion proof
         reflect.register_dependent(tid, 42);
@@ -1016,14 +1016,14 @@ mod tests {
     async fn runtime_tenant_isolation_respects_access() {
         let reg = make_registry_with_tools();
 
-        // tenant-a can execute private_a via ToolService precedence (runtime get_for_tenant)
+        // tenant-a can execute private_a via Tools precedence (runtime get_for_tenant)
         let tool = reg
             .get_for_tenant("private_a", Some("tenant-a"))
             .expect("tenant-a should see private_a");
         let result = tool.execute(json!({})).await;
         assert!(result.is_ok());
 
-        // tenant-b cannot — ToolService precedence would fall through to fleet/static and not find private_a
+        // tenant-b cannot — Tools precedence would fall through to fleet/static and not find private_a
         assert!(reg.get_for_tenant("private_a", Some("tenant-b")).is_none());
     }
 

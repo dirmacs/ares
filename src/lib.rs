@@ -44,32 +44,35 @@
 //! ### Using Tools
 //!
 //! ```rust,ignore
-//! use ares::{ToolRegistry, tools::calculator::Calculator};
+//! use ares::tools::{Tool, Tools, calculator::Calculator};
+//! use cordis::Context;
 //! use std::sync::Arc;
 //!
-//! let mut registry = ToolRegistry::new();
-//! registry.register(Arc::new(Calculator));
-//!
-//! // Tools can be used with LLM function calling
-//! let tool_definitions = registry.definitions();
+//! let tools = Tools::from_static([Arc::new(Calculator) as Arc<dyn Tool>]);
+//! let ctx = Context::new_root();
+//! ctx.provide(tools);
+//! let tools = ctx.get::<Tools>().expect("Tools provided");
+//! let tool_definitions = tools.list(&ctx);
 //! ```
 //!
 //! ### Multi-Turn Tool Calling with ToolCoordinator
 //!
 //! ```rust,ignore
 //! use ares::llm::{Provider, ToolCoordinator, ToolCallingConfig};
-//! use ares::tools::ToolRegistry;
+//! use ares::tools::{Tool, Tools};
+//! use cordis::Context;
 //! use std::sync::Arc;
 //!
 //! let provider = Provider::from_env()?;
 //! let client = provider.create_client().await?;
-//! let registry = Arc::new(ToolRegistry::new());
+//! let tools = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
+//! let ctx = Context::new_root();
 //!
 //! // Create a unified coordinator that works with any LLM provider
-//! let coordinator = ToolCoordinator::new(client, registry, ToolCallingConfig::default());
+//! let coordinator = ToolCoordinator::new(client, tools, ToolCallingConfig::default());
 //!
 //! // Execute a tool-calling conversation
-//! let result = coordinator.execute(Some("You are a helpful assistant."), "What is 25 * 4?").await?;
+//! let result = coordinator.execute(Some("You are a helpful assistant."), "What is 25 * 4?", &ctx).await?;
 //! println!("Response: {}", result.content);
 //! println!("Tool calls made: {}", result.tool_calls.len());
 //! ```
@@ -77,21 +80,19 @@
 //! ### Configuration-Driven Setup
 //!
 //! ```rust,ignore
-//! use ares::{AresConfigManager, AgentRegistry, ProviderRegistry, ToolRegistry};
+//! use ares::{AresConfigManager, ProviderRegistry};
+//! use ares::tools::{Tool, Tools};
+//! use cordis::Context;
 //! use std::sync::Arc;
 //!
 //! // Load configuration from ares.toml
 //! let config_manager = AresConfigManager::new("ares.toml")?;
 //! let config = config_manager.config();
 //!
-//! // Create registries from configuration
 //! let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
-//! let tool_registry = Arc::new(ToolRegistry::with_config(&config));
-//! let agent_registry = AgentRegistry::from_config(
-//!     &config,
-//!     provider_registry,
-//!     tool_registry,
-//! );
+//! let ctx = Context::new_root();
+//! ctx.provide_arc(provider_registry);
+//! ctx.provide(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
 //! ```
 //!
 //! ## Feature Flags
@@ -150,7 +151,7 @@
 #![allow(ambiguous_glob_reexports)]
 
 /// AI agent orchestration and management.
-pub mod agents { pub use ares_agents::*; }
+pub mod agents { pub use ares_agent::*; }
 /// HTTP API handlers and routes.
 #[cfg(feature = "postgres")]
 pub mod api;
@@ -180,19 +181,19 @@ pub mod auth;
 /// Command-line interface and scaffolding.
 pub mod cli;
 /// Database clients (Turso/SQLite, Qdrant).
-pub mod db { pub use ares_db::*; }
+pub mod db { pub use ares_store::*; }
 /// LLM provider clients and abstractions.
 pub mod llm;
 /// Model Context Protocol (MCP) server integration.
 #[cfg(feature = "mcp")]
 pub mod mcp { pub use ares_mcp::*; }
-/// In-process MCP [`AgentRunner`](ares_mcp::AgentRunner) over [`AgentExecutionService`](ares_agents::execution::AgentExecutionService).
+/// In-process MCP [`AgentRunner`](ares_mcp::AgentRunner) over [`Execute`](ares_agent::execution::Execute).
 #[cfg(all(feature = "postgres", feature = "mcp"))]
 pub mod mcp_agent_runner;
 #[cfg(feature = "postgres")]
 pub mod execution_stack;
 /// Conversation memory and context management.
-pub mod memory { pub use ares_agents::memory::*; }
+pub mod memory { pub use ares_agent::memory::*; }
 /// Middleware for API key auth and usage tracking.
 #[cfg(feature = "postgres")]
 pub mod middleware;
@@ -202,7 +203,7 @@ pub mod models;
 pub mod rag;
 /// Multi-agent research coordination.
 #[cfg(feature = "postgres")]
-pub mod research { pub use ares_agents::research::*; }
+pub mod research { pub use ares_agent::research::*; }
 /// SKILL.md file discovery and loading — runtime-gated via `SkillsService::check()` (was `#[cfg(feature = "skills")]`).
 pub mod skills;
 /// Built-in tools (calculator, web search).
@@ -237,9 +238,7 @@ pub use models::{ApiKey, Tenant, TenantContext, TenantQuota, TenantTier};
 pub use ares_config::fleet_secrets::{FleetSecrets, MasterKey};
 #[cfg(feature = "postgres")]
 pub use observability::RunObservability;
-#[cfg(feature = "postgres")]
-pub use tools::runtime_registry::RuntimeToolRegistry;
-pub use tools::registry::ToolRegistry;
+pub use tools::{Tool, Tools};
 pub use types::{AppError, ErrorCode, Result};
 pub use utils::toml_config::{AresConfig, AresConfigManager};
 pub use utils::toon_config::DynamicConfigManager;
@@ -256,7 +255,7 @@ use crate::auth::jwt::AuthService;
 
 /// Cordis context type. `AppState` is `Arc<Context>`; tests and callers
 /// construct a root via `Context::new_root()` then `provide` services.
-pub use ares_cordis_core::Context;
+pub use cordis::Context;
 
 #[cfg(not(feature = "postgres"))]
 pub type AppState = std::sync::Arc<Context>;
@@ -282,10 +281,10 @@ pub fn cordis_routes() -> axum::Router<AppState> {
 /// Reads services via `ctx.get::<...>()` + `State<Arc<Context>>` handlers.
 #[cfg(feature = "postgres")]
 pub fn build_router(ctx: AppState) -> axum::Router {
-    let _events = ctx.get::<ares_cordis_core::EventsService>();
-    let _registry = ctx.get::<ares_cordis_core::RegistryService>();
-    let _agent_resolver = ctx.get::<crate::agents::resolver::AgentResolverService>();
-    let _tool_svc = ctx.get::<ares_tools::UnifiedToolService>();
+    let _events = ctx.get::<cordis::EventsService>();
+    let _registry = ctx.get::<cordis::RegistryService>();
+    let _exec = ctx.get::<ares_agent::Execute>();
+    let _tool_svc = ctx.get::<ares_tools::Tools>();
     cordis_routes().with_state(ctx)
 }
 
@@ -337,8 +336,7 @@ mod lib_tests {
         DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig, ServerConfig,
     };
     use crate::{
-        AgentRegistry, AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
-        ProviderRegistry, ToolRegistry,
+        AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager,
     };
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
@@ -402,13 +400,6 @@ mod lib_tests {
     fn test_ctx() -> AppState {
         let config = minimal_config();
         let config_manager = Arc::new(AresConfigManager::from_config(config));
-        let provider_registry = Arc::new(ProviderRegistry::from_config(&config_manager.config()));
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let _agent_registry = Arc::new(AgentRegistry::from_config(
-            &config_manager.config(),
-            provider_registry.clone(),
-            tool_registry.clone(),
-        ));
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base = temp_dir.path();
         for sub in ["agents", "models", "tools", "workflows", "mcps"] {
@@ -427,7 +418,7 @@ mod lib_tests {
         );
         std::mem::forget(temp_dir);
 
-        let ctx = ares_cordis_core::Context::new_root();
+        let ctx = cordis::Context::new_root();
         ctx.provide_arc(config_manager);
         ctx
     }
@@ -453,8 +444,8 @@ mod lib_tests {
     #[test]
     fn ares_server_hmr_feature_forwards_to_cordis_core() {
         // apply_plugin_so_if_dylib is reachable when the feature is on
-        let ctx = ares_cordis_core::Context::new_root();
-        let applied = ares_cordis_core::hmr::apply_plugin_so_if_dylib(&ctx, std::path::Path::new("README.md")).expect("non-lib");
+        let ctx = cordis::Context::new_root();
+        let applied = cordis::hmr::apply_plugin_so_if_dylib(&ctx, std::path::Path::new("README.md")).expect("non-lib");
         assert!(!applied);
     }
 }

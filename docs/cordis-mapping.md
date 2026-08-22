@@ -2,7 +2,17 @@
 
 Source: DeepSeek Cordis paper ("A Programming model for Spatiotemporal Composability", Aug 2026, `cordiverse/cordis` + `cordiverse/paper`) and DeepSeek Harness (`deepseek-ai/deepseek-harness`, TS, ~60 packages, 12 layers).
 Target: ARES `/opt/ares` (dirmacs/ares v0.7.3, 11 crates + `ares-server` root, Rust 1.98, Tokio/Axum).
-This doc is strategy only, no code changes. Spike crate `crates/ares-cordis-core` (Phase 1) must prove the theorems before adoption.
+This doc is strategy only, no code changes. Spike crate `crates/cordis` (Phase 1) must prove the theorems before adoption.
+
+Phase 2 crate graph (`crates.io` already has `cordis` 0.0.0, so the Cargo package is `ares-cordis` with `[lib] name = "cordis"`; workspace dep key stays `cordis`):
+
+| Path | Package | Rust crate |
+|------|---------|------------|
+| `crates/cordis` | `ares-cordis` | `cordis` |
+| `crates/ares-agent` | `ares-agent` | `ares_agent` |
+| `crates/ares-store` | `ares-store` | `ares_store` |
+
+Root package stays `ares-server` with lib name `ares`. `ares-config` stays until Phase 4.
 
 ---
 
@@ -241,7 +251,7 @@ impl Fiber {
 
 The fiber lifecycle adds `Loading` and `Failed`: `Loading` marks a fiber mid-instantiation and `Failed` records a terminal error from a plugin activation. A failed fiber remains observable via the registry so a loader or admin tool can report why a registration did not become `Active`; a later successful re-registration starts a fresh fiber that reaches `Active`.
 
-File placement: `crates/ares-cordis-core/src/fiber.rs` (spike) → later `crates/ares-context/src/fiber.rs`.
+File placement: `crates/cordis/src/fiber.rs` (spike) → later `crates/ares-context/src/fiber.rs`.
 
 ---
 
@@ -406,7 +416,7 @@ It is provided as a service with `ctx.provide(LoaderJournal::new())`, so `Contex
 
 Cordis plugins are `FnOnce(&Context, Config) -> Result<Disposable>` or struct with `apply`. Registry enforces single-source discipline.
 
-Rust (Phase 2, `crates/ares-cordis-core/src/registry.rs`):
+Rust (Phase 2, `crates/cordis/src/registry.rs`):
 
 ```rust
 pub trait Plugin: Send + Sync + 'static {
@@ -427,15 +437,15 @@ impl RegistryService {
 }
 ```
 
-Static registration (preferred production): `inventory`/`linkme` (compile-time plugin set), real surface is `RegistryService::plugin` (single-source discipline); `inventory::submit!` / `linkme::distributed_slice` of `fn(&Arc<Context>) -> Result<FiberId, CordisError>` is the future shortcut once crate count stabilizes (see `crates/ares-cordis-core/src/lib.rs` HMR section and `Wiring` task). Dynamic HMR (dev only, behind `#[cfg(feature = "hmr")]` off by default): `libloading` path that `dlopen`s `.so` and calls `Plugin::apply` via `extern "C"`; if `libloading` ABI fragility blocks (Rust `1.98` toolchain coupling, `unsafe` soundness), fall back to file-watch + full fiber reload (re-read config/TOON), 90% of value per plan, see `watcher` fallback below.
+Static registration (preferred production): `inventory`/`linkme` (compile-time plugin set), real surface is `RegistryService::plugin` (single-source discipline); `inventory::submit!` / `linkme::distributed_slice` of `fn(&Arc<Context>) -> Result<FiberId, CordisError>` is the future shortcut once crate count stabilizes (see `crates/cordis/src/lib.rs` HMR section and `Wiring` task). Dynamic HMR (dev only, behind `#[cfg(feature = "hmr")]` off by default): `libloading` path that `dlopen`s `.so` and calls `Plugin::apply` via `extern "C"`; if `libloading` ABI fragility blocks (Rust `1.98` toolchain coupling, `unsafe` soundness), fall back to file-watch + full fiber reload (re-read config/TOON), 90% of value per plan, see `watcher` fallback below.
 
 ### Hmr yagni decision (plan assumptions §contingencies)
 
 Decision: DEFER `libloading` HMR, keep file-watch + `Fiber::reload` as production path.
 
 - Rationale: `libloading::Library::new` + `Symbol<extern "C">` requires `unsafe`, a stable `repr(C)` ABI boundary, and the `.so` to be built with the exact same Rust toolchain (`1.98`). ABI drift across patches, `rust-doctor` soundness flags, and `Box::leak` ownership hazards make `libloading` too brittle for a generic runtime. As plan contingency states: "If `libloading` HMR proves too complex for Rust (dynamic library ABI fragility, `unsafe` surface), fall back to file-watch + full fiber reload without dynamic code swapping … `file watcher still triggers Fiber::reload()` by re-reading config/TOON, which already covers 90% of self-evolution value. Dynamic code HMR can be deferred to a later phase behind `#[cfg(feature = "hmr")]` without blocking the core re…
-- Fallback implemented: `crates/ares-cordis-core/src/watcher.rs` (`watch_many` / `watch_cordis_entries`) uses `notify::RecommendedWatcher` (debounced `500 ms` + `100 ms` settle, same as `AresConfigManager::start_watching`) to watch `config/agents/*.toon` (recursive) and `config/entries.json` (or `config/cordis-entries.toon` parent dir). On `Modify`/`Create` it calls `ReflectService::notify(tid)` which BFS-walks `dependents` and spawns `Fiber::refresh` (epoch recompute via `compute_epoch`). No restart, no `libloading`. Logs `Configuration hot-reloaded successfully via Cordis watch` (generalizes `AresConfigManager`'s `Configuration hot-reloaded successfully` which is already proven on random-port E2E `39476`/`39120`, see `docs/cordis-redesign.md` §9/9b).
-- Stub preserved: `crates/ares-cordis-core/src/hmr.rs` is `#[cfg(feature = "hmr")]` (Cargo feature `hmr = ["dep:libloading"]`, off by default). It shows `libloading::Library::new` + `get::<HmrEntryFn>` + owned `HmrLibrary` holder (RAII, no `Box::leak`) calling `cordis_plugin_apply` (`extern "C"`). Enable with `cargo build --features hmr` and a `.so` built with the same toolchain. Not invoked by `src/main.rs` or `ReflectService`, `watcher` is the production path.
+- Fallback implemented: `crates/cordis/src/watcher.rs` (`watch_many` / `watch_cordis_entries`) uses `notify::RecommendedWatcher` (debounced `500 ms` + `100 ms` settle, same as `AresConfigManager::start_watching`) to watch `config/agents/*.toon` (recursive) and `config/entries.json` (or `config/cordis-entries.toon` parent dir). On `Modify`/`Create` it calls `ReflectService::notify(tid)` which BFS-walks `dependents` and spawns `Fiber::refresh` (epoch recompute via `compute_epoch`). No restart, no `libloading`. Logs `Configuration hot-reloaded successfully via Cordis watch` (generalizes `AresConfigManager`'s `Configuration hot-reloaded successfully` which is already proven on random-port E2E `39476`/`39120`, see `docs/cordis-redesign.md` §9/9b).
+- Stub preserved: `crates/cordis/src/hmr.rs` is `#[cfg(feature = "hmr")]` (Cargo feature `hmr = ["dep:libloading"]`, off by default). It shows `libloading::Library::new` + `get::<HmrEntryFn>` + owned `HmrLibrary` holder (RAII, no `Box::leak`) calling `cordis_plugin_apply` (`extern "C"`). Enable with `cargo build --features hmr` and a `.so` built with the same toolchain. Not invoked by `src/main.rs` or `ReflectService`, `watcher` is the production path.
 - `Cargo.toml`: `[features] hmr = ["dep:libloading"]` (`libloading 0.8` optional, `notify 8.2.0` always for `watcher`), `default = []`.
 
 ---
@@ -444,7 +454,7 @@ Decision: DEFER `libloading` HMR, keep file-watch + `Fiber::reload` as productio
 
 Per YAGNI (Phase 1, §8) + HMR deferral above:
 
--  `libloading` HMR DEFERRED, file-watch fallback `crates/ares-cordis-core/src/watcher.rs` (`notify` → `ReflectService::notify` → `Fiber::reload` via epoch) covers 90% value without dynamic code. Dynamic code swap remains as `crates/ares-cordis-core/src/hmr.rs` stub behind `#[cfg(feature = "hmr")]` (off by default, `libloading 0.8` optional). See HMR decision above and `lib.rs` HMR section.
+-  `libloading` HMR DEFERRED, file-watch fallback `crates/cordis/src/watcher.rs` (`notify` → `ReflectService::notify` → `Fiber::reload` via epoch) covers 90% value without dynamic code. Dynamic code swap remains as `crates/cordis/src/hmr.rs` stub behind `#[cfg(feature = "hmr")]` (off by default, `libloading 0.8` optional). See HMR decision above and `lib.rs` HMR section.
 -  WASM, deferred.
 -  Visual layer package (~60 TS packages, 12 layers), in Rust, one crate; do not replicate ceremony.
 -  `ares.toml` symlink handling, keep `AresConfigManager::start_watching()` as-is for Phase 2; Loader is additive. `watcher` generalizes it to Cordis entries/TOON without touching `ares.toml` symlink (`/opt/ares-config/ares.toml`).

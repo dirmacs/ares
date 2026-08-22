@@ -30,7 +30,7 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 // Phase 3 unified hot-reload: re-export ReflectService from core (single source)
-pub use ares_cordis_core::ReflectService;
+pub use cordis::ReflectService;
 
 /// Runtime provider entry, synthesized from the DB `runtime_providers` table.
 #[derive(Debug, Clone)]
@@ -192,13 +192,15 @@ impl ProviderRegistry {
     /// providers are materialised from the arc-swapped map rather than stored as
     /// [`ProviderConfig`] internally.
     pub fn get_provider(&self, name: &str) -> Option<ProviderConfig> {
-        self.get_provider_for_tenant(name, None)
+        self.provider_for_tenant(name, None)
     }
 
-    /// Get a provider visible to `tenant_id`. Tenant-scoped runtime providers
-    /// are only visible to their owning tenant; fleet-wide runtime providers and
-    /// static providers remain visible to every tenant.
-    pub fn get_provider_for_tenant(
+    /// Crate-private tenant lookup. The former public tenant-provider getter
+    /// is gone; callers use `Llm::get_client` (or `get_provider_for_ctx` inside
+    /// this crate). Tenant-scoped runtime providers are only visible to their
+    /// owning tenant; fleet-wide runtime providers and static providers remain
+    /// visible to every tenant.
+    pub(crate) fn provider_for_tenant(
         &self,
         name: &str,
         tenant_id: Option<&str>,
@@ -210,17 +212,17 @@ impl ProviderRegistry {
     }
 
     /// Resolve a provider visible to the tenant derived from the context's isolate
-    /// namespace. Reads `ctx.isolate_label(TypeId::of::<ProviderRegistry>())` and
+    /// namespace. Reads `ctx.isolate_label(TypeId::of::<Llm>())` and
     /// strips a leading `tenant:`/`user:` prefix (mirroring
-    /// `ares_agents::resolver::user_id_from_ctx`), delegating to
-    /// `get_provider_for_tenant` with the derived tenant (`None` when unlabeled).
+    /// `ares_agent::resolver::user_id_from_ctx`), delegating to
+    /// crate-private tenant lookup with the derived tenant (`None` when unlabeled).
     pub fn get_provider_for_ctx(
         &self,
-        ctx: &std::sync::Arc<ares_cordis_core::Context>,
+        ctx: &std::sync::Arc<cordis::Context>,
         name: &str,
     ) -> Option<ProviderConfig> {
         let tenant = tenant_from_ctx(ctx);
-        self.get_provider_for_tenant(name, tenant.as_deref())
+        self.provider_for_tenant(name, tenant.as_deref())
     }
 
     fn runtime_provider_entry_for_tenant(
@@ -561,7 +563,7 @@ impl ProviderRegistry {
     /// are used when the caller holds a tenant-isolated context.
     pub async fn create_client_for_model_ctx(
         &self,
-        ctx: &std::sync::Arc<ares_cordis_core::Context>,
+        ctx: &std::sync::Arc<cordis::Context>,
         model_name: &str,
     ) -> Result<Box<dyn LLMClient>> {
         let tenant = tenant_from_ctx(ctx);
@@ -606,7 +608,7 @@ impl ProviderRegistry {
         if let Some(model_id) = Self::bedrock_model_id_from_name(model_name) {
             let model_config = Self::bedrock_model_config(model_id);
             let provider_config = self
-                .get_provider_for_tenant("bedrock", tenant)
+                .provider_for_tenant("bedrock", tenant)
                 .unwrap_or_else(Self::default_bedrock_provider_config);
             let provider = Provider::from_model_config(&model_config, &provider_config)?;
             return provider.create_client().await;
@@ -616,7 +618,7 @@ impl ProviderRegistry {
         if let Some(model_id) = Self::azure_model_id_from_name(model_name) {
             let model_config = Self::azure_model_config(model_id);
             let provider_config = self
-                .get_provider_for_tenant("azure", tenant)
+                .provider_for_tenant("azure", tenant)
                 .unwrap_or_else(Self::default_azure_provider_config);
             let provider = Provider::from_model_config(&model_config, &provider_config)?;
             return provider.create_client().await;
@@ -999,7 +1001,7 @@ impl ProviderRegistry {
         models
     }
 
-    /// Capability-aware fallback chain for `LlmService`.
+    /// Capability-aware fallback chain for `Llm`.
     ///
     /// Tries `create_client_for_requirements` for the given `requirements` if
     /// `Some`, then falls back to `create_default_client`. This reuses the
@@ -1017,7 +1019,7 @@ impl ProviderRegistry {
         self.create_default_client().await
     }
 
-    /// Alias satisfying the `LlmService` spec's `resolve_with_fallback` name
+    /// Alias satisfying the `Llm` spec's `resolve_with_fallback` name
     /// when the postgres-gated tier resolver is not active.
     #[cfg(not(feature = "postgres"))]
     pub async fn resolve_with_fallback(
@@ -1047,14 +1049,14 @@ impl ProviderRegistry {
         pool: &sqlx::PgPool,
         fleet_secrets: &ares_config::fleet_secrets::FleetSecrets,
     ) -> Result<Vec<ResolvedProviderConfig>> {
-        use ares_db::tenant_model_tiers::TenantModelTierStore;
+        use ares_store::tenant_model_tiers::TenantModelTierStore;
         use std::collections::HashSet;
 
         let store = TenantModelTierStore::new(pool);
         let primary = match store.get(tenant_id, tier_or_model).await {
             Ok(Some(tier)) => {
                 let provider_config = self
-                    .get_provider_for_tenant(&tier.provider_name, Some(tenant_id))
+                    .provider_for_tenant(&tier.provider_name, Some(tenant_id))
                     .ok_or_else(|| {
                         AppError::Configuration(format!(
                             "Provider '{}' configured for tenant '{}' tier '{}' not found",
@@ -1072,7 +1074,7 @@ impl ProviderRegistry {
             Ok(None) => {
                 if let Some(model_cfg) = self.get_model(tier_or_model) {
                     let provider_config = self
-                        .get_provider_for_tenant(&model_cfg.provider, Some(tenant_id))
+                        .provider_for_tenant(&model_cfg.provider, Some(tenant_id))
                         .ok_or_else(|| {
                             AppError::Configuration(format!(
                                 "Provider '{}' referenced by model/tier '{}' not found",
@@ -1087,7 +1089,7 @@ impl ProviderRegistry {
                         tenant_id: Some(tenant_id.to_string()),
                     }
                 } else if let Some(provider_config) =
-                    self.get_provider_for_tenant(tier_or_model, Some(tenant_id))
+                    self.provider_for_tenant(tier_or_model, Some(tenant_id))
                 {
                     let model_name = Self::provider_default_model(&provider_config).to_string();
                     if model_name.is_empty() {
@@ -1129,7 +1131,7 @@ impl ProviderRegistry {
                     continue;
                 }
                 let provider_config = self
-                    .get_provider_for_tenant(fallback_name, Some(tenant_id))
+                    .provider_for_tenant(fallback_name, Some(tenant_id))
                     .ok_or_else(|| {
                         AppError::Configuration(format!(
                             "Fallback provider '{}' configured for primary provider '{}' not found",
@@ -1266,9 +1268,9 @@ impl ConfigBasedLLMFactory {
 
 /// Phase 3 unified hot-reload demo — watch channel creation on provide.
 /// Compile-time proof that notifiers/dependents insertion compiles via ReflectService.
-pub fn reflect_notify_stub(ctx: &Arc<ares_cordis_core::Context>) {
+pub fn reflect_notify_stub(ctx: &Arc<cordis::Context>) {
     // Prove Loader integration still compiles
-    let _ = ctx.get::<ares_cordis_core::loader::Loader>();
+    let _ = ctx.get::<cordis::loader::Loader>();
     let tid = TypeId::of::<ProviderRegistry>();
     // Prove ReflectService watch channel creation on provide + dependents insertion + BFS notify compiles
     if let Some(reflect) = ctx.get::<ReflectService>() {
@@ -1671,10 +1673,10 @@ mod tests {
         assert!(registry.has_provider_for_tenant("tenant-runtime", Some("tenant-a")));
         assert!(!registry.has_provider_for_tenant("tenant-runtime", Some("tenant-b")));
         assert!(registry
-            .get_provider_for_tenant("tenant-runtime", Some("tenant-a"))
+            .provider_for_tenant("tenant-runtime", Some("tenant-a"))
             .is_some());
         assert!(registry
-            .get_provider_for_tenant("tenant-runtime", Some("tenant-b"))
+            .provider_for_tenant("tenant-runtime", Some("tenant-b"))
             .is_none());
         assert_eq!(
             registry.provider_names(),
@@ -1717,10 +1719,10 @@ mod tests {
         assert!(registry.has_provider_for_tenant("shared-runtime", Some("tenant-b")));
 
         let tenant_provider = registry
-            .get_provider_for_tenant("shared-runtime", Some("tenant-a"))
+            .provider_for_tenant("shared-runtime", Some("tenant-a"))
             .expect("tenant provider");
         let global_provider = registry
-            .get_provider_for_tenant("shared-runtime", Some("tenant-b"))
+            .provider_for_tenant("shared-runtime", Some("tenant-b"))
             .expect("global fallback provider");
         assert_eq!(
             ProviderRegistry::provider_default_model(&tenant_provider),
@@ -1992,7 +1994,7 @@ mod tests {
         // Cordis design (§4): per-tenant provider resolution should be driven by
         // the context's isolate namespace, not a throwaway method param.
         // get_provider_for_ctx(ctx, name) reads
-        // ctx.isolate_label(TypeId::of::<ProviderRegistry>()) and strips a
+        // ctx.isolate_label(TypeId::of::<Llm>()) and strips a
         // leading 'tenant:' prefix (mirroring resolver::user_id_from_ctx) so a
         // tenant-isolated context resolves the tenant-scoped provider.
 
@@ -2024,7 +2026,7 @@ mod tests {
             vec!["shared-runtime".to_string(), "shared-runtime".to_string()],
         );
 
-        let ctx: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let ctx: Arc<cordis::Context> = cordis::Context::new_root();
 
         // Untagged context -> no isolate label -> falls back to the fleet-wide
         // provider (the shared "shared-runtime" entry's tenant is None).
@@ -2034,7 +2036,7 @@ mod tests {
         // A tenant-isolated context must drive resolution: the isolate label
         // 'tenant:tenant-a' derives tenant 'tenant-a', so the tenant-scoped
         // provider wins.
-        let tenant_ctx = ctx.isolate::<ProviderRegistry>("tenant:tenant-a");
+        let tenant_ctx = ctx.isolate::<crate::Llm>("tenant:tenant-a");
         let tenant_provider =
             registry.get_provider_for_ctx(&tenant_ctx, "shared-runtime");
         assert!(
@@ -2048,7 +2050,7 @@ mod tests {
         // Unlabeled root has no isolate label and no intercept, so tenant is
         // None (fleet-wide). A TenantContext intercept is the fallback when
         // isolate_label is missing.
-        let ctx: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let ctx: Arc<cordis::Context> = cordis::Context::new_root();
         assert_eq!(tenant_from_ctx(&ctx), None);
 
         let intercepted = ctx.with_intercept(ares_types::models::TenantContext::new(
@@ -2099,12 +2101,12 @@ mod tests {
         // Isolate label is the primary source even when a TenantContext
         // intercept is present. Intercept "from-intercept", then isolate
         // as tenant:from-isolate, must yield the isolate id.
-        let ctx: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let ctx: Arc<cordis::Context> = cordis::Context::new_root();
         let intercepted = ctx.with_intercept(ares_types::models::TenantContext::new(
             "from-intercept".into(),
             ares_types::models::TenantTier::Pro,
         ));
-        let isolated = intercepted.isolate::<ProviderRegistry>("tenant:from-isolate");
+        let isolated = intercepted.isolate::<crate::Llm>("tenant:from-isolate");
         assert_eq!(
             tenant_from_ctx(&isolated),
             Some("from-isolate".to_string())
@@ -2112,14 +2114,14 @@ mod tests {
     }
 }
 
-/// Derive the tenant id from the context's isolate namespace for
-/// [`ProviderRegistry`], stripping a leading `tenant:`/`user:` prefix.
+/// Derive the tenant id from the context's isolate namespace for [`Llm`],
+/// stripping a leading `tenant:`/`user:` prefix.
 ///
-/// Isolate labels win. When unlabeled for `ProviderRegistry`, falls back to a
+/// Isolate labels win. When unlabeled for `Llm`, falls back to a
 /// [`ares_types::models::TenantContext`] intercept (`tenant_id` if non-empty).
 /// Empty labels/ids yield `None` (fleet-wide resolution).
-pub fn tenant_from_ctx(ctx: &std::sync::Arc<ares_cordis_core::Context>) -> Option<String> {
-    ctx.isolate_label(std::any::TypeId::of::<ProviderRegistry>())
+pub(crate) fn tenant_from_ctx(ctx: &std::sync::Arc<cordis::Context>) -> Option<String> {
+    ctx.isolate_label(std::any::TypeId::of::<crate::Llm>())
         .and_then(|label| {
             label
                 .strip_prefix("tenant:")
@@ -2134,20 +2136,20 @@ pub fn tenant_from_ctx(ctx: &std::sync::Arc<ares_cordis_core::Context>) -> Optio
         })
 }
 
-// Cordis Service impl — allows direct ctx.get::<ProviderRegistry>() and makes
-// ProviderRegistry a valid isolate-realm key for per-tenant provider scoping.
-impl ares_cordis_core::Service for ProviderRegistry {
+// Cordis Service impl — allows ctx.get::<ProviderRegistry>() for crate wiring.
+// Per-tenant provider-secret isolate labels key on TypeId::of::<Llm>(), not this type.
+impl cordis::Service for ProviderRegistry {
     fn name(&self) -> &'static str { "provider_registry" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }
 }
 
 // Cordis Service impl — allows direct ctx.get::<ConfigBasedLLMFactory>() without wrapper
-impl ares_cordis_core::Service for ConfigBasedLLMFactory {
+impl cordis::Service for ConfigBasedLLMFactory {
     fn name(&self) -> &'static str { "llm_factory" }
-    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }

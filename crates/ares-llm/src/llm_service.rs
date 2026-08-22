@@ -1,10 +1,11 @@
-//! Unified LLM service (Cordis Phase 5).
+//! Unified LLM capability (Cordis Phase 3).
 //!
-//! Wraps `ProviderRegistry` + `NvidiaCatalogCache` + `ClientPool` behind a single
-//! `Service` that can be injected via `ctx.get::<LlmService>()`.
+//! Wraps `ProviderRegistry` + `NvidiaCatalogCache` + `ClientPool` +
+//! `ConfigBasedLLMFactory` behind a single `Service` injected via
+//! `ctx.get::<Llm>()`.
 //!
 //! Per-request model pinning uses `ctx.intercept(ModelOverride { model })` so
-//! the override is visible to `LlmService` via `ctx.get::<ModelOverride>()`
+//! the override is visible to `Llm` via `ctx.get::<ModelOverride>()`
 //! without mutating global state.
 //!
 //! Circuit-breaker (`Breaker`) causes `Service::check` to return `false` when
@@ -15,7 +16,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
-use ares_cordis_core::{Context, CordisError, Service};
+use cordis::{Context, CordisError, Service};
 use ares_config::nvidia_catalog::NvidiaCatalogCache;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
@@ -23,7 +24,7 @@ use parking_lot::RwLock;
 use crate::capabilities::CapabilityRequirements;
 use crate::client::LLMClient;
 use crate::pool::ClientPool;
-use crate::provider_registry::ProviderRegistry;
+use crate::provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
 use ares_types::types::AppError;
 
 /// Per-request model override for `ctx.intercept`.
@@ -31,8 +32,8 @@ use ares_types::types::AppError;
 /// Example:
 /// ```ignore
 /// let req_ctx = root_ctx.intercept(ModelOverride { model: "gpt-4o-mini".into() });
-/// let llm = req_ctx.get::<LlmService>().unwrap();
-/// // inside LlmService, check `ctx.get::<ModelOverride>()` for pinning
+/// let llm = req_ctx.get::<Llm>().unwrap();
+/// // inside Llm, check `ctx.get::<ModelOverride>()` for pinning
 /// ```
 #[derive(Debug, Clone)]
 pub struct ModelOverride {
@@ -102,7 +103,7 @@ impl TenantModelPolicy {
 
 impl Service for TenantModelPolicy {}
 
-/// Circuit-breaker state for `LlmService`.
+/// Circuit-breaker state for `Llm`.
 ///
 /// `check()` returns:
 /// - `Closed` / `HalfOpen` → `true` (service advertises healthy, fibers stay Active)
@@ -152,10 +153,10 @@ impl Breaker {
     /// Transition on failure with threshold and cooldown.
     ///
     /// - `Closed` → `Open{until: now+cooldown}` after `FAILURE_THRESHOLD` is reached,
-    ///   otherwise stays `Closed` (counting is external via `LlmService::record_failure`
+    ///   otherwise stays `Closed` (counting is external via `Llm::record_failure`
     ///   failure counter; this pure transition always opens — the service layer
     ///   decides when to call it. For `Closed` we open immediately; callers that
-    ///   want threshold counting should use `LlmService::record_failure`).
+    ///   want threshold counting should use `Llm::record_failure`).
     /// - `HalfOpen` → `Open`
     /// - `Open` → `Open` (refresh cooldown)
     pub fn transition_on_failure(&self) -> Breaker {
@@ -188,30 +189,32 @@ impl Breaker {
 }
 
 
-/// Unified LLM service composing provider registry, catalog, and pool.
+/// Unified LLM capability composing provider registry, catalog, factory, and pool.
 ///
-/// Supports `ctx.get::<LlmService>()`, `ctx.isolate` per-tenant scoping, and
+/// Supports `ctx.get::<Llm>()`, `ctx.isolate::<Llm>` per-tenant scoping, and
 /// `ctx.intercept::<ModelOverride>` per-request model pinning.
 ///
 /// `Service::check` delegates to the circuit breaker — when the breaker is
-/// `Open`, `check()` returns `false` so dependent fibers (e.g. `AgentExecutionService`)
+/// `Open`, `check()` returns `false` so dependent fibers (e.g. `Execute`)
 /// deactivate via guarded withdrawal (Thm 63).
-pub struct LlmService {
+pub struct Llm {
     /// Named provider registry (OpenAI, Anthropic, etc.).
-    pub provider_registry: Arc<ProviderRegistry>,
+    pub(crate) provider_registry: Arc<ProviderRegistry>,
     /// NVIDIA catalog cache for capability-based model selection (optional so
     /// `cargo check --no-default-features` remains viable).
-    pub catalog: Option<Arc<NvidiaCatalogCache>>,
+    pub(crate) catalog: Option<Arc<NvidiaCatalogCache>>,
     /// Pooled LLM clients.
-    pub pool: Arc<ClientPool>,
+    pub(crate) pool: Arc<ClientPool>,
+    /// Config-based factory used by crate-internal wiring.
+    pub(crate) factory: Option<Arc<ConfigBasedLLMFactory>>,
     /// Circuit-breaker state.
     breaker: RwLock<Breaker>,
     /// Consecutive failure count for thresholded transition.
     failures: RwLock<u32>,
 }
 
-impl LlmService {
-    /// Create a new `LlmService`.
+impl Llm {
+    /// Create a new `Llm`.
     pub fn new(
         provider_registry: Arc<ProviderRegistry>,
         pool: Arc<ClientPool>,
@@ -221,9 +224,16 @@ impl LlmService {
             provider_registry,
             catalog,
             pool,
+            factory: None,
             breaker: RwLock::new(Breaker::Closed),
             failures: RwLock::new(0),
         }
+    }
+
+    /// Attach a config-based factory (crate wiring / Execute boot).
+    pub fn with_factory(mut self, factory: Arc<ConfigBasedLLMFactory>) -> Self {
+        self.factory = Some(factory);
+        self
     }
 
     /// Create with explicit breaker (e.g. `Open` for testing).
@@ -237,6 +247,7 @@ impl LlmService {
             provider_registry,
             catalog,
             pool,
+            factory: None,
             breaker: RwLock::new(breaker),
             failures: RwLock::new(0),
         }
@@ -323,6 +334,8 @@ impl LlmService {
     }
 
     /// Capability-aware client resolution with per-request `ModelOverride` pinning.
+    ///
+    /// Public API: `Llm::get_client(&self, ctx: &Arc<cordis::Context>, capability)`.
     ///
     /// 1. If `ctx.get::<ModelOverride>()` is present, attempt to create a client for
     ///    that exact model (via `ProviderRegistry::create_client_for_model_ctx`). On
@@ -429,15 +442,15 @@ impl LlmService {
     }
 }
 
-impl Service for LlmService {
+impl Service for Llm {
     fn name(&self) -> &'static str {
-        "LlmService"
+        "Llm"
     }
 
     fn init(
         &self,
         _ctx: &Arc<Context>,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<Box<dyn ares_cordis_core::Disposable>>, CordisError>> + Send + '_>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<Box<dyn cordis::Disposable>>, CordisError>> + Send + '_>> {
         Box::pin(async { Ok(None) })
     }
 
@@ -453,7 +466,7 @@ mod tests {
     use super::*;
     use crate::capabilities::CapabilityRequirements;
     use crate::provider_registry::RuntimeProviderEntry;
-    use ares_cordis_core::Context;
+    use cordis::Context;
     use ares_types::models::{TenantContext, TenantTier};
     use chrono::Duration;
     use std::collections::HashMap;
@@ -496,12 +509,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn llm_service_model_override_via_context() {
+    async fn llm_model_override_via_context() {
         let registry = Arc::new(ProviderRegistry::new());
         let pool = Arc::new(ClientPool::with_defaults());
-        let svc = Arc::new(LlmService::new(registry, pool, None));
+        let svc = Arc::new(Llm::new(registry, pool, None));
         let root = Context::new_root();
-        root.provide::<LlmService>(LlmService::new(
+        root.provide::<Llm>(Llm::new(
             Arc::new(ProviderRegistry::new()),
             Arc::new(ClientPool::with_defaults()),
             None,
@@ -512,7 +525,7 @@ mod tests {
         });
         assert!(req_ctx.get::<ModelOverride>().is_some());
         assert_eq!(req_ctx.get::<ModelOverride>().unwrap().model, "gpt-4o-mini");
-        // LlmService composition fields exist
+        // Llm composition fields exist
         assert!(!Arc::as_ptr(&svc.provider_registry).is_null());
         let _ = svc.catalog.clone();
         let _ = svc.pool.provider_names();
@@ -522,7 +535,7 @@ mod tests {
 
     #[tokio::test]
     async fn record_failure_threshold_opens_breaker() {
-        let svc = LlmService::new(
+        let svc = Llm::new(
             Arc::new(ProviderRegistry::new()),
             Arc::new(ClientPool::with_defaults()),
             None,
@@ -555,7 +568,7 @@ mod tests {
         policy
             .authorize(&override_model.model)
             .expect("allowed model override should pass policy");
-        let svc = LlmService::new(
+        let svc = Llm::new(
             Arc::new(ProviderRegistry::new()),
             Arc::new(ClientPool::with_defaults()),
             None,
@@ -569,7 +582,7 @@ mod tests {
     #[tokio::test]
     async fn disallowed_model_override_is_rejected_before_provider_execution() {
         let registry = Arc::new(ProviderRegistry::new());
-        let svc = Arc::new(LlmService::new(
+        let svc = Arc::new(Llm::new(
             registry,
             Arc::new(ClientPool::with_defaults()),
             None,
@@ -595,7 +608,7 @@ mod tests {
         assert!(root.get::<ModelOverride>().is_none());
         assert!(root.get::<TenantModelPolicy>().is_none());
         assert!(matches!(
-            root.get::<LlmService>().expect("global service").breaker(),
+            root.get::<Llm>().expect("global service").breaker(),
             Breaker::Closed
         ));
     }
@@ -604,7 +617,7 @@ mod tests {
     async fn get_client_uses_override_when_catalog_absent() {
         let registry = Arc::new(ProviderRegistry::new());
         let pool = Arc::new(ClientPool::with_defaults());
-        let svc = LlmService::new(registry, pool, None);
+        let svc = Llm::new(registry, pool, None);
         let ctx = Context::new_root();
         let req_ctx = ctx.intercept(ModelOverride {
             model: "nonexistent-model-xyz".into(),
@@ -654,7 +667,7 @@ mod tests {
             vec!["shared-runtime".to_string(), "shared-runtime".to_string()],
         );
         let registry = Arc::new(registry);
-        let svc = LlmService::new(registry, Arc::new(ClientPool::with_defaults()), None);
+        let svc = Llm::new(registry, Arc::new(ClientPool::with_defaults()), None);
         let root = Context::new_root();
         let ctx = root
             .with_intercept(TenantContext::new("tenant-a".into(), TenantTier::Pro))

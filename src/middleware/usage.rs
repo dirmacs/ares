@@ -1,5 +1,5 @@
 use crate::db::tenants::TenantDb;
-use ares_cordis_core::{Context, Service, ServiceInitFuture};
+use cordis::{Context, Service, ServiceInitFuture};
 use axum::{extract::Request, middleware::Next, response::Response};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn usage_context_readable_via_cordis_intercept() {
-        let root = ares_cordis_core::Context::new_root();
+        let root = cordis::Context::new_root();
         let child = root.with_intercept(UsageContext::new("acme"));
         let retrieved = child
             .get::<UsageContext>()
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn usage_context_record_then_params_from_ctx() {
-        let root = ares_cordis_core::Context::new_root();
+        let root = cordis::Context::new_root();
         let child = root.with_intercept(UsageContext::new("acme"));
         let usage = child
             .get::<UsageContext>()
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn usage_event_params_from_ctx_none_without_intercept() {
-        let root = ares_cordis_core::Context::new_root();
+        let root = cordis::Context::new_root();
         assert_eq!(usage_event_params_from_ctx(&root), None);
     }
 
@@ -467,7 +467,7 @@ mod tests {
     fn usage_event_params_from_ctx_sees_record_on_clone() {
         let original = UsageContext::new("acme");
         let cloned = original.clone();
-        let root = ares_cordis_core::Context::new_root();
+        let root = cordis::Context::new_root();
         let child = root.with_intercept(cloned);
         original.record(MeteringSnapshot {
             input_tokens: 4,

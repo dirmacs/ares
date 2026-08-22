@@ -102,10 +102,11 @@ impl PipelineService {
             ctx_provider: None,
         };
 
-        // Phase 4 §15: prefer execute_agent (full pipeline) with fallback to legacy execute
-        let resp = match exec.execute_agent(&req, ctx).await {
+        // Isolate wins over intercept over fallback; keep req.tenant for execute fallback.
+        let scoped = tenant_scoped_ctx(ctx, tenant);
+        let resp = match exec.execute_agent(&req, &scoped).await {
             Ok(result) => result.response,
-            Err(_) => exec.execute(req, ctx).await.map_err(|e| e.to_string())?,
+            Err(_) => exec.execute(req, &scoped).await.map_err(|e| e.to_string())?,
         };
 
         // Surface as JSON Value for caller uniformity.
@@ -152,6 +153,10 @@ impl Service for PipelineService {
 }
 
 pub(crate) const PIPELINE_REQUEST_SOURCE: &str = "pipeline";
+
+pub(crate) fn tenant_scoped_ctx(ctx: &Arc<Context>, tenant_id: &str) -> Arc<Context> {
+    ctx.isolate::<ares_agents::AgentResolverService>(&format!("tenant:{tenant_id}"))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PipelineUsageRecord {
@@ -345,10 +350,11 @@ async fn execute_target_agent(
     };
 
     let pool = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let scoped = tenant_scoped_ctx(app_state, tenant_id);
 
-    let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(&pool,
+    let mut resolved_agent = tenant_agent::resolve_agent_from_ctx(&pool,
         &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
-        tenant_id,
+        &scoped,
         &pipeline.target_agent,
         &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
@@ -480,9 +486,9 @@ async fn execute_target_agent(
         pool: pool.clone(),
     });
     resolved_agent.agent.set_observability(obs.clone());
-    resolved_agent.agent.set_runtime_tools(
+    resolved_agent.agent.set_runtime_tools_from_ctx(
         app_state.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(),
-        tenant_id.to_string(),
+        &scoped,
     );
 
     let mut runtime_context = AgentRuntimeContext::new(
@@ -685,6 +691,18 @@ pub fn evaluate_condition(condition: &str, output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tenant_scoped_ctx_sets_isolate_label() {
+        use std::any::TypeId;
+        let root = Context::new_root();
+        let scoped = tenant_scoped_ctx(&root, "acme");
+        assert_eq!(
+            scoped.isolate_label(TypeId::of::<ares_agents::AgentResolverService>()).as_deref(),
+            Some("tenant:acme"),
+        );
+        assert!(root.isolate_label(TypeId::of::<ares_agents::AgentResolverService>()).is_none());
+    }
 
     #[test]
     fn test_evaluate_condition() {

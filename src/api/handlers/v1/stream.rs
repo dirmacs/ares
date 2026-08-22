@@ -30,16 +30,16 @@ pub async fn sandbox_run_agent(
     // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
     let state_ctx = state_ctx.with_intercept(tc.clone());
 
-    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
-        &tc.tenant_id,
+        &state_ctx,
         &name,
         &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
     .await?;
     resolved_agent
         .agent
-        .set_runtime_tools(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), tc.tenant_id.clone());
+        .set_runtime_tools_from_ctx(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), &state_ctx);
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let started = Utc::now();

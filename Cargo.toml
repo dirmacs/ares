@@ -51,11 +51,13 @@ rhai = { version = "1.25", features = ["serde", "sync"] }
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "tls-rustls", "uuid", "chrono", "json", "migrate", "rust_decimal"] }
 libsql = { version = "0.6" }
 qdrant-client = { version = "1.16.0" }
-lancedb = { version = "0.23.1" }
-lance = { version = "1.0.1", features = ["protoc"], default-features = false }
+# lance is not imported directly; the lancedb crate pulls its own lance stack.
+# Keeping it as a direct dependency dragged in an older parquet 56 / thrift 0.17
+# chain, so it is removed. (lancedb feature below no longer lists dep:lance.)
+lancedb = { version = "0.37.1" }
 chromadb = { version = "2.3.0" }
 pinecone-sdk = { version = "0.1.2" }
-rmcp = { version = "0.12.0", features = ["server", "client", "transport-io", "macros"] }
+rmcp = { version = "3.1.4", features = ["server", "client", "transport-io", "macros"] }
 rust_decimal = { version = "1.36", features = ["serde"] }
 toml = "0.9.8"
 toon-format = { version = "0.4.1", default-features = false }
@@ -134,7 +136,7 @@ ares-vector = ["dep:ares-vector", "ares-db/ares-vector"]
 
 # LanceDB - Serverless, embedded vector database
 # Note: Requires protoc compilation, may have issues on Windows MSVC
-lancedb = ["dep:lancedb", "dep:lance", "ares-db/lancedb"]
+lancedb = ["dep:lancedb", "ares-db/lancedb"]
 
 # Qdrant vector database for semantic search
 qdrant = ["dep:qdrant-client", "ares-db/qdrant"]
@@ -284,9 +286,7 @@ rust_decimal = { workspace = true }
 ares-vector = { workspace = true, features = ["serde"], optional = true }
 # External vector DBs
 qdrant-client = { version = "1.16.0", optional = true }
-lancedb = { version = "0.23.1", optional = true }
-# Lance with protoc feature compiles protobuf compiler from source - may have issues on Windows
-lance = { version = "1.0.1", features = ["protoc"], default-features = false, optional = true }
+lancedb = { version = "0.37.1", optional = true }
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "tls-rustls", "uuid", "chrono", "json", "migrate"], optional = true }
 libsql = { version = "0.6", optional = true }
 chromadb = { version = "2.3.0", optional = true }
@@ -306,7 +306,7 @@ utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
 
 # MCP support (optional)
-rmcp = { version = "0.12.0", features = ["server", "client", "transport-io", "macros"], optional = true }
+rmcp = { version = "3.1.4", features = ["server", "client", "transport-io", "macros"], optional = true }
 
 # Email sending via SMTP (optional — gated by email feature)
 lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"], optional = true }

@@ -97,8 +97,11 @@ impl OllamaClient {
             (host_port.to_string(), 11434)
         };
 
-        // ollama-rs Ollama::new expects an absolute URL; pass scheme+host
-        let client = Ollama::new(format!("http://{}", host), port);
+        // ollama-rs Ollama::builder().host(...) expects an absolute URL; pass scheme+host
+        let client = Ollama::builder()
+            .host(format!("http://{}", host))
+            .port(port)
+            .build();
 
         Ok(Self {
             client,

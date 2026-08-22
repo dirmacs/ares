@@ -15,3 +15,10 @@ plugin = "EventsService"
 disabled = false
 
 [entry.config]
+
+[[entry]]
+id = "probe"
+plugin = "noop_probe"
+disabled = false
+
+[entry.config]

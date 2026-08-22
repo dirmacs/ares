@@ -414,6 +414,15 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/admin/runtime-tools/{id}/rollback/{version}",
             post(crate::api::handlers::admin::rollback_runtime_tool),
         )
+        // Cordis service lifecycle (retire / re-provide)
+        .route(
+            "/admin/cordis/services/{name}/retire",
+            post(crate::api::handlers::admin::retire_cordis_service),
+        )
+        .route(
+            "/admin/cordis/services/{name}/provide",
+            post(crate::api::handlers::admin::provide_cordis_service),
+        )
         // Runtime Providers
         .route(
             "/admin/runtime_providers",
@@ -691,6 +700,15 @@ pub fn build_routes(ctx: &Arc<Context>) -> Router<AppState> {
         .merge(crate::api::handlers::admin::connectors::routes())
         .merge(crate::api::handlers::admin::health::routes())
         .merge(crate::api::handlers::admin::audit::routes())
+        // Cordis service lifecycle (retire / re-provide)
+        .route(
+            "/admin/cordis/services/{name}/retire",
+            post(crate::api::handlers::admin::retire_cordis_service),
+        )
+        .route(
+            "/admin/cordis/services/{name}/provide",
+            post(crate::api::handlers::admin::provide_cordis_service),
+        )
         .merge(crate::api::handlers::v1::chat::routes())
         .merge(crate::api::handlers::v1::stream::routes())
         .merge(crate::api::handlers::v1::agents::routes())
@@ -714,6 +732,15 @@ pub fn build_routes(ctx: &Arc<Context>) -> Router<Arc<Context>> {
         .merge(crate::api::handlers::admin::connectors::routes())
         .merge(crate::api::handlers::admin::health::routes())
         .merge(crate::api::handlers::admin::audit::routes())
+        // Cordis service lifecycle (retire / re-provide)
+        .route(
+            "/admin/cordis/services/{name}/retire",
+            post(crate::api::handlers::admin::retire_cordis_service),
+        )
+        .route(
+            "/admin/cordis/services/{name}/provide",
+            post(crate::api::handlers::admin::provide_cordis_service),
+        )
         .merge(crate::api::handlers::v1::chat::routes())
         .merge(crate::api::handlers::v1::stream::routes())
         .merge(crate::api::handlers::v1::agents::routes())
@@ -1136,6 +1163,53 @@ mod tests {
         let server = test_server(test_app_state());
         let response = server.get("/admin/runtime-tools/capabilities").await;
         assert_ne!(response.status_code(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_cordis_service_retire_route() {
+        // No env manipulation: other admin tests set/unset ADMIN_API_KEY
+        // concurrently. Whether the middleware rejects (401) or the handler
+        // runs (200), a non-404 proves the route segment reached the layer.
+        let server = test_server(test_app_state());
+        let response = server.post("/admin/cordis/services/events_service/retire").await;
+        assert_ne!(response.status_code(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_router_registers_cordis_service_provide_route() {
+        let server = test_server(test_app_state());
+        let response = server.post("/admin/cordis/services/events_service/provide").await;
+        assert_ne!(response.status_code(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn cordis_service_lifecycle_end_to_end_over_http() {
+        let ctx = Context::new_root();
+        ctx.provide(ares_cordis_core::ReflectService::new());
+        ctx.provide(crate::context_services::ToolRegistryService(
+            std::sync::Arc::new(ares_tools::ToolRegistry::new()),
+        ));
+        ctx.provide(ares_cordis_core::EventsService::new());
+
+        let app = crate::api::handlers::admin::cordis::routes()
+            .with_state(ctx.clone());
+        let server = axum_test::TestServer::new(app).expect("test server");
+
+        // Wrapper-backed name → 409 Conflict (not retirably supported today).
+        let response = server.post("/cordis/services/tool_registry/retire").await;
+        assert_eq!(response.status_code(), StatusCode::CONFLICT);
+
+        // Real retirement removes EventsService by TypeId.
+        let response = server.post("/cordis/services/events_service/retire").await;
+        assert_eq!(response.status_code(), StatusCode::OK);
+        assert_eq!(response.json::<serde_json::Value>()["retired"], serde_json::json!(true));
+        assert!(ctx.get::<ares_cordis_core::EventsService>().is_none());
+
+        // Companion endpoint re-registers it so the cycle repeats.
+        let response = server.post("/cordis/services/events_service/provide").await;
+        assert_eq!(response.status_code(), StatusCode::OK);
+        assert_eq!(response.json::<serde_json::Value>()["provided"], serde_json::json!(true));
+        assert!(ctx.get::<ares_cordis_core::EventsService>().is_some());
     }
 
     #[tokio::test]

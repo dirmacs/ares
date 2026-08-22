@@ -27,6 +27,8 @@ pub async fn sandbox_run_agent(
     Json(input): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
     let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
 
     let mut resolved_agent = tenant_agent::resolve_required_tenant_agent(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),

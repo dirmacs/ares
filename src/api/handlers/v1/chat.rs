@@ -55,11 +55,13 @@ pub async fn v1_chat(
     Json(payload): Json<ChatRequest>,
 ) -> Result<axum::response::Response> {
     let tc = extract_tenant(ctx)?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
     // Per-request model override is implemented via ModelOverride + Cordis intercept
     // (see the DI path below: state_ctx.with_intercept(ModelOverride { .. })).
 
     // Quota enforcement — check monthly + daily request limits
-    enforce_quota(&state_ctx, &tc).await?;
+    enforce_quota(&state_ctx).await?;
 
     // Emergency stop — kill switch for all agents
     if state_ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
@@ -349,7 +351,9 @@ pub async fn v1_research(
     Json(payload): Json<ResearchRequest>,
 ) -> Result<Response> {
     let tc = extract_tenant(ctx)?;
-    enforce_quota(&state_ctx, &tc).await?;
+    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
+    let state_ctx = state_ctx.with_intercept(tc.clone());
+    enforce_quota(&state_ctx).await?;
 
     if state_ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
         .load(std::sync::atomic::Ordering::Relaxed)

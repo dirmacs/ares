@@ -531,6 +531,7 @@ dependencies = [
 name = "ares-types"
 version = "0.9.0"
 dependencies = [
+ "ares-cordis-core",
  "axum 0.8.9",
  "chrono",
  "serde",

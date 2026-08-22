@@ -193,6 +193,16 @@ impl TenantContext {
     }
 }
 
+// Cordis Service impl — makes TenantContext a valid intercept key so per-request
+// tenant scope flows through the Cordis context via ctx.with_intercept(tenant_ctx).
+impl ares_cordis_core::Service for TenantContext {
+    fn name(&self) -> &'static str { "tenant_context" }
+    fn init(&self, _ctx: &std::sync::Arc<ares_cordis_core::Context>) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool { true }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,5 +574,25 @@ mod tests {
         assert!(!ctx.can_make_request(u64::MAX, 0));
         assert!(!ctx.can_make_request(0, u64::MAX));
         assert!(!ctx.can_use_tokens(u64::MAX, 1));
+    }
+
+    #[test]
+    fn tenant_context_readable_via_cordis_intercept() {
+        // Cordis design: per-request tenant scope should flow via
+        // ctx.with_intercept(TenantContext) so downstream services read it
+        // from the context (ctx.get::<TenantContext>()) instead of Axum
+        // request extensions.
+        use std::sync::Arc;
+        let root: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+
+        // Before intercept — no TenantContext in context.
+        assert!(root.get::<TenantContext>().is_none());
+
+        // After intercept — TenantContext is readable.
+        let tc = TenantContext::new("acme".into(), TenantTier::Pro);
+        let child = root.with_intercept(tc);
+        let retrieved = child.get::<TenantContext>().expect("intercept must make TenantContext readable");
+        assert_eq!(retrieved.tenant_id, "acme");
+        assert_eq!(retrieved.tier, TenantTier::Pro);
     }
 }

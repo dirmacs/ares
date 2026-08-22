@@ -817,9 +817,8 @@ fn factory_execution_stack(
     _config: &serde_json::Value,
 ) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
     let db = ctx
-        .get::<ares::context_services::DbService>()
-        .map(|s| s.0.clone())
-        .ok_or_else(|| missing("DbService"))?;
+        .get::<PostgresClient>()
+        .ok_or_else(|| missing("PostgresClient"))?;
     let tenant_db = ctx
         .get::<ares::TenantDb>()
         .ok_or_else(|| missing("TenantDb"))?;
@@ -834,7 +833,7 @@ fn factory_execution_stack(
         .map(|s| s as Arc<dyn ares_agents::RunTracker>)
         .ok_or_else(|| missing("ActiveRuns"))?;
     let shared_execution = ares::execution_stack::new_shared_execution(
-        db,
+        db.clone() as Arc<dyn ares::db::traits::DatabaseClient>,
         tenant_db,
         llm_factory,
         agent_registry,
@@ -941,9 +940,7 @@ fn factory_app_state_services(
     ctx.provide(ares::context_services::EmergencyStop::new(false));
     let context_provider: Arc<dyn ares::agents::context_provider::ContextProvider> =
         Arc::new(ares::agents::NoOpContextProvider);
-    ctx.provide(ares::context_services::ContextProviderService(
-        context_provider,
-    ));
+    ctx.provide(ares::agents::ContextProviderHandle::new(context_provider));
 
     #[cfg(feature = "mcp")]
     {
@@ -1152,7 +1149,7 @@ async fn run_server(
         .expect("Failed to seed agent templates");
     tracing::info!("Agent templates seeded");
 
-    // 5. provide ConfigService, TenantDb, DbService, PostgresClient
+    // 5. provide ConfigService, TenantDb, PostgresClient
     let db_arc = Arc::new(db);
     let tenant_db = Arc::new(ares::TenantDb::new(db_arc.clone()));
 
@@ -1162,9 +1159,6 @@ async fn run_server(
         .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
     root_ctx.provide_arc(config_manager.clone());
     root_ctx.provide_arc(tenant_db.clone());
-    root_ctx.provide(ares::context_services::DbService(
-        db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>
-    ));
     root_ctx.provide_arc(db_arc.clone());
 
     // 6–7. register factories + Loader::load_from_file + instantiate every enabled entry
@@ -1795,7 +1789,7 @@ async fn health_check_detailed(
 
     // Check database connectivity
     let db_status = serde_json::json!({ "status": "healthy" });
-    /* let db_status = match state.get::<ares::context_services::DbService>().expect("not provided").0.operation_conn().await {
+    /* let db_status = match state.get::<PostgresClient>().expect("not provided").operation_conn().await {
         Ok(_) => serde_json::json!({ "status": "healthy" }),
         Err(e) => serde_json::json!({ "status": "unhealthy", "error": e.to_string() }),
     }; */

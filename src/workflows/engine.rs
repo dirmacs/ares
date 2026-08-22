@@ -469,7 +469,7 @@ mod tests {
             ctx.provide_arc(config_manager.clone());
             ctx.provide(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap());
             let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
-            ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
+            ctx.provide_arc(db_tmp.clone());
             let tenant_db = Arc::new(crate::db::TenantDb::new(db_tmp.clone()));
             ctx.provide_arc(tenant_db.clone());
             ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
@@ -481,7 +481,7 @@ mod tests {
             ctx.provide(crate::api::handlers::deploy::new_deploy_registry());
             ctx.provide(crate::api::handlers::loops::LoopRegistry::new());
             ctx.provide(crate::context_services::EmergencyStop::new(false));
-            ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
+            ctx.provide(crate::agents::ContextProviderHandle::new(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
             ctx.provide(ares_config::fleet_secrets::FleetSecrets::new());
             ctx.provide_arc(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())));
             ctx.provide_arc(Arc::new(crate::active_runs::ActiveRuns::new()));
@@ -514,7 +514,7 @@ mod tests {
             ctx.provide_arc(config_manager.clone());
             ctx.provide(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap());
             let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
-            ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
+            ctx.provide_arc(db_tmp.clone());
             let tenant_db = Arc::new(crate::db::TenantDb::new(db_tmp.clone()));
             ctx.provide_arc(tenant_db.clone());
             ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
@@ -526,7 +526,7 @@ mod tests {
             ctx.provide(crate::api::handlers::deploy::new_deploy_registry());
             ctx.provide(crate::api::handlers::loops::LoopRegistry::new());
             ctx.provide(crate::context_services::EmergencyStop::new(false));
-            ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
+            ctx.provide(crate::agents::ContextProviderHandle::new(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
             ctx.provide(ares_config::fleet_secrets::FleetSecrets::new());
             ctx.provide_arc(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())));
             ctx.provide_arc(Arc::new(crate::active_runs::ActiveRuns::new()));
@@ -559,7 +559,7 @@ mod tests {
             ctx.provide_arc(config_manager.clone());
             ctx.provide(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap());
             let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
-            ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
+            ctx.provide_arc(db_tmp.clone());
             let tenant_db = Arc::new(crate::db::TenantDb::new(db_tmp.clone()));
             ctx.provide_arc(tenant_db.clone());
             ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
@@ -571,7 +571,7 @@ mod tests {
             ctx.provide(crate::api::handlers::deploy::new_deploy_registry());
             ctx.provide(crate::api::handlers::loops::LoopRegistry::new());
             ctx.provide(crate::context_services::EmergencyStop::new(false));
-            ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
+            ctx.provide(crate::agents::ContextProviderHandle::new(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
             ctx.provide(ares_config::fleet_secrets::FleetSecrets::new());
             ctx.provide_arc(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())));
             ctx.provide_arc(Arc::new(crate::active_runs::ActiveRuns::new()));
@@ -662,7 +662,7 @@ mod tests {
             ctx.provide_arc(config_manager.clone());
             ctx.provide(DynamicConfigManager::new(std::path::PathBuf::from("config/agents"), std::path::PathBuf::from("config/models"), std::path::PathBuf::from("config/tools"), std::path::PathBuf::from("config/workflows"), std::path::PathBuf::from("config/mcps"), false).unwrap());
             let db_tmp = Arc::new(crate::db::PostgresClient::new_test());
-            ctx.provide(crate::context_services::DbService(db_tmp.clone() as std::sync::Arc<dyn crate::db::traits::DatabaseClient>));
+            ctx.provide_arc(db_tmp.clone());
             let tenant_db = Arc::new(crate::db::TenantDb::new(db_tmp.clone()));
             ctx.provide_arc(tenant_db.clone());
             ctx.provide_arc(Arc::new(crate::ConfigBasedLLMFactory::new(provider_registry.clone(), "default")));
@@ -674,7 +674,7 @@ mod tests {
             ctx.provide(crate::api::handlers::deploy::new_deploy_registry());
             ctx.provide(crate::api::handlers::loops::LoopRegistry::new());
             ctx.provide(crate::context_services::EmergencyStop::new(false));
-            ctx.provide(crate::context_services::ContextProviderService(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
+            ctx.provide(crate::agents::ContextProviderHandle::new(Arc::new(crate::agents::NoOpContextProvider) as std::sync::Arc<dyn crate::agents::context_provider::ContextProvider>));
             ctx.provide(ares_config::fleet_secrets::FleetSecrets::new());
             ctx.provide_arc(Arc::new(crate::RuntimeToolRegistry::new(db_tmp.pool.clone())));
             ctx.provide_arc(Arc::new(crate::active_runs::ActiveRuns::new()));

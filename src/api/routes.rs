@@ -921,7 +921,7 @@ mod tests {
         let db = Arc::new(crate::db::PostgresClient::new_test());
         let tenant_db = Arc::new(TenantDb::new(db.clone()));
         ctx.provide_arc(tenant_db.clone());
-        ctx.provide(crate::context_services::DbService(db.clone() as Arc<dyn crate::db::traits::DatabaseClient>));
+        ctx.provide_arc(db.clone());
         let auth_service = Arc::new(AuthService::new(
             "test-secret-at-least-32-characters-long".into(),
             900,

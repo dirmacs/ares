@@ -82,6 +82,34 @@ impl ContextProvider for NoOpContextProvider {
     }
 }
 
+/// Cordis-native handle for the process-wide ContextProvider.
+#[derive(Clone)]
+pub struct ContextProviderHandle(pub std::sync::Arc<dyn ContextProvider>);
+
+impl ares_cordis_core::Service for ContextProviderHandle {
+    fn name(&self) -> &'static str {
+        "context_provider"
+    }
+    fn init(
+        &self,
+        _ctx: &std::sync::Arc<ares_cordis_core::Context>,
+    ) -> ares_cordis_core::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+impl ContextProviderHandle {
+    pub fn new(inner: std::sync::Arc<dyn ContextProvider>) -> Self {
+        Self(inner)
+    }
+    pub fn inner(&self) -> &std::sync::Arc<dyn ContextProvider> {
+        &self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +240,14 @@ mod tests {
         let provider: Box<dyn ContextProvider> = Box::new(NoOpContextProvider);
         let arc = std::sync::Arc::new(provider);
         let _clone = arc.clone();
+    }
+
+    #[test]
+    fn context_provider_handle_readable_via_cordis() {
+        let ctx = ares_cordis_core::Context::new_root();
+        ctx.provide(ContextProviderHandle::new(std::sync::Arc::new(
+            NoOpContextProvider,
+        )));
+        assert!(ctx.get::<ContextProviderHandle>().is_some());
     }
 }

@@ -784,12 +784,6 @@ pub struct EmbeddingService {
     config: EmbeddingConfig,
 }
 
-impl ares_cordis_core::Service for EmbeddingService {
-    fn name(&self) -> &'static str {
-        "embedding_service"
-    }
-}
-
 impl EmbeddingService {
     /// Create a new embedding service with the given configuration
     ///

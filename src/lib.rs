@@ -448,5 +448,14 @@ mod lib_tests {
         let response = server.get("/health/context").await;
         response.assert_status_ok();
     }
+
+    #[cfg(feature = "hmr")]
+    #[test]
+    fn ares_server_hmr_feature_forwards_to_cordis_core() {
+        // apply_plugin_so_if_dylib is reachable when the feature is on
+        let ctx = ares_cordis_core::Context::new_root();
+        let applied = ares_cordis_core::hmr::apply_plugin_so_if_dylib(&ctx, std::path::Path::new("README.md")).expect("non-lib");
+        assert!(!applied);
+    }
 }
 

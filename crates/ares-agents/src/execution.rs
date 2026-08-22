@@ -33,9 +33,6 @@ use crate::AgentResponse;
 pub use ares_tools::ToolService;
 pub use ares_tools::UnifiedToolService;
 
-/// Tenant identifier alias (plain String, `tenant:<id>` isolate label).
-pub type TenantId = String;
-
 /// Canonical per-request model override used by the LLM interceptor.
 ///
 /// Re-exporting the LLM type keeps context interception and provider policy
@@ -51,8 +48,6 @@ pub use ares_llm::ModelOverride;
 pub struct AgentRequest {
     /// Agent name to execute.
     pub agent_name: String,
-    /// Optional tenant owner (`None` = fleet/system).
-    pub tenant: Option<TenantId>,
     /// Current user message.
     pub message: String,
     /// Prior conversation history (explicitly passed; may be augmented by
@@ -67,7 +62,6 @@ impl std::fmt::Debug for AgentRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentRequest")
             .field("agent_name", &self.agent_name)
-            .field("tenant", &self.tenant)
             .field("message", &self.message)
             .field("history_len", &self.history.len())
             .field(
@@ -260,8 +254,8 @@ impl AgentExecutionService {
         // Resolve agent config
         let resolver = ctx.get::<crate::resolver::AgentResolverService>()
             .ok_or_else(|| AppError::Configuration("AgentResolverService not provided".into()))?;
-        let user_id = crate::resolver::user_id_from_ctx(ctx, req.tenant.as_deref().unwrap_or(""));
-        let (user_agent, source) = resolver.resolve_async(&req.agent_name, &user_id).await?;
+        let (user_agent, source) = resolver.resolve_for_ctx(ctx, &req.agent_name).await?;
+        let user_id = crate::resolver::user_id_from_ctx(ctx, "");
 
         // Build AgentConfig from resolved UserAgent
         let mut config = crate::configurable::agent_config_from_user_agent(&user_agent);
@@ -403,7 +397,6 @@ impl AgentExecutionService {
         if let Some(tenant_db) = &self.tenant_db {
             let _pool = tenant_db.pool();
             tracing::debug!(
-                tenant = ?req.tenant,
                 history_len = effective_history.len(),
                 "history load via TenantDb"
             );
@@ -433,7 +426,7 @@ impl AgentExecutionService {
             policy.authorize(&ovr.model)?;
         }
 
-        let tenant = tenant_from_request_ctx(ctx, req.tenant.as_deref());
+        let tenant = tenant_from_request_ctx(ctx, None);
 
         // 2) inject memory via `ContextProvider` if Some
         // Prefer per-request ctx_provider (req.ctx_provider) over service-level
@@ -862,24 +855,36 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn execute_lists_tools_using_tenant_context_intercept() {
+    async fn execute_with_tenant_context_intercept(tenant_id: &str) {
         let recorder = Arc::new(RecordingToolService {
             last: std::sync::Mutex::new(None),
         });
         let svc = AgentExecutionService::new().with_tool_service(recorder.clone());
         let ctx = Context::new_root().with_intercept(ares_types::models::TenantContext::new(
-            "acme".into(),
+            tenant_id.into(),
             ares_types::models::TenantTier::Pro,
         ));
         let req = AgentRequest {
             agent_name: "echo".into(),
-            tenant: None,
             message: "hi".into(),
             ..Default::default()
         };
         svc.execute(req, &ctx).await.expect("echo fallback");
-        assert_eq!(*recorder.last.lock().unwrap(), Some(Some("acme".into())));
+        assert_eq!(
+            *recorder.last.lock().unwrap(),
+            Some(Some(tenant_id.into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_lists_tools_using_tenant_context_intercept() {
+        execute_with_tenant_context_intercept("acme").await;
+    }
+
+    /// Intercept path without an `AgentRequest` tenant field (aliases the listing test).
+    #[tokio::test]
+    async fn execute_uses_ctx_tenant_without_request_field() {
+        execute_with_tenant_context_intercept("acme").await;
     }
 
     #[cfg(feature = "postgres")]
@@ -898,7 +903,6 @@ mod tests {
         let ctx = intercepted.isolate::<crate::resolver::AgentResolverService>("tenant:from-isolate");
         let req = AgentRequest {
             agent_name: "echo".into(),
-            tenant: Some("from-request".into()),
             message: "hi".into(),
             ..Default::default()
         };

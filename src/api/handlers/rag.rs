@@ -70,93 +70,87 @@ fn filter_collections_by_allowed_sources(
 // Shared RAG Services
 // ============================================================================
 
-/// Global embedding service (lazy initialized).
-static EMBEDDING_SERVICE: OnceCell<Arc<EmbeddingService>> = OnceCell::const_new();
-
-/// Get or create the embedding service.
+/// Construct EmbeddingService without a process-global cache.
 ///
 /// Pre-downloads model files via lancor (reqwest) before fastembed init,
 /// because fastembed's hf-hub/ureq client fails on HuggingFace's xethub CDN.
-pub async fn get_embedding_service() -> Result<Arc<EmbeddingService>> {
-    EMBEDDING_SERVICE
-        .get_or_try_init(|| async {
-            // Pre-download ONNX model via lancor before fastembed tries with ureq
-            let model = EmbeddingModelType::default();
-            let cache_dir = std::env::var("FASTEMBED_CACHE_DIR")
-                .unwrap_or_else(|_| ".fastembed_cache".to_string());
-            let cache_path = std::path::PathBuf::from(&cache_dir);
+/// Context is the singleton: callers must `provide_arc` after construction.
+async fn construct_embedding_service() -> Result<Arc<EmbeddingService>> {
+    // Pre-download ONNX model via lancor before fastembed tries with ureq
+    let model = EmbeddingModelType::default();
+    let cache_dir = std::env::var("FASTEMBED_CACHE_DIR")
+        .unwrap_or_else(|_| ".fastembed_cache".to_string());
+    let cache_path = std::path::PathBuf::from(&cache_dir);
 
-            match lancor::hub::HubClient::with_cache_dir(cache_path.clone()) {
-                Err(e) => tracing::error!("Failed to create lancor HubClient: {}", e),
-                Ok(hub) => {
-                    let repo_id = model.hf_repo_id();
-                    for filename in &[
-                        "onnx/model.onnx",
-                        "tokenizer.json",
-                        "config.json",
-                        "tokenizer_config.json",
-                    ] {
-                        // Build HF cache path
-                        let folder = format!("models--{}", repo_id.replace('/', "--"));
-                        let snapshot_dir =
-                            cache_path.join(&folder).join("snapshots").join("lancor");
-                        let target = snapshot_dir.join(filename);
+    match lancor::hub::HubClient::with_cache_dir(cache_path.clone()) {
+        Err(e) => tracing::error!("Failed to create lancor HubClient: {}", e),
+        Ok(hub) => {
+            let repo_id = model.hf_repo_id();
+            for filename in &[
+                "onnx/model.onnx",
+                "tokenizer.json",
+                "config.json",
+                "tokenizer_config.json",
+            ] {
+                // Build HF cache path
+                let folder = format!("models--{}", repo_id.replace('/', "--"));
+                let snapshot_dir =
+                    cache_path.join(&folder).join("snapshots").join("lancor");
+                let target = snapshot_dir.join(filename);
 
-                        if target.exists()
-                            && std::fs::metadata(&target)
-                                .map(|m| m.len() > 0)
-                                .unwrap_or(false)
-                        {
-                            tracing::debug!("Model file cached: {}", target.display());
-                            continue;
+                if target.exists()
+                    && std::fs::metadata(&target)
+                        .map(|m| m.len() > 0)
+                        .unwrap_or(false)
+                {
+                    tracing::debug!("Model file cached: {}", target.display());
+                    continue;
+                }
+
+                tracing::info!("Downloading {}/{} via lancor...", repo_id, filename);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+
+                match hub.download(repo_id, filename, None).await {
+                    Ok(dl_path) => {
+                        if dl_path != target {
+                            std::fs::copy(&dl_path, &target).ok();
                         }
-
-                        tracing::info!("Downloading {}/{} via lancor...", repo_id, filename);
-                        if let Some(parent) = target.parent() {
-                            std::fs::create_dir_all(parent).ok();
-                        }
-
-                        match hub.download(repo_id, filename, None).await {
-                            Ok(dl_path) => {
-                                if dl_path != target {
-                                    std::fs::copy(&dl_path, &target).ok();
-                                }
-                                tracing::info!(
-                                    "Downloaded: {} ({} bytes)",
-                                    filename,
-                                    std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0)
-                                );
-                            }
-                            Err(e) => tracing::warn!("Could not download {}: {}", filename, e),
-                        }
+                        tracing::info!(
+                            "Downloaded: {} ({} bytes)",
+                            filename,
+                            std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0)
+                        );
                     }
-
-                    // Write refs/main
-                    let refs_dir = cache_path
-                        .join(format!("models--{}", repo_id.replace('/', "--")))
-                        .join("refs");
-                    std::fs::create_dir_all(&refs_dir).ok();
-                    std::fs::write(refs_dir.join("main"), "lancor").ok();
+                    Err(e) => tracing::warn!("Could not download {}: {}", filename, e),
                 }
             }
 
-            let service = EmbeddingService::with_model(model)
-                .map_err(|e| AppError::Internal(format!("Failed to init embeddings: {}", e)))?;
-            Ok::<_, AppError>(Arc::new(service))
-        })
-        .await
-        .cloned()
+            // Write refs/main
+            let refs_dir = cache_path
+                .join(format!("models--{}", repo_id.replace('/', "--")))
+                .join("refs");
+            std::fs::create_dir_all(&refs_dir).ok();
+            std::fs::write(refs_dir.join("main"), "lancor").ok();
+        }
+    }
+
+    let service = EmbeddingService::with_model(model)
+        .map_err(|e| AppError::Internal(format!("Failed to init embeddings: {}", e)))?;
+    Ok(Arc::new(service))
 }
 
-/// Resolve EmbeddingService from Context, lazily constructing via OnceCell on miss.
+/// Resolve EmbeddingService from Context, constructing on miss.
 /// Construction (model download) happens on first RAG request, not at boot.
+/// Context is the singleton; there is no process-global cache.
 pub async fn embedding_service_from_ctx(
     ctx: &std::sync::Arc<ares_cordis_core::Context>,
 ) -> Result<Arc<EmbeddingService>> {
     if let Some(existing) = ctx.get::<EmbeddingService>() {
         return Ok(existing);
     }
-    let created = get_embedding_service().await?;
+    let created = construct_embedding_service().await?;
     ctx.provide_arc(created.clone());
     Ok(created)
 }
@@ -212,7 +206,8 @@ pub async fn ingest(
         return Err(AppError::InvalidInput("Content required".into()));
     }
 
-    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::TenantDb>().expect("not provided").pool().clone());
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
+    let allowlist_store = allowlist::TenantAllowlistStore::new(&pool);
     if !allowlist_store
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
@@ -341,7 +336,8 @@ pub async fn search(
         ));
     }
 
-    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::TenantDb>().expect("not provided").pool().clone());
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
+    let allowlist_store = allowlist::TenantAllowlistStore::new(&pool);
     if !allowlist_store
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
@@ -554,7 +550,8 @@ pub async fn delete_collection(
         return Err(AppError::InvalidInput("Collection name required".into()));
     }
 
-    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::TenantDb>().expect("not provided").pool().clone());
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
+    let allowlist_store = allowlist::TenantAllowlistStore::new(&pool);
     if !allowlist_store
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
@@ -637,7 +634,8 @@ pub async fn list_collections(
         })
         .collect();
 
-    let allowlist_store = allowlist::TenantAllowlistStore::new(&ctx.get::<crate::TenantDb>().expect("not provided").pool().clone());
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
+    let allowlist_store = allowlist::TenantAllowlistStore::new(&pool);
     let db_sources = allowlist_store.list_rag_sources(&claims.sub).await?;
     let user_collections = filter_collections_by_allowed_sources(user_collections, &db_sources);
 
@@ -737,7 +735,17 @@ mod tests {
     #[tokio::test]
     async fn embedding_service_from_ctx_none_without_provide() {
         let ctx = ares_cordis_core::Context::new_root();
+        // Reuse is ctx.get / provide_arc; do not construct here (model init is heavy).
         assert!(ctx.get::<EmbeddingService>().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn embedding_service_from_ctx_reuses_provided_instance() {
+        let ctx = ares_cordis_core::Context::new_root();
+        let service = Arc::new(EmbeddingService::with_default_model().expect("default model"));
+        ctx.provide_arc(service.clone());
+        let got = embedding_service_from_ctx(&ctx).await.expect("from ctx");
+        assert!(Arc::ptr_eq(&service, &got));
     }
 
     #[test]

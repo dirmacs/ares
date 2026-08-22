@@ -204,11 +204,16 @@ pub async fn chat(
     State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
     tenant_ctx: Option<Extension<crate::models::TenantContext>>,
+    usage: Option<Extension<crate::middleware::usage::UsageContext>>,
     Json(payload): Json<ChatRequest>,
 ) -> Result<Response> {
     // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
     let ctx = match &tenant_ctx {
         Some(Extension(tc)) => ctx.with_intercept(tc.clone()),
+        None => ctx,
+    };
+    let ctx = match usage {
+        Some(Extension(u)) => ctx.with_intercept(u),
         None => ctx,
     };
     validate_chat_request(&payload)?;

@@ -225,7 +225,6 @@ dependencies = [
  "ares-cordis-core",
  "ares-db",
  "ares-llm",
- "ares-memory",
  "ares-tools",
  "ares-types",
  "async-trait",
@@ -243,21 +242,6 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
-]
-
-[[package]]
-name = "ares-auth"
-version = "0.9.0"
-dependencies = [
- "ares-types",
- "argon2",
- "chrono",
- "jsonwebtoken",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.20",
- "uuid",
 ]
 
 [[package]]
@@ -395,16 +379,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ares-memory"
-version = "0.9.0"
-dependencies = [
- "ares-types",
- "chrono",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "ares-rag"
 version = "0.9.0"
 dependencies = [
@@ -432,7 +406,6 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "ares-agents",
- "ares-auth",
  "ares-config",
  "ares-cordis-core",
  "ares-db",

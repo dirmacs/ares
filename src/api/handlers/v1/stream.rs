@@ -23,12 +23,17 @@ use chrono::{TimeZone, Utc};
 pub async fn sandbox_run_agent(
     State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
+    usage: Option<Extension<crate::middleware::usage::UsageContext>>,
     Path(name): Path<String>,
     Json(input): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
     let tc = extract_tenant(ctx)?;
     // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
     let state_ctx = state_ctx.with_intercept(tc.clone());
+    let state_ctx = match usage {
+        Some(Extension(u)) => state_ctx.with_intercept(u),
+        None => state_ctx,
+    };
 
     let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(&state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
@@ -199,11 +204,16 @@ pub(crate) fn sandbox_tool_call_requests(
 pub async fn list_agent_logs(
     State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
+    usage: Option<Extension<crate::middleware::usage::UsageContext>>,
     Path(name): Path<String>,
     Query(q): Query<PaginationQuery>,
 ) -> Result<Json<Paginated<V1AgentLog>>> {
     let _tc = extract_tenant(ctx)?;
     let _state_ctx = state_ctx.with_intercept(_tc.clone());
+    let _state_ctx = match usage {
+        Some(Extension(u)) => _state_ctx.with_intercept(u),
+        None => _state_ctx,
+    };
     let (page, per_page) = logs_pagination(q.page, q.per_page);
     let _ = name;
     Ok(Json(Paginated::empty(page, per_page)))
@@ -217,10 +227,15 @@ pub async fn list_agent_logs(
 pub async fn semantic_search(
     State(_state): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
+    usage: Option<Extension<crate::middleware::usage::UsageContext>>,
     Json(payload): Json<crate::types::SemanticSearchRequest>,
 ) -> Result<Json<crate::types::SemanticSearchResponse>> {
     let _tc = extract_tenant(ctx)?;
     let _state = _state.with_intercept(_tc.clone());
+    let _state = match usage {
+        Some(Extension(u)) => _state.with_intercept(u),
+        None => _state,
+    };
     if payload.collection.is_empty() {
         return Err(AppError::InvalidInput("Collection name required".into()));
     }

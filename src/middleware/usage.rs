@@ -4,23 +4,38 @@ use axum::{extract::Request, middleware::Next, response::Response};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-pub async fn track_usage(req: Request, next: Next) -> Response {
+pub async fn track_usage(mut req: Request, next: Next) -> Response {
     let tenant_id = req
         .extensions()
         .get::<crate::models::TenantContext>()
         .map(|c| c.tenant_id.clone());
     let tenant_db = req.extensions().get::<Arc<TenantDb>>().cloned();
 
+    let usage = tenant_id.as_ref().map(|tid| UsageContext::new(tid.clone()));
+    if let Some(ref usage) = usage {
+        req.extensions_mut().insert(usage.clone());
+    }
+
     let response = next.run(req).await;
 
     if should_record_usage(tenant_id.as_deref(), tenant_db.is_some()) {
         let tid = tenant_id.expect("checked above");
         let db = tenant_db.expect("checked above");
-        let headers = response.headers().clone();
         let pool = db.pool().clone();
-        tokio::spawn(async move {
-            let _ = crate::middleware::usage::record_usage(&tid, &headers, &pool).await;
-        });
+        if let Some(snapshot) = usage.as_ref().and_then(|u| u.snapshot()) {
+            let tenant_id = usage
+                .as_ref()
+                .map(|u| u.tenant_id.clone())
+                .unwrap_or(tid);
+            tokio::spawn(async move {
+                let _ = record_usage_params(&tenant_id, &snapshot, &pool).await;
+            });
+        } else {
+            let headers = response.headers().clone();
+            tokio::spawn(async move {
+                let _ = crate::middleware::usage::record_usage(&tid, &headers, &pool).await;
+            });
+        }
     }
 
     response
@@ -41,14 +56,14 @@ pub(crate) struct MeteringSnapshot {
 #[derive(Debug)]
 pub struct UsageContext {
     pub tenant_id: String,
-    snapshot: Mutex<Option<MeteringSnapshot>>,
+    snapshot: Arc<Mutex<Option<MeteringSnapshot>>>,
 }
 
 impl Clone for UsageContext {
     fn clone(&self) -> Self {
         Self {
             tenant_id: self.tenant_id.clone(),
-            snapshot: Mutex::new(self.snapshot.lock().clone()),
+            snapshot: Arc::clone(&self.snapshot),
         }
     }
 }
@@ -57,7 +72,7 @@ impl UsageContext {
     pub fn new(tenant_id: impl Into<String>) -> Self {
         Self {
             tenant_id: tenant_id.into(),
-            snapshot: Mutex::new(None),
+            snapshot: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -180,15 +195,12 @@ pub(crate) fn usage_event_params_from_ctx(ctx: &Arc<Context>) -> Option<UsageEve
     Some(usage_event_params(&usage.tenant_id, &snapshot))
 }
 
-async fn record_usage(
+async fn record_usage_params(
     tenant_id: &str,
-    headers: &axum::http::HeaderMap,
+    snapshot: &MeteringSnapshot,
     pool: &sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(snapshot) = parse_metering_headers(headers) else {
-        return Ok(());
-    };
-    let params = usage_event_params(tenant_id, &snapshot);
+    let params = usage_event_params(tenant_id, snapshot);
 
     // Record usage event.
     // Use runtime `sqlx::query` (not the `query!` macro) so downstream
@@ -211,6 +223,17 @@ async fn record_usage(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+async fn record_usage(
+    tenant_id: &str,
+    headers: &axum::http::HeaderMap,
+    pool: &sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(snapshot) = parse_metering_headers(headers) else {
+        return Ok(());
+    };
+    record_usage_params(tenant_id, &snapshot, pool).await
 }
 
 #[cfg(test)]
@@ -436,5 +459,42 @@ mod tests {
     fn usage_event_params_from_ctx_none_without_intercept() {
         let root = ares_cordis_core::Context::new_root();
         assert_eq!(usage_event_params_from_ctx(&root), None);
+    }
+
+    #[test]
+    fn usage_context_clone_shares_snapshot() {
+        let original = UsageContext::new("acme");
+        let cloned = original.clone();
+        original.record(MeteringSnapshot {
+            input_tokens: 3,
+            output_tokens: 7,
+            token_count: 10,
+            model_name: Some("gpt".into()),
+            agent_name: Some("bot".into()),
+            provider_name: Some("openai".into()),
+        });
+        let snapshot = cloned.snapshot().expect("clone must share snapshot");
+        assert_eq!(snapshot.token_count, 10);
+        assert_eq!(snapshot.input_tokens, 3);
+        assert_eq!(snapshot.output_tokens, 7);
+    }
+
+    #[test]
+    fn usage_event_params_from_ctx_sees_record_on_clone() {
+        let original = UsageContext::new("acme");
+        let cloned = original.clone();
+        let root = ares_cordis_core::Context::new_root();
+        let child = root.with_intercept(cloned);
+        original.record(MeteringSnapshot {
+            input_tokens: 4,
+            output_tokens: 6,
+            token_count: 10,
+            model_name: Some("gpt".into()),
+            agent_name: Some("bot".into()),
+            provider_name: Some("openai".into()),
+        });
+        let params = usage_event_params_from_ctx(&child).expect("intercepted clone sees record");
+        assert_eq!(params.tenant_id, "acme");
+        assert_eq!(params.token_count, 10);
     }
 }

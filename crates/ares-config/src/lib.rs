@@ -1,3 +1,4 @@
+pub mod domains;
 pub mod fleet_secrets;
 pub mod nvidia_catalog;
 pub mod toml_config;

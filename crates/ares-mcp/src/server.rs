@@ -948,6 +948,24 @@ impl ServerHandler for AresMcpServer {
     }
 }
 
+/// Build an MCP server, optionally injecting an in-process [`AgentRunner`].
+///
+/// `runner: None` keeps HTTP fallback for `ares_run_agent`. Tests and
+/// `start_mcp_server` use this instead of calling `AresMcpServer::new` directly
+/// when a runner may be present.
+pub fn build_mcp_server(
+    tenant_db: Arc<TenantDb>,
+    pool: sqlx::PgPool,
+    ares_api_url: &str,
+    runner: Option<Arc<dyn AgentRunner>>,
+) -> AresMcpServer {
+    let server = AresMcpServer::new(tenant_db, pool, ares_api_url);
+    match runner {
+        Some(r) => server.with_agent_runner(r),
+        None => server,
+    }
+}
+
 /// Starts the ARES MCP server in stdio mode.
 ///
 /// This is called when the ARES binary is invoked with `--mcp` flag.
@@ -957,6 +975,7 @@ impl ServerHandler for AresMcpServer {
 /// - `tenant_db`: Tenant database for auth
 /// - `pool`: PostgreSQL connection pool
 /// - `ares_api_url`: ARES HTTP API URL
+/// - `runner`: Optional in-process agent runner; `None` uses HTTP POST /api/chat
 ///
 /// Extension crates can register additional tools via `server.register_extension()`.
 ///
@@ -968,8 +987,9 @@ pub async fn start_mcp_server(
     tenant_db: Arc<TenantDb>,
     pool: sqlx::PgPool,
     ares_api_url: &str,
+    runner: Option<Arc<dyn AgentRunner>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let server = AresMcpServer::new(tenant_db, pool, ares_api_url);
+    let server = build_mcp_server(tenant_db, pool, ares_api_url, runner);
 
     // Authenticate before accepting tool calls
     server.authenticate().await?;
@@ -1594,6 +1614,32 @@ mod tests {
         assert_eq!(calls[0].0, "bot");
         assert_eq!(calls[0].1, "hi");
         assert_eq!(calls[0].2.as_deref(), Some("ctx-1"));
+    }
+
+    #[tokio::test]
+    async fn build_mcp_server_none_leaves_runner_unset() {
+        let client = PostgresClient::new_test();
+        let pool = client.pool.clone();
+        let tenant_db = Arc::new(TenantDb::new(Arc::new(client)));
+        let server = build_mcp_server(tenant_db, pool, "https://api.test.com", None);
+        assert!(server.agent_runner.is_none());
+    }
+
+    #[tokio::test]
+    async fn build_mcp_server_some_sets_runner() {
+        let client = PostgresClient::new_test();
+        let pool = client.pool.clone();
+        let tenant_db = Arc::new(TenantDb::new(Arc::new(client)));
+        let recorder: Arc<dyn AgentRunner> = Arc::new(RecordingRunner {
+            calls: std::sync::Mutex::new(Vec::new()),
+        });
+        let server = build_mcp_server(
+            tenant_db,
+            pool,
+            "https://api.test.com",
+            Some(recorder),
+        );
+        assert!(server.agent_runner.is_some());
     }
 
     #[tokio::test]
@@ -2371,7 +2417,7 @@ mod tests {
         let tenant_db = Arc::new(TenantDb::new(Arc::new(client)));
         let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
         std::env::remove_var("ARES_API_KEY");
-        let result = start_mcp_server(tenant_db, pool, "https://api.test.com").await;
+        let result = start_mcp_server(tenant_db, pool, "https://api.test.com", None).await;
         assert!(result.is_err());
     }
 

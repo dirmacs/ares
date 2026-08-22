@@ -171,21 +171,13 @@ impl AgentResolverService {
     /// tenant label. Reads `ctx.isolate_label(TypeId::of::<AgentResolverService>())`
     /// so per-tenant resolution flows through the Cordis isolate namespace rather
     /// than a throwaway method parameter.
-    pub fn resolve_for_ctx(
+    pub async fn resolve_for_ctx(
         &self,
         ctx: &Arc<ares_cordis_core::Context>,
         name: &str,
     ) -> std::result::Result<(UserAgent, AgentSource), AppError> {
-        let _tenant_label = ctx.isolate_label(std::any::TypeId::of::<Self>());
-        // DB-free sync path: system config tier. The tenant label is consulted so
-        // callers can observe that resolution is isolate-driven. Falls back to the
-        // global system config when unlabeled, preserving legacy behavior.
-        let system_config_owned = self.agent_registry.get_config_any(name);
-        let system_config = self
-            .config
-            .get_agent(name)
-            .or(system_config_owned.as_ref());
-        resolve_from_candidates(None, None, system_config, name, chrono::Utc::now().timestamp())
+        let user_id = user_id_from_ctx(ctx, "");
+        self.resolve_async(name, &user_id).await
     }
 }
 
@@ -205,6 +197,27 @@ impl Service for AgentResolverService {
         // Active when both sources are present; if DB unavailable, dependent
         // fibers should deactivate (guarded withdrawal).
         true
+    }
+}
+
+/// Derive the effective user/tenant scope for agent resolution from the
+/// context's Cordis isolate namespace. Reads
+/// `ctx.isolate_label(TypeId::of::<AgentResolverService>())` and strips a
+/// leading `tenant:`/`user:` prefix if present (falling back to the raw label);
+/// the provided `fallback` is used when the context is not isolated for
+/// `AgentResolverService`, or when the stripped label is empty.
+pub fn user_id_from_ctx(ctx: &Arc<ares_cordis_core::Context>, fallback: &str) -> String {
+    let Some(label) = ctx.isolate_label(std::any::TypeId::of::<AgentResolverService>()) else {
+        return fallback.to_string();
+    };
+    let trimmed = label
+        .strip_prefix("tenant:")
+        .or_else(|| label.strip_prefix("user:"))
+        .unwrap_or(&label);
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -583,37 +596,36 @@ url = "postgres://localhost/ares"
 
     #[cfg(feature = "postgres")]
     #[tokio::test]
-    async fn resolver_reads_tenant_from_isolate_namespace() {
-        // Per the cordis design (§4), per-tenant resolution flows through the
-        // isolate realm: ctx.isolate::<AgentResolverService>("tenant:<id>")
-        // creates a scoped namespace whose label the resolver reads — NOT a
-        // throwaway method parameter. This test proves the DB-free resolver
-        // consults ctx.isolate_label(TypeId::of::<AgentResolverService>()) and
-        // uses that label to drive per-tenant system-config resolution.
-
-        let config = minimal_ares_config("router", agent_config());
-        let registry = AgentRegistry::new(
-            Arc::new(ares_llm::provider_registry::ProviderRegistry::new()),
-            Arc::new(ares_tools::ToolRegistry::new()),
-        );
-        let resolver =
-            AgentResolverService::new(Arc::new(TenantDb::new(Arc::new(ares_db::postgres::PostgresClient::new_test()))), Arc::new(registry), Arc::new(config));
+    async fn resolve_for_ctx_uses_isolate_label_for_scope() {
+        // Cordis design (§4): the tenant scope for agent resolution is derived
+        // from the context's isolate namespace, not a throwaway method param.
+        // A tenant-isolated context ("tenant:acme") must make the resolver
+        // resolve the user tier under that tenant label. The pure helper
+        // `user_id_from_ctx` drives the DB-aware 3-tier resolution: it reads
+        // ctx.isolate_label(TypeId::of::<AgentResolverService>()) and strips the
+        // "tenant:" prefix to yield the effective user scope.
 
         let ctx: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
-        // No isolate label -> falls back to the global system config.
-        let global = resolver.resolve_for_ctx(&ctx, "router").unwrap();
-        assert_eq!(global.1, AgentSource::System);
-        assert_eq!(global.0.user_id, "system");
+        let fallback = "anon";
+        // Untagged context -> falls back to the provided default.
+        assert_eq!(
+            user_id_from_ctx(&ctx, fallback),
+            "anon",
+            "no isolate label -> fallback scope"
+        );
 
-        // A tenant-isolated context must be recognized: the resolver reads the
-        // tenant label from the isolate namespace and surfaces it so callers can
-        // scope subsequent tier lookups (system config alias per tenant).
         let tenant_ctx = ctx.isolate::<AgentResolverService>("tenant:acme");
-        let scoped = resolver.resolve_for_ctx(&tenant_ctx, "router").unwrap();
-        assert_eq!(scoped.1, AgentSource::System);
-        // The isolate label drives resolution: it must be observable that the
-        // resolver consulted the isolate namespace for this context.
-        let label = tenant_ctx.isolate_label(std::any::TypeId::of::<AgentResolverService>());
-        assert_eq!(label.as_deref().map(|s| s.as_ref()), Some("tenant:acme"));
+        assert_eq!(
+            user_id_from_ctx(&tenant_ctx, fallback),
+            "acme",
+            "isolate label 'tenant:acme' -> scope 'acme'"
+        );
+
+        let user_ctx = ctx.isolate::<AgentResolverService>("user:u42");
+        assert_eq!(
+            user_id_from_ctx(&user_ctx, fallback),
+            "u42",
+            "isolate label 'user:u42' -> scope 'u42'"
+        );
     }
 }

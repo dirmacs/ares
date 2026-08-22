@@ -162,6 +162,21 @@ impl AgentExecutionService {
             .unwrap_or(payload)
     }
 
+    /// Fire-and-forget observability event via Cordis `Dispatch::Emit`.
+    ///
+    /// Returns immediately without waiting for handlers. Missing `EventsService`
+    /// is a no-op. Usage snapshot recording stays in server middleware
+    /// (`UsageContext` is not in this crate).
+    pub async fn emit_observability(
+        &self,
+        ctx: &Arc<Context>,
+        event: impl Into<String>,
+        payload: serde_json::Value,
+    ) {
+        let Some(events) = ctx.get::<ares_cordis_core::EventsService>() else { return; };
+        let _ = events.dispatch(event.into(), payload, ares_cordis_core::Dispatch::Emit).await;
+    }
+
     /// Attach a database client for history/observability.
     #[cfg(feature = "postgres")]
     pub fn with_db(mut self, db: Arc<dyn ares_db::traits::DatabaseClient>) -> Self {
@@ -313,6 +328,22 @@ impl AgentExecutionService {
         if let Some(tracker) = &self.run_tracker {
             let status = if result.is_ok() { "completed" } else { "failed" };
             tracker.finish_run(&run_id, status);
+        }
+
+        if let Ok(response) = result.as_ref() {
+            if let Some(usage) = &response.usage {
+                self.emit_observability(
+                    ctx,
+                    "agent.usage",
+                    serde_json::json!({
+                        "tenant": user_id,
+                        "prompt": usage.prompt_tokens,
+                        "completion": usage.completion_tokens,
+                        "total": usage.total_tokens,
+                    }),
+                )
+                .await;
+            }
         }
 
         // Emit agent completion event via Cordis EventsService
@@ -528,6 +559,17 @@ impl AgentExecutionService {
                                 let _ = _pool;
                                 // Real: ares_db::token_budgets::TokenBudgetStore::new(_pool).record_usage(...)
                             }
+                            self.emit_observability(
+                                ctx,
+                                "agent.usage",
+                                serde_json::json!({
+                                    "tenant": tenant,
+                                    "prompt": usage.prompt_tokens,
+                                    "completion": usage.completion_tokens,
+                                    "total": usage.total_tokens,
+                                }),
+                            )
+                            .await;
                             // loop detection via crate::loop_detector
                             let mut detector = crate::loop_detector::LoopDetector::new();
                             match detector.check(&coord_result.content) {
@@ -675,7 +717,7 @@ pub trait RunTracker: Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// RED contract: the `agent.started` event must be fanned out to every
     /// registered handler via Cordis `Dispatch::Parallel` (join-all), so the
@@ -729,6 +771,44 @@ mod tests {
             count.load(Ordering::SeqCst),
             2,
             "Dispatch::Parallel must join both 'agent.started' handlers before returning"
+        );
+    }
+
+    /// `Dispatch::Emit` must return before a slow handler finishes, then the
+    /// handler still runs on the runtime after the call returns.
+    #[tokio::test]
+    async fn emit_observability_returns_without_waiting_for_slow_handler() {
+        let svc = AgentExecutionService::new();
+        let ctx = Context::new_root();
+        let events = ctx.provide(ares_cordis_core::EventsService::new());
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = ran.clone();
+        let _d = events.on(
+            "agent.usage".into(),
+            move |payload: serde_json::Value| {
+                let flag = flag.clone();
+                async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                    flag.store(true, Ordering::SeqCst);
+                    Ok(payload)
+                }
+            },
+        );
+
+        let start = std::time::Instant::now();
+        svc.emit_observability(&ctx, "agent.usage", serde_json::json!({}))
+            .await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(40),
+            "emit_observability must return without awaiting handlers, elapsed {elapsed:?}"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            ran.load(Ordering::SeqCst),
+            "slow agent.usage handler must still run after emit returns"
         );
     }
 

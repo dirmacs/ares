@@ -87,7 +87,7 @@ pub async fn list_workflows(
     State(ctx): State<Arc<Context>>,
     AuthUser(_claims): AuthUser,
 ) -> Result<Json<Vec<WorkflowInfo>>> {
-    let config = ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
+    let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
 
     let workflows: Vec<WorkflowInfo> = config
         .workflows

@@ -522,6 +522,7 @@ fn init_tracing(log_filter: &str) {
         .init();
 }
 
+
 /// Minimal no-op service behind the `noop_probe` loader factory.
 ///
 /// Exists purely to prove end-to-end declarative instantiation
@@ -536,6 +537,524 @@ struct LoaderProbeService {
 
 #[cfg(feature = "postgres")]
 impl ares_cordis_core::Service for LoaderProbeService {}
+
+/// Marker fiber for the ExecutionStack loader entry (the live service is
+/// `AgentExecutionService` via `provide_shared_execution`).
+#[cfg(feature = "postgres")]
+struct ExecutionStackService;
+
+#[cfg(feature = "postgres")]
+impl ares_cordis_core::Service for ExecutionStackService {
+    fn name(&self) -> &'static str {
+        "ExecutionStack"
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "postgres")]
+fn block_on_async<F: std::future::Future>(fut: F) -> F::Output {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+}
+
+#[cfg(feature = "postgres")]
+fn block_on_plugin<S: ares_cordis_core::Service + 'static>(
+    ctx: &Arc<Context>,
+    svc: S,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    block_on_async(ctx.plugin(svc))
+}
+
+#[cfg(feature = "postgres")]
+fn missing(what: &str) -> ares_cordis_core::CordisError {
+    ares_cordis_core::CordisError::Configuration(format!(
+        "{what} is not on context; prelude or an earlier loader entry must provide it"
+    ))
+}
+
+#[cfg(feature = "postgres")]
+fn config_manager_from_ctx(
+    ctx: &Arc<Context>,
+) -> Result<Arc<AresConfigManager>, ares_cordis_core::CordisError> {
+    if let Some(cs) = ctx.get::<ConfigService>() {
+        return Ok(cs.0.clone());
+    }
+    if let Some(cms) = ctx.get::<ares::context_services::ConfigManagerService>() {
+        return Ok(cms.0.clone());
+    }
+    if let Some(mgr) = ctx.get::<AresConfigManager>() {
+        return Ok(mgr);
+    }
+    Err(missing("ConfigService"))
+}
+
+#[cfg(feature = "postgres")]
+fn postgres_from_ctx(
+    ctx: &Arc<Context>,
+) -> Result<Arc<PostgresClient>, ares_cordis_core::CordisError> {
+    ctx.get::<ares::context_services::PostgresClientService>()
+        .map(|s| s.0.clone())
+        .ok_or_else(|| missing("PostgresClientService"))
+}
+
+#[cfg(feature = "postgres")]
+fn factory_catalog(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let mgr = config_manager_from_ctx(ctx)?;
+    let config = mgr.config();
+    let nvidia_cfg = config.nvidia.clone().unwrap_or_default();
+    let catalog = Arc::new(NvidiaCatalogCache::new(nvidia_cfg.clone()));
+    match block_on_async(catalog.refresh()) {
+        Ok(count) => tracing::info!("NVIDIA catalog refreshed with {} models", count),
+        Err(e) => tracing::warn!("NVIDIA catalog initial refresh failed: {}", e),
+    }
+    catalog.clone().start_background_refresh();
+    tracing::info!(
+        "[nvidia] api_base={} default_model={}",
+        nvidia_cfg.api_base,
+        nvidia_cfg.default_model,
+    );
+    block_on_plugin(ctx, CatalogService(catalog))
+}
+
+#[cfg(feature = "postgres")]
+fn factory_provider_registry(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let mgr = config_manager_from_ctx(ctx)?;
+    let config = mgr.config();
+    let mut registry = ProviderRegistry::from_config(&config);
+    if let Some(catalog) = ctx.get::<CatalogService>() {
+        registry = registry.with_catalog(catalog.0.clone());
+    }
+    let arc = Arc::new(registry);
+    ctx.provide_arc(arc.clone());
+    let fid = block_on_plugin(ctx, ProviderRegistryService(arc.clone()))?;
+    ctx.provide(ares::context_services::ProviderRegistryService(arc));
+    Ok(fid)
+}
+
+#[cfg(feature = "postgres")]
+fn factory_llm(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let mgr = config_manager_from_ctx(ctx)?;
+    let factory = ConfigBasedLLMFactory::from_config(&mgr.config()).map_err(|e| {
+        ares_cordis_core::CordisError::Configuration(format!("LLM factory: {e}"))
+    })?;
+    tracing::info!(
+        "LLM factory initialized with default model: {}",
+        factory.default_model()
+    );
+    block_on_plugin(ctx, factory)
+}
+
+#[cfg(feature = "postgres")]
+fn factory_auth(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let mgr = config_manager_from_ctx(ctx)?;
+    let config = mgr.config();
+    let jwt_secret = config.jwt_secret().map_err(|e| {
+        ares_cordis_core::CordisError::Configuration(format!(
+            "JWT_SECRET environment variable must be set: {e}"
+        ))
+    })?;
+    let auth = Arc::new(AuthService::new(
+        jwt_secret,
+        config.auth.jwt_access_expiry,
+        config.auth.jwt_refresh_expiry,
+    ));
+    tracing::info!("Auth service initialized");
+    ctx.provide_arc(auth.clone());
+    let fid = block_on_plugin(ctx, AuthServiceWrapper(auth.clone()))?;
+    ctx.provide(ares::context_services::AuthServiceWrapper(auth));
+    Ok(fid)
+}
+
+#[cfg(feature = "postgres")]
+fn factory_tool_registry(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let mgr = config_manager_from_ctx(ctx)?;
+    let config = mgr.config();
+    let mut tool_registry = ToolRegistry::with_config(&config);
+
+    tool_registry.register(Arc::new(ares::tools::calculator::Calculator));
+    #[cfg(feature = "search-tools")]
+    tool_registry.register(Arc::new(ares::tools::search::WebSearch::new()));
+    #[cfg(feature = "search-tools")]
+    tool_registry.register(Arc::new(ares::tools::web_scrape::WebScrape::new()));
+
+    if let Some(master_key) = MasterKey::from_env() {
+        if let Ok(pg) = postgres_from_ctx(ctx) {
+            ares::tools::connectors::register_prebuilt_connector_tools(
+                &mut tool_registry,
+                pg.pool.clone(),
+                master_key,
+            );
+        } else {
+            tracing::warn!(
+                "PostgresClientService missing; pre-built connector tools are not registered"
+            );
+        }
+    } else {
+        tracing::warn!(
+            "FLEET_SECRETS_KEY is not set; pre-built connector tools are not registered"
+        );
+    }
+
+    #[cfg(feature = "mcp")]
+    {
+        if let Ok(mcp_reg) =
+            ares::mcp::McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref())
+        {
+            for client_name in mcp_reg.client_names() {
+                if mcp_reg.get_client(&client_name).is_some() {
+                    ares::tools::mcp_bridge::register_mcp_tools(&mut tool_registry, &client_name);
+                }
+            }
+        }
+    }
+
+    let tool_registry = Arc::new(tool_registry);
+    tracing::info!(
+        "Tool registry initialized with {} tools",
+        tool_registry.enabled_tool_names().len()
+    );
+    ctx.provide_arc(tool_registry.clone());
+    block_on_plugin(
+        ctx,
+        ares::context_services::ToolRegistryService(tool_registry),
+    )
+}
+
+#[cfg(feature = "postgres")]
+fn factory_dynamic_config(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let mgr = config_manager_from_ctx(ctx)?;
+    let config = mgr.config();
+    let dynamic_config = match DynamicConfigManager::from_config(&config) {
+        Ok(dm) => {
+            tracing::info!(
+                "Dynamic config manager initialized with {} agents, {} models, {} tools",
+                dm.agents().len(),
+                dm.models().len(),
+                dm.tools().len()
+            );
+            Arc::new(dm)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to initialize dynamic config manager: {}. Using empty config.",
+                e
+            );
+            Arc::new(
+                DynamicConfigManager::new(
+                    std::path::PathBuf::from(&config.config.agents_dir),
+                    std::path::PathBuf::from(&config.config.models_dir),
+                    std::path::PathBuf::from(&config.config.tools_dir),
+                    std::path::PathBuf::from(&config.config.workflows_dir),
+                    std::path::PathBuf::from(&config.config.mcps_dir),
+                    false,
+                )
+                .unwrap_or_else(|_| panic!("Cannot create even empty DynamicConfigManager")),
+            )
+        }
+    };
+    block_on_plugin(
+        ctx,
+        ares::context_services::DynamicConfigService(dynamic_config),
+    )
+}
+
+#[cfg(feature = "postgres")]
+fn factory_agent_registry(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let mgr = config_manager_from_ctx(ctx)?;
+    let providers = ctx
+        .get::<ProviderRegistry>()
+        .or_else(|| {
+            ctx.get::<ares::context_services::ProviderRegistryService>()
+                .map(|s| s.0.clone())
+        })
+        .ok_or_else(|| missing("ProviderRegistry"))?;
+    let tools = ctx
+        .get::<ToolRegistry>()
+        .or_else(|| {
+            ctx.get::<ares::context_services::ToolRegistryService>()
+                .map(|s| s.0.clone())
+        })
+        .ok_or_else(|| missing("ToolRegistry"))?;
+    let dynamic = ctx
+        .get::<ares::context_services::DynamicConfigService>()
+        .map(|s| s.0.clone())
+        .ok_or_else(|| missing("DynamicConfig"))?;
+    let agent_registry = Arc::new(AgentRegistry::with_dynamic_config(
+        &mgr.config(),
+        providers,
+        tools,
+        dynamic.clone(),
+    ));
+    tracing::info!(
+        "Agent registry initialized with {} agents (TOML + TOON)",
+        agent_registry.agent_names().len()
+    );
+    ctx.provide_arc(agent_registry.clone());
+    block_on_plugin(
+        ctx,
+        AgentServiceWrapper {
+            registry: agent_registry,
+            dynamic,
+        },
+    )
+}
+
+#[cfg(feature = "postgres")]
+fn factory_runtime_tool_registry(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let pg = postgres_from_ctx(ctx)?;
+    let tools = ctx
+        .get::<ToolRegistry>()
+        .or_else(|| {
+            ctx.get::<ares::context_services::ToolRegistryService>()
+                .map(|s| s.0.clone())
+        })
+        .ok_or_else(|| missing("ToolRegistry"))?;
+    let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(pg.pool.clone()));
+    {
+        use std::any::TypeId;
+        if let Some(reflect) = ctx.get::<ares_cordis_core::ReflectService>() {
+            let tid = TypeId::of::<ares::RuntimeToolRegistry>();
+            let _rx = reflect.ensure_notifier(tid);
+            reflect.register_dependent(tid, 1);
+        }
+    }
+    if let Err(e) = block_on_async(runtime_tool_registry.reload()) {
+        tracing::warn!("Failed to preload runtime tools on startup: {}", e);
+    }
+    ctx.provide(ares::context_services::RuntimeToolRegistryService(
+        runtime_tool_registry.clone(),
+    ));
+    block_on_plugin(
+        ctx,
+        ToolServiceWrapper {
+            static_registry: tools,
+            runtime: runtime_tool_registry,
+            unified: None,
+        },
+    )
+}
+
+#[cfg(feature = "postgres")]
+fn factory_execution_stack(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let db = ctx
+        .get::<ares::context_services::DbService>()
+        .map(|s| s.0.clone())
+        .ok_or_else(|| missing("DbService"))?;
+    let tenant_db = ctx
+        .get::<ares::context_services::TenantDbService>()
+        .map(|s| s.0.clone())
+        .ok_or_else(|| missing("TenantDbService"))?;
+    let llm_factory = ctx
+        .get::<ConfigBasedLLMFactory>()
+        .ok_or_else(|| missing("ConfigBasedLLMFactory"))?;
+    let agent_registry = ctx
+        .get::<AgentRegistry>()
+        .ok_or_else(|| missing("AgentRegistry"))?;
+    let active_runs = ctx
+        .get::<ares::context_services::ActiveRunsService>()
+        .map(|s| s.0.clone() as Arc<dyn ares_agents::RunTracker>)
+        .ok_or_else(|| missing("ActiveRuns"))?;
+    let shared_execution = ares::execution_stack::new_shared_execution(
+        db,
+        tenant_db,
+        llm_factory,
+        agent_registry,
+        active_runs,
+    );
+    ares::execution_stack::provide_shared_execution(ctx, shared_execution);
+    block_on_plugin(ctx, ExecutionStackService)
+}
+
+#[cfg(feature = "postgres")]
+fn factory_scheduler(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let db = postgres_from_ctx(ctx)?;
+    let execution = ctx
+        .get::<ares_agents::execution::AgentExecutionService>()
+        .ok_or_else(|| missing("AgentExecutionService"))?;
+    let fid = block_on_plugin(
+        ctx,
+        ares::scheduler::SchedulerService::new(db, execution, 60_000),
+    )?;
+    tracing::info!(
+        "SchedulerService plugin registered (tick_ms=60_000, watch + catch-up owned)"
+    );
+    Ok(fid)
+}
+
+#[cfg(feature = "postgres")]
+fn factory_pipeline(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let db = postgres_from_ctx(ctx)?;
+    let execution = ctx
+        .get::<ares_agents::execution::AgentExecutionService>()
+        .ok_or_else(|| missing("AgentExecutionService"))?;
+    let fid = block_on_plugin(
+        ctx,
+        ares::pipeline_engine::PipelineService::new(db, execution),
+    )?;
+    tracing::info!(
+        "PipelineService plugin registered (no tick, downstream-triggered, conditional + execution owned)"
+    );
+    Ok(fid)
+}
+
+#[cfg(feature = "postgres")]
+fn factory_trigger(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let db = postgres_from_ctx(ctx)?;
+    let execution = ctx
+        .get::<ares_agents::execution::AgentExecutionService>()
+        .ok_or_else(|| missing("AgentExecutionService"))?;
+    let fid = block_on_plugin(
+        ctx,
+        ares::trigger_engine::TriggerService::new(db, execution),
+    )?;
+    tracing::info!(
+        "TriggerService plugin registered (webhook/document_upload/field_change owned)"
+    );
+    Ok(fid)
+}
+
+#[cfg(feature = "postgres")]
+fn factory_health_job(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    block_on_plugin(ctx, HealthJobService::default())
+}
+
+#[cfg(feature = "postgres")]
+fn factory_app_state_services(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<ares_cordis_core::FiberId, ares_cordis_core::CordisError> {
+    let pg = postgres_from_ctx(ctx)?;
+
+    let active_runs = Arc::new(ares::active_runs::ActiveRuns::new());
+    let fid = block_on_plugin(
+        ctx,
+        ares::context_services::ActiveRunsService(active_runs),
+    )?;
+
+    let fleet_secrets = ares::FleetSecrets::new();
+    let fleet_provider_store =
+        ares::db::fleet_provider_secrets::FleetProviderSecretsStore::new(&pg.pool);
+    let fleet_provider_master = MasterKey::from_env();
+    match block_on_async(fleet_provider_store.load_all(fleet_provider_master.as_ref())) {
+        Ok(providers) => {
+            let count = providers.len();
+            fleet_secrets.store(providers);
+            tracing::info!(count, "Fleet provider secrets loaded");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load fleet provider secrets on startup");
+        }
+    }
+    ctx.provide(ares::context_services::FleetSecretsService(fleet_secrets));
+
+    let deploy_registry = ares::api::handlers::deploy::new_deploy_registry();
+    ctx.provide(ares::context_services::DeployRegistryService(deploy_registry));
+    let loop_registry = ares::api::handlers::loops::LoopRegistry::new();
+    ctx.provide(ares::context_services::LoopRegistryService(loop_registry));
+    let emergency_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    ctx.provide(ares::context_services::EmergencyStopService(emergency_stop));
+    let context_provider: Arc<dyn ares::agents::context_provider::ContextProvider> =
+        Arc::new(ares::agents::NoOpContextProvider);
+    ctx.provide(ares::context_services::ContextProviderService(
+        context_provider,
+    ));
+
+    #[cfg(feature = "mcp")]
+    {
+        let mgr = config_manager_from_ctx(ctx)?;
+        let config = mgr.config();
+        let mcp_registry: Option<Arc<McpRegistry>> =
+            match McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref()) {
+                Ok(registry) => {
+                    tracing::info!(
+                        "MCP registry initialized with {} clients",
+                        registry.client_names().len()
+                    );
+                    Some(Arc::new(registry))
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to initialize MCP registry: {}", e);
+                    None
+                }
+            };
+        ctx.provide(ares::context_services::McpRegistryService(mcp_registry));
+    }
+
+    let tools = ctx
+        .get::<ToolRegistry>()
+        .or_else(|| {
+            ctx.get::<ares::context_services::ToolRegistryService>()
+                .map(|s| s.0.clone())
+        })
+        .ok_or_else(|| missing("ToolRegistry"))?;
+    let runtime = ctx
+        .get::<ares::context_services::RuntimeToolRegistryService>()
+        .ok_or_else(|| missing("RuntimeToolRegistry"))?;
+    let llm_factory = ctx
+        .get::<ConfigBasedLLMFactory>()
+        .ok_or_else(|| missing("ConfigBasedLLMFactory"))?;
+    let mgr = config_manager_from_ctx(ctx)?;
+    let skill_engine = Arc::new(ares::skill_engine::SkillEngine::new(
+        pg.pool.clone(),
+        tools,
+        runtime.0.clone(),
+        llm_factory,
+        mgr.clone(),
+    ));
+    ctx.provide(ares::context_services::SkillEngineService(skill_engine));
+
+    if let Some(tenant_db) = ctx.get::<ares::context_services::TenantDbService>() {
+        if let Some(agent_registry) = ctx.get::<AgentRegistry>() {
+            ctx.provide(ares_agents::resolver::AgentResolverService::new(
+                tenant_db.0.clone(),
+                agent_registry,
+                mgr.config(),
+            ));
+        }
+    }
+
+    Ok(fid)
+}
 
 /// Register built-in factories consumed by declarative Cordis entries.
 ///
@@ -583,12 +1102,26 @@ fn register_loader_factories(root_ctx: &Arc<Context>) {
     // EventsService — the central event bus. Registered so a declarative entry
     // (`plugin = "EventsService"`) can instantiate it at startup via the Loader,
     // using the same block_in_place pattern as the other factories. The
-    // duplicate-provider check in `Context::plugin` and the guard at the
-    // direct-bootstrap provide (see run_server) keep this single-source.
+    // duplicate-provider check in `Context::plugin` keeps this single-source.
     registry.register("EventsService", Arc::new(|ctx, _config| {
         let future = ctx.plugin(ares_cordis_core::EventsService::new());
         tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
     }));
+
+    registry.register("CatalogService", Arc::new(factory_catalog));
+    registry.register("ProviderRegistry", Arc::new(factory_provider_registry));
+    registry.register("LlmFactory", Arc::new(factory_llm));
+    registry.register("AuthService", Arc::new(factory_auth));
+    registry.register("ToolRegistry", Arc::new(factory_tool_registry));
+    registry.register("AgentRegistry", Arc::new(factory_agent_registry));
+    registry.register("RuntimeToolRegistry", Arc::new(factory_runtime_tool_registry));
+    registry.register("DynamicConfig", Arc::new(factory_dynamic_config));
+    registry.register("ExecutionStack", Arc::new(factory_execution_stack));
+    registry.register("SchedulerService", Arc::new(factory_scheduler));
+    registry.register("PipelineService", Arc::new(factory_pipeline));
+    registry.register("TriggerService", Arc::new(factory_trigger));
+    registry.register("HealthJobService", Arc::new(factory_health_job));
+    registry.register("AppStateServices", Arc::new(factory_app_state_services));
 }
 
 /// Run the A.R.E.S server
@@ -597,13 +1130,15 @@ async fn run_server(
     config_path: &std::path::Path,
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Cordis Context — Phase 2 step 7 / Phase 4 step 16 wiring via `Context::plugin`.
-    // Replaces 17 sequential `let` steps with ~8 `root_ctx.plugin(...).await` calls (see below after each domain init).
-    // Inventory compile-time static registration is proved via `CordisInventory::inventory_len()` and `inventory::submit!`
-    // in `crates/ares-cordis-core/src/lib.rs` and `src/main.rs` top-level wrappers.
-    // ReflectService with `watch` + BFS `Fiber::refresh` is the unified hot-reload path (replaces 60s `ArcSwap` polling).
+    // 1. tracing / dotenv
+    dotenvy::dotenv().ok();
+    let log_filter = if verbose { "debug,ares=trace" } else { "info" };
+    init_tracing(log_filter);
+    tracing::info!("Starting A.R.E.S - Agentic Retrieval Enhanced Server");
+
+    // 2. Context::new_root + ReflectService (needed before watchers)
     let root_ctx = ares_cordis_core::Context::new_root();
-    let reflect = {
+    let _reflect = {
         use std::any::TypeId;
         root_ctx
             .plugin(ares_cordis_core::ReflectService::new())
@@ -624,37 +1159,93 @@ async fn run_server(
     };
     let _inv_len = ares_cordis_core::inventory_len();
 
-    // Load .env file for secrets (JWT_SECRET, API_KEY, etc.)
-    dotenvy::dotenv().ok();
+    // 3. Load AresConfigManager from config_path, start ares.toml watcher
+    if !config_path.exists() {
+        let output = Output::new();
+        output.banner();
+        output.error(&format!(
+            "Configuration file '{}' not found!",
+            config_path.display()
+        ));
+        output.newline();
+        output.info("A.R.E.S requires a configuration file to run.");
+        output.info("You can create one by running:");
+        output.newline();
+        output.command("ares-server init");
+        output.newline();
+        output.hint("This will create ares.toml and all necessary configuration files");
 
-    // Initialize tracing
-    let log_filter = if verbose { "debug,ares=trace" } else { "info" };
-    init_tracing(log_filter);
+        std::process::exit(1);
+    }
 
-    tracing::info!("Starting A.R.E.S - Agentic Retrieval Enhanced Server");
+    let config_path_str = config_path.to_str().unwrap_or("ares.toml");
+    let mut config_manager = AresConfigManager::new(config_path_str)
+        .expect("Failed to load configuration - check for syntax errors");
 
-    // Cordis Loader: reconcile plugin entries from config file.
-    // The PluginRegistry maps entry `plugin` names → factories; each
-    // non-disabled entry is instantiated via `Loader::instantiate`. Individual
-    // failures (unknown plugin, duplicate provider) are logged, never fatal —
-    // startup continues without the offending fiber.
+    config_manager
+        .start_watching()
+        .expect("Failed to start config file watcher");
+
+    let config_manager = Arc::new(config_manager);
+    let config = config_manager.config();
+
+    tracing::info!(
+        "Configuration loaded from {} (hot-reload enabled)",
+        config_path_str
+    );
+
+    // 4. init_postgres_db, migrations, seed templates
+    let db = init_postgres_db(&config.database.url).await?;
+    tracing::info!("PostgreSQL database client initialized");
+
+    sqlx::migrate!("./migrations")
+        .run(&db.pool)
+        .await
+        .expect("Failed to run database migrations");
+    tracing::info!("Database migrations applied");
+
+    ares::db::tenant_agents::seed_default_templates(&db.pool)
+        .await
+        .expect("Failed to seed agent templates");
+    tracing::info!("Agent templates seeded");
+
+    // 5. provide ConfigService, TenantDbService, DbService, PostgresClientService
+    let db_arc = Arc::new(db);
+    let tenant_db = Arc::new(ares::TenantDb::new(db_arc.clone()));
+
+    root_ctx
+        .plugin(ConfigService(config_manager.clone()))
+        .await
+        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
+    root_ctx
+        .plugin(ares::context_services::ConfigManagerService(Arc::clone(
+            &config_manager,
+        )))
+        .await
+        .expect("ConfigManager plugin failed");
+    root_ctx.provide_arc(config_manager.clone());
+    root_ctx.provide(ares::context_services::TenantDbService(tenant_db.clone()));
+    root_ctx.provide_arc(tenant_db.clone());
+    root_ctx.provide(ares::context_services::DbService(
+        db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>
+    ));
+    root_ctx.provide(ares::context_services::PostgresClientService(db_arc.clone()));
+
+    // 6–7. register factories + Loader::load_from_file + instantiate every enabled entry
     {
-        use ares_cordis_core::loader::{Loader, EntryTree};
+        use ares_cordis_core::loader::{EntryTree, Loader};
         register_loader_factories(&root_ctx);
 
         let entries_path = std::path::Path::new("config/cordis-entries.toml");
         if entries_path.exists() {
             match Loader::load_from_file(entries_path) {
                 Ok(desired) => {
-                    let current = EntryTree(vec![]); // first boot: nothing loaded yet
+                    let current = EntryTree(vec![]);
                     let loader = Loader::new();
                     let actions = loader.reconcile(&current, &desired);
                     for action in &actions {
                         Loader::execute_action(action, &root_ctx);
                     }
-                    // Instantiate every enabled entry whose plugin has a
-                    // registered factory (Begin actions carry no plugin name,
-                    // so the desired tree is the source of truth here).
                     let mut ok = 0usize;
                     let mut failed = 0usize;
                     for e in &desired.0 {
@@ -686,51 +1277,11 @@ async fn run_server(
         }
     }
 
-    // =================================================================
-    // Load TOML Configuration
-    // =================================================================
-    if !config_path.exists() {
-        let output = Output::new();
-        output.banner();
-        output.error(&format!(
-            "Configuration file '{}' not found!",
-            config_path.display()
-        ));
-        output.newline();
-        output.info("A.R.E.S requires a configuration file to run.");
-        output.info("You can create one by running:");
-        output.newline();
-        output.command("ares-server init");
-        output.newline();
-        output.hint("This will create ares.toml and all necessary configuration files");
-
-        std::process::exit(1);
-    }
-
-    let config_path_str = config_path.to_str().unwrap_or("ares.toml");
-    let mut config_manager = AresConfigManager::new(config_path_str)
-        .expect("Failed to load configuration - check for syntax errors");
-
-    // Start hot-reload watcher
-    config_manager
-        .start_watching()
-        .expect("Failed to start config file watcher");
-
-    let config_manager = Arc::new(config_manager);
-    let config = config_manager.config();
-
-    // Cordis hot-reload: watch config/cordis-entries.toml via `notify`
-    // (RecommendedWatcher, parent dir non-recursive, 500 ms debounce) and
-    // re-reconcile declarative entries on change. A 30 s mtime poll remains as
-    // a fallback in case the watcher fails to start or the fs backend errors.
-    // Detached daemon task — graceful shutdown not required (live config reload
-    // is best-effort; the config_manager watcher owns its own handle).
+    // 8. cordis-entries watcher
     {
         let ctx_for_watch = root_ctx.clone();
         let entries_path_str = "config/cordis-entries.toml".to_string();
 
-        // Reload closure shared by the notify path and the fallback poll.
-        // Returns true when at least one reconcile action was produced.
         let reload = |ctx: &std::sync::Arc<Context>, path: &std::path::Path| -> bool {
             use ares_cordis_core::loader::{EntryTree, Loader};
             match Loader::load_from_file(path) {
@@ -771,7 +1322,6 @@ async fn run_server(
             )
             .ok();
 
-            // Watch the parent directory non-recursively (single-file target).
             if let Some(w) = watcher.as_mut() {
                 let target = entries_path.parent().filter(|p| p.exists());
                 match target {
@@ -800,7 +1350,6 @@ async fn run_server(
                 }
             }
 
-            // Fallback mtime poll every 30s for when the watcher is unavailable.
             let mut last_modified =
                 std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
             let mut watcher_active = watcher.is_some();
@@ -810,11 +1359,9 @@ async fn run_server(
                     tokio::select! {
                         maybe = rx.recv() => {
                             if maybe.is_none() {
-                                // All senders dropped (watcher died/target missing) → poll only.
                                 watcher_active = false;
                                 continue;
                             }
-                            // Debounce 500ms: coalesce bursts, then reload.
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                             while rx.try_recv().is_ok() {}
                             if entries_path.exists() {
@@ -846,403 +1393,21 @@ async fn run_server(
         });
     }
 
-    tracing::info!(
-        "Configuration loaded from {} (hot-reload enabled)",
-        config_path_str
-    );
-
-    // Cordis plugin 1/8: ConfigService — single-source, check() always true (guarded withdrawal via Fiber)
-    root_ctx
-        .plugin(ConfigService(config_manager.clone()))
-        .await
-        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
-
-    // =================================================================
-    // Initialize Provider Registry
-    // =================================================================
-    let nvidia_cfg = config.nvidia.clone().unwrap_or_default();
-    let catalog = Arc::new(NvidiaCatalogCache::new(nvidia_cfg.clone()));
-    // Attempt an initial refresh; if it fails we still have the default_model fallback.
-    match catalog.refresh().await {
-        Ok(count) => tracing::info!("NVIDIA catalog refreshed with {} models", count),
-        Err(e) => tracing::warn!("NVIDIA catalog initial refresh failed: {}", e),
-    }
-    // Clone the Arc before consuming one in the background refresh task.
-    let catalog_for_registry = catalog.clone();
-    catalog.clone().start_background_refresh();
-
-    // Cordis plugin 2/8: CatalogService
-    root_ctx
-        .plugin(CatalogService(catalog.clone()))
-        .await
-        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
-
-    let provider_registry =
-        Arc::new(ProviderRegistry::from_config(&config).with_catalog(catalog_for_registry));
-    tracing::info!(
-        "[nvidia] api_base={} default_model={}",
-        nvidia_cfg.api_base,
-        nvidia_cfg.default_model,
-    );
-
-    // Cordis plugin 3/8: ProviderRegistryService
-    root_ctx
-        .plugin(ProviderRegistryService(provider_registry.clone()))
-        .await
-        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
-
-    // =================================================================
-    // Initialize LLM Factory
-    // =================================================================
-    let llm_factory = Arc::new(
-        ConfigBasedLLMFactory::from_config(&config)
-            .expect("Failed to create LLM factory from config"),
-    );
-    tracing::info!(
-        "LLM factory initialized with default model: {}",
-        llm_factory.default_model()
-    );
-
-    // =================================================================
-    // Initialize Database
-    // =================================================================
-    let db = init_postgres_db(&config.database.url).await?;
-    tracing::info!("PostgreSQL database client initialized");
-
-    // =================================================================
-    // Run Database Migrations
-    // =================================================================
-    sqlx::migrate!("./migrations")
-        .run(&db.pool)
-        .await
-        .expect("Failed to run database migrations");
-    tracing::info!("Database migrations applied");
-
-    // Seed default agent templates (idempotent)
-    ares::db::tenant_agents::seed_default_templates(&db.pool)
-        .await
-        .expect("Failed to seed agent templates");
-    tracing::info!("Agent templates seeded");
-
-    // =================================================================
-    // Initialize Auth Service
-    // =================================================================
-    let jwt_secret = config
-        .jwt_secret()
-        .expect("JWT_SECRET environment variable must be set");
-    let auth_service = Arc::new(AuthService::new(
-        jwt_secret,
-        config.auth.jwt_access_expiry,
-        config.auth.jwt_refresh_expiry,
-    ));
-    tracing::info!("Auth service initialized");
-
-    // Cordis plugin 4/8: AuthServiceWrapper
-    root_ctx
-        .plugin(AuthServiceWrapper(auth_service.clone()))
-        .await
-        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
-
-    // =================================================================
-    // Initialize Tool Registry
-    // =================================================================
-    let mut tool_registry = ToolRegistry::with_config(&config);
-
-    // Register built-in tools
-    tool_registry.register(Arc::new(ares::tools::calculator::Calculator));
-    #[cfg(feature = "search-tools")]
-    tool_registry.register(Arc::new(ares::tools::search::WebSearch::new()));
-    #[cfg(feature = "search-tools")]
-    tool_registry.register(Arc::new(ares::tools::web_scrape::WebScrape::new()));
-
-    if let Some(master_key) = MasterKey::from_env() {
-        ares::tools::connectors::register_prebuilt_connector_tools(
-            &mut tool_registry,
-            db.pool.clone(),
-            master_key,
-        );
-    } else {
-        tracing::warn!(
-            "FLEET_SECRETS_KEY is not set; pre-built connector tools are not registered"
-        );
-    }
-
-    // Proprietary tools (POM, DCRM, Eruka) are registered by ares-dirmacs, not here.
-    // Extension crates call tool_registry.register() in their own main.rs.
-
-    // Register MCP client tools as agent-callable tools (MCP→ToolRegistry bridge)
-    #[cfg(feature = "mcp")]
-    {
-        if let Ok(mcp_reg) =
-            ares::mcp::McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref())
-        {
-            for client_name in mcp_reg.client_names() {
-                if mcp_reg.get_client(&client_name).is_some() {
-                    ares::tools::mcp_bridge::register_mcp_tools(&mut tool_registry, &client_name);
-                }
-            }
-        }
-    }
-
-    let tool_registry = Arc::new(tool_registry);
-    tracing::info!(
-        "Tool registry initialized with {} tools",
-        tool_registry.enabled_tool_names().len()
-    );
-
-    // =================================================================
-    // Initialize Dynamic Configuration (TOON)
-    // =================================================================
-    let dynamic_config = match DynamicConfigManager::from_config(&config) {
-        Ok(dm) => {
-            tracing::info!(
-                "Dynamic config manager initialized with {} agents, {} models, {} tools",
-                dm.agents().len(),
-                dm.models().len(),
-                dm.tools().len()
-            );
-            Arc::new(dm)
-        }
-        Err(e) => {
-            tracing::warn!(
-                "Failed to initialize dynamic config manager: {}. Using empty config.",
-                e
-            );
-            Arc::new(
-                DynamicConfigManager::new(
-                    std::path::PathBuf::from(&config.config.agents_dir),
-                    std::path::PathBuf::from(&config.config.models_dir),
-                    std::path::PathBuf::from(&config.config.tools_dir),
-                    std::path::PathBuf::from(&config.config.workflows_dir),
-                    std::path::PathBuf::from(&config.config.mcps_dir),
-                    false,
-                )
-                .unwrap_or_else(|_| panic!("Cannot create even empty DynamicConfigManager")),
-            )
-        }
-    };
-
-    // =================================================================
-    // Initialize Agent Registry (with TOON support)
-    // =================================================================
-    let agent_registry = AgentRegistry::with_dynamic_config(
-        &config,
-        Arc::clone(&provider_registry),
-        Arc::clone(&tool_registry),
-        Arc::clone(&dynamic_config),
-    );
-    let agent_registry = Arc::new(agent_registry);
-    tracing::info!(
-        "Agent registry initialized with {} agents (TOML + TOON)",
-        agent_registry.agent_names().len()
-    );
-
-    // Cordis plugin 5/8: AgentServiceWrapper
-    root_ctx
-        .plugin(AgentServiceWrapper {
-            registry: agent_registry.clone(),
-            dynamic: dynamic_config.clone(),
-        })
-        .await
-        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
-
-    // =================================================================
-    // Initialize MCP Registry (Eruka, etc.)
-    // =================================================================
-    #[cfg(feature = "mcp")]
-    let mcp_registry: Option<Arc<McpRegistry>> =
-        match McpRegistry::from_dir(config.config.mcps_dir.to_string_lossy().as_ref()) {
-            Ok(registry) => {
-                tracing::info!(
-                    "MCP registry initialized with {} clients",
-                    registry.client_names().len()
-                );
-                Some(Arc::new(registry))
-            }
-            Err(e) => {
-                tracing::warn!("Failed to initialize MCP registry: {}", e);
-                None
-            }
-        };
-    // =================================================================
-    // Create Application State
-    // =================================================================
-    let db_arc = Arc::new(db);
-    let tenant_db = Arc::new(ares::TenantDb::new(db_arc.clone()));
-
-    let fleet_secrets = ares::FleetSecrets::new();
-    let fleet_provider_store =
-        ares::db::fleet_provider_secrets::FleetProviderSecretsStore::new(&db_arc.pool);
-    let fleet_provider_master = MasterKey::from_env();
-    match fleet_provider_store
-        .load_all(fleet_provider_master.as_ref())
-        .await
-    {
-        Ok(providers) => {
-            let count = providers.len();
-            fleet_secrets.store(providers);
-            tracing::info!(count, "Fleet provider secrets loaded");
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to load fleet provider secrets on startup");
-        }
-    }
-
-    let runtime_tool_registry = Arc::new(ares::RuntimeToolRegistry::new(db_arc.pool.clone()));
-    // Phase3 compile-time proof: registry creation inserts notifier/dependent for watch + BFS (ReflectService)
-    {
-        use std::any::TypeId;
-        let tid = TypeId::of::<ares::RuntimeToolRegistry>();
-        let _rx = reflect.ensure_notifier(tid);
-        reflect.register_dependent(tid, 1);
-    }
-    if let Err(e) = runtime_tool_registry.reload().await {
-        tracing::warn!("Failed to preload runtime tools on startup: {}", e);
-    }
-    // Phase3: background polling eliminated — reload via ReflectService::notify + Fiber::refresh
-
-    let skill_engine = Arc::new(ares::skill_engine::SkillEngine::new(
-        db_arc.pool.clone(),
-        Arc::clone(&tool_registry),
-        Arc::clone(&runtime_tool_registry),
-        Arc::clone(&llm_factory),
-        Arc::clone(&config_manager),
-    ));
-
-    // Cordis plugin 6/8: ToolServiceWrapper — static + runtime + unified
-    root_ctx
-        .plugin(ToolServiceWrapper {
-            static_registry: tool_registry.clone(),
-            runtime: runtime_tool_registry.clone(),
-            unified: None,
-        })
-        .await
-        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
-
-    // Keep calculator available when no declarative entry is configured. When
-    // the loader already instantiated it, the guard avoids duplicate provider
-    // failure while preserving the existing direct-bootstrap fallback.
-    if root_ctx
-        .get::<ares::tools::CalculatorService>()
-        .is_none()
-    {
-        root_ctx
-            .plugin(ares::tools::CalculatorService)
-            .await
-            .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
-    }
-
-    // Provide AppState fields as Cordis services — replaces `let state = AppState { ... }`
-    // =========================================================================
-    // Cordis Bootstrap: provide all services to Context (Phase 2 §12, Phase 7)
-    // =========================================================================
-    // These `provide` calls replace the old `AppState { field1, field2, ... }` struct.
-    // Handlers access them via `ctx.get::<ServiceWrapper>()`. As handlers migrate to
-    // dedicated services (AgentResolverService, AgentExecutionService, etc.), these
-    // wrappers become unused and can be removed. Target: 0 context_services wrappers.
-    // Cordis EventsService — central event bus for inter-service communication
-    // Guarded: the Loader may already have instantiated it from a declarative
-    // `config/cordis-entries.toml` entry (`plugin = "EventsService"`); a second
-    // provide here would trip the duplicate-provider check.
-    if root_ctx.get::<ares_cordis_core::EventsService>().is_none() {
-        root_ctx.provide(ares_cordis_core::EventsService::new());
-    }
-    root_ctx.plugin(ares::context_services::ConfigManagerService(Arc::clone(&config_manager))).await.expect("ConfigManager plugin failed");
-    root_ctx.provide(ares::context_services::DynamicConfigService(dynamic_config.clone()));
-    root_ctx.provide(ares::context_services::DbService(db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>));
-    root_ctx.provide(ares::context_services::TenantDbService(tenant_db.clone()));
-    root_ctx.provide_arc(llm_factory.clone());
-    root_ctx.provide(ares::context_services::ProviderRegistryService(provider_registry.clone()));
-    root_ctx.provide_arc(agent_registry.clone());
-    root_ctx.plugin(ares::context_services::ToolRegistryService(tool_registry.clone())).await.expect("ToolRegistry plugin failed");
-    root_ctx.provide(ares::context_services::AuthServiceWrapper(auth_service.clone()));
-    #[cfg(feature = "mcp")]
-    root_ctx.provide(ares::context_services::McpRegistryService(mcp_registry.clone()));
-    let deploy_registry = ares::api::handlers::deploy::new_deploy_registry();
-    root_ctx.provide(ares::context_services::DeployRegistryService(deploy_registry.clone()));
-    let loop_registry = ares::api::handlers::loops::LoopRegistry::new();
-    root_ctx.provide(ares::context_services::LoopRegistryService(loop_registry.clone()));
-    let emergency_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    root_ctx.provide(ares::context_services::EmergencyStopService(emergency_stop.clone()));
-    let context_provider: Arc<dyn ares::agents::context_provider::ContextProvider> =
-        Arc::new(ares::agents::NoOpContextProvider);
-    root_ctx.provide(ares::context_services::ContextProviderService(context_provider.clone()));
-    root_ctx.provide(ares::context_services::FleetSecretsService(fleet_secrets.clone()));
-    root_ctx.provide(ares::context_services::RuntimeToolRegistryService(runtime_tool_registry.clone()));
-    let active_runs = Arc::new(ares::active_runs::ActiveRuns::new());
-    root_ctx.provide(ares::context_services::ActiveRunsService(active_runs.clone()));
-    root_ctx.provide(ares::context_services::SkillEngineService(skill_engine.clone()));
-
-    // Cordis: AgentResolverService — replaces inline resolve_agent in handlers (Phase 5 §19)
-    root_ctx.provide(ares_agents::resolver::AgentResolverService::new(
-        tenant_db.clone(),
-        agent_registry.clone(),
-        config_manager.config(),
-    ));
-
+    // 9. build_router + bind + graceful shutdown (below)
     let state: AppState = root_ctx.clone();
 
     if let Err(e) = api::handlers::admin::reload_runtime_provider_registry(&state).await {
         tracing::warn!("Failed to preload runtime providers on startup: {}", e);
     }
 
-    // =================================================================
-    // Health Metrics Aggregation Job
-    // =================================================================
-    ares::health_metrics_job::spawn(state.get::<ares::context_services::TenantDbService>().expect("not provided").0.pool().clone());
-
-    // =================================================================
-    // Background Scheduler (Agent Schedules) — Cordis Service (Phase 4)
-    // =================================================================
-    // Cordis plugin 7/9: SchedulerService owns tick_ms 60_000, db, agent_execution, with next_run_at(cron) impl
-    // Shared execution for Scheduler + Pipeline (both inject AgentExecutionService)
-    let shared_execution = ares::execution_stack::provide_shared_execution(
-        &root_ctx,
-        ares::execution_stack::new_shared_execution(
-            db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>,
-            tenant_db.clone(),
-            llm_factory.clone(),
-            agent_registry.clone(),
-            active_runs.clone() as Arc<dyn ares_agents::RunTracker>,
-        ),
+    ares::health_metrics_job::spawn(
+        state
+            .get::<ares::context_services::TenantDbService>()
+            .expect("not provided")
+            .0
+            .pool()
+            .clone(),
     );
-    {
-        root_ctx
-            .plugin(ares::scheduler::SchedulerService::new(
-                db_arc.clone(),
-                shared_execution.clone(),
-                60_000,
-            ))
-            .await
-            .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
-        tracing::info!("SchedulerService plugin registered (tick_ms=60_000, watch + catch-up owned)");
-    }
-
-    // Cordis plugin 8/10: PipelineService — owns agent_pipelines lookup + conditional, injects AgentExecutionService
-    root_ctx
-        .plugin(ares::pipeline_engine::PipelineService::new(
-            db_arc.clone(),
-            shared_execution.clone(),
-        ))
-        .await
-        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
-    tracing::info!("PipelineService plugin registered (no tick, downstream-triggered, conditional + execution owned)");
-
-    // Cordis plugin 9/10: TriggerService — owns webhook/document_upload/field_change dispatch, injects AgentExecutionService
-    root_ctx
-        .plugin(ares::trigger_engine::TriggerService::new(
-            db_arc.clone(),
-            shared_execution.clone(),
-        ))
-        .await
-        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
-    tracing::info!("TriggerService plugin registered (webhook/document_upload/field_change owned)");
-
-    // Cordis plugin 10/10: HealthJobService — inventory health loop via inventory::iter + ctx.get check + notify (Thm 63)
-    root_ctx
-        .plugin(HealthJobService::default())
-        .await
-        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
 
     // Cordis reactive-fiber demo: a fiber depending on EventsService that flips
     // Active/Inactive as the service is retired/re-provided via admin endpoints.
@@ -1852,7 +2017,7 @@ mod tests {
     use super::*;
     use ares_cordis_core::loader::Loader;
     use ares_cordis_core::{Context, PluginRegistry};
-    use ares_tools::{Tool, ToolService};
+    use ares_tools::ToolService;
     use serde_json::json;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1901,5 +2066,23 @@ disabled = false
         // Context::plugin path rather than silently replacing the provider.
         let duplicate = Loader::instantiate(&ctx, &entry.plugin, &entry.config, &entry.id);
         assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn loader_factories_include_execution_stack() {
+        let ctx = Context::new_root();
+        register_loader_factories(&ctx);
+        let names = ctx
+            .get::<PluginRegistry>()
+            .expect("PluginRegistry after register_loader_factories")
+            .names();
+        assert!(
+            names.iter().any(|name| name == "ExecutionStack"),
+            "ExecutionStack factory missing from {names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name == "ProviderRegistry"),
+            "ProviderRegistry factory missing from {names:?}"
+        );
     }
 }

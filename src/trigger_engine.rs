@@ -475,7 +475,7 @@ async fn execute_triggered_agent_legacy(
         RunObservability, run_cost_aggregation_request, spawn_run_cost_aggregation,
     };
 
-    let pool = app_state.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = app_state.get::<crate::TenantDb>().expect("not provided").pool().clone();
 
     let tenant_agent_record =
         crate::db::tenant_agents::get_tenant_agent(&pool, &trigger.tenant_id, &trigger.target_agent)

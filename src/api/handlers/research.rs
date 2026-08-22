@@ -93,10 +93,10 @@ pub async fn deep_research(
     let start = Instant::now();
     ensure_research_emergency_stop_inactive(&ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0)?;
 
-    let config = ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
+    let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
     let (depth, max_iterations, model_name) = plan_research_run(&config, &payload);
 
-    let llm_client = match ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0
+    let llm_client = match ctx.get::<crate::ProviderRegistry>().expect("not provided")
         .create_client_for_model_ctx(&ctx, model_name)
         .await
     {

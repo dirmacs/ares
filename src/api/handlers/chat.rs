@@ -250,13 +250,13 @@ pub async fn chat(
         at
     } else {
         // Get router model from config, or use default
-        let config = ctx.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.config();
+        let config = ctx.get::<crate::AresConfigManager>().expect("not provided").config();
         let router_model = config
             .get_agent("router")
             .map(|a| a.model.as_str())
             .unwrap_or("fast");
 
-        let router_llm = match ctx.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0
+        let router_llm = match ctx.get::<crate::ProviderRegistry>().expect("not provided")
             .create_client_for_model_ctx(&ctx, router_model)
             .await
         {
@@ -301,7 +301,7 @@ pub async fn chat(
 
     // Record agent run (fire-and-forget)
     {
-        let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+        let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
         let agent_name = agent_name_for_run;
         let user_id = claims.sub.clone();
         let tenant_id_for_run = tenant_ctx
@@ -395,7 +395,7 @@ async fn execute_agent(
         .create_agent_from_config_with_fallbacks(
             agent_name,
             &config,
-            &context.user_id, &ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+            &context.user_id, &ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
             &ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
         )
         .await?;
@@ -406,7 +406,7 @@ async fn execute_agent(
         run_id: run_id.clone(),
         tenant_id: context.user_id.clone(),
         agent_name: agent_name.to_string(),
-        pool: ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone(),
+        pool: ctx.get::<crate::TenantDb>().expect("not provided").pool().clone(),
     });
     agent.set_observability(obs.clone());
     agent.set_run_id(run_id.clone());
@@ -611,10 +611,10 @@ fn chat_stream_response(
     let stream = async_stream::stream! {
         // Cordis: hold Context-derived services for stream (avoid temp dropped)
         let db = state_clone.get::<crate::context_services::DbService>().expect("not provided").0.clone();
-        let config_manager = state_clone.get::<crate::context_services::ConfigManagerService>().expect("not provided").0.clone();
-        let provider_registry = state_clone.get::<crate::context_services::ProviderRegistryService>().expect("not provided").0.clone();
+        let config_manager = state_clone.get::<crate::AresConfigManager>().expect("not provided").clone();
+        let provider_registry = state_clone.get::<crate::ProviderRegistry>().expect("not provided").clone();
         let llm_factory = state_clone.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>().expect("LlmFactory not provided").clone();
-        let tenant_db = state_clone.get::<crate::context_services::TenantDbService>().expect("not provided").0.clone();
+        let tenant_db = state_clone.get::<crate::TenantDb>().expect("not provided").clone();
         if let Some(e) = &validation_error {
             let event = stream_error_event(&e.to_string(), None);
             yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));

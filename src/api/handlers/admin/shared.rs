@@ -1643,7 +1643,7 @@ pub async fn list_agent_versions_handler(
     State(ctx): State<Arc<Context>>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
-    let __pool_1 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_1 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let records = agent_versions::get_agent_version_history(&__pool_1, &agent_id, 50)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -1658,7 +1658,7 @@ pub async fn rollback_agent_handler(
     Path((agent_id, version)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
     // Fetch the target version from DB
-    let __pool_2 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_2 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let history = agent_versions::get_agent_version_history(&__pool_2, &agent_id, 100)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -1683,11 +1683,11 @@ pub async fn rollback_agent_handler(
     ctx.get::<crate::context_services::DynamicConfigService>().expect("not provided").0.upsert_agent(agent_config.clone());
 
     // Record the rollback as a new version entry
-    let pool = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let pool = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let _ = agent_versions::record_agent_versions(&pool, &[agent_config], "rollback").await;
 
     // Audit log
-    let __pool_3 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_3 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let aid = agent_id.clone();
     let ver = version.clone();
     tokio::spawn(async move {
@@ -1747,7 +1747,7 @@ pub use ares_config::fleet_secrets::{MasterKey, decrypt_api_key, last_n_visible}
 pub async fn list_fleet_providers(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<serde_json::Value>>> {
-    let __pool_4 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_4 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = fps::FleetProviderSecretsStore::new(&__pool_4);
     let master = MasterKey::from_env();
     // Decrypt all rows so the UI can show the last-4 of the stored key.
@@ -2877,7 +2877,7 @@ pub async fn receive_webhook(
             }
         }
     }
-    let __pool_5 = ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool().clone();
+    let __pool_5 = ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();
     let store = db_schedules::EventTriggerStore::new(&__pool_5);
     let trigger = store.get_trigger(&trigger_id).await?;
     if let Some(trigger) = trigger {

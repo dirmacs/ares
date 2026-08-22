@@ -189,6 +189,8 @@ pub mod mcp { pub use ares_mcp::*; }
 /// In-process MCP [`AgentRunner`](ares_mcp::AgentRunner) over [`AgentExecutionService`](ares_agents::execution::AgentExecutionService).
 #[cfg(all(feature = "postgres", feature = "mcp"))]
 pub mod mcp_agent_runner;
+#[cfg(feature = "postgres")]
+pub mod execution_stack;
 /// Conversation memory and context management.
 pub mod memory { pub use ares_agents::memory::*; }
 /// Middleware for API key auth and usage tracking.

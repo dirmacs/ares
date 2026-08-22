@@ -138,7 +138,8 @@ pub async fn resolve_agent(
 ) -> Result<(UserAgent, String)> {
     // Cordis DI path: delegate to AgentResolverService (Phase 5 §19)
     if let Some(resolver) = state.get::<ares_agents::resolver::AgentResolverService>() {
-        let (agent, source) = resolver.resolve_async(&agent_name, user_id).await?;
+        let user_id = ares_agents::resolver::user_id_from_ctx(state, user_id);
+        let (agent, source) = resolver.resolve_async(&agent_name, &user_id).await?;
         return Ok((agent, source.as_str().into()));
     }
     // Fallback: inline resolution (legacy path, to be removed)

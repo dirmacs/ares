@@ -1196,17 +1196,16 @@ async fn run_server(
     // =================================================================
     // Cordis plugin 7/9: SchedulerService owns tick_ms 60_000, db, agent_execution, with next_run_at(cron) impl
     // Shared execution for Scheduler + Pipeline (both inject AgentExecutionService)
-    let shared_execution = Arc::new(
-        ares_agents::execution::AgentExecutionService::new()
-            .with_db(db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>)
-            .with_tenant_db(tenant_db.clone())
-            .with_llm_factory(llm_factory.clone())
-            .with_agent_registry(agent_registry.clone())
-            .with_fleet_secrets(Arc::new(ares::FleetSecrets::new()))
-            .with_run_tracker(active_runs.clone() as Arc<dyn ares_agents::RunTracker>)
+    let shared_execution = ares::execution_stack::provide_shared_execution(
+        &root_ctx,
+        ares::execution_stack::new_shared_execution(
+            db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>,
+            tenant_db.clone(),
+            llm_factory.clone(),
+            agent_registry.clone(),
+            active_runs.clone() as Arc<dyn ares_agents::RunTracker>,
+        ),
     );
-    // Provide to context so handlers can use ctx.get::<AgentExecutionService>()
-    root_ctx.provide_arc(shared_execution.clone());
     {
         root_ctx
             .plugin(ares::scheduler::SchedulerService::new(
@@ -1628,7 +1627,10 @@ async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std
     tracing::info!("ARES API URL: {}", ares_api_url);
 
     // Start MCP server (extensions like Eruka are registered by managed platform crates)
-    ares::mcp::start_mcp_server(tenant_db, pool, &ares_api_url, None).await?;
+    let runner = std::sync::Arc::new(
+        ares::mcp_agent_runner::ExecutionAgentRunner::with_tenant_db(tenant_db.clone()),
+    );
+    ares::mcp::start_mcp_server(tenant_db, pool, &ares_api_url, Some(runner)).await?;
 
     Ok(())
 }

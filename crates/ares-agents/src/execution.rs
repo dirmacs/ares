@@ -137,6 +137,31 @@ impl AgentExecutionService {
         }
     }
 
+    /// Emit the `agent.started` event through the Cordis event bus with
+    /// `Dispatch::Parallel`, which fans out to every registered observer
+    /// concurrently and awaits all of them before returning (join-all).
+    ///
+    /// If no `EventsService` is present in the context, or the dispatch
+    /// errors, the original `payload` is returned unchanged so callers never
+    /// lose data.
+    pub async fn emit_agent_started(
+        &self,
+        ctx: &Arc<Context>,
+        payload: serde_json::Value,
+    ) -> serde_json::Value {
+        let Some(events) = ctx.get::<ares_cordis_core::EventsService>() else {
+            return payload;
+        };
+        events
+            .dispatch(
+                "agent.started".into(),
+                payload.clone(),
+                ares_cordis_core::Dispatch::Parallel,
+            )
+            .await
+            .unwrap_or(payload)
+    }
+
     /// Attach a database client for history/observability.
     #[cfg(feature = "postgres")]
     pub fn with_db(mut self, db: Arc<dyn ares_db::traits::DatabaseClient>) -> Self {
@@ -261,15 +286,16 @@ impl AgentExecutionService {
             tracker.start_run(&run_id, user_id, &req.agent_name, Some("execution_service"));
         }
 
-        // Emit agent execution event via Cordis EventsService
-        if let Some(events) = ctx.get::<ares_cordis_core::EventsService>() {
+        // Emit agent execution event via Cordis EventsService (Parallel — join-all
+        // fan-out to every registered `agent.started` observer before returning).
+        if ctx.get::<ares_cordis_core::EventsService>().is_some() {
             let payload = serde_json::json!({
                 "agent_name": req.agent_name,
                 "run_id": run_id,
                 "tenant": user_id,
                 "event": "agent.started"
             });
-            let _ = events.dispatch("agent.started".into(), payload, ares_cordis_core::Dispatch::Emit).await;
+            let _ = self.emit_agent_started(ctx, payload).await;
         }
 
         // Build context for execution
@@ -624,4 +650,65 @@ pub trait RunTracker: Send + Sync + 'static {
     fn update_run(&self, run_id: &str, status: &str, step: i32);
     /// Mark run as finished with terminal status.
     fn finish_run(&self, run_id: &str, status: &str);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// RED contract: the `agent.started` event must be fanned out to every
+    /// registered handler via Cordis `Dispatch::Parallel` (join-all), so the
+    /// dispatch awaits all handlers before returning. A fire-and-forget
+    /// `Dispatch::Emit` returns immediately and may not have run any handler,
+    /// so this assertion would be flaky/false under the old implementation.
+    ///
+    /// The harness calls the not-yet-existing public seam `emit_agent_started`,
+    /// which the implement phase adds and wires into `execute_agent` in place
+    /// of the `Dispatch::Emit` at line ~272.
+    #[tokio::test]
+    async fn agent_started_fans_out_via_parallel() {
+        let svc = AgentExecutionService::new();
+        let ctx = Context::new_root();
+        let events = ctx.provide(ares_cordis_core::EventsService::new());
+
+        let count = Arc::new(AtomicUsize::new(0));
+
+        // Handler 1 — `Dispatch::Parallel` must run it before returning.
+        let c1 = count.clone();
+        let _d1 = events.on(
+            "agent.started".into(),
+            move |payload: serde_json::Value| {
+                let c = c1.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok(payload)
+                }
+            },
+        );
+
+        // Handler 2 — also must be run before the dispatch returns.
+        let c2 = count.clone();
+        let _d2 = events.on(
+            "agent.started".into(),
+            move |payload: serde_json::Value| {
+                let c = c2.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok(payload)
+                }
+            },
+        );
+
+        // Seam the implement phase adds: dispatches "agent.started" with
+        // `Dispatch::Parallel` and returns the resulting value.
+        svc.emit_agent_started(&ctx, serde_json::json!({"agent_name": "a"}))
+            .await;
+
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "Dispatch::Parallel must join both 'agent.started' handlers before returning"
+        );
+    }
 }

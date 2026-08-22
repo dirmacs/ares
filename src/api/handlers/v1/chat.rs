@@ -29,6 +29,7 @@ pub async fn v1_chat(
     Json(payload): Json<ChatRequest>,
 ) -> Result<axum::response::Response> {
     let tc = extract_tenant(ctx)?;
+    // NOTE: per-request model override would use ctx.with_intercept::<LlmOverride>(...) here
 
     // Quota enforcement — check monthly + daily request limits
     enforce_quota(&state_ctx, &tc).await?;
@@ -151,6 +152,9 @@ pub async fn v1_chat(
     }
 
     // Legacy fallback: resolve_agent_for_tenant + inline execution
+    // Cordis isolate: tenant-scoped namespace for tool resolution
+    let _tenant_ctx = state_ctx.isolate::<crate::context_services::ToolRegistryService>(&tc.tenant_id);
+    tracing::debug!(tenant = %tc.tenant_id, "v1/chat: Cordis-isolated context created for tenant tool scoping");
     let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
         state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),

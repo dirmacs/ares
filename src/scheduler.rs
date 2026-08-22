@@ -344,6 +344,17 @@ pub(crate) fn scheduled_pipeline_trigger<'a>(
 
 /// Start the background scheduler loop (legacy shim — prefer SchedulerService).
 pub async fn start_scheduler(pool: PgPool, app_state: AppState) {
+    // Cordis Events: subscribe to agent.completed for observability
+    if let Some(events) = app_state.get::<ares_cordis_core::EventsService>() {
+        events.on("agent.completed".into(), |payload| {
+            Box::pin(async move {
+                if let Some(agent) = payload.get("agent_name").and_then(|v| v.as_str()) {
+                    tracing::debug!(agent = %agent, status = ?payload.get("status"), "scheduler observed agent completion");
+                }
+                Ok(payload)
+            })
+        });
+    }
     let mut ticker = interval(Duration::from_secs(60));
     loop {
         ticker.tick().await;

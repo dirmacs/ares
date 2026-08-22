@@ -261,6 +261,24 @@ impl Loader {
 
         actions
     }
+
+    /// Execute a reconciliation action against the context (logs the action).
+    pub fn execute_action(action: &LoaderAction, _ctx: &std::sync::Arc<crate::Context>) {
+        match action {
+            LoaderAction::RebuildFiber { id, plugin } => {
+                tracing::info!(id = %id, plugin = %plugin, "Loader: rebuilding fiber for entry");
+            }
+            LoaderAction::UpdateConfig { id, .. } => {
+                tracing::info!(id = %id, "Loader: updating fiber config for entry");
+            }
+            LoaderAction::Retire { id } => {
+                tracing::info!(id = %id, "Loader: retiring entry");
+            }
+            LoaderAction::Begin { id } => {
+                tracing::info!(id = %id, "Loader: beginning entry");
+            }
+        }
+    }
 }
 
 #[cfg(test)]

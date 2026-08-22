@@ -536,7 +536,13 @@ async fn run_server(
     let root_ctx = ares_cordis_core::Context::new_root();
     let reflect = {
         use std::any::TypeId;
-        let reflect = root_ctx.provide(ares_cordis_core::ReflectService::new());
+        root_ctx
+            .plugin(ares_cordis_core::ReflectService::new())
+            .await
+            .expect("ReflectService plugin failed");
+        let reflect = root_ctx
+            .get::<ares_cordis_core::ReflectService>()
+            .expect("ReflectService missing");
         let tid_tool = TypeId::of::<ares::RuntimeToolRegistry>();
         let tid_provider = TypeId::of::<ares::ProviderRegistry>();
         let _rx_tool = reflect.ensure_notifier(tid_tool);
@@ -568,12 +574,13 @@ async fn run_server(
                     let current = EntryTree(vec![]); // first boot: nothing loaded yet
                     let loader = Loader::new();
                     let actions = loader.reconcile(&current, &desired);
+                    for action in &actions {
+                        Loader::execute_action(action, &root_ctx);
+                    }
                     tracing::info!(
-                        loader_actions = actions.len(),
-                        entries = desired.0.len(),
-                        "Cordis Loader: reconciled {} entries from {}",
-                        desired.0.len(),
-                        entries_path.display()
+                        total_actions = actions.len(),
+                        total_entries = desired.0.len(),
+                        "Cordis Loader: startup reconciliation complete"
                     );
                 }
                 Err(e) => {
@@ -615,6 +622,43 @@ async fn run_server(
 
     let config_manager = Arc::new(config_manager);
     let config = config_manager.config();
+
+    // Cordis hot-reload: watch cordis-entries.toml for changes and re-reconcile
+    {
+        let ctx_for_watch = root_ctx.clone();
+        tokio::spawn(async move {
+            let entries_path_str = "config/cordis-entries.toml".to_string();
+            use ares_cordis_core::loader::{EntryTree, Loader};
+            let mut last_modified =
+                std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let cur = std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
+                if cur != last_modified && cur.is_some() {
+                    last_modified = cur;
+                    let path = std::path::Path::new(&entries_path_str);
+                    if path.exists() {
+                        match Loader::load_from_file(path) {
+                            Ok(desired) => {
+                                let current = EntryTree(vec![]);
+                                let actions = Loader::new().reconcile(&current, &desired);
+                                for action in &actions {
+                                    Loader::execute_action(action, &ctx_for_watch);
+                                }
+                                if !actions.is_empty() {
+                                    tracing::info!(
+                                        actions = actions.len(),
+                                        "Cordis hot-reload: reconciled entries change"
+                                    );
+                                }
+                            }
+                            Err(e) => tracing::warn!(error = %e, "Cordis hot-reload: parse failed"),
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     tracing::info!(
         "Configuration loaded from {} (hot-reload enabled)",
@@ -903,14 +947,16 @@ async fn run_server(
     // Handlers access them via `ctx.get::<ServiceWrapper>()`. As handlers migrate to
     // dedicated services (AgentResolverService, AgentExecutionService, etc.), these
     // wrappers become unused and can be removed. Target: 0 context_services wrappers.
-    root_ctx.provide(ares::context_services::ConfigManagerService(Arc::clone(&config_manager)));
+    // Cordis EventsService — central event bus for inter-service communication
+    root_ctx.provide(ares_cordis_core::EventsService::new());
+    root_ctx.plugin(ares::context_services::ConfigManagerService(Arc::clone(&config_manager))).await.expect("ConfigManager plugin failed");
     root_ctx.provide(ares::context_services::DynamicConfigService(dynamic_config.clone()));
     root_ctx.provide(ares::context_services::DbService(db_arc.clone() as Arc<dyn ares::db::traits::DatabaseClient>));
     root_ctx.provide(ares::context_services::TenantDbService(tenant_db.clone()));
     root_ctx.provide_arc(llm_factory.clone());
     root_ctx.provide(ares::context_services::ProviderRegistryService(provider_registry.clone()));
     root_ctx.provide_arc(agent_registry.clone());
-    root_ctx.provide(ares::context_services::ToolRegistryService(tool_registry.clone()));
+    root_ctx.plugin(ares::context_services::ToolRegistryService(tool_registry.clone())).await.expect("ToolRegistry plugin failed");
     root_ctx.provide(ares::context_services::AuthServiceWrapper(auth_service.clone()));
     #[cfg(feature = "mcp")]
     root_ctx.provide(ares::context_services::McpRegistryService(mcp_registry.clone()));

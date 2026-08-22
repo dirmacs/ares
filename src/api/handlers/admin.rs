@@ -15,6 +15,7 @@
 #[path = "admin/connectors.rs"] pub mod connectors;
 #[path = "admin/health.rs"] pub mod health;
 #[path = "admin/audit.rs"] pub mod audit;
+#[path = "admin/cordis.rs"] pub mod cordis;
 #[path = "admin/shared.rs"] pub mod shared;
 
 pub use tenants::*;
@@ -30,6 +31,7 @@ pub use fleet_secrets::*;
 pub use connectors::*;
 pub use health::*;
 pub use audit::*;
+pub use cordis::*;
 
 
 // Re-export shared DTOs/helpers so `use super::*;` in shards resolves.
@@ -162,4 +164,5 @@ pub fn admin_routes() -> axum::Router<AppState> {
         .merge(connectors::routes())
         .merge(health::routes())
         .merge(audit::routes())
+        .merge(cordis::routes())
 }

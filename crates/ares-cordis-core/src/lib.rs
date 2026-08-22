@@ -244,6 +244,7 @@ impl Fiber {
         let _guard = self.inertia.lock().await;
         let new_epoch = self.compute_epoch(ctx);
         let old_epoch = self.epoch.read().clone();
+        let prev = self.state.read().clone();
         if new_epoch == old_epoch && *self.state.read() != (FiberState::Inactive { error: None }) {
             // No change and already active -> no reload
             // But also check if still active vs inactive due to dep satisfaction
@@ -258,9 +259,15 @@ impl Fiber {
         let satisfied = self.is_satisfied(ctx);
         if satisfied {
             *self.epoch.write() = new_epoch.clone();
-            *self.state.write() = FiberState::Active { epoch: new_epoch };
+            *self.state.write() = FiberState::Active { epoch: new_epoch.clone() };
+            if prev != *self.state.read() {
+                tracing::info!(from=?prev, to=?*self.state.read(), epoch=%new_epoch, "Cordis fiber transition");
+            }
         } else {
             *self.state.write() = FiberState::Inactive { error: None };
+            if prev != *self.state.write() {
+                tracing::info!(from=?prev, to=?*self.state.write(), epoch=%new_epoch, "Cordis fiber transition");
+            }
             // do not update epoch when inactive? keep old?
         }
     }
@@ -754,6 +761,57 @@ pub fn compute_epoch(inject: &HashMap<TypeId, Symbol>) -> String {
 
 // RegistryService and Plugin live in registry.rs to keep single-source discipline
 // and isolate-aware checks in one place. Re-exported here for ergonomics.
+
+// ---------------------------------------------------------------------------
+// PluginRegistry — name → factory map consumed by `Loader::instantiate`
+// ---------------------------------------------------------------------------
+
+/// Factory closure that turns one declarative entry into a live fiber.
+///
+/// The body must call [`Context::plugin`] (directly or via a helper) so that
+/// single-source discipline applies: a factory whose service is already
+/// provided fails with `CordisError::Configuration("duplicate provider …")`
+/// instead of silently shadowing it.
+pub type PluginFactory =
+    Arc<dyn Fn(&Arc<Context>, &serde_json::Value) -> Result<FiberId, CordisError> + Send + Sync>;
+
+/// Name-keyed directory of [`PluginFactory`] closures.
+///
+/// Registered at bootstrap (`root_ctx.provide(PluginRegistry::new())` +
+/// `register(name, …)`); consulted by `Loader::instantiate` when applying
+/// entries from `config/cordis-entries.toml`. Entries naming a plugin with no
+/// registered factory fail their own instantiation but never abort startup.
+pub struct PluginRegistry {
+    factories: RwLock<HashMap<String, PluginFactory>>,
+}
+
+impl PluginRegistry {
+    pub fn new() -> Self {
+        Self {
+            factories: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn register(&self, name: &str, f: PluginFactory) {
+        self.factories.write().insert(name.to_string(), f);
+    }
+
+    pub fn get(&self, name: &str) -> Option<PluginFactory> {
+        self.factories.read().get(name).cloned()
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.factories.read().keys().cloned().collect()
+    }
+}
+
+impl Default for PluginRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Service for PluginRegistry {}
 
 // ---------------------------------------------------------------------------
 // ReflectService — Phase 3 unified hot-reload (watch + BFS via Fiber::refresh)
@@ -1270,5 +1328,48 @@ mod tests {
         assert_eq!(inner_ctx.get::<ModelSvc>().unwrap().model, "o1-preview");
         // Outer still sees its own override
         assert_eq!(req_ctx.get::<ModelSvc>().unwrap().model, "gpt-4o-mini");
+    }
+
+    #[tokio::test]
+    async fn test_production_style_reactive_cycle() {
+        #[derive(Debug)]
+        struct Probe;
+        impl Service for Probe {}
+
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        let reflect = ctx.get::<ReflectService>().unwrap();
+        reflect.set_context(&ctx);
+
+        let f = Arc::new(Fiber::new());
+        f.declare_inject::<Probe>();
+        reflect.register_dependent(TypeId::of::<Probe>(), 777);
+        reflect.register_fiber(777, f.clone(), TypeId::of::<Probe>());
+
+        // Initially Inactive: dep not yet provided
+        f.refresh(&ctx).await;
+        assert!(
+            matches!(f.state(), FiberState::Inactive { .. }),
+            "expected Inactive before provide, got {:?}",
+            f.state()
+        );
+
+        // Provide -> notify_with_ctx (synchronous, no sleeps) drives activation
+        let _probe = ctx.provide(Probe);
+        reflect.notify_with_ctx(TypeId::of::<Probe>(), &ctx).await;
+        assert!(
+            matches!(f.state(), FiberState::Active { .. }),
+            "expected Active after provide, got {:?}",
+            f.state()
+        );
+
+        // Remove -> notify_with_ctx drives deactivation
+        ctx.remove::<Probe>();
+        reflect.notify_with_ctx(TypeId::of::<Probe>(), &ctx).await;
+        assert!(
+            matches!(f.state(), FiberState::Inactive { .. }),
+            "expected Inactive after remove, got {:?}",
+            f.state()
+        );
     }
 }

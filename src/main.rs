@@ -522,6 +522,21 @@ fn init_tracing(log_filter: &str) {
         .init();
 }
 
+/// Minimal no-op service behind the `noop_probe` loader factory.
+///
+/// Exists purely to prove end-to-end declarative instantiation
+/// (`config/cordis-entries.toml` entry → `PluginRegistry` factory →
+/// `Context::plugin`) without colliding with any real provider already wired
+/// in `run_server` — a fresh distinct type guarantees single-source discipline
+/// can never see a duplicate.
+#[cfg(feature = "postgres")]
+struct LoaderProbeService {
+    created_at: std::time::SystemTime,
+}
+
+#[cfg(feature = "postgres")]
+impl ares_cordis_core::Service for LoaderProbeService {}
+
 /// Run the A.R.E.S server
 #[cfg(feature = "postgres")]
 async fn run_server(
@@ -564,9 +579,29 @@ async fn run_server(
 
     tracing::info!("Starting A.R.E.S - Agentic Retrieval Enhanced Server");
 
-    // Cordis Loader: reconcile plugin entries from config file
+    // Cordis Loader: reconcile plugin entries from config file.
+    // The PluginRegistry maps entry `plugin` names → factories; each
+    // non-disabled entry is instantiated via `Loader::instantiate`. Individual
+    // failures (unknown plugin, duplicate provider) are logged, never fatal —
+    // startup continues without the offending fiber.
     {
         use ares_cordis_core::loader::{Loader, EntryTree};
+        if root_ctx.get::<ares_cordis_core::PluginRegistry>().is_none() {
+            root_ctx.provide(ares_cordis_core::PluginRegistry::new());
+        }
+        // Built-in factories. `noop_probe` provides a fresh local service of a
+        // distinct type, so it can never hit the duplicate-provider guard.
+        if let Some(reg) = root_ctx.get::<ares_cordis_core::PluginRegistry>() {
+            reg.register("noop_probe", std::sync::Arc::new(|ctx, _cfg| {
+                let fut = ctx.plugin(LoaderProbeService {
+                    created_at: std::time::SystemTime::now(),
+                });
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(fut)
+                })
+            }));
+        }
+
         let entries_path = std::path::Path::new("config/cordis-entries.toml");
         if entries_path.exists() {
             match Loader::load_from_file(entries_path) {
@@ -577,9 +612,30 @@ async fn run_server(
                     for action in &actions {
                         Loader::execute_action(action, &root_ctx);
                     }
+                    // Instantiate every enabled entry whose plugin has a
+                    // registered factory (Begin actions carry no plugin name,
+                    // so the desired tree is the source of truth here).
+                    let mut ok = 0usize;
+                    let mut failed = 0usize;
+                    for e in &desired.0 {
+                        if e.disabled {
+                            tracing::info!(entry_id=%e.id, "Cordis Loader: skipping disabled entry");
+                            continue;
+                        }
+                        match Loader::instantiate(&root_ctx, &e.plugin, &e.config, &e.id) {
+                            Ok(_fid) => ok += 1,
+                            Err(err) => {
+                                failed += 1;
+                                tracing::warn!(entry_id=%e.id, plugin=%e.plugin, error=%err,
+                                    "Cordis Loader: instantiation failed for entry (continuing)");
+                            }
+                        }
+                    }
                     tracing::info!(
                         total_actions = actions.len(),
                         total_entries = desired.0.len(),
+                        instantiated = ok,
+                        failed = failed,
                         "Cordis Loader: startup reconciliation complete"
                     );
                 }
@@ -1046,6 +1102,26 @@ async fn run_server(
         .plugin(HealthJobService::default())
         .await
         .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
+
+    // Cordis reactive-fiber demo: a fiber depending on EventsService that flips
+    // Active/Inactive as the service is retired/re-provided via admin endpoints.
+    {
+        use std::any::TypeId;
+        let fiber = std::sync::Arc::new(ares_cordis_core::Fiber::new());
+        fiber.declare_inject::<ares_cordis_core::EventsService>();
+        let reflect = root_ctx
+            .get::<ares_cordis_core::ReflectService>()
+            .expect("reflect");
+        let fid = 990_001u64;
+        reflect.register_dependent(TypeId::of::<ares_cordis_core::EventsService>(), fid);
+        reflect.register_fiber(
+            fid,
+            fiber.clone(),
+            TypeId::of::<ares_cordis_core::EventsService>(),
+        );
+        fiber.refresh(&root_ctx).await; // initial: Active (EventsService provided earlier)
+        tracing::info!(state=?fiber.state(), "reactive demo fiber initialized (expect Active)");
+    }
 
     // =================================================================
     // Agent Config Versioning (Sprint 11)

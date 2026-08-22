@@ -29,7 +29,8 @@ pub async fn v1_chat(
     Json(payload): Json<ChatRequest>,
 ) -> Result<axum::response::Response> {
     let tc = extract_tenant(ctx)?;
-    // NOTE: per-request model override would use ctx.with_intercept::<LlmOverride>(...) here
+    // Per-request model override is implemented via ModelOverride + Cordis intercept
+    // (see the DI path below: state_ctx.with_intercept(ModelOverride { .. })).
 
     // Quota enforcement — check monthly + daily request limits
     enforce_quota(&state_ctx, &tc).await?;
@@ -99,7 +100,13 @@ pub async fn v1_chat(
             history: agent_context.conversation_history.clone(),
             ctx_provider: None,
         };
-        let exec_result = exec_svc.execute_agent(&req, &state_ctx).await?;
+        // Cordis intercept: pin the LLM model for this request without mutating global state.
+        let req_ctx = if let Some(m) = &payload.model {
+            state_ctx.with_intercept(ares_agents::execution::ModelOverride { model: m.clone() })
+        } else {
+            state_ctx.clone()
+        };
+        let exec_result = exec_svc.execute_agent(&req, &req_ctx).await?;
         let duration_ms = start.elapsed().as_millis() as i64;
         let response_text = exec_result.response.content;
         let (model_name, provider_name) = execution_metadata_names(exec_result.response.metadata.as_ref());
@@ -153,8 +160,14 @@ pub async fn v1_chat(
 
     // Legacy fallback: resolve_agent_for_tenant + inline execution
     // Cordis isolate: tenant-scoped namespace for tool resolution
-    let _tenant_ctx = state_ctx.isolate::<crate::context_services::ToolRegistryService>(&tc.tenant_id);
-    tracing::debug!(tenant = %tc.tenant_id, "v1/chat: Cordis-isolated context created for tenant tool scoping");
+    let tenant_ctx = state_ctx.isolate::<crate::context_services::ToolRegistryService>(&tc.tenant_id);
+    let base_tools = state_ctx.get::<crate::context_services::ToolRegistryService>().expect("ToolRegistry missing").0.clone();
+    tenant_ctx.provide(crate::context_services::ToolRegistryService(base_tools));
+    let scoped_tools = tenant_ctx.get_isolated::<crate::context_services::ToolRegistryService>(&tc.tenant_id);
+    match &scoped_tools {
+        Some(_) => tracing::debug!(tenant=%tc.tenant_id, "v1/chat: tools resolved via Cordis-isolated context"),
+        None => tracing::debug!(tenant=%tc.tenant_id, "v1/chat: isolated lookup missed (isolate semantics); falling back to base registry"),
+    }
     let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
         state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),

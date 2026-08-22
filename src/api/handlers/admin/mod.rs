@@ -18,6 +18,7 @@ pub mod fleet_secrets;
 pub mod connectors;
 pub mod health;
 pub mod audit;
+pub mod cordis;
 
 pub use shared::*;
 

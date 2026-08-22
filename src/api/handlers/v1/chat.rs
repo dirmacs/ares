@@ -22,6 +22,32 @@ use axum::{
     Json,
 };
 
+/// Resolve the tenant-isolated static tool service and inject it into the
+/// legacy agent. The child context is intentionally request-local: the
+/// resolved service cannot be observed by another tenant's request.
+fn inject_tenant_tool_service(
+    state_ctx: &Arc<Context>,
+    tenant_id: &str,
+    agent: &mut ares_agents::ConfigurableAgent,
+) {
+    let tenant_ctx = state_ctx.isolate::<crate::context_services::ToolRegistryService>(tenant_id);
+    let base_tools = state_ctx
+        .get::<crate::context_services::ToolRegistryService>()
+        .expect("ToolRegistry missing")
+        .0
+        .clone();
+    tenant_ctx.provide(crate::context_services::ToolRegistryService(base_tools));
+    let scoped_tools = tenant_ctx
+        .get_isolated::<crate::context_services::ToolRegistryService>(tenant_id)
+        .expect("isolated ToolRegistry missing");
+
+    // ConfigurableAgent uses this service for definitions and dispatch, rather
+    // than merely resolving it for logging. Runtime tools remain filtered by
+    // the existing tenant_id path below.
+    let service = ares_tools::UnifiedToolService::new(scoped_tools.0.clone());
+    agent.inject_tool_service(Arc::new(service));
+}
+
 /// POST /v1/chat — tenant-scoped chat (API key auth, no conversation history)
 pub async fn v1_chat(
     State(state_ctx): State<Arc<Context>>,
@@ -100,9 +126,26 @@ pub async fn v1_chat(
             history: agent_context.conversation_history.clone(),
             ctx_provider: None,
         };
-        // Cordis intercept: pin the LLM model for this request without mutating global state.
+        // Cordis intercepts are request-local and composable: pin the model,
+        // then attach the tenant's current allowlist without mutating root state.
         let req_ctx = if let Some(m) = &payload.model {
-            state_ctx.with_intercept(ares_agents::execution::ModelOverride { model: m.clone() })
+            let pool = state_ctx
+                .get::<crate::context_services::TenantDbService>()
+                .expect("TenantDbService not provided")
+                .0
+                .pool()
+                .clone();
+            let allowed_models = crate::db::tenant_allowlist::TenantAllowlistStore::new(&pool)
+                .list_models(&tc.tenant_id)
+                .await?;
+            let child = state_ctx.with_intercept(ares_agents::execution::ModelOverride {
+                model: m.clone(),
+            });
+            child.provide(ares_llm::TenantModelPolicy::new(
+                tc.tenant_id.clone(),
+                allowed_models.into_iter().map(|item| item.model_id),
+            ));
+            child
         } else {
             state_ctx.clone()
         };
@@ -159,15 +202,6 @@ pub async fn v1_chat(
     }
 
     // Legacy fallback: resolve_agent_for_tenant + inline execution
-    // Cordis isolate: tenant-scoped namespace for tool resolution
-    let tenant_ctx = state_ctx.isolate::<crate::context_services::ToolRegistryService>(&tc.tenant_id);
-    let base_tools = state_ctx.get::<crate::context_services::ToolRegistryService>().expect("ToolRegistry missing").0.clone();
-    tenant_ctx.provide(crate::context_services::ToolRegistryService(base_tools));
-    let scoped_tools = tenant_ctx.get_isolated::<crate::context_services::ToolRegistryService>(&tc.tenant_id);
-    match &scoped_tools {
-        Some(_) => tracing::debug!(tenant=%tc.tenant_id, "v1/chat: tools resolved via Cordis-isolated context"),
-        None => tracing::debug!(tenant=%tc.tenant_id, "v1/chat: isolated lookup missed (isolate semantics); falling back to base registry"),
-    }
     let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
         state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
@@ -176,6 +210,7 @@ pub async fn v1_chat(
         &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
     .await?;
+    inject_tenant_tool_service(&state_ctx, &tc.tenant_id, &mut resolved_agent.agent);
     // Give the agent access to its tenant's runtime (DB-defined) tools so the
     // LLM can actually call them. Tenant-scoped — never cross-tenant.
     // cordis Phase6: runtime gating via PostgresService::check (was cfg feature postgres)
@@ -383,3 +418,143 @@ pub fn routes() -> axum::Router<crate::AppState> {
 use ares_cordis_core::Service;
 pub struct V1ChatService;
 impl Service for V1ChatService {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ares_agents::ConfigurableAgent;
+    use ares_config::toml_config::AgentConfig;
+    use ares_llm::{LLMClient, LLMResponse};
+    use ares_tools::registry::{Tool, ToolRegistry};
+    use ares_types::types::ToolDefinition;
+    use async_trait::async_trait;
+    use serde_json::Value;
+
+    struct TestTool(&'static str);
+
+    #[async_trait]
+    impl Tool for TestTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+
+        fn description(&self) -> &str {
+            self.0
+        }
+
+        fn parameters_schema(&self) -> Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(&self, _args: Value) -> crate::types::Result<Value> {
+            Ok(serde_json::json!({"tool": self.0}))
+        }
+    }
+
+    struct TestLlm;
+
+    fn test_response() -> LLMResponse {
+        LLMResponse {
+            content: String::new(),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            usage: None,
+        }
+    }
+
+    #[async_trait]
+    impl LLMClient for TestLlm {
+        async fn generate(&self, _prompt: &str) -> crate::types::Result<String> {
+            Ok(String::new())
+        }
+
+        async fn generate_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> crate::types::Result<String> {
+            Ok(String::new())
+        }
+
+        async fn generate_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> crate::types::Result<LLMResponse> {
+            Ok(test_response())
+        }
+
+        async fn generate_with_tools(
+            &self,
+            _prompt: &str,
+            _tools: &[ToolDefinition],
+        ) -> crate::types::Result<LLMResponse> {
+            Ok(test_response())
+        }
+
+        async fn generate_with_tools_and_history(
+            &self,
+            _messages: &[ares_llm::coordinator::ConversationMessage],
+            _tools: &[ToolDefinition],
+        ) -> crate::types::Result<LLMResponse> {
+            Ok(test_response())
+        }
+
+        async fn stream(
+            &self,
+            _prompt: &str,
+        ) -> crate::types::Result<Box<dyn futures::Stream<Item = crate::types::Result<String>> + Send + Unpin>> {
+            Ok(Box::new(futures::stream::empty()))
+        }
+
+        async fn stream_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> crate::types::Result<Box<dyn futures::Stream<Item = crate::types::Result<String>> + Send + Unpin>> {
+            Ok(Box::new(futures::stream::empty()))
+        }
+
+        async fn stream_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> crate::types::Result<Box<dyn futures::Stream<Item = crate::types::Result<String>> + Send + Unpin>> {
+            Ok(Box::new(futures::stream::empty()))
+        }
+
+        fn model_name(&self) -> &str {
+            "test"
+        }
+    }
+
+    #[test]
+    fn tenant_isolated_service_reaches_agent_and_denies_other_tenant_tool() {
+        let root = Context::new_root();
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(TestTool("tenant_a_tool")));
+        registry.register(Arc::new(TestTool("tenant_b_tool")));
+        root.provide(crate::context_services::ToolRegistryService(Arc::new(registry)));
+
+        let config = AgentConfig {
+            model: "test".to_string(),
+            system_prompt: Some("test".to_string()),
+            tools: vec!["tenant_a_tool".to_string()],
+            allowed_tools: None,
+            max_tool_iterations: 1,
+            parallel_tools: false,
+            extra: std::collections::HashMap::new(),
+        };
+        let mut agent = ConfigurableAgent::new_with_tool_service(
+            "tenant-a",
+            &config,
+            Box::new(TestLlm),
+            None,
+        );
+
+        inject_tenant_tool_service(&root, "tenant-a", &mut agent);
+
+        let definitions = agent.get_filtered_tool_definitions();
+        assert_eq!(definitions.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["tenant_a_tool"]);
+        assert!(agent.can_use_tool("tenant_a_tool"));
+        assert!(!agent.can_use_tool("tenant_b_tool"));
+    }
+}

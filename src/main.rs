@@ -537,6 +537,50 @@ struct LoaderProbeService {
 #[cfg(feature = "postgres")]
 impl ares_cordis_core::Service for LoaderProbeService {}
 
+/// Register built-in factories consumed by declarative Cordis entries.
+///
+/// Factories construct services through `Context::plugin`, preserving the
+/// context's duplicate-provider checks instead of taking a log-only path.
+#[cfg(feature = "postgres")]
+fn register_loader_factories(root_ctx: &Arc<Context>) {
+    use ares_cordis_core::PluginRegistry;
+
+    if root_ctx.get::<PluginRegistry>().is_none() {
+        root_ctx.provide(PluginRegistry::new());
+    }
+    let Some(registry) = root_ctx.get::<PluginRegistry>() else {
+        return;
+    };
+
+    // Keep the existing probe semantics: it owns a distinct service type and
+    // therefore cannot collide with a real startup provider.
+    registry.register("noop_probe", Arc::new(|ctx, _config| {
+        let future = ctx.plugin(LoaderProbeService {
+            created_at: std::time::SystemTime::now(),
+        });
+        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+    }));
+
+    // TOML's empty `[entry.config]` is represented as `{}`, while the empty
+    // unit config remains part of CalculatorService's public API. Accept the
+    // two default forms and reject non-empty malformed configuration.
+    registry.register("CalculatorService", Arc::new(|ctx, config| {
+        let calculator_config = if config.is_null()
+            || config.as_object().is_some_and(|object| object.is_empty())
+        {
+            ares_tools::CalculatorConfig
+        } else {
+            serde_json::from_value::<ares_tools::CalculatorConfig>(config.clone()).map_err(|error| {
+                ares_cordis_core::CordisError::Configuration(format!(
+                    "invalid CalculatorService config: {error}"
+                ))
+            })?
+        };
+        let future = ctx.plugin(ares_tools::CalculatorService::with_config(calculator_config));
+        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+    }));
+}
+
 /// Run the A.R.E.S server
 #[cfg(feature = "postgres")]
 async fn run_server(
@@ -586,21 +630,7 @@ async fn run_server(
     // startup continues without the offending fiber.
     {
         use ares_cordis_core::loader::{Loader, EntryTree};
-        if root_ctx.get::<ares_cordis_core::PluginRegistry>().is_none() {
-            root_ctx.provide(ares_cordis_core::PluginRegistry::new());
-        }
-        // Built-in factories. `noop_probe` provides a fresh local service of a
-        // distinct type, so it can never hit the duplicate-provider guard.
-        if let Some(reg) = root_ctx.get::<ares_cordis_core::PluginRegistry>() {
-            reg.register("noop_probe", std::sync::Arc::new(|ctx, _cfg| {
-                let fut = ctx.plugin(LoaderProbeService {
-                    created_at: std::time::SystemTime::now(),
-                });
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(fut)
-                })
-            }));
-        }
+        register_loader_factories(&root_ctx);
 
         let entries_path = std::path::Path::new("config/cordis-entries.toml");
         if entries_path.exists() {
@@ -989,11 +1019,18 @@ async fn run_server(
         .await
         .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
 
-    // Cordis plugin: CalculatorService via DI (Step 11 — proves plugin pattern for tools)
-    root_ctx
-        .plugin(ares::tools::CalculatorService)
-        .await
-        .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
+    // Keep calculator available when no declarative entry is configured. When
+    // the loader already instantiated it, the guard avoids duplicate provider
+    // failure while preserving the existing direct-bootstrap fallback.
+    if root_ctx
+        .get::<ares::tools::CalculatorService>()
+        .is_none()
+    {
+        root_ctx
+            .plugin(ares::tools::CalculatorService)
+            .await
+            .map_err(|e| Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>)?;
+    }
 
     // Provide AppState fields as Cordis services — replaces `let state = AppState { ... }`
     // =========================================================================
@@ -1682,10 +1719,57 @@ fn ui_routes() -> Router<AppState> {
 
 #[cfg(all(test, feature = "postgres"))]
 mod tests {
-    #[tokio::test]
-    async fn placeholder_keep_test_module() {
-        // start_runtime_tool_background_reload was removed (Phase 3)
-        // Reload now via ReflectService::notify + Fiber::refresh
-        assert!(true);
+    use super::*;
+    use ares_cordis_core::loader::Loader;
+    use ares_cordis_core::{Context, PluginRegistry};
+    use ares_tools::{Tool, ToolService};
+    use serde_json::json;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn calculator_entry_loads_factory_and_executes_tool() {
+        let dir = tempfile::tempdir().expect("temporary config directory");
+        let path = dir.path().join("cordis-entries.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[entry]]
+id = "calculator"
+plugin = "CalculatorService"
+disabled = false
+
+[entry.config]
+"#,
+        )
+        .expect("write loader config");
+
+        let desired = Loader::load_from_file(&path).expect("parse loader config");
+        let entry = desired.0.first().expect("calculator entry");
+        assert_eq!(entry.plugin, "CalculatorService");
+        assert_eq!(entry.config, json!({}));
+
+        let ctx = Context::new_root();
+        ctx.provide(PluginRegistry::new());
+        register_loader_factories(&ctx);
+
+        let fiber_id = Loader::instantiate(&ctx, &entry.plugin, &entry.config, &entry.id)
+            .expect("calculator factory should instantiate");
+        assert!(fiber_id > 0);
+
+        let service = ctx
+            .get::<ares_tools::CalculatorService>()
+            .expect("factory must provide CalculatorService");
+        let tool = service
+            .resolve("calculator", None)
+            .expect("calculator should resolve through ToolService");
+        let output = tool
+            .execute(json!({"operation": "add", "a": 2.0, "b": 3.0}))
+            .await
+            .expect("calculator execution");
+        assert_eq!(output["result"], json!(5.0));
+
+        // A second instance in the same context must be rejected by the real
+        // Context::plugin path rather than silently replacing the provider.
+        let duplicate = Loader::instantiate(&ctx, &entry.plugin, &entry.config, &entry.id);
+        assert!(duplicate.is_err());
     }
 }

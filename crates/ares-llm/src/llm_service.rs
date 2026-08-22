@@ -11,6 +11,7 @@
 //! open, causing dependent fibers to deactivate (guarded withdrawal per Thm 63:
 //! provider does not withdraw until dependents deactivate).
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -43,6 +44,63 @@ pub struct ModelOverride {
 // but we implement Service so `ctx.intercept(ModelOverride)` and `ctx.get`
 // work via the same `Service` type map when needed.
 impl Service for ModelOverride {}
+
+/// Tenant-scoped model allowlist carried by a request context.
+///
+/// This is a snapshot of the tenant policy (normally populated from
+/// `TenantAllowlistStore`) and is intentionally request-scoped.  It lets the
+/// LLM service authorize an intercepted [`ModelOverride`] without changing the
+/// process-wide provider registry or its default model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantModelPolicy {
+    tenant_id: String,
+    allowed_models: HashSet<String>,
+}
+
+impl TenantModelPolicy {
+    /// Build a policy from the currently enabled model ids for a tenant.
+    pub fn new<I, S>(tenant_id: impl Into<String>, allowed_models: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            tenant_id: tenant_id.into(),
+            allowed_models: allowed_models.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Tenant whose allowlist is represented by this policy.
+    pub fn tenant_id(&self) -> &str {
+        &self.tenant_id
+    }
+
+    /// Return whether this tenant may use `model`.
+    pub fn allows(&self, model: &str) -> bool {
+        self.allowed_models.contains(model)
+    }
+
+    /// Build the authorization message for a model denied by a tenant policy.
+    pub fn denial_message(tenant_id: &str, model: &str) -> String {
+        format!("Model '{}' is not allowed for tenant '{}'", model, tenant_id)
+    }
+
+    /// Build the authorization error for a model denied by a tenant policy.
+    pub fn denial_error(tenant_id: &str, model: &str) -> AppError {
+        AppError::Auth(Self::denial_message(tenant_id, model))
+    }
+
+    /// Authorize a model selected by a request interceptor.
+    pub fn authorize(&self, model: &str) -> Result<(), AppError> {
+        if self.allows(model) {
+            Ok(())
+        } else {
+            Err(Self::denial_error(&self.tenant_id, model))
+        }
+    }
+}
+
+impl Service for TenantModelPolicy {}
 
 /// Circuit-breaker state for `LlmService`.
 ///
@@ -249,6 +307,21 @@ impl LlmService {
         }
     }
 
+    /// Validate a request's model override against its tenant policy.
+    ///
+    /// Both values are resolved through the context prototype chain, so callers
+    /// can compose `TenantModelPolicy` and `ModelOverride` on separate child
+    /// contexts. With no policy, legacy override behavior is preserved.
+    pub fn validate_model_override(&self, ctx: &Arc<Context>) -> Result<(), AppError> {
+        if let (Some(policy), Some(override_model)) = (
+            ctx.get::<TenantModelPolicy>(),
+            ctx.get::<ModelOverride>(),
+        ) {
+            policy.authorize(&override_model.model)?;
+        }
+        Ok(())
+    }
+
     /// Capability-aware client resolution with per-request `ModelOverride` pinning.
     ///
     /// 1. If `ctx.get::<ModelOverride>()` is present, attempt to create a client for
@@ -264,6 +337,8 @@ impl LlmService {
         ctx: &Arc<Context>,
         capability: CapabilityRequirements,
     ) -> Result<Arc<dyn LLMClient>, AppError> {
+        // Authorize before touching the pool or provider registry.
+        self.validate_model_override(ctx)?;
         // 1. Per-request pinning via `ctx.get::<ModelOverride>()` (intercept realm).
         if let Some(ov) = ctx.get::<ModelOverride>() {
             // Fast-path: pooled provider named exactly like the override model
@@ -321,6 +396,8 @@ impl LlmService {
         ctx: &Arc<Context>,
         capability: CapabilityRequirements,
     ) -> Result<Box<dyn LLMClient>, AppError> {
+        // Keep the boxed and Arc paths subject to the same request policy.
+        self.validate_model_override(ctx)?;
         if let Some(ov) = ctx.get::<ModelOverride>() {
             if let Ok(guard) = self.pool.try_get(&ov.model).await {
                 return Ok(guard.take());
@@ -433,7 +510,7 @@ mod tests {
         assert!(req_ctx.get::<ModelOverride>().is_some());
         assert_eq!(req_ctx.get::<ModelOverride>().unwrap().model, "gpt-4o-mini");
         // LlmService composition fields exist
-        assert!(svc.provider_registry as *const _ != std::ptr::null());
+        assert!(!Arc::as_ptr(&svc.provider_registry).is_null());
         let _ = svc.catalog.clone();
         let _ = svc.pool.provider_names();
         // Service check guarded withdrawal comment path
@@ -454,6 +531,70 @@ mod tests {
         assert!(!svc.check());
         svc.record_success();
         assert!(svc.check());
+    }
+
+    #[test]
+    fn tenant_model_policy_allows_and_composes_with_model_override() {
+        let root = Context::new_root();
+        let tenant_ctx = root.intercept(TenantModelPolicy::new(
+            "tenant-a",
+            ["gpt-4o-mini".to_string()],
+        ));
+        let request = tenant_ctx.intercept(ModelOverride {
+            model: "gpt-4o-mini".into(),
+        });
+        let policy = request
+            .get::<TenantModelPolicy>()
+            .expect("policy should be inherited by request context");
+        let override_model = request
+            .get::<ModelOverride>()
+            .expect("model override should be visible in request context");
+        policy
+            .authorize(&override_model.model)
+            .expect("allowed model override should pass policy");
+        let svc = LlmService::new(
+            Arc::new(ProviderRegistry::new()),
+            Arc::new(ClientPool::with_defaults()),
+            None,
+        );
+        svc.validate_model_override(&request)
+            .expect("allowed model override should pass LLM validation");
+        assert!(root.get::<ModelOverride>().is_none());
+        assert!(root.get::<TenantModelPolicy>().is_none());
+    }
+
+    #[tokio::test]
+    async fn disallowed_model_override_is_rejected_before_provider_execution() {
+        let registry = Arc::new(ProviderRegistry::new());
+        let svc = Arc::new(LlmService::new(
+            registry,
+            Arc::new(ClientPool::with_defaults()),
+            None,
+        ));
+        let root = Context::new_root();
+        root.provide_arc(svc.clone());
+        let tenant_ctx = root.intercept(TenantModelPolicy::new(
+            "tenant-a",
+            ["gpt-4o".to_string()],
+        ));
+        let request = tenant_ctx.intercept(ModelOverride {
+            model: "not-allowed".into(),
+        });
+        let err = match svc
+            .get_client(&request, CapabilityRequirements::default())
+            .await
+        {
+            Ok(_) => panic!("disallowed override must fail before provider lookup"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, AppError::Auth(_)));
+        assert!(err.to_string().contains("not-allowed"));
+        assert!(root.get::<ModelOverride>().is_none());
+        assert!(root.get::<TenantModelPolicy>().is_none());
+        assert!(matches!(
+            root.get::<LlmService>().expect("global service").breaker(),
+            Breaker::Closed
+        ));
     }
 
     #[tokio::test]

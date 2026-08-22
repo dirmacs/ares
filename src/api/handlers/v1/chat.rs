@@ -27,9 +27,12 @@ use axum::{
 /// resolved service cannot be observed by another tenant's request.
 fn inject_tenant_tool_service(
     state_ctx: &Arc<Context>,
-    tenant_id: &str,
     agent: &mut ares_agents::ConfigurableAgent,
 ) {
+    let Some(tc) = state_ctx.get::<crate::models::TenantContext>() else {
+        return;
+    };
+    let tenant_id = tc.tenant_id.as_str();
     let tenant_ctx = state_ctx.isolate::<crate::context_services::ToolRegistryService>(tenant_id);
     let base_tools = state_ctx
         .get::<crate::context_services::ToolRegistryService>()
@@ -204,6 +207,22 @@ pub async fn v1_chat(
     }
 
     // Legacy fallback: resolve_agent_for_tenant + inline execution
+    // Cordis isolate: tenant-scoped tool resolution
+    let tenant_ctx = state_ctx.isolate::<crate::context_services::ToolRegistryService>(&tc.tenant_id);
+    tracing::debug!(
+        tenant = %tc.tenant_id,
+        "v1/chat: using Cordis-isolated context for tenant tool scoping"
+    );
+    // Cordis intercept: per-request model override without mutating global state
+    let tenant_ctx = if let Some(ref model) = payload.model {
+        tracing::debug!(model = %model, "v1/chat: Cordis intercept for model override");
+        tenant_ctx.intercept(ares_agents::execution::ModelOverride {
+            model: model.clone(),
+        })
+    } else {
+        tenant_ctx
+    };
+
     let mut resolved_agent = tenant_agent::resolve_agent_for_tenant(
         state_ctx.get::<crate::context_services::TenantDbService>().expect("not provided").0.pool(),
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
@@ -212,14 +231,14 @@ pub async fn v1_chat(
         &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
     )
     .await?;
-    inject_tenant_tool_service(&state_ctx, &tc.tenant_id, &mut resolved_agent.agent);
+    inject_tenant_tool_service(&tenant_ctx, &mut resolved_agent.agent);
     // Give the agent access to its tenant's runtime (DB-defined) tools so the
     // LLM can actually call them. Tenant-scoped — never cross-tenant.
     // cordis Phase6: runtime gating via PostgresService::check (was cfg feature postgres)
     if cfg!(feature = "postgres") {
         resolved_agent
             .agent
-            .set_runtime_tools(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), tc.tenant_id.clone());
+            .set_runtime_tools(tenant_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), tc.tenant_id.clone());
     }
     let response = resolved_agent
         .agent
@@ -426,6 +445,7 @@ impl Service for V1ChatService {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::TenantTier;
     use ares_agents::ConfigurableAgent;
     use ares_config::toml_config::AgentConfig;
     use ares_llm::{LLMClient, LLMResponse};
@@ -554,7 +574,8 @@ mod tests {
             None,
         );
 
-        inject_tenant_tool_service(&root, "tenant-a", &mut agent);
+        let scoped = root.with_intercept(TenantContext::new("tenant-a".into(), TenantTier::Free));
+        inject_tenant_tool_service(&scoped, &mut agent);
 
         let definitions = agent.get_filtered_tool_definitions();
         assert_eq!(definitions.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["tenant_a_tool"]);

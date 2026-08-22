@@ -3,6 +3,7 @@
 use ares_config::toml_config::{AgentConfig, AresConfig};
 use ares_db::postgres::UserAgent;
 use ares_db::traits::DatabaseClient;
+use ares_types::models::TenantContext;
 use ares_types::types::{AppError, Result};
 
 /// Resolution tier label returned alongside the resolved [`UserAgent`].
@@ -200,25 +201,27 @@ impl Service for AgentResolverService {
     }
 }
 
-/// Derive the effective user/tenant scope for agent resolution from the
-/// context's Cordis isolate namespace. Reads
-/// `ctx.isolate_label(TypeId::of::<AgentResolverService>())` and strips a
-/// leading `tenant:`/`user:` prefix if present (falling back to the raw label);
-/// the provided `fallback` is used when the context is not isolated for
-/// `AgentResolverService`, or when the stripped label is empty.
+/// Derive the effective user/tenant scope for agent resolution.
+///
+/// Precedence: isolate label for `AgentResolverService` (with a leading
+/// `tenant:`/`user:` prefix stripped), then a non-empty
+/// `ctx.get::<TenantContext>()` intercept id, then `fallback`.
 pub fn user_id_from_ctx(ctx: &Arc<ares_cordis_core::Context>, fallback: &str) -> String {
-    let Some(label) = ctx.isolate_label(std::any::TypeId::of::<AgentResolverService>()) else {
-        return fallback.to_string();
-    };
-    let trimmed = label
-        .strip_prefix("tenant:")
-        .or_else(|| label.strip_prefix("user:"))
-        .unwrap_or(&label);
-    if trimmed.is_empty() {
-        fallback.to_string()
-    } else {
-        trimmed.to_string()
+    if let Some(label) = ctx.isolate_label(std::any::TypeId::of::<AgentResolverService>()) {
+        let trimmed = label
+            .strip_prefix("tenant:")
+            .or_else(|| label.strip_prefix("user:"))
+            .unwrap_or(&label);
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
     }
+    if let Some(tc) = ctx.get::<TenantContext>() {
+        if !tc.tenant_id.is_empty() {
+            return tc.tenant_id.clone();
+        }
+    }
+    fallback.to_string()
 }
 
 /// Resolve an agent for a user using the 3-tier hierarchy.
@@ -627,5 +630,25 @@ url = "postgres://localhost/ares"
             "u42",
             "isolate label 'user:u42' -> scope 'u42'"
         );
+    }
+
+    #[test]
+    fn user_id_from_ctx_reads_tenant_context_intercept() {
+        use ares_types::models::{TenantContext, TenantTier};
+
+        let root: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let ctx = root.with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
+        assert_eq!(user_id_from_ctx(&ctx, "anon"), "acme");
+    }
+
+    #[test]
+    fn user_id_from_ctx_isolate_label_wins_over_intercept() {
+        use ares_types::models::{TenantContext, TenantTier};
+
+        let root: Arc<ares_cordis_core::Context> = ares_cordis_core::Context::new_root();
+        let intercepted =
+            root.with_intercept(TenantContext::new("from-intercept".into(), TenantTier::Pro));
+        let isolated = intercepted.isolate::<AgentResolverService>("tenant:from-isolate");
+        assert_eq!(user_id_from_ctx(&isolated, "anon"), "from-isolate");
     }
 }

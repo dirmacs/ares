@@ -808,7 +808,7 @@ async fn execute_scheduled_agent(
         .await
         .map_err(|e| e.to_string())?;
 
-        app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
+        app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
             run_id: run_id.clone(),
             tenant_id: sched.tenant_id.clone(),
             agent_name: sched.agent_name.clone(),
@@ -826,7 +826,7 @@ async fn execute_scheduled_agent(
             trigger_id: None,
         });
 
-        let skill_result = app_state.get::<crate::context_services::SkillEngineService>().expect("not provided").0
+        let skill_result = app_state.get::<crate::skill_engine::SkillEngine>().expect("not provided")
             .execute_skill(
                 skill_id,
                 &sched.tenant_id,
@@ -841,7 +841,7 @@ async fn execute_scheduled_agent(
         } else {
             "error"
         };
-        app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, active_status);
+        app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, active_status);
 
         let status = if skill_result.is_ok() {
             "completed"
@@ -928,7 +928,7 @@ async fn execute_scheduled_agent(
         &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &scoped,
         &sched.agent_name,
-        &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
+        &app_state.get::<crate::FleetSecrets>().expect("not provided"),
     )
     .await
     {
@@ -953,7 +953,7 @@ async fn execute_scheduled_agent(
     });
     resolved_agent.agent.set_observability(obs.clone());
     resolved_agent.agent.set_runtime_tools_from_ctx(
-        app_state.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(),
+        app_state.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(),
         &scoped,
     );
 
@@ -1022,7 +1022,7 @@ async fn execute_scheduled_agent(
     .await
     .map_err(|e| e.to_string())?;
 
-    app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
+    app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),
         tenant_id: sched.tenant_id.clone(),
         agent_name: sched.agent_name.clone(),
@@ -1079,9 +1079,9 @@ async fn execute_scheduled_agent(
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
 
-            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0
+            app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided")
                 .update_model(&run_id, Some(&model_name));
-            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "completed");
+            app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "completed");
 
             let trigger = scheduled_pipeline_trigger(sched, &response.content);
             let _ = crate::pipeline_engine::execute_pipeline_with_origin(
@@ -1104,7 +1104,7 @@ async fn execute_scheduled_agent(
             model_name = "unknown".to_string();
             provider_name = "unknown".to_string();
 
-            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
+            app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "error");
         }
     }
 

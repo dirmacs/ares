@@ -83,8 +83,8 @@ pub async fn run_agent(
     };
 
     // Emergency stop
-    if state_ctx.get::<crate::context_services::EmergencyStopService>().expect("not provided").0
-        .load(std::sync::atomic::Ordering::Relaxed)
+    if state_ctx.get::<crate::context_services::EmergencyStop>().expect("not provided")
+        .is_active()
     {
         return Err(crate::types::AppError::Unavailable(
             "All agents are currently under human review. Please try again later.".to_string(),
@@ -110,19 +110,19 @@ pub async fn run_agent(
         &state_ctx.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &state_ctx,
         &name,
-        &state_ctx.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
+        &state_ctx.get::<crate::FleetSecrets>().expect("not provided"),
     )
     .await?;
 
     // Skill-based agent execution
     resolved_agent
         .agent
-        .set_runtime_tools_from_ctx(state_ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(), &state_ctx);
+        .set_runtime_tools_from_ctx(state_ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(), &state_ctx);
 
     if let Some(config) = &resolved_agent.config {
         if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {
             let run_id = uuid::Uuid::new_v4().to_string();
-            state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
+            state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
                 run_id: run_id.clone(),
                 tenant_id: tc.tenant_id.clone(),
                 agent_name: name.clone(),
@@ -139,7 +139,7 @@ pub async fn run_agent(
                 schedule_id: None,
                 trigger_id: None,
             });
-            let skill_result = state_ctx.get::<crate::context_services::SkillEngineService>().expect("not provided").0
+            let skill_result = state_ctx.get::<crate::skill_engine::SkillEngine>().expect("not provided")
                 .execute_skill(skill_id, &tc.tenant_id, input.clone(), &run_id)
                 .await;
             let duration_ms = start.elapsed().as_millis() as u64;
@@ -148,7 +148,7 @@ pub async fn run_agent(
             } else {
                 "error"
             };
-            state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, skill_status);
+            state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, skill_status);
 
             // Record agent run
             {
@@ -306,7 +306,7 @@ pub async fn run_agent(
         message.clone()
     };
 
-    state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
+    state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),
         tenant_id: tc.tenant_id.clone(),
         agent_name: name.clone(),
@@ -355,8 +355,8 @@ pub async fn run_agent(
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
-            state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.update_model(&run_id, Some(&model_name));
-            state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "completed");
+            state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").update_model(&run_id, Some(&model_name));
+            state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "completed");
 
             // Record agent run
             {
@@ -449,7 +449,7 @@ pub async fn run_agent(
             Ok(response)
         }
         Err(e) => {
-            state_ctx.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
+            state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "error");
             // Record failed run
             {
                 let pool = state_ctx.get::<crate::TenantDb>().expect("not provided").pool().clone();

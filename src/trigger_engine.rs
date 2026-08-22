@@ -203,7 +203,7 @@ impl TriggerService {
     }
 
     /// Common pathway: resolve tenant-agent, handle skill branch via
-    /// `SkillEngineService`, otherwise delegate to `AgentExecutionService`,
+    /// `SkillEngine`, otherwise delegate to `AgentExecutionService`,
     /// then propagate to downstream pipelines.
     async fn execute_trigger(
         &self,
@@ -223,7 +223,7 @@ impl TriggerService {
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty());
             if let Some(skill_id) = skill_id_opt {
-                if let Some(skill_engine) = ctx.get::<crate::context_services::SkillEngineService>() {
+                if let Some(skill_engine) = ctx.get::<crate::skill_engine::SkillEngine>() {
                     // Use dedicated skill path (agent_runs + ActiveRuns + run_tool_calls)
                     let run_id = uuid::Uuid::new_v4().to_string();
                     let start = std::time::Instant::now();
@@ -245,8 +245,8 @@ impl TriggerService {
                         Some(&metadata),
                     )
                     .await;
-                    if let Some(active) = ctx.get::<crate::context_services::ActiveRunsService>() {
-                        active.0.start(crate::active_runs::ActiveRun {
+                    if let Some(active) = ctx.get::<crate::active_runs::ActiveRuns>() {
+                        active.start(crate::active_runs::ActiveRun {
                             run_id: run_id.clone(),
                             tenant_id: trigger.tenant_id.clone(),
                             agent_name: trigger.target_agent.clone(),
@@ -265,7 +265,6 @@ impl TriggerService {
                         });
                     }
                     let skill_result = skill_engine
-                        .0
                         .execute_skill(
                             &skill_id,
                             &trigger.tenant_id,
@@ -276,8 +275,8 @@ impl TriggerService {
                     let duration_ms = start.elapsed().as_millis() as i64;
                     let status = if skill_result.is_ok() { "completed" } else { "failed" };
                     let active_status = if skill_result.is_ok() { "completed" } else { "error" };
-                    if let Some(active) = ctx.get::<crate::context_services::ActiveRunsService>() {
-                        active.0.finish(&run_id, active_status);
+                    if let Some(active) = ctx.get::<crate::active_runs::ActiveRuns>() {
+                        active.finish(&run_id, active_status);
                     }
                     let (itok, otok) = skill_result
                         .as_ref()
@@ -515,7 +514,7 @@ async fn execute_triggered_agent_legacy(
         .await
         .map_err(|e| e.to_string())?;
 
-        app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
+        app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
             run_id: run_id.clone(),
             tenant_id: trigger.tenant_id.clone(),
             agent_name: trigger.target_agent.clone(),
@@ -533,7 +532,7 @@ async fn execute_triggered_agent_legacy(
             trigger_id: Some(trigger.id.clone()),
         });
 
-        let skill_result = app_state.get::<crate::context_services::SkillEngineService>().expect("not provided").0
+        let skill_result = app_state.get::<crate::skill_engine::SkillEngine>().expect("not provided")
             .execute_skill(
                 skill_id,
                 &trigger.tenant_id,
@@ -548,7 +547,7 @@ async fn execute_triggered_agent_legacy(
         } else {
             "error"
         };
-        app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, active_status);
+        app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, active_status);
 
         let status = if skill_result.is_ok() {
             "completed"
@@ -632,7 +631,7 @@ async fn execute_triggered_agent_legacy(
         &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &scoped,
         &trigger.target_agent,
-        &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
+        &app_state.get::<crate::FleetSecrets>().expect("not provided"),
     )
     .await
     .map_err(|e| format!("Agent resolution failed: {}", e))?;
@@ -646,7 +645,7 @@ async fn execute_triggered_agent_legacy(
     });
     resolved_agent.agent.set_observability(obs.clone());
     resolved_agent.agent.set_runtime_tools_from_ctx(
-        app_state.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(),
+        app_state.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(),
         &scoped,
     );
 
@@ -701,7 +700,7 @@ async fn execute_triggered_agent_legacy(
     .await
     .map_err(|e| e.to_string())?;
 
-    app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(crate::active_runs::ActiveRun {
+    app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
         run_id: run_id.clone(),
         tenant_id: trigger.tenant_id.clone(),
         agent_name: trigger.target_agent.clone(),
@@ -754,9 +753,9 @@ async fn execute_triggered_agent_legacy(
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
-            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0
+            app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided")
                 .update_model(&run_id, Some(&model_name));
-            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "completed");
+            app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "completed");
 
             let _ = crate::pipeline_engine::execute_pipeline_with_origin(
                 &trigger.target_agent,
@@ -776,7 +775,7 @@ async fn execute_triggered_agent_legacy(
             output_tokens = 0;
             model_name = "unknown".to_string();
             provider_name = "unknown".to_string();
-            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
+            app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "error");
         }
     }
 

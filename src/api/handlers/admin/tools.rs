@@ -50,7 +50,7 @@ pub async fn create_runtime_tool(
     let store = RuntimeToolStore::new(&__pool_3);
     let tool = store.create(&req).await?;
 
-    if let Err(e) = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.reload().await {
+    if let Err(e) = ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").reload().await {
         tracing::warn!("Failed to hot-reload runtime tools after create: {}", e);
     }
 
@@ -103,7 +103,7 @@ pub async fn update_runtime_tool(
     }
     let tool = store.update(&id, &req).await?;
 
-    if let Err(e) = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.reload().await {
+    if let Err(e) = ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").reload().await {
         tracing::warn!("Failed to hot-reload runtime tools after update: {}", e);
     }
 
@@ -143,7 +143,7 @@ pub async fn delete_runtime_tool(
         return Err(AppError::NotFound(format!("runtime tool {id} not found")));
     }
 
-    if let Err(e) = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.reload().await {
+    if let Err(e) = ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").reload().await {
         tracing::warn!("Failed to hot-reload runtime tools after delete: {}", e);
     }
 
@@ -184,13 +184,13 @@ pub async fn test_runtime_tool(
 
     // If the registry doesn't yet contain this tool (e.g. first test after
     // creation), force a reload before executing.
-    if ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.get(&tool.name).is_none() {
-        if let Err(e) = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.reload().await {
+    if ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").get(&tool.name).is_none() {
+        if let Err(e) = ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").reload().await {
             tracing::warn!("Failed to reload runtime tools before test: {}", e);
         }
     }
 
-    let result = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0
+    let result = ctx.get::<crate::RuntimeToolRegistry>().expect("not provided")
         .execute(&tool.name, req.input_args.clone())
         .await;
     let latency_ms = start.elapsed().as_millis() as u64;
@@ -297,7 +297,7 @@ pub async fn rollback_runtime_tool(
 
     let updated = store.update(&id, &update_req).await?;
 
-    if let Err(e) = ctx.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.reload().await {
+    if let Err(e) = ctx.get::<crate::RuntimeToolRegistry>().expect("not provided").reload().await {
         tracing::warn!("Failed to hot-reload runtime tools after rollback: {}", e);
     }
 

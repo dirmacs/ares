@@ -356,7 +356,7 @@ async fn execute_target_agent(
         &app_state.get::<ares_agents::AgentRegistry>().expect("AgentRegistry not provided"),
         &scoped,
         &pipeline.target_agent,
-        &app_state.get::<crate::context_services::FleetSecretsService>().expect("not provided").0,
+        &app_state.get::<crate::FleetSecrets>().expect("not provided"),
     )
     .await
     .map_err(|e| format!("Agent resolution failed: {}", e))?;
@@ -368,7 +368,7 @@ async fn execute_target_agent(
     // Skill-based execution
     if let Some(config) = &resolved_agent.config {
         if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {
-            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(pipeline_active_run(
+            app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(pipeline_active_run(
                 &run_id,
                 tenant_id,
                 &pipeline.target_agent,
@@ -377,7 +377,7 @@ async fn execute_target_agent(
                 Some(format!("skill:{}", skill_id)),
             ));
 
-            let skill_result = app_state.get::<crate::context_services::SkillEngineService>().expect("not provided").0
+            let skill_result = app_state.get::<crate::skill_engine::SkillEngine>().expect("not provided")
                 .execute_skill(
                     skill_id,
                     tenant_id,
@@ -392,7 +392,7 @@ async fn execute_target_agent(
             } else {
                 "error"
             };
-            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, skill_status);
+            app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, skill_status);
 
             let (input_tokens, output_tokens) = skill_result
                 .as_ref()
@@ -487,7 +487,7 @@ async fn execute_target_agent(
     });
     resolved_agent.agent.set_observability(obs.clone());
     resolved_agent.agent.set_runtime_tools_from_ctx(
-        app_state.get::<crate::context_services::RuntimeToolRegistryService>().expect("not provided").0.clone(),
+        app_state.get::<crate::RuntimeToolRegistry>().expect("not provided").clone(),
         &scoped,
     );
 
@@ -515,7 +515,7 @@ async fn execute_target_agent(
         user_memory: None,
     };
 
-    app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.start(pipeline_active_run(
+    app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(pipeline_active_run(
         &run_id,
         tenant_id,
         &pipeline.target_agent,
@@ -559,9 +559,9 @@ async fn execute_target_agent(
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
-            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0
+            app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided")
                 .update_model(&run_id, Some(&model_name));
-            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "completed");
+            app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "completed");
         }
         Err(e) => {
             status = "failed";
@@ -570,7 +570,7 @@ async fn execute_target_agent(
             output_tokens = 0;
             model_name = "unknown".to_string();
             provider_name = "unknown".to_string();
-            app_state.get::<crate::context_services::ActiveRunsService>().expect("not provided").0.finish(&run_id, "error");
+            app_state.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "error");
         }
     }
 

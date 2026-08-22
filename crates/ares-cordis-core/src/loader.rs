@@ -585,6 +585,46 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_isolate_or_intercept_change_rebuilds_fiber() {
+        let cur = EntryTree(vec![Entry {
+            id: "a".into(),
+            plugin: "Foo".into(),
+            config: json!(null),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }]);
+        let des_isolate = EntryTree(vec![Entry {
+            id: "a".into(),
+            plugin: "Foo".into(),
+            config: json!(null),
+            disabled: false,
+            isolate: Some("tenant:acme".into()),
+            intercept: HashMap::new(),
+        }]);
+        let loader = Loader::new();
+        assert!(matches!(
+            loader.reconcile(&cur, &des_isolate)[0],
+            LoaderAction::RebuildFiber { .. }
+        ));
+
+        let mut intercept = HashMap::new();
+        intercept.insert("k".into(), json!(1));
+        let des_intercept = EntryTree(vec![Entry {
+            id: "a".into(),
+            plugin: "Foo".into(),
+            config: json!(null),
+            disabled: false,
+            isolate: None,
+            intercept,
+        }]);
+        assert!(matches!(
+            loader.reconcile(&cur, &des_intercept)[0],
+            LoaderAction::RebuildFiber { .. }
+        ));
+    }
+
+    #[test]
     fn test_load_from_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("entries.toml");

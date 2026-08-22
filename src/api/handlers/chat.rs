@@ -368,12 +368,19 @@ async fn execute_agent(
     if let Some(exec_svc) = ctx.get::<ares_agents::execution::AgentExecutionService>() {
         let req = ares_agents::execution::AgentRequest {
             agent_name: agent_name.to_string(),
-            tenant: Some(context.user_id.clone()),
             message: message.to_string(),
             history: context.conversation_history.clone(),
             ctx_provider: None,
         };
-        let exec_result = exec_svc.execute_agent(&req, ctx).await?;
+        let exec_ctx = if ctx.get::<crate::models::TenantContext>().is_none() {
+            ctx.isolate::<ares_agents::resolver::AgentResolverService>(format!(
+                "user:{}",
+                context.user_id
+            ))
+        } else {
+            ctx.clone()
+        };
+        let exec_result = exec_svc.execute_agent(&req, &exec_ctx).await?;
         return Ok((
             chat_response_from_agent_output(agent_type, exec_result.source.as_str(), &context.session_id, exec_result.response.content),
             exec_result.response.usage.map(|u| crate::llm::client::TokenUsage {

@@ -725,7 +725,6 @@ async fn execute_scheduled_agent(
     if let Some(exec_svc) = app_state.get::<ares_agents::execution::AgentExecutionService>() {
         let req = ares_agents::execution::AgentRequest {
             agent_name: sched.agent_name.clone(),
-            tenant: None, // isolate label on scoped ctx
             message: String::new(),
             history: Vec::new(),
             ctx_provider: None,

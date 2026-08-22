@@ -36,12 +36,11 @@ pub use ares_tools::UnifiedToolService;
 /// Tenant identifier alias (plain String, `tenant:<id>` isolate label).
 pub type TenantId = String;
 
-/// Per-request LLM model override delivered via Cordis intercept.
-#[derive(Debug, Clone)]
-pub struct ModelOverride {
-    pub model: String,
-}
-impl ares_cordis_core::Service for ModelOverride {}
+/// Canonical per-request model override used by the LLM interceptor.
+///
+/// Re-exporting the LLM type keeps context interception and provider policy
+/// enforcement on the same `TypeId` across the agent and server crates.
+pub use ares_llm::ModelOverride;
 
 /// Request for unified agent execution.
 ///
@@ -226,6 +225,13 @@ impl AgentExecutionService {
 
         // Build AgentConfig from resolved UserAgent
         let mut config = crate::configurable::agent_config_from_user_agent(&user_agent);
+        // Enforce tenant-scoped model allowlist before applying override (re-uses LLM policy guard, preserves AppError::Auth)
+        if let (Some(policy), Some(ovr)) = (
+            ctx.get::<ares_llm::TenantModelPolicy>(),
+            ctx.get::<ModelOverride>(),
+        ) {
+            policy.authorize(&ovr.model)?;
+        }
         if let Some(ovr) = ctx.get::<ModelOverride>() {
             tracing::info!(model=%ovr.model, agent=%req.agent_name, "model overridden via Cordis intercept");
             config.model = ovr.model.clone();
@@ -291,7 +297,22 @@ impl AgentExecutionService {
                 "status": if result.is_ok() { "completed" } else { "failed" },
                 "event": "agent.completed"
             });
-            let _ = events.dispatch("agent.completed".into(), payload, ares_cordis_core::Dispatch::Emit).await;
+            // Serial invokes registered Cordis subscribers; Emit only broadcasts.
+            let _ = events.dispatch("agent.completed".into(), payload, ares_cordis_core::Dispatch::Serial).await;
+            if result.is_err() {
+                let _ = events
+                    .dispatch(
+                        "agent.failed".into(),
+                        serde_json::json!({
+                            "agent_name": req.agent_name,
+                            "run_id": run_id,
+                            "tenant": user_id,
+                            "event": "agent.failed",
+                        }),
+                        ares_cordis_core::Dispatch::Serial,
+                    )
+                    .await;
+            }
         }
 
         result.map(|response| ExecutionResult {
@@ -345,6 +366,14 @@ impl AgentExecutionService {
         #[cfg(feature = "postgres")]
         if let Some(_db) = &self.db {
             tracing::trace!("DatabaseClient available for conversation history");
+        }
+
+        // Validate tenant-scoped model override before any LLM/registry use (same TypeId as LlmService guard, preserves AppError::Auth)
+        if let (Some(policy), Some(ovr)) = (
+            ctx.get::<ares_llm::TenantModelPolicy>(),
+            ctx.get::<ModelOverride>(),
+        ) {
+            policy.authorize(&ovr.model)?;
         }
 
         // 2) inject memory via `ContextProvider` if Some

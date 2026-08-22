@@ -1286,6 +1286,7 @@ mod tests {
             workflows: HashMap::new(),
             rag: RagConfig::default(),
             billing: BillingConfig::default(),
+            skills: None,
             config: DynamicConfigPaths::default(),
         }
     }

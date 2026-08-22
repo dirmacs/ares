@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use std::any::TypeId;
 use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use crate::AppState;
 use std::time::Duration;
@@ -47,10 +48,50 @@ impl Default for SchedulerConfig {
 ///
 /// Owns `db` + `agent_execution` + `tick_ms` and spawns the background loop
 /// in `Service::init` via `tokio::spawn` with `select! { tick, watch }`.
+/// Runtime controls changed by scheduler lifecycle events.
+///
+/// A scheduler keeps running through an isolated failure, but pauses after
+/// [`FAILURE_DISABLE_THRESHOLD`] failures until an operator re-enables it.
+/// Atomics keep event handlers non-blocking and safe to invoke concurrently.
+#[derive(Debug, Default)]
+pub struct SchedulerControl {
+    failure_count: AtomicUsize,
+    disabled: AtomicBool,
+}
+
+const FAILURE_DISABLE_THRESHOLD: usize = 3;
+
+impl SchedulerControl {
+    /// Number of `agent.failed` events observed by this scheduler.
+    pub fn failure_count(&self) -> usize {
+        self.failure_count.load(Ordering::Acquire)
+    }
+
+    /// Whether repeated failures have paused schedule processing.
+    pub fn is_disabled(&self) -> bool {
+        self.disabled.load(Ordering::Acquire)
+    }
+
+    /// Re-enable scheduling and clear the failure window after intervention.
+    pub fn reset(&self) {
+        self.failure_count.store(0, Ordering::Release);
+        self.disabled.store(false, Ordering::Release);
+    }
+
+    fn record_failure(&self) -> usize {
+        let count = self.failure_count.fetch_add(1, Ordering::AcqRel) + 1;
+        if count >= FAILURE_DISABLE_THRESHOLD {
+            self.disabled.store(true, Ordering::Release);
+        }
+        count
+    }
+}
+
 pub struct SchedulerService {
     pub db: Arc<PostgresClient>,
     pub execution: Arc<AgentExecutionService>,
     pub tick_ms: u64,
+    control: Arc<SchedulerControl>,
     _handle: parking_lot::Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -65,8 +106,14 @@ impl SchedulerService {
             db,
             execution,
             tick_ms,
+            control: Arc::new(SchedulerControl::default()),
             _handle: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Shared runtime controls for observing and managing scheduler state.
+    pub fn control(&self) -> Arc<SchedulerControl> {
+        Arc::clone(&self.control)
     }
 
     /// Convenience for `SchedulerConfig { tick_ms }`.
@@ -150,15 +197,41 @@ impl Service for SchedulerService {
         let db = self.db.clone();
         let _execution = self.execution.clone();
         let tick_ms = self.tick_ms;
+        let control = self.control();
 
-        // Cordis Events: subscribe to agent.completed for observability (live path —
-        // the legacy start_scheduler shim is never called).
+        // Cordis Events: subscribe to agent.completed for observability and
+        // agent.failed for runtime control (the legacy start_scheduler shim is
+        // never called by the live server).
         if let Some(events) = ctx.get::<ares_cordis_core::EventsService>() {
             events.on("agent.completed".into(), |payload| {
                 Box::pin(async move {
                     if let Some(agent) = payload.get("agent_name").and_then(|v| v.as_str()) {
                         tracing::debug!(agent = %agent, status = ?payload.get("status"), "scheduler observed agent completion via Cordis event bus");
                     }
+                    Ok(payload)
+                })
+            });
+
+            let failure_control = Arc::clone(&control);
+            events.on("agent.failed".into(), move |payload| {
+                let failure_control = Arc::clone(&failure_control);
+                Box::pin(async move {
+                    let agent = payload
+                        .get("agent_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let run_id = payload
+                        .get("run_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let failures = failure_control.record_failure();
+                    tracing::warn!(
+                        agent = %agent,
+                        run_id = %run_id,
+                        failures,
+                        disabled = failure_control.is_disabled(),
+                        "scheduler observed agent failure via Cordis event bus"
+                    );
                     Ok(payload)
                 })
             });
@@ -227,6 +300,7 @@ impl Service for SchedulerService {
             });
         }
 
+        let loop_control = Arc::clone(&control);
         Box::pin(async move {
             // Spawn the main tick loop: select! { interval tick, watch changed }
             let mut ticker = interval(Duration::from_millis(tick_ms));
@@ -254,6 +328,10 @@ impl Service for SchedulerService {
                         Some(rx) => {
                             tokio::select! {
                                 _ = ticker.tick() => {
+                                    if loop_control.is_disabled() {
+                                        tracing::warn!("SchedulerService paused after repeated agent failures");
+                                        continue;
+                                    }
                                     // DB-only tick: update catch-up/due next_run without AppState execution
                                     // If AppState is needed, the legacy start_scheduler path handles it.
                                     // Here we at least exercise cron evaluation and DB access.
@@ -271,6 +349,10 @@ impl Service for SchedulerService {
                                 }
                                 changed = rx.changed() => {
                                     if changed.is_ok() {
+                                        if loop_control.is_disabled() {
+                                            tracing::warn!("SchedulerService paused after repeated agent failures");
+                                            continue;
+                                        }
                                         tracing::info!("SchedulerService watch notified (DB NOTIFY)");
                                         // On watch notification, run an immediate catch-up pass
                                         let store = ScheduleStore::new(&db.pool);
@@ -284,6 +366,10 @@ impl Service for SchedulerService {
                         }
                         None => {
                             ticker.tick().await;
+                            if loop_control.is_disabled() {
+                                tracing::warn!("SchedulerService paused after repeated agent failures");
+                                continue;
+                            }
                             let store = ScheduleStore::new(&db.pool);
                             let _ = store.get_due_schedules().await;
                             tracing::debug!("SchedulerService tick (polling fallback, {}ms)", tick_ms);
@@ -1238,6 +1324,65 @@ mod tests {
         assert!(next > Utc::now());
         let diff = (next - Utc::now()).num_seconds();
         assert!(diff >= 55 && diff <= 65, "fallback diff {} should be ~60s", diff);
+    }
+
+    #[tokio::test]
+    async fn agent_failed_event_updates_scheduler_control_state() {
+        let service = SchedulerService::new(
+            Arc::new(PostgresClient::new_test()),
+            Arc::new(AgentExecutionService::new()),
+            60_000,
+        );
+        let ctx = Context::new_root();
+        let events = ctx.provide(ares_cordis_core::EventsService::new());
+        let disposable = service
+            .init(&ctx)
+            .await
+            .expect("scheduler init should succeed")
+            .expect("scheduler should return a disposal guard");
+
+        assert_eq!(service.control().failure_count(), 0);
+        assert!(!service.control().is_disabled());
+        let payload = serde_json::json!({
+            "agent_name": "scheduled-agent",
+            "run_id": "run-1",
+            "tenant": "tenant-a",
+            "event": "agent.failed",
+        });
+        events
+            .dispatch(
+                "agent.failed".into(),
+                payload,
+                ares_cordis_core::Dispatch::Serial,
+            )
+            .await
+            .expect("agent failure event should be handled");
+
+        assert_eq!(service.control().failure_count(), 1);
+        assert!(!service.control().is_disabled());
+
+        // Repeated failures cross the deterministic pause threshold.
+        for run_id in ["run-2", "run-3"] {
+            events
+                .dispatch(
+                    "agent.failed".into(),
+                    serde_json::json!({
+                        "agent_name": "scheduled-agent",
+                        "run_id": run_id,
+                        "tenant": "tenant-a",
+                        "event": "agent.failed",
+                    }),
+                    ares_cordis_core::Dispatch::Serial,
+                )
+                .await
+                .expect("agent failure event should be handled");
+        }
+        assert_eq!(service.control().failure_count(), 3);
+        assert!(service.control().is_disabled());
+        service.control().reset();
+        assert_eq!(service.control().failure_count(), 0);
+        assert!(!service.control().is_disabled());
+        disposable.dispose();
     }
 
     #[test]

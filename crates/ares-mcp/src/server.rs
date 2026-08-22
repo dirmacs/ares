@@ -25,13 +25,14 @@ use crate::extension::{dispatch_extensions, McpToolExtension};
 use crate::tools::*;
 use crate::usage::{check_quota, record_mcp_usage, McpOperation};
 use rmcp::model::{
-    CallToolRequestParam, CallToolResult, Content, Implementation, ListToolsResult,
-    PaginatedRequestParam, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResult, CallToolResponse, ContentBlock, ListToolsResult,
+    PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
 };
-use rmcp::service::{RequestContext, RoleServer};
+use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use rmcp::transport::stdio;
 use rmcp::ServerHandler;
 use rmcp::ServiceExt;
+use std::future::Future;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -384,7 +385,7 @@ impl AresMcpServer {
         )
         .await;
 
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
     /// Run an ARES agent with a message. Returns the agent's response.
@@ -458,7 +459,7 @@ impl AresMcpServer {
                 let output_json =
                     serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
-                Ok(CallToolResult::success(vec![Content::text(output_json)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(output_json)]))
             }
             Ok(response) => {
                 let status = response.status().as_u16();
@@ -546,7 +547,7 @@ impl AresMcpServer {
 
         let json = serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
     /// Deploy a new agent by uploading a .toon configuration.
@@ -603,7 +604,7 @@ impl AresMcpServer {
                 let output_json =
                     serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
-                Ok(CallToolResult::success(vec![Content::text(output_json)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(output_json)]))
             }
             Ok(response) => {
                 let status = response.status().as_u16();
@@ -713,36 +714,35 @@ impl AresMcpServer {
 
         let json = serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
+
+    /// Build a `Tool` from a name, description, JSON schema, and title.
+    fn build_tool(name: &str, description: &str, schema: serde_json::Value, title: &str) -> Tool {
+        let input_schema: rmcp::model::JsonObject =
+            serde_json::from_value(schema).unwrap_or_default();
+        Tool::new(name.to_string(), description.to_string(), input_schema)
+            .with_title(title.to_string())
+    }
 
     /// Get list of available tools with JSON schemas
     fn get_tools(&self) -> Vec<Tool> {
         let tools = vec![
-            Tool {
-                name: "ares_list_agents".into(),
-                description: Some(
-                    "List all agents available in your ARES account. Returns agent names, descriptions, types, and deployment status.".into(),
-                ),
-                input_schema: serde_json::from_value(json!({
+            Self::build_tool(
+                "ares_list_agents",
+                "List all agents available in your ARES account. Returns agent names, descriptions, types, and deployment status.",
+                json!({
                     "type": "object",
                     "properties": {},
                     "required": []
-                }))
-                .unwrap_or_default(),
-                annotations: None,
-                icons: None,
-                meta: None,
-                output_schema: None,
-                title: Some("List ARES Agents".into()),
-            },
-            Tool {
-                name: "ares_run_agent".into(),
-                description: Some(
-                    "Run an ARES agent with a message. Specify the agent name and your message. Optionally pass a context_id to continue a conversation.".into(),
-                ),
-                input_schema: serde_json::from_value(json!({
+                }),
+                "List ARES Agents",
+            ),
+            Self::build_tool(
+                "ares_run_agent",
+                "Run an ARES agent with a message. Specify the agent name and your message. Optionally pass a context_id to continue a conversation.",
+                json!({
                     "type": "object",
                     "properties": {
                         "agent_name": {
@@ -759,20 +759,13 @@ impl AresMcpServer {
                         }
                     },
                     "required": ["agent_name", "message"]
-                }))
-                .unwrap_or_default(),
-                annotations: None,
-                icons: None,
-                meta: None,
-                output_schema: None,
-                title: Some("Run ARES Agent".into()),
-            },
-            Tool {
-                name: "ares_get_status".into(),
-                description: Some(
-                    "Check the status of a previous agent run. Pass the context_id from an ares_run_agent call. Returns running/completed/failed status.".into(),
-                ),
-                input_schema: serde_json::from_value(json!({
+                }),
+                "Run ARES Agent",
+            ),
+            Self::build_tool(
+                "ares_get_status",
+                "Check the status of a previous agent run. Pass the context_id from an ares_run_agent call. Returns running/completed/failed status.",
+                json!({
                     "type": "object",
                     "properties": {
                         "context_id": {
@@ -781,20 +774,13 @@ impl AresMcpServer {
                         }
                     },
                     "required": ["context_id"]
-                }))
-                .unwrap_or_default(),
-                annotations: None,
-                icons: None,
-                meta: None,
-                output_schema: None,
-                title: Some("Get Agent Status".into()),
-            },
-            Tool {
-                name: "ares_deploy_agent".into(),
-                description: Some(
-                    "Deploy a new agent to ARES by providing a .toon configuration (TOML format). The agent becomes immediately available for use.".into(),
-                ),
-                input_schema: serde_json::from_value(json!({
+                }),
+                "Get Agent Status",
+            ),
+            Self::build_tool(
+                "ares_deploy_agent",
+                "Deploy a new agent to ARES by providing a .toon configuration (TOML format). The agent becomes immediately available for use.",
+                json!({
                     "type": "object",
                     "properties": {
                         "toon_config": {
@@ -807,20 +793,13 @@ impl AresMcpServer {
                         }
                     },
                     "required": ["toon_config"]
-                }))
-                .unwrap_or_default(),
-                annotations: None,
-                icons: None,
-                meta: None,
-                output_schema: None,
-                title: Some("Deploy Agent".into()),
-            },
-            Tool {
-                name: "ares_get_usage".into(),
-                description: Some(
-                    "Check your ARES account usage statistics and quota. Shows requests made, tokens consumed, and remaining quota for your tier.".into(),
-                ),
-                input_schema: serde_json::from_value(json!({
+                }),
+                "Deploy Agent",
+            ),
+            Self::build_tool(
+                "ares_get_usage",
+                "Check your ARES account usage statistics and quota. Shows requests made, tokens consumed, and remaining quota for your tier.",
+                json!({
                     "type": "object",
                     "properties": {
                         "from_date": {
@@ -833,16 +812,10 @@ impl AresMcpServer {
                         }
                     },
                     "required": []
-                }))
-                .unwrap_or_default(),
-                annotations: None,
-                icons: None,
-                meta: None,
-                output_schema: None,
-                title: Some("Get Usage Stats".into()),
-            },
+                }),
+                "Get Usage Stats",
+            ),
         ];
-
 
         tools
     }
@@ -857,7 +830,7 @@ impl AresMcpServer {
 
         let dispatch = match tool_call_dispatch(name, args_value.clone()) {
             Ok(d) => d,
-            Err(e) => return CallToolResult::error(vec![Content::text(e)]),
+            Err(e) => return CallToolResult::error(vec![ContentBlock::text(e)]),
         };
 
         let result = match dispatch {
@@ -883,14 +856,14 @@ impl AresMcpServer {
             ToolDispatch::Extension { name, args } => {
                 let tenant_id = match self.get_session().await {
                     Ok(s) => s.tenant_id().to_string(),
-                    Err(e) => return CallToolResult::error(vec![Content::text(e)]),
+                    Err(e) => return CallToolResult::error(vec![ContentBlock::text(e)]),
                 };
                 if let Some(result) =
                     dispatch_extensions(&self.extensions, &name, args, &tenant_id).await
                 {
                     return match result {
                         Ok(r) => r,
-                        Err(e) => CallToolResult::error(vec![Content::text(e)]),
+                        Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
                     };
                 }
                 Err(format!("Unknown tool: {}", name))
@@ -899,7 +872,7 @@ impl AresMcpServer {
 
         match result {
             Ok(call_result) => call_result,
-            Err(e) => CallToolResult::error(vec![Content::text(e)]),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
         }
     }
 }
@@ -907,35 +880,34 @@ impl AresMcpServer {
 /// Implement ServerHandler for MCP protocol
 impl ServerHandler for AresMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation::from_build_env(),
-            instructions: Some(
-                "A.R.E.S MCP Server - Provides ARES agent management and Eruka knowledge tools"
-                    .into(),
-            ),
+        let info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        info.with_instructions(
+            "A.R.E.S MCP Server - Provides ARES agent management and Eruka knowledge tools",
+        )
+        .with_protocol_version(ProtocolVersion::V_2024_11_05)
+    }
+
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + MaybeSendFuture + '_ {
+        let tools = self.get_tools();
+        async move { Ok(ListToolsResult::with_all_items(tools)) }
+    }
+
+    fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + MaybeSendFuture + '_ {
+        let name = request.name.to_string();
+        let arguments = request.arguments;
+        let this = self;
+        async move {
+            let result = this.execute_tool(&name, arguments).await;
+            Ok(result.into())
         }
-    }
-
-    async fn list_tools(
-        &self,
-        _request: Option<PaginatedRequestParam>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, rmcp::ErrorData> {
-        Ok(ListToolsResult {
-            tools: self.get_tools(),
-            next_cursor: None,
-            meta: None,
-        })
-    }
-
-    async fn call_tool(
-        &self,
-        request: CallToolRequestParam,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(self.execute_tool(&request.name, request.arguments).await)
     }
 }
 
@@ -1379,7 +1351,7 @@ mod tests {
     // Extension tool dispatch
     // =========================================================================
 
-    use rmcp::model::Content as RmcpContent;
+    use rmcp::model::ContentBlock as RmcpContent;
 
     struct TestExtensionSuccess;
 
@@ -2237,21 +2209,32 @@ mod tests {
     // =========================================================================
 
     use rmcp::model::{
-        CallToolRequestParam, ClientRequest, InitializeRequest, InitializeRequestParam,
+        CallToolRequestParams, ClientRequest, InitializeRequest, InitializeRequestParams,
         NumberOrString, ProtocolVersion,
     };
     use rmcp::service::{serve_directly, RequestContext, RoleServer};
-    use tokio_util::sync::CancellationToken;
 
     fn dummy_request_context(
         peer: rmcp::service::Peer<RoleServer>,
     ) -> RequestContext<RoleServer> {
-        RequestContext {
-            ct: CancellationToken::new(),
-            id: NumberOrString::Number(1),
-            meta: Default::default(),
-            extensions: Default::default(),
-            peer,
+        RequestContext::new(NumberOrString::Number(1), peer)
+    }
+
+    fn call_tool_request(name: &str, arguments: serde_json::Value) -> CallToolRequestParams {
+        let mut request = CallToolRequestParams::new(name.to_string());
+        request.arguments = arguments.as_object().cloned();
+        request
+    }
+
+    async fn call_tool_result(
+        server: &AresMcpServer,
+        request: CallToolRequestParams,
+        ctx: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let response = server.call_tool(request, ctx).await.unwrap();
+        match response {
+            CallToolResponse::Complete(result) => result,
+            _ => panic!("expected CallToolResponse::Complete"),
         }
     }
 
@@ -2300,11 +2283,8 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = CallToolRequestParam {
-            name: "ares_list_agents".into(),
-            arguments: None,
-        };
-        let result = server.call_tool(request, ctx).await.unwrap();
+        let request = CallToolRequestParams::new("ares_list_agents");
+        let result = call_tool_result(&server, request, ctx).await;
         assert_ne!(result.is_error, Some(true));
         let text = tool_result_text(&result);
         let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
@@ -2330,16 +2310,11 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = CallToolRequestParam {
-            name: "ares_run_agent".into(),
-            arguments: serde_json::json!({
-                "agent_name": "bot",
-                "message": "hello"
-            })
-            .as_object()
-            .cloned(),
-        };
-        let result = server.call_tool(request, ctx).await.unwrap();
+        let request = call_tool_request("ares_run_agent", json!({
+            "agent_name": "bot",
+            "message": "hello"
+        }));
+        let result = call_tool_result(&server, request, ctx).await;
         assert_ne!(result.is_error, Some(true));
         let text = tool_result_text(&result);
         let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
@@ -2353,13 +2328,8 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = CallToolRequestParam {
-            name: "ares_get_status".into(),
-            arguments: serde_json::json!({"context_id": "ctx-test"})
-                .as_object()
-                .cloned(),
-        };
-        let result = server.call_tool(request, ctx).await.unwrap();
+        let request = call_tool_request("ares_get_status", json!({"context_id": "ctx-test"}));
+        let result = call_tool_result(&server, request, ctx).await;
         assert_eq!(result.is_error, Some(true));
     }
 
@@ -2383,13 +2353,8 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = CallToolRequestParam {
-            name: "ares_deploy_agent".into(),
-            arguments: serde_json::json!({"toon_config": "[agent]"})
-                .as_object()
-                .cloned(),
-        };
-        let result = server.call_tool(request, ctx).await.unwrap();
+        let request = call_tool_request("ares_deploy_agent", json!({"toon_config": "[agent]"}));
+        let result = call_tool_result(&server, request, ctx).await;
         assert_ne!(result.is_error, Some(true));
         let text = tool_result_text(&result);
         let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
@@ -2403,11 +2368,8 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = CallToolRequestParam {
-            name: "ares_get_usage".into(),
-            arguments: None,
-        };
-        let result = server.call_tool(request, ctx).await.unwrap();
+        let request = CallToolRequestParams::new("ares_get_usage");
+        let result = call_tool_result(&server, request, ctx).await;
         assert_ne!(result.is_error, Some(true));
         let text = tool_result_text(&result);
         let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
@@ -2421,16 +2383,11 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = CallToolRequestParam {
-            name: "ares_run_agent".into(),
-            arguments: serde_json::json!({
-                "agent_name": "bot",
-                "message": "hello"
-            })
-            .as_object()
-            .cloned(),
-        };
-        let result = server.call_tool(request, ctx).await.unwrap();
+        let request = call_tool_request("ares_run_agent", json!({
+            "agent_name": "bot",
+            "message": "hello"
+        }));
+        let result = call_tool_result(&server, request, ctx).await;
         assert_eq!(result.is_error, Some(true));
         let text = tool_result_text(&result);
         assert!(text.contains("Quota check failed"));
@@ -2443,21 +2400,12 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = ClientRequest::InitializeRequest(InitializeRequest {
-            method: Default::default(),
-            params: InitializeRequestParam {
-                protocol_version: ProtocolVersion::V_2024_11_05,
-                capabilities: rmcp::model::ClientCapabilities::default(),
-                client_info: rmcp::model::Implementation {
-                    name: "test".into(),
-                    title: None,
-                    version: "1.0".into(),
-                    icons: None,
-                    website_url: None,
-                },
-            },
-            extensions: Default::default(),
-        });
+        let params = InitializeRequestParams::new(
+            rmcp::model::ClientCapabilities::default(),
+            rmcp::model::Implementation::new("test", "1.0"),
+        )
+        .with_protocol_version(ProtocolVersion::V_2024_11_05);
+        let request = ClientRequest::InitializeRequest(InitializeRequest::new(params));
         let result = rmcp::service::Service::<RoleServer>::handle_request(&server, request, ctx)
             .await
             .unwrap();
@@ -2477,11 +2425,8 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = CallToolRequestParam {
-            name: "custom_tool".into(),
-            arguments: None,
-        };
-        let result = server.call_tool(request, ctx).await.unwrap();
+        let request = CallToolRequestParams::new("custom_tool");
+        let result = call_tool_result(&server, request, ctx).await;
         assert_ne!(result.is_error, Some(true));
         let text = tool_result_text(&result);
         assert_eq!(text, "custom result");
@@ -2494,11 +2439,8 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = CallToolRequestParam {
-            name: "invalid_tool".into(),
-            arguments: None,
-        };
-        let result = server.call_tool(request, ctx).await.unwrap();
+        let request = CallToolRequestParams::new("invalid_tool");
+        let result = call_tool_result(&server, request, ctx).await;
         assert_eq!(result.is_error, Some(true));
         let text = tool_result_text(&result);
         assert!(text.contains("Unknown tool"));
@@ -2511,16 +2453,11 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = CallToolRequestParam {
-            name: "ares_run_agent".into(),
-            arguments: serde_json::json!({
-                "agent_name": 12345,
-                "message": "hello"
-            })
-            .as_object()
-            .cloned(),
-        };
-        let result = server.call_tool(request, ctx).await.unwrap();
+        let request = call_tool_request("ares_run_agent", json!({
+            "agent_name": 12345,
+            "message": "hello"
+        }));
+        let result = call_tool_result(&server, request, ctx).await;
         assert_eq!(result.is_error, Some(true));
         let text = tool_result_text(&result);
         assert!(text.contains("Invalid arguments"));
@@ -2539,11 +2476,8 @@ mod tests {
             let srv = server.clone();
             let ctx = dummy_request_context(peer.clone());
             let handle = tokio::spawn(async move {
-                let request = CallToolRequestParam {
-                    name: "ares_list_agents".into(),
-                    arguments: None,
-                };
-                let result = srv.call_tool(request, ctx).await.unwrap();
+                let request = CallToolRequestParams::new("ares_list_agents");
+                let result = call_tool_result(&srv, request, ctx).await;
                 assert_ne!(result.is_error, Some(true), "call {} failed", i);
             });
             handles.push(handle);

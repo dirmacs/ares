@@ -67,25 +67,18 @@ impl McpToolExtension for NoOpMcpExtension {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmcp::model::Content as RmcpContent;
+    use rmcp::model::ContentBlock as RmcpContent;
     use serde_json::json;
 
     fn test_tool(name: &str) -> Tool {
-        Tool {
-            name: name.to_string().into(),
-            description: Some("test extension tool".into()),
-            input_schema: serde_json::from_value(json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }))
-            .unwrap_or_default(),
-            annotations: None,
-            icons: None,
-            meta: None,
-            output_schema: None,
-            title: Some(format!("Test {name}")),
-        }
+        let input_schema: rmcp::model::JsonObject = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        }))
+        .unwrap_or_default();
+        Tool::new(name.to_string(), "test extension tool", input_schema)
+            .with_title(format!("Test {name}"))
     }
 
     struct MatchingExtension {

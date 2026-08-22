@@ -150,7 +150,7 @@ use async_trait::async_trait;
 #[cfg(feature = "lancedb")]
 use lancedb::connection::Connection;
 #[cfg(feature = "lancedb")]
-use lancedb::query::QueryBase;
+use lancedb::query::{ExecutableQuery, QueryBase};
 #[cfg(feature = "lancedb")]
 use lancedb::{arrow::arrow_array, DistanceType};
 #[cfg(feature = "lancedb")]
@@ -442,13 +442,13 @@ impl VectorStore for LanceDBStore {
         ]);
 
         // Create builders for empty table
-        let id_builder = StringBuilder::new();
-        let content_builder = StringBuilder::new();
-        let vector_builder = FixedSizeListBuilder::new(Float32Builder::new(), dimensions as i32);
-        let title_builder = StringBuilder::new();
-        let source_builder = StringBuilder::new();
-        let created_at_builder = StringBuilder::new();
-        let tags_builder = StringBuilder::new();
+        let mut id_builder = StringBuilder::new();
+        let mut content_builder = StringBuilder::new();
+        let mut vector_builder = FixedSizeListBuilder::new(Float32Builder::new(), dimensions as i32);
+        let mut title_builder = StringBuilder::new();
+        let mut source_builder = StringBuilder::new();
+        let mut created_at_builder = StringBuilder::new();
+        let mut tags_builder = StringBuilder::new();
 
         let batch = arrow_array::RecordBatch::try_new(
             StdArc::new(schema),
@@ -482,7 +482,7 @@ impl VectorStore for LanceDBStore {
         debug!("Deleting collection '{}'", name);
 
         self.connection
-            .drop_table(name)
+            .drop_table(name, &[])
             .await
             .map_err(|e| AppError::Database(format!("Failed to delete collection: {}", e)))?;
 
@@ -590,14 +590,19 @@ impl VectorStore for LanceDBStore {
                 AppError::NotFound(format!("Collection '{}' not found: {}", collection, e))
             })?;
 
-        // Use merge insert (upsert) based on ID
-        table
-            .merge_insert(&[schema::ID])
+        // Use merge insert (upsert) based on ID. The 0.37.1 builder methods
+        // return `&mut Self`, so build modifiers as separate statements, then
+        // execute with a boxed RecordBatchReader.
+        use arrow_array::RecordBatchIterator;
+        let schema = batch.schema();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
+        let mut merge = table.merge_insert(&[schema::ID]);
+        merge
             .when_matched_update_all(None)
-            .when_not_matched_insert_all()
-            .execute(Box::new(
-                futures::stream::once(async move { Ok(batch) }).boxed(),
-            ))
+            .when_not_matched_insert_all();
+        merge
+            .execute(reader)
             .await
             .map_err(|e| AppError::Database(format!("Failed to upsert: {}", e)))?;
 
@@ -1043,7 +1048,7 @@ mod tests {
     #[cfg(feature = "lancedb")]
     #[tokio::test]
     async fn new_rejects_empty_path() {
-        let err = LanceDBStore::new("   ").await.unwrap_err();
+        let err = LanceDBStore::new("   ").await.err().unwrap();
         matches::assert_matches!(err, AppError::Configuration(_));
     }
 
@@ -1054,7 +1059,7 @@ mod tests {
             path: "   ".into(),
             ..LanceDBConfig::default()
         };
-        let err = LanceDBStore::from_config(&config).await.unwrap_err();
+        let err = LanceDBStore::from_config(&config).await.err().unwrap();
         matches::assert_matches!(err, AppError::Configuration(_));
     }
 

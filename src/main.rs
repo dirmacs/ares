@@ -1031,6 +1031,56 @@ fn register_loader_factories(root_ctx: &Arc<Context>) {
     registry.register("AppStateServices", Arc::new(factory_app_state_services));
 }
 
+/// Reload `config/cordis-entries.toml` through the Loader reconcile path.
+/// Returns true when at least one reconcile action ran.
+#[cfg(feature = "postgres")]
+fn reload_cordis_entries(ctx: &Arc<Context>, path: &std::path::Path) -> bool {
+    use ares_cordis_core::loader::{EntryTree, Loader};
+    match Loader::load_from_file(path) {
+        Ok(desired) => {
+            let current = EntryTree(vec![]);
+            let actions = Loader::new().reconcile(&current, &desired);
+            for action in &actions {
+                Loader::execute_action(action, ctx);
+            }
+            if !actions.is_empty() {
+                tracing::info!(
+                    actions = actions.len(),
+                    "Cordis hot-reload: reconciled entries change"
+                );
+            }
+            !actions.is_empty()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Cordis hot-reload: parse failed");
+            false
+        }
+    }
+}
+
+/// Forward cordis-entries.toml onto `watch_many_with` so HMR dylib apply
+/// (inside watch_many) shares the file-watch path. Hold the returned
+/// `WatchHandle` until `run_server` returns.
+#[cfg(feature = "postgres")]
+fn start_cordis_entries_watch(
+    ctx: &Arc<Context>,
+    entries_path: &std::path::Path,
+) -> Option<ares_cordis_core::watcher::WatchHandle> {
+    let reflect = ctx.get::<ares_cordis_core::ReflectService>()?;
+    let entries = entries_path.to_path_buf();
+    let on_change: ares_cordis_core::watcher::WatchOnChange = std::sync::Arc::new(move |c, _p| {
+        let _ = reload_cordis_entries(c, &entries);
+    });
+    ares_cordis_core::watcher::watch_many_with(
+        ctx.clone(),
+        reflect,
+        vec![entries_path.to_path_buf()],
+        std::any::TypeId::of::<ares_cordis_core::ReflectService>(),
+        on_change,
+    )
+    .ok()
+}
+
 /// Run the A.R.E.S server
 #[cfg(feature = "postgres")]
 async fn run_server(
@@ -1174,116 +1224,33 @@ async fn run_server(
         }
     }
 
-    // 8. cordis-entries watcher
-    {
+    // 8. cordis-entries watcher (handle lives until run_server returns)
+    let _cordis_entries_watch = start_cordis_entries_watch(
+        &root_ctx,
+        std::path::Path::new("config/cordis-entries.toml"),
+    );
+    if _cordis_entries_watch.is_none() {
+        tracing::warn!(
+            path = "config/cordis-entries.toml",
+            "Cordis hot-reload watcher failed to start; falling back to 30s poll"
+        );
         let ctx_for_watch = root_ctx.clone();
         let entries_path_str = "config/cordis-entries.toml".to_string();
-
-        let reload = |ctx: &std::sync::Arc<Context>, path: &std::path::Path| -> bool {
-            use ares_cordis_core::loader::{EntryTree, Loader};
-            match Loader::load_from_file(path) {
-                Ok(desired) => {
-                    let current = EntryTree(vec![]);
-                    let actions = Loader::new().reconcile(&current, &desired);
-                    for action in &actions {
-                        Loader::execute_action(action, ctx);
-                    }
-                    if !actions.is_empty() {
-                        tracing::info!(
-                            actions = actions.len(),
-                            "Cordis hot-reload: reconciled entries change"
-                        );
-                    }
-                    !actions.is_empty()
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Cordis hot-reload: parse failed");
-                    false
-                }
-            }
-        };
-
         tokio::spawn(async move {
-            use notify::Watcher;
             let entries_path = std::path::Path::new(&entries_path_str);
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-
-            let mut watcher = notify::recommended_watcher(
-                move |res: Result<notify::Event, notify::Error>| match res {
-                    Ok(event) if event.kind.is_modify() || event.kind.is_create() => {
-                        let _ = tx.send(());
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::error!(error = ?e, "Cordis hot-reload watcher error"),
-                },
-            )
-            .ok();
-
-            if let Some(w) = watcher.as_mut() {
-                let target = entries_path.parent().filter(|p| p.exists());
-                match target {
-                    Some(parent) => {
-                        if let Err(e) = w.watch(parent, notify::RecursiveMode::NonRecursive) {
-                            tracing::warn!(
-                                error = %e,
-                                path = %parent.display(),
-                                "Cordis hot-reload watcher failed to start; falling back to 30s poll"
-                            );
-                            watcher = None;
-                        } else {
-                            tracing::info!(
-                                path = %parent.display(),
-                                "Cordis hot-reload notify watcher started (500ms debounce)"
-                            );
-                        }
-                    }
-                    None => {
-                        tracing::warn!(
-                            path = %entries_path_str,
-                            "Cordis hot-reload watch target missing; falling back to 30s poll"
-                        );
-                        watcher = None;
-                    }
-                }
-            }
-
-            let mut last_modified =
-                std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
-            let mut watcher_active = watcher.is_some();
+            let mut last_modified = std::fs::metadata(&entries_path_str)
+                .and_then(|m| m.modified())
+                .ok();
             let mut fallback = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
-                if watcher_active {
-                    tokio::select! {
-                        maybe = rx.recv() => {
-                            if maybe.is_none() {
-                                watcher_active = false;
-                                continue;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            while rx.try_recv().is_ok() {}
-                            if entries_path.exists() {
-                                last_modified = std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
-                                reload(&ctx_for_watch, entries_path);
-                            }
-                        }
-                        _ = fallback.tick() => {
-                            let cur = std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
-                            if cur != last_modified && cur.is_some() {
-                                last_modified = cur;
-                                if entries_path.exists() {
-                                    reload(&ctx_for_watch, entries_path);
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    fallback.tick().await;
-                    let cur = std::fs::metadata(&entries_path_str).and_then(|m| m.modified()).ok();
-                    if cur != last_modified && cur.is_some() {
-                        last_modified = cur;
-                        if entries_path.exists() {
-                            reload(&ctx_for_watch, entries_path);
-                        }
+                fallback.tick().await;
+                let cur = std::fs::metadata(&entries_path_str)
+                    .and_then(|m| m.modified())
+                    .ok();
+                if cur != last_modified && cur.is_some() {
+                    last_modified = cur;
+                    if entries_path.exists() {
+                        reload_cordis_entries(&ctx_for_watch, entries_path);
                     }
                 }
             }
@@ -2003,5 +1970,29 @@ disabled = false
             .expect("timed out")
             .expect("task");
         assert!(got.check());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn start_cordis_entries_watch_holds_handle_for_existing_toml() {
+        let dir = tempfile::tempdir().expect("temporary config directory");
+        let path = dir.path().join("cordis-entries.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[entry]]
+id = "probe"
+plugin = "noop_probe"
+disabled = false
+"#,
+        )
+        .expect("write toml");
+
+        let ctx = Context::new_root();
+        ctx.provide(ares_cordis_core::ReflectService::new());
+        let handle = start_cordis_entries_watch(&ctx, &path);
+        assert!(
+            handle.is_some(),
+            "start_cordis_entries_watch must return Some for an existing toml"
+        );
     }
 }

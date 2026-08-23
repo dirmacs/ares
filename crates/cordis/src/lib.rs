@@ -58,6 +58,8 @@ pub use events::{Dispatch, EventsService};
 pub use fiber::{Fiber, FiberState};
 pub use service::{CordisError, Service, ServiceInitFuture};
 
+pub mod events_catalog;
+pub use events_catalog::{contract_for, validate_dispatch, validate_listener, EventContract};
 pub mod loader;
 pub use loader::{Entry, EntryTree, Loader};
 
@@ -242,11 +244,15 @@ impl ReflectService {
             if let Some(events) = ctx.get::<EventsService>() {
                 let payload = serde_json::json!({
                     "type_id": format!("{:?}", tid),
-                    "event": "service.changed"
+                    "event": crate::events_catalog::ev::SERVICE_CHANGED
                 });
                 tokio::spawn(async move {
                     let _ = events
-                        .dispatch("service.changed".into(), payload, Dispatch::Emit)
+                        .dispatch(
+                            crate::events_catalog::ev::SERVICE_CHANGED.to_string(),
+                            payload,
+                            Dispatch::Emit,
+                        )
                         .await;
                 });
             }
@@ -1219,5 +1225,39 @@ mod tests {
             completed,
             vec![("a".to_string(), payload.clone()), ("b".to_string(), payload)]
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn notify_broadcasts_service_changed_event() {
+        let ctx = Context::new_root();
+        let events_handle = ctx.provide(EventsService::new());
+        let reflect = ctx.provide(ReflectService::new());
+        reflect.set_context(&ctx);
+
+        let mut rx = events_handle.subscribe();
+        reflect.notify(TypeId::of::<u64>());
+
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let mut seen = false;
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok((name, payload)) => {
+                    assert_eq!(name, crate::events_catalog::ev::SERVICE_CHANGED);
+                    // TypeId formats as a hash, not a name; just require presence.
+                    assert!(
+                        payload["type_id"].as_str().unwrap().starts_with("TypeId("),
+                        "payload should identify the changed type: {payload}"
+                    );
+                    seen = true;
+                    break;
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Err(e) => panic!("unexpected broadcast error: {e}"),
+            }
+        }
+        assert!(seen, "service.changed broadcast not observed within timeout");
     }
 }

@@ -164,7 +164,7 @@ impl Tools {
         };
         let payload = json!({ "name": name, "args": args });
         let out = events
-            .waterfall_around("tools.execute".into(), payload, move |p| {
+            .waterfall_around( cordis::events_catalog::ev::TOOLS_EXECUTE.to_string(), payload, move |p| {
                 async move {
                     let exec_args = p.get("args").cloned().unwrap_or(Value::Null);
                     let result = tool
@@ -422,7 +422,7 @@ mod tests {
         assert!(names.contains(&"b".to_string()));
 
         let events = ctx.get::<EventsService>().expect("events");
-        events.on_waterfall("tools.list".into(), |payload, next| async move {
+        events.on_waterfall( cordis::events_catalog::ev::TOOLS_LIST.to_string(), |payload, next| async move {
             let mut out = next(payload).await?;
             if let Some(arr) = out.get_mut("tools").and_then(Value::as_array_mut) {
                 arr.retain(|t| t.get("name").and_then(Value::as_str) != Some("b"));
@@ -441,7 +441,7 @@ mod tests {
         ctx.provide(EventsService::new());
         assert!(svc.resolve(&ctx, "a").is_some());
         let events = ctx.get::<EventsService>().expect("events");
-        events.on_waterfall("tools.resolve".into(), |payload, _next| async move {
+        events.on_waterfall( cordis::events_catalog::ev::TOOLS_RESOLVE.to_string(), |payload, _next| async move {
             Ok(payload)
         });
         assert!(svc.resolve(&ctx, "a").is_none());
@@ -469,7 +469,7 @@ mod tests {
         let ctx = Context::new_root();
         ctx.provide(EventsService::new());
         let events = ctx.get::<EventsService>().expect("events");
-        events.on_waterfall("tools.execute".into(), |_payload, _next| async move {
+        events.on_waterfall( cordis::events_catalog::ev::TOOLS_EXECUTE.to_string(), |_payload, _next| async move {
             Ok(json!({ "result": { "short": true } }))
         });
         let out = svc

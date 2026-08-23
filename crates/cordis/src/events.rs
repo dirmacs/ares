@@ -18,6 +18,55 @@ pub enum Dispatch {
     Waterfall,
 }
 
+/// Synthetic event names used by this crate's own unit tests to exercise
+/// dispatch mechanics (ordering, bail, disposal). They are not product
+/// contracts and bypass catalog validation when built for tests.
+const MECHANICS_TEST_EVENTS: &[&str] = &[
+    "test",
+    "test.event",
+    "gone",
+    "gone.wf",
+    "parallel.result",
+    "serial.bail",
+    "serial.identity",
+    "serial.test",
+    "bail.test",
+    "emit.test",
+    "emit.counter",
+    "wf.next",
+    "wf.short",
+    "wf.empty",
+    "par.test",
+    "par2.test",
+    "around.empty",
+    "around.wrap",
+    "around.short",
+];
+
+fn bypasses_catalog(event: &str) -> bool {
+    cfg!(test) && MECHANICS_TEST_EVENTS.contains(&event)
+}
+
+/// Debug-only contract enforcement. Compiles out in release builds.
+fn debug_enforce_dispatch(event: &EventId, mode: Dispatch) {
+    if bypasses_catalog(event) {
+        return;
+    }
+    if let Err(msg) = crate::events_catalog::validate_dispatch(event, mode) {
+        debug_assert!(false, "{msg}");
+    }
+}
+
+/// Debug-only listener-registry enforcement. Compiles out in release builds.
+fn debug_enforce_listener(event: &EventId, waterfall_registration: bool) {
+    if bypasses_catalog(event) {
+        return;
+    }
+    if let Err(msg) = crate::events_catalog::validate_listener(event, waterfall_registration) {
+        debug_assert!(false, "{msg}");
+    }
+}
+
 type Handler = Arc<
     dyn Fn(
             serde_json::Value,
@@ -104,6 +153,7 @@ impl EventsService {
         F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
     {
+        debug_enforce_listener(&event, false);
         let cancelled = Arc::new(AtomicBool::new(false));
         let slot = HandlerSlot {
             cancelled: cancelled.clone(),
@@ -130,6 +180,7 @@ impl EventsService {
         F: Fn(serde_json::Value, WaterfallNext) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
     {
+        debug_enforce_listener(&event, true);
         let cancelled = Arc::new(AtomicBool::new(false));
         let slot = WaterfallSlot {
             cancelled: cancelled.clone(),
@@ -185,6 +236,7 @@ impl EventsService {
         payload: serde_json::Value,
         mode: Dispatch,
     ) -> Result<serde_json::Value, CordisError> {
+        debug_enforce_dispatch(&event, mode);
         let handlers = self.active_handlers(&event);
         match mode {
             // Waterfall uses its own around-middleware registry. With no active
@@ -263,6 +315,7 @@ impl EventsService {
         F: FnOnce(serde_json::Value) -> Fut + Send + 'static,
         Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
     {
+        debug_enforce_dispatch(&event, Dispatch::Waterfall);
         let handlers = self.active_waterfall(&event);
         if handlers.is_empty() {
             return core(payload).await;

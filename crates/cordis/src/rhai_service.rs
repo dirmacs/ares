@@ -54,6 +54,22 @@ pub struct RhaiListenerConfig {
     /// means "pass through / delegate to the chain"; any other value becomes
     /// the dispatch result (a Bail deny marker, or a waterfall short-circuit).
     pub fn_name: String,
+    /// What happens when the listener fn raises a runtime error.
+    #[serde(default)]
+    pub on_error: RhaiOnError,
+}
+
+/// What happens when the listener fn raises a runtime error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RhaiOnError {
+    /// Log a warning and pass the original payload through (waterfall:
+    /// delegate via `next`).
+    #[default]
+    Passthrough,
+    /// Fail closed: return a deny marker (waterfall: short-circuit WITHOUT
+    /// calling `next`).
+    Deny,
 }
 
 // Stub when feature disabled
@@ -290,16 +306,24 @@ impl Service for RhaiService {
                         CordisError::Configuration(format!("unknown policy event {}", l.event))
                     })?;
                     let around = contract.around;
+                    // Fail-closed deny marker: same shape as the built-in
+                    // quota handler in events.rs, with the policy fn named.
+                    let deny_marker = serde_json::json!({
+                        "deny": format!("policy script error in {}", l.fn_name)
+                    });
+                    let on_error = l.on_error;
                     if around {
                         let engine = Arc::clone(&engine);
                         let ast = ast.clone();
                         let fn_name = l.fn_name.clone();
                         let event_name = l.event.clone();
+                        let deny_marker = deny_marker.clone();
                         let d = events.on_waterfall(l.event.clone(), move |payload, next| {
                             let engine = Arc::clone(&engine);
                             let ast = ast.clone();
                             let fn_name = fn_name.clone();
                             let event_name = event_name.clone();
+                            let deny_marker = deny_marker.clone();
                             let fut = async move {
                                 let mut scope = Scope::new();
                                 match engine.call_fn::<Dynamic>(
@@ -312,14 +336,24 @@ impl Service for RhaiService {
                                         Some(v) => Ok(v),
                                         None => next(payload).await,
                                     },
-                                    Err(err) => {
-                                        tracing::warn!(
-                                            event = %event_name,
-                                            error = %err,
-                                            "rhai policy runtime error; delegating to chain"
-                                        );
-                                        next(payload).await
-                                    }
+                                    Err(err) => match on_error {
+                                        RhaiOnError::Passthrough => {
+                                            tracing::warn!(
+                                                event = %event_name,
+                                                error = %err,
+                                                "rhai policy runtime error; delegating to chain"
+                                            );
+                                            next(payload).await
+                                        }
+                                        RhaiOnError::Deny => {
+                                            tracing::warn!(
+                                                event = %event_name,
+                                                error = %err,
+                                                "rhai policy runtime error; failing closed"
+                                            );
+                                            Ok(deny_marker)
+                                        }
+                                    },
                                 }
                             };
                             Box::pin(fut)
@@ -336,11 +370,13 @@ impl Service for RhaiService {
                         let ast = ast.clone();
                         let fn_name = l.fn_name.clone();
                         let event_name = l.event.clone();
+                        let deny_marker = deny_marker.clone();
                         let d = events.on(l.event.clone(), move |payload| {
                             let engine = Arc::clone(&engine);
                             let ast = ast.clone();
                             let fn_name = fn_name.clone();
                             let event_name = event_name.clone();
+                            let deny_marker = deny_marker.clone();
                             let fut = async move {
                                 let mut scope = Scope::new();
                                 match engine.call_fn::<Dynamic>(
@@ -353,14 +389,24 @@ impl Service for RhaiService {
                                         Some(v) => Ok(v),
                                         None => Ok(payload),
                                     },
-                                    Err(err) => {
-                                        tracing::warn!(
-                                            event = %event_name,
-                                            error = %err,
-                                            "rhai policy runtime error; passing through"
-                                        );
-                                        Ok(payload)
-                                    }
+                                    Err(err) => match on_error {
+                                        RhaiOnError::Passthrough => {
+                                            tracing::warn!(
+                                                event = %event_name,
+                                                error = %err,
+                                                "rhai policy runtime error; passing through"
+                                            );
+                                            Ok(payload)
+                                        }
+                                        RhaiOnError::Deny => {
+                                            tracing::warn!(
+                                                event = %event_name,
+                                                error = %err,
+                                                "rhai policy runtime error; failing closed"
+                                            );
+                                            Ok(deny_marker)
+                                        }
+                                    },
                                 }
                             };
                             Box::pin(fut)
@@ -635,14 +681,22 @@ mod tests {
         assert!(!svc.check());
     }
 
-    fn gate_config(event: &str, fn_name: &str) -> RhaiServiceConfig {
-        RhaiServiceConfig {
-            script: r#"
+    /// Shared script source: `gate` denies banned tenants, `pin`
+    /// short-circuits chat capability, `boom` always throws.
+    const POLICY_SCRIPT: &str = r#"
                 fn gate(p) { if p.tenant_id == "banned" { #{deny: "script"} } else { () } }
                 fn pin(p) { if p.capability == "chat" { #{model: "pinned"} } else { () } }
                 fn boom(p) { throw "boom"; }
-            "#
-            .to_string(),
+            "#;
+
+    fn listener_config(
+        event: &str,
+        fn_name: &str,
+        on_error: RhaiOnError,
+        script: &str,
+    ) -> RhaiServiceConfig {
+        RhaiServiceConfig {
+            script: script.to_string(),
             name: Some("policy".to_string()),
             entry_init: None,
             entry_check: None,
@@ -650,8 +704,13 @@ mod tests {
             listen: vec![RhaiListenerConfig {
                 event: event.to_string(),
                 fn_name: fn_name.to_string(),
+                on_error,
             }],
         }
+    }
+
+    fn gate_config(event: &str, fn_name: &str) -> RhaiServiceConfig {
+        listener_config(event, fn_name, RhaiOnError::Passthrough, POLICY_SCRIPT)
     }
 
     // Bail-mode listener: a non-null script return denies (replaces the
@@ -847,6 +906,178 @@ mod tests {
         assert_eq!(
             out["tenant_id"], "banned",
             "disposed listener must not deny"
+        );
+    }
+
+    // Fail-closed (on_error = deny) on a Bail event: a throwing script must
+    // return the deny marker instead of the original payload.
+    #[tokio::test]
+    async fn rhai_policy_bail_deny_on_error() {
+        use crate::events::Dispatch;
+        let events = crate::EventsService::new();
+        let svc = RhaiService::from_config(listener_config(
+            crate::events_catalog::ev::SCHEDULER_ADMIT,
+            "boom",
+            RhaiOnError::Deny,
+            POLICY_SCRIPT,
+        ))
+        .expect("compile");
+        let ctx = Context::new_root();
+        ctx.provide(events);
+        let _d = svc
+            .init(&ctx)
+            .await
+            .expect("init")
+            .expect("listeners registered");
+        let events = ctx.get::<crate::EventsService>().expect("events provided");
+
+        let payload = serde_json::json!({"agent_name": "a", "tenant_id": "ok"});
+        let out = events
+            .dispatch(
+                crate::events_catalog::ev::SCHEDULER_ADMIT.into(),
+                payload.clone(),
+                Dispatch::Bail,
+            )
+            .await
+            .unwrap();
+        assert_ne!(out, payload, "fail-closed must not return the payload");
+        assert_eq!(
+            out["deny"],
+            serde_json::json!("policy script error in boom"),
+            "deny marker must name the failing policy fn"
+        );
+    }
+
+    // Fail-closed (on_error = deny) on a waterfall: a throwing script
+    // short-circuits with the deny marker; the core never runs.
+    #[tokio::test]
+    async fn rhai_policy_waterfall_deny_on_error() {
+        let events = crate::EventsService::new();
+        let svc = RhaiService::from_config(listener_config(
+            crate::events_catalog::ev::LLM_GET_CLIENT,
+            "boom",
+            RhaiOnError::Deny,
+            POLICY_SCRIPT,
+        ))
+        .expect("compile");
+        let ctx = Context::new_root();
+        ctx.provide(events);
+        let _d = svc
+            .init(&ctx)
+            .await
+            .expect("init")
+            .expect("listeners registered");
+        let events = ctx.get::<crate::EventsService>().expect("events provided");
+
+        let core_hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hit = core_hit.clone();
+        let out = events
+            .waterfall_around(
+                crate::events_catalog::ev::LLM_GET_CLIENT.into(),
+                serde_json::json!({"capability": "chat"}),
+                move |_p| {
+                    let hit = hit.clone();
+                    async move {
+                        hit.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(serde_json::json!({"capability": "chat", "core": true}))
+                    }
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            out["deny"],
+            serde_json::json!("policy script error in boom"),
+            "failing script must veto with the deny marker"
+        );
+        assert!(
+            !core_hit.load(std::sync::atomic::Ordering::SeqCst),
+            "fail-closed waterfall must short-circuit without running the core"
+        );
+    }
+
+    // Two isolated realms each carry their own RhaiPolicy instance: p1's
+    // script denies tenant t1, p2's denies t2, and neither sees the other.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rhai_policy_two_isolate_realms_coexist() {
+        use crate::events::Dispatch;
+        let root = Context::new_root();
+        let c1 = root.isolate::<RhaiService>("p1");
+        let c2 = root.isolate::<RhaiService>("p2");
+        // Each realm gets its own event bus: production realms isolate their
+        // data-bearing services, so one tenant's admission policy never sees
+        // another realm's dispatches.
+        c1.provide(crate::EventsService::new());
+        c2.provide(crate::EventsService::new());
+
+        for (ctx, tenant, label) in [(&c1, "t1", "p1"), (&c2, "t2", "p2")] {
+            let cfg = RhaiServiceConfig {
+                script: format!(
+                    r#"fn gate(p) {{ if p.tenant_id == "{tenant}" {{ #{{deny: "{label}"}} }} else {{ () }} }}"#
+                ),
+                name: Some(label.to_string()),
+                entry_init: None,
+                entry_check: None,
+                max_ops: None,
+                listen: vec![RhaiListenerConfig {
+                    event: crate::events_catalog::ev::SCHEDULER_ADMIT.to_string(),
+                    fn_name: "gate".to_string(),
+                    on_error: RhaiOnError::Deny,
+                }],
+            };
+            ctx.plugin_with(RhaiPlugin, cfg)
+                .await
+                .unwrap_or_else(|e| panic!("{label} plugin registration failed: {e}"));
+            let svc = ctx
+                .get::<RhaiService>()
+                .unwrap_or_else(|| panic!("{label} realm must resolve its own RhaiService"));
+            // `plugin_with`'s direct path skips `Service::init`; production
+            // registration goes through `Context::plugin`, which inits. Run
+            // the init step explicitly so the realm's gate gets registered.
+            let _d = svc
+                .init(ctx)
+                .await
+                .expect("init")
+                .expect("listeners registered");
+        }
+
+        async fn dispatch_tenant_in(tenant: &'static str, ctx: &Context) -> serde_json::Value {
+            let events = ctx.get::<crate::EventsService>().expect("realm events");
+            events
+                .dispatch(
+                    crate::events_catalog::ev::SCHEDULER_ADMIT.into(),
+                    serde_json::json!({"agent_name": "a", "tenant_id": tenant}),
+                    Dispatch::Bail,
+                )
+                .await
+                .unwrap()
+        }
+
+        // Realm p1: t1 is denied by its gate; t2 and free pass through.
+        // (A pass-through rhai handler returns the payload object, which a
+        // Bail chain treats as its terminal result — so each realm's bus is
+        // exercised independently, exactly like isolated tenant realms.)
+        let denied_t1 = dispatch_tenant_in("t1", &c1).await;
+        assert_eq!(
+            denied_t1["deny"], "p1",
+            "realm p1 must deny its own tenant t1"
+        );
+        let passed_t2 = dispatch_tenant_in("t2", &c1).await;
+        assert_eq!(
+            passed_t2["tenant_id"], "t2",
+            "realm p1 passes tenants it does not deny"
+        );
+
+        // Realm p2 (independent bus): t2 is denied; t1/free pass through.
+        let denied_t2 = dispatch_tenant_in("t2", &c2).await;
+        assert_eq!(
+            denied_t2["deny"], "p2",
+            "realm p2 must deny its own tenant t2"
+        );
+        let passed_free = dispatch_tenant_in("free", &c1).await;
+        assert_eq!(
+            passed_free["tenant_id"], "free",
+            "unmatched tenants pass through the realm gate"
         );
     }
 }

@@ -101,6 +101,22 @@ disabled = false
 
 [entry.config]
 
+# Admission audit: logs every admitted scheduled run and passes the payload
+# through unchanged (`agent_name` comes from SchedulerAdmitPayload). Script
+# errors pass through too (listener default on_error = "passthrough").
+[[entry]]
+id = "policy-admission-audit"
+plugin = "RhaiPolicy"
+isolate = "policy-audit"
+disabled = false
+[entry.config]
+script = """
+fn audit(p) { log(`admission agent=${p.agent_name}`); () }
+"""
+[[entry.config.listen]]
+event = "scheduler.admit"
+fn_name = "audit"
+
 # RhaiPolicy — sandboxed script listeners on catalog events (feature "rhai").
 # Returning ()/null passes through or delegates to the chain; any other value
 # becomes the dispatch result (Bail deny marker, or waterfall short-circuit).
@@ -114,3 +130,5 @@ disabled = false
 # [[entry.config.listen]]
 # event = "scheduler.admit"
 # fn_name = "gate"
+# # Fail closed when the script raises: deny instead of pass through.
+# on_error = "deny"

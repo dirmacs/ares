@@ -795,7 +795,7 @@ mod tests {
         );
 
         // Remove DepService -> fiber should deactivate via notify cascade
-        ctx.remove::<DepService>();
+        let _ = ctx.remove::<DepService>();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(
             matches!(fiber.state(), FiberState::Inactive { .. }),
@@ -984,7 +984,7 @@ mod tests {
         );
 
         // Remove -> notify_with_ctx drives deactivation
-        ctx.remove::<Probe>();
+        let _ = ctx.remove::<Probe>();
         reflect.notify_with_ctx(TypeId::of::<Probe>(), &ctx).await;
         assert!(
             matches!(f.state(), FiberState::Inactive { .. }),

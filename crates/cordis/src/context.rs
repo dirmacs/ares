@@ -197,8 +197,37 @@ impl Context {
     }
 
     /// Remove a service from the store and trigger deactivation cascade.
-    /// Pushes the inverse (re-provide) onto the fiber's accumulator for LIFO reversal.
-    pub fn remove<T: Service>(self: &Arc<Self>) -> Option<Arc<T>> {
+    ///
+    /// Guarded withdrawal: when a [`RegistryService`] is present and active
+    /// consumer fibers still resolve `T` in this isolate realm, removal is
+    /// refused with a `guarded withdrawal` configuration error instead of
+    /// pulling the dependency out from under them. Internal rollback paths
+    /// (fiber undo stacks) bypass the guard via [`Self::remove_forced`].
+    /// Pushes the inverse (re-provide) onto the fiber's accumulator for LIFO
+    /// reversal once the guard permits the removal.
+    pub fn remove<T: Service>(self: &Arc<Self>) -> Result<Option<Arc<T>>, CordisError> {
+        let tid = TypeId::of::<T>();
+        if self.store.read().contains_key(&tid) {
+            if let Some(registry) = self.get::<RegistryService>() {
+                let key = (tid, self.isolate_label(tid));
+                let consumers = registry.reliance_count(&key);
+                if consumers > 0 {
+                    return Err(CordisError::Configuration(format!(
+                        "guarded withdrawal: {consumers} active consumer(s) still rely on {}",
+                        std::any::type_name::<T>()
+                    )));
+                }
+            }
+        }
+        Self::remove_forced::<T>(self)
+    }
+
+    /// Unconditional removal -- the rollback primitive behind [`Self::remove`].
+    /// Internal undo paths must never be blocked by the guarded-withdrawal
+    /// check, so they call this directly.
+    pub(crate) fn remove_forced<T: Service>(
+        self: &Arc<Self>,
+    ) -> Result<Option<Arc<T>>, CordisError> {
         let tid = TypeId::of::<T>();
         let removed = {
             let mut store = self.store.write();
@@ -239,10 +268,63 @@ impl Context {
             });
             fiber.push_undo(undo);
             // Downcast to the concrete type
-            any.downcast::<T>().ok()
+            Ok(any.downcast::<T>().ok())
         } else {
-            None
+            Ok(None)
         }
+    }
+
+    /// Install an already-built service under a concrete `TypeId` without
+    /// registering it with the [`RegistryService`].
+    ///
+    /// Used by the loader's verified hot-swap trial: the candidate fiber is
+    /// applied out-of-band first so a failing factory cannot kill the live
+    /// provider. Returns `Err(tid)` when the slot is already occupied.
+    pub(crate) fn provide_untyped(
+        self: &Arc<Self>,
+        tid: TypeId,
+        any: Arc<dyn Any + Send + Sync>,
+    ) -> Result<(), TypeId> {
+        let mut store = self.store.write();
+        if store.contains_key(&tid) {
+            return Err(tid);
+        }
+        if tid == TypeId::of::<ReflectService>() {
+            if let Ok(reflect) = any.clone().downcast::<ReflectService>() {
+                reflect.set_context(self);
+            }
+        }
+        store.insert(tid, any);
+        Ok(())
+    }
+
+    /// Take the raw value stored for `tid` without notifying dependents or
+    /// touching versions/owners. Companion to [`Self::provide_untyped`] for
+    /// the verified hot-swap trial teardown.
+    pub(crate) fn take_untyped(&self, tid: TypeId) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.store.write().remove(&tid)
+    }
+
+    /// Untyped availability probe mirroring `get::<T>()` semantics without a
+    /// generic parameter (the trial's `Provides` type is erased).
+    pub(crate) fn get_untyped(&self, tid: TypeId) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.store.read().get(&tid).cloned()
+    }
+
+    /// Install an untyped intercept override without forking a child context.
+    /// Companion to [`Self::bind_intercept`] for erased service values.
+    pub(crate) fn bind_intercept_untyped(&self, tid: TypeId, any: Arc<dyn Any + Send + Sync>) {
+        self.intercept.write().insert(tid, any);
+    }
+
+    /// Read an intercept override without removing it.
+    pub(crate) fn peek_intercept_untyped(&self, tid: TypeId) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.intercept.read().get(&tid).cloned()
+    }
+
+    /// Drop an intercept override.
+    pub(crate) fn remove_intercept_untyped(&self, tid: TypeId) {
+        self.intercept.write().remove(&tid);
     }
 
     pub fn get<T: Service>(&self) -> Option<Arc<T>> {

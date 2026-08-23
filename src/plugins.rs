@@ -93,7 +93,7 @@ impl Service for HealthJobService {
                                     .map(|s| s.check())
                                     .unwrap_or(true),
                                 "AuthService" => ctx_for_task
-                                    .get::<AuthService>()
+                                    .get::<ares_http::auth::jwt::AuthService>()
                                     .map(|s| s.check())
                                     .unwrap_or(true),
                                 "SchedulerService" => ctx_for_task

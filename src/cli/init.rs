@@ -167,6 +167,49 @@ fn generate_ares_toml(config: &InitConfig) -> String {
         "meta/llama-3.3-70b-instruct"
     };
 
+    // [providers.*] blocks follow the `ProviderConfig` serde schema
+    // (`#[serde(tag = "type", rename_all = "lowercase")]`): openai carries
+    // api_key_env/api_base/default_model; ollama carries base_url/default_model.
+    let want_openai = matches!(config.provider.as_str(), "openai" | "both");
+    let want_ollama = matches!(config.provider.as_str(), "ollama" | "both");
+    let mut providers_block = String::new();
+    if want_ollama {
+        providers_block.push_str(
+            "\n# =============================================================================\n\
+             # Local Ollama Provider\n\
+             # =============================================================================\n\
+             [providers.ollama-local]\n\
+             type = \"ollama\"\n\
+             base_url = \"http://localhost:11434\"\n\
+             default_model = \"ministral-3:3b\"\n",
+        );
+    }
+    if want_openai {
+        providers_block.push_str(
+            "\n# =============================================================================\n\
+             # OpenAI Provider (or any OpenAI-compatible endpoint)\n\
+             # =============================================================================\n\
+             [providers.openai]\n\
+             type = \"openai\"\n\
+             api_key_env = \"OPENAI_API_KEY\"\n\
+             default_model = \"gpt-4o-mini\"\n",
+        );
+    }
+    if !want_ollama && !want_openai {
+        // Unknown provider value: fall back to the NVIDIA NIM single-provider block.
+        providers_block.push_str(
+            "\n# =============================================================================\n\
+             # NVIDIA NIM Provider (single provider)\n\
+             # =============================================================================\n\
+             [nvidia]\n\
+             api_key_env = \"NVIDIA_API_KEY\"\n\
+             api_base = \"https://integrate.api.nvidia.com/v1\"\n\
+             models_url = \"https://integrate.api.nvidia.com/v1/models\"\n\
+             catalog_refresh_seconds = 3600\n\
+             default_model = \"{default_model}\"\n",
+        );
+    }
+
     format!(
         r#"# A.R.E.S Configuration
 # =====================
@@ -203,16 +246,7 @@ api_key_env = "API_KEY"
 [database]
 url = "./data/ares.db"
 
-# =============================================================================
-# NVIDIA NIM Provider (single provider)
-# =============================================================================
-[nvidia]
-api_key_env = "NVIDIA_API_KEY"
-api_base = "https://integrate.api.nvidia.com/v1"
-models_url = "https://integrate.api.nvidia.com/v1/models"
-catalog_refresh_seconds = 3600
-default_model = "{default_model}"
-
+{providers_block}
 # =============================================================================
 # Tools Configuration
 # =============================================================================

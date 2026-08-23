@@ -1,5 +1,5 @@
-use parking_lot::RwLock;
-use std::collections::HashMap;
+use parking_lot::{Mutex, RwLock};
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -116,6 +116,8 @@ pub struct EventsService {
     handlers: RwLock<HashMap<EventId, Vec<HandlerSlot>>>,
     waterfall_handlers: RwLock<HashMap<EventId, Vec<WaterfallSlot>>>,
     bus: tokio::sync::broadcast::Sender<(EventId, serde_json::Value)>,
+    /// Per-event dispatch counter (every mode, every dispatch path).
+    dispatch_counts: Mutex<BTreeMap<String, u64>>,
 }
 
 impl EventsService {
@@ -125,6 +127,7 @@ impl EventsService {
             handlers: RwLock::new(HashMap::new()),
             waterfall_handlers: RwLock::new(HashMap::new()),
             bus: tx,
+            dispatch_counts: Mutex::new(BTreeMap::new()),
         };
         svc.register_default_admit_handler();
         svc
@@ -141,6 +144,14 @@ impl EventsService {
             .entry("agent.admit".into())
             .or_default()
             .push(slot);
+    }
+
+    /// Subscribe to the fire-and-forget emit broadcast bus.
+    /// Snapshot of dispatch counters: (total, per-event sorted ascending).
+    pub fn dispatch_snapshot(&self) -> (u64, Vec<(String, u64)>) {
+        let map = self.dispatch_counts.lock();
+        let total = map.values().sum();
+        (total, map.iter().map(|(k, v)| (k.clone(), *v)).collect())
     }
 
     /// Subscribe to the fire-and-forget emit broadcast bus.
@@ -237,6 +248,11 @@ impl EventsService {
         mode: Dispatch,
     ) -> Result<serde_json::Value, CordisError> {
         debug_enforce_dispatch(&event, mode);
+        *self
+            .dispatch_counts
+            .lock()
+            .entry(event.to_string())
+            .or_insert(0) += 1;
         let handlers = self.active_handlers(&event);
         match mode {
             // Waterfall uses its own around-middleware registry. With no active

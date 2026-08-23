@@ -158,8 +158,22 @@ impl EntryTree {
                     .map_err(|e| CordisError::Configuration(e.to_string()))?;
             }
         }
-        std::fs::write(path, format!("{header}{body}"))
-            .map_err(|e| CordisError::Configuration(e.to_string()))?;
+        // Atomic persistence: write a sibling temp file, then rename over the
+        // target. A crash mid-write leaves the previous file intact; the temp
+        // is removed on failure so no `.tmp-*` residue accumulates.
+        let tmp = path.with_file_name(format!(
+            "{}.tmp-{}",
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("entries"),
+            std::process::id()
+        ));
+        if let Err(e) = std::fs::write(&tmp, format!("{header}{body}"))
+            .and_then(|_| std::fs::rename(&tmp, path))
+        {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(CordisError::Configuration(e.to_string()));
+        }
         Ok(())
     }
 }
@@ -1333,6 +1347,31 @@ disabled = false
         tree.save_to_toml_file(&path).unwrap();
         let loaded = Loader::load_from_file(&path).unwrap();
         assert_eq!(tree, loaded);
+    }
+
+    #[test]
+    fn save_to_toml_file_leaves_no_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entries.toml");
+        let tree = EntryTree(vec![Entry {
+            id: "tool:calc".into(),
+            plugin: "CalculatorService".into(),
+            config: json!({}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }]);
+        // Two consecutive saves exercise both the create and rename-over
+        // paths; neither may leave `.tmp-*` siblings behind.
+        tree.save_to_toml_file(&path).unwrap();
+        tree.save_to_toml_file(&path).unwrap();
+        let mut leftovers: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        leftovers.sort();
+        assert_eq!(leftovers, vec!["entries.toml".to_string()]);
     }
 
     #[test]

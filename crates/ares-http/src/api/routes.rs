@@ -17,7 +17,10 @@ use cordis::Context;
 ///
 /// Routes are split into public (no auth), protected (requires JWT), and admin (requires admin secret).
 /// `tenant_db` is injected into request extensions so `track_usage` middleware can record billing events.
-pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -> Router<Arc<Context>> {
+pub fn create_router(
+    auth_service: Arc<AuthService>,
+    tenant_db: Arc<TenantDb>,
+) -> Router<Arc<Context>> {
     // Clone for v1 routes (API key auth)
     let tenant_db_for_v1 = tenant_db.clone();
 
@@ -425,6 +428,20 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
         .route(
             "/admin/cordis/entries/reload",
             post(crate::api::handlers::admin::reload_cordis_entries),
+        )
+        // Cordis entries management (list / upsert / delete / toggle)
+        .route(
+            "/admin/cordis/entries",
+            get(crate::api::handlers::admin::list_cordis_entries)
+                .put(crate::api::handlers::admin::put_cordis_entry),
+        )
+        .route(
+            "/admin/cordis/entries/{id}",
+            delete(crate::api::handlers::admin::delete_cordis_entry),
+        )
+        .route(
+            "/admin/cordis/entries/{id}/toggle",
+            post(crate::api::handlers::admin::toggle_cordis_entry),
         )
         // Runtime Providers
         .route(
@@ -848,15 +865,15 @@ mod tests {
     use std::sync::Mutex;
     static ADMIN_ENV_LOCK: Mutex<()> = Mutex::new(());
     use super::*;
-    use ares_agent::context_provider::NoOpContextProvider;
+    use crate::config::{AuthConfig, ServerConfig};
     use crate::overlay::{
         AgentConfig, AresConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths, ModelConfig,
         ProviderConfig, RagConfig,
     };
-    use crate::config::{AuthConfig, ServerConfig};
+    use crate::{AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager};
+    use ares_agent::context_provider::NoOpContextProvider;
     use ares_agent::AgentRegistry;
     use ares_llm::ProviderRegistry;
-    use crate::{AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager};
     use axum::http::StatusCode;
     use axum_test::TestServer;
     use std::collections::HashMap;
@@ -939,8 +956,14 @@ mod tests {
     }
 
     fn test_server(state: Arc<Context>) -> axum_test::TestServer {
-        let auth = state.get::<crate::auth::jwt::AuthService>().expect("not provided").clone();
-        let tenant_db = state.get::<ares_store::TenantDb>().expect("not provided").clone();
+        let auth = state
+            .get::<crate::auth::jwt::AuthService>()
+            .expect("not provided")
+            .clone();
+        let tenant_db = state
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .clone();
         let app = create_router(auth, tenant_db).with_state(state);
         axum_test::TestServer::new(app).expect("test server")
     }
@@ -977,7 +1000,16 @@ mod tests {
     #[tokio::test]
     async fn create_router_builds_without_panic() {
         let state = test_app_state();
-        let _ = create_router(state.get::<crate::auth::jwt::AuthService>().expect("not provided").clone(), state.get::<ares_store::TenantDb>().expect("not provided").clone());
+        let _ = create_router(
+            state
+                .get::<crate::auth::jwt::AuthService>()
+                .expect("not provided")
+                .clone(),
+            state
+                .get::<ares_store::TenantDb>()
+                .expect("not provided")
+                .clone(),
+        );
     }
 
     #[test]
@@ -1007,7 +1039,9 @@ mod tests {
     #[tokio::test]
     async fn create_router_exposes_loop_routes_behind_jwt() {
         let state = test_app_state();
-        let tokens = state.get::<crate::auth::jwt::AuthService>().expect("not provided")
+        let tokens = state
+            .get::<crate::auth::jwt::AuthService>()
+            .expect("not provided")
             .generate_tokens("user-1", "user@example.com")
             .expect("tokens");
         let server = test_server(state);
@@ -1187,14 +1221,18 @@ mod tests {
         // concurrently. Whether the middleware rejects (401) or the handler
         // runs (200), a non-404 proves the route segment reached the layer.
         let server = test_server(test_app_state());
-        let response = server.post("/admin/cordis/services/events_service/retire").await;
+        let response = server
+            .post("/admin/cordis/services/events_service/retire")
+            .await;
         assert_ne!(response.status_code(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
     async fn create_router_registers_cordis_service_provide_route() {
         let server = test_server(test_app_state());
-        let response = server.post("/admin/cordis/services/events_service/provide").await;
+        let response = server
+            .post("/admin/cordis/services/events_service/provide")
+            .await;
         assert_ne!(response.status_code(), StatusCode::NOT_FOUND);
     }
 
@@ -1202,11 +1240,12 @@ mod tests {
     async fn cordis_service_lifecycle_end_to_end_over_http() {
         let ctx = Context::new_root();
         ctx.provide(cordis::ReflectService::new());
-        ctx.provide(ares_tools::Tools::from_static(Vec::<std::sync::Arc<dyn ares_tools::Tool>>::new()));
+        ctx.provide(ares_tools::Tools::from_static(Vec::<
+            std::sync::Arc<dyn ares_tools::Tool>,
+        >::new()));
         ctx.provide(cordis::EventsService::new());
 
-        let app = crate::api::handlers::admin::cordis::routes()
-            .with_state(ctx.clone());
+        let app = crate::api::handlers::admin::cordis::routes().with_state(ctx.clone());
         let server = axum_test::TestServer::new(app).expect("test server");
 
         // Wrapper-backed name → 409 Conflict (not retirably supported today).
@@ -1216,13 +1255,19 @@ mod tests {
         // Real retirement removes EventsService by TypeId.
         let response = server.post("/cordis/services/events_service/retire").await;
         assert_eq!(response.status_code(), StatusCode::OK);
-        assert_eq!(response.json::<serde_json::Value>()["retired"], serde_json::json!(true));
+        assert_eq!(
+            response.json::<serde_json::Value>()["retired"],
+            serde_json::json!(true)
+        );
         assert!(ctx.get::<cordis::EventsService>().is_none());
 
         // Companion endpoint re-registers it so the cycle repeats.
         let response = server.post("/cordis/services/events_service/provide").await;
         assert_eq!(response.status_code(), StatusCode::OK);
-        assert_eq!(response.json::<serde_json::Value>()["provided"], serde_json::json!(true));
+        assert_eq!(
+            response.json::<serde_json::Value>()["provided"],
+            serde_json::json!(true)
+        );
         assert!(ctx.get::<cordis::EventsService>().is_some());
     }
 

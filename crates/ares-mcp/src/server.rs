@@ -1593,8 +1593,7 @@ mod tests {
             std::any::TypeId::of::<DummyTools>(),
             std::any::TypeId::of::<DummyExecute>(),
         ));
-        let tenant =
-            ares_types::TenantContext::new("acme".into(), ares_types::TenantTier::Pro);
+        let tenant = ares_types::TenantContext::new("acme".into(), ares_types::TenantTier::Pro);
         let scoped = open_session_ctx(&root, &tenant);
         assert_eq!(
             scoped
@@ -1603,7 +1602,9 @@ mod tests {
                 .tenant_id,
             "acme"
         );
-        let realms = root.get::<ares_store::TenantRealms>().expect("TenantRealms");
+        let realms = root
+            .get::<ares_store::TenantRealms>()
+            .expect("TenantRealms");
         let realm = realms.open(&root, "acme");
         assert!(realm.get::<ares_types::TenantContext>().is_none());
         assert_eq!(
@@ -2210,10 +2211,14 @@ mod tests {
     async fn enforce_quota_event_denial_preserves_mcp_error() {
         let base = cordis::Context::new_root();
         let events = base.provide(cordis::EventsService::new());
-        events.on( cordis::events_catalog::ev::AGENT_ADMIT.to_string(), |_payload| async {
-            Ok::<_, cordis::CordisError>(serde_json::json!({ "deny": "daily" }))
-        });
-        let server = test_server_with_session_tier(TenantTier::Pro).await
+        events.on(
+            cordis::events_catalog::ev::AGENT_ADMIT.to_string(),
+            |_payload| async {
+                Ok::<_, cordis::CordisError>(serde_json::json!({ "deny": "daily" }))
+            },
+        );
+        let server = test_server_with_session_tier(TenantTier::Pro)
+            .await
             .with_context(base);
         let session = server.get_session().await.expect("session");
 

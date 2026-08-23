@@ -16,10 +16,10 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use cordis::{Context, CordisError, EventsService, Service};
 use crate::nvidia_catalog::NvidiaCatalogCache;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use cordis::{Context, CordisError, EventsService, Service};
 use parking_lot::RwLock;
 
 use crate::capabilities::CapabilityRequirements;
@@ -87,7 +87,10 @@ impl TenantModelPolicy {
 
     /// Build the authorization message for a model denied by a tenant policy.
     pub fn denial_message(tenant_id: &str, model: &str) -> String {
-        format!("Model '{}' is not allowed for tenant '{}'", model, tenant_id)
+        format!(
+            "Model '{}' is not allowed for tenant '{}'",
+            model, tenant_id
+        )
     }
 
     /// Build the authorization error for a model denied by a tenant policy.
@@ -112,8 +115,7 @@ impl Service for TenantModelPolicy {}
 /// `check()` returns:
 /// - `Closed` / `HalfOpen` → `true` (service advertises healthy, fibers stay Active)
 /// - `Open { until }` → `false` until cooldown expires (fibers deactivate, guarded withdrawal per Thm 63)
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum Breaker {
     /// Normal operation.
     #[default]
@@ -191,7 +193,6 @@ impl Breaker {
         }
     }
 }
-
 
 /// Unified LLM capability composing provider registry, catalog, factory, and pool.
 ///
@@ -365,10 +366,9 @@ impl Llm {
     /// can compose `TenantModelPolicy` and `ModelOverride` on separate child
     /// contexts. With no policy, legacy override behavior is preserved.
     pub fn validate_model_override(&self, ctx: &Arc<Context>) -> Result<(), AppError> {
-        if let (Some(policy), Some(override_model)) = (
-            ctx.get::<TenantModelPolicy>(),
-            ctx.get::<ModelOverride>(),
-        ) {
+        if let (Some(policy), Some(override_model)) =
+            (ctx.get::<TenantModelPolicy>(), ctx.get::<ModelOverride>())
+        {
             policy.authorize(&override_model.model)?;
         }
         Ok(())
@@ -397,15 +397,21 @@ impl Llm {
         })
         .unwrap_or(serde_json::Value::Null);
         let result = events
-            .waterfall_around( cordis::events_catalog::ev::LLM_GET_CLIENT.to_string(), payload, |payload| async move {
-                Ok(payload)
-            })
+            .waterfall_around(
+                cordis::events_catalog::ev::LLM_GET_CLIENT.to_string(),
+                payload,
+                |payload| async move { Ok(payload) },
+            )
             .await
             .map_err(map_cordis)?;
         if result.get("deny").and_then(|v| v.as_bool()) == Some(true) {
             return Err(AppError::InvalidInput("llm.get_client denied".into()));
         }
-        if let Some(model) = result.get("model").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        if let Some(model) = result
+            .get("model")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
             if ctx.get::<ModelOverride>().is_none() {
                 let intercepted = ctx.with_intercept(ModelOverride {
                     model: model.to_string(),
@@ -493,11 +499,7 @@ impl Llm {
     /// Without `EventsService`, this is `get_client` then `generate`. With events,
     /// handlers wrap payload `{"prompt"}`; core generates using `payload["prompt"]`
     /// and returns `{"prompt", "content"}`.
-    pub async fn complete(
-        &self,
-        ctx: &Arc<Context>,
-        prompt: &str,
-    ) -> Result<String, AppError> {
+    pub async fn complete(&self, ctx: &Arc<Context>, prompt: &str) -> Result<String, AppError> {
         let client = self
             .get_client(ctx, CapabilityRequirements::default())
             .await?;
@@ -509,21 +511,25 @@ impl Llm {
         })
         .unwrap_or(serde_json::Value::Null);
         let out = events
-            .waterfall_around( cordis::events_catalog::ev::LLM_COMPLETE.to_string(), payload, move |payload| {
-                let client = Arc::clone(&client);
-                async move {
-                    let prompt = payload
-                        .get("prompt")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let text = client
-                        .generate(&prompt)
-                        .await
-                        .map_err(|e| CordisError::Fiber(e.to_string()))?;
-                    Ok(serde_json::json!({ "prompt": prompt, "content": text }))
-                }
-            })
+            .waterfall_around(
+                cordis::events_catalog::ev::LLM_COMPLETE.to_string(),
+                payload,
+                move |payload| {
+                    let client = Arc::clone(&client);
+                    async move {
+                        let prompt = payload
+                            .get("prompt")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let text = client
+                            .generate(&prompt)
+                            .await
+                            .map_err(|e| CordisError::Fiber(e.to_string()))?;
+                        Ok(serde_json::json!({ "prompt": prompt, "content": text }))
+                    }
+                },
+            )
             .await
             .map_err(map_cordis)?;
         Ok(out
@@ -545,15 +551,12 @@ impl Llm {
 
     /// Check if a provider exists for the given tenant (legacy or runtime).
     pub fn has_provider_for_tenant(&self, name: &str, tenant_id: Option<&str>) -> bool {
-        self.provider_registry.has_provider_for_tenant(name, tenant_id)
+        self.provider_registry
+            .has_provider_for_tenant(name, tenant_id)
     }
 
     /// Resolve a provider visible to the tenant derived from `ctx`.
-    pub fn get_provider_for_ctx(
-        &self,
-        ctx: &Arc<Context>,
-        name: &str,
-    ) -> Option<ProviderConfig> {
+    pub fn get_provider_for_ctx(&self, ctx: &Arc<Context>, name: &str) -> Option<ProviderConfig> {
         self.provider_registry.get_provider_for_ctx(ctx, name)
     }
 
@@ -617,7 +620,9 @@ impl LLMClient for BoxedArcClient {
     async fn stream(
         &self,
         prompt: &str,
-    ) -> ares_types::types::Result<Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>> {
+    ) -> ares_types::types::Result<
+        Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+    > {
         self.0.stream(prompt).await
     }
 
@@ -625,14 +630,18 @@ impl LLMClient for BoxedArcClient {
         &self,
         system: &str,
         prompt: &str,
-    ) -> ares_types::types::Result<Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>> {
+    ) -> ares_types::types::Result<
+        Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+    > {
         self.0.stream_with_system(system, prompt).await
     }
 
     async fn stream_with_history(
         &self,
         messages: &[(String, String)],
-    ) -> ares_types::types::Result<Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>> {
+    ) -> ares_types::types::Result<
+        Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+    > {
         self.0.stream_with_history(messages).await
     }
 
@@ -649,7 +658,13 @@ impl Service for Llm {
     fn init(
         &self,
         _ctx: &Arc<Context>,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<Box<dyn cordis::Disposable>>, CordisError>> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<Output = Result<Option<Box<dyn cordis::Disposable>>, CordisError>>
+                + Send
+                + '_,
+        >,
+    > {
         Box::pin(async { Ok(None) })
     }
 
@@ -665,9 +680,9 @@ mod tests {
     use super::*;
     use crate::capabilities::CapabilityRequirements;
     use crate::provider_registry::RuntimeProviderEntry;
-    use cordis::Context;
     use ares_types::models::{TenantContext, TenantTier};
     use chrono::Duration;
+    use cordis::Context;
     use std::collections::HashMap;
 
     #[test]
@@ -800,10 +815,7 @@ mod tests {
         ));
         let root = Context::new_root();
         root.provide_arc(svc.clone());
-        let tenant_ctx = root.intercept(TenantModelPolicy::new(
-            "tenant-a",
-            ["gpt-4o".to_string()],
-        ));
+        let tenant_ctx = root.intercept(TenantModelPolicy::new("tenant-a", ["gpt-4o".to_string()]));
         let request = tenant_ctx.intercept(ModelOverride {
             model: "not-allowed".into(),
         });
@@ -905,7 +917,6 @@ mod tests {
             "unlabeled root with ModelOverride should construct a client from the fleet global runtime entry: {:?}",
             fleet_client.as_ref().err()
         );
-
     }
 
     struct EchoClient {
@@ -1019,12 +1030,15 @@ mod tests {
         let llm = Llm::for_test(std::sync::Arc::new(client));
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        events.on_waterfall( cordis::events_catalog::ev::LLM_COMPLETE.to_string(), |mut payload, next| async move {
-            if let Some(p) = payload.get("prompt").and_then(|v| v.as_str()) {
-                payload["prompt"] = serde_json::json!(format!("WRAP:{p}"));
-            }
-            next(payload).await
-        });
+        events.on_waterfall(
+            cordis::events_catalog::ev::LLM_COMPLETE.to_string(),
+            |mut payload, next| async move {
+                if let Some(p) = payload.get("prompt").and_then(|v| v.as_str()) {
+                    payload["prompt"] = serde_json::json!(format!("WRAP:{p}"));
+                }
+                next(payload).await
+            },
+        );
         let out = llm.complete(&ctx, "hi").await.expect("complete");
         assert_eq!(out, "echo:WRAP:hi");
     }
@@ -1035,9 +1049,10 @@ mod tests {
         let llm = Llm::for_test(std::sync::Arc::new(client));
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        events.on_waterfall( cordis::events_catalog::ev::LLM_COMPLETE.to_string(), |_payload, _next| async move {
-            Ok(serde_json::json!({ "content": "cached" }))
-        });
+        events.on_waterfall(
+            cordis::events_catalog::ev::LLM_COMPLETE.to_string(),
+            |_payload, _next| async move { Ok(serde_json::json!({ "content": "cached" })) },
+        );
         let out = llm.complete(&ctx, "hi").await.expect("complete");
         assert_eq!(out, "cached");
         assert!(
@@ -1052,9 +1067,10 @@ mod tests {
         let llm = Llm::for_test(std::sync::Arc::new(client));
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        events.on_waterfall( cordis::events_catalog::ev::LLM_GET_CLIENT.to_string(), |_payload, _next| async move {
-            Ok(serde_json::json!({ "deny": true }))
-        });
+        events.on_waterfall(
+            cordis::events_catalog::ev::LLM_GET_CLIENT.to_string(),
+            |_payload, _next| async move { Ok(serde_json::json!({ "deny": true })) },
+        );
         let err = match llm
             .get_client(&ctx, CapabilityRequirements::default())
             .await

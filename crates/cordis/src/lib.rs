@@ -64,18 +64,18 @@ pub mod events_payload;
 pub use events_payload::{
     AgentAdmitEvent, AgentAdmitPayload, AgentCompletedEvent, AgentCompletedPayload,
     AgentFailedEvent, AgentFailedPayload, AgentRunEvent, AgentRunRequest, AgentRunResult,
-    AgentStartedEvent, AgentStartedPayload, AgentUsageEvent, AgentUsagePayload,
-    LlmCompleteEvent, LlmCompleteRequest, LlmCompleteResult, LlmGenerateEvent,
-    LlmGeneratePayload, LlmGenerateToolsEvent, LlmGenerateToolsPayload, LlmGetClientEvent,
-    LlmGetClientPayload, LlmMessage, SchedulerAdmitEvent, SchedulerAdmitPayload,
-    SchedulerBeforeRunEvent, SchedulerBeforeRunPayload, ServiceChangedEvent,
-    ServiceChangedPayload, ToolsExecuteEvent, ToolsExecutePayload, ToolsListEvent,
-    ToolsListRequest, ToolsListResult, ToolsResolveEvent, ToolsResolveRequest, TypedEvent,
+    AgentStartedEvent, AgentStartedPayload, AgentUsageEvent, AgentUsagePayload, LlmCompleteEvent,
+    LlmCompleteRequest, LlmCompleteResult, LlmGenerateEvent, LlmGeneratePayload,
+    LlmGenerateToolsEvent, LlmGenerateToolsPayload, LlmGetClientEvent, LlmGetClientPayload,
+    LlmMessage, SchedulerAdmitEvent, SchedulerAdmitPayload, SchedulerBeforeRunEvent,
+    SchedulerBeforeRunPayload, ServiceChangedEvent, ServiceChangedPayload, ToolsExecuteEvent,
+    ToolsExecutePayload, ToolsListEvent, ToolsListRequest, ToolsListResult, ToolsResolveEvent,
+    ToolsResolveRequest, TypedEvent,
 };
 pub mod loader;
 pub use loader::{
-    AppliedAction, CurrentEntries, Entry, EntryConfigFiller, EntryConfigFillerHandle,
-    EntryTree, Loader,
+    AppliedAction, CurrentEntries, Entry, EntryConfigFiller, EntryConfigFillerHandle, EntryTree,
+    Loader,
 };
 
 pub mod hmr;
@@ -1241,7 +1241,10 @@ mod tests {
         completed.sort_by(|left, right| left.0.cmp(&right.0));
         assert_eq!(
             completed,
-            vec![("a".to_string(), payload.clone()), ("b".to_string(), payload)]
+            vec![
+                ("a".to_string(), payload.clone()),
+                ("b".to_string(), payload)
+            ]
         );
     }
 
@@ -1255,8 +1258,7 @@ mod tests {
         let mut rx = events_handle.subscribe();
         reflect.notify(TypeId::of::<u64>());
 
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
         let mut seen = false;
         while std::time::Instant::now() < deadline {
             match rx.try_recv() {
@@ -1276,6 +1278,9 @@ mod tests {
                 Err(e) => panic!("unexpected broadcast error: {e}"),
             }
         }
-        assert!(seen, "service.changed broadcast not observed within timeout");
+        assert!(
+            seen,
+            "service.changed broadcast not observed within timeout"
+        );
     }
 }

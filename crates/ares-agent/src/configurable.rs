@@ -4,19 +4,22 @@
 //! It replaces the hardcoded agent implementations with a flexible,
 //! configuration-driven approach.
 
-#![allow(deprecated, reason = "deprecated AgentRegistry shims retained for one-release migration; internal use until loader cutover")]
+#![allow(
+    deprecated,
+    reason = "deprecated AgentRegistry shims retained for one-release migration; internal use until loader cutover"
+)]
 
-use crate::{Agent, AgentResponse, ExecutionMetadata};
 use crate::AgentConfig;
+use crate::{Agent, AgentResponse, ExecutionMetadata};
 use ares_llm::coordinator::ConversationMessage;
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use ares_llm::{LLMClient, LLMResponse};
 use ares_tools::Tools;
 use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
 use async_trait::async_trait;
+use cordis::{Context, CordisError, EventsService};
 use std::future::Future;
 use std::sync::Arc;
-use cordis::{Context, CordisError, EventsService};
 
 // cordis Phase6: runtime postgres availability via Service::check() — replaces compile-time #[cfg(feature="postgres")] branching
 // Previously: `#[cfg(feature = "postgres")] token_budget_pool: Option<PgPool>`
@@ -260,8 +263,7 @@ impl ConfigurableAgent {
         tools: Option<Arc<Tools>>,
         provider_name: String,
     ) -> Self {
-        let (agent_type, system_prompt, allowed_tools) =
-            Self::resolve_common_fields(name, config);
+        let (agent_type, system_prompt, allowed_tools) = Self::resolve_common_fields(name, config);
 
         Self {
             name: name.to_string(),
@@ -325,7 +327,13 @@ impl ConfigurableAgent {
         llm: Box<dyn LLMClient>,
         tool_service: Option<Arc<Tools>>,
     ) -> Self {
-        Self::new_with_provider_and_tool_service(name, config, llm, tool_service, config.model.clone())
+        Self::new_with_provider_and_tool_service(
+            name,
+            config,
+            llm,
+            tool_service,
+            config.model.clone(),
+        )
     }
 
     /// Create an agent with provider metadata and a unified ToolService.
@@ -336,8 +344,7 @@ impl ConfigurableAgent {
         tool_service: Option<Arc<Tools>>,
         provider_name: String,
     ) -> Self {
-        let (agent_type, system_prompt, allowed_tools) =
-            Self::resolve_common_fields(name, config);
+        let (agent_type, system_prompt, allowed_tools) = Self::resolve_common_fields(name, config);
         Self {
             name: name.to_string(),
             agent_type,
@@ -409,7 +416,8 @@ impl ConfigurableAgent {
         llm: Box<dyn LLMClient>,
         provider_name: String,
     ) -> Self {
-        let mut agent = Self::new_with_provider_and_tool_service(name, config, llm, None, provider_name);
+        let mut agent =
+            Self::new_with_provider_and_tool_service(name, config, llm, None, provider_name);
         if let Some(tools) = ctx.get::<Tools>() {
             agent.set_tools(tools);
         }
@@ -621,14 +629,19 @@ Handle employee info, policies, and benefits."#
                 .collect(),
         })
         .unwrap_or(serde_json::Value::Null);
-        let out = run_events_waterfall(&events, cordis::events_catalog::ev::LLM_GENERATE, payload, |payload| async move {
-            let parsed = history_messages_from_payload(&payload);
-            let msgs = if parsed.is_empty() { orig } else { parsed };
-            match self.generate_with_history_direct(&msgs).await {
-                Ok(attempt) => Ok(attempt_to_generate_json(&attempt)),
-                Err(e) => Err(CordisError::Fiber(e.to_string())),
-            }
-        })
+        let out = run_events_waterfall(
+            &events,
+            cordis::events_catalog::ev::LLM_GENERATE,
+            payload,
+            |payload| async move {
+                let parsed = history_messages_from_payload(&payload);
+                let msgs = if parsed.is_empty() { orig } else { parsed };
+                match self.generate_with_history_direct(&msgs).await {
+                    Ok(attempt) => Ok(attempt_to_generate_json(&attempt)),
+                    Err(e) => Err(CordisError::Fiber(e.to_string())),
+                }
+            },
+        )
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
         self.generate_attempt_from_payload(out, cordis::events_catalog::ev::LLM_GENERATE)
@@ -694,7 +707,9 @@ Handle employee info, policies, and benefits."#
     ) -> Result<LlmAttemptResponse> {
         let ctx = self.cordis_ctx.clone().unwrap_or_else(Context::new_root);
         let Some(events) = ctx.get::<EventsService>() else {
-            return self.generate_with_tools_and_history_direct(messages, tools).await;
+            return self
+                .generate_with_tools_and_history_direct(messages, tools)
+                .await;
         };
         let orig_messages = messages.to_vec();
         let orig_tools = tools.to_vec();
@@ -709,27 +724,32 @@ Handle employee info, policies, and benefits."#
                 .collect(),
         })
         .unwrap_or(serde_json::Value::Null);
-        let out = run_events_waterfall(&events, cordis::events_catalog::ev::LLM_GENERATE_TOOLS, payload, |payload| async move {
-            let parsed_msgs = conversation_messages_from_payload(&payload);
-            let msgs = if parsed_msgs.is_empty() {
-                orig_messages
-            } else {
-                parsed_msgs
-            };
-            let parsed_tools = tools_from_payload(&payload);
-            let tool_defs = if parsed_tools.is_empty() && payload.get("tools").is_none() {
-                orig_tools
-            } else {
-                parsed_tools
-            };
-            match self
-                .generate_with_tools_and_history_direct(&msgs, &tool_defs)
-                .await
-            {
-                Ok(attempt) => Ok(attempt_to_generate_json(&attempt)),
-                Err(e) => Err(CordisError::Fiber(e.to_string())),
-            }
-        })
+        let out = run_events_waterfall(
+            &events,
+            cordis::events_catalog::ev::LLM_GENERATE_TOOLS,
+            payload,
+            |payload| async move {
+                let parsed_msgs = conversation_messages_from_payload(&payload);
+                let msgs = if parsed_msgs.is_empty() {
+                    orig_messages
+                } else {
+                    parsed_msgs
+                };
+                let parsed_tools = tools_from_payload(&payload);
+                let tool_defs = if parsed_tools.is_empty() && payload.get("tools").is_none() {
+                    orig_tools
+                } else {
+                    parsed_tools
+                };
+                match self
+                    .generate_with_tools_and_history_direct(&msgs, &tool_defs)
+                    .await
+                {
+                    Ok(attempt) => Ok(attempt_to_generate_json(&attempt)),
+                    Err(e) => Err(CordisError::Fiber(e.to_string())),
+                }
+            },
+        )
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
         self.generate_attempt_from_payload(out, cordis::events_catalog::ev::LLM_GENERATE_TOOLS)
@@ -1379,10 +1399,10 @@ pub fn agent_config_from_user_agent(user_agent: &ares_store::postgres::UserAgent
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_tools::Tool;
     use crate::AgentConfig;
     use ares_llm::client::TokenUsage;
     use ares_llm::LLMResponse;
+    use ares_tools::Tool;
     use ares_types::types::{Message, MessageRole, Preference, ToolCall, UserMemory};
     use chrono::Utc;
     use std::collections::{HashMap, VecDeque};
@@ -1456,7 +1476,10 @@ mod tests {
         async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
             Ok(self.content.clone())
         }
-        async fn generate_with_history(&self, messages: &[(String, String)]) -> Result<LLMResponse> {
+        async fn generate_with_history(
+            &self,
+            messages: &[(String, String)],
+        ) -> Result<LLMResponse> {
             self.generated.store(true, Ordering::SeqCst);
             let content = if self.echo_last {
                 messages
@@ -1625,16 +1648,14 @@ mod tests {
 
     fn make_tools_with_tool(name: &str) -> Arc<Tools> {
         Arc::new(Tools::from_static([
-            Arc::new(MockTool::new(name)) as Arc<dyn Tool>,
+            Arc::new(MockTool::new(name)) as Arc<dyn Tool>
         ]))
     }
 
     fn make_tools_with_echo_tool(name: &str) -> Arc<Tools> {
-        Arc::new(Tools::from_static([
-            Arc::new(EchoArgsTool {
-                name: name.to_string(),
-            }) as Arc<dyn Tool>,
-        ]))
+        Arc::new(Tools::from_static([Arc::new(EchoArgsTool {
+            name: name.to_string(),
+        }) as Arc<dyn Tool>]))
     }
 
     // ==========================================================
@@ -2195,9 +2216,7 @@ mod tests {
             }
         }
 
-        let reg = Arc::new(Tools::from_static([
-            Arc::new(FailingTool) as Arc<dyn Tool>,
-        ]));
+        let reg = Arc::new(Tools::from_static([Arc::new(FailingTool) as Arc<dyn Tool>]));
 
         let mut config = make_config(vec!["fail_tool"], Some("system"));
         config.max_tool_iterations = 3;
@@ -2667,14 +2686,17 @@ mod tests {
     async fn configurable_generate_waterfall_rewrites_last_message() {
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        events.on_waterfall( cordis::events_catalog::ev::LLM_GENERATE.to_string(), |mut payload, next| async move {
-            if let Some(arr) = payload.get_mut("messages").and_then(|v| v.as_array_mut()) {
-                if let Some(last) = arr.last_mut() {
-                    last["content"] = serde_json::json!("rewritten-hello");
+        events.on_waterfall(
+            cordis::events_catalog::ev::LLM_GENERATE.to_string(),
+            |mut payload, next| async move {
+                if let Some(arr) = payload.get_mut("messages").and_then(|v| v.as_array_mut()) {
+                    if let Some(last) = arr.last_mut() {
+                        last["content"] = serde_json::json!("rewritten-hello");
+                    }
                 }
-            }
-            next(payload).await
-        });
+                next(payload).await
+            },
+        );
 
         let mut agent = ConfigurableAgent::new(
             "router",
@@ -2694,9 +2716,10 @@ mod tests {
     async fn configurable_generate_short_circuit_skips_llm() {
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        events.on_waterfall( cordis::events_catalog::ev::LLM_GENERATE.to_string(), |_payload, _next| async move {
-            Ok(serde_json::json!({ "content": "cached" }))
-        });
+        events.on_waterfall(
+            cordis::events_catalog::ev::LLM_GENERATE.to_string(),
+            |_payload, _next| async move { Ok(serde_json::json!({ "content": "cached" })) },
+        );
 
         let (llm, generated) = MockLLM::with_generated_flag();
         let mut agent = ConfigurableAgent::new(
@@ -2738,9 +2761,9 @@ mod tests {
         let (llm, generated) = MockLLM::with_generated_flag();
         // A Tools capability on the bound ctx routes execute() into the
         // tool-calling path (has_tools), which dispatches llm.generate_tools.
-        ctx.provide(ares_tools::Tools::from_static(
-            Vec::<Arc<dyn ares_tools::Tool>>::new(),
-        ));
+        ctx.provide(ares_tools::Tools::from_static(Vec::<
+            Arc<dyn ares_tools::Tool>,
+        >::new()));
         let mut agent = ConfigurableAgent::new(
             "router",
             &make_config(vec![], Some("system")),

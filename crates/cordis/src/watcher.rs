@@ -65,7 +65,15 @@ pub fn watch_cordis_entries(
     entries_path: impl AsRef<Path>,
     tid: TypeId,
 ) -> Result<WatchHandle, notify::Error> {
-    watch_many(ctx, reflect, vec![agents_dir.as_ref().to_path_buf(), entries_path.as_ref().to_path_buf()], tid)
+    watch_many(
+        ctx,
+        reflect,
+        vec![
+            agents_dir.as_ref().to_path_buf(),
+            entries_path.as_ref().to_path_buf(),
+        ],
+        tid,
+    )
 }
 
 /// Callback invoked on a debounced filesystem event, after optional HMR dylib
@@ -93,18 +101,19 @@ pub fn watch_many_with(
 ) -> Result<WatchHandle, notify::Error> {
     let (tx, mut rx) = mpsc::unbounded_channel::<PathBuf>();
 
-    let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
-        Ok(event) if event.kind.is_modify() || event.kind.is_create() => {
-            // Forward any modify/create; filter to toon/json in the task if desired.
-            // Use first path as representative; debounce will coalesce.
-            let path = event.paths.first().cloned().unwrap_or_default();
-            let _ = tx.send(path);
-        }
-        Ok(_) => {}
-        Err(e) => {
-            tracing::error!(error = ?e, "Cordis watcher error");
-        }
-    })?;
+    let mut watcher =
+        notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
+            Ok(event) if event.kind.is_modify() || event.kind.is_create() => {
+                // Forward any modify/create; filter to toon/json in the task if desired.
+                // Use first path as representative; debounce will coalesce.
+                let path = event.paths.first().cloned().unwrap_or_default();
+                let _ = tx.send(path);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!(error = ?e, "Cordis watcher error");
+            }
+        })?;
 
     for p in &paths {
         let watch_target = if p.is_file() {
@@ -167,7 +176,10 @@ pub fn watch_many_with(
         }
     });
 
-    Ok(WatchHandle { _watcher: watcher, _task: task })
+    Ok(WatchHandle {
+        _watcher: watcher,
+        _task: task,
+    })
 }
 
 #[cfg(test)]
@@ -216,7 +228,9 @@ mod tests {
         std::fs::write(&file_path, "name = \"test\" v2").unwrap();
         // File watcher would detect Modify and call reflect.notify
         reflect.notify(TypeId::of::<FooService>());
-        reflect.notify_with_ctx(TypeId::of::<FooService>(), &ctx).await;
+        reflect
+            .notify_with_ctx(TypeId::of::<FooService>(), &ctx)
+            .await;
 
         // Re-provide v2 to simulate re-read of TOON changing provider
         ctx.provide(FooService(2));
@@ -336,7 +350,10 @@ mod tests {
                 notified || epoch_before != epoch_after,
                 "either watch channel fired or epoch changed"
             );
-            assert_ne!(epoch_before, epoch_after, "epoch should change after provider version bump");
+            assert_ne!(
+                epoch_before, epoch_after,
+                "epoch should change after provider version bump"
+            );
         } else {
             // Fallback: if notify debounce missed (flaky FS), still prove via direct notify
             // but the watcher channel should have fired on most runs.

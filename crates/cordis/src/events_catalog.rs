@@ -48,22 +48,86 @@ pub mod ev {
 
 /// The 16 production events, verified by inventory across all crates.
 pub const CONTRACTS: &[EventContract] = &[
-    EventContract { name: ev::AGENT_ADMIT, mode: Dispatch::Bail, around: false },
-    EventContract { name: ev::AGENT_STARTED, mode: Dispatch::Parallel, around: false },
-    EventContract { name: ev::AGENT_USAGE, mode: Dispatch::Emit, around: false },
-    EventContract { name: ev::AGENT_COMPLETED, mode: Dispatch::Emit, around: false },
-    EventContract { name: ev::AGENT_FAILED, mode: Dispatch::Emit, around: false },
-    EventContract { name: ev::AGENT_RUN, mode: Dispatch::Waterfall, around: true },
-    EventContract { name: ev::LLM_COMPLETE, mode: Dispatch::Waterfall, around: true },
-    EventContract { name: ev::LLM_GET_CLIENT, mode: Dispatch::Waterfall, around: true },
-    EventContract { name: ev::LLM_GENERATE, mode: Dispatch::Waterfall, around: true },
-    EventContract { name: ev::LLM_GENERATE_TOOLS, mode: Dispatch::Waterfall, around: true },
-    EventContract { name: ev::TOOLS_EXECUTE, mode: Dispatch::Waterfall, around: true },
-    EventContract { name: ev::TOOLS_LIST, mode: Dispatch::Waterfall, around: true },
-    EventContract { name: ev::TOOLS_RESOLVE, mode: Dispatch::Waterfall, around: true },
-    EventContract { name: ev::SCHEDULER_BEFORE_RUN, mode: Dispatch::Waterfall, around: true },
-    EventContract { name: ev::SCHEDULER_ADMIT, mode: Dispatch::Bail, around: false },
-    EventContract { name: ev::SERVICE_CHANGED, mode: Dispatch::Emit, around: false },
+    EventContract {
+        name: ev::AGENT_ADMIT,
+        mode: Dispatch::Bail,
+        around: false,
+    },
+    EventContract {
+        name: ev::AGENT_STARTED,
+        mode: Dispatch::Parallel,
+        around: false,
+    },
+    EventContract {
+        name: ev::AGENT_USAGE,
+        mode: Dispatch::Emit,
+        around: false,
+    },
+    EventContract {
+        name: ev::AGENT_COMPLETED,
+        mode: Dispatch::Emit,
+        around: false,
+    },
+    EventContract {
+        name: ev::AGENT_FAILED,
+        mode: Dispatch::Emit,
+        around: false,
+    },
+    EventContract {
+        name: ev::AGENT_RUN,
+        mode: Dispatch::Waterfall,
+        around: true,
+    },
+    EventContract {
+        name: ev::LLM_COMPLETE,
+        mode: Dispatch::Waterfall,
+        around: true,
+    },
+    EventContract {
+        name: ev::LLM_GET_CLIENT,
+        mode: Dispatch::Waterfall,
+        around: true,
+    },
+    EventContract {
+        name: ev::LLM_GENERATE,
+        mode: Dispatch::Waterfall,
+        around: true,
+    },
+    EventContract {
+        name: ev::LLM_GENERATE_TOOLS,
+        mode: Dispatch::Waterfall,
+        around: true,
+    },
+    EventContract {
+        name: ev::TOOLS_EXECUTE,
+        mode: Dispatch::Waterfall,
+        around: true,
+    },
+    EventContract {
+        name: ev::TOOLS_LIST,
+        mode: Dispatch::Waterfall,
+        around: true,
+    },
+    EventContract {
+        name: ev::TOOLS_RESOLVE,
+        mode: Dispatch::Waterfall,
+        around: true,
+    },
+    EventContract {
+        name: ev::SCHEDULER_BEFORE_RUN,
+        mode: Dispatch::Waterfall,
+        around: true,
+    },
+    EventContract {
+        name: ev::SCHEDULER_ADMIT,
+        mode: Dispatch::Bail,
+        around: false,
+    },
+    EventContract {
+        name: ev::SERVICE_CHANGED,
+        mode: Dispatch::Emit,
+        around: false,
+    },
 ];
 
 /// Look up the declared contract for `name`.

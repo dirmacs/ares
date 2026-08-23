@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use ares_types::models::{QuotaExceeded, TenantContext};
 use ares_types::types::AppError;
-use cordis::{Context, EventsService, CordisError};
-use serde_json::{json, Value};
+use cordis::{Context, CordisError, EventsService};
+use serde_json::Value;
 
 /// Which usage query failed while preparing the admission payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,11 +36,7 @@ impl From<AdmissionError> for AppError {
 }
 
 /// Apply the final typed quota policy to a usage snapshot.
-pub fn quota_exceeded(
-    tenant: &TenantContext,
-    monthly: u64,
-    daily: u64,
-) -> Option<QuotaExceeded> {
+pub fn quota_exceeded(tenant: &TenantContext, monthly: u64, daily: u64) -> Option<QuotaExceeded> {
     tenant.admit(monthly, daily).err()
 }
 
@@ -92,27 +88,23 @@ fn deny_from_bail(result: &Value) -> Option<QuotaExceeded> {
     }
 }
 
-async fn usage_counts(
-    ctx: &Arc<Context>,
-    tenant_id: &str,
-) -> Result<(u64, u64), AdmissionError> {
+async fn usage_counts(ctx: &Arc<Context>, tenant_id: &str) -> Result<(u64, u64), AdmissionError> {
     #[cfg(feature = "postgres")]
     {
         if let Some(db) = ctx.get::<ares_store::TenantDb>() {
-            let monthly = db
-                .get_monthly_requests(tenant_id)
-                .await
-                .map_err(|source| AdmissionError::Usage {
+            let monthly = db.get_monthly_requests(tenant_id).await.map_err(|source| {
+                AdmissionError::Usage {
                     period: UsagePeriod::Monthly,
                     source,
-                })?;
-            let daily = db
-                .get_daily_requests(tenant_id)
-                .await
-                .map_err(|source| AdmissionError::Usage {
-                    period: UsagePeriod::Daily,
-                    source,
-                })?;
+                }
+            })?;
+            let daily =
+                db.get_daily_requests(tenant_id)
+                    .await
+                    .map_err(|source| AdmissionError::Usage {
+                        period: UsagePeriod::Daily,
+                        source,
+                    })?;
             return Ok((monthly, daily));
         }
     }
@@ -124,6 +116,7 @@ async fn usage_counts(
 mod tests {
     use super::*;
     use ares_types::models::TenantTier;
+    use serde_json::json;
 
     fn free_tenant() -> TenantContext {
         TenantContext::new("acme".into(), TenantTier::Free)
@@ -132,9 +125,10 @@ mod tests {
     fn ctx_with_deny(deny: &'static str) -> (Arc<Context>, Box<dyn cordis::Disposable>) {
         let root = Context::new_root();
         let events = root.provide(EventsService::new());
-        let keep = events.on( cordis::events_catalog::ev::AGENT_ADMIT.to_string(), move |_payload| async move {
-            Ok(json!({ "deny": deny }))
-        });
+        let keep = events.on(
+            cordis::events_catalog::ev::AGENT_ADMIT.to_string(),
+            move |_payload| async move { Ok(json!({ "deny": deny })) },
+        );
         let ctx = root.with_intercept(free_tenant());
         (ctx, keep)
     }
@@ -150,10 +144,7 @@ mod tests {
         let err = admit_with_details(&ctx)
             .await
             .expect_err("event deny must win over typed pass");
-        assert!(matches!(
-            err,
-            AdmissionError::Quota(QuotaExceeded::Monthly)
-        ));
+        assert!(matches!(err, AdmissionError::Quota(QuotaExceeded::Monthly)));
     }
 
     #[tokio::test]

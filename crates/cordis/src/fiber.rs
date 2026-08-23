@@ -94,10 +94,7 @@ impl Fiber {
         *self.epoch.write() = epoch;
     }
 
-    pub(crate) fn set_reload_runner(
-        &self,
-        runner: ReloadRunner,
-    ) {
+    pub(crate) fn set_reload_runner(&self, runner: ReloadRunner) {
         *self.reload_runner.lock() = Some(runner);
     }
 

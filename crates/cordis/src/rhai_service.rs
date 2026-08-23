@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 #[cfg(feature = "rhai")]
-use rhai::{AST, Dynamic, Engine, EvalAltResult, Scope};
+use rhai::{Dynamic, Engine, EvalAltResult, Scope, AST};
 #[cfg(feature = "rhai")]
 use serde::{Deserialize, Serialize};
 
@@ -291,11 +291,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_init_calls_rhai() {
-        let svc =
-            RhaiService::new("test_init", r#"fn init() { "hello" }"#).expect("compile");
+        let svc = RhaiService::new("test_init", r#"fn init() { "hello" }"#).expect("compile");
         let ctx = Context::new_root();
         let out = svc.init(&ctx).await.expect("init should succeed");
-        assert!(out.is_some(), "init with defined fn should return Some(disposable)");
+        assert!(
+            out.is_some(),
+            "init with defined fn should return Some(disposable)"
+        );
         // calling dispose should not panic
         if let Some(d) = out {
             d.dispose();
@@ -312,31 +314,25 @@ mod tests {
 
     #[test]
     fn test_check_true() {
-        let svc =
-            RhaiService::new("check_true", r#"fn check() { true }"#).expect("compile");
+        let svc = RhaiService::new("check_true", r#"fn check() { true }"#).expect("compile");
         assert!(svc.check(), "check() true should return true");
     }
 
     #[test]
     fn test_check_false() {
-        let svc =
-            RhaiService::new("check_false", r#"fn check() { false }"#).expect("compile");
+        let svc = RhaiService::new("check_false", r#"fn check() { false }"#).expect("compile");
         assert!(!svc.check(), "check() false should return false");
     }
 
     #[test]
     fn test_check_default_true_when_missing() {
         let svc = RhaiService::new("check_missing", r#"let x = 1;"#).expect("compile");
-        assert!(
-            svc.check(),
-            "missing check fn should default to true"
-        );
+        assert!(svc.check(), "missing check fn should default to true");
     }
 
     #[test]
     fn test_max_ops() {
-        let svc = RhaiService::new("max_ops_default", r#"fn check() { true }"#)
-            .expect("compile");
+        let svc = RhaiService::new("max_ops_default", r#"fn check() { true }"#).expect("compile");
         assert_eq!(svc.engine.max_operations(), 50_000);
         assert_eq!(svc.engine.max_string_size(), 8192);
         assert_eq!(svc.engine.max_call_levels(), 64);

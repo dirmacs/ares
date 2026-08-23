@@ -335,8 +335,8 @@ impl EventsService {
         &self,
         payload: &E::Payload,
     ) -> Result<serde_json::Value, CordisError> {
-        let value = serde_json::to_value(payload)
-            .map_err(|e| CordisError::Configuration(e.to_string()))?;
+        let value =
+            serde_json::to_value(payload).map_err(|e| CordisError::Configuration(e.to_string()))?;
         self.dispatch(E::NAME.to_string(), value, E::MODE).await
     }
 
@@ -360,7 +360,9 @@ impl EventsService {
                 Err(err) => {
                     tracing::warn!(event = E::NAME, error = %err, "typed listener skipped malformed payload");
                     return Box::pin(async { Ok(v) })
-                        as Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>;
+                        as Pin<
+                            Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>,
+                        >;
                 }
             };
             Box::pin(fut)
@@ -391,7 +393,9 @@ impl EventsService {
                         // the continuation so downstream handlers still run.
                         next(v).await
                     })
-                        as Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>;
+                        as Pin<
+                            Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>,
+                        >;
                 }
             };
             Box::pin(fut)
@@ -780,12 +784,14 @@ mod tests {
                 Ok(serde_json::Value::Null)
             }
         });
-        svc.dispatch_typed::<crate::events_payload::AgentUsageEvent>(&crate::events_payload::AgentUsagePayload {
-            tenant: Some("acme".into()),
-            prompt: 3,
-            completion: 4,
-            total: 7,
-        })
+        svc.dispatch_typed::<crate::events_payload::AgentUsageEvent>(
+            &crate::events_payload::AgentUsagePayload {
+                tenant: Some("acme".into()),
+                prompt: 3,
+                completion: 4,
+                total: 7,
+            },
+        )
         .await
         .unwrap();
         // Emit spawns handlers; poll briefly for the handler to land.
@@ -863,4 +869,3 @@ mod tests {
         assert_eq!(passed["capability"], "chat");
     }
 }
-

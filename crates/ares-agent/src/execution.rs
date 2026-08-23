@@ -260,31 +260,35 @@ impl Execute {
         let ctx_owned = Arc::clone(ctx);
         let orig = req.clone();
         let out = events
-            .waterfall_around( cordis::events_catalog::ev::AGENT_RUN.to_string(), payload, move |payload| async move {
-                let mut run_req = orig;
-                if let Some(name) = payload.get("agent_name").and_then(|v| v.as_str()) {
-                    run_req.agent_name = name.to_string();
-                }
-                if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
-                    run_req.message = msg.to_string();
-                }
-                match execute.run_resolved_or_execute(&run_req, &ctx_owned).await {
-                    Ok(er) => Ok(serde_json::json!({
-                        "content": er.response.content,
-                        "usage": er.response.usage,
-                        "metadata": er.response.metadata.as_ref().map(|m| {
-                            serde_json::json!({
-                                "model_name": m.model_name,
-                                "provider_name": m.provider_name,
-                            })
-                        }),
-                        "source": er.source,
-                        "agent_name": er.agent_name,
-                        "run_id": er.run_id,
-                    })),
-                    Err(e) => Err(CordisError::Fiber(e.to_string())),
-                }
-            })
+            .waterfall_around(
+                cordis::events_catalog::ev::AGENT_RUN.to_string(),
+                payload,
+                move |payload| async move {
+                    let mut run_req = orig;
+                    if let Some(name) = payload.get("agent_name").and_then(|v| v.as_str()) {
+                        run_req.agent_name = name.to_string();
+                    }
+                    if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
+                        run_req.message = msg.to_string();
+                    }
+                    match execute.run_resolved_or_execute(&run_req, &ctx_owned).await {
+                        Ok(er) => Ok(serde_json::json!({
+                            "content": er.response.content,
+                            "usage": er.response.usage,
+                            "metadata": er.response.metadata.as_ref().map(|m| {
+                                serde_json::json!({
+                                    "model_name": m.model_name,
+                                    "provider_name": m.provider_name,
+                                })
+                            }),
+                            "source": er.source,
+                            "agent_name": er.agent_name,
+                            "run_id": er.run_id,
+                        })),
+                        Err(e) => Err(CordisError::Fiber(e.to_string())),
+                    }
+                },
+            )
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         if out.get("deny").and_then(|v| v.as_bool()) == Some(true) {
@@ -378,7 +382,8 @@ impl Execute {
             .map_err(AppError::Internal)?;
         Ok(ExecutionResult {
             response: AgentResponse {
-                content: serde_json::to_string(&value).map_err(|e| AppError::Internal(e.to_string()))?,
+                content: serde_json::to_string(&value)
+                    .map_err(|e| AppError::Internal(e.to_string()))?,
                 usage: None,
                 metadata: None,
             },
@@ -395,7 +400,9 @@ impl Execute {
         _ctx: &Arc<Context>,
         _dispatch: &SkillDispatch,
     ) -> std::result::Result<ExecutionResult, AppError> {
-        Err(AppError::Unavailable("SkillEngine requires postgres".to_string()))
+        Err(AppError::Unavailable(
+            "SkillEngine requires postgres".to_string(),
+        ))
     }
 
     async fn try_run_resolved(
@@ -534,7 +541,12 @@ impl Execute {
             &cordis::AgentCompletedPayload {
                 agent_name: req.agent_name.clone(),
                 run_id: run_id.clone(),
-                status: if result.is_ok() { "completed" } else { "failed" }.to_string(),
+                status: if result.is_ok() {
+                    "completed"
+                } else {
+                    "failed"
+                }
+                .to_string(),
                 event: cordis::events_catalog::ev::AGENT_COMPLETED.to_string(),
             },
         )
@@ -921,28 +933,42 @@ mod tests {
 
         // Handler 1 — `Dispatch::Parallel` must run it before returning.
         let c1 = count.clone();
-        let _d1 = events.on( cordis::events_catalog::ev::AGENT_STARTED.to_string(), move |payload: serde_json::Value| {
-            let c = c1.clone();
-            async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Ok(payload)
-            }
-        });
+        let _d1 = events.on(
+            cordis::events_catalog::ev::AGENT_STARTED.to_string(),
+            move |payload: serde_json::Value| {
+                let c = c1.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok(payload)
+                }
+            },
+        );
 
         // Handler 2 — also must be run before the dispatch returns.
         let c2 = count.clone();
-        let _d2 = events.on( cordis::events_catalog::ev::AGENT_STARTED.to_string(), move |payload: serde_json::Value| {
-            let c = c2.clone();
-            async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Ok(payload)
-            }
-        });
+        let _d2 = events.on(
+            cordis::events_catalog::ev::AGENT_STARTED.to_string(),
+            move |payload: serde_json::Value| {
+                let c = c2.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok(payload)
+                }
+            },
+        );
 
         // Seam the implement phase adds: dispatches "agent.started" with
         // `Dispatch::Parallel` and returns the resulting value.
-        svc.emit_agent_started(&ctx, serde_json::json!({"agent_name": "a"}))
-            .await;
+        svc.emit_agent_started(
+            &ctx,
+            cordis::AgentStartedPayload {
+                agent_name: "a".into(),
+                run_id: String::new(),
+                tenant: String::new(),
+                event: "agent.started".into(),
+            },
+        )
+        .await;
 
         assert_eq!(
             count.load(Ordering::SeqCst),
@@ -961,18 +987,25 @@ mod tests {
 
         let ran = Arc::new(AtomicBool::new(false));
         let flag = ran.clone();
-        let _d = events.on( cordis::events_catalog::ev::AGENT_USAGE.to_string(), move |payload: serde_json::Value| {
-            let flag = flag.clone();
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                flag.store(true, Ordering::SeqCst);
-                Ok(payload)
-            }
-        });
+        let _d = events.on(
+            cordis::events_catalog::ev::AGENT_USAGE.to_string(),
+            move |payload: serde_json::Value| {
+                let flag = flag.clone();
+                async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                    flag.store(true, Ordering::SeqCst);
+                    Ok(payload)
+                }
+            },
+        );
 
         let start = std::time::Instant::now();
-        svc.emit_observability(&ctx, cordis::events_catalog::ev::AGENT_USAGE, serde_json::json!({}))
-            .await;
+        svc.emit_observability(
+            &ctx,
+            cordis::events_catalog::ev::AGENT_USAGE,
+            serde_json::json!({}),
+        )
+        .await;
         let elapsed = start.elapsed();
         assert!(
             elapsed < std::time::Duration::from_millis(40),
@@ -1007,10 +1040,18 @@ mod tests {
         }
 
         let start = std::time::Instant::now();
-        svc.emit_observability(&ctx, cordis::events_catalog::ev::AGENT_COMPLETED, serde_json::json!({}))
-            .await;
-        svc.emit_observability(&ctx, cordis::events_catalog::ev::AGENT_FAILED, serde_json::json!({}))
-            .await;
+        svc.emit_observability(
+            &ctx,
+            cordis::events_catalog::ev::AGENT_COMPLETED,
+            serde_json::json!({}),
+        )
+        .await;
+        svc.emit_observability(
+            &ctx,
+            cordis::events_catalog::ev::AGENT_FAILED,
+            serde_json::json!({}),
+        )
+        .await;
         let elapsed = start.elapsed();
         assert!(
             elapsed < std::time::Duration::from_millis(40),
@@ -1176,10 +1217,13 @@ mod tests {
         let svc = Execute::new();
         let ctx = Context::new_root();
         let events = ctx.provide(cordis::EventsService::new());
-        events.on_waterfall( cordis::events_catalog::ev::AGENT_RUN.to_string(), |mut payload, next| async move {
-            payload["message"] = serde_json::json!("rewritten-hello");
-            next(payload).await
-        });
+        events.on_waterfall(
+            cordis::events_catalog::ev::AGENT_RUN.to_string(),
+            |mut payload, next| async move {
+                payload["message"] = serde_json::json!("rewritten-hello");
+                next(payload).await
+            },
+        );
         let req = AgentRequest {
             agent_name: "echo".into(),
             message: "original".into(),
@@ -1198,14 +1242,17 @@ mod tests {
         let svc = Execute::new();
         let ctx = Context::new_root();
         let events = ctx.provide(cordis::EventsService::new());
-        events.on_waterfall( cordis::events_catalog::ev::AGENT_RUN.to_string(), |_payload, _next| async move {
-            Ok(serde_json::json!({
-                "content": "short-circuit",
-                "source": "system",
-                "agent_name": "echo",
-                "run_id": "test-run",
-            }))
-        });
+        events.on_waterfall(
+            cordis::events_catalog::ev::AGENT_RUN.to_string(),
+            |_payload, _next| async move {
+                Ok(serde_json::json!({
+                    "content": "short-circuit",
+                    "source": "system",
+                    "agent_name": "echo",
+                    "run_id": "test-run",
+                }))
+            },
+        );
         let req = AgentRequest {
             agent_name: "echo".into(),
             message: "would-echo-this-if-core-ran".into(),

@@ -274,7 +274,8 @@ impl SchedulerService {
             return run;
         };
         events
-            .dispatch( cordis::events_catalog::ev::SCHEDULER_BEFORE_RUN.to_string(),
+            .dispatch(
+                cordis::events_catalog::ev::SCHEDULER_BEFORE_RUN.to_string(),
                 run.clone(),
                 cordis::Dispatch::Waterfall,
             )
@@ -321,7 +322,8 @@ impl SchedulerService {
             return true;
         };
         let result = events
-            .dispatch( cordis::events_catalog::ev::SCHEDULER_ADMIT.to_string(),
+            .dispatch(
+                cordis::events_catalog::ev::SCHEDULER_ADMIT.to_string(),
                 run.clone(),
                 cordis::Dispatch::Bail,
             )
@@ -374,28 +376,31 @@ impl Service for SchedulerService {
             });
 
             let failure_control = Arc::clone(&control);
-            events.on(cordis::events_catalog::ev::AGENT_FAILED.to_string(), move |payload| {
-                let failure_control = Arc::clone(&failure_control);
-                Box::pin(async move {
-                    let agent = payload
-                        .get("agent_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let run_id = payload
-                        .get("run_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let failures = failure_control.record_failure();
-                    tracing::warn!(
-                        agent = %agent,
-                        run_id = %run_id,
-                        failures,
-                        disabled = failure_control.is_disabled(),
-                        "scheduler observed agent failure via Cordis event bus"
-                    );
-                    Ok(payload)
-                })
-            });
+            events.on(
+                cordis::events_catalog::ev::AGENT_FAILED.to_string(),
+                move |payload| {
+                    let failure_control = Arc::clone(&failure_control);
+                    Box::pin(async move {
+                        let agent = payload
+                            .get("agent_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let run_id = payload
+                            .get("run_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let failures = failure_control.record_failure();
+                        tracing::warn!(
+                            agent = %agent,
+                            run_id = %run_id,
+                            failures,
+                            disabled = failure_control.is_disabled(),
+                            "scheduler observed agent failure via Cordis event bus"
+                        );
+                        Ok(payload)
+                    })
+                },
+            );
         }
 
         // ReflectService watch notifier: ensure channel exists for DB NOTIFY / polling fallback.
@@ -842,22 +847,19 @@ async fn execute_scheduled_agent(
     let run_id = uuid::Uuid::new_v4().to_string();
     let request_source = scheduled_usage_source(is_catchup);
 
-    let skill_id = ares_store::tenant_agents::get_tenant_agent(
-        &pool,
-        &sched.tenant_id,
-        &sched.agent_name,
-    )
-    .await
-    .ok()
-    .and_then(|record| {
-        record
-            .config
-            .get("skill_id")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-    });
+    let skill_id =
+        ares_store::tenant_agents::get_tenant_agent(&pool, &sched.tenant_id, &sched.agent_name)
+            .await
+            .ok()
+            .and_then(|record| {
+                record
+                    .config
+                    .get("skill_id")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            });
 
     let mut runtime_context = AgentRuntimeContext::new(
         sched.tenant_id.clone(),
@@ -894,7 +896,9 @@ async fn execute_scheduled_agent(
     };
 
     // Skill runs need their id before tool steps can write run_tool_calls.
-    let skill_run = request_ctx.get::<crate::execution::SkillDispatch>().is_some();
+    let skill_run = request_ctx
+        .get::<crate::execution::SkillDispatch>()
+        .is_some();
     if skill_run {
         let metadata = AgentRunMetadata {
             workspace_id: None,
@@ -1088,7 +1092,9 @@ async fn execute_scheduled_agent(
         .await;
     });
 
-    error_msg.map_or(Ok(()), |error| Err(format!("Agent execution failed: {error}")))
+    error_msg.map_or(Ok(()), |error| {
+        Err(format!("Agent execution failed: {error}"))
+    })
 }
 
 #[cfg(test)]
@@ -1428,7 +1434,8 @@ mod tests {
         // A Cordis `Dispatch::Bail` admission policy on `scheduler.admit`: a
         // handler that returns a non-null value bails (denies) the run, while a
         // null result means "did not bail" (the run is admitted).
-        let disposable = events.on( cordis::events_catalog::ev::SCHEDULER_ADMIT.to_string(),
+        let disposable = events.on(
+            cordis::events_catalog::ev::SCHEDULER_ADMIT.to_string(),
             |payload: serde_json::Value| async move {
                 if payload
                     .get("deny")
@@ -1498,11 +1505,14 @@ mod tests {
         );
         let ctx = Context::new_root();
         let events = ctx.provide(cordis::EventsService::new());
-        events.on_waterfall( cordis::events_catalog::ev::SCHEDULER_BEFORE_RUN.to_string(), |payload, next| async move {
-            let mut obj = payload.as_object().cloned().unwrap_or_default();
-            obj.insert("enriched".into(), serde_json::json!(true));
-            next(serde_json::Value::Object(obj)).await
-        });
+        events.on_waterfall(
+            cordis::events_catalog::ev::SCHEDULER_BEFORE_RUN.to_string(),
+            |payload, next| async move {
+                let mut obj = payload.as_object().cloned().unwrap_or_default();
+                obj.insert("enriched".into(), serde_json::json!(true));
+                next(serde_json::Value::Object(obj)).await
+            },
+        );
 
         let enriched = service
             .before_run_payload(&ctx, serde_json::json!({"agent_name":"a","run_id":"r1"}))

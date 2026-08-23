@@ -95,17 +95,19 @@ impl Tools {
         })
         .unwrap_or(serde_json::Value::Null);
         let this = self.clone();
-        let out = match run_waterfall(&events, "tools.resolve", payload, move |p| {
-            async move {
-                let n = p.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-                let tenant = p.get("tenant").and_then(Value::as_str).map(str::to_string);
-                let found = this.resolve_named(&n, tenant.as_deref()).is_some();
-                Ok(json!({
-                    "name": n,
-                    "tenant": p.get("tenant").cloned().unwrap_or(Value::Null),
-                    "found": found,
-                }))
-            }
+        let out = match run_waterfall(&events, "tools.resolve", payload, move |p| async move {
+            let n = p
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let tenant = p.get("tenant").and_then(Value::as_str).map(str::to_string);
+            let found = this.resolve_named(&n, tenant.as_deref()).is_some();
+            Ok(json!({
+                "name": n,
+                "tenant": p.get("tenant").cloned().unwrap_or(Value::Null),
+                "found": found,
+            }))
         }) {
             Ok(v) => v,
             Err(_) => return self.resolve_named(name, tenant.as_deref()),
@@ -114,10 +116,7 @@ impl Tools {
             return None;
         }
         out.get("found")?;
-        let resolved_name = out
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(name);
+        let resolved_name = out.get("name").and_then(Value::as_str).unwrap_or(name);
         self.resolve_named(resolved_name, tenant.as_deref())
     }
 
@@ -127,18 +126,18 @@ impl Tools {
         let Some(events) = ctx.get::<EventsService>() else {
             return self.list_named(tenant.as_deref());
         };
-        let payload = serde_json::to_value(cordis::ToolsListRequest { tenant: tenant.clone() })
-            .unwrap_or(serde_json::Value::Null);
+        let payload = serde_json::to_value(cordis::ToolsListRequest {
+            tenant: tenant.clone(),
+        })
+        .unwrap_or(serde_json::Value::Null);
         let this = self.clone();
-        let out = match run_waterfall(&events, "tools.list", payload, move |p| {
-            async move {
-                let tenant = p.get("tenant").and_then(Value::as_str).map(str::to_string);
-                let tools = this.list_named(tenant.as_deref());
-                Ok(json!({
-                    "tenant": p.get("tenant").cloned().unwrap_or(Value::Null),
-                    "tools": tools,
-                }))
-            }
+        let out = match run_waterfall(&events, "tools.list", payload, move |p| async move {
+            let tenant = p.get("tenant").and_then(Value::as_str).map(str::to_string);
+            let tools = this.list_named(tenant.as_deref());
+            Ok(json!({
+                "tenant": p.get("tenant").cloned().unwrap_or(Value::Null),
+                "tools": tools,
+            }))
         }) {
             Ok(v) => v,
             Err(_) => return self.list_named(tenant.as_deref()),
@@ -161,18 +160,22 @@ impl Tools {
         name: &str,
         args: Value,
     ) -> Result<Value> {
-        let tool = self.resolve(ctx, name).ok_or_else(|| {
-            ares_types::AppError::NotFound(format!("Tool not found: {name}"))
-        })?;
+        let tool = self
+            .resolve(ctx, name)
+            .ok_or_else(|| ares_types::AppError::NotFound(format!("Tool not found: {name}")))?;
         let Some(events) = ctx.get::<EventsService>() else {
             return tool.execute(args).await;
         };
-        let payload =
-            serde_json::to_value(cordis::ToolsExecutePayload { name: name.to_string(), args })
-                .unwrap_or(serde_json::Value::Null);
+        let payload = serde_json::to_value(cordis::ToolsExecutePayload {
+            name: name.to_string(),
+            args,
+        })
+        .unwrap_or(serde_json::Value::Null);
         let out = events
-            .waterfall_around( cordis::events_catalog::ev::TOOLS_EXECUTE.to_string(), payload, move |p| {
-                async move {
+            .waterfall_around(
+                cordis::events_catalog::ev::TOOLS_EXECUTE.to_string(),
+                payload,
+                move |p| async move {
                     let exec_args = p.get("args").cloned().unwrap_or(Value::Null);
                     let result = tool
                         .execute(exec_args)
@@ -185,8 +188,8 @@ impl Tools {
                         out = json!({ "result": result });
                     }
                     Ok(out)
-                }
-            })
+                },
+            )
             .await
             .map_err(|e| ares_types::AppError::Internal(e.to_string()))?;
         Ok(out.get("result").cloned().unwrap_or(Value::Null))
@@ -213,8 +216,7 @@ impl Tools {
         #[cfg(any(feature = "postgres", test))]
         {
             let tenant = tenant_id_from_tool_ctx(ctx);
-            self
-                .runtime
+            self.runtime
                 .as_ref()
                 .and_then(|rt| rt.tool_type_for_tenant(name, tenant.as_deref()))
         }
@@ -246,14 +248,15 @@ impl Tools {
         let mut seen: HashSet<String> = HashSet::new();
         let mut out: Vec<ToolDefinition> = Vec::new();
 
-        let push_defs =
-            |defs: Vec<ToolDefinition>, seen: &mut HashSet<String>, out: &mut Vec<ToolDefinition>| {
-                for d in defs {
-                    if seen.insert(d.name.clone()) {
-                        out.push(d);
-                    }
+        let push_defs = |defs: Vec<ToolDefinition>,
+                         seen: &mut HashSet<String>,
+                         out: &mut Vec<ToolDefinition>| {
+            for d in defs {
+                if seen.insert(d.name.clone()) {
+                    out.push(d);
                 }
-            };
+            }
+        };
 
         #[cfg(any(feature = "postgres", test))]
         if let Some(rt) = &self.runtime {
@@ -377,8 +380,8 @@ mod tests {
 
     #[test]
     fn intercept_tenant_context_yields_acme() {
-        let ctx = Context::new_root()
-            .with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
+        let ctx =
+            Context::new_root().with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
         assert_eq!(tenant_id_from_tool_ctx(&ctx).as_deref(), Some("acme"));
     }
 
@@ -429,13 +432,16 @@ mod tests {
         assert!(names.contains(&"b".to_string()));
 
         let events = ctx.get::<EventsService>().expect("events");
-        events.on_waterfall( cordis::events_catalog::ev::TOOLS_LIST.to_string(), |payload, next| async move {
-            let mut out = next(payload).await?;
-            if let Some(arr) = out.get_mut("tools").and_then(Value::as_array_mut) {
-                arr.retain(|t| t.get("name").and_then(Value::as_str) != Some("b"));
-            }
-            Ok(out)
-        });
+        events.on_waterfall(
+            cordis::events_catalog::ev::TOOLS_LIST.to_string(),
+            |payload, next| async move {
+                let mut out = next(payload).await?;
+                if let Some(arr) = out.get_mut("tools").and_then(Value::as_array_mut) {
+                    arr.retain(|t| t.get("name").and_then(Value::as_str) != Some("b"));
+                }
+                Ok(out)
+            },
+        );
         let names: Vec<_> = svc.list(&ctx).into_iter().map(|d| d.name).collect();
         assert!(names.contains(&"a".to_string()));
         assert!(!names.contains(&"b".to_string()));
@@ -448,9 +454,10 @@ mod tests {
         ctx.provide(EventsService::new());
         assert!(svc.resolve(&ctx, "a").is_some());
         let events = ctx.get::<EventsService>().expect("events");
-        events.on_waterfall( cordis::events_catalog::ev::TOOLS_RESOLVE.to_string(), |payload, _next| async move {
-            Ok(payload)
-        });
+        events.on_waterfall(
+            cordis::events_catalog::ev::TOOLS_RESOLVE.to_string(),
+            |payload, _next| async move { Ok(payload) },
+        );
         assert!(svc.resolve(&ctx, "a").is_none());
     }
 
@@ -476,9 +483,10 @@ mod tests {
         let ctx = Context::new_root();
         ctx.provide(EventsService::new());
         let events = ctx.get::<EventsService>().expect("events");
-        events.on_waterfall( cordis::events_catalog::ev::TOOLS_EXECUTE.to_string(), |_payload, _next| async move {
-            Ok(json!({ "result": { "short": true } }))
-        });
+        events.on_waterfall(
+            cordis::events_catalog::ev::TOOLS_EXECUTE.to_string(),
+            |_payload, _next| async move { Ok(json!({ "result": { "short": true } })) },
+        );
         let out = svc
             .execute(&ctx, "probe", json!({}))
             .await

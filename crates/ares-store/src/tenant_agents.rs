@@ -1343,7 +1343,7 @@ mod tests {
         async fn integration_create_get_delete_tenant_agent() {
             let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
             let tenant_id = unique_tenant();
-            sqlx::query("INSERT INTO tenants (id, name, tier, status, created_at, updated_at) VALUES ($1, $2, 'free', 'active', 1, 1) ON CONFLICT (id) DO NOTHING")
+            sqlx::query("INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $2, 'free', 1, 1) ON CONFLICT (id) DO NOTHING")
                 .bind(&tenant_id).bind("Test Tenant").execute(&pool).await.expect("tenant");
             let created = create_tenant_agent(&pool, &tenant_id, CreateTenantAgentRequest {
                 agent_name: "product".into(), display_name: "Product".into(), description: Some("i".into()),
@@ -1370,7 +1370,7 @@ mod tests {
         async fn integration_list_tenant_agents_orders_by_name() {
             let Some(pool) = try_test_pool().await else { return; };
             let tenant_id = unique_tenant();
-            sqlx::query("INSERT INTO tenants (id, name, tier, status, created_at, updated_at) VALUES ($1, $2, 'free', 'active', 1, 1) ON CONFLICT (id) DO NOTHING")
+            sqlx::query("INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $2, 'free', 1, 1) ON CONFLICT (id) DO NOTHING")
                 .bind(&tenant_id).bind("List Tenant").execute(&pool).await.expect("tenant");
             for name in ["zebra", "alpha"] {
                 create_tenant_agent(&pool, &tenant_id, CreateTenantAgentRequest {

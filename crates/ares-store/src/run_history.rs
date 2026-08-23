@@ -357,6 +357,9 @@ impl<'a> RunHistoryStore<'a> {
         }
         sql.push_str(" ORDER BY created_at DESC, id ASC LIMIT $7 OFFSET $8");
 
+        // `Default` derives limit 0, which Postgres reads as "no rows";
+        // clamp so programmatic callers get sane pagination.
+        let limit = if q.limit > 0 { q.limit } else { 100 };
         let mut query = sqlx::query(&sql);
         query = query.bind(&q.run_id);
         query = query.bind(&q.tenant_id);
@@ -364,7 +367,7 @@ impl<'a> RunHistoryStore<'a> {
         query = query.bind(&q.provider);
         query = query.bind(&q.model);
         query = query.bind(&q.status);
-        query = query.bind(q.limit);
+        query = query.bind(limit);
         query = query.bind(q.offset);
 
         let rows = query.fetch_all(self.pool).await.map_err(sqlx_err)?;
@@ -466,6 +469,8 @@ impl<'a> RunHistoryStore<'a> {
         }
         sql.push_str(" ORDER BY created_at DESC, id ASC LIMIT $7 OFFSET $8");
 
+        // Same zero-limit clamp as `list_llm_calls`.
+        let limit = if q.limit > 0 { q.limit } else { 100 };
         let mut query = sqlx::query(&sql);
         query = query.bind(&q.run_id);
         query = query.bind(&q.tenant_id);
@@ -473,7 +478,7 @@ impl<'a> RunHistoryStore<'a> {
         query = query.bind(&q.tool_name);
         query = query.bind(&q.tool_type);
         query = query.bind(&q.status);
-        query = query.bind(q.limit);
+        query = query.bind(limit);
         query = query.bind(q.offset);
 
         let rows = query.fetch_all(self.pool).await.map_err(sqlx_err)?;
@@ -1394,6 +1399,23 @@ mod tests {
         Some(db.pool)
     }
 
+    /// Seed the tenant and agent_runs parents required by run-history FKs.
+    async fn seed_integration_parents(pool: &PgPool, tenant_id: &str, run_id: &str) {
+        let _ = sqlx::query(
+            "INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $1, 'free', 1, 1) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(tenant_id)
+        .execute(pool)
+        .await;
+        let _ = sqlx::query(
+            "INSERT INTO agent_runs (id, tenant_id, agent_name, status, input_tokens, output_tokens, duration_ms, created_at) VALUES ($1, $2, 'integration-test-agent', 'completed', 0, 0, 0, 1) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(run_id)
+        .bind(tenant_id)
+        .execute(pool)
+        .await;
+    }
+
     #[tokio::test]
     async fn integration_llm_call_crud_roundtrip() {
         let Some(pool) = try_test_pool().await else {
@@ -1401,6 +1423,7 @@ mod tests {
             return;
         };
         let store = RunHistoryStore::new(&pool);
+        seed_integration_parents(&pool, "tenant-integration", "run-integration-1").await;
 
         // Clean up
         let _ = sqlx::query("DELETE FROM run_llm_calls WHERE agent_name LIKE 'integration-test-%'")
@@ -1467,6 +1490,7 @@ mod tests {
             return;
         };
         let store = RunHistoryStore::new(&pool);
+        seed_integration_parents(&pool, "tenant-integration", "run-integration-2").await;
 
         // Clean up
         let _ =
@@ -1622,10 +1646,17 @@ mod tests {
             .execute(&pool)
             .await;
 
+        let alert_tenant = format!("integration-test-{}", uuid::Uuid::new_v4());
+        let _ = sqlx::query(
+            "INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $1, 'free', 1, 1) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(&alert_tenant)
+        .execute(&pool)
+        .await;
         let now = chrono::Utc::now().timestamp();
         let alert = BudgetAlert {
             id: id.clone(),
-            tenant_id: format!("integration-test-{}", uuid::Uuid::new_v4()),
+            tenant_id: alert_tenant,
             alert_type: "threshold_reached".into(),
             current_spend_usd: dec!(85.00),
             limit_usd: dec!(100.00),

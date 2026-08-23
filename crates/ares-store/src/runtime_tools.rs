@@ -783,6 +783,12 @@ mod tests {
         let _ = sqlx::query("DELETE FROM runtime_tools WHERE name LIKE 'integration-test-%'")
             .execute(&pool)
             .await;
+        // created_by/tenant_id reference tenants(id); seed the parent row.
+        let _ = sqlx::query(
+            "INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ('integration-tenant', 'Integration Tenant', 'free', 1, 1) ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await;
 
         // Create
         let req = CreateRuntimeToolRequest {
@@ -875,6 +881,16 @@ mod tests {
 
         let tenant_a = format!("tenant-{}", uuid::Uuid::new_v4());
         let tenant_b = format!("tenant-{}", uuid::Uuid::new_v4());
+
+        // created_by/tenant_id reference tenants(id); seed the parents.
+        for tenant in [&tenant_a, &tenant_b] {
+            let _ = sqlx::query(
+                "INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $1, 'free', 1, 1) ON CONFLICT (id) DO NOTHING",
+            )
+            .bind(tenant)
+            .execute(&pool)
+            .await;
+        }
 
         // Clean up
         let _ = sqlx::query("DELETE FROM runtime_tools WHERE name LIKE 'scoping-%'")

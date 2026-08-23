@@ -1119,11 +1119,17 @@ mod tool_call_tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn skills_service_tool_call_uses_execute() {
-        let ctx = Context::new_root();
-        let events = ctx.provide(EventsService::new());
+        // block_in_place inside Tools::list requires the multi-thread runtime.
+        // block_in_place inside Tools::list requires the multi-thread runtime.
+        let root = Context::new_root();
+        let events = root.provide(EventsService::new());
+        // Skill steps resolve inside the tenant realm; label once and provide
+        // into that realm so the helper's re-isolate walks into it.
+        let ctx = root.isolate::<Tools>("acme");
         ctx.provide(Tools::from_static([Arc::new(ProbeTool) as Arc<dyn Tool>]));
+        let _ = events;
         events.on_waterfall("tools.execute".into(), |payload, _next| async move {
             let name = payload
                 .get("name")
@@ -1147,10 +1153,15 @@ mod tool_call_tests {
     fn skills_service_resolve_isolates_tenant() {
         let parent = Context::new_root();
         parent.provide(Tools::from_static([Arc::new(ProbeTool) as Arc<dyn Tool>]));
-        let found = resolve_skill_tool(&parent, "acme", "probe");
+        // Realm boundary: parent tools must NOT leak into the acme scope...
+        assert!(resolve_skill_tool(&parent, "acme", "probe").is_none());
+        // ...and tools provided inside the scope resolve there.
+        let scoped = parent.isolate::<Tools>("acme");
+        scoped.provide(Tools::from_static([Arc::new(ProbeTool) as Arc<dyn Tool>]));
+        assert!(resolve_skill_tool(&scoped, "acme", "probe").is_some());
         assert!(
-            found.is_some(),
-            "Tools on parent must remain visible after isolate::<Tools>(acme)"
+            parent.get::<Tools>().is_some(),
+            "parent Tools survives scope activity"
         );
     }
 }

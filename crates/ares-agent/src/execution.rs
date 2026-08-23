@@ -794,13 +794,20 @@ pub fn request_user_scope(ctx: &Arc<Context>, user_id: &str) -> Arc<Context> {
 /// Derive user/tenant scope: `Execute` isolate label (strip `tenant:`/`user:`),
 /// then `TenantContext` intercept, then `fallback`.
 pub fn user_id_from_ctx(ctx: &Arc<Context>, fallback: &str) -> String {
-    if let Some(label) = ctx.isolate_label(std::any::TypeId::of::<Execute>()) {
-        let trimmed = label
-            .strip_prefix("tenant:")
-            .or_else(|| label.strip_prefix("user:"))
-            .unwrap_or(&label);
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
+    // Legacy label first (realms created before Execute stopped being
+    // isolated), then the live realm boundary on `Tools`.
+    for tid in [
+        std::any::TypeId::of::<Execute>(),
+        std::any::TypeId::of::<ares_tools::Tools>(),
+    ] {
+        if let Some(label) = ctx.isolate_label(tid) {
+            let trimmed = label
+                .strip_prefix("tenant:")
+                .or_else(|| label.strip_prefix("user:"))
+                .unwrap_or(&label);
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
         }
     }
     if let Some(tc) = ctx.get::<ares_types::models::TenantContext>() {
@@ -1224,11 +1231,12 @@ mod tests {
                 .as_deref(),
             Some("acme")
         );
+        // Execute is the shared engine: no realm label, always resolvable.
         assert_eq!(
             scoped
                 .isolate_label(std::any::TypeId::of::<Execute>())
                 .as_deref(),
-            Some("acme")
+            None
         );
         #[cfg(feature = "postgres")]
         {
@@ -1250,11 +1258,12 @@ mod tests {
         let root = Context::new_root();
         let scoped = request_user_scope(&root, "user-1");
         assert!(scoped.get::<ares_types::models::TenantContext>().is_none());
+        // Execute stays unlabeled (shared engine); Tools carries the realm.
         assert_eq!(
             scoped
                 .isolate_label(std::any::TypeId::of::<Execute>())
                 .as_deref(),
-            Some("user:user-1")
+            None
         );
         assert_eq!(
             scoped

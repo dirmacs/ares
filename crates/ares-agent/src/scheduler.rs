@@ -427,45 +427,37 @@ impl Service for SchedulerService {
         // agent.failed for runtime control (the legacy start_scheduler shim is
         // never called by the live server).
         if let Some(events) = ctx.get::<cordis::EventsService>() {
-            events.on("agent.completed".into(), |payload| {
-                Box::pin(async move {
-                    if let Some(agent) = payload.get("agent_name").and_then(|v| v.as_str()) {
-                        tracing::debug!(
-                            agent = %agent,
-                            status = %payload.get("status").and_then(|v| v.as_str()).unwrap_or("unknown"),
-                            "scheduler: observed agent completion via Cordis event bus"
-                        );
-                    }
-                    Ok(payload)
-                })
+            events.on_typed::<cordis::AgentCompletedEvent, _, _>(|payload| async move {
+                tracing::debug!(
+                    agent = %payload.agent_name,
+                    status = %payload.status,
+                    "scheduler: observed agent completion via Cordis event bus"
+                );
+                Ok(serde_json::Value::Null)
             });
 
             let failure_control = Arc::clone(&control);
-            events.on(
-                cordis::events_catalog::ev::AGENT_FAILED.to_string(),
-                move |payload| {
-                    let failure_control = Arc::clone(&failure_control);
-                    Box::pin(async move {
-                        let agent = payload
-                            .get("agent_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown");
-                        let run_id = payload
-                            .get("run_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown");
-                        let failures = failure_control.record_failure();
-                        tracing::warn!(
-                            agent = %agent,
-                            run_id = %run_id,
-                            failures,
-                            disabled = failure_control.is_disabled(),
-                            "scheduler observed agent failure via Cordis event bus"
-                        );
-                        Ok(payload)
-                    })
-                },
-            );
+            events.on_typed::<cordis::AgentFailedEvent, _, _>(move |payload| {
+                let failure_control = Arc::clone(&failure_control);
+                async move {
+                    // Raw handlers logged "unknown" for a missing run_id; the
+                    // typed struct defaults the field to "", so keep parity.
+                    let run_id = if payload.run_id.is_empty() {
+                        "unknown"
+                    } else {
+                        payload.run_id.as_str()
+                    };
+                    let failures = failure_control.record_failure();
+                    tracing::warn!(
+                        agent = %payload.agent_name,
+                        run_id = %run_id,
+                        failures,
+                        disabled = failure_control.is_disabled(),
+                        "scheduler observed agent failure via Cordis event bus"
+                    );
+                    Ok(serde_json::Value::Null)
+                }
+            });
         }
 
         // ReflectService watch notifier: ensure channel exists for DB NOTIFY / polling fallback.
@@ -673,17 +665,13 @@ pub(crate) fn scheduled_pipeline_trigger<'a>(
 pub async fn start_scheduler(pool: PgPool, app_state: std::sync::Arc<cordis::Context>) {
     // Cordis Events: subscribe to agent.completed for scheduler metrics
     if let Some(events) = app_state.get::<cordis::EventsService>() {
-        events.on("agent.completed".into(), |payload| {
-            Box::pin(async move {
-                if let Some(agent) = payload.get("agent_name").and_then(|v| v.as_str()) {
-                    tracing::debug!(
-                        agent = %agent,
-                        status = %payload.get("status").and_then(|v| v.as_str()).unwrap_or("unknown"),
-                        "scheduler: observed agent completion via Cordis event bus"
-                    );
-                }
-                Ok(payload)
-            })
+        events.on_typed::<cordis::AgentCompletedEvent, _, _>(|payload| async move {
+            tracing::debug!(
+                agent = %payload.agent_name,
+                status = %payload.status,
+                "scheduler: observed agent completion via Cordis event bus"
+            );
+            Ok(serde_json::Value::Null)
         });
     }
     let mut ticker = interval(Duration::from_secs(60));
@@ -1551,6 +1539,57 @@ mod tests {
         service.control().reset();
         assert_eq!(service.control().failure_count(), 0);
         assert!(!service.control().is_disabled());
+        disposable.dispose();
+    }
+
+    /// End-to-end proof of the typed-listener migration: production emits
+    /// `agent.failed` via `dispatch_typed`, and the migrated `on_typed`
+    /// listener must still drive scheduler runtime control (failure counting
+    /// and pause threshold).
+    #[tokio::test]
+    async fn agent_failed_typed_dispatch_drives_runtime_control() {
+        let service = SchedulerService::new(
+            Arc::new(PostgresClient::new_test()),
+            Arc::new(Execute::new()),
+            60_000,
+        );
+        let ctx = Context::new_root();
+        let events = ctx.provide(cordis::EventsService::new());
+        let disposable = service
+            .init(&ctx)
+            .await
+            .expect("scheduler init should succeed")
+            .expect("scheduler should return a disposal guard");
+
+        assert_eq!(service.control().failure_count(), 0);
+
+        async fn wait_for(control: &SchedulerControl, expected: usize) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+            while control.failure_count() < expected {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timeout waiting for failure_count >= {expected}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+
+        // Production path: typed dispatch of AgentFailedEvent.
+        for run_id in ["run-1", "run-2", "run-3"] {
+            events
+                .dispatch_typed::<cordis::AgentFailedEvent>(&cordis::AgentFailedPayload {
+                    agent_name: "scheduled-agent".into(),
+                    run_id: run_id.into(),
+                    tenant: "tenant-a".into(),
+                    event: cordis::events_catalog::ev::AGENT_FAILED.to_string(),
+                })
+                .await
+                .expect("typed emit dispatch should succeed");
+        }
+        wait_for(&service.control(), 3).await;
+        assert_eq!(service.control().failure_count(), 3);
+        assert!(service.control().is_disabled());
+
         disposable.dispose();
     }
 

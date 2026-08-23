@@ -36,6 +36,47 @@ inventory::submit! {
     CordisInventory { name: "Loader" }
 }
 
+// Kernel factory submits — same feature gates as the manual registrations.
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    CordisPluginFactory { name: "EventsService", make: factory_events_service }
+}
+#[cfg(all(feature = "inventory", feature = "rhai"))]
+inventory::submit! {
+    CordisPluginFactory { name: "RhaiPolicy", make: factory_rhai_policy }
+}
+
+/// Function-pointer form of [`PluginFactory`] carried through inventory.
+///
+/// Factories are plain `fn` items so they can cross crate boundaries as
+/// static data; the registry wraps them in the usual `Arc<dyn Fn>`.
+#[cfg(feature = "inventory")]
+pub type PluginFactoryFn = fn(&Arc<Context>, &serde_json::Value) -> Result<FiberId, CordisError>;
+
+/// Compile-time collected plugin factory (inventory feature only).
+#[cfg(feature = "inventory")]
+pub struct CordisPluginFactory {
+    /// Loader plugin key (e.g. `"Http"`, `"SchedulerService"`).
+    pub name: &'static str,
+    /// The factory function itself.
+    pub make: PluginFactoryFn,
+}
+
+#[cfg(feature = "inventory")]
+inventory::collect!(CordisPluginFactory);
+
+/// Register every inventory-collected factory onto `reg`.
+///
+/// This is the primary registration path for binaries built with the
+/// default features; the hand-written per-crate `register_plugins` chains
+/// remain as the fallback when `inventory` is off.
+#[cfg(feature = "inventory")]
+pub fn register_inventory_factories(reg: &PluginRegistry) {
+    for entry in inventory::iter::<CordisPluginFactory> {
+        reg.register(entry.name, Arc::new(entry.make));
+    }
+}
+
 #[cfg(feature = "inventory")]
 pub fn inventory_len() -> usize {
     inventory::iter::<CordisInventory>.into_iter().count()
@@ -158,26 +199,39 @@ impl Default for PluginRegistry {
 
 impl Service for PluginRegistry {}
 
+fn block_on_plugin<S: Service + 'static>(
+    ctx: &Arc<Context>,
+    svc: S,
+) -> Result<FiberId, CordisError> {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(ctx.plugin(svc)))
+}
+
+/// Kernel `EventsService` loader factory.
+pub fn factory_events_service(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<FiberId, CordisError> {
+    block_on_plugin(ctx, EventsService::new())
+}
+
+/// Kernel `RhaiPolicy` loader factory (feature `rhai`).
+#[cfg(feature = "rhai")]
+pub fn factory_rhai_policy(
+    ctx: &Arc<Context>,
+    config: &serde_json::Value,
+) -> Result<FiberId, CordisError> {
+    let cfg: RhaiServiceConfig = serde_json::from_value(config.clone())
+        .map_err(|e| CordisError::Configuration(format!("invalid RhaiPolicy config: {e}")))?;
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(ctx.plugin_with(RhaiPlugin, cfg))
+    })
+}
+
 /// Register kernel string factories consumed by the declarative loader.
 pub fn register_plugins(reg: &PluginRegistry) {
-    reg.register(
-        "EventsService",
-        Arc::new(|ctx, _config| {
-            let future = ctx.plugin(EventsService::new());
-            tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
-        }),
-    );
+    reg.register("EventsService", Arc::new(factory_events_service));
     #[cfg(feature = "rhai")]
-    reg.register(
-        "RhaiPolicy",
-        Arc::new(|ctx, config| {
-            let cfg: RhaiServiceConfig = serde_json::from_value(config.clone()).map_err(|e| {
-                CordisError::Configuration(format!("invalid RhaiPolicy config: {e}"))
-            })?;
-            let future = ctx.plugin_with(RhaiPlugin, cfg);
-            tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
-        }),
-    );
+    reg.register("RhaiPolicy", Arc::new(factory_rhai_policy));
 }
 
 // ---------------------------------------------------------------------------

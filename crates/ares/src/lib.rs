@@ -16,7 +16,7 @@
 
 pub use ares_agent::{AgentConfig, AgentRegistry, AgentRequest, Execute, ExecutionResult};
 pub use ares_llm::coordinator::ConversationMessage;
-pub use ares_llm::{Llm, LLMClient, LLMResponse};
+pub use ares_llm::{LLMClient, LLMResponse, Llm};
 pub use ares_tools::{Calculator, Tool, Tools};
 pub use ares_types::types::ToolDefinition;
 pub use ares_types::{AppError, TenantContext, TenantTier};

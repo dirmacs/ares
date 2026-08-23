@@ -19,10 +19,21 @@ fn block_on_plugin<S: cordis::Service + 'static>(
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(ctx.plugin(svc)))
 }
 
-/// Register the `CalculatorService` and `Tools` loader factories.
+/// Register the `CalculatorService` and `Tools` loader factories
+/// (manual fallback path; inventory carries the same pair).
 pub fn register_plugins(reg: &cordis::PluginRegistry) {
     reg.register("CalculatorService", Arc::new(factory_calculator));
     reg.register("Tools", Arc::new(factory_tools));
+}
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "CalculatorService", make: factory_calculator }
+}
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "Tools", make: factory_tools }
 }
 
 fn factory_calculator(
@@ -35,9 +46,7 @@ fn factory_calculator(
         CalculatorConfig
     } else {
         serde_json::from_value::<CalculatorConfig>(config.clone()).map_err(|error| {
-            cordis::CordisError::Configuration(format!(
-                "invalid CalculatorService config: {error}"
-            ))
+            cordis::CordisError::Configuration(format!("invalid CalculatorService config: {error}"))
         })?
     };
     block_on_plugin(ctx, CalculatorService::with_config(calculator_config))
@@ -125,9 +134,7 @@ fn register_connector_tools(ctx: &Arc<cordis::Context>, tool_registry: &mut Tool
             );
         }
         (Some(_), None) => {
-            tracing::warn!(
-                "PostgresClient missing; pre-built connector tools are not registered"
-            );
+            tracing::warn!("PostgresClient missing; pre-built connector tools are not registered");
         }
         (None, _) => {
             tracing::warn!(

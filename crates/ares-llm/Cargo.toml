@@ -10,6 +10,8 @@ description = "LLM provider clients and abstractions for ARES"
 
 [features]
 default = []
+# Compile-time factory collection (mirrors the server root feature)
+inventory = ["dep:inventory", "cordis/inventory"]
 ollama = ["dep:ollama-rs"]
 openai = ["dep:async-openai"]
 azure = ["openai"]
@@ -26,6 +28,7 @@ ares-types = { workspace = true }
 ares-tools = { workspace = true }
 ares-store = { workspace = true, optional = true }
 cordis = { workspace = true }
+inventory = { workspace = true, optional = true }
 chrono = { workspace = true }
 sqlx = { workspace = true, optional = true }
 async-stream = "0.3.6"

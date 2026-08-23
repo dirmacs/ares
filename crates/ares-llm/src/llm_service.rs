@@ -24,8 +24,11 @@ use parking_lot::RwLock;
 
 use crate::capabilities::CapabilityRequirements;
 use crate::client::{LLMClient, LLMResponse};
+use crate::config::ProviderConfig;
 use crate::pool::ClientPool;
-use crate::provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
+use crate::provider_registry::{
+    ConfigBasedLLMFactory, ModelInfo, ProviderRegistry, RuntimeProviderEntry,
+};
 use ares_types::types::{AppError, ToolDefinition};
 
 /// Per-request model override for `ctx.intercept`.
@@ -520,6 +523,35 @@ impl Llm {
     /// Stub for capability-based model selection (delegates to registry).
     pub fn find_model_stub(&self, _capability: &str) -> Option<String> {
         None
+    }
+
+    /// List registered models with their provider info.
+    pub fn list_models(&self) -> Vec<ModelInfo> {
+        self.provider_registry.list_models()
+    }
+
+    /// Check if a provider exists for the given tenant (legacy or runtime).
+    pub fn has_provider_for_tenant(&self, name: &str, tenant_id: Option<&str>) -> bool {
+        self.provider_registry.has_provider_for_tenant(name, tenant_id)
+    }
+
+    /// Resolve a provider visible to the tenant derived from `ctx`.
+    pub fn get_provider_for_ctx(
+        &self,
+        ctx: &Arc<Context>,
+        name: &str,
+    ) -> Option<ProviderConfig> {
+        self.provider_registry.get_provider_for_ctx(ctx, name)
+    }
+
+    /// Hot-swap the runtime provider map.
+    pub fn reload_runtime_providers(
+        &self,
+        providers: Vec<RuntimeProviderEntry>,
+        names: Vec<String>,
+    ) {
+        self.provider_registry
+            .reload_runtime_providers(providers, names);
     }
 }
 
@@ -1022,5 +1054,31 @@ mod tests {
             Err(err) => err,
         };
         assert!(matches!(err, AppError::InvalidInput(msg) if msg == "llm.get_client denied"));
+    }
+
+    #[test]
+    fn llm_list_models_exposes_registry_models() {
+        let mut registry = ProviderRegistry::new();
+        registry.register_model(
+            "stub-model",
+            crate::config::ModelConfig {
+                provider: "stub".into(),
+                model: "stub-model".into(),
+                temperature: 0.7,
+                max_tokens: 512,
+            },
+        );
+        let llm = Llm::new(
+            Arc::new(registry),
+            Arc::new(ClientPool::with_defaults()),
+            None,
+        );
+        let models = llm.list_models();
+        assert!(
+            models
+                .iter()
+                .any(|m| m.name == "stub-model" && m.provider == "stub"),
+            "Llm::list_models should expose registry models: {models:?}"
+        );
     }
 }

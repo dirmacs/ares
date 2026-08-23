@@ -26,13 +26,12 @@ pub async fn v1_chat(
     Json(payload): Json<ChatRequest>,
 ) -> Result<axum::response::Response> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    let state_ctx = state_ctx.isolate::<ares_tools::Tools>(&tc.tenant_id);
     // Per-request model override is implemented via ModelOverride + Cordis intercept
     // (see the DI path below: state_ctx.with_intercept(ModelOverride { .. })).
 
@@ -121,7 +120,6 @@ pub async fn v1_chat(
         } else {
             state_ctx.clone()
         };
-        let req_ctx = req_ctx.isolate::<ares_tools::Tools>(&tc.tenant_id);
         let req_ctx = ares_agent::tenant_scope(&req_ctx, &tc.tenant_id);
         if let Some(ext) = eruka_context.clone() {
             req_ctx.provide(ares_agent::ExternalContext(ext));
@@ -216,13 +214,11 @@ pub async fn v1_research(
     Json(payload): Json<ResearchRequest>,
 ) -> Result<Response> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    let state_ctx = state_ctx.isolate::<ares_tools::Tools>(&tc.tenant_id);
 
     if state_ctx.get::<ares_agent::EmergencyStop>().expect("not provided")
         .is_active()
@@ -251,13 +247,17 @@ pub async fn v1_research(
         .map(|m| m.provider.clone())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let llm_client = match state_ctx.get::<ares_llm::ProviderRegistry>().expect("not provided")
-        .create_client_for_model_ctx(&state_ctx, model_key)
-        .await
-    {
-        Ok(client) => client,
-        Err(_) => state_ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>().expect("LlmFactory not provided").create_default().await?,
-    };
+    let llm = state_ctx.get::<ares_llm::Llm>().ok_or_else(|| {
+        HttpError::from(AppError::Configuration(
+            "Llm service is not provided on the request context".to_string(),
+        ))
+    })?;
+    let model_ctx = state_ctx.with_intercept(ares_llm::ModelOverride {
+        model: model_key.to_string(),
+    });
+    let llm_client = llm
+        .get_client_boxed(&model_ctx, ares_llm::CapabilityRequirements::default())
+        .await?;
     let model_name = llm_client.model_name().to_string();
     ensure_research_model_allowed(&state_ctx, &tc.tenant_id, &model_name).await?;
 
@@ -296,7 +296,7 @@ mod tests {
     use ares_agent::ConfigurableAgent;
     use ares_agent::AgentConfig;
     use ares_llm::{LLMClient, LLMResponse};
-    use ares_tools::registry::{Tool, ToolRegistry};
+    use ares_tools::Tool;
     use ares_types::types::ToolDefinition;
     use async_trait::async_trait;
     use serde_json::Value;
@@ -400,10 +400,11 @@ mod tests {
     #[test]
     fn tenant_isolated_service_reaches_agent_and_denies_other_tenant_tool() {
         let root = Context::new_root();
-        let mut registry = ToolRegistry::new();
-        registry.register(Arc::new(TestTool("tenant_a_tool")));
-        registry.register(Arc::new(TestTool("tenant_b_tool")));
-        root.provide(ares_tools::Tools::new(Arc::new(registry)));
+        let tools = ares_tools::Tools::from_static([
+            Arc::new(TestTool("tenant_a_tool")) as Arc<dyn Tool>,
+            Arc::new(TestTool("tenant_b_tool")) as Arc<dyn Tool>,
+        ]);
+        root.provide(tools);
 
         let config = AgentConfig {
             model: "test".to_string(),

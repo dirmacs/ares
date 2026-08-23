@@ -177,18 +177,18 @@ pub use db::tenants::TenantDb;
 pub use db::PostgresClient;
 #[cfg(feature = "postgres")]
 pub use db::fleet_provider_secrets::FleetProviderSecretsStore;
+// Residual: tests import ConfigBasedLLMFactory / ProviderRegistry at crate
+// root (api_tests, integration_toml_tests, v1_tenant_agent_runtime_tests).
+// NvidiaCatalogCache is not crate-root imported by binary or tests.
 pub use llm::client::LLMClientFactoryTrait;
 pub use llm::{
-    ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, NvidiaCatalogCache,
-    Provider, ProviderRegistry,
+    ConfigBasedLLMFactory, LLMClient, LLMClientFactory, LLMResponse, Provider, ProviderRegistry,
 };
 pub use models::{ApiKey, QuotaExceeded, Tenant, TenantContext, TenantQuota, TenantTier};
 pub use ares_store::{FleetSecrets, MasterKey};
 #[cfg(feature = "postgres")]
 pub use observability::RunObservability;
-pub use tools::{Tool, ToolRegistry, Tools};
-#[cfg(feature = "postgres")]
-pub use tools::RuntimeToolRegistry;
+pub use tools::{Tool, Tools};
 pub use types::{AppError, ErrorCode, Result};
 pub use overlay::{AresConfig, AresConfigManager, Overlay, OverlayPlugin};
 pub use overlay as toml_config;

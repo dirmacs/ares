@@ -40,6 +40,7 @@ type ConfigFsNotify = notify::ReadDirectoryChangesWatcher;
 type ConfigFsNotify = notify::PollWatcher;
 use notify::{Event, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1125,9 +1126,21 @@ impl DynamicConfigManager {
 impl cordis::Service for DynamicConfigManager {
     fn name(&self) -> &'static str { "dynamic_config_manager" }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
+        // Overlay::watch_cordis owns the single watch_many_with for TOON dirs.
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool { true }
+}
+
+/// Notify Tools and Execute TypeIds after a TOON reload.
+///
+/// Overlay's `watch_many_with` callback calls this instead of starting a
+/// second notify watcher on [`DynamicConfigManager`].
+pub(crate) fn notify_tools_and_execute(ctx: &Arc<cordis::Context>) {
+    if let Some(reflect) = ctx.get::<cordis::ReflectService>() {
+        reflect.notify(TypeId::of::<ares_tools::Tools>());
+        reflect.notify(TypeId::of::<ares_agent::Execute>());
+    }
 }
 
 fn json_extra_to_toml(extra: &HashMap<String, serde_json::Value>) -> HashMap<String, toml::Value> {
@@ -1804,6 +1817,27 @@ model: fast
         let got = ctx.get::<DynamicConfigManager>().expect("provided");
         assert_eq!(got.name(), "dynamic_config_manager");
         assert!(got.check());
+    }
+
+    #[test]
+    fn toon_changes_notify_tools_and_execute_type_ids() {
+        let ctx = cordis::Context::new_root();
+        let reflect = ctx.provide(cordis::ReflectService::new());
+        let mut tools_rx = reflect.ensure_notifier(TypeId::of::<ares_tools::Tools>());
+        let mut execute_rx = reflect.ensure_notifier(TypeId::of::<ares_agent::Execute>());
+        let _ = tools_rx.borrow_and_update();
+        let _ = execute_rx.borrow_and_update();
+
+        super::notify_tools_and_execute(&ctx);
+
+        assert!(
+            tools_rx.has_changed().expect("tools watch"),
+            "TOON notify must signal TypeId::of::<Tools>()"
+        );
+        assert!(
+            execute_rx.has_changed().expect("execute watch"),
+            "TOON notify must signal TypeId::of::<Execute>()"
+        );
     }
 
 }

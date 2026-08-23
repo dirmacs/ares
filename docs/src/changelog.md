@@ -21,6 +21,13 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - `RunTracker` trait extracted to `ares-agent` for decoupled run observability
 - `Service` impl directly on `AgentRegistry` and `ConfigBasedLLMFactory` (no wrappers needed)
 - `agent_config_from_user_agent` helper in `ares-agent::configurable`
+- `Fiber::refresh` reruns registered plugin `apply` after epoch recompute
+- `EventsService` `Parallel` returns JSON `null`; `Serial` bails on the first non-null handler result
+- Store loader factory runs SQL migrations and seeds agent templates
+- Overlay fills empty loader `entry.config` from `ares.toml`; TOON reloads notify `Tools` and `Execute`
+- `TenantRealms` open-then-intercept on request paths; dispose on admin tenant delete
+- `agent.admit` as the shared quota gate for `Execute`, JWT chat, API-key middleware, and MCP
+- Default `ares` facade has no axum (`http` is optional)
 
 ### Changed
 
@@ -32,6 +39,10 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - Deleted deprecated `start_background_reload` function and its test
 - Calculator tool registered via `ctx.plugin(CalculatorService)` in addition to legacy path
 - Version bump to 0.9.0
+- `Tools`, `Llm`, `Execute`, and skills remain event-first on `EventsService` waterfalls
+- `run_server` still instantiates Overlay first, then remaining loader entries
+- Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`
+- `ProviderRegistry` remains for `AgentRegistry` construction
 
 ---
 

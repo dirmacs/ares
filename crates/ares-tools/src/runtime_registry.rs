@@ -18,9 +18,6 @@ use arc_swap::ArcSwap;
 #[cfg(any(feature = "mcp", test))]
 use async_trait::async_trait;
 use serde_json::Value;
-// cordis Phase 3 unified imports for ReflectService watch + deprecated shim tracing
-#[cfg(feature = "mcp")]
-use tracing;
 
 use ares_store::runtime_tools::{RuntimeTool, RuntimeToolStore};
 use ares_types::types::{AppError, Result, ToolDefinition};
@@ -237,7 +234,7 @@ impl Tool for RuntimeMcpTool {
 ///
 /// Not a Cordis Service. Boot/factory construct this and pass it to
 /// [`crate::Tools::with_runtime`]. Do not provide it on `Context`.
-pub struct RuntimeToolRegistry {
+pub(crate) struct RuntimeToolRegistry {
     pool: sqlx::PgPool,
     /// The tool cache -- `ArcSwap` for lock-free hot-swap reads.
     tools: Arc<ArcSwap<HashMap<String, Arc<dyn Tool>>>>,
@@ -271,14 +268,14 @@ impl RuntimeToolRegistry {
     /// Create a new empty registry backed by `pool`.
     ///
     /// Call [`reload`] to populate the cache.
-    pub fn new(pool: sqlx::PgPool) -> Self {
+    pub(crate) fn new(pool: sqlx::PgPool) -> Self {
         Self::with_interval(pool, 60)
     }
 
     /// Create a registry with a custom background reload interval.
     ///
     /// `interval_secs == 0` disables background reload.
-    pub fn with_interval(pool: sqlx::PgPool, interval_secs: u64) -> Self {
+    pub(crate) fn with_interval(pool: sqlx::PgPool, interval_secs: u64) -> Self {
         Self {
             pool,
             tools: Arc::new(ArcSwap::from_pointee(HashMap::new())),
@@ -466,7 +463,11 @@ impl RuntimeToolRegistry {
     ///
     /// Returns `None` if the tool does not exist, is disabled, or the tenant
     /// does not have access to it.
-    pub(crate) fn get_for_tenant(&self, name: &str, tenant_id: Option<&str>) -> Option<Arc<dyn Tool>> {
+    pub(crate) fn get_for_tenant(
+        &self,
+        name: &str,
+        tenant_id: Option<&str>,
+    ) -> Option<Arc<dyn Tool>> {
         let tools = self.tools.load();
         let meta = self.metadata.load();
 
@@ -487,11 +488,13 @@ impl RuntimeToolRegistry {
     }
 
     /// Check if a tool exists in the cache (fleet-wide, ignores tenant).
+    #[allow(dead_code)] // crate-internal API used by tests/connectors
     pub fn has_tool(&self, name: &str) -> bool {
         self.tools.load().contains_key(name)
     }
 
     /// Execute a tool by name (fleet-wide, no tenant check).
+    #[allow(dead_code)] // crate-internal API used by tests/connectors
     pub async fn execute(&self, name: &str, args: Value) -> Result<Value> {
         let tool = self
             .get(name)
@@ -500,7 +503,11 @@ impl RuntimeToolRegistry {
     }
 
     /// Return the concrete runtime tool type after tenant visibility checks.
-    pub(crate) fn tool_type_for_tenant(&self, name: &str, tenant_id: Option<&str>) -> Option<String> {
+    pub(crate) fn tool_type_for_tenant(
+        &self,
+        name: &str,
+        tenant_id: Option<&str>,
+    ) -> Option<String> {
         let row = self.metadata.load().get(name)?.clone();
         if !row.enabled {
             return None;
@@ -535,7 +542,10 @@ impl RuntimeToolRegistry {
     }
 
     /// Get tool definitions scoped to a tenant.
-    pub(crate) fn get_tool_definitions_for_tenant(&self, tenant_id: Option<&str>) -> Vec<ToolDefinition> {
+    pub(crate) fn get_tool_definitions_for_tenant(
+        &self,
+        tenant_id: Option<&str>,
+    ) -> Vec<ToolDefinition> {
         let tools = self.tools.load();
         let meta = self.metadata.load();
 
@@ -561,6 +571,7 @@ impl RuntimeToolRegistry {
     }
 
     /// Get definitions for specific tool names (fleet-wide, no tenant check).
+    #[allow(dead_code)] // crate-internal API used by tests/connectors
     pub fn get_tool_definitions_for(&self, names: &[&str]) -> Vec<ToolDefinition> {
         let tools = self.tools.load();
         let meta = self.metadata.load();
@@ -612,7 +623,10 @@ impl RuntimeToolRegistry {
     ///
     /// Retained for one release to avoid breaking callers; now returns `false` without spawning.
     /// Use `ReflectService::notify(TypeId::of::<RuntimeToolRegistry>())` triggered by `watch` channel on DB change instead.
-    #[deprecated(note = "polling replaced by ReflectService::notify + Fiber::refresh; no background task spawned")]
+    #[deprecated(
+        note = "polling replaced by ReflectService::notify + Fiber::refresh; no background task spawned"
+    )]
+    #[allow(dead_code)] // crate-internal API used by tests/connectors
     pub fn start_background_reload(self: Arc<Self>) -> bool {
         // REMOVED: polling fallback retained for one release then delete.
         #[cfg(feature = "mcp")]
@@ -624,16 +638,19 @@ impl RuntimeToolRegistry {
     }
 
     /// Atomically replace the reload interval.
+    #[allow(dead_code)] // crate-internal API used by tests/connectors
     pub fn set_reload_interval(&mut self, secs: u64) {
         self.reload_interval_secs = secs;
     }
 
     /// Number of tools currently cached.
+    #[allow(dead_code)] // crate-internal API used by tests/connectors
     pub fn len(&self) -> usize {
         self.tools.load().len()
     }
 
     /// Return `true` if no tools are cached.
+    #[allow(dead_code)] // crate-internal API used by tests/connectors
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -641,6 +658,7 @@ impl RuntimeToolRegistry {
 
 /// Phase 3 unified hot-reload demo — watch channel creation on provide.
 /// Compile-time proof that notifiers/dependents insertion compiles via ReflectService.
+#[allow(dead_code)] // crate-internal API used by tests/connectors
 pub fn reflect_notify_stub(ctx: &Arc<cordis::Context>) {
     // Prove Loader integration still compiles
     let _ = ctx.get::<cordis::loader::Loader>();

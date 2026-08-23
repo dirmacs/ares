@@ -19,22 +19,22 @@
 //! - ares_deploy_agent — deploy a .toon config
 //! - ares_get_usage    — check usage/quota
 
-use ares_store::tenants::TenantDb;
 use crate::auth::{extract_api_key_from_env, validate_mcp_api_key, McpSession};
 use crate::extension::{dispatch_extensions, McpToolExtension};
 use crate::tools::*;
 use crate::usage::{record_mcp_usage, McpOperation};
+use ares_store::tenants::TenantDb;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, CallToolResponse, ContentBlock, ListToolsResult,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
     PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use rmcp::transport::stdio;
 use rmcp::ServerHandler;
 use rmcp::ServiceExt;
-use std::future::Future;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -132,26 +132,41 @@ pub struct McpSessionState {
 
 impl McpSessionState {
     pub fn unauthenticated() -> Self {
-        Self { session: None, quota_within_limit: true }
+        Self {
+            session: None,
+            quota_within_limit: true,
+        }
     }
     pub fn authenticated(session: McpSession, quota_within_limit: bool) -> Self {
-        Self { session: Some(session), quota_within_limit }
+        Self {
+            session: Some(session),
+            quota_within_limit,
+        }
     }
     pub fn require_session(&self) -> Result<&McpSession, String> {
-        self.session.as_ref().ok_or_else(|| "Not authenticated. Set ARES_API_KEY.".to_string())
+        self.session
+            .as_ref()
+            .ok_or_else(|| "Not authenticated. Set ARES_API_KEY.".to_string())
     }
     pub fn enforce_quota(&self, tier: &str) -> Result<(), String> {
         if !self.quota_within_limit {
-            return Err(format!("Usage quota exceeded for tier '{}'. Contact your administrator to upgrade.", tier));
+            return Err(format!(
+                "Usage quota exceeded for tier '{}'. Contact your administrator to upgrade.",
+                tier
+            ));
         }
         Ok(())
     }
 }
 
 pub fn parse_mcp_request(raw: &str) -> Result<MCPRequest, MCPErrorObject> {
-    let request: MCPRequest = serde_json::from_str(raw).map_err(|e| json_rpc_error(-32700, format!("Parse error: {e}")))?;
+    let request: MCPRequest = serde_json::from_str(raw)
+        .map_err(|e| json_rpc_error(-32700, format!("Parse error: {e}")))?;
     if request.jsonrpc != "2.0" {
-        return Err(json_rpc_error(-32600, format!("Unsupported JSON-RPC version: {}", request.jsonrpc)));
+        return Err(json_rpc_error(
+            -32600,
+            format!("Unsupported JSON-RPC version: {}", request.jsonrpc),
+        ));
     }
     if request.method.trim().is_empty() {
         return Err(json_rpc_error(-32600, "Invalid Request: missing method"));
@@ -159,24 +174,51 @@ pub fn parse_mcp_request(raw: &str) -> Result<MCPRequest, MCPErrorObject> {
     Ok(request)
 }
 
-pub fn build_mcp_response(id: Option<Value>, outcome: Result<Value, MCPErrorObject>) -> MCPResponse {
+pub fn build_mcp_response(
+    id: Option<Value>,
+    outcome: Result<Value, MCPErrorObject>,
+) -> MCPResponse {
     match outcome {
-        Ok(result) => MCPResponse { jsonrpc: "2.0".into(), id, result: Some(result), error: None },
-        Err(error) => MCPResponse { jsonrpc: "2.0".into(), id, result: None, error: Some(error) },
+        Ok(result) => MCPResponse {
+            jsonrpc: "2.0".into(),
+            id,
+            result: Some(result),
+            error: None,
+        },
+        Err(error) => MCPResponse {
+            jsonrpc: "2.0".into(),
+            id,
+            result: None,
+            error: Some(error),
+        },
     }
 }
 
 pub fn json_rpc_error(code: i64, message: impl Into<String>) -> MCPErrorObject {
-    MCPErrorObject { code, message: message.into(), data: None }
+    MCPErrorObject {
+        code,
+        message: message.into(),
+        data: None,
+    }
 }
 
-pub fn session_handler(method: &str, params: Option<&Value>, session_id: &str) -> Result<Value, MCPErrorObject> {
+pub fn session_handler(
+    method: &str,
+    params: Option<&Value>,
+    session_id: &str,
+) -> Result<Value, MCPErrorObject> {
     match method {
         "initialize" => {
-            let init: SessionInit = params.ok_or_else(|| json_rpc_error(-32602, "Missing initialize params")).and_then(|p| {
-                serde_json::from_value(p.clone()).map_err(|e| json_rpc_error(-32602, format!("Invalid initialize params: {e}")))
-            })?;
-            Ok(json!({"protocolVersion": init.protocol_version, "capabilities": {"tools": {}}, "serverInfo": {"name": "ares-mcp", "version": env!("CARGO_PKG_VERSION")}, "sessionId": session_id}))
+            let init: SessionInit = params
+                .ok_or_else(|| json_rpc_error(-32602, "Missing initialize params"))
+                .and_then(|p| {
+                    serde_json::from_value(p.clone()).map_err(|e| {
+                        json_rpc_error(-32602, format!("Invalid initialize params: {e}"))
+                    })
+                })?;
+            Ok(
+                json!({"protocolVersion": init.protocol_version, "capabilities": {"tools": {}}, "serverInfo": {"name": "ares-mcp", "version": env!("CARGO_PKG_VERSION")}, "sessionId": session_id}),
+            )
         }
         "notifications/initialized" => Ok(Value::Null),
         other => Err(json_rpc_error(-32601, format!("Method not found: {other}"))),
@@ -184,12 +226,18 @@ pub fn session_handler(method: &str, params: Option<&Value>, session_id: &str) -
 }
 
 pub fn validate_tool_name(name: &str) -> Result<(), String> {
-    if name.trim().is_empty() { return Err("tool name must not be empty".into()); }
-    if name.chars().any(char::is_whitespace) { return Err("tool name must not contain whitespace".into()); }
+    if name.trim().is_empty() {
+        return Err("tool name must not be empty".into());
+    }
+    if name.chars().any(char::is_whitespace) {
+        return Err("tool name must not contain whitespace".into());
+    }
     Ok(())
 }
 
-pub fn generate_session_id() -> String { format!("mcp-{}", uuid::Uuid::new_v4()) }
+pub fn generate_session_id() -> String {
+    format!("mcp-{}", uuid::Uuid::new_v4())
+}
 
 pub fn tool_call_dispatch(name: &str, args: Value) -> Result<ToolDispatch, String> {
     validate_tool_name(name)?;
@@ -199,7 +247,10 @@ pub fn tool_call_dispatch(name: &str, args: Value) -> Result<ToolDispatch, Strin
         "ares_get_status" => Ok(ToolDispatch::GetStatus(args)),
         "ares_deploy_agent" => Ok(ToolDispatch::DeployAgent(args)),
         "ares_get_usage" => Ok(ToolDispatch::GetUsage(args)),
-        other => Ok(ToolDispatch::Extension { name: other.to_string(), args }),
+        other => Ok(ToolDispatch::Extension {
+            name: other.to_string(),
+            args,
+        }),
     }
 }
 
@@ -220,6 +271,19 @@ pub trait AgentRunner: Send + Sync {
         &self,
         input: &crate::tools::RunAgentInput,
     ) -> Result<crate::tools::RunAgentOutput, String>;
+}
+
+/// Request-path tenant: `realms.open` when `TenantRealms` is on ctx, then intercept.
+fn open_session_ctx(
+    root: &Arc<cordis::Context>,
+    tenant: &ares_types::TenantContext,
+) -> Arc<cordis::Context> {
+    if let Some(realms) = root.get::<ares_store::TenantRealms>() {
+        return realms
+            .open(root, tenant.tenant_id.as_str())
+            .with_intercept(tenant.clone());
+    }
+    root.with_intercept(tenant.clone())
 }
 
 /// The ARES MCP Server.
@@ -248,6 +312,8 @@ pub struct AresMcpServer {
     http: reqwest::Client,
     /// Optional in-process runner; when set, `run_agent` skips HTTP POST /api/chat.
     agent_runner: Option<Arc<dyn AgentRunner>>,
+    /// Cordis context used for admission and protocol integrations.
+    context: Arc<cordis::Context>,
     /// When true, `enforce_quota` is a no-op (unit tests only).
     #[cfg(test)]
     skip_quota_check: bool,
@@ -260,16 +326,16 @@ impl AresMcpServer {
     /// - `tenant_db`: Tenant database for auth and tenant queries
     /// - `pool`: PostgreSQL connection pool for raw queries
     /// - `ares_api_url`: Base URL of ARES HTTP API (e.g., "https://api.ares.dirmacs.com")
-    pub fn new(
-        tenant_db: Arc<TenantDb>,
-        pool: sqlx::PgPool,
-        ares_api_url: &str,
-    ) -> Self {
+    pub fn new(tenant_db: Arc<TenantDb>, pool: sqlx::PgPool, ares_api_url: &str) -> Self {
         let extensions: Vec<Arc<dyn McpToolExtension>> = vec![];
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to build HTTP client for MCP server");
+
+        let context = cordis::Context::new_root();
+        context.provide_arc(tenant_db.clone());
+        context.provide(cordis::EventsService::new());
 
         Self {
             tenant_db,
@@ -279,6 +345,7 @@ impl AresMcpServer {
             ares_api_url: ares_api_url.trim_end_matches('/').to_string(),
             http,
             agent_runner: None,
+            context,
             #[cfg(test)]
             skip_quota_check: false,
         }
@@ -290,6 +357,13 @@ impl AresMcpServer {
             agent_runner: Some(runner),
             ..self
         }
+    }
+
+    /// Use an application-owned context for admission and other integrations.
+    /// The context may carry custom `EventsService` handlers; the server adds
+    /// the authenticated session as a `TenantContext` intercept per call.
+    pub fn with_context(self, context: Arc<cordis::Context>) -> Self {
+        Self { context, ..self }
     }
 
     /// Register an MCP tool extension. Extensions provide additional tools
@@ -327,6 +401,11 @@ impl AresMcpServer {
             .ok_or_else(|| "Not authenticated. Set ARES_API_KEY.".to_string())
     }
 
+    /// Open the session tenant realm when `TenantRealms` is on ctx, then intercept.
+    fn session_ctx(&self, session: &McpSession) -> Arc<cordis::Context> {
+        open_session_ctx(&self.context, &session.tenant)
+    }
+
     /// Checks quota before executing a tool call.
     async fn enforce_quota(&self, session: &McpSession) -> Result<(), String> {
         #[cfg(test)]
@@ -335,18 +414,61 @@ impl AresMcpServer {
             return Ok(());
         }
 
-        let monthly = self
-            .tenant_db
-            .get_monthly_requests(session.tenant_id())
-            .await
-            .map_err(|e| format!("Quota check failed: {}", e))?;
-        let daily = self
-            .tenant_db
-            .get_daily_requests(session.tenant_id())
-            .await
-            .map_err(|e| format!("Quota check failed: {}", e))?;
+        let ctx = self.session_ctx(session);
+        if ctx.get::<cordis::EventsService>().is_none() {
+            ctx.provide(cordis::EventsService::new());
+        }
+        let (monthly, daily) = match ctx.get::<TenantDb>() {
+            Some(db) => {
+                let monthly = db
+                    .get_monthly_requests(session.tenant_id())
+                    .await
+                    .map_err(|source| format!("Quota check failed: {source}"))?;
+                let daily = db
+                    .get_daily_requests(session.tenant_id())
+                    .await
+                    .map_err(|source| format!("Quota check failed: {source}"))?;
+                (monthly, daily)
+            }
+            None => (0, 0),
+        };
 
-        session.tenant.admit(monthly, daily).map_err(|e| e.message().to_string())
+        if let Some(events) = ctx.get::<cordis::EventsService>() {
+            let payload = json!({
+                "tenant_id": session.tenant_id(),
+                "monthly": monthly,
+                "daily": daily,
+                "requests_per_month": session.tenant.quota.requests_per_month,
+                "requests_per_day": session.tenant.quota.requests_per_day,
+                "tier": session.tier(),
+            });
+            let result = events
+                .dispatch("agent.admit".into(), payload, cordis::Dispatch::Bail)
+                .await
+                .map_err(|source| format!("Quota check failed: {source}"))?;
+            if let Some(exceeded) = Self::quota_denial(&result) {
+                return Err(exceeded.message().to_string());
+            }
+        }
+
+        session
+            .tenant
+            .admit(monthly, daily)
+            .map_err(|exceeded| exceeded.message().to_string())
+    }
+
+    /// Interpret an admission event's denial marker using the MCP protocol's
+    /// monthly/daily error mapping.
+    fn quota_denial(result: &Value) -> Option<ares_types::QuotaExceeded> {
+        let marker = result
+            .get("deny")
+            .and_then(Value::as_str)
+            .or_else(|| result.get("error").and_then(Value::as_str));
+        match marker {
+            Some("daily") => Some(ares_types::QuotaExceeded::Daily),
+            Some("monthly") | Some(_) => Some(ares_types::QuotaExceeded::Monthly),
+            None => None,
+        }
     }
 
     /// Records usage after a tool call completes.
@@ -429,7 +551,9 @@ impl AresMcpServer {
             .await;
             let output_json =
                 serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
-            return Ok(CallToolResult::success(vec![ContentBlock::text(output_json)]));
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
+                output_json,
+            )]));
         }
 
         // Call ARES HTTP API: POST /api/chat
@@ -496,7 +620,9 @@ impl AresMcpServer {
                 let output_json =
                     serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
-                Ok(CallToolResult::success(vec![ContentBlock::text(output_json)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    output_json,
+                )]))
             }
             Ok(response) => {
                 let status = response.status().as_u16();
@@ -641,7 +767,9 @@ impl AresMcpServer {
                 let output_json =
                     serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
 
-                Ok(CallToolResult::success(vec![ContentBlock::text(output_json)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    output_json,
+                )]))
             }
             Ok(response) => {
                 let status = response.status().as_u16();
@@ -753,7 +881,6 @@ impl AresMcpServer {
 
         Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
-
 
     /// Build a `Tool` from a name, description, JSON schema, and title.
     fn build_tool(name: &str, description: &str, schema: serde_json::Value, title: &str) -> Tool {
@@ -937,7 +1064,8 @@ impl ServerHandler for AresMcpServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + MaybeSendFuture + '_ {
+    ) -> impl Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + MaybeSendFuture + '_
+    {
         let name = request.name.to_string();
         let arguments = request.arguments;
         let this = self;
@@ -1085,9 +1213,18 @@ mod tests {
     #[tokio::test]
     async fn execute_tool_run_agent_empty_args_returns_error() {
         let server = test_server().await;
-        let result = server.execute_tool("ares_run_agent", Some(serde_json::Map::new())).await;
+        let result = server
+            .execute_tool("ares_run_agent", Some(serde_json::Map::new()))
+            .await;
         assert_eq!(result.is_error, Some(true));
-        let text = result.content.first().unwrap().as_text().unwrap().text.as_str();
+        let text = result
+            .content
+            .first()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .as_str();
         assert!(text.contains("Invalid arguments"));
     }
 
@@ -1096,7 +1233,14 @@ mod tests {
         let server = test_server().await;
         let result = server.execute_tool("ares_list_agents", None).await;
         assert_eq!(result.is_error, Some(true));
-        let text = result.content.first().unwrap().as_text().unwrap().text.as_str();
+        let text = result
+            .content
+            .first()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .as_str();
         assert!(text.contains("Not authenticated"));
     }
 
@@ -1104,21 +1248,36 @@ mod tests {
     async fn execute_tool_get_status_without_session_returns_error() {
         let server = test_server().await;
         let args = serde_json::Map::from_iter(
-            [("context_id".to_string(), serde_json::json!("ctx-1"))]
-                .into_iter(),
+            [("context_id".to_string(), serde_json::json!("ctx-1"))].into_iter(),
         );
         let result = server.execute_tool("ares_get_status", Some(args)).await;
         assert_eq!(result.is_error, Some(true));
-        let text = result.content.first().unwrap().as_text().unwrap().text.as_str();
+        let text = result
+            .content
+            .first()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .as_str();
         assert!(text.contains("Not authenticated"));
     }
 
     #[tokio::test]
     async fn execute_tool_get_usage_without_session_returns_error() {
         let server = test_server().await;
-        let result = server.execute_tool("ares_get_usage", Some(serde_json::Map::new())).await;
+        let result = server
+            .execute_tool("ares_get_usage", Some(serde_json::Map::new()))
+            .await;
         assert_eq!(result.is_error, Some(true));
-        let text = result.content.first().unwrap().as_text().unwrap().text.as_str();
+        let text = result
+            .content
+            .first()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .as_str();
         assert!(text.contains("Not authenticated"));
     }
 
@@ -1126,12 +1285,18 @@ mod tests {
     async fn execute_tool_deploy_agent_without_session_returns_error() {
         let server = test_server().await;
         let args = serde_json::Map::from_iter(
-            [("toon_config".to_string(), serde_json::json!("name = x"))]
-                .into_iter(),
+            [("toon_config".to_string(), serde_json::json!("name = x"))].into_iter(),
         );
         let result = server.execute_tool("ares_deploy_agent", Some(args)).await;
         assert_eq!(result.is_error, Some(true));
-        let text = result.content.first().unwrap().as_text().unwrap().text.as_str();
+        let text = result
+            .content
+            .first()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .as_str();
         assert!(text.contains("Not authenticated"));
     }
 
@@ -1342,7 +1507,10 @@ mod tests {
         assert_eq!(required.len(), 1);
         assert_eq!(required[0].as_str(), Some("context_id"));
 
-        let deploy = tools.iter().find(|t| t.name == "ares_deploy_agent").unwrap();
+        let deploy = tools
+            .iter()
+            .find(|t| t.name == "ares_deploy_agent")
+            .unwrap();
         let required = deploy.input_schema["required"].as_array().unwrap();
         assert_eq!(required.len(), 1);
         assert_eq!(required[0].as_str(), Some("toon_config"));
@@ -1350,7 +1518,11 @@ mod tests {
         for name in &["ares_list_agents", "ares_get_usage"] {
             let tool = tools.iter().find(|t| t.name == *name).unwrap();
             let required = tool.input_schema["required"].as_array().unwrap();
-            assert!(required.is_empty(), "{} should have no required fields", name);
+            assert!(
+                required.is_empty(),
+                "{} should have no required fields",
+                name
+            );
         }
     }
 
@@ -1402,14 +1574,47 @@ mod tests {
     /// Helper: create a server with an injected session (bypasses auth).
     async fn test_server_with_session() -> AresMcpServer {
         let server = test_server().await;
-        let tenant = ares_types::TenantContext::new(
-            "test-tenant".into(),
-            ares_types::TenantTier::Pro,
-        );
+        let tenant =
+            ares_types::TenantContext::new("test-tenant".into(), ares_types::TenantTier::Pro);
         let session = crate::auth::McpSession::new(tenant, "test-api-key".into());
         *server.session.write().await = Some(session);
         server
     }
+
+    struct DummyTools;
+    impl cordis::Service for DummyTools {}
+    struct DummyExecute;
+    impl cordis::Service for DummyExecute {}
+
+    #[tokio::test]
+    async fn open_session_ctx_uses_realm_child_when_realms_provided() {
+        let root = cordis::Context::new_root();
+        root.provide(ares_store::TenantRealms::new(
+            std::any::TypeId::of::<DummyTools>(),
+            std::any::TypeId::of::<DummyExecute>(),
+        ));
+        let tenant =
+            ares_types::TenantContext::new("acme".into(), ares_types::TenantTier::Pro);
+        let scoped = open_session_ctx(&root, &tenant);
+        assert_eq!(
+            scoped
+                .get::<ares_types::TenantContext>()
+                .expect("intercept")
+                .tenant_id,
+            "acme"
+        );
+        let realms = root.get::<ares_store::TenantRealms>().expect("TenantRealms");
+        let realm = realms.open(&root, "acme");
+        assert!(realm.get::<ares_types::TenantContext>().is_none());
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<DummyTools>())
+                .as_deref(),
+            Some("acme")
+        );
+        assert!(std::sync::Arc::ptr_eq(&realm, &realms.open(&root, "acme")));
+    }
+
     // =========================================================================
     // Extension tool dispatch
     // =========================================================================
@@ -1483,7 +1688,14 @@ mod tests {
         server.register_extension(Arc::new(TestExtensionSuccess));
         let result = server.execute_tool("custom_tool", None).await;
         assert_ne!(result.is_error, Some(true));
-        let text = result.content.first().unwrap().as_text().unwrap().text.as_str();
+        let text = result
+            .content
+            .first()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .as_str();
         assert_eq!(text, "custom result");
     }
 
@@ -1493,7 +1705,14 @@ mod tests {
         server.register_extension(Arc::new(TestExtensionError));
         let result = server.execute_tool("failing_tool", None).await;
         assert_eq!(result.is_error, Some(true));
-        let text = result.content.first().unwrap().as_text().unwrap().text.as_str();
+        let text = result
+            .content
+            .first()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .as_str();
         assert!(text.contains("extension failure"));
     }
 
@@ -1503,7 +1722,14 @@ mod tests {
         server.register_extension(Arc::new(TestExtensionPassThrough));
         let result = server.execute_tool("unknown_tool", None).await;
         assert_eq!(result.is_error, Some(true));
-        let text = result.content.first().unwrap().as_text().unwrap().text.as_str();
+        let text = result
+            .content
+            .first()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .as_str();
         assert!(text.contains("Unknown tool"));
     }
 
@@ -1603,7 +1829,14 @@ mod tests {
             .expect("run_agent");
 
         assert_ne!(result.is_error, Some(true));
-        let text = result.content.first().unwrap().as_text().unwrap().text.as_str();
+        let text = result
+            .content
+            .first()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .as_str();
         assert!(
             text.contains("from-runner"),
             "expected runner JSON in tool result, got {text}"
@@ -1633,12 +1866,7 @@ mod tests {
         let recorder: Arc<dyn AgentRunner> = Arc::new(RecordingRunner {
             calls: std::sync::Mutex::new(Vec::new()),
         });
-        let server = build_mcp_server(
-            tenant_db,
-            pool,
-            "https://api.test.com",
-            Some(recorder),
-        );
+        let server = build_mcp_server(tenant_db, pool, "https://api.test.com", Some(recorder));
         assert!(server.agent_runner.is_some());
     }
 
@@ -1695,7 +1923,10 @@ mod tests {
         assert_eq!(json["response"], "Hello");
         assert_eq!(json["agent"], "bot");
         assert_eq!(json["context_id"], "ctx-1");
-        assert!(json.get("sources").is_none(), "None sources should be omitted");
+        assert!(
+            json.get("sources").is_none(),
+            "None sources should be omitted"
+        );
     }
 
     #[test]
@@ -1801,7 +2032,14 @@ mod tests {
         let server = test_server().await;
         let result = server.execute_tool("ares_list_agents", None).await;
         assert_eq!(result.is_error, Some(true));
-        let text = result.content.first().unwrap().as_text().unwrap().text.as_str();
+        let text = result
+            .content
+            .first()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .as_str();
         assert!(text.contains("Not authenticated"));
     }
 
@@ -1854,7 +2092,14 @@ mod tests {
     }
 
     fn tool_result_text(result: &CallToolResult) -> &str {
-        result.content.first().unwrap().as_text().unwrap().text.as_str()
+        result
+            .content
+            .first()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .as_str()
     }
 
     #[tokio::test]
@@ -1925,7 +2170,10 @@ mod tests {
     #[tokio::test]
     async fn get_usage_with_session_uses_default_period_and_tier_limits() {
         let server = test_server_with_session_tier(TenantTier::Pro).await;
-        let result = server.get_usage(GetUsageInput::default()).await.expect("get_usage");
+        let result = server
+            .get_usage(GetUsageInput::default())
+            .await
+            .expect("get_usage");
         let parsed: serde_json::Value = serde_json::from_str(tool_result_text(&result)).unwrap();
         assert_eq!(parsed["tenant_id"], "test-tenant");
         assert_eq!(parsed["tier"], "pro");
@@ -1956,6 +2204,21 @@ mod tests {
         let session = server.get_session().await.expect("session");
         let err = server.enforce_quota(&session).await.unwrap_err();
         assert!(err.starts_with("Quota check failed:"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn enforce_quota_event_denial_preserves_mcp_error() {
+        let base = cordis::Context::new_root();
+        let events = base.provide(cordis::EventsService::new());
+        events.on("agent.admit".into(), |_payload| async {
+            Ok::<_, cordis::CordisError>(serde_json::json!({ "deny": "daily" }))
+        });
+        let server = test_server_with_session_tier(TenantTier::Pro).await
+            .with_context(base);
+        let session = server.get_session().await.expect("session");
+
+        let err = server.enforce_quota(&session).await.unwrap_err();
+        assert_eq!(err, "Daily rate limit exceeded");
     }
 
     #[tokio::test]
@@ -2033,9 +2296,7 @@ mod tests {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(503).set_body_string("service unavailable"),
-            )
+            .respond_with(ResponseTemplate::new(503).set_body_string("service unavailable"))
             .mount(&mock)
             .await;
 
@@ -2086,7 +2347,10 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(err.starts_with("Failed to reach ARES API:"), "unexpected: {err}");
+        assert!(
+            err.starts_with("Failed to reach ARES API:"),
+            "unexpected: {err}"
+        );
     }
 
     #[tokio::test]
@@ -2168,8 +2432,7 @@ mod tests {
         args.insert("message".into(), serde_json::json!("hello"));
         let result = server.execute_tool("ares_run_agent", Some(args)).await;
         assert_ne!(result.is_error, Some(true));
-        let parsed: serde_json::Value =
-            serde_json::from_str(tool_result_text(&result)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(tool_result_text(&result)).unwrap();
         assert_eq!(parsed["response"], "ok");
     }
 
@@ -2191,25 +2454,38 @@ mod tests {
 
     #[test]
     fn mcp_request_roundtrip_with_string_id() {
-        let req = MCPRequest { jsonrpc: "2.0".into(), id: Some(json!("req-1")), method: "tools/call".into(), params: Some(json!({"name": "ares_list_agents"})) };
+        let req = MCPRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!("req-1")),
+            method: "tools/call".into(),
+            params: Some(json!({"name": "ares_list_agents"})),
+        };
         let back: MCPRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
         assert_eq!(back, req);
     }
     #[test]
     fn mcp_request_roundtrip_with_numeric_id() {
-        let req = MCPRequest { jsonrpc: "2.0".into(), id: Some(json!(42)), method: "initialize".into(), params: None };
+        let req = MCPRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(42)),
+            method: "initialize".into(),
+            params: None,
+        };
         let back: MCPRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
         assert_eq!(back.id, Some(json!(42)));
     }
     #[test]
     fn mcp_request_notification_omits_id() {
-        let req: MCPRequest = serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).unwrap();
+        let req: MCPRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .unwrap();
         assert!(req.id.is_none());
     }
     #[test]
     fn mcp_response_success_roundtrip() {
         let resp = build_mcp_response(Some(json!(1)), Ok(json!({"ok": true})));
-        let back: MCPResponse = serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+        let back: MCPResponse =
+            serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
         assert_eq!(back.jsonrpc, "2.0");
         assert_eq!(back.result, Some(json!({"ok": true})));
         assert!(back.error.is_none());
@@ -2217,20 +2493,35 @@ mod tests {
     #[test]
     fn mcp_response_error_roundtrip() {
         let err = json_rpc_error(-32601, "Method not found");
-        let back: MCPResponse = serde_json::from_str(&serde_json::to_string(&build_mcp_response(Some(json!(7)), Err(err.clone()))).unwrap()).unwrap();
+        let back: MCPResponse = serde_json::from_str(
+            &serde_json::to_string(&build_mcp_response(Some(json!(7)), Err(err.clone()))).unwrap(),
+        )
+        .unwrap();
         assert_eq!(back.error, Some(err));
         assert!(back.result.is_none());
     }
     #[test]
     fn session_init_roundtrip() {
-        let init = SessionInit { protocol_version: "2024-11-05".into(), capabilities: json!({}), client_info: SessionClientInfo { name: "test-client".into(), version: "1.0.0".into() } };
-        let back: SessionInit = serde_json::from_str(&serde_json::to_string(&init).unwrap()).unwrap();
+        let init = SessionInit {
+            protocol_version: "2024-11-05".into(),
+            capabilities: json!({}),
+            client_info: SessionClientInfo {
+                name: "test-client".into(),
+                version: "1.0.0".into(),
+            },
+        };
+        let back: SessionInit =
+            serde_json::from_str(&serde_json::to_string(&init).unwrap()).unwrap();
         assert_eq!(back, init);
     }
     #[test]
     fn session_call_roundtrip() {
-        let call = SessionCall { name: "ares_run_agent".into(), arguments: json!({"agent_name": "bot", "message": "hi"}) };
-        let back: SessionCall = serde_json::from_str(&serde_json::to_string(&call).unwrap()).unwrap();
+        let call = SessionCall {
+            name: "ares_run_agent".into(),
+            arguments: json!({"agent_name": "bot", "message": "hi"}),
+        };
+        let back: SessionCall =
+            serde_json::from_str(&serde_json::to_string(&call).unwrap()).unwrap();
         assert_eq!(back, call);
     }
     #[test]
@@ -2240,17 +2531,37 @@ mod tests {
     }
     #[test]
     fn parse_mcp_request_valid() {
-        let req = parse_mcp_request(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#).unwrap();
+        let req =
+            parse_mcp_request(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
+                .unwrap();
         assert_eq!(req.method, "initialize");
     }
     #[test]
-    fn parse_mcp_request_invalid_json_is_parse_error() { assert_eq!(parse_mcp_request("not-json").unwrap_err().code, -32700); }
+    fn parse_mcp_request_invalid_json_is_parse_error() {
+        assert_eq!(parse_mcp_request("not-json").unwrap_err().code, -32700);
+    }
     #[test]
-    fn parse_mcp_request_wrong_jsonrpc_version() { assert_eq!(parse_mcp_request(r#"{"jsonrpc":"1.0","id":1,"method":"initialize"}"#).unwrap_err().code, -32600); }
+    fn parse_mcp_request_wrong_jsonrpc_version() {
+        assert_eq!(
+            parse_mcp_request(r#"{"jsonrpc":"1.0","id":1,"method":"initialize"}"#)
+                .unwrap_err()
+                .code,
+            -32600
+        );
+    }
     #[test]
-    fn parse_mcp_request_missing_method() { assert_eq!(parse_mcp_request(r#"{"jsonrpc":"2.0","id":1,"method":"   "}"#).unwrap_err().code, -32600); }
+    fn parse_mcp_request_missing_method() {
+        assert_eq!(
+            parse_mcp_request(r#"{"jsonrpc":"2.0","id":1,"method":"   "}"#)
+                .unwrap_err()
+                .code,
+            -32600
+        );
+    }
     #[test]
-    fn build_mcp_response_jsonrpc_version() { assert_eq!(build_mcp_response(None, Ok(json!(null))).jsonrpc, "2.0"); }
+    fn build_mcp_response_jsonrpc_version() {
+        assert_eq!(build_mcp_response(None, Ok(json!(null))).jsonrpc, "2.0");
+    }
     #[test]
     fn build_mcp_response_result_xor_error() {
         let ok = build_mcp_response(Some(json!(1)), Ok(json!({})));
@@ -2266,19 +2577,51 @@ mod tests {
         assert_eq!(result["sessionId"], "mcp-test");
     }
     #[test]
-    fn session_handler_initialize_invalid_params() { assert_eq!(session_handler("initialize", Some(&json!({})), "mcp-test").unwrap_err().code, -32602); }
+    fn session_handler_initialize_invalid_params() {
+        assert_eq!(
+            session_handler("initialize", Some(&json!({})), "mcp-test")
+                .unwrap_err()
+                .code,
+            -32602
+        );
+    }
     #[test]
-    fn session_handler_unknown_method() { assert_eq!(session_handler("tools/list", None, "mcp-test").unwrap_err().code, -32601); }
+    fn session_handler_unknown_method() {
+        assert_eq!(
+            session_handler("tools/list", None, "mcp-test")
+                .unwrap_err()
+                .code,
+            -32601
+        );
+    }
     #[test]
-    fn session_handler_initialized_notification() { assert!(session_handler("notifications/initialized", None, "mcp-test").unwrap().is_null()); }
+    fn session_handler_initialized_notification() {
+        assert!(
+            session_handler("notifications/initialized", None, "mcp-test")
+                .unwrap()
+                .is_null()
+        );
+    }
     #[test]
-    fn validate_tool_name_rejects_empty() { assert!(validate_tool_name("").is_err()); assert!(validate_tool_name("   ").is_err()); }
+    fn validate_tool_name_rejects_empty() {
+        assert!(validate_tool_name("").is_err());
+        assert!(validate_tool_name("   ").is_err());
+    }
     #[test]
-    fn validate_tool_name_rejects_whitespace() { assert!(validate_tool_name("ares run").is_err()); }
+    fn validate_tool_name_rejects_whitespace() {
+        assert!(validate_tool_name("ares run").is_err());
+    }
     #[test]
-    fn validate_tool_name_accepts_builtin_and_extension() { assert!(validate_tool_name("ares_list_agents").is_ok()); assert!(validate_tool_name("custom_tool").is_ok()); }
+    fn validate_tool_name_accepts_builtin_and_extension() {
+        assert!(validate_tool_name("ares_list_agents").is_ok());
+        assert!(validate_tool_name("custom_tool").is_ok());
+    }
     #[test]
-    fn generate_session_id_unique_and_prefixed() { let (a,b)=(generate_session_id(),generate_session_id()); assert_ne!(a,b); assert!(a.starts_with("mcp-") && b.starts_with("mcp-")); }
+    fn generate_session_id_unique_and_prefixed() {
+        let (a, b) = (generate_session_id(), generate_session_id());
+        assert_ne!(a, b);
+        assert!(a.starts_with("mcp-") && b.starts_with("mcp-"));
+    }
     #[test]
     fn tool_call_dispatch_builtin_tools() {
         for name in BUILTIN_TOOL_NAMES {
@@ -2295,10 +2638,18 @@ mod tests {
     }
     #[test]
     fn tool_call_dispatch_extension_tool() {
-        assert_eq!(tool_call_dispatch("eruka_search", json!({"q": "x"})).unwrap(), ToolDispatch::Extension { name: "eruka_search".into(), args: json!({"q": "x"}) });
+        assert_eq!(
+            tool_call_dispatch("eruka_search", json!({"q": "x"})).unwrap(),
+            ToolDispatch::Extension {
+                name: "eruka_search".into(),
+                args: json!({"q": "x"})
+            }
+        );
     }
     #[test]
-    fn tool_call_dispatch_invalid_name() { assert!(tool_call_dispatch("", json!({})).is_err()); }
+    fn tool_call_dispatch_invalid_name() {
+        assert!(tool_call_dispatch("", json!({})).is_err());
+    }
     #[test]
     fn tier_limits_known_tiers() {
         assert_eq!(tier_limits("free"), (1_000, 3, 10_000));
@@ -2307,18 +2658,33 @@ mod tests {
         assert_eq!(tier_limits("enterprise"), (u64::MAX, u32::MAX, u64::MAX));
     }
     #[test]
-    fn tier_limits_unknown_defaults_to_free() { assert_eq!(tier_limits("trial"), (1_000, 3, 10_000)); }
+    fn tier_limits_unknown_defaults_to_free() {
+        assert_eq!(tier_limits("trial"), (1_000, 3, 10_000));
+    }
     #[test]
-    fn app_state_require_session_unauthenticated() { assert!(McpSessionState::unauthenticated().require_session().unwrap_err().contains("Not authenticated")); }
+    fn app_state_require_session_unauthenticated() {
+        assert!(McpSessionState::unauthenticated()
+            .require_session()
+            .unwrap_err()
+            .contains("Not authenticated"));
+    }
     #[test]
     fn app_state_enforce_quota_blocks_when_exceeded() {
-        let session = McpSession::new(ares_types::TenantContext::new("t".into(), ares_types::TenantTier::Pro), "ares_testkey12345678".into());
-        let err = McpSessionState::authenticated(session, false).enforce_quota("pro").unwrap_err();
+        let session = McpSession::new(
+            ares_types::TenantContext::new("t".into(), ares_types::TenantTier::Pro),
+            "ares_testkey12345678".into(),
+        );
+        let err = McpSessionState::authenticated(session, false)
+            .enforce_quota("pro")
+            .unwrap_err();
         assert!(err.contains("Usage quota exceeded") && err.contains("pro"));
     }
     #[test]
     fn app_state_auth_and_quota_ok() {
-        let session = McpSession::new(ares_types::TenantContext::new("t".into(), ares_types::TenantTier::Dev), "ares_testkey12345678".into());
+        let session = McpSession::new(
+            ares_types::TenantContext::new("t".into(), ares_types::TenantTier::Dev),
+            "ares_testkey12345678".into(),
+        );
         let state = McpSessionState::authenticated(session, true);
         let session = state.require_session().unwrap();
         assert_eq!(session.tier(), "dev");
@@ -2333,7 +2699,11 @@ mod tests {
     }
     #[test]
     fn serialized_mcp_response_has_jsonrpc_field() {
-        let value: Value = serde_json::to_value(build_mcp_response(Some(json!(99)), Ok(json!({"tools": []})))).unwrap();
+        let value: Value = serde_json::to_value(build_mcp_response(
+            Some(json!(99)),
+            Ok(json!({"tools": []})),
+        ))
+        .unwrap();
         assert_eq!(value["jsonrpc"], "2.0");
         assert_eq!(value["id"], 99);
     }
@@ -2359,9 +2729,7 @@ mod tests {
     };
     use rmcp::service::{serve_directly, RequestContext, RoleServer};
 
-    fn dummy_request_context(
-        peer: rmcp::service::Peer<RoleServer>,
-    ) -> RequestContext<RoleServer> {
+    fn dummy_request_context(peer: rmcp::service::Peer<RoleServer>) -> RequestContext<RoleServer> {
         RequestContext::new(NumberOrString::Number(1), peer)
     }
 
@@ -2455,10 +2823,13 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = call_tool_request("ares_run_agent", json!({
-            "agent_name": "bot",
-            "message": "hello"
-        }));
+        let request = call_tool_request(
+            "ares_run_agent",
+            json!({
+                "agent_name": "bot",
+                "message": "hello"
+            }),
+        );
         let result = call_tool_result(&server, request, ctx).await;
         assert_ne!(result.is_error, Some(true));
         let text = tool_result_text(&result);
@@ -2528,10 +2899,13 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = call_tool_request("ares_run_agent", json!({
-            "agent_name": "bot",
-            "message": "hello"
-        }));
+        let request = call_tool_request(
+            "ares_run_agent",
+            json!({
+                "agent_name": "bot",
+                "message": "hello"
+            }),
+        );
         let result = call_tool_result(&server, request, ctx).await;
         assert_eq!(result.is_error, Some(true));
         let text = tool_result_text(&result);
@@ -2598,10 +2972,13 @@ mod tests {
         let (a, _b) = tokio::io::duplex(4096);
         let running = serve_directly::<RoleServer, _, _, _, _>(server.clone(), a, None);
         let ctx = dummy_request_context(running.peer().clone());
-        let request = call_tool_request("ares_run_agent", json!({
-            "agent_name": 12345,
-            "message": "hello"
-        }));
+        let request = call_tool_request(
+            "ares_run_agent",
+            json!({
+                "agent_name": 12345,
+                "message": "hello"
+            }),
+        );
         let result = call_tool_result(&server, request, ctx).await;
         assert_eq!(result.is_error, Some(true));
         let text = tool_result_text(&result);
@@ -2632,4 +3009,3 @@ mod tests {
         }
     }
 }
-

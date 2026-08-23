@@ -487,7 +487,7 @@ mod tests {
     struct TestTool;
 
     #[async_trait::async_trait]
-    impl ares_tools::registry::Tool for TestTool {
+    impl ares_tools::Tool for TestTool {
         fn name(&self) -> &str {
             "builtin_search"
         }
@@ -528,7 +528,7 @@ mod tests {
     #[tokio::test]
     async fn validate_agent_config_tools_accepts_builtin_tools() {
         let tools = ares_tools::Tools::from_static([
-            Arc::new(TestTool) as Arc<dyn ares_tools::registry::Tool>,
+            Arc::new(TestTool) as Arc<dyn ares_tools::Tool>,
         ]);
         let ctx = Context::new_root();
         let config = serde_json::json!({"allowed_tools": ["builtin_search"]});
@@ -540,7 +540,7 @@ mod tests {
     #[tokio::test]
     async fn validate_agent_config_tools_rejects_unknown_tools() {
         let tools = ares_tools::Tools::from_static(
-            [] as [Arc<dyn ares_tools::registry::Tool>; 0],
+            [] as [Arc<dyn ares_tools::Tool>; 0],
         );
         let ctx = Context::new_root();
         let config = serde_json::json!({"allowed_tools": ["ghost"]});
@@ -554,7 +554,7 @@ mod tests {
     #[tokio::test]
     async fn validate_agent_config_tools_supports_legacy_tools_field() {
         let tools = ares_tools::Tools::from_static([
-            Arc::new(TestTool) as Arc<dyn ares_tools::registry::Tool>,
+            Arc::new(TestTool) as Arc<dyn ares_tools::Tool>,
         ]);
         let ctx = Context::new_root();
         let config = serde_json::json!({"tools": ["builtin_search"]});
@@ -566,7 +566,7 @@ mod tests {
     #[tokio::test]
     async fn validate_agent_config_tools_rejects_non_string_allowed_tools() {
         let tools = ares_tools::Tools::from_static(
-            [] as [Arc<dyn ares_tools::registry::Tool>; 0],
+            [] as [Arc<dyn ares_tools::Tool>; 0],
         );
         let ctx = Context::new_root();
         let config = serde_json::json!({"allowed_tools": ["builtin_search", 7]});
@@ -582,7 +582,7 @@ mod tests {
     #[tokio::test]
     async fn validate_agent_config_tools_rejects_non_array_legacy_tools() {
         let tools = ares_tools::Tools::from_static(
-            [] as [Arc<dyn ares_tools::registry::Tool>; 0],
+            [] as [Arc<dyn ares_tools::Tool>; 0],
         );
         let ctx = Context::new_root();
         let config = serde_json::json!({"tools": "builtin_search"});
@@ -1806,10 +1806,7 @@ pub fn validate_runtime_tool_execution_config(
     tool_type: &str,
     execution_config: &serde_json::Value,
 ) -> Result<()> {
-    ares_tools::runtime_registry::RuntimeToolRegistry::validate_execution_config(
-        tool_type,
-        execution_config,
-    )
+    ares_tools::Tools::validate_runtime_tool_execution_config(tool_type, execution_config)
     .map_err(|e| HttpError::from(AppError::InvalidInput(format!("invalid execution_config: {e}"))))
 }
 

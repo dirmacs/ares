@@ -250,28 +250,13 @@ pub(crate) async fn resolve_agent_for_tenant(
 }
 
 /// Tenant id from Cordis isolate (`Execute`) then TenantContext intercept.
-pub fn tenant_id_from_agent_ctx(
-    ctx: &std::sync::Arc<cordis::Context>,
-) -> Option<String> {
+pub fn tenant_id_from_agent_ctx(ctx: &std::sync::Arc<cordis::Context>) -> Option<String> {
     let id = crate::resolver::user_id_from_ctx(ctx, "");
     if id.is_empty() {
         None
     } else {
         Some(id)
     }
-}
-
-pub async fn resolve_agent_from_ctx(
-    pool: &PgPool,
-    agent_registry: &AgentRegistry,
-    ctx: &std::sync::Arc<cordis::Context>,
-    agent_name: &str,
-    fleet_secrets: &ares_store::FleetSecrets,
-) -> Result<ResolvedAgent> {
-    let tenant_id = tenant_id_from_agent_ctx(ctx).ok_or_else(|| {
-        AppError::Auth("Missing tenant context".to_string())
-    })?;
-    resolve_agent_for_tenant(pool, agent_registry, &tenant_id, agent_name, fleet_secrets).await
 }
 
 pub async fn resolve_required_tenant_agent_from_ctx(
@@ -281,9 +266,8 @@ pub async fn resolve_required_tenant_agent_from_ctx(
     agent_name: &str,
     fleet_secrets: &ares_store::FleetSecrets,
 ) -> Result<ResolvedAgent> {
-    let tenant_id = tenant_id_from_agent_ctx(ctx).ok_or_else(|| {
-        AppError::Auth("Missing tenant context".to_string())
-    })?;
+    let tenant_id = tenant_id_from_agent_ctx(ctx)
+        .ok_or_else(|| AppError::Auth("Missing tenant context".to_string()))?;
     resolve_required_tenant_agent(pool, agent_registry, &tenant_id, agent_name, fleet_secrets).await
 }
 
@@ -319,8 +303,10 @@ pub(crate) async fn resolve_required_tenant_agent(
     })
 }
 
-/// Legacy helper kept for backward compatibility with older callers.
-/// New runtime code should use `resolve_agent_from_ctx` or `resolve_required_tenant_agent_from_ctx`.
+/// Construct a tenant-configured agent for legacy callers.
+///
+/// Runtime execution goes through `Execute::run`; this helper remains only for
+/// compatibility with storage-focused callers and tests.
 pub async fn create_tenant_agent(
     pool: &PgPool,
     agent_registry: &AgentRegistry,
@@ -702,10 +688,7 @@ mod tests {
         assert_eq!(tenant_id_from_agent_ctx(&root), None);
 
         let ctx = root.with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
-        assert_eq!(
-            tenant_id_from_agent_ctx(&ctx).as_deref(),
-            Some("acme")
-        );
+        assert_eq!(tenant_id_from_agent_ctx(&ctx).as_deref(), Some("acme"));
     }
 
     #[test]
@@ -731,6 +714,7 @@ mod tests {
         use crate::registry::AgentRegistry;
         use crate::Agent;
         use crate::AgentConfig;
+        use ares_llm::ProviderRegistry;
         use ares_llm::{ModelConfig, ProviderConfig};
         use ares_store::postgres::PostgresClient;
         use ares_store::tenant_agents::{
@@ -738,7 +722,6 @@ mod tests {
             CreateTenantAgentRequest, UpdateTenantAgentRequest,
         };
         use ares_store::tenant_allowlist::TenantAllowlistStore;
-        use ares_llm::ProviderRegistry;
         use ares_tools::{Tool, Tools};
         use ares_types::types::{AgentContext, AppError};
         use axum::{routing::post, Json, Router};
@@ -854,8 +837,10 @@ mod tests {
                 },
             );
 
-            let mut registry =
-                AgentRegistry::new(Arc::new(provider_registry), Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())));
+            let mut registry = AgentRegistry::new(
+                Arc::new(provider_registry),
+                Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())),
+            );
             registry.register(
                 "product",
                 AgentConfig {
@@ -1038,8 +1023,10 @@ mod tests {
                 },
             );
 
-            let mut registry =
-                AgentRegistry::new(Arc::new(provider_registry), Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())));
+            let mut registry = AgentRegistry::new(
+                Arc::new(provider_registry),
+                Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())),
+            );
             registry.register(
                 "product",
                 AgentConfig {

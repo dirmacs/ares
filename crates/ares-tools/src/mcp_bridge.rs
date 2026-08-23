@@ -132,7 +132,8 @@ pub fn mcp_bridge_tool_catalog() -> Vec<MCPTool> {
         },
         MCPTool {
             name: "mcp_search_context".into(),
-            description: "Search context in an MCP server with optional scope and max results".into(),
+            description: "Search context in an MCP server with optional scope and max results"
+                .into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -200,19 +201,19 @@ pub fn mcp_bridge_tool_catalog() -> Vec<MCPTool> {
     ]
 }
 
-
 fn tool_description(name: &str) -> &'static str {
     match name {
         "mcp_get_context" => "Get context from an MCP server by path",
         "mcp_write_context" => "Write context to an MCP server at a specific path",
-        "mcp_search_context" => "Search context in an MCP server with optional scope and max results",
+        "mcp_search_context" => {
+            "Search context in an MCP server with optional scope and max results"
+        }
         "mcp_get_completeness" => "Get completeness metrics from an MCP server for a scope",
         "mcp_get_gaps" => "Get gaps from an MCP server filtered by status and category",
         "mcp_detect_gaps" => "Detect gaps in an MCP server optionally filtered by category",
         _ => "MCP bridge tool",
     }
 }
-
 
 fn catalog_tool(name: &str) -> Option<MCPTool> {
     mcp_bridge_tool_catalog()
@@ -229,7 +230,10 @@ fn require_str_field(args: &Value, field: &str) -> std::result::Result<(), McpBr
 }
 
 /// Validate tool arguments for a named MCP bridge tool before dispatch.
-pub fn validate_mcp_call_params(tool_name: &str, args: &Value) -> std::result::Result<(), McpBridgeError> {
+pub fn validate_mcp_call_params(
+    tool_name: &str,
+    args: &Value,
+) -> std::result::Result<(), McpBridgeError> {
     if catalog_tool(tool_name).is_none() {
         return Err(McpBridgeError::tool_not_found(tool_name));
     }
@@ -250,7 +254,9 @@ pub fn parse_mcp_response(payload: &Value) -> std::result::Result<Value, McpBrid
     if let Some(error) = payload.get("error") {
         if let Some(message) = error.get("message").and_then(Value::as_str) {
             let code = error.get("code").and_then(Value::as_i64).unwrap_or(-32000);
-            return Err(McpBridgeError::mcp_server_error(format!("{code}: {message}")));
+            return Err(McpBridgeError::mcp_server_error(format!(
+                "{code}: {message}"
+            )));
         }
         return Err(McpBridgeError::mcp_server_error(error.to_string()));
     }
@@ -285,7 +291,12 @@ pub fn build_tool_definitions(
 ) -> Vec<ToolDefinition> {
     tools
         .iter()
-        .filter(|tool| configs.get(&tool.name).map(|cfg| cfg.enabled).unwrap_or(true))
+        .filter(|tool| {
+            configs
+                .get(&tool.name)
+                .map(|cfg| cfg.enabled)
+                .unwrap_or(true)
+        })
         .map(|tool| ToolDefinition {
             name: tool.name.clone(),
             description: tool.description.clone(),
@@ -309,13 +320,19 @@ pub fn mcp_server_config_for_client(client_name: &str) -> McpServerConfig {
 }
 
 /// Register MCP bridge tool implementations for `client_name`.
-pub fn register_mcp_tools(registry: &mut ToolRegistry, client_name: &str) {
+pub(crate) fn register_mcp_tools(registry: &mut ToolRegistry, client_name: &str) {
     let config = mcp_server_config_for_client(client_name);
 
     registry.register(Arc::new(McpGetContext::new(McpClient::new(config.clone()))));
-    registry.register(Arc::new(McpWriteContext::new(McpClient::new(config.clone()))));
-    registry.register(Arc::new(McpSearchContext::new(McpClient::new(config.clone()))));
-    registry.register(Arc::new(McpGetCompleteness::new(McpClient::new(config.clone()))));
+    registry.register(Arc::new(McpWriteContext::new(McpClient::new(
+        config.clone(),
+    ))));
+    registry.register(Arc::new(McpSearchContext::new(McpClient::new(
+        config.clone(),
+    ))));
+    registry.register(Arc::new(McpGetCompleteness::new(McpClient::new(
+        config.clone(),
+    ))));
     registry.register(Arc::new(McpGetGaps::new(McpClient::new(config.clone()))));
     registry.register(Arc::new(McpDetectGaps::new(McpClient::new(config.clone()))));
 }
@@ -626,7 +643,10 @@ mod tests {
         let catalog = mcp_bridge_tool_catalog();
         let names: Vec<_> = catalog.iter().map(|tool| tool.name.as_str()).collect();
         for expected in MCP_BRIDGE_TOOL_NAMES {
-            assert!(names.contains(expected), "missing catalog entry for {expected}");
+            assert!(
+                names.contains(expected),
+                "missing catalog entry for {expected}"
+            );
         }
     }
 
@@ -648,7 +668,10 @@ mod tests {
     fn register_mcp_tools_count_matches_catalog() {
         let mut registry = ToolRegistry::new();
         register_mcp_tools(&mut registry, "client");
-        assert_eq!(registry.enabled_tool_names().len(), MCP_BRIDGE_TOOL_NAMES.len());
+        assert_eq!(
+            registry.enabled_tool_names().len(),
+            MCP_BRIDGE_TOOL_NAMES.len()
+        );
     }
 
     // ===============================
@@ -659,10 +682,7 @@ mod tests {
     fn build_tool_definitions_returns_enabled_only() {
         let catalog = mcp_bridge_tool_catalog();
         let mut configs = HashMap::new();
-        configs.insert(
-            "mcp_get_context".into(),
-            MCPToolConfig { enabled: false },
-        );
+        configs.insert("mcp_get_context".into(), MCPToolConfig { enabled: false });
         configs.insert("mcp_write_context".into(), MCPToolConfig { enabled: true });
 
         let defs = build_tool_definitions(&catalog, &configs);
@@ -779,15 +799,14 @@ mod tests {
 
     #[test]
     fn execute_mcp_call_invalid_params() {
-        let err = execute_mcp_call("mcp_get_context", &json!({}), &json!({"result": {}}))
-            .unwrap_err();
+        let err =
+            execute_mcp_call("mcp_get_context", &json!({}), &json!({"result": {}})).unwrap_err();
         assert!(matches!(err, McpBridgeError::InvalidParams(_)));
     }
 
     #[test]
     fn execute_mcp_call_tool_not_found() {
-        let err = execute_mcp_call("missing_tool", &json!({}), &json!({"result": {}}))
-            .unwrap_err();
+        let err = execute_mcp_call("missing_tool", &json!({}), &json!({"result": {}})).unwrap_err();
         assert!(matches!(err, McpBridgeError::ToolNotFound(_)));
     }
 
@@ -801,8 +820,8 @@ mod tests {
 
     #[test]
     fn validate_mcp_write_context_requires_value() {
-        let err = validate_mcp_call_params("mcp_write_context", &json!({"path": "/a"}))
-            .unwrap_err();
+        let err =
+            validate_mcp_call_params("mcp_write_context", &json!({"path": "/a"})).unwrap_err();
         assert!(matches!(err, McpBridgeError::InvalidParams(_)));
     }
 
@@ -842,7 +861,10 @@ mod tests {
             tool.description(),
             "Get completeness metrics from an MCP server for a scope"
         );
-        assert_eq!(tool.parameters_schema()["properties"]["scope"]["default"], "*");
+        assert_eq!(
+            tool.parameters_schema()["properties"]["scope"]["default"],
+            "*"
+        );
     }
 
     #[test]
@@ -851,7 +873,10 @@ mod tests {
         assert_eq!(tool.name(), "mcp_search_context");
         assert!(tool.description().contains("scope"));
         let schema = tool.parameters_schema();
-        assert!(schema["required"].as_array().unwrap().contains(&json!("query")));
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("query")));
     }
 
     #[test]
@@ -868,7 +893,10 @@ mod tests {
     fn mcp_get_context_signature() {
         let tool = McpGetContext::new(test_client());
         assert_eq!(tool.name(), "mcp_get_context");
-        assert_eq!(tool.parameters_schema()["properties"]["path"]["type"], "string");
+        assert_eq!(
+            tool.parameters_schema()["properties"]["path"]["type"],
+            "string"
+        );
     }
 
     #[test]

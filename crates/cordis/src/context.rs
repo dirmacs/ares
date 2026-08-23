@@ -1,8 +1,13 @@
 use parking_lot::RwLock;
 use std::any::{Any, TypeId};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
+
+thread_local! {
+    static ACTIVE_PROVIDER_FIBERS: RefCell<Vec<(usize, Arc<Fiber>)>> = const { RefCell::new(Vec::new()) };
+}
 
 use crate::effect::{Disposable, Effect};
 use crate::fiber::{Fiber, FiberState};
@@ -17,18 +22,53 @@ pub struct Context {
     isolate: RwLock<HashMap<TypeId, Symbol>>,
     intercept: RwLock<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
     versions: RwLock<HashMap<TypeId, u64>>,
+    // Providers installed by a registration fiber are hidden while that fiber
+    // is inactive, reloading, or failed. Direct `provide` values remain
+    // permissive for existing root/test APIs.
+    owners: RwLock<HashMap<TypeId, Weak<Fiber>>>,
     fiber: Arc<Fiber>,
     parent: Option<Arc<Context>>,
     root: Weak<Context>,
 }
 
 impl Context {
+    pub(crate) fn with_provider_fiber<R>(
+        self: &Arc<Self>,
+        fiber: &Arc<Fiber>,
+        f: impl FnOnce() -> R,
+    ) -> R {
+        let key = Arc::as_ptr(self) as usize;
+        ACTIVE_PROVIDER_FIBERS.with(|stack| stack.borrow_mut().push((key, fiber.clone())));
+        struct Scope;
+        impl Drop for Scope {
+            fn drop(&mut self) {
+                ACTIVE_PROVIDER_FIBERS.with(|stack| {
+                    let _ = stack.borrow_mut().pop();
+                });
+            }
+        }
+        let _scope = Scope;
+        f()
+    }
+
+    fn active_provider_fiber(&self) -> Option<Arc<Fiber>> {
+        let key = self as *const Context as usize;
+        ACTIVE_PROVIDER_FIBERS.with(|stack| {
+            stack
+                .borrow()
+                .iter()
+                .rev()
+                .find(|(context, _)| *context == key)
+                .map(|(_, fiber)| fiber.clone())
+        })
+    }
     pub fn new_root() -> Arc<Self> {
         Arc::new_cyclic(|weak| Self {
             store: RwLock::new(HashMap::new()),
             isolate: RwLock::new(HashMap::new()),
             intercept: RwLock::new(HashMap::new()),
             versions: RwLock::new(HashMap::new()),
+            owners: RwLock::new(HashMap::new()),
             fiber: Arc::new(Fiber::new()),
             parent: None,
             root: weak.clone(),
@@ -41,6 +81,7 @@ impl Context {
             isolate: RwLock::new(HashMap::new()),
             intercept: RwLock::new(HashMap::new()),
             versions: RwLock::new(HashMap::new()),
+            owners: RwLock::new(HashMap::new()),
             fiber: Arc::new(Fiber::new()),
             parent: Some(self.clone()),
             root: self.root.clone(),
@@ -55,6 +96,7 @@ impl Context {
             isolate: RwLock::new(parent_isolate),
             intercept: RwLock::new(HashMap::new()),
             versions: RwLock::new(HashMap::new()),
+            owners: RwLock::new(HashMap::new()),
             fiber: Arc::new(Fiber::new()),
             parent: Some(self.clone()),
             root: self.root.clone(),
@@ -74,44 +116,85 @@ impl Context {
         child
     }
 
-    // Provide inserts and pushes LIFO undo onto this context's fiber
+    // Direct providers are owned by this context's fiber for compatibility.
     pub fn provide<T: Service>(self: &Arc<Self>, svc: T) -> Arc<T> {
+        let owner = self.active_provider_fiber();
+        self.provide_impl(Arc::new(svc), owner.as_ref())
+    }
+
+    /// Install a provider and record its undo on an explicit registration
+    /// fiber. This is used by RegistryService so disposing one registration
+    /// cannot remove another registration's service.
+    pub(crate) fn provide_on_fiber<T: Service>(
+        self: &Arc<Self>,
+        svc: Arc<T>,
+        owner: &Arc<Fiber>,
+    ) -> Arc<T> {
+        self.provide_impl(svc, Some(owner))
+    }
+
+    fn provide_impl<T: Service>(
+        self: &Arc<Self>,
+        svc: Arc<T>,
+        owner: Option<&Arc<Fiber>>,
+    ) -> Arc<T> {
         let tid = TypeId::of::<T>();
-        let arc = Arc::new(svc);
-        let any: Arc<dyn Any + Send + Sync> = arc.clone();
-        let prev = self.store.write().insert(tid, any);
+        let any: Arc<dyn Any + Send + Sync> = svc.clone();
+        let prev = self.store.write().insert(tid, any.clone());
+        if tid == TypeId::of::<ReflectService>() {
+            if let Ok(reflect) = any.downcast::<ReflectService>() {
+                reflect.set_context(self);
+            }
+        }
+        let prev_owner = if let Some(owner) = owner {
+            self.owners.write().insert(tid, Arc::downgrade(owner))
+        } else {
+            self.owners.write().remove(&tid)
+        };
         {
             let mut versions = self.versions.write();
-            let e = versions.entry(tid).or_insert(0);
-            *e += 1;
+            *versions.entry(tid).or_insert(0) += 1;
         }
-        // Notify dependents that T was provided/updated (reactive cascade)
         if let Some(reflect) = self.get::<ReflectService>() {
             reflect.notify(tid);
         }
-        // push undo
         let weak = Arc::downgrade(self);
-        let fiber = self.fiber.clone();
-        let prev_clone = prev;
         let undo: Box<dyn FnOnce() + Send> = Box::new(move || {
             if let Some(ctx) = weak.upgrade() {
-                let mut store = ctx.store.write();
-                if let Some(prev_any) = prev_clone {
-                    store.insert(tid, prev_any);
-                } else {
-                    store.remove(&tid);
-                }
-                let mut versions = ctx.versions.write();
-                if let Some(v) = versions.get_mut(&tid) {
-                    *v = v.saturating_sub(1);
-                    if *v == 0 {
-                        versions.remove(&tid);
+                // Release all context write guards before looking up ReflectService.
+                // Context get reads the store; calling it while the store write lock is held
+                // deadlocks parking_lot's non-reentrant RwLock during disposal.
+                {
+                    let mut store = ctx.store.write();
+                    if let Some(prev_any) = prev {
+                        store.insert(tid, prev_any);
+                    } else {
+                        store.remove(&tid);
                     }
+                    let mut owners = ctx.owners.write();
+                    if let Some(previous) = prev_owner {
+                        owners.insert(tid, previous);
+                    } else {
+                        owners.remove(&tid);
+                    }
+                    let mut versions = ctx.versions.write();
+                    if let Some(v) = versions.get_mut(&tid) {
+                        *v = v.saturating_sub(1);
+                        if *v == 0 {
+                            versions.remove(&tid);
+                        }
+                    }
+                }
+                if let Some(reflect) = ctx.get::<ReflectService>() {
+                    reflect.notify(tid);
                 }
             }
         });
-        fiber.push_undo(undo);
-        arc
+        owner
+            .cloned()
+            .unwrap_or_else(|| self.fiber.clone())
+            .push_undo(undo);
+        svc
     }
 
     /// Remove a service from the store and trigger deactivation cascade.
@@ -123,6 +206,7 @@ impl Context {
             store.remove(&tid)
         };
         if let Some(any) = removed {
+            let previous_owner = self.owners.write().remove(&tid);
             // Adjust version down (or remove entirely)
             {
                 let mut versions = self.versions.write();
@@ -139,11 +223,16 @@ impl Context {
             }
             // Push undo (re-provide) for LIFO reversal
             let weak = Arc::downgrade(self);
-            let fiber = self.fiber.clone();
+            let fiber = self
+                .active_provider_fiber()
+                .unwrap_or_else(|| self.fiber.clone());
             let any_clone = any.clone();
             let undo: Box<dyn FnOnce() + Send> = Box::new(move || {
                 if let Some(ctx) = weak.upgrade() {
                     ctx.store.write().insert(tid, any_clone);
+                    if let Some(owner) = previous_owner {
+                        ctx.owners.write().insert(tid, owner);
+                    }
                     let mut versions = ctx.versions.write();
                     let e = versions.entry(tid).or_insert(0);
                     *e += 1;
@@ -164,15 +253,40 @@ impl Context {
                 return Some(arc);
             }
         }
+        let mut local_provider = false;
         if let Some(any) = self.store.read().get(&tid) {
-            if let Ok(arc) = any.clone().downcast::<T>() {
-                return Some(arc);
+            local_provider = true;
+            let active = self
+                .owners
+                .read()
+                .get(&tid)
+                .and_then(Weak::upgrade)
+                .map(|fiber| matches!(fiber.state(), FiberState::Active { .. }))
+                .unwrap_or(true);
+            if active {
+                if let Ok(arc) = any.clone().downcast::<T>() {
+                    if arc.check() {
+                        return Some(arc);
+                    }
+                }
             }
         }
-        if let Some(parent) = &self.parent {
-            return parent.get::<T>();
+        if local_provider {
+            return None;
         }
-        None
+        // An isolate label is a realm boundary. A provider from an unlabeled
+        // parent must not leak into a labeled child, nor may another label
+        // satisfy this lookup. Unrelated service types still walk normally.
+        if self.isolate.read().contains_key(&tid) {
+            return self.parent.as_ref().and_then(|parent| {
+                if parent.isolate_label(tid) == self.isolate_label(tid) {
+                    parent.get::<T>()
+                } else {
+                    None
+                }
+            });
+        }
+        self.parent.as_ref().and_then(|parent| parent.get::<T>())
     }
 
     pub fn get_version(&self, tid: TypeId) -> u64 {
@@ -183,6 +297,29 @@ impl Context {
             return parent.get_version(tid);
         }
         0
+    }
+
+    pub(crate) fn is_available(&self, tid: TypeId) -> bool {
+        if self.intercept.read().contains_key(&tid) {
+            return true;
+        }
+        if self.store.read().contains_key(&tid) {
+            return self
+                .owners
+                .read()
+                .get(&tid)
+                .and_then(Weak::upgrade)
+                .map(|fiber| matches!(fiber.state(), FiberState::Active { .. }))
+                .unwrap_or(true);
+        }
+        if self.isolate.read().contains_key(&tid) {
+            return self.parent.as_ref().is_some_and(|parent| {
+                parent.isolate_label(tid) == self.isolate_label(tid) && parent.is_available(tid)
+            });
+        }
+        self.parent
+            .as_ref()
+            .is_some_and(|parent| parent.is_available(tid))
     }
 
     pub fn isolate_label(&self, tid: TypeId) -> Option<Symbol> {
@@ -225,8 +362,19 @@ impl Context {
             Some(l) if l == label => {
                 // Matching namespace — check this context's store
                 if let Some(any) = self.store.read().get(&tid) {
-                    if let Ok(arc) = any.clone().downcast::<T>() {
-                        return Some(arc);
+                    let active = self
+                        .owners
+                        .read()
+                        .get(&tid)
+                        .and_then(Weak::upgrade)
+                        .map(|fiber| matches!(fiber.state(), FiberState::Active { .. }))
+                        .unwrap_or(true);
+                    if active {
+                        if let Ok(arc) = any.clone().downcast::<T>() {
+                            if arc.check() {
+                                return Some(arc);
+                            }
+                        }
                     }
                 }
                 // Continue up the chain
@@ -285,40 +433,8 @@ impl Context {
     }
 
     pub fn provide_arc<T: Service>(self: &Arc<Self>, svc: Arc<T>) -> Arc<T> {
-        let tid = TypeId::of::<T>();
-        let any: Arc<dyn Any + Send + Sync> = svc.clone();
-        let prev = self.store.write().insert(tid, any);
-        {
-            let mut versions = self.versions.write();
-            let e = versions.entry(tid).or_insert(0);
-            *e += 1;
-        }
-        // Notify dependents that T was provided/updated (reactive cascade)
-        if let Some(reflect) = self.get::<ReflectService>() {
-            reflect.notify(tid);
-        }
-        let weak = Arc::downgrade(self);
-        let fiber = self.fiber.clone();
-        let prev_clone = prev;
-        let undo: Box<dyn FnOnce() + Send> = Box::new(move || {
-            if let Some(ctx) = weak.upgrade() {
-                let mut store = ctx.store.write();
-                if let Some(prev_any) = prev_clone {
-                    store.insert(tid, prev_any);
-                } else {
-                    store.remove(&tid);
-                }
-                let mut versions = ctx.versions.write();
-                if let Some(v) = versions.get_mut(&tid) {
-                    *v = v.saturating_sub(1);
-                    if *v == 0 {
-                        versions.remove(&tid);
-                    }
-                }
-            }
-        });
-        fiber.push_undo(undo);
-        svc
+        let owner = self.active_provider_fiber();
+        self.provide_impl(svc, owner.as_ref())
     }
 
     pub fn fiber(&self) -> Arc<Fiber> {
@@ -386,7 +502,11 @@ impl Context {
         Ok(fid)
     }
 
-    pub async fn plugin_with<P: Plugin>(self: &Arc<Self>, plugin: P, config: P::Config) -> Result<FiberId, CordisError> {
+    pub async fn plugin_with<P: Plugin>(
+        self: &Arc<Self>,
+        plugin: P,
+        config: P::Config,
+    ) -> Result<FiberId, CordisError> {
         if let Some(registry) = self.get::<RegistryService>() {
             return registry.plugin(self, plugin, config);
         }

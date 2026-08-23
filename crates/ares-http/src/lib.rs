@@ -64,8 +64,6 @@ pub use toon_config::DynamicConfigManager;
 pub use pipeline_hook::{PipelineFanout, PipelineFanoutHandle, PipelineOrigin};
 pub use ares_types::{models, types};
 pub use ares_llm::ConfigBasedLLMFactory;
-#[cfg(feature = "postgres")]
-pub use ares_tools::RuntimeToolRegistry;
 
 /// Compatibility paths so moved handlers can keep `crate::agents` / `crate::db`.
 pub use ares_agent as agents;

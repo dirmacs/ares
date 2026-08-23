@@ -12,6 +12,7 @@ use arc_swap::ArcSwap;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -696,6 +697,11 @@ pub struct AresConfigManager {
     config_path: PathBuf,
     watcher: RwLock<Option<RecommendedWatcher>>,
     reload_tx: Option<mpsc::UnboundedSender<()>>,
+    /// Context captured by [`Overlay::watch_cordis`] so `start_watching` can
+    /// notify `TypeId::of::<Overlay>()` without a second watcher stack.
+    watch_ctx: Arc<RwLock<Option<Arc<cordis::Context>>>>,
+    /// Holds the single `watch_many_with` handle (ares.toml + TOON dirs).
+    cordis_watch: RwLock<Option<cordis::watcher::WatchHandle>>,
 }
 
 impl AresConfigManager {
@@ -722,6 +728,8 @@ impl AresConfigManager {
             config_path: path,
             watcher: RwLock::new(None),
             reload_tx: None,
+            watch_ctx: Arc::new(RwLock::new(None)),
+            cordis_watch: RwLock::new(None),
         })
     }
 
@@ -743,6 +751,10 @@ impl AresConfigManager {
 
     /// Start watching for configuration file changes
     pub fn start_watching(&mut self) -> Result<(), ConfigError> {
+        if self.cordis_watch.read().is_some() {
+            // Overlay::watch_cordis already owns watch_many_with for ares.toml.
+            return Ok(());
+        }
         let (tx, mut rx) = mpsc::unbounded_channel::<()>();
         self.reload_tx = Some(tx.clone());
 
@@ -773,6 +785,7 @@ impl AresConfigManager {
 
         // Spawn reload handler with debouncing
         let config_path_clone = config_path.clone();
+        let watch_ctx = Arc::clone(&self.watch_ctx);
         tokio::spawn(async move {
             let mut last_reload = std::time::Instant::now();
             let debounce_duration = Duration::from_millis(500);
@@ -790,6 +803,11 @@ impl AresConfigManager {
                     Ok(new_config) => {
                         config_arc.store(Arc::new(new_config));
                         info!("Configuration hot-reloaded successfully");
+                        if let Some(ctx) = watch_ctx.read().clone() {
+                            if let Some(reflect) = ctx.get::<cordis::ReflectService>() {
+                                reflect.notify(TypeId::of::<Overlay>());
+                            }
+                        }
                         last_reload = std::time::Instant::now();
                     }
                     Err(e) => {
@@ -820,6 +838,8 @@ impl Clone for AresConfigManager {
             config_path: self.config_path.clone(),
             watcher: RwLock::new(None), // Watcher is not cloned
             reload_tx: self.reload_tx.clone(),
+            watch_ctx: Arc::clone(&self.watch_ctx),
+            cordis_watch: RwLock::new(None),
         }
     }
 }
@@ -833,6 +853,8 @@ impl AresConfigManager {
             config_path: PathBuf::from("test-config.toml"),
             watcher: RwLock::new(None),
             reload_tx: None,
+            watch_ctx: Arc::new(RwLock::new(None)),
+            cordis_watch: RwLock::new(None),
         }
     }
 }
@@ -868,30 +890,121 @@ impl Default for OverlayConfig {
     }
 }
 
+fn entry_config_is_empty(config: &serde_json::Value) -> bool {
+    match config {
+        serde_json::Value::Null => true,
+        serde_json::Value::Object(map) => map.is_empty(),
+        serde_json::Value::Array(arr) => arr.is_empty(),
+        _ => false,
+    }
+}
+
+/// Map a loader plugin key to the matching `ares.toml` section value.
+fn overlay_value_for_plugin(plugin: &str, cfg: &AresConfig) -> Option<serde_json::Value> {
+    match plugin {
+        "Http" => serde_json::to_value(&cfg.server).ok(),
+        "AuthService" => serde_json::to_value(&cfg.auth).ok(),
+        "Store" => serde_json::to_value(&cfg.database).ok(),
+        "Tools" => serde_json::to_value(&cfg.tools).ok(),
+        "Llm" => Some(serde_json::json!({
+            "providers": cfg.providers,
+            "models": cfg.models,
+            "nvidia": cfg.nvidia,
+        })),
+        "Execute" => serde_json::to_value(&cfg.agents).ok(),
+        _ => None,
+    }
+}
+
+fn path_is_toml(path: &Path, overlay_path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "toml")
+        || path == overlay_path
+        || path.file_name() == overlay_path.file_name()
+}
+
+fn path_is_toon(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "toon")
+}
+
 impl Overlay {
-    /// Best-effort file watch hook used by the Overlay factory.
-    pub fn watch_cordis(&self, _ctx: &std::sync::Arc<cordis::Context>) -> Result<(), ConfigError> {
+    /// Single Cordis watch for `ares.toml` plus TOON dirs.
+    ///
+    /// Uses `watch_many_with` (no second notify stack). `ares.toml` changes
+    /// reload this overlay and notify `TypeId::of::<Overlay>()`; TOON changes
+    /// reload [`crate::toon_config::DynamicConfigManager`] and notify Tools
+    /// and Execute TypeIds.
+    pub fn watch_cordis(&self, ctx: &std::sync::Arc<cordis::Context>) -> Result<(), ConfigError> {
+        *self.watch_ctx.write() = Some(Arc::clone(ctx));
+        if self.cordis_watch.read().is_some() {
+            return Ok(());
+        }
+
+        let Some(reflect) = ctx.get::<cordis::ReflectService>() else {
+            return Ok(());
+        };
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Ok(());
+        }
+
+        let overlay_path = self.config_path.clone();
+        let config_store = Arc::clone(&self.config);
+        let snapshot = self.config();
+        let paths = vec![
+            overlay_path.clone(),
+            snapshot.config.agents_dir.clone(),
+            snapshot.config.models_dir.clone(),
+            snapshot.config.tools_dir.clone(),
+            snapshot.config.workflows_dir.clone(),
+            snapshot.config.mcps_dir.clone(),
+        ];
+
+        let on_change: cordis::watcher::WatchOnChange = Arc::new(move |c, path| {
+            if path_is_toml(path, &overlay_path) {
+                match AresConfig::load(&overlay_path) {
+                    Ok(new_config) => {
+                        config_store.store(Arc::new(new_config));
+                        info!("Configuration hot-reloaded successfully");
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to hot-reload config: {}. Keeping previous config.",
+                            e
+                        );
+                    }
+                }
+            }
+            if path_is_toon(path) {
+                if let Some(dynamic) = c.get::<crate::toon_config::DynamicConfigManager>() {
+                    match dynamic.reload() {
+                        Ok(_) => info!("TOON configuration reloaded"),
+                        Err(e) => warn!("Failed to reload TOON config: {e}"),
+                    }
+                }
+                crate::toon_config::notify_tools_and_execute(c);
+            }
+        });
+
+        let handle = cordis::watcher::watch_many_with(
+            Arc::clone(ctx),
+            reflect,
+            paths,
+            TypeId::of::<Overlay>(),
+            on_change,
+        )?;
+        *self.cordis_watch.write() = Some(handle);
         Ok(())
     }
 
     /// Fill empty cordis-entry configs from `ares.toml` sections.
+    ///
+    /// Non-empty loader `entry.config` values are left unchanged.
     pub fn fill_empty_entry_configs(&self, tree: &mut cordis::EntryTree) {
         let cfg = self.config();
         for entry in &mut tree.0 {
-            let empty = match &entry.config {
-                serde_json::Value::Null => true,
-                serde_json::Value::Object(map) => map.is_empty(),
-                serde_json::Value::Array(arr) => arr.is_empty(),
-                _ => false,
-            };
-            if !empty {
+            if !entry_config_is_empty(&entry.config) {
                 continue;
             }
-            if let Some(value) = match entry.plugin.as_str() {
-                "Http" => serde_json::to_value(&cfg.server).ok(),
-                "AuthService" => serde_json::to_value(&cfg.auth).ok(),
-                _ => None,
-            } {
+            if let Some(value) = overlay_value_for_plugin(entry.plugin.as_str(), &cfg) {
                 entry.config = value;
             }
         }
@@ -907,12 +1020,15 @@ impl cordis::Plugin for OverlayPlugin {
 
     fn apply(
         &self,
-        _ctx: &std::sync::Arc<cordis::Context>,
+        ctx: &std::sync::Arc<cordis::Context>,
         config: Self::Config,
     ) -> std::result::Result<std::sync::Arc<Overlay>, cordis::CordisError> {
-        Overlay::new(&config.toml_path)
-            .map(std::sync::Arc::new)
-            .map_err(|e| cordis::CordisError::Configuration(e.to_string()))
+        let overlay = Overlay::new(&config.toml_path)
+            .map_err(|e| cordis::CordisError::Configuration(e.to_string()))?;
+        overlay
+            .watch_cordis(ctx)
+            .map_err(|e| cordis::CordisError::Configuration(e.to_string()))?;
+        Ok(std::sync::Arc::new(overlay))
     }
 }
 
@@ -1202,6 +1318,80 @@ api_key_env = "TEST_API_KEY"
         assert_eq!(config.rag.chunking.chunk_size, 200);
         assert_eq!(config.rag.chunking.chunk_overlap, 50);
         assert_eq!(config.rag.search.search_strategy, "semantic");
+    }
+
+    #[test]
+    fn fill_empty_entry_configs_copies_only_when_empty() {
+        let content = create_test_config();
+        let config: AresConfig = toml::from_str(&content).expect("parse test config");
+        let overlay = Overlay::from_config(config);
+
+        let mut tree = cordis::EntryTree(vec![
+            cordis::Entry {
+                id: "http-empty".into(),
+                plugin: "Http".into(),
+                config: serde_json::json!({}),
+                ..Default::default()
+            },
+            cordis::Entry {
+                id: "http-kept".into(),
+                plugin: "Http".into(),
+                config: serde_json::json!({"host": "keep.example", "port": 9}),
+                ..Default::default()
+            },
+            cordis::Entry {
+                id: "store-null".into(),
+                plugin: "Store".into(),
+                config: serde_json::Value::Null,
+                ..Default::default()
+            },
+            cordis::Entry {
+                id: "tools-empty".into(),
+                plugin: "Tools".into(),
+                config: serde_json::json!({}),
+                ..Default::default()
+            },
+            cordis::Entry {
+                id: "tools-kept".into(),
+                plugin: "Tools".into(),
+                config: serde_json::json!({"calculator": {"enabled": false}}),
+                ..Default::default()
+            },
+            cordis::Entry {
+                id: "llm-empty".into(),
+                plugin: "Llm".into(),
+                config: serde_json::Value::Null,
+                ..Default::default()
+            },
+            cordis::Entry {
+                id: "execute-empty".into(),
+                plugin: "Execute".into(),
+                config: serde_json::json!([]),
+                ..Default::default()
+            },
+            cordis::Entry {
+                id: "auth-empty".into(),
+                plugin: "AuthService".into(),
+                config: serde_json::json!({}),
+                ..Default::default()
+            },
+        ]);
+
+        overlay.fill_empty_entry_configs(&mut tree);
+
+        assert_eq!(tree.0[0].config["host"], "127.0.0.1");
+        assert_eq!(tree.0[0].config["port"], 3000);
+        assert_eq!(tree.0[1].config["host"], "keep.example");
+        assert_eq!(tree.0[1].config["port"], 9);
+        assert_eq!(tree.0[2].config["url"], "./data/test.db");
+        assert!(
+            tree.0[3].config.get("calculator").is_some(),
+            "empty Tools config should receive ares.toml tools map"
+        );
+        assert_eq!(tree.0[4].config["calculator"]["enabled"], false);
+        assert!(tree.0[5].config.get("providers").and_then(|v| v.get("ollama-local")).is_some());
+        assert!(tree.0[6].config.get("router").is_some());
+        assert_eq!(tree.0[7].config["jwt_secret_env"], "TEST_JWT_SECRET");
     }
 
     #[test]

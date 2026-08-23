@@ -6,8 +6,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use cordis::{Context, CordisError, EventsService, Service};
 use ares_types::types::{AppError, Message};
+use cordis::{Context, CordisError, EventsService, Service};
 
 /// Result of `Execute::run` including resolution metadata.
 ///
@@ -58,8 +58,7 @@ pub use ares_llm::ModelOverride;
 ///
 /// Carries the minimal fields needed to execute any agent via the single
 /// `Execute::run` entry-point.
-#[derive(Clone)]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct AgentRequest {
     /// Agent name to execute.
     pub agent_name: String,
@@ -72,6 +71,38 @@ pub struct AgentRequest {
     /// provider when `Some`).
     pub ctx_provider: Option<Arc<dyn crate::context_provider::ContextProvider>>,
 }
+
+/// Internal marker for skill-triggered executions.
+///
+/// Background engines attach this marker to their tenant-scoped request
+/// context and still cross the same public `Execute::run` boundary as regular
+/// agent requests. Keeping the marker in the context avoids a second public
+/// execution API or changes to the request shape used by downstream crates.
+#[derive(Clone)]
+pub(crate) struct SkillDispatch {
+    pub(crate) skill_id: String,
+    pub(crate) tenant_id: String,
+    pub(crate) input: serde_json::Value,
+    pub(crate) run_id: String,
+}
+
+impl SkillDispatch {
+    pub(crate) fn new(
+        skill_id: impl Into<String>,
+        tenant_id: impl Into<String>,
+        input: serde_json::Value,
+        run_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            skill_id: skill_id.into(),
+            tenant_id: tenant_id.into(),
+            input,
+            run_id: run_id.into(),
+        }
+    }
+}
+
+impl Service for SkillDispatch {}
 
 impl std::fmt::Debug for AgentRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -86,7 +117,6 @@ impl std::fmt::Debug for AgentRequest {
             .finish()
     }
 }
-
 
 /// Unified agent execution service — the single place handling:
 ///
@@ -119,7 +149,6 @@ impl Execute {
             run_tracker: None,
         }
     }
-
 
     /// Emit the `agent.started` event through the Cordis event bus with
     /// `Dispatch::Parallel`, which fans out to every registered observer
@@ -157,8 +186,12 @@ impl Execute {
         event: impl Into<String>,
         payload: serde_json::Value,
     ) {
-        let Some(events) = ctx.get::<cordis::EventsService>() else { return; };
-        let _ = events.dispatch(event.into(), payload, cordis::Dispatch::Emit).await;
+        let Some(events) = ctx.get::<cordis::EventsService>() else {
+            return;
+        };
+        let _ = events
+            .dispatch(event.into(), payload, cordis::Dispatch::Emit)
+            .await;
     }
 
     /// Attach a context provider for memory injection.
@@ -213,31 +246,29 @@ impl Execute {
         let ctx_owned = Arc::clone(ctx);
         let orig = req.clone();
         let out = events
-            .waterfall_around("agent.run".into(), payload, move |payload| {
-                async move {
-                    let mut run_req = orig;
-                    if let Some(name) = payload.get("agent_name").and_then(|v| v.as_str()) {
-                        run_req.agent_name = name.to_string();
-                    }
-                    if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
-                        run_req.message = msg.to_string();
-                    }
-                    match execute.run_resolved_or_execute(&run_req, &ctx_owned).await {
-                        Ok(er) => Ok(serde_json::json!({
-                            "content": er.response.content,
-                            "usage": er.response.usage,
-                            "metadata": er.response.metadata.as_ref().map(|m| {
-                                serde_json::json!({
-                                    "model_name": m.model_name,
-                                    "provider_name": m.provider_name,
-                                })
-                            }),
-                            "source": er.source,
-                            "agent_name": er.agent_name,
-                            "run_id": er.run_id,
-                        })),
-                        Err(e) => Err(CordisError::Fiber(e.to_string())),
-                    }
+            .waterfall_around("agent.run".into(), payload, move |payload| async move {
+                let mut run_req = orig;
+                if let Some(name) = payload.get("agent_name").and_then(|v| v.as_str()) {
+                    run_req.agent_name = name.to_string();
+                }
+                if let Some(msg) = payload.get("message").and_then(|v| v.as_str()) {
+                    run_req.message = msg.to_string();
+                }
+                match execute.run_resolved_or_execute(&run_req, &ctx_owned).await {
+                    Ok(er) => Ok(serde_json::json!({
+                        "content": er.response.content,
+                        "usage": er.response.usage,
+                        "metadata": er.response.metadata.as_ref().map(|m| {
+                            serde_json::json!({
+                                "model_name": m.model_name,
+                                "provider_name": m.provider_name,
+                            })
+                        }),
+                        "source": er.source,
+                        "agent_name": er.agent_name,
+                        "run_id": er.run_id,
+                    })),
+                    Err(e) => Err(CordisError::Fiber(e.to_string())),
                 }
             })
             .await
@@ -296,6 +327,9 @@ impl Execute {
         req: &AgentRequest,
         ctx: &Arc<Context>,
     ) -> std::result::Result<ExecutionResult, AppError> {
+        if let Some(dispatch) = ctx.get::<SkillDispatch>() {
+            return self.run_skill(req, ctx, &dispatch).await;
+        }
         if let Some(result) = self.try_run_resolved(req, ctx).await {
             return result;
         }
@@ -306,6 +340,48 @@ impl Execute {
             agent_name: req.agent_name.clone(),
             run_id: uuid::Uuid::new_v4().to_string(),
         })
+    }
+
+    #[cfg(feature = "postgres")]
+    async fn run_skill(
+        &self,
+        req: &AgentRequest,
+        ctx: &Arc<Context>,
+        dispatch: &SkillDispatch,
+    ) -> std::result::Result<ExecutionResult, AppError> {
+        let skill_engine = ctx
+            .get::<crate::skills::SkillEngine>()
+            .ok_or_else(|| AppError::Unavailable("SkillEngine is not provided".to_string()))?;
+        let value = skill_engine
+            .execute_skill(
+                &dispatch.skill_id,
+                &dispatch.tenant_id,
+                dispatch.input.clone(),
+                &dispatch.run_id,
+                ctx,
+            )
+            .await
+            .map_err(AppError::Internal)?;
+        Ok(ExecutionResult {
+            response: AgentResponse {
+                content: serde_json::to_string(&value).map_err(|e| AppError::Internal(e.to_string()))?,
+                usage: None,
+                metadata: None,
+            },
+            source: AgentSource::System,
+            agent_name: req.agent_name.clone(),
+            run_id: dispatch.run_id.clone(),
+        })
+    }
+
+    #[cfg(not(feature = "postgres"))]
+    async fn run_skill(
+        &self,
+        _req: &AgentRequest,
+        _ctx: &Arc<Context>,
+        _dispatch: &SkillDispatch,
+    ) -> std::result::Result<ExecutionResult, AppError> {
+        Err(AppError::Unavailable("SkillEngine requires postgres".to_string()))
     }
 
     async fn try_run_resolved(
@@ -337,11 +413,9 @@ impl Execute {
             .clone()
             .or_else(|| ctx.get::<crate::registry::AgentRegistry>());
         let registry = registry_owned.as_ref()?;
-        let resolver = ctx
-            .get::<crate::resolver::Resolver>()
-            .or_else(|| {
-                crate::resolver::Resolver::from_ctx(ctx, Arc::clone(registry)).map(Arc::new)
-            })?;
+        let resolver = ctx.get::<crate::resolver::Resolver>().or_else(|| {
+            crate::resolver::Resolver::from_ctx(ctx, Arc::clone(registry)).map(Arc::new)
+        })?;
         let resolved = resolver.resolve(ctx, &req.agent_name).await;
         let (user_agent, source) = match resolved {
             Ok(v) => v,
@@ -386,7 +460,12 @@ impl Execute {
 
         let run_id = uuid::Uuid::new_v4().to_string();
         if let Some(tracker) = &self.run_tracker {
-            tracker.start_run(&run_id, &user_id, &req.agent_name, Some("execution_service"));
+            tracker.start_run(
+                &run_id,
+                &user_id,
+                &req.agent_name,
+                Some("execution_service"),
+            );
         }
 
         if ctx.get::<cordis::EventsService>().is_some() {
@@ -409,7 +488,11 @@ impl Execute {
         let result = agent.execute(&req.message, &agent_context).await;
 
         if let Some(tracker) = &self.run_tracker {
-            let status = if result.is_ok() { "completed" } else { "failed" };
+            let status = if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            };
             tracker.finish_run(&run_id, status);
         }
 
@@ -470,10 +553,7 @@ impl Execute {
     ) -> Result<AgentResponse, AppError> {
         if let Some(tenant_db) = tenant_db(ctx) {
             let _pool = tenant_db.pool();
-            tracing::debug!(
-                history_len = req.history.len(),
-                "history load via TenantDb"
-            );
+            tracing::debug!(history_len = req.history.len(), "history load via TenantDb");
             let _ = _pool;
         }
 
@@ -487,8 +567,10 @@ impl Execute {
         let tenant = tenant_from_request_ctx(ctx, None);
 
         let mut injected_context: Option<String> = None;
-        let provider_opt: Option<Arc<dyn crate::context_provider::ContextProvider>> =
-            req.ctx_provider.clone().or_else(|| self.context_provider.clone());
+        let provider_opt: Option<Arc<dyn crate::context_provider::ContextProvider>> = req
+            .ctx_provider
+            .clone()
+            .or_else(|| self.context_provider.clone());
         if let Some(provider) = provider_opt {
             let tid = tenant.clone().unwrap_or_default();
             let rt_ctx = crate::context_provider::AgentRuntimeContext::new(
@@ -497,18 +579,24 @@ impl Execute {
                 "agent_execution",
             );
             if let Some(s) = provider.get_context_for_run(&rt_ctx).await {
-                tracing::debug!(len = s.len(), "memory injected via ContextProvider::get_context_for_run");
+                tracing::debug!(
+                    len = s.len(),
+                    "memory injected via ContextProvider::get_context_for_run"
+                );
                 injected_context = Some(s);
             } else if let Some(s) = provider.get_context(&req.agent_name, &tid).await {
-                tracing::debug!(len = s.len(), "memory injected via ContextProvider::get_context");
+                tracing::debug!(
+                    len = s.len(),
+                    "memory injected via ContextProvider::get_context"
+                );
                 injected_context = Some(s);
             }
         }
 
         let tools = ctx.get::<ares_tools::Tools>().unwrap_or_else(|| {
-            Arc::new(ares_tools::Tools::from_static(
-                std::iter::empty::<Arc<dyn ares_tools::Tool>>(),
-            ))
+            Arc::new(ares_tools::Tools::from_static(std::iter::empty::<
+                Arc<dyn ares_tools::Tool>,
+            >()))
         });
         let tool_definitions = tools.list(ctx);
         tracing::debug!(
@@ -519,9 +607,12 @@ impl Execute {
         let _resolve_probe = tools.resolve(ctx, "__probe__");
 
         let system_prompt = if let Some(extra) = injected_context.clone() {
-            format!("{}
+            format!(
+                "{}
 
-You are {}.", extra, req.agent_name)
+You are {}.",
+                extra, req.agent_name
+            )
         } else {
             format!("You are {}.", req.agent_name)
         };
@@ -683,6 +774,22 @@ pub fn tenant_scope(ctx: &Arc<Context>, tenant_id: &str) -> Arc<Context> {
         .isolate::<Execute>(tenant_id)
 }
 
+/// Request-path tenant: open the realm (or isolate) then intercept `TenantContext`.
+/// Background jobs keep using [`tenant_scope`] (isolate only, no intercept).
+pub fn request_tenant_ctx(
+    ctx: &Arc<Context>,
+    tc: ares_types::models::TenantContext,
+) -> Arc<Context> {
+    tenant_scope(ctx, &tc.tenant_id).with_intercept(tc)
+}
+
+/// JWT `user:` isolate when no tenant is present. Does not invent `TenantContext`.
+pub fn request_user_scope(ctx: &Arc<Context>, user_id: &str) -> Arc<Context> {
+    let label = format!("user:{user_id}");
+    ctx.isolate::<ares_tools::Tools>(&label)
+        .isolate::<Execute>(&label)
+}
+
 /// Derive user/tenant scope: `Execute` isolate label (strip `tenant:`/`user:`),
 /// then `TenantContext` intercept, then `fallback`.
 pub fn user_id_from_ctx(ctx: &Arc<Context>, fallback: &str) -> String {
@@ -737,7 +844,16 @@ impl Service for Execute {
         "Execute"
     }
 
-    fn init(&self, _ctx: &Arc<Context>) -> Pin<Box<dyn Future<Output = Result<Option<Box<dyn cordis::Disposable>>, CordisError>> + Send + '_>> {
+    fn init(
+        &self,
+        _ctx: &Arc<Context>,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Option<Box<dyn cordis::Disposable>>, CordisError>>
+                + Send
+                + '_,
+        >,
+    > {
         Box::pin(async move { Ok(None) })
     }
 
@@ -783,29 +899,23 @@ mod tests {
 
         // Handler 1 — `Dispatch::Parallel` must run it before returning.
         let c1 = count.clone();
-        let _d1 = events.on(
-            "agent.started".into(),
-            move |payload: serde_json::Value| {
-                let c = c1.clone();
-                async move {
-                    c.fetch_add(1, Ordering::SeqCst);
-                    Ok(payload)
-                }
-            },
-        );
+        let _d1 = events.on("agent.started".into(), move |payload: serde_json::Value| {
+            let c = c1.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok(payload)
+            }
+        });
 
         // Handler 2 — also must be run before the dispatch returns.
         let c2 = count.clone();
-        let _d2 = events.on(
-            "agent.started".into(),
-            move |payload: serde_json::Value| {
-                let c = c2.clone();
-                async move {
-                    c.fetch_add(1, Ordering::SeqCst);
-                    Ok(payload)
-                }
-            },
-        );
+        let _d2 = events.on("agent.started".into(), move |payload: serde_json::Value| {
+            let c = c2.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok(payload)
+            }
+        });
 
         // Seam the implement phase adds: dispatches "agent.started" with
         // `Dispatch::Parallel` and returns the resulting value.
@@ -829,17 +939,14 @@ mod tests {
 
         let ran = Arc::new(AtomicBool::new(false));
         let flag = ran.clone();
-        let _d = events.on(
-            "agent.usage".into(),
-            move |payload: serde_json::Value| {
-                let flag = flag.clone();
-                async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                    flag.store(true, Ordering::SeqCst);
-                    Ok(payload)
-                }
-            },
-        );
+        let _d = events.on("agent.usage".into(), move |payload: serde_json::Value| {
+            let flag = flag.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                flag.store(true, Ordering::SeqCst);
+                Ok(payload)
+            }
+        });
 
         let start = std::time::Instant::now();
         svc.emit_observability(&ctx, "agent.usage", serde_json::json!({}))
@@ -867,17 +974,14 @@ mod tests {
         let mut _guards = Vec::new();
         for event in ["agent.completed", "agent.failed"] {
             let flag = ran.clone();
-            _guards.push(events.on(
-                event.into(),
-                move |payload: serde_json::Value| {
-                    let flag = flag.clone();
-                    async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                        flag.store(true, Ordering::SeqCst);
-                        Ok(payload)
-                    }
-                },
-            ));
+            _guards.push(events.on(event.into(), move |payload: serde_json::Value| {
+                let flag = flag.clone();
+                async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                    flag.store(true, Ordering::SeqCst);
+                    Ok(payload)
+                }
+            }));
         }
 
         let start = std::time::Instant::now();
@@ -907,17 +1011,18 @@ mod tests {
         fn parameters_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object", "properties": {}})
         }
-        async fn execute(&self, _args: serde_json::Value) -> ares_types::types::Result<serde_json::Value> {
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+        ) -> ares_types::types::Result<serde_json::Value> {
             Ok(serde_json::json!({"ok": true}))
         }
     }
 
     fn tools_with_probe() -> ares_tools::Tools {
-        ares_tools::Tools::from_static([
-            Arc::new(ProbeTool {
-                name: "probe".into(),
-            }) as Arc<dyn ares_tools::Tool>,
-        ])
+        ares_tools::Tools::from_static([Arc::new(ProbeTool {
+            name: "probe".into(),
+        }) as Arc<dyn ares_tools::Tool>])
     }
 
     async fn execute_with_tenant_context_intercept(tenant_id: &str) {
@@ -935,7 +1040,10 @@ mod tests {
         svc.run(&req, &ctx).await.expect("echo fallback");
         let tools = ctx.get::<ares_tools::Tools>().expect("Tools on ctx");
         let names: Vec<_> = tools.list(&ctx).into_iter().map(|d| d.name).collect();
-        assert!(names.contains(&"probe".to_string()), "Tools::list(ctx) sees intercept tenant tools");
+        assert!(
+            names.contains(&"probe".to_string()),
+            "Tools::list(ctx) sees intercept tenant tools"
+        );
     }
 
     #[tokio::test]
@@ -973,12 +1081,11 @@ mod tests {
     #[tokio::test]
     async fn execute_isolate_label_wins_over_intercept_for_tools() {
         let svc = Execute::new();
-        let intercepted = Context::new_root().with_intercept(
-            ares_types::models::TenantContext::new(
+        let intercepted =
+            Context::new_root().with_intercept(ares_types::models::TenantContext::new(
                 "from-intercept".into(),
                 ares_types::models::TenantTier::Pro,
-            ),
-        );
+            ));
         let ctx = tenant_scope(&intercepted, "from-isolate");
         let _ = ctx.provide(tools_with_probe());
         let req = AgentRequest {
@@ -1069,6 +1176,71 @@ mod tests {
         assert_ne!(
             result.response.content, req.message,
             "skipping next must not run echo execute"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_tenant_ctx_intercepts_after_scope() {
+        let root = Context::new_root();
+        #[cfg(feature = "postgres")]
+        {
+            root.provide(ares_store::TenantRealms::new(
+                std::any::TypeId::of::<ares_tools::Tools>(),
+                std::any::TypeId::of::<Execute>(),
+            ));
+        }
+        let tc = ares_types::models::TenantContext::new(
+            "acme".into(),
+            ares_types::models::TenantTier::Pro,
+        );
+        let scoped = request_tenant_ctx(&root, tc);
+        let got = scoped
+            .get::<ares_types::models::TenantContext>()
+            .expect("TenantContext intercept");
+        assert_eq!(got.tenant_id, "acme");
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<ares_tools::Tools>())
+                .as_deref(),
+            Some("acme")
+        );
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<Execute>())
+                .as_deref(),
+            Some("acme")
+        );
+        #[cfg(feature = "postgres")]
+        {
+            let realms = root
+                .get::<ares_store::TenantRealms>()
+                .expect("TenantRealms");
+            let realm = realms.open(&root, "acme");
+            assert!(
+                realm.get::<ares_types::models::TenantContext>().is_none(),
+                "cached realm must stay intercept-free"
+            );
+            let realm2 = realms.open(&root, "acme");
+            assert!(std::sync::Arc::ptr_eq(&realm, &realm2));
+        }
+    }
+
+    #[tokio::test]
+    async fn request_user_scope_does_not_invent_tenant_context() {
+        let root = Context::new_root();
+        let scoped = request_user_scope(&root, "user-1");
+        assert!(scoped.get::<ares_types::models::TenantContext>().is_none());
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<Execute>())
+                .as_deref(),
+            Some("user:user-1")
+        );
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<ares_tools::Tools>())
+                .as_deref(),
+            Some("user:user-1")
         );
     }
 }

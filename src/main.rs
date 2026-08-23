@@ -20,12 +20,21 @@
 #![allow(dead_code, reason = "CLI init/rag paths unused in lib build; keep for binary")]
 
 #[cfg(feature = "postgres")]
-use ares_server::{
-    api,
-    cli::{init, output::Output, rag, AgentCommands, Cli, Commands},
-    overlay::AresConfig,
-    AresConfigManager, DynamicConfigManager, PostgresClient,
-};
+mod cli;
+#[cfg(feature = "postgres")]
+mod plugins;
+#[cfg(feature = "postgres")]
+mod health_metrics_job;
+#[cfg(feature = "postgres")]
+mod mcp_agent_runner;
+
+
+#[cfg(feature = "postgres")]
+use crate::cli::{init, output::Output, rag, AgentCommands, Cli, Commands};
+#[cfg(feature = "postgres")]
+use ares_http::{api, overlay::AresConfig, AresConfigManager, DynamicConfigManager};
+#[cfg(feature = "postgres")]
+use ares_store::PostgresClient;
 #[cfg(feature = "postgres")]
 use axum::routing::get;
 #[cfg(feature = "postgres")]
@@ -296,7 +305,7 @@ fn block_on_async<F: std::future::Future>(fut: F) -> F::Output {
 
 #[cfg(feature = "postgres")]
 fn inject_sync<T: cordis::Service>(ctx: &Arc<Context>) -> Arc<T> {
-    ares_server::plugins::inject_sync::<T>(ctx)
+    crate::plugins::inject_sync::<T>(ctx)
 }
 
 /// Register built-in factories consumed by declarative Cordis entries.
@@ -316,7 +325,7 @@ fn register_loader_factories(root_ctx: &Arc<Context>) {
 
     ares::register_plugins(&registry); // facade: cordis, store, tools, llm, agent
     ares_http::register_plugins(&registry);
-    ares_server::register_plugins(&registry); // Overlay, Execute overwrite, HealthJob
+    crate::plugins::register_plugins(&registry); // Overlay, Execute overwrite, HealthJob
 }
 
 /// Reload `config/cordis-entries.toml` through the Loader reconcile path.
@@ -626,7 +635,7 @@ async fn run_server(
     // Agent Config Versioning (Sprint 11)
     // =================================================================
     {
-        let pool = state.get::<ares_server::TenantDb>().expect("not provided").pool().clone();
+        let pool = state.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
 
         // Startup snapshot: record all currently loaded agent configs
         let startup_agents = state.get::<DynamicConfigManager>().expect("not provided").agents();
@@ -641,7 +650,7 @@ async fn run_server(
                 })
                 .collect();
             if let Err(e) =
-                ares_server::db::agent_versions::record_agent_versions(&pool, &inputs, "startup")
+                ares_store::agent_versions::record_agent_versions(&pool, &inputs, "startup")
                     .await
             {
                 tracing::warn!("Failed to snapshot agent versions on startup: {}", e);
@@ -655,7 +664,7 @@ async fn run_server(
 
         // Hot-reload version tracking: background task drains mpsc channel
         let (version_tx, mut version_rx) = tokio::sync::mpsc::unbounded_channel::<
-            Vec<ares_server::utils::toon_config::ToonAgentConfig>,
+            Vec<ares_http::toon_config::ToonAgentConfig>,
         >();
         state.get::<DynamicConfigManager>().expect("not provided").set_version_tx(version_tx);
 
@@ -671,7 +680,7 @@ async fn run_server(
                     })
                     .collect();
                 if let Err(e) =
-                    ares_server::db::agent_versions::record_agent_versions(&pool, &inputs, "hot_reload")
+                    ares_store::agent_versions::record_agent_versions(&pool, &inputs, "hot_reload")
                         .await
                 {
                     tracing::warn!("Failed to record hot-reload agent versions: {}", e);
@@ -693,44 +702,44 @@ async fn run_server(
     #[openapi(
         paths(
             // Auth endpoints
-            ares_server::api::handlers::auth::register,
-            ares_server::api::handlers::auth::login,
-            ares_server::api::handlers::auth::logout,
-            ares_server::api::handlers::auth::refresh_token,
+            ares_http::api::handlers::auth::register,
+            ares_http::api::handlers::auth::login,
+            ares_http::api::handlers::auth::logout,
+            ares_http::api::handlers::auth::refresh_token,
             // Chat endpoints
-            ares_server::api::handlers::chat::chat,
-            ares_server::api::handlers::chat::chat_stream,
-            ares_server::api::handlers::chat::get_user_memory,
+            ares_http::api::handlers::chat::chat,
+            ares_http::api::handlers::chat::chat_stream,
+            ares_http::api::handlers::chat::get_user_memory,
             // Research endpoints
-            ares_server::api::handlers::research::deep_research,
+            ares_http::api::handlers::research::deep_research,
             // Conversation endpoints
-            ares_server::api::handlers::conversations::list_conversations,
-            ares_server::api::handlers::conversations::get_conversation,
-            ares_server::api::handlers::conversations::update_conversation,
-            ares_server::api::handlers::conversations::delete_conversation,
+            ares_http::api::handlers::conversations::list_conversations,
+            ares_http::api::handlers::conversations::get_conversation,
+            ares_http::api::handlers::conversations::update_conversation,
+            ares_http::api::handlers::conversations::delete_conversation,
             // RAG endpoints
-            ares_server::api::handlers::rag::ingest,
-            ares_server::api::handlers::rag::search,
-            ares_server::api::handlers::rag::delete_collection,
-            ares_server::api::handlers::rag::list_collections,
+            ares_http::api::handlers::rag::ingest,
+            ares_http::api::handlers::rag::search,
+            ares_http::api::handlers::rag::delete_collection,
+            ares_http::api::handlers::rag::list_collections,
         ),
         components(schemas(
-            ares_server::types::ChatRequest,
-            ares_server::types::ChatResponse,
-            ares_server::types::ResearchRequest,
-            ares_server::types::ResearchResponse,
-            ares_server::types::LoginRequest,
-            ares_server::types::RegisterRequest,
-            ares_server::types::TokenResponse,
-            ares_server::types::AgentType,
-            ares_server::types::Source,
-            ares_server::api::handlers::auth::RefreshTokenRequest,
-            ares_server::api::handlers::auth::LogoutRequest,
-            ares_server::api::handlers::auth::LogoutResponse,
-            ares_server::api::handlers::conversations::ConversationSummary,
-            ares_server::api::handlers::conversations::ConversationDetails,
-            ares_server::api::handlers::conversations::ConversationMessage,
-            ares_server::api::handlers::conversations::UpdateConversationRequest,
+            ares_types::types::ChatRequest,
+            ares_types::types::ChatResponse,
+            ares_types::types::ResearchRequest,
+            ares_types::types::ResearchResponse,
+            ares_types::types::LoginRequest,
+            ares_types::types::RegisterRequest,
+            ares_types::types::TokenResponse,
+            ares_types::types::AgentType,
+            ares_types::types::Source,
+            ares_http::api::handlers::auth::RefreshTokenRequest,
+            ares_http::api::handlers::auth::LogoutRequest,
+            ares_http::api::handlers::auth::LogoutResponse,
+            ares_http::api::handlers::conversations::ConversationSummary,
+            ares_http::api::handlers::conversations::ConversationDetails,
+            ares_http::api::handlers::conversations::ConversationMessage,
+            ares_http::api::handlers::conversations::UpdateConversationRequest,
         )),
         tags(
             (name = "auth", description = "Authentication endpoints"),
@@ -756,39 +765,39 @@ async fn run_server(
     #[openapi(
         paths(
             // Auth endpoints
-            ares_server::api::handlers::auth::register,
-            ares_server::api::handlers::auth::login,
-            ares_server::api::handlers::auth::logout,
-            ares_server::api::handlers::auth::refresh_token,
+            ares_http::api::handlers::auth::register,
+            ares_http::api::handlers::auth::login,
+            ares_http::api::handlers::auth::logout,
+            ares_http::api::handlers::auth::refresh_token,
             // Chat endpoints
-            ares_server::api::handlers::chat::chat,
-            ares_server::api::handlers::chat::chat_stream,
-            ares_server::api::handlers::chat::get_user_memory,
+            ares_http::api::handlers::chat::chat,
+            ares_http::api::handlers::chat::chat_stream,
+            ares_http::api::handlers::chat::get_user_memory,
             // Research endpoints
-            ares_server::api::handlers::research::deep_research,
+            ares_http::api::handlers::research::deep_research,
             // Conversation endpoints
-            ares_server::api::handlers::conversations::list_conversations,
-            ares_server::api::handlers::conversations::get_conversation,
-            ares_server::api::handlers::conversations::update_conversation,
-            ares_server::api::handlers::conversations::delete_conversation,
+            ares_http::api::handlers::conversations::list_conversations,
+            ares_http::api::handlers::conversations::get_conversation,
+            ares_http::api::handlers::conversations::update_conversation,
+            ares_http::api::handlers::conversations::delete_conversation,
         ),
         components(schemas(
-            ares_server::types::ChatRequest,
-            ares_server::types::ChatResponse,
-            ares_server::types::ResearchRequest,
-            ares_server::types::ResearchResponse,
-            ares_server::types::LoginRequest,
-            ares_server::types::RegisterRequest,
-            ares_server::types::TokenResponse,
-            ares_server::types::AgentType,
-            ares_server::types::Source,
-            ares_server::api::handlers::auth::RefreshTokenRequest,
-            ares_server::api::handlers::auth::LogoutRequest,
-            ares_server::api::handlers::auth::LogoutResponse,
-            ares_server::api::handlers::conversations::ConversationSummary,
-            ares_server::api::handlers::conversations::ConversationDetails,
-            ares_server::api::handlers::conversations::ConversationMessage,
-            ares_server::api::handlers::conversations::UpdateConversationRequest,
+            ares_types::types::ChatRequest,
+            ares_types::types::ChatResponse,
+            ares_types::types::ResearchRequest,
+            ares_types::types::ResearchResponse,
+            ares_types::types::LoginRequest,
+            ares_types::types::RegisterRequest,
+            ares_types::types::TokenResponse,
+            ares_types::types::AgentType,
+            ares_types::types::Source,
+            ares_http::api::handlers::auth::RefreshTokenRequest,
+            ares_http::api::handlers::auth::LogoutRequest,
+            ares_http::api::handlers::auth::LogoutResponse,
+            ares_http::api::handlers::conversations::ConversationSummary,
+            ares_http::api::handlers::conversations::ConversationDetails,
+            ares_http::api::handlers::conversations::ConversationMessage,
+            ares_http::api::handlers::conversations::UpdateConversationRequest,
         )),
         tags(
             (name = "auth", description = "Authentication endpoints"),
@@ -960,7 +969,7 @@ async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std
     // Initialize database
     let db = init_postgres_db(&config.database.url).await?;
     let pool = db.pool.clone();
-    let tenant_db = Arc::new(ares_server::TenantDb::new(Arc::new(db)));
+    let tenant_db = Arc::new(ares_store::TenantDb::new(Arc::new(db)));
 
     // Get API URL from environment or config
     let ares_api_url =
@@ -969,9 +978,9 @@ async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std
 
     // Start MCP server (extensions like Eruka are registered by managed platform crates)
     let runner = std::sync::Arc::new(
-        ares_server::mcp_agent_runner::ExecutionAgentRunner::with_tenant_db(tenant_db.clone()),
+        crate::mcp_agent_runner::ExecutionAgentRunner::with_tenant_db(tenant_db.clone()),
     );
-    ares_server::mcp::start_mcp_server(tenant_db, pool, &ares_api_url, Some(runner)).await?;
+    ares_mcp::start_mcp_server(tenant_db, pool, &ares_api_url, Some(runner)).await?;
 
     Ok(())
 }
@@ -1286,7 +1295,7 @@ disabled = false
     #[tokio::test]
     async fn health_job_service_init_spawns_without_blocking() {
         let ctx = Context::new_root();
-        let svc = ares_server::plugins::HealthJobService::new(60_000);
+        let svc = crate::plugins::HealthJobService::new(60_000);
         let start = std::time::Instant::now();
         let _ = svc.init(&ctx).await.unwrap();
         assert!(start.elapsed() < std::time::Duration::from_millis(200));

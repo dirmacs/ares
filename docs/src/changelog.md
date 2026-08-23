@@ -33,6 +33,7 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - Single `Execute` loader key (ares-agent); Overlay/`ServerRuntime` provide host extras
 - JWT middleware opens `TenantRealms` then intercepts `TenantContext`; user claims isolate with no dummy Free tenant
 - `Llm::from_client` is the public test constructor; `no_http` no longer builds `ProviderRegistry`
+- Root `ares-server` is binary-only (no `[lib]`); integration tests depend on `ares` / `ares-http`
 
 ### Changed
 
@@ -48,7 +49,7 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - `run_server` still instantiates Overlay first, then remaining loader entries
 - Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`
 - `ProviderRegistry` remains on `ares-llm` for `Llm::new` / `AgentRegistry::from_config`
-- Root `ares-server` remains a library; Overlay still compiles into `ares-http` via `#[path]`
+- Overlay still lives in `src/overlay.rs` and compiles into `ares-http` via `#[path]`
 
 ---
 

@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ares_server::llm::{ModelCapabilities, CapabilityRequirements, ProviderRegistry};
+//! use ares_llm::{ModelCapabilities, CapabilityRequirements, ProviderRegistry};
 //!
 //! // Define what capabilities the task needs
 //! let requirements = CapabilityRequirements::builder()

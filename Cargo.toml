@@ -95,10 +95,6 @@ exclude = [
     "scripts/*",
 ]
 
-# Library configuration - allows other projects to use this as a dependency
-[lib]
-name = "ares_server"
-path = "src/lib.rs"
 
 # Binary configuration - allows running as standalone server
 [[bin]]

@@ -24,7 +24,7 @@
 
 #![cfg(all(feature = "ares-vector", feature = "local-embeddings"))]
 
-use ares_server::{
+use ares_http::{
     db::{AresVectorStore, VectorStore},
     rag::{
         chunker::{ChunkingStrategy, TextChunker},

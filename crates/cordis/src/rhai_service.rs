@@ -10,6 +10,10 @@ use std::sync::Arc;
 use rhai::{Dynamic, Engine, EvalAltResult, Scope, AST};
 #[cfg(feature = "rhai")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "rhai")]
+use std::future::Future;
+#[cfg(feature = "rhai")]
+use std::pin::Pin;
 
 #[cfg(feature = "rhai")]
 use crate::{Context, CordisError, Disposable, Plugin, Service, ServiceInitFuture};
@@ -36,6 +40,20 @@ pub struct RhaiServiceConfig {
     /// Optional max operations override (defaults to 50_000).
     #[serde(default)]
     pub max_ops: Option<u64>,
+    /// Catalog events this policy service listens on.
+    #[serde(default)]
+    pub listen: Vec<RhaiListenerConfig>,
+}
+
+/// One catalog-event listener backed by a Rhai function in `script`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RhaiListenerConfig {
+    /// Catalog event name; must exist in `events_catalog::CONTRACTS`.
+    pub event: String,
+    /// `fn name(payload_map) -> value` in the script. Returning `()`/null
+    /// means "pass through / delegate to the chain"; any other value becomes
+    /// the dispatch result (a Bail deny marker, or a waterfall short-circuit).
+    pub fn_name: String,
 }
 
 // Stub when feature disabled
@@ -47,6 +65,8 @@ pub struct RhaiServiceConfig {
     pub entry_init: Option<String>,
     pub entry_check: Option<String>,
     pub max_ops: Option<u64>,
+    #[serde(default)]
+    pub listen: Vec<RhaiListenerConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +92,8 @@ pub struct RhaiService {
     pub entry_init: String,
     /// Entry function for `Service::check` (default `check`).
     pub entry_check: String,
+    /// Declared policy listeners, registered during `Service::init`.
+    pub listen: Vec<RhaiListenerConfig>,
 }
 
 #[cfg(not(feature = "rhai"))]
@@ -80,6 +102,75 @@ pub struct RhaiService {
     pub script: String,
     pub entry_init: String,
     pub entry_check: String,
+}
+
+/// Convert a serialized event payload into a Rhai `Dynamic` (object map for
+/// JSON objects, so scripts use plain property access like `p.tenant_id`).
+fn json_to_dynamic(v: &serde_json::Value) -> Dynamic {
+    match v {
+        serde_json::Value::Null => Dynamic::UNIT,
+        serde_json::Value::Bool(b) => (*b).into(),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                i.into()
+            } else if let Some(u) = n.as_u64() {
+                if u <= i64::MAX as u64 {
+                    ((u) as i64).into()
+                } else {
+                    (n.as_f64().unwrap_or_default()).into()
+                }
+            } else {
+                n.as_f64().unwrap_or_default().into()
+            }
+        }
+        serde_json::Value::String(s) => s.clone().into(),
+        serde_json::Value::Array(items) => {
+            items.iter().map(json_to_dynamic).collect::<Vec<_>>().into()
+        }
+        serde_json::Value::Object(map) => {
+            let mut out = rhai::Map::new();
+            for (k, val) in map {
+                out.insert(k.clone().into(), json_to_dynamic(val));
+            }
+            out.into()
+        }
+    }
+}
+
+/// Convert a script return value back to JSON. `()`/unit yields `None`, which
+/// callers interpret as "pass through / delegate"; any other value maps to a
+/// JSON value (unrepresentable dynamics degrade to their display string).
+fn dynamic_to_json(d: &Dynamic) -> Option<serde_json::Value> {
+    if d.is_unit() {
+        return None;
+    }
+    if let Ok(b) = d.as_bool() {
+        return Some(serde_json::Value::Bool(b));
+    }
+    if let Ok(i) = d.as_int() {
+        return Some(serde_json::json!(i));
+    }
+    if let Ok(f) = d.as_float() {
+        return Some(serde_json::json!(f));
+    }
+    if let Ok(s) = d.clone().into_string() {
+        return Some(serde_json::Value::String(s));
+    }
+    if let Ok(a) = d.clone().into_array() {
+        let items: Option<Vec<_>> = a.iter().map(dynamic_to_json).collect();
+        return items.map(serde_json::Value::Array);
+    }
+    if let Some(m) = d.clone().try_cast::<rhai::Map>() {
+        let mut obj = serde_json::Map::new();
+        for (k, v) in m {
+            obj.insert(
+                k.to_string(),
+                dynamic_to_json(&v).unwrap_or(serde_json::Value::Null),
+            );
+        }
+        return Some(serde_json::Value::Object(obj));
+    }
+    Some(serde_json::json!(d.to_string()))
 }
 
 #[cfg(feature = "rhai")]
@@ -112,6 +203,7 @@ impl RhaiService {
             ast,
             entry_init: "init".to_string(),
             entry_check: "check".to_string(),
+            listen: Vec::new(),
         })
     }
 
@@ -129,6 +221,7 @@ impl RhaiService {
         if let Some(e) = config.entry_check {
             svc.entry_check = e;
         }
+        svc.listen = config.listen;
         Ok(svc)
     }
 
@@ -154,26 +247,143 @@ impl RhaiService {
     }
 }
 
+/// Combine per-listener disposables (plus the init logging guard) into one;
+/// disposal unregisters every listener in registration order.
+fn finish_disposables(
+    mut disposables: Vec<Box<dyn Disposable>>,
+) -> Result<Option<Box<dyn Disposable>>, CordisError> {
+    if disposables.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Box::new(move || {
+        while let Some(d) = disposables.pop() {
+            d.dispose();
+        }
+    })))
+}
+
 #[cfg(feature = "rhai")]
 impl Service for RhaiService {
     fn name(&self) -> &'static str {
         "RhaiService"
     }
 
-    fn init(&self, _ctx: &Arc<Context>) -> ServiceInitFuture<'_> {
+    fn init(&self, ctx: &Arc<Context>) -> ServiceInitFuture<'_> {
         let engine = Arc::clone(&self.engine);
         let ast = self.ast.clone();
         let entry = self.entry_init.clone();
+        let listen: Vec<crate::RhaiListenerConfig> = self.listen.clone();
+        let ctx = Arc::clone(ctx);
         Box::pin(async move {
+            // Policy listeners: register on the catalog events declared in
+            // config. Validation failures abort the entry (loader records it
+            // and startup continues); runtime script errors pass through.
+            let mut disposables: Vec<Box<dyn Disposable>> = Vec::new();
+            if !listen.is_empty() {
+                let events = ctx.get::<crate::EventsService>().ok_or_else(|| {
+                    CordisError::Configuration(
+                        "RhaiPolicy requires EventsService on the context".to_string(),
+                    )
+                })?;
+                for l in &listen {
+                    let contract = crate::contract_for(&l.event).ok_or_else(|| {
+                        CordisError::Configuration(format!("unknown policy event {}", l.event))
+                    })?;
+                    let around = contract.around;
+                    if around {
+                        let engine = Arc::clone(&engine);
+                        let ast = ast.clone();
+                        let fn_name = l.fn_name.clone();
+                        let event_name = l.event.clone();
+                        let d = events.on_waterfall(l.event.clone(), move |payload, next| {
+                            let engine = Arc::clone(&engine);
+                            let ast = ast.clone();
+                            let fn_name = fn_name.clone();
+                            let event_name = event_name.clone();
+                            let fut = async move {
+                                let mut scope = Scope::new();
+                                match engine.call_fn::<Dynamic>(
+                                    &mut scope,
+                                    &ast,
+                                    &fn_name,
+                                    (json_to_dynamic(&payload),),
+                                ) {
+                                    Ok(ret) => match dynamic_to_json(&ret) {
+                                        Some(v) => Ok(v),
+                                        None => next(payload).await,
+                                    },
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            event = %event_name,
+                                            error = %err,
+                                            "rhai policy runtime error; delegating to chain"
+                                        );
+                                        next(payload).await
+                                    }
+                                }
+                            };
+                            Box::pin(fut)
+                                as Pin<
+                                    Box<
+                                        dyn Future<Output = Result<serde_json::Value, CordisError>>
+                                            + Send,
+                                    >,
+                                >
+                        });
+                        disposables.push(d);
+                    } else {
+                        let engine = Arc::clone(&engine);
+                        let ast = ast.clone();
+                        let fn_name = l.fn_name.clone();
+                        let event_name = l.event.clone();
+                        let d = events.on(l.event.clone(), move |payload| {
+                            let engine = Arc::clone(&engine);
+                            let ast = ast.clone();
+                            let fn_name = fn_name.clone();
+                            let event_name = event_name.clone();
+                            let fut = async move {
+                                let mut scope = Scope::new();
+                                match engine.call_fn::<Dynamic>(
+                                    &mut scope,
+                                    &ast,
+                                    &fn_name,
+                                    (json_to_dynamic(&payload),),
+                                ) {
+                                    Ok(ret) => match dynamic_to_json(&ret) {
+                                        Some(v) => Ok(v),
+                                        None => Ok(payload),
+                                    },
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            event = %event_name,
+                                            error = %err,
+                                            "rhai policy runtime error; passing through"
+                                        );
+                                        Ok(payload)
+                                    }
+                                }
+                            };
+                            Box::pin(fut)
+                                as Pin<
+                                    Box<
+                                        dyn Future<Output = Result<serde_json::Value, CordisError>>
+                                            + Send,
+                                    >,
+                                >
+                        });
+                        disposables.push(d);
+                    }
+                }
+            }
             let mut scope = Scope::new();
             // Try calling entry as Dynamic (generic return). If not found, return None.
             match engine.call_fn::<Dynamic>(&mut scope, &ast, &entry, ()) {
                 Ok(val) => {
                     tracing::info!(rhai_result = %val, entry = %entry, "RhaiService init");
-                    let d: Box<dyn Disposable> = Box::new(move || {
+                    disposables.push(Box::new(move || {
                         tracing::info!(entry = %entry, "RhaiService disposed");
-                    });
-                    Ok(Some(d))
+                    }));
+                    finish_disposables(disposables)
                 }
                 Err(e) => {
                     let msg = e.to_string();
@@ -181,7 +391,11 @@ impl Service for RhaiService {
                         || msg.contains("unknown function")
                         || msg.contains("Function not found")
                     {
-                        Ok(None)
+                        if disposables.is_empty() {
+                            Ok(None)
+                        } else {
+                            finish_disposables(disposables)
+                        }
                     } else {
                         Err(CordisError::Configuration(format!(
                             "rhai init '{}' failed: {}",
@@ -347,6 +561,7 @@ mod tests {
             entry_init: None,
             entry_check: None,
             max_ops: Some(123),
+            listen: vec![],
         };
         let svc = RhaiService::from_config(cfg).expect("compile");
         assert_eq!(svc.engine.max_operations(), 123);
@@ -370,22 +585,38 @@ mod tests {
         let _ = svc.check(); // should not panic
     }
 
-    #[test]
-    fn test_plugin_apply() {
+    #[tokio::test]
+    async fn test_plugin_apply() {
+        // Provision goes through `plugin_with`, mirroring what the
+        // "RhaiPolicy" factory does for the declarative loader.
         let ctx = Context::new_root();
-        let plugin = RhaiPlugin;
         let cfg = RhaiServiceConfig {
             script: r#"fn init() { "ok" } fn check() { true }"#.to_string(),
             name: Some("plugin_test".to_string()),
             entry_init: None,
             entry_check: None,
             max_ops: None,
+            listen: vec![],
         };
-        let d = plugin.apply(&ctx, cfg).expect("plugin apply");
-        // Should have provided service
+        ctx.plugin_with(RhaiPlugin, cfg)
+            .await
+            .expect("plugin registration");
         let svc = ctx.get::<RhaiService>();
         assert!(svc.is_some(), "RhaiService should be provided via plugin");
-        d.dispose();
+    }
+
+    #[test]
+    fn test_config_literal_without_listen_compiles() {
+        // Older call sites construct configs without listeners.
+        let cfg = RhaiServiceConfig {
+            script: r#"fn check() { true }"#.to_string(),
+            name: None,
+            entry_init: None,
+            entry_check: None,
+            max_ops: None,
+            listen: Vec::new(),
+        };
+        assert!(RhaiService::from_config(cfg).is_ok());
     }
 
     #[test]
@@ -396,10 +627,226 @@ mod tests {
             entry_init: Some("my_init".to_string()),
             entry_check: Some("my_check".to_string()),
             max_ops: None,
+            listen: vec![],
         };
         let svc = RhaiService::from_config(cfg).expect("compile");
         assert_eq!(svc.entry_init, "my_init");
         assert_eq!(svc.entry_check, "my_check");
         assert!(!svc.check());
+    }
+
+    fn gate_config(event: &str, fn_name: &str) -> RhaiServiceConfig {
+        RhaiServiceConfig {
+            script: r#"
+                fn gate(p) { if p.tenant_id == "banned" { #{deny: "script"} } else { () } }
+                fn pin(p) { if p.capability == "chat" { #{model: "pinned"} } else { () } }
+                fn boom(p) { throw "boom"; }
+            "#
+            .to_string(),
+            name: Some("policy".to_string()),
+            entry_init: None,
+            entry_check: None,
+            max_ops: None,
+            listen: vec![RhaiListenerConfig {
+                event: event.to_string(),
+                fn_name: fn_name.to_string(),
+            }],
+        }
+    }
+
+    // Bail-mode listener: a non-null script return denies (replaces the
+    // dispatch result); null passes the original payload through.
+    #[tokio::test]
+    async fn rhai_policy_denies_bail_event() {
+        use crate::events::Dispatch;
+        let events = crate::EventsService::new();
+        let svc = RhaiService::from_config(gate_config(
+            crate::events_catalog::ev::SCHEDULER_ADMIT,
+            "gate",
+        ))
+        .expect("compile");
+        let ctx = Context::new_root();
+        ctx.provide(events);
+        let d = svc
+            .init(&ctx)
+            .await
+            .expect("init")
+            .expect("listeners registered");
+        let events = ctx.get::<crate::EventsService>().expect("events provided");
+
+        let out = events
+            .dispatch(
+                crate::events_catalog::ev::SCHEDULER_ADMIT.into(),
+                serde_json::json!({"agent_name": "a", "tenant_id": "banned"}),
+                Dispatch::Bail,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            out["deny"], "script",
+            "banned tenant must be denied by script"
+        );
+
+        let out = events
+            .dispatch(
+                crate::events_catalog::ev::SCHEDULER_ADMIT.into(),
+                serde_json::json!({"agent_name": "a", "tenant_id": "ok"}),
+                Dispatch::Bail,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["tenant_id"], "ok", "allowed tenant must pass through");
+        d.dispose();
+    }
+
+    // Waterfall listener: a non-null return short-circuits the chain (core
+    // never runs); a null return delegates via `next`.
+    #[tokio::test]
+    async fn rhai_policy_waterfall_short_circuits_and_delegates() {
+        let events = crate::EventsService::new();
+        let svc = RhaiService::from_config(gate_config(
+            crate::events_catalog::ev::LLM_GET_CLIENT,
+            "pin",
+        ))
+        .expect("compile");
+        let ctx = Context::new_root();
+        ctx.provide(events);
+        let _d = svc
+            .init(&ctx)
+            .await
+            .expect("init")
+            .expect("listeners registered");
+        let events = ctx.get::<crate::EventsService>().expect("events provided");
+
+        let core_hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hit = core_hit.clone();
+        let out = events
+            .waterfall_around(
+                crate::events_catalog::ev::LLM_GET_CLIENT.into(),
+                serde_json::json!({"capability": "chat"}),
+                move |_p| {
+                    let hit = hit.clone();
+                    async move {
+                        hit.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(serde_json::json!({"capability": "chat", "core": true}))
+                    }
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            out["model"], "pinned",
+            "script short-circuits chat capability"
+        );
+        assert!(
+            !core_hit.load(std::sync::atomic::Ordering::SeqCst),
+            "core must be skipped on short-circuit"
+        );
+
+        let out = events
+            .waterfall_around(
+                crate::events_catalog::ev::LLM_GET_CLIENT.into(),
+                serde_json::json!({"capability": "embed"}),
+                |mut p| async move {
+                    p.as_object_mut()
+                        .map(|o| o.insert("core".into(), serde_json::json!(true)));
+                    Ok(p)
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            out["core"],
+            serde_json::Value::Bool(true),
+            "null return delegates to core"
+        );
+        assert!(
+            out.get("model").is_none(),
+            "no short-circuit for other capabilities"
+        );
+    }
+
+    // A runtime error inside the script warns and passes the original through.
+    #[tokio::test]
+    async fn rhai_policy_runtime_error_passes_through() {
+        use crate::events::Dispatch;
+        let events = crate::EventsService::new();
+        let svc =
+            RhaiService::from_config(gate_config(crate::events_catalog::ev::AGENT_ADMIT, "boom"))
+                .expect("compile");
+        let ctx = Context::new_root();
+        ctx.provide(events);
+        let _d = svc
+            .init(&ctx)
+            .await
+            .expect("init")
+            .expect("listeners registered");
+        let events = ctx.get::<crate::EventsService>().expect("events provided");
+
+        let payload = serde_json::json!({"agent_name": "a"});
+        let out = events
+            .dispatch(
+                crate::events_catalog::ev::AGENT_ADMIT.into(),
+                payload.clone(),
+                Dispatch::Bail,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out, payload, "script errors must pass the original through");
+    }
+
+    // Unknown catalog events abort init with a Configuration error.
+    #[tokio::test]
+    async fn rhai_policy_unknown_event_fails_init() {
+        let svc = RhaiService::from_config(gate_config("nope.nope", "gate")).expect("compile");
+        let ctx = Context::new_root();
+        ctx.provide(crate::EventsService::new());
+        let err = match svc.init(&ctx).await {
+            Err(e) => e,
+            Ok(_) => panic!("unknown event must fail init"),
+        };
+        match err {
+            CordisError::Configuration(msg) => {
+                assert!(msg.contains("unknown policy event"), "got: {msg}");
+            }
+            other => panic!(
+                "expected Configuration error, got {:?}",
+                crate::CordisError::to_string(&other)
+            ),
+        }
+    }
+
+    // Disposal unregisters every listener; dispatch falls back to passthrough.
+    #[tokio::test]
+    async fn rhai_policy_dispose_removes_listeners() {
+        use crate::events::Dispatch;
+        let events = crate::EventsService::new();
+        let svc = RhaiService::from_config(gate_config(
+            crate::events_catalog::ev::SCHEDULER_ADMIT,
+            "gate",
+        ))
+        .expect("compile");
+        let ctx = Context::new_root();
+        ctx.provide(events);
+        let d = svc
+            .init(&ctx)
+            .await
+            .expect("init")
+            .expect("listeners registered");
+
+        d.dispose();
+        let events = ctx.get::<crate::EventsService>().expect("events provided");
+        let out = events
+            .dispatch(
+                crate::events_catalog::ev::SCHEDULER_ADMIT.into(),
+                serde_json::json!({"agent_name": "a", "tenant_id": "banned"}),
+                Dispatch::Bail,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            out["tenant_id"], "banned",
+            "disposed listener must not deny"
+        );
     }
 }

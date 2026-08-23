@@ -11,27 +11,58 @@ use crate::HttpError;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
-use ::cordis::{Context, EventsService, ReflectService};
+use ::cordis::{Context, EventsService, ReflectService, RegistryService};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Json,
 };
 
-type RetireFn = fn(&Arc<Context>) -> Option<String>;
+/// Outcome of one retirability probe.
+struct RetireOutcome {
+    /// Debug type name when the service instance was actually removed.
+    removed_type: Option<String>,
+    /// Set when guarded withdrawal refused the removal: the number of active
+    /// consumer fibers still relying on the provider.
+    guarded: Option<usize>,
+}
+
+type RetireFn = fn(&Arc<Context>) -> RetireOutcome;
 
 /// Static registry of retirable services, keyed by wire name.
 ///
 /// Entries map a name to a plain fn performing the real
 /// `Context::remove::<T>()` (which notifies dependents via `ReflectService`
-/// BFS and pushes a re-provide undo onto the fiber accumulator). Wrapper
-/// services are deliberately absent from this registry.
+/// BFS and pushes a re-provide undo onto the fiber accumulator). Removal is
+/// guarded: active consumer fibers block the withdrawal (paper §4.3.1).
+/// Wrapper services are deliberately absent from this registry.
 static RETIRE_MAP: LazyLock<RwLock<HashMap<String, RetireFn>>> = LazyLock::new(|| {
     RwLock::new(HashMap::from([(
         "events_service".to_string(),
-        (|ctx: &Arc<Context>| {
-            ctx.remove::<EventsService>()
-                .map(|_| std::any::type_name::<EventsService>().to_string())
+        (|ctx: &Arc<Context>| match ctx.remove::<EventsService>() {
+            Ok(removed) => RetireOutcome {
+                removed_type: removed.map(|_| std::any::type_name::<EventsService>().to_string()),
+                guarded: None,
+            },
+            Err(err) if err.to_string().contains("guarded withdrawal") => {
+                let tid = std::any::TypeId::of::<EventsService>();
+                let consumers = ctx
+                    .get::<RegistryService>()
+                    .map(|rs| rs.reliance_count(&(tid, ctx.isolate_label(tid))))
+                    .unwrap_or(0);
+                tracing::info!(
+                    consumers,
+                    "cordis retire refused: guarded withdrawal with active consumers"
+                );
+                RetireOutcome {
+                    removed_type: None,
+                    guarded: Some(consumers),
+                }
+            }
+            Err(_) => RetireOutcome {
+                removed_type: None,
+                guarded: None,
+            },
         }) as RetireFn,
     )]))
 });
@@ -42,8 +73,10 @@ static RETIRE_MAP: LazyLock<RwLock<HashMap<String, RetireFn>>> = LazyLock::new(|
 /// `TypeId`, version bumped down, dependents notified (BFS → `Fiber::refresh`)
 /// and a LIFO undo pushed onto the fiber accumulator. Responds
 /// `200 {"retired": true, ...}` on removal, `200 {"retired": false, ...}`
-/// when the service was already absent, and `409` for names that are not
-/// direct Cordis services (wrapper-registered types are not supported today).
+/// when the service was already absent, `409 {"retired": false,
+/// "reason": "guarded", "consumers": N}` when active consumer fibers still
+/// rely on the provider (guarded withdrawal), and `409` for names that are
+/// not direct Cordis services (wrapper types are not supported today).
 pub async fn retire_cordis_service(
     State(ctx): State<Arc<Context>>,
     Path(name): Path<String>,
@@ -69,7 +102,20 @@ pub async fn retire_cordis_service(
         ));
     };
 
-    let removed_type = retire(&ctx);
+    let outcome = retire(&ctx);
+    if let Some(consumers) = outcome.guarded {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "retired": false,
+                "service": name,
+                "reason": "guarded",
+                "consumers": consumers,
+                "cascaded_notify": ctx.get::<ReflectService>().is_some(),
+            })),
+        ));
+    }
+    let removed_type = outcome.removed_type;
     // `Context::remove` already notified dependents (reflect.notify(tid));
     // a second explicit `notify` is skipped to avoid duplicate fan-out.
     let cascaded_notify = ctx.get::<ReflectService>().is_some();
@@ -207,10 +253,11 @@ fn applied_json(actions: &[cordis::loader::AppliedAction]) -> Vec<serde_json::Va
         .iter()
         .map(|a| match &a.status {
             Ok(()) => serde_json::json!({
-                "id": a.id, "action": a.action, "ok": true,
+                "id": a.id, "action": a.action, "ok": true, "verified": a.verified,
             }),
             Err(err) => serde_json::json!({
                 "id": a.id, "action": a.action, "ok": false, "error": err,
+                "verified": a.verified,
             }),
         })
         .collect()
@@ -597,6 +644,73 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// Registry-backed plugin providing `BarService`; used to build a real
+    /// Active consumer fiber that declares an inject on `EventsService`.
+    struct EventsDependentPlugin;
+    impl ::cordis::Plugin for EventsDependentPlugin {
+        type Config = ();
+        type Provides = BarService;
+        fn apply(
+            &self,
+            _ctx: &Arc<Context>,
+            _cfg: Self::Config,
+        ) -> Result<Arc<BarService>, ::cordis::CordisError> {
+            Ok(Arc::new(BarService(5)))
+        }
+    }
+
+    #[derive(Debug)]
+    struct BarService(u64);
+    impl ::cordis::Service for BarService {}
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retire_guarded_by_active_consumer_then_allowed_after_drop() {
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        ctx.provide(RegistryService::new());
+        ctx.provide(EventsService::new());
+
+        // Register the dependent THROUGH the registry so it is Active with a
+        // recorded registration realm, then declare its inject on Events.
+        let registry = ctx.get::<RegistryService>().unwrap();
+        let dep_fid = registry
+            .register(&ctx, EventsDependentPlugin, ())
+            .expect("dependent registration");
+        registry
+            .get_fiber(dep_fid)
+            .unwrap()
+            .declare_inject::<EventsService>();
+        assert!(matches!(
+            registry.get_fiber(dep_fid).unwrap().state(),
+            ::cordis::FiberState::Active { .. }
+        ));
+
+        // Retire must be REFUSED: one active consumer still relies on it.
+        let resp = retire_cordis_service(State(ctx.clone()), Path("events_service".into()))
+            .await
+            .expect("handler");
+        assert_eq!(resp.0, StatusCode::CONFLICT);
+        assert_eq!(resp.1 .0["retired"], json!(false));
+        assert_eq!(resp.1 .0["reason"], json!("guarded"));
+        assert_eq!(resp.1 .0["consumers"], json!(1));
+        assert!(
+            ctx.get::<EventsService>().is_some(),
+            "service stays provided under guard"
+        );
+
+        // Drop the consumer: its effects unwind and reliance drops to zero.
+        registry.get_fiber(dep_fid).unwrap().dispose().await;
+        assert!(ctx.get::<BarService>().is_none());
+
+        // Retire now succeeds.
+        let resp = retire_cordis_service(State(ctx.clone()), Path("events_service".into()))
+            .await
+            .expect("handler");
+        assert_eq!(resp.0, StatusCode::OK);
+        assert_eq!(resp.1 .0["retired"], json!(true));
+        assert!(ctx.get::<EventsService>().is_none());
     }
 
     #[tokio::test]

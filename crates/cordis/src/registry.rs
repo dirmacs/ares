@@ -36,6 +36,9 @@ pub trait Plugin: Send + Sync + 'static {
 pub struct RegistryService {
     fibers: RwLock<HashMap<FiberId, Arc<Fiber>>>,
     provided: RwLock<HashMap<(TypeId, Option<Symbol>), FiberId>>,
+    /// Registration context per tracked fiber, used to resolve which isolate
+    /// realm a consumer was registered against (guarded withdrawal).
+    realms: RwLock<HashMap<FiberId, std::sync::Weak<Context>>>,
     next_id: Mutex<FiberId>,
 }
 
@@ -44,8 +47,56 @@ impl RegistryService {
         Self {
             fibers: RwLock::new(HashMap::new()),
             provided: RwLock::new(HashMap::new()),
+            realms: RwLock::new(HashMap::new()),
             next_id: Mutex::new(1),
         }
+    }
+
+    /// Count active consumer fibers that currently resolve the provider key
+    /// `(TypeId, isolate label)` through this registry.
+    ///
+    /// Reliance is derived live rather than seeded incrementally: a tracked
+    /// fiber counts as a consumer of `key` when it is Active, was registered
+    /// against the same isolate realm as the key's label, declares an inject
+    /// on the key's TypeId, and is not the provider fiber itself. Late
+    /// `declare_inject` calls therefore count immediately, retired or failed
+    /// consumers never block a withdrawal, and no stale bookkeeping can
+    /// accumulate.
+    pub fn reliance_count(&self, key: &(TypeId, Option<Symbol>)) -> usize {
+        let fibers = self.fibers.read();
+        let mut consumers = 0;
+        for (fid, fiber) in fibers.iter() {
+            if !matches!(fiber.state(), crate::FiberState::Active { .. }) {
+                continue;
+            }
+            // The provider itself never counts as its own consumer.
+            if Some(*fid) == self.provided.read().get(key).copied() {
+                continue;
+            }
+            // Realm check: the consumer must resolve the injected type in the
+            // same isolate realm the provider serves. `register` records each
+            // fiber's registration context, so its `isolate_label` view is the
+            // authoritative realm; loader-tracked fibers (no recorded context)
+            // cannot resolve realms and are skipped.
+            let Some(reg_ctx) = self
+                .realms
+                .read()
+                .get(fid)
+                .and_then(std::sync::Weak::upgrade)
+            else {
+                continue;
+            };
+            if reg_ctx.isolate_label(key.0) != key.1 {
+                continue;
+            }
+            for inject_tid in fiber.injected_type_ids() {
+                if inject_tid == key.0 {
+                    consumers += 1;
+                    break;
+                }
+            }
+        }
+        consumers
     }
 
     fn next_fiber_id(&self) -> FiberId {
@@ -101,6 +152,7 @@ impl RegistryService {
         fiber.set_reload_context(ctx);
         fiber.set_id(fid);
         self.fibers.write().insert(fid, fiber.clone());
+        self.realms.write().insert(fid, Arc::downgrade(ctx));
 
         let config_value = serde_json::to_value(&config).map_err(|error| {
             let message = format!("cannot serialize plugin config: {error}");
@@ -184,7 +236,16 @@ impl RegistryService {
         let fiber = self.fibers.write().remove(&id)?;
         let mut provided = self.provided.write();
         provided.retain(|_, v| *v != id);
+        drop(provided);
+        self.realms.write().remove(&id);
         Some(fiber)
+    }
+
+    /// Record the registration context for an externally-created fiber
+    /// (loader-tracked registrations), so guarded-withdrawal realm checks can
+    /// resolve its isolate realm.
+    pub fn track_fiber_in_realm(&self, fid: FiberId, ctx: &Arc<Context>) {
+        self.realms.write().insert(fid, Arc::downgrade(ctx));
     }
 
     pub fn len(&self) -> usize {
@@ -518,6 +579,117 @@ mod tests {
         assert_eq!(tenant.get::<FooService>().unwrap().0, 2);
         let other = root.isolate::<FooService>("tenant:b");
         assert!(other.get::<FooService>().is_none());
+    }
+
+    // --- guarded withdrawal (paper §4.3.1 relied_n) ---
+
+    struct DependentPlugin;
+    impl Plugin for DependentPlugin {
+        type Config = ();
+        type Provides = BarService;
+        fn apply(
+            &self,
+            _ctx: &Arc<Context>,
+            _cfg: Self::Config,
+        ) -> Result<Arc<Self::Provides>, CordisError> {
+            Ok(Arc::new(BarService(5)))
+        }
+    }
+
+    /// Register a consumer of `FooService` through the registry so it is
+    /// Active and declares its inject against a recorded registration context.
+    fn register_foo_consumer(ctx: &Arc<Context>, registry: &RegistryService) -> FiberId {
+        let fid = registry
+            .register(&ctx.clone(), DependentPlugin, ())
+            .expect("dependent registration");
+        registry
+            .get_fiber(fid)
+            .unwrap()
+            .declare_inject::<FooService>();
+        fid
+    }
+
+    #[tokio::test]
+    async fn guarded_withdrawal_blocks_removal_with_active_consumer() {
+        use crate::Context;
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+        ctx.provide(registry);
+        let registry = ctx.get::<RegistryService>().unwrap();
+
+        let provider_fid = registry.register(&ctx, FooPlugin, ()).expect("provider");
+        let consumer_fid = register_foo_consumer(&ctx, &registry);
+        assert!(matches!(
+            registry.get_fiber(consumer_fid).unwrap().state(),
+            FiberState::Active { .. }
+        ));
+
+        let key = (TypeId::of::<FooService>(), None);
+        assert_eq!(registry.reliance_count(&key), 1);
+
+        // Guarded withdrawal: removal must fail while the consumer is Active.
+        let err = ctx.remove::<FooService>().expect_err("guard must block");
+        assert!(
+            err.to_string().contains("guarded withdrawal"),
+            "error should mention guarded withdrawal, got {err}"
+        );
+        assert!(ctx.get::<FooService>().is_some(), "service stays provided");
+        assert!(matches!(
+            registry.get_fiber(provider_fid).unwrap().state(),
+            FiberState::Active { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn guarded_withdrawal_allows_after_consumer_gone() {
+        use crate::Context;
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+        ctx.provide(registry);
+        let registry = ctx.get::<RegistryService>().unwrap();
+
+        registry.register(&ctx, FooPlugin, ()).expect("provider");
+        let consumer_fid = register_foo_consumer(&ctx, &registry);
+
+        // Dispose the consumer: its effects are undone and it is no longer
+        // Active, so reliance drops to zero and removal succeeds.
+        registry.get_fiber(consumer_fid).unwrap().dispose().await;
+        let key = (TypeId::of::<FooService>(), None);
+        assert_eq!(registry.reliance_count(&key), 0);
+
+        let removed = ctx.remove::<FooService>().expect("removal now allowed");
+        assert_eq!(removed.unwrap().0, 1);
+        assert!(ctx.get::<FooService>().is_none());
+    }
+
+    #[tokio::test]
+    async fn internal_undo_bypasses_guard() {
+        use crate::Context;
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+        ctx.provide(registry);
+        let registry = ctx.get::<RegistryService>().unwrap();
+
+        registry.register(&ctx, FooPlugin, ()).expect("provider");
+        register_foo_consumer(&ctx, &registry);
+        let key = (TypeId::of::<FooService>(), None);
+        assert_eq!(registry.reliance_count(&key), 1);
+
+        // The forced path (used by fiber undo stacks / internal rollback)
+        // removes even with an active consumer.
+        let removed = ctx.remove_forced::<FooService>().expect("forced removal");
+        assert!(removed.is_some());
+        assert!(ctx.get::<FooService>().is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_without_registry_or_consumers_still_works() {
+        use crate::Context;
+        // No RegistryService on ctx: guard is inert, behavior as before.
+        let ctx = Context::new_root();
+        ctx.provide(FooService(2));
+        let removed = ctx.remove::<FooService>().expect("unguarded removal");
+        assert!(removed.is_some());
     }
 
     #[test]

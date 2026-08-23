@@ -19,6 +19,7 @@
 
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -36,7 +37,7 @@ impl Service for EntryIntercept {
 }
 
 /// TOML wrapper struct for `[[entry]]` array deserialization.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TomlEntries {
     #[serde(default)]
     entry: Vec<Entry>,
@@ -128,6 +129,38 @@ impl EntryTree {
         let data =
             std::fs::read_to_string(path).map_err(|e| CordisError::Configuration(e.to_string()))?;
         serde_json::from_str(&data).map_err(|e| CordisError::Configuration(e.to_string()))
+    }
+
+    /// Serialize the tree to TOML, preserving any leading comment header
+    /// (lines starting with '#', plus blank lines) already present in the
+    /// existing file. Comments cannot survive serde round-trips, so they
+    /// are captured verbatim from the current file content and prepended
+    /// to the regenerated body.
+    pub fn save_to_toml_file(&self, path: &Path) -> Result<(), CordisError> {
+        let mut header = String::new();
+        if let Ok(existing) = std::fs::read_to_string(path) {
+            for line in existing.lines() {
+                if line.starts_with('#') || line.trim().is_empty() {
+                    header.push_str(line);
+                    header.push('\n');
+                } else {
+                    break;
+                }
+            }
+        }
+        let body = toml::to_string_pretty(&TomlEntries {
+            entry: self.0.clone(),
+        })
+        .map_err(|e| CordisError::Configuration(e.to_string()))?;
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| CordisError::Configuration(e.to_string()))?;
+            }
+        }
+        std::fs::write(path, format!("{header}{body}"))
+            .map_err(|e| CordisError::Configuration(e.to_string()))?;
+        Ok(())
     }
 }
 
@@ -1273,5 +1306,95 @@ disabled = false
             current.0.is_empty(),
             "current tree must stay unchanged when any action failed"
         );
+    }
+
+    #[test]
+    fn save_to_toml_file_round_trips_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entries.toml");
+        let tree = EntryTree(vec![
+            Entry {
+                id: "tool:calc".into(),
+                plugin: "CalculatorService".into(),
+                config: json!({"precision": 2}),
+                disabled: true,
+                isolate: None,
+                intercept: HashMap::new(),
+            },
+            Entry {
+                id: "svc:acme".into(),
+                plugin: "PluginA".into(),
+                config: json!({"x": 1}),
+                disabled: false,
+                isolate: Some("acme".into()),
+                intercept: HashMap::new(),
+            },
+        ]);
+        tree.save_to_toml_file(&path).unwrap();
+        let loaded = Loader::load_from_file(&path).unwrap();
+        assert_eq!(tree, loaded);
+    }
+
+    #[test]
+    fn save_to_toml_file_preserves_comment_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entries.toml");
+        std::fs::write(
+            &path,
+            r#"# Cordis plugin entries loaded at startup.
+# Order matters.
+
+[[entry]]
+id = "a"
+plugin = "Foo"
+
+[entry.config]
+
+[[entry]]
+id = "b"
+plugin = "Bar"
+
+[entry.config]
+"#,
+        )
+        .unwrap();
+
+        let mut tree = Loader::load_from_file(&path).unwrap();
+        assert_eq!(tree.len(), 2);
+        tree.0.push(Entry {
+            id: "c".into(),
+            plugin: "Baz".into(),
+            config: json!({}),
+            disabled: false,
+            isolate: Some("acme".into()),
+            intercept: HashMap::new(),
+        });
+        tree.save_to_toml_file(&path).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let first_table = raw.find("[[entry]]").expect("serialized body present");
+        let header = &raw[..first_table];
+        assert!(
+            header.contains("# Cordis plugin entries loaded at startup."),
+            "first comment line must survive the round-trip"
+        );
+        assert!(
+            header.contains("# Order matters."),
+            "second comment line must survive the round-trip"
+        );
+
+        let reloaded = Loader::load_from_file(&path).unwrap();
+        assert_eq!(reloaded.len(), 3);
+        assert_eq!(reloaded, tree);
+    }
+
+    #[test]
+    fn save_to_toml_file_empty_tree_writes_valid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.toml");
+        EntryTree::default().save_to_toml_file(&path).unwrap();
+        let loaded = Loader::load_from_file(&path).unwrap();
+        assert_eq!(loaded.len(), 0);
+        assert!(loaded.is_empty());
     }
 }

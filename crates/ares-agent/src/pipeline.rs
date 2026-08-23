@@ -456,7 +456,83 @@ pub async fn execute_pipeline_with_origin(
             ),
         }
     }
+    emit_pipeline_fanout_completed(app_state, source_agent_name, tenant_id, &triggered);
     Ok(triggered)
+}
+
+/// Fire-and-forget `pipeline.step.started` emission; missing event bus is a
+/// no-op and the fan-out path never waits on handlers.
+fn emit_pipeline_step_started(
+    ctx: &std::sync::Arc<cordis::Context>,
+    pipeline_id: &str,
+    target_agent: &str,
+    tenant_id: &str,
+    run_id: &str,
+) {
+    let Some(events) = ctx.get::<cordis::EventsService>() else {
+        return;
+    };
+    let payload = cordis::PipelineStepStartedPayload {
+        pipeline_id: pipeline_id.to_string(),
+        target_agent: target_agent.to_string(),
+        tenant_id: tenant_id.to_string(),
+        run_id: run_id.to_string(),
+    };
+    tokio::spawn(async move {
+        let _ = events
+            .dispatch_typed::<cordis::PipelineStepStartedEvent>(&payload)
+            .await;
+    });
+}
+
+/// Fire-and-forget `pipeline.step.finished` emission after status resolution.
+fn emit_pipeline_step_finished(
+    ctx: &std::sync::Arc<cordis::Context>,
+    pipeline_id: &str,
+    target_agent: &str,
+    tenant_id: &str,
+    status: &str,
+    duration_ms: u64,
+    error: Option<String>,
+) {
+    let Some(events) = ctx.get::<cordis::EventsService>() else {
+        return;
+    };
+    let payload = cordis::PipelineStepFinishedPayload {
+        pipeline_id: pipeline_id.to_string(),
+        target_agent: target_agent.to_string(),
+        tenant_id: tenant_id.to_string(),
+        status: status.to_string(),
+        duration_ms,
+        error,
+    };
+    tokio::spawn(async move {
+        let _ = events
+            .dispatch_typed::<cordis::PipelineStepFinishedEvent>(&payload)
+            .await;
+    });
+}
+
+/// Fire-and-forget `pipeline.fanout.completed` emission at fan-out end.
+fn emit_pipeline_fanout_completed(
+    ctx: &std::sync::Arc<cordis::Context>,
+    source_agent: &str,
+    tenant_id: &str,
+    triggered: &[String],
+) {
+    let Some(events) = ctx.get::<cordis::EventsService>() else {
+        return;
+    };
+    let payload = cordis::PipelineFanoutCompletedPayload {
+        source_agent: source_agent.to_string(),
+        tenant_id: tenant_id.to_string(),
+        triggered: triggered.to_vec(),
+    };
+    tokio::spawn(async move {
+        let _ = events
+            .dispatch_typed::<cordis::PipelineFanoutCompletedEvent>(&payload)
+            .await;
+    });
 }
 
 async fn execute_target_agent(
@@ -476,29 +552,26 @@ async fn execute_target_agent(
     let scoped = tenant_scoped_ctx(app_state, tenant_id);
     let exec = scoped
         .get::<Execute>()
-            .ok_or_else(|| "Execute not provided".to_string())?;
+        .ok_or_else(|| "Execute not provided".to_string())?;
     let start = std::time::Instant::now();
     let run_id = uuid::Uuid::new_v4().to_string();
 
     // A skill is identified from tenant configuration, but execution still
     // crosses Execute::run. The marker is request-local and cannot leak into
     // another tenant's context.
-    let skill_id = ares_store::tenant_agents::get_tenant_agent(
-        &pool,
-        tenant_id,
-        &pipeline.target_agent,
-    )
-    .await
-    .ok()
-    .and_then(|record| {
-        record
-            .config
-            .get("skill_id")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-    });
+    let skill_id =
+        ares_store::tenant_agents::get_tenant_agent(&pool, tenant_id, &pipeline.target_agent)
+            .await
+            .ok()
+            .and_then(|record| {
+                record
+                    .config
+                    .get("skill_id")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            });
 
     let request_ctx = if let Some(skill_id) = skill_id {
         scoped.with_intercept(crate::execution::SkillDispatch::new(
@@ -542,6 +615,13 @@ async fn execute_target_agent(
         tenant_id,
         &pipeline.target_agent,
         Some(PIPELINE_REQUEST_SOURCE),
+    );
+    emit_pipeline_step_started(
+        app_state,
+        &pipeline.id,
+        &pipeline.target_agent,
+        tenant_id,
+        &run_id,
     );
     let execution = exec
         .run(&req, &request_ctx)
@@ -593,6 +673,16 @@ async fn execute_target_agent(
                 )
             }
         };
+
+    emit_pipeline_step_finished(
+        app_state,
+        &pipeline.id,
+        &pipeline.target_agent,
+        tenant_id,
+        status,
+        duration_ms,
+        error_msg.clone(),
+    );
 
     let effects = pipeline_target_run_effects(
         pipeline,
@@ -874,6 +964,157 @@ mod tests {
         assert_eq!(effects.metadata.pipeline_id.as_deref(), Some("pipeline-1"));
         assert_eq!(effects.metadata.schedule_id, None);
         assert_eq!(effects.metadata.trigger_id.as_deref(), Some("trigger-1"));
+    }
+
+    /// Phase 5 engine choreography: drive the REAL fan-out path and observe
+    /// `pipeline.step.started`, `pipeline.step.finished`, and
+    /// `pipeline.fanout.completed` on the Cordis event bus.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pipeline_boundary_events_emitted_around_step_and_fanout() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://dirmacs@localhost/ares_test".to_string());
+        let Ok(pool) = sqlx::PgPool::connect(&database_url).await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
+
+        let app_state = Context::new_root();
+        app_state.provide(cordis::EventsService::new());
+        app_state.provide(ares_store::TenantDb::new(Arc::new(PostgresClient {
+            pool: pool.clone(),
+        })));
+        app_state.provide(crate::Execute::new());
+        let mut rx = app_state
+            .get::<cordis::EventsService>()
+            .expect("events service provided")
+            .subscribe();
+
+        // Fresh slate for this test's unique prefix, then seed one enabled
+        // pipeline whose target fails fast (no LLM configured).
+        sqlx::query("DELETE FROM agent_pipelines WHERE source_agent LIKE 'src-agent-t5%'")
+            .execute(&pool)
+            .await
+            .expect("pre-cleanup pipelines");
+        sqlx::query(
+            "INSERT INTO agent_pipelines \
+             (id, tenant_id, source_agent, target_agent, condition, enabled, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, NULL, TRUE, 0, 0)",
+        )
+        .bind("t5-pipe-seeded")
+        .bind("tenant-t5-pipe")
+        .bind("src-agent-t5")
+        .bind("target-t5")
+        .execute(&pool)
+        .await
+        .expect("seed pipeline row");
+
+        let fanned = execute_pipeline_with_origin(
+            "src-agent-t5",
+            "{\"ok\":true}",
+            "tenant-t5-pipe",
+            None,
+            &app_state,
+        )
+        .await;
+        // The fan-out itself succeeds regardless of the target's own outcome
+        // (with no LLM configured the engine may still answer via a fallback);
+        // boundary events must fire either way.
+        let _triggered = fanned.expect("fan-out ok");
+
+        async fn next_named(
+            rx: &mut tokio::sync::broadcast::Receiver<(String, serde_json::Value)>,
+            name: &str,
+        ) -> serde_json::Value {
+            loop {
+                let (event, payload) =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                        .await
+                        .expect("timed out waiting for event")
+                        .expect("broadcast channel open");
+                if event == name {
+                    return payload;
+                }
+            }
+        }
+
+        let started = next_named(&mut rx, "pipeline.step.started").await;
+        assert_eq!(started["pipeline_id"], "t5-pipe-seeded");
+        assert_eq!(started["target_agent"], "target-t5");
+        assert_eq!(started["tenant_id"], "tenant-t5-pipe");
+        assert!(
+            started["run_id"]
+                .as_str()
+                .map(|r| !r.is_empty())
+                .unwrap_or(false),
+            "started payload carries the run id: {started}"
+        );
+
+        let finished = next_named(&mut rx, "pipeline.step.finished").await;
+        assert_eq!(finished["pipeline_id"], "t5-pipe-seeded");
+        assert_eq!(finished["target_agent"], "target-t5");
+        let status = finished["status"].as_str().expect("status string");
+        assert!(
+            status == "completed" || status == "failed",
+            "terminal step status, got: {finished}"
+        );
+        if status == "failed" {
+            assert!(
+                finished["error"].is_string(),
+                "failure recorded: {finished}"
+            );
+        } else {
+            assert!(
+                finished["error"].is_null(),
+                "success has no error: {finished}"
+            );
+        }
+
+        // Second pass with no matching pipelines: fan-out still completes and
+        // reports an empty triggered list. Skip the first run's own
+        // fanout.completed by matching on the unique source agent.
+        sqlx::query("DELETE FROM agent_pipelines WHERE source_agent LIKE 'src-agent-t5%'")
+            .execute(&pool)
+            .await
+            .expect("mid-cleanup pipelines");
+        let empty = execute_pipeline_with_origin(
+            "src-agent-t5-empty",
+            "{\"ok\":true}",
+            "tenant-t5-pipe",
+            None,
+            &app_state,
+        )
+        .await;
+        assert_eq!(empty.expect("empty fan-out ok"), Vec::<String>::new());
+
+        loop {
+            let (event, payload) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                    .await
+                    .expect("timed out waiting for fanout.completed")
+                    .expect("broadcast channel open");
+            if event != "pipeline.fanout.completed"
+                || payload["source_agent"] != "src-agent-t5-empty"
+            {
+                continue;
+            }
+            assert_eq!(payload["tenant_id"], "tenant-t5-pipe");
+            assert_eq!(payload["triggered"], serde_json::json!([]));
+            break;
+        }
+
+        // Keep the shared ares_test DB clean for the rest of the suite.
+        sqlx::query("DELETE FROM agent_pipelines WHERE source_agent LIKE 'src-agent-t5%'")
+            .execute(&pool)
+            .await
+            .expect("cleanup pipelines");
+        sqlx::query("DELETE FROM agent_runs WHERE tenant_id LIKE 'tenant-t5-%'")
+            .execute(&pool)
+            .await
+            .expect("cleanup agent_runs");
+        sqlx::query("DELETE FROM usage_events WHERE tenant_id LIKE 'tenant-t5-%'")
+            .execute(&pool)
+            .await
+            .expect("cleanup usage_events");
     }
 }
 

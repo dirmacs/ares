@@ -1831,7 +1831,15 @@ mod tests {
     async fn test_set_default_model() {
         let mut registry = create_test_registry();
         registry.set_default_model("powerful-local");
-        match registry.create_default_client().await {
+        // The fixture's provider reads TEST_KEY; other suites export it, so
+        // clear it here to keep the missing-key error deterministic.
+        let saved_key = std::env::var("TEST_KEY").ok();
+        std::env::remove_var("TEST_KEY");
+        let result = registry.create_default_client().await;
+        if let Some(key) = saved_key {
+            std::env::set_var("TEST_KEY", key);
+        }
+        match result {
             Err(AppError::Configuration(msg)) => {
                 assert!(!msg.contains("No default model configured"), "got: {msg}");
             }

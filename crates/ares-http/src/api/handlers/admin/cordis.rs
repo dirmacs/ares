@@ -513,6 +513,31 @@ pub async fn toggle_cordis_entry(
     }
 }
 
+/// GET /admin/cordis/events — per-event dispatch counters from the
+/// `EventsService`. Returns 503 when the service is not provided.
+pub async fn cordis_event_metrics(
+    State(ctx): State<Arc<Context>>,
+) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
+    let Some(events) = ctx.get::<EventsService>() else {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "total_dispatched": 0,
+                "by_event": {},
+                "error": "EventsService is not provided on this context",
+            })),
+        ));
+    };
+    let (total, by_event) = events.dispatch_snapshot();
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "total_dispatched": total,
+            "by_event": by_event.into_iter().collect::<HashMap<String, u64>>(),
+        })),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -899,5 +924,58 @@ mod tests {
         assert_eq!(err.0.status_code(), 400);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod event_metrics_tests {
+    use super::*;
+    use ::cordis::Dispatch;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn cordis_event_metrics_counts_dispatches() {
+        let ctx = Context::new_root();
+        ctx.provide(EventsService::new());
+        let events = ctx.get::<EventsService>().expect("events provided");
+
+        // Two Emit dispatches on agent.usage + one Bail on scheduler.admit.
+        for _ in 0..2 {
+            events
+                .dispatch(
+                    cordis::events_catalog::ev::AGENT_USAGE.into(),
+                    json!({"tokens": 1}),
+                    Dispatch::Emit,
+                )
+                .await
+                .unwrap();
+        }
+        events
+            .dispatch(
+                cordis::events_catalog::ev::SCHEDULER_ADMIT.into(),
+                json!({"agent_name": "a"}),
+                Dispatch::Bail,
+            )
+            .await
+            .unwrap();
+
+        let resp = cordis_event_metrics(State(ctx.clone()))
+            .await
+            .expect("handler");
+        assert_eq!(resp.0, StatusCode::OK);
+        assert_eq!(resp.1 .0["total_dispatched"], json!(3));
+        assert_eq!(resp.1 .0["by_event"]["agent.usage"], json!(2));
+        assert_eq!(resp.1 .0["by_event"]["scheduler.admit"], json!(1));
+    }
+
+    #[tokio::test]
+    async fn cordis_event_metrics_missing_service_is_503() {
+        let ctx = Context::new_root();
+        let resp = cordis_event_metrics(State(ctx)).await.expect("handler");
+        assert_eq!(resp.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.1 .0["error"],
+            json!("EventsService is not provided on this context")
+        );
     }
 }

@@ -4,8 +4,8 @@
 //! All connectors authenticate via OAuth2 credentials stored in the database
 //! (`oauth_credentials` table) and encrypt/decrypt using the fleet master key.
 
-use ares_store::{decrypt_api_key, MasterKey};
 use ares_store::oauth_credentials::{OAuthCredential, OAuthCredentialStore};
+use ares_store::{decrypt_api_key, MasterKey};
 use ares_types::types::{AppError, Result};
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -389,7 +389,7 @@ pub fn require_tenant_id(args: &serde_json::Value) -> Result<String> {
 /// Runtime-created tools are loaded separately by [`RuntimeToolRegistry`]; these
 /// pre-built connector tools are normal [`ToolRegistry`] entries so configured
 /// agents can discover and execute them through the existing tool-calling path.
-pub fn register_prebuilt_connector_tools(
+pub(crate) fn register_prebuilt_connector_tools(
     registry: &mut crate::registry::ToolRegistry,
     pool: PgPool,
     master_key: MasterKey,

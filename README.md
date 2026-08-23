@@ -15,7 +15,7 @@ Extensible via ContextProvider trait. Run standalone or embed as a library.
 
 ---
 
-**A.R.E.S** is a production-grade agentic AI server built in Rust. Multi-provider LLM routing, structured tool calling, RAG, MCP integration, multi-tenant auth, and workflow orchestration. Extensible via `ContextProvider` trait and `base_router()` for building managed platforms on top.
+**A.R.E.S** is a production-grade agentic AI server built in Rust. Multi-provider LLM routing, structured tool calling, RAG, MCP integration, multi-tenant auth, and workflow orchestration. Embed the default `ares` facade (`Context`, `Execute`, `Tools`, `Llm`) with no axum on the graph, or enable the `http` feature for the Axum adapter.
 
 Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.github.io/ares)**
 
@@ -41,10 +41,12 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 - Config validation: circular reference detection and unused config warnings
 - Loop detection: 3-tier escalation (warn, force alternative, halt) for repetitive outputs
 - Crash recovery: checkpoint serialization, save agent state at each step, restore on restart
-- Service-based architecture (0.9.0): dependency injection via typed `Context`, services register with `ctx.plugin()` or `ctx.provide()`, handlers pull deps with `ctx.get::<T>()`
-- Unified execution: single `Execute` handles resolve, create, and execute for all call sites (chat, v1 API, scheduler, pipeline, trigger)
-- Event-first skills (0.9.0): `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`), falling back to a 5ms poll only when the notifier is unavailable. Skills carry the request `Context`, isolate tools with `ctx.isolate::<Tools>(tenant_id)`, and call `Tools::execute` on that tenant isolate. Skill `LlmCall` steps strictly use `Llm::complete` through `llm.complete`, with no direct provider `generate_with_history` fallback.
-- Hot-reload: file-watch triggers automatic service refresh without restart
+- Service-based architecture (0.9.0): dependency injection via typed `Context`, services register with `ctx.plugin()` or `ctx.provide()`, handlers pull deps with `ctx.get::<T>()`. `Fiber::refresh` recomputes the dependency epoch and reruns plugin `apply`.
+- Unified execution: single `Execute` handles resolve, create, and execute for chat, v1 API, JWT chat, MCP, scheduler, pipeline, and trigger. Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`.
+- Event-first skills (0.9.0): `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`), falling back to a 5ms poll only when the notifier is unavailable. Skills carry the request `Context`, isolate tools with `ctx.isolate::<Tools>(tenant_id)`, and call `Tools::execute` on that tenant isolate. Skill `LlmCall` steps strictly use `Llm::complete` through `llm.complete`, with no direct provider `generate_with_history` fallback. `Tools`, `Llm`, `Execute`, and skills stay event-first on `EventsService` waterfalls.
+- Quota: `agent.admit` (`Dispatch::Bail`) is the shared gate for `Execute`, JWT chat, API-key middleware, and MCP.
+- Store / Overlay / realms: Store factory runs migrations and seeds templates. Overlay fills empty loader configs from `ares.toml`. TOON changes notify `Tools` and `Execute`. `TenantRealms` open-then-intercept on request paths and dispose on tenant delete.
+- Hot-reload: file-watch triggers automatic service refresh without restart. `Fiber::refresh` reruns plugin apply when the epoch changes.
 - Circuit breaker: LLM provider health tracked per-endpoint with automatic failover
 
 ## Installation
@@ -60,11 +62,13 @@ Add to your project (0.9.0):
 ares = "0.9"
 ```
 
-Basic usage:
+Basic usage (default features: no axum, no postgres, no engines):
 
 ```rust
 use ares::{Context, Execute, Tools, Llm};
 ```
+
+`ares` with default features does not depend on axum. Enable `http` to pull `ares-http`. `ProviderRegistry` remains on the constructor path for `AgentRegistry` / `Llm` until those take `Llm` only.
 
 ### As a binary
 
@@ -500,20 +504,29 @@ system_prompt: |
 
 ## Extending ARES
 
-ARES is designed as a library. Build on it by adding routes to the context-based router or injecting services.
+ARES is designed as a library. The default `ares` facade injects `Execute`, `Tools`, and `Llm` on a Cordis `Context` and runs an agent with no HTTP stack. HTTP routes live behind the optional `http` feature (`ares-http`).
 
-### Custom routes
+### Library (no axum)
+
+```rust
+use ares::{Context, Execute, Tools, Llm, register_plugins};
+use cordis::PluginRegistry;
+
+let ctx = Context::new_root();
+let reg = PluginRegistry::new();
+register_plugins(&reg);
+// provide in-memory or real Execute + Tools + Llm, then Execute::run(&req, &ctx)
+```
+
+### Custom routes (feature `http`)
 
 ```rust
 use std::sync::Arc;
 use cordis::Context;
-use ares::build_router;
+use ares_http::Http;
 
-let ctx: Arc<Context> = /* your configured context */;
-let app = build_router(ctx.clone())
-    .merge(my_custom_routes(ctx.clone()))
-    .layer(my_custom_middleware());
-axum::serve(listener, app).await?;
+let ctx: Arc<Context> = /* your configured context with Http provided */;
+// Http::apply builds the Axum router; the ares-server binary binds it.
 ```
 
 ### Custom context provider
@@ -538,40 +551,61 @@ By default, ARES uses `NoOpContextProvider` (returns `None`).
 
 ## Architecture
 
-ARES uses a service-based architecture. Components register into a typed `Context` and handlers pull what they need at request time.
+0.9.0 composition is Cordis `Context` plus loader entries. Components register into a typed `Context`. Handlers and engines pull `Execute`, `Tools`, `Llm`, and `Store` at call time. The default `ares` facade has no axum.
 
 ```
-HTTP request -> Router -> Handler -> ctx.get::<AgentExecutionService>()
-                                  -> resolve agent (tenant DB -> community -> system)
-                                  -> create agent via registry
-                                  -> agent.execute(message, context)
-                                  -> tool calling loop
-                                  -> response
+request / job
+  -> TenantRealms.open then intercept (HTTP/MCP/JWT) or isolate only (background)
+  -> agent.admit (Execute, JWT chat, API-key middleware, MCP)
+  -> Execute::run
+  -> Tools / Llm / skills via EventsService waterfalls
+  -> response
 ```
+
+### Fiber, events, and capabilities
+
+`Fiber::refresh` recomputes the dependency epoch and reruns plugin `apply` when the epoch changed or the fiber is not already Active with dependencies satisfied. Dispose still LIFO-undoes effects.
+
+`EventsService` dispatch: `Emit` returns JSON null. `Parallel` joins every handler and returns JSON null on success (handler values are discarded; the first join/handler error is propagated). `Serial` (same path as `Bail`) stops at the first non-null handler result. `Waterfall` is around-middleware with `next`.
+
+`Tools`, `Llm`, `Execute`, and skills remain event-first. Public methods run through `waterfall_around` when `EventsService` is on ctx.
+
+`agent.admit` is the shared quota gate for `Execute::run`, JWT `/api/chat`, API-key middleware, and MCP. Deny maps to HTTP 429 or an MCP tool error.
+
+### Store, Overlay, realms, boot
+
+The Store loader factory connects, runs SQL migrations, and seeds default agent templates. Overlay copies `ares.toml` sections into loader entries only when `entry.config` is empty. TOON reloads call `ReflectService::notify` for `Tools` and `Execute`.
+
+`TenantRealms` open-then-intercept on request paths. Background jobs open/isolate only. Admin tenant delete calls `dispose` then SQL delete.
+
+`run_server` still instantiates Overlay first, fills empty loader configs, then instantiates remaining `config/cordis-entries.toml` entries. `ProviderRegistry` still exists for `AgentRegistry` construction. Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`.
 
 ### Key services
 
 | Service | What it does |
 |---------|-------------|
-| `AgentExecutionService` | Single entry point for running agents. All 5 call sites delegate here. |
-| `AgentResolverService` | 3-tier agent resolution: tenant DB, community, system config. |
-| `LlmService` | Provider management with circuit breaker and per-request model override. |
-| `UnifiedToolService` | Merges static, runtime DB, and MCP tools. Tenant isolation built in. |
+| `Execute` | Single entry point for running agents. Chat, v1, JWT, MCP, scheduler, pipeline, and trigger delegate here after `agent.admit`. |
+| `Resolver` | Crate-private 3-tier agent resolution: tenant DB, community, system config. |
+| `Llm` | Provider clients with circuit breaker. `ProviderRegistry` remains a constructor input. |
+| `Tools` | Merges static, runtime DB, and MCP tools. Tenant isolation via `isolate::<Tools>`. |
+| `Store` | Postgres client, migrations, template seed, tenant DB. |
+| `EventsService` | Typed bus. Product paths stay event-first. |
+| `Overlay` | `ares.toml` overlay; fills empty loader configs; TOON notifies Tools/Execute. |
+| `TenantRealms` | Per-tenant child contexts. Open-then-intercept on request; dispose on tenant delete. |
 | `ReflectService` | Hot-reload coordination. File changes propagate without restart. |
 
 ### Adding a service
 
 ```rust
-// Register in main.rs
-root_ctx.provide(AgentExecutionService::new()
-    .with_db(db)
+// Register in a plugin apply / loader factory
+root_ctx.provide(Execute::new()
     .with_agent_registry(registry)
     .with_run_tracker(active_runs));
 
-// Use in any handler
+// Use from a handler or engine (HTTP types require feature `http`)
 async fn my_handler(State(ctx): State<Arc<Context>>) -> Result<Response> {
-    let exec = ctx.get::<AgentExecutionService>().expect("not provided");
-    let result = exec.execute_agent(&req, &ctx).await?;
+    let exec = ctx.get::<Execute>().expect("not provided");
+    let result = exec.run(&req, &ctx).await?;
     Ok(Json(result.response).into_response())
 }
 ```

@@ -17,7 +17,7 @@ use axum::{
 use sha2::Digest;
 
 pub async fn list_models_handler(State(ctx): State<Arc<Context>>) -> Result<Json<Vec<ModelInfo>>> {
-    Ok(Json(ctx.get::<ares_llm::ProviderRegistry>().expect("not provided").list_models()))
+    Ok(Json(ctx.get::<ares_llm::Llm>().expect("not provided").list_models()))
 }
 
 pub async fn reload_runtime_provider_registry(ctx: &Arc<Context>) -> Result<()> {
@@ -44,7 +44,7 @@ pub async fn reload_runtime_provider_registry(ctx: &Arc<Context>) -> Result<()> 
         });
     }
 
-    ctx.get::<ares_llm::ProviderRegistry>().expect("not provided")
+    ctx.get::<ares_llm::Llm>().expect("not provided")
         .reload_runtime_providers(entries, names);
     Ok(())
 }

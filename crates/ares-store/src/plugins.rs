@@ -56,6 +56,16 @@ fn factory_store(
     let tenant = crate::TenantDb::new(pg_arc.clone());
     let fid = block_on_plugin(ctx, tenant)?;
 
+    let pg = ctx.get::<crate::TenantDb>().ok_or_else(|| {
+        CordisError::Configuration("TenantDb missing after Store factory".into())
+    })?;
+    block_on_async(sqlx::migrate!("../../migrations").run(pg.pool()))
+        .map_err(|e| CordisError::Configuration(format!("Failed to run database migrations: {e}")))?;
+    tracing::info!("Database migrations applied");
+    block_on_async(crate::tenant_agents::seed_default_templates(pg.pool()))
+        .map_err(|e| CordisError::Configuration(format!("Failed to seed agent templates: {e}")))?;
+    tracing::info!("Agent templates seeded");
+
     let fleet_secrets = crate::FleetSecrets::new();
     let fleet_store = crate::fleet_provider_secrets::FleetProviderSecretsStore::new(&pg_arc.pool);
     let master = crate::MasterKey::from_env();

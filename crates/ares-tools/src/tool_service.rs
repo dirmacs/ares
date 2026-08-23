@@ -38,7 +38,7 @@ impl Clone for Tools {
 }
 
 impl Tools {
-    pub fn new(static_registry: Arc<ToolRegistry>) -> Self {
+    pub(crate) fn new(static_registry: Arc<ToolRegistry>) -> Self {
         Self {
             static_registry,
             #[cfg(any(feature = "postgres", test))]
@@ -47,7 +47,8 @@ impl Tools {
     }
 
     #[cfg(any(feature = "postgres", test))]
-    pub fn with_runtime(
+    #[allow(dead_code)]
+    pub(crate) fn with_runtime(
         static_registry: Arc<ToolRegistry>,
         runtime: Option<Arc<RuntimeToolRegistry>>,
     ) -> Self {
@@ -64,6 +65,22 @@ impl Tools {
             registry.register(tool);
         }
         Self::new(Arc::new(registry))
+    }
+
+    /// Validate runtime tool execution_config without exposing the registry.
+    pub fn validate_runtime_tool_execution_config(
+        tool_type: &str,
+        execution_config: &Value,
+    ) -> Result<()> {
+        #[cfg(any(feature = "postgres", test))]
+        {
+            RuntimeToolRegistry::validate_execution_config(tool_type, execution_config)
+        }
+        #[cfg(not(any(feature = "postgres", test)))]
+        {
+            let _ = (tool_type, execution_config);
+            Ok(())
+        }
     }
 
     /// Resolve a tool using the tenant derived from `ctx` (isolate, then intercept).
@@ -179,7 +196,8 @@ impl Tools {
 
     /// Runtime registry for admin mutation. Not a Service; do not `ctx.get` it.
     #[cfg(any(feature = "postgres", test))]
-    pub fn runtime(&self) -> Option<Arc<RuntimeToolRegistry>> {
+    #[allow(dead_code)]
+    pub(crate) fn runtime(&self) -> Option<Arc<RuntimeToolRegistry>> {
         self.runtime.clone()
     }
 

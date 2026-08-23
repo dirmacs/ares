@@ -14,8 +14,6 @@
 
 pub mod loader {
     #[cfg(feature = "skills")]
-    use std::path::PathBuf;
-    #[cfg(feature = "skills")]
     use thulp_skill_files::{SkillLoader, SkillLoaderConfig};
 
     #[cfg(feature = "skills")]
@@ -77,7 +75,9 @@ pub mod loader {
     #[cfg(feature = "skills")]
     /// Get a single skill by name.
     pub fn get_skill(config: &SkillsConfig, name: &str) -> Option<LoadedSkill> {
-        load_skills(config).into_iter().find(|s| s.qualified_name() == name)
+        load_skills(config)
+            .into_iter()
+            .find(|s| s.qualified_name() == name)
     }
 
     #[cfg(not(feature = "skills"))]
@@ -164,10 +164,10 @@ pub use engine::SkillEngine;
 // Real Cordis SkillsService — Phase 4 step 16
 // ---------------------------------------------------------------------------
 
-use std::sync::Arc;
-use cordis::{Context,  Service};
 use crate::execution::Execute;
 use ares_tools::Tools;
+use cordis::{Context, Service};
+use std::sync::Arc;
 
 /// Maximum skill call recursion depth.
 pub const MAX_SKILL_CALL_DEPTH: usize = 8;
@@ -354,7 +354,11 @@ fn evaluate_condition(expression: &str, context: &serde_json::Value) -> bool {
             let key = l.trim_end_matches(".result").trim();
             if let Some(obj) = context.get(key) {
                 // compare against result["content"] or raw
-                let content = obj.get("result").and_then(|r| r.get("content")).and_then(|c| c.as_str()).unwrap_or("");
+                let content = obj
+                    .get("result")
+                    .and_then(|r| r.get("content"))
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("");
                 return content == r;
             }
             return false;
@@ -411,7 +415,10 @@ impl SkillsService {
 
     /// Create with explicit max depth.
     pub fn with_max_depth(execution: Arc<Execute>, max_depth: usize) -> Self {
-        Self { execution, max_depth }
+        Self {
+            execution,
+            max_depth,
+        }
     }
 
     /// Execute a skill by id with JSON input via `ctx` (Cordis provider-agnostic).
@@ -459,7 +466,10 @@ impl SkillsService {
         {
             let _ = (skill_id, &input, ctx, &self.execution);
             // Without postgres, skill store unavailable — return context echo for correctness of cargo check both.
-            #[allow(clippy::needless_return, reason = "cfg stub uses explicit return to keep postgres/non-postgres branches symmetric for audit")]
+            #[allow(
+                clippy::needless_return,
+                reason = "cfg stub uses explicit return to keep postgres/non-postgres branches symmetric for audit"
+            )]
             return Ok(serde_json::json!({"input": input, "skill_id": skill_id, "status":"ok"}));
         }
 
@@ -507,9 +517,11 @@ impl SkillsService {
                     SkillStep::ToolCall { tool_name, args } => {
                         tracing::info!("Step {}: tool_call {}", step_index, tool_name);
                         let start = std::time::Instant::now();
-                        let result = execute_skill_tool(ctx, &tenant_id, &tool_name, args.clone()).await?;
+                        let result =
+                            execute_skill_tool(ctx, &tenant_id, &tool_name, args.clone()).await?;
                         let latency_ms = start.elapsed().as_millis() as i64;
-                        context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
+                        context[&format!("step_{}", step_index)] =
+                            successful_step_context(result.clone());
                         // Log to run_history when pool available
                         let store = ares_store::run_history::RunHistoryStore::new(&pool);
                         let req = ares_store::run_history::LogToolCallRequest {
@@ -532,12 +544,15 @@ impl SkillsService {
                     SkillStep::LlmCall { prompt, model_tier } => {
                         tracing::info!("Step {}: llm_call tier={}", step_index, model_tier);
                         let start = std::time::Instant::now();
-                        let (provider_name, model_name) = ("default".to_string(), model_tier.clone());
-                        let response = skill_llm_response(ctx, &prompt, &model_name, &provider_name).await?;
+                        let (provider_name, model_name) =
+                            ("default".to_string(), model_tier.clone());
+                        let response =
+                            skill_llm_response(ctx, &prompt, &model_name, &provider_name).await?;
 
                         let latency_ms = start.elapsed().as_millis() as i64;
                         let result = serde_json::json!({"content": response.content, "usage": response.usage});
-                        context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
+                        context[&format!("step_{}", step_index)] =
+                            successful_step_context(result.clone());
                         let store = ares_store::run_history::RunHistoryStore::new(&pool);
                         let usage = response.usage.unwrap_or_default();
                         let req = ares_store::run_history::LogLlmCallRequest {
@@ -551,27 +566,54 @@ impl SkillsService {
                             prompt_tokens: usage.prompt_tokens as i64,
                             completion_tokens: usage.completion_tokens as i64,
                             total_tokens: usage.total_tokens as i64,
-                            estimated_cost_usd: rust_decimal::Decimal::new((usage.prompt_tokens as i64 + usage.completion_tokens as i64) * 2, 6),
+                            estimated_cost_usd: rust_decimal::Decimal::new(
+                                (usage.prompt_tokens as i64 + usage.completion_tokens as i64) * 2,
+                                6,
+                            ),
                             latency_ms,
                             status: "success".to_string(),
                             error_message: None,
                             request_payload: None,
-                            response_payload: Some(serde_json::json!({"content": response.content})),
+                            response_payload: Some(
+                                serde_json::json!({"content": response.content}),
+                            ),
                             created_at: chrono::Utc::now().timestamp(),
                         };
                         let _ = store.insert_llm_call(&req).await;
                     }
-                    SkillStep::SkillCall { skill_id: inner_id, input: inner_input } => {
+                    SkillStep::SkillCall {
+                        skill_id: inner_id,
+                        input: inner_input,
+                    } => {
                         tracing::info!("Step {}: skill_call {}", step_index, inner_id);
-                        let result = Box::pin(self.execute_skill_at_depth(&inner_id, inner_input, ctx, depth + 1)).await?;
+                        let result = Box::pin(self.execute_skill_at_depth(
+                            &inner_id,
+                            inner_input,
+                            ctx,
+                            depth + 1,
+                        ))
+                        .await?;
                         context[&format!("step_{}", step_index)] = successful_step_context(result);
                     }
-                    SkillStep::Condition { expression, then_steps } => {
+                    SkillStep::Condition {
+                        expression,
+                        then_steps,
+                    } => {
                         tracing::info!("Step {}: condition {}", step_index, expression);
                         if let Some(ready) = ready_then_steps(&expression, &then_steps, &context) {
                             for (sub_idx, sub_step) in ready.iter().enumerate() {
                                 let sub_index = step_index + 1 + sub_idx as i32;
-                                self.execute_sub_step(sub_step, ctx, &pool, &tenant_id, &run_id, sub_index, &mut context, depth).await?;
+                                self.execute_sub_step(
+                                    sub_step,
+                                    ctx,
+                                    &pool,
+                                    &tenant_id,
+                                    &run_id,
+                                    sub_index,
+                                    &mut context,
+                                    depth,
+                                )
+                                .await?;
                             }
                         }
                     }
@@ -624,7 +666,8 @@ impl SkillsService {
                 let (provider_name, model_name) = ("default".to_string(), model_tier.clone());
                 let response = skill_llm_response(ctx, prompt, &model_name, &provider_name).await?;
                 let latency_ms = start.elapsed().as_millis() as i64;
-                let result = serde_json::json!({"content": response.content, "usage": response.usage});
+                let result =
+                    serde_json::json!({"content": response.content, "usage": response.usage});
                 context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
                 let store = ares_store::run_history::RunHistoryStore::new(pool);
                 let usage = response.usage.unwrap_or_default();
@@ -639,7 +682,10 @@ impl SkillsService {
                     prompt_tokens: usage.prompt_tokens as i64,
                     completion_tokens: usage.completion_tokens as i64,
                     total_tokens: usage.total_tokens as i64,
-                    estimated_cost_usd: rust_decimal::Decimal::new((usage.prompt_tokens as i64 + usage.completion_tokens as i64) * 2, 6),
+                    estimated_cost_usd: rust_decimal::Decimal::new(
+                        (usage.prompt_tokens as i64 + usage.completion_tokens as i64) * 2,
+                        6,
+                    ),
                     latency_ms,
                     status: "success".to_string(),
                     error_message: None,
@@ -651,15 +697,23 @@ impl SkillsService {
                 Ok(())
             }
             SkillStep::SkillCall { skill_id, input } => {
-                let result = Box::pin(self.execute_skill_at_depth(skill_id, input.clone(), ctx, depth + 1)).await?;
+                let result =
+                    Box::pin(self.execute_skill_at_depth(skill_id, input.clone(), ctx, depth + 1))
+                        .await?;
                 context[&format!("step_{}", step_index)] = successful_step_context(result);
                 Ok(())
             }
-            SkillStep::Condition { expression, then_steps } => {
+            SkillStep::Condition {
+                expression,
+                then_steps,
+            } => {
                 if let Some(ready) = ready_then_steps(expression, then_steps, context) {
                     for (sub_idx, sub_step) in ready.iter().enumerate() {
                         let sub_index = step_index + 1 + sub_idx as i32;
-                        Box::pin(self.execute_sub_step(sub_step, ctx, pool, tenant_id, run_id, sub_index, context, depth)).await?;
+                        Box::pin(self.execute_sub_step(
+                            sub_step, ctx, pool, tenant_id, run_id, sub_index, context, depth,
+                        ))
+                        .await?;
                     }
                 }
                 Ok(())
@@ -885,7 +939,11 @@ mod tests {
             ..Default::default()
         };
         let skills = load_skills(&config);
-        assert!(skills.len() >= 2, "Should find skills from plugin dirs, got {}", skills.len());
+        assert!(
+            skills.len() >= 2,
+            "Should find skills from plugin dirs, got {}",
+            skills.len()
+        );
     }
 
     #[test]
@@ -941,7 +999,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod llm_call_tests {
     use super::skill_llm_content;
@@ -991,10 +1048,7 @@ mod llm_call_tests {
         let events = ctx.provide(EventsService::new());
         ctx.provide_arc(stub_llm());
         events.on_waterfall("llm.complete".into(), |payload, _next| async move {
-            let prompt = payload
-                .get("prompt")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let prompt = payload.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
             Ok(serde_json::json!({ "content": format!("CACHED:{prompt}") }))
         });
         let out = skill_llm_content(&ctx, "hello-skill")
@@ -1069,9 +1123,7 @@ mod tool_call_tests {
     async fn skills_service_tool_call_uses_execute() {
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        ctx.provide(Tools::from_static([
-            Arc::new(ProbeTool) as Arc<dyn Tool>,
-        ]));
+        ctx.provide(Tools::from_static([Arc::new(ProbeTool) as Arc<dyn Tool>]));
         events.on_waterfall("tools.execute".into(), |payload, _next| async move {
             let name = payload
                 .get("name")
@@ -1094,9 +1146,7 @@ mod tool_call_tests {
     #[test]
     fn skills_service_resolve_isolates_tenant() {
         let parent = Context::new_root();
-        parent.provide(Tools::from_static([
-            Arc::new(ProbeTool) as Arc<dyn Tool>,
-        ]));
+        parent.provide(Tools::from_static([Arc::new(ProbeTool) as Arc<dyn Tool>]));
         let found = resolve_skill_tool(&parent, "acme", "probe");
         assert!(
             found.is_some(),

@@ -29,11 +29,12 @@ pub trait Tool: Send + Sync {
 /// [`crate::Tools::new`] / [`crate::Tools::with_runtime`]. Handlers resolve
 /// tools through [`crate::Tools`] (`ctx.get::<Tools>()`,
 /// `ctx.isolate::<Tools>(tenant_id)`), not by providing this type on `Context`.
-pub struct ToolRegistry {
+pub(crate) struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
     configs: HashMap<String, ToolConfig>,
 }
 
+#[allow(dead_code)] // crate-internal helpers retained for tests
 impl ToolRegistry {
     /// Creates an empty tool registry.
     pub fn new() -> Self {

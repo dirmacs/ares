@@ -515,18 +515,6 @@ async fn run_server(
             output.hint("This will create ares.toml and all necessary configuration files");
             std::process::exit(1);
         }
-
-        if let Some(store) = root_ctx.get::<ares_server::TenantDb>() {
-            sqlx::migrate!("./migrations")
-                .run(store.pool())
-                .await
-                .expect("Failed to run database migrations");
-            tracing::info!("Database migrations applied");
-            ares_server::db::tenant_agents::seed_default_templates(store.pool())
-                .await
-                .expect("Failed to seed agent templates");
-            tracing::info!("Agent templates seeded");
-        }
     }
 
     if root_ctx.get::<AresConfigManager>().is_none() {
@@ -1267,7 +1255,7 @@ disabled = false
             "Tools",
             "Llm",
             "Overlay",
-            "Store",
+            "Store", // migrate + seed_default_templates live in this factory
             "EventsService",
             "AuthService",
             "CalculatorService",

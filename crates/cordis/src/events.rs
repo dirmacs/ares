@@ -19,7 +19,9 @@ pub enum Dispatch {
 }
 
 type Handler = Arc<
-    dyn Fn(serde_json::Value) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
+    dyn Fn(
+            serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
         + Send
         + Sync,
 >;
@@ -28,16 +30,23 @@ type Handler = Arc<
 /// next registered waterfall handler, or returns the passed payload unchanged once
 /// the chain is exhausted.  It is `FnOnce`: a handler may call `next` at most once,
 /// mirroring Cordis `next()` semantics.
-pub type WaterfallNext =
-    Box<dyn FnOnce(serde_json::Value) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>> + Send>;
+pub type WaterfallNext = Box<
+    dyn FnOnce(
+            serde_json::Value,
+        )
+            -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
+        + Send,
+>;
 
 /// A Cordis `waterfall` around-middleware handler.  It receives the current payload
 /// plus a `next` continuation.  Calling `next(payload)` runs the downstream chain and
 /// yields its result for further transformation; choosing NOT to call `next`
 /// short-circuits the chain (any later handlers do not run).
 type WaterfallHandler = Arc<
-    dyn Fn(serde_json::Value, WaterfallNext)
-        -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
+    dyn Fn(
+            serde_json::Value,
+            WaterfallNext,
+        ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
         + Send
         + Sync,
 >;
@@ -76,9 +85,7 @@ impl EventsService {
         let cancelled = Arc::new(AtomicBool::new(false));
         let slot = HandlerSlot {
             cancelled,
-            handler: Arc::new(|payload| {
-                Box::pin(async move { Ok(default_agent_admit(payload)) })
-            }),
+            handler: Arc::new(|payload| Box::pin(async move { Ok(default_agent_admit(payload)) })),
         };
         self.handlers
             .write()
@@ -137,31 +144,39 @@ impl EventsService {
     }
 
     fn active_handlers(&self, event: &EventId) -> Vec<Handler> {
-        self.handlers
-            .read()
-            .get(event)
-            .map(|slots| {
-                slots
-                    .iter()
-                    .filter(|s| !s.cancelled.load(Ordering::SeqCst))
-                    .map(|s| s.handler.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
+        let mut handlers = self.handlers.write();
+        let active = {
+            let Some(slots) = handlers.get_mut(event) else {
+                return Vec::new();
+            };
+            slots.retain(|slot| !slot.cancelled.load(Ordering::SeqCst));
+            slots
+                .iter()
+                .map(|slot| slot.handler.clone())
+                .collect::<Vec<_>>()
+        };
+        if active.is_empty() {
+            handlers.remove(event);
+        }
+        active
     }
 
     fn active_waterfall(&self, event: &EventId) -> Vec<WaterfallHandler> {
-        self.waterfall_handlers
-            .read()
-            .get(event)
-            .map(|slots| {
-                slots
-                    .iter()
-                    .filter(|s| !s.cancelled.load(Ordering::SeqCst))
-                    .map(|s| s.handler.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
+        let mut handlers = self.waterfall_handlers.write();
+        let active = {
+            let Some(slots) = handlers.get_mut(event) else {
+                return Vec::new();
+            };
+            slots.retain(|slot| !slot.cancelled.load(Ordering::SeqCst));
+            slots
+                .iter()
+                .map(|slot| slot.handler.clone())
+                .collect::<Vec<_>>()
+        };
+        if active.is_empty() {
+            handlers.remove(event);
+        }
+        active
     }
 
     pub async fn dispatch(
@@ -172,8 +187,8 @@ impl EventsService {
     ) -> Result<serde_json::Value, CordisError> {
         let handlers = self.active_handlers(&event);
         match mode {
-            // Cordis `waterfall` uses its own around-middleware registry, so it
-            // must not be short-circuited by the plain-handler emptiness check.
+            // Waterfall uses its own around-middleware registry. With no active
+            // around handlers it is an identity operation.
             Dispatch::Waterfall => {
                 let wf_handlers = self.active_waterfall(&event);
                 if wf_handlers.is_empty() {
@@ -181,12 +196,8 @@ impl EventsService {
                 }
                 run_waterfall_chain(wf_handlers, 0, payload, None).await
             }
-            _ if handlers.is_empty() => Ok(payload),
-            // Cordis `emit`: fire-and-forget. Every handler is spawned and NOT
-            // awaited, so `dispatch` returns immediately; the event+payload is
-            // also broadcast on the bus. Handlers still run to completion on the
-            // runtime (a caller that needs to observe completion should listen on
-            // the bus or use a oneshot/notify channel instead of awaiting this).
+            // Emit is fire-and-forget. The broadcast and spawned handlers do not
+            // contribute a result, so callers always observe JSON null.
             Dispatch::Emit => {
                 let _ = self.bus.send((event, payload.clone()));
                 for h in handlers {
@@ -197,48 +208,41 @@ impl EventsService {
                 }
                 Ok(serde_json::Value::Null)
             }
-            // Cordis `parallel`: run every handler concurrently (fan-out); if any
-            // handler errors, propagate the first error we observe.
+            // Parallel fans out the same payload to every handler. All tasks are
+            // joined so errors are observed and no in-flight handler is dropped;
+            // successful dispatch has no meaningful result and returns null.
             Dispatch::Parallel => {
                 let mut set = tokio::task::JoinSet::new();
                 for h in handlers {
                     let p = payload.clone();
                     set.spawn(async move { h(p).await });
                 }
-                let mut last = serde_json::Value::Null;
+                let mut first_error = None;
                 while let Some(res) = set.join_next().await {
                     match res {
-                        // Task panicked — surface as a fiber error.
-                        Err(join_err) => return Err(CordisError::Fiber(join_err.to_string())),
-                        Ok(Err(e)) => return Err(e),
-                        Ok(Ok(v)) => last = v,
+                        Err(join_err) => {
+                            if first_error.is_none() {
+                                first_error = Some(CordisError::Fiber(join_err.to_string()));
+                            }
+                        }
+                        Ok(Err(err)) => {
+                            if first_error.is_none() {
+                                first_error = Some(err);
+                            }
+                        }
+                        Ok(Ok(_)) => {}
                     }
                 }
-                Ok(last)
-            }
-            // Cordis `serial`: thread the payload through each handler in order;
-            // a handler error aborts the chain and propagates.
-            Dispatch::Serial => {
-                let mut cur = payload;
-                for h in handlers {
-                    cur = h(cur).await?;
+                match first_error {
+                    Some(err) => Err(err),
+                    None => Ok(serde_json::Value::Null),
                 }
-                Ok(cur)
             }
-            // Cordis `bail`: stop at the first handler that returns a non-null
-            // result (`isBailed` analog) and return that value without running
-            // any later handlers. A null result means "not bailing" — the chain
-            // continues with the original payload.
-            Dispatch::Bail => {
-                let cur = payload;
-                for h in handlers {
-                    let res = h(cur.clone()).await?;
-                    if !res.is_null() {
-                        return Ok(res);
-                    }
-                }
-                Ok(cur)
-            }
+            // Serial invokes handlers in registration order with the original
+            // payload. A non-null result bails out immediately; null means the
+            // handler did not claim the event, so an all-null chain returns the
+            // untouched original payload.
+            Dispatch::Serial | Dispatch::Bail => run_bail_handlers(handlers, payload).await,
         }
     }
 
@@ -309,12 +313,26 @@ fn default_agent_admit(payload: serde_json::Value) -> serde_json::Value {
 
 impl Service for EventsService {}
 
+async fn run_bail_handlers(
+    handlers: Vec<Handler>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, CordisError> {
+    for handler in handlers {
+        let result = handler(payload.clone()).await?;
+        if !result.is_null() {
+            return Ok(result);
+        }
+    }
+    Ok(payload)
+}
+
 /// Optional terminal `next` for [`EventsService::waterfall_around`]. `None` is
 /// identity (used by [`Dispatch::Waterfall`]).
 type WaterfallCore = Box<
     dyn FnOnce(
             serde_json::Value,
-        ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
+        )
+            -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
         + Send,
 >;
 
@@ -375,6 +393,7 @@ mod tests {
         svc.dispatch("gone".into(), serde_json::json!({}), Dispatch::Serial)
             .await
             .unwrap();
+        assert!(svc.handlers.read().get("gone").is_none());
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         assert!(
             !flag.load(Ordering::SeqCst),
@@ -395,13 +414,109 @@ mod tests {
             }
         });
         d.dispose();
-        svc.dispatch("gone.wf".into(), serde_json::json!({ "n": 1 }), Dispatch::Waterfall)
-            .await
-            .unwrap();
+        svc.dispatch(
+            "gone.wf".into(),
+            serde_json::json!({ "n": 1 }),
+            Dispatch::Waterfall,
+        )
+        .await
+        .unwrap();
         assert!(
             !flag.load(Ordering::SeqCst),
             "disposed on_waterfall handler must not run"
         );
+        assert!(svc.waterfall_handlers.read().get("gone.wf").is_none());
+    }
+
+    #[tokio::test]
+    async fn parallel_returns_null_after_all_handlers_complete() {
+        let svc = EventsService::new();
+        let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for value in [1, 2] {
+            let completed = completed.clone();
+            svc.on("parallel.result".into(), move |_payload| {
+                let completed = completed.clone();
+                async move {
+                    completed.fetch_add(value, Ordering::SeqCst);
+                    Ok(serde_json::json!({ "value": value }))
+                }
+            });
+        }
+
+        let out = svc
+            .dispatch(
+                "parallel.result".into(),
+                serde_json::json!({ "input": true }),
+                Dispatch::Parallel,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out, serde_json::Value::Null);
+        assert_eq!(completed.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn serial_stops_at_first_non_null_result() {
+        let svc = EventsService::new();
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first = ran.clone();
+        svc.on("serial.bail".into(), move |payload| {
+            let first = first.clone();
+            async move {
+                first.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(payload["input"], true);
+                Ok(serde_json::Value::Null)
+            }
+        });
+        let second = ran.clone();
+        svc.on("serial.bail".into(), move |payload| {
+            let second = second.clone();
+            async move {
+                second.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(payload["input"], true);
+                Ok(serde_json::json!({ "handled": true }))
+            }
+        });
+        let third = ran.clone();
+        svc.on("serial.bail".into(), move |_payload| {
+            let third = third.clone();
+            async move {
+                third.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({ "late": true }))
+            }
+        });
+
+        let out = svc
+            .dispatch(
+                "serial.bail".into(),
+                serde_json::json!({ "input": true }),
+                Dispatch::Serial,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out, serde_json::json!({ "handled": true }));
+        assert_eq!(ran.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn serial_preserves_original_payload_when_no_handler_bails() {
+        let svc = EventsService::new();
+        svc.on("serial.identity".into(), |_payload| async move {
+            Ok(serde_json::Value::Null)
+        });
+        svc.on("serial.identity".into(), |_payload| async move {
+            Ok(serde_json::Value::Null)
+        });
+
+        let payload = serde_json::json!({ "input": [1, 2], "nested": { "ok": true } });
+        let out = svc
+            .dispatch("serial.identity".into(), payload.clone(), Dispatch::Serial)
+            .await
+            .unwrap();
+
+        assert_eq!(out, payload);
     }
 
     #[tokio::test]
@@ -441,19 +556,26 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.get("deny").is_none(), "under-quota must not deny, got {out}");
+        assert!(
+            out.get("deny").is_none(),
+            "under-quota must not deny, got {out}"
+        );
     }
 
     #[tokio::test]
     async fn waterfall_around_no_handlers_runs_core() {
         let svc = EventsService::new();
         let out = svc
-            .waterfall_around("around.empty".into(), serde_json::json!({}), |mut payload| async move {
-                if let Some(obj) = payload.as_object_mut() {
-                    obj.insert("core".into(), serde_json::json!(true));
-                }
-                Ok(payload)
-            })
+            .waterfall_around(
+                "around.empty".into(),
+                serde_json::json!({}),
+                |mut payload| async move {
+                    if let Some(obj) = payload.as_object_mut() {
+                        obj.insert("core".into(), serde_json::json!(true));
+                    }
+                    Ok(payload)
+                },
+            )
             .await
             .unwrap();
         assert_eq!(out["core"], true);
@@ -469,12 +591,16 @@ mod tests {
             next(payload).await
         });
         let out = svc
-            .waterfall_around("around.wrap".into(), serde_json::json!({}), |mut payload| async move {
-                if let Some(obj) = payload.as_object_mut() {
-                    obj.insert("core".into(), serde_json::json!(true));
-                }
-                Ok(payload)
-            })
+            .waterfall_around(
+                "around.wrap".into(),
+                serde_json::json!({}),
+                |mut payload| async move {
+                    if let Some(obj) = payload.as_object_mut() {
+                        obj.insert("core".into(), serde_json::json!(true));
+                    }
+                    Ok(payload)
+                },
+            )
             .await
             .unwrap();
         assert_eq!(out["wrap"], true);

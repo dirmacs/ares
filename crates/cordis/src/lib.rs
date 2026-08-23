@@ -796,6 +796,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn isolate_wins_over_same_type_intercept() {
+        #[derive(Debug)]
+        struct ToolSvc(String);
+        impl Service for ToolSvc {}
+
+        #[derive(Debug)]
+        struct OtherSvc(String);
+        impl Service for OtherSvc {}
+
+        let root = Context::new_root();
+        let child = root.isolate::<ToolSvc>("acme");
+        child.provide(ToolSvc("store".into()));
+
+        let intercepted = child.intercept(ToolSvc("override".into()));
+        assert_eq!(intercepted.get::<ToolSvc>().unwrap().0, "store");
+
+        let mixed = child.intercept(OtherSvc("override".into()));
+        assert_eq!(mixed.get::<OtherSvc>().unwrap().0, "override");
+        assert_eq!(mixed.get::<ToolSvc>().unwrap().0, "store");
+    }
+
+    #[tokio::test]
     async fn inject_returns_immediately_when_already_provided() {
         let ctx = Context::new_root();
         ctx.provide(FooService(1));

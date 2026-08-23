@@ -28,8 +28,8 @@ pub async fn sandbox_run_agent(
     Json(input): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
@@ -218,7 +218,7 @@ pub async fn list_agent_logs(
     Query(q): Query<PaginationQuery>,
 ) -> Result<Json<Paginated<V1AgentLog>>> {
     let _tc = extract_tenant(ctx)?;
-    let _state_ctx = state_ctx.with_intercept(_tc.clone());
+    let _state_ctx = ares_agent::request_tenant_ctx(&state_ctx, _tc.clone());
     let _state_ctx = match usage {
         Some(Extension(u)) => _state_ctx.with_intercept(u),
         None => _state_ctx,
@@ -240,7 +240,7 @@ pub async fn semantic_search(
     Json(payload): Json<ares_types::types::SemanticSearchRequest>,
 ) -> Result<Json<ares_types::types::SemanticSearchResponse>> {
     let _tc = extract_tenant(ctx)?;
-    let _state = _state.with_intercept(_tc.clone());
+    let _state = ares_agent::request_tenant_ctx(&_state, _tc.clone());
     let _state = match usage {
         Some(Extension(u)) => _state.with_intercept(u),
         None => _state,
@@ -277,7 +277,10 @@ mod tests {
         let root = Context::new_root();
         assert_eq!(tenant_id_for_sandbox(&root), "");
 
-        let scoped = root.with_intercept(TenantContext::new("acme".into(), TenantTier::Pro));
+        let scoped = ares_agent::request_tenant_ctx(
+            &root,
+            TenantContext::new("acme".into(), TenantTier::Pro),
+        );
         assert_eq!(tenant_id_for_sandbox(&scoped), "acme");
     }
 }

@@ -248,9 +248,13 @@ impl Context {
 
     pub fn get<T: Service>(&self) -> Option<Arc<T>> {
         let tid = TypeId::of::<T>();
-        if let Some(any) = self.intercept.read().get(&tid) {
-            if let Ok(arc) = any.clone().downcast::<T>() {
-                return Some(arc);
+        // Isolate-labeled TypeIds resolve from store / isolate parent walk.
+        // Unlabeled TypeIds still let intercept win (request-scoped override).
+        if self.isolate_label(tid).is_none() {
+            if let Some(any) = self.intercept.read().get(&tid) {
+                if let Ok(arc) = any.clone().downcast::<T>() {
+                    return Some(arc);
+                }
             }
         }
         let mut local_provider = false;
@@ -300,7 +304,7 @@ impl Context {
     }
 
     pub(crate) fn is_available(&self, tid: TypeId) -> bool {
-        if self.intercept.read().contains_key(&tid) {
+        if self.isolate_label(tid).is_none() && self.intercept.read().contains_key(&tid) {
             return true;
         }
         if self.store.read().contains_key(&tid) {

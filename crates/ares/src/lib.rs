@@ -23,11 +23,6 @@ pub use ares_types::types::ToolDefinition;
 pub use ares_types::{AppError, TenantContext, TenantTier};
 pub use cordis::{Context, Dispatch, Loader, Plugin, PluginRegistry, Service};
 
-/// Leftover: [`Llm::new`] and [`AgentRegistry::from_config`] still take a
-/// `ProviderRegistry`. `crates/ares/tests/no_http.rs` constructs one; keep
-/// this re-export until those constructors take only [`Llm`].
-pub use ares_llm::ProviderRegistry;
-
 /// Tenant database. Gated so default features do not enable postgres.
 #[cfg(feature = "postgres")]
 pub use ares_store::Store;

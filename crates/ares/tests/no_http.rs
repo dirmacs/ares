@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use ares::{
     AgentConfig, AgentRegistry, AgentRequest, AppError, Calculator, ClientPool, Context,
-    ConversationMessage, Execute, Llm, LLMClient, LLMResponse, PluginRegistry, ProviderRegistry,
+    ConversationMessage, Execute, Llm, LLMClient, LLMResponse, PluginRegistry,
     TenantContext, TenantTier, Tool, ToolDefinition, Tools,
 };
+use ares_llm::ProviderRegistry;
 use async_trait::async_trait;
 
 /// Minimal in-test LLM: never performs network I/O.

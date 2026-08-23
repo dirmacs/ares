@@ -400,11 +400,17 @@ mod tests {
     #[test]
     fn tenant_isolated_service_reaches_agent_and_denies_other_tenant_tool() {
         let root = Context::new_root();
-        let tools = ares_tools::Tools::from_static([
-            Arc::new(TestTool("tenant_a_tool")) as Arc<dyn Tool>,
+        let tenant_b_tools = ares_tools::Tools::from_static([
             Arc::new(TestTool("tenant_b_tool")) as Arc<dyn Tool>,
         ]);
-        root.provide(tools);
+        root.provide(tenant_b_tools);
+
+        // Tenant A's realm isolates its own tool registry; the parent's
+        // registry stays invisible inside the scope (realm boundary).
+        let scoped_a = root.isolate::<ares_tools::Tools>("tenant-a");
+        scoped_a.provide(ares_tools::Tools::from_static([
+            Arc::new(TestTool("tenant_a_tool")) as Arc<dyn Tool>,
+        ]));
 
         let config = AgentConfig {
             model: "test".to_string(),
@@ -422,9 +428,8 @@ mod tests {
             None,
         );
 
-        let scoped = root.isolate::<ares_tools::Tools>("tenant-a");
-        agent.set_tools(scoped.get::<ares_tools::Tools>().expect("Tools"));
-        agent.bind_request_ctx(scoped);
+        agent.set_tools(scoped_a.get::<ares_tools::Tools>().expect("Tools"));
+        agent.bind_request_ctx(scoped_a.clone());
 
         let definitions = agent.get_filtered_tool_definitions();
         assert_eq!(definitions.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["tenant_a_tool"]);

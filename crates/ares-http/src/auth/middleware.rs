@@ -528,11 +528,12 @@ mod tests {
                 .as_deref(),
             Some("acme")
         );
+        // Execute is the shared engine: no realm label, always resolvable.
         assert_eq!(
             scoped
                 .isolate_label(std::any::TypeId::of::<ares_agent::Execute>())
                 .as_deref(),
-            Some("acme")
+            None
         );
         let realm = ctx
             .get::<ares_store::TenantRealms>()
@@ -549,11 +550,12 @@ mod tests {
         let ctx = Context::new_root();
         let scoped = apply_jwt_scope(&ctx, &sample_claims("user-1", None), None);
         assert!(scoped.get::<TenantContext>().is_none());
+        // Execute is the shared engine: no realm label, always resolvable.
         assert_eq!(
             scoped
                 .isolate_label(std::any::TypeId::of::<ares_agent::Execute>())
                 .as_deref(),
-            Some("user:user-1")
+            None
         );
         assert_eq!(
             scoped

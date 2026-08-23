@@ -250,6 +250,10 @@ pub struct AppliedAction {
     /// `"begin" | "update-config" | "retire" | "rebuild-fiber"`
     pub action: &'static str,
     pub status: Result<(), String>,
+    /// Verified hot-swap outcome for `rebuild-fiber` actions: `true` when the
+    /// replacement plugin was applied out-of-band and returned `Ok` before the
+    /// old fiber was retired. Non-rebuild actions report `true`.
+    pub verified: bool,
 }
 
 impl Loader {
@@ -276,7 +280,7 @@ impl Loader {
         let mut any_failure = false;
 
         for action in &actions {
-            let outcome: Result<(), String> = match action {
+            let (outcome, verified): (Result<(), String>, bool) = match action {
                 LoaderAction::Retire { id } => {
                     // Dispose the live fiber (undo effects) before clearing.
                     if let Some(record) = journal.get(id) {
@@ -291,7 +295,7 @@ impl Loader {
                     }
                     journal.retire(id);
                     tracing::info!(id = %id, "Loader: retired entry");
-                    Ok(())
+                    (Ok(()), true)
                 }
                 LoaderAction::UpdateConfig { id, new_config } => {
                     journal.update_config(id, new_config.clone(), None);
@@ -308,15 +312,18 @@ impl Loader {
                                 tokio::task::block_in_place(move || {
                                     handle.block_on(async move { fiber_ref.update(&ctx_ref).await })
                                 });
-                                Ok(())
+                                (Ok(()), true)
                             }
-                            Err(_) => Err("no tokio runtime for live fiber update".to_string()),
+                            Err(_) => (
+                                Err("no tokio runtime for live fiber update".to_string()),
+                                false,
+                            ),
                         }
                     } else {
-                        Ok(())
+                        (Ok(()), true)
                     }
                 }
-                LoaderAction::Begin { id } | LoaderAction::RebuildFiber { id, .. } => {
+                LoaderAction::Begin { id } => {
                     let entry = match desired.0.iter().find(|e| &e.id == id) {
                         Some(e) => e.clone(),
                         None => {
@@ -324,14 +331,34 @@ impl Loader {
                                 id: id.clone(),
                                 action: "begin",
                                 status: Err(format!("entry '{id}' not found in desired tree")),
+                                verified: true,
                             });
                             any_failure = true;
                             continue;
                         }
                     };
                     match Self::instantiate_entry(ctx, &entry) {
-                        Ok(_fid) => Ok(()),
-                        Err(e) => Err(e.to_string()),
+                        Ok(_fid) => (Ok(()), true),
+                        Err(e) => (Err(e.to_string()), false),
+                    }
+                }
+                LoaderAction::RebuildFiber { id, plugin } => {
+                    let entry = match desired.0.iter().find(|e| &e.id == id) {
+                        Some(e) => e.clone(),
+                        None => {
+                            results.push(AppliedAction {
+                                id: id.clone(),
+                                action: "rebuild-fiber",
+                                status: Err(format!("entry '{id}' not found in desired tree")),
+                                verified: false,
+                            });
+                            any_failure = true;
+                            continue;
+                        }
+                    };
+                    match Self::rebuild_fiber_verified(ctx, id, plugin, entry, journal).await {
+                        Ok(v) => (Ok(()), v),
+                        Err(e) => (Err(e), false),
                     }
                 }
             };
@@ -350,10 +377,14 @@ impl Loader {
                 | LoaderAction::Retire { id }
                 | LoaderAction::RebuildFiber { id, .. } => id.clone(),
             };
+            // Rebuild actions report whether the swap was applied with
+            // verification (candidate proven before the old provider retired);
+            // every other action kind is trivially verified.
             results.push(AppliedAction {
                 id,
                 action: kind,
                 status: outcome,
+                verified,
             });
         }
 
@@ -625,6 +656,164 @@ impl Loader {
             handle.0.fill_empty_entry_configs(&mut desired);
         }
         Some(Self::apply(ctx, current, &desired, journal).await)
+    }
+
+    /// Rebuild an entry's fiber with swap-with-verification.
+    ///
+    /// When the old registration fiber is known, the replacement plugin is
+    /// applied OUT-OF-BAND first against a scratch child context: the factory
+    /// runs and builds its services there, so a failure leaves the live
+    /// provider completely untouched. Only after the candidate applies `Ok`
+    /// does the swap proceed: the new instances are bridged in as intercept
+    /// overrides (intercept lookups precede store lookups, so `get` keeps
+    /// resolving), the old fiber retires, and the bridged values are promoted
+    /// into the store under a fresh registration fiber.
+    ///
+    /// Fallback to the classic dispose-then-rebuild path — reported as
+    /// `Ok(false)` ("unverified") — when there is no tracked old fiber or the
+    /// entry targets an isolate realm (isolated lookups do not consult
+    /// intercepts). A failed candidate returns `Err` and keeps the old
+    /// provider serving.
+    ///
+    /// Note: the trial executes the factory once, so factories with external
+    /// side effects (e.g. migrations) run twice across trial + promotion;
+    /// such plugins should be swapped through the unverified path instead.
+    async fn rebuild_fiber_verified(
+        ctx: &Arc<crate::Context>,
+        id: &str,
+        plugin_name: &str,
+        entry: Entry,
+        journal: &crate::LoaderJournal,
+    ) -> Result<bool, String> {
+        let registry = ctx.get::<crate::RegistryService>();
+        let old_fid = journal.get(id).and_then(|r| r.fiber_id);
+        let old_fiber = old_fid
+            .as_ref()
+            .and_then(|fid| registry.as_ref()?.get_fiber(*fid));
+        let Some((registry, old_fiber, old_fid)) = registry
+            .zip(old_fiber)
+            .zip(old_fid)
+            .map(|((r, f), i)| (r, f, i))
+        else {
+            tracing::warn!(entry_id = %id, plugin = %plugin_name, swap_mode = "unverified",
+                "Loader: no tracked fiber for rebuild; dispose-then-rebuild");
+            return Self::retire_then_instantiate(ctx, entry)
+                .await
+                .map(|_| false);
+        };
+        if entry.isolate.is_some() {
+            tracing::warn!(entry_id = %id, plugin = %plugin_name, swap_mode = "unverified",
+                "Loader: isolated entry rebuild; dispose-then-rebuild");
+            return Self::retire_then_instantiate(ctx, entry)
+                .await
+                .map(|_| false);
+        }
+
+        // Out-of-band trial: build the candidate on a scratch child context.
+        // The parent chain keeps every dependency resolvable while the
+        // duplicate-provider discipline of the empty scratch store prevents
+        // collisions; nothing lands on the live provider.
+        let scratch = ctx.extend();
+        let Some(plugin_registry) = scratch.get::<crate::PluginRegistry>() else {
+            return Err("PluginRegistry missing".to_string());
+        };
+        let Some(factory) = plugin_registry.get(&entry.plugin) else {
+            return Err(format!("no factory registered for plugin '{plugin_name}'"));
+        };
+        let trial_fiber = std::sync::Arc::new(crate::Fiber::new());
+        trial_fiber.set_state(crate::FiberState::Loading);
+        let trial = scratch.with_provider_fiber(&trial_fiber, || factory(&scratch, &entry.config));
+        // A trial factory calling Context::plugin re-points ReflectService at
+        // the scratch context; restore the authoritative root binding.
+        if let Some(reflect) = ctx.get::<crate::ReflectService>() {
+            reflect.set_context(ctx);
+        }
+        if let Err(e) = trial {
+            tracing::warn!(entry_id = %id, plugin = %plugin_name, error = %e,
+                "Loader: verified swap trial failed; old provider kept");
+            return Err(e.to_string());
+        }
+
+        // Every TypeId freshly built in scratch AND currently served by the
+        // root context is replaced by this rebuild (the plugin's Provides plus
+        // nested provides owned by the same registration fiber).
+        let built: Vec<TypeId> = scratch.provided_type_ids();
+        let replaced: Vec<TypeId> = built
+            .iter()
+            .copied()
+            .filter(|tid| ctx.get_untyped(*tid).is_some())
+            .collect();
+        if replaced.is_empty() {
+            tracing::warn!(entry_id = %id, plugin = %plugin_name, swap_mode = "unverified",
+                "Loader: trial produced no comparable services; dispose-then-rebuild");
+            return Self::retire_then_instantiate(ctx, entry)
+                .await
+                .map(|_| false);
+        }
+
+        // Preserve the entry-intercept overlay exactly as instantiate_entry
+        // would have installed it.
+        if !entry.intercept.is_empty() {
+            ctx.bind_intercept(EntryIntercept(entry.intercept.clone()));
+        }
+
+        // Bridge: intercept overrides win over store lookups, so installing
+        // here makes the new instances resolvable instantly.
+        for tid in &replaced {
+            if let Some(any) = scratch.get_untyped(*tid) {
+                ctx.bind_intercept_untyped(*tid, any);
+            }
+        }
+
+        // Retire the old registration fiber: its undos clear the stale store
+        // entries while the bridge keeps serving the new values.
+        old_fiber.dispose().await;
+        registry.remove(old_fid);
+
+        // Promote bridge values into the store. Peek-before-remove keeps every
+        // lookup satisfied at every instant (store insert precedes intercept
+        // removal, and intercept is consulted first).
+        for tid in &replaced {
+            if let Some(any) = ctx.peek_intercept_untyped(*tid) {
+                let _ = ctx.provide_untyped(*tid, any);
+                ctx.remove_intercept_untyped(*tid);
+            }
+        }
+        // Types the new build introduces that the old one did not provide are
+        // simply added to the store.
+        for tid in &built {
+            if replaced.contains(tid) || ctx.get_untyped(*tid).is_some() {
+                continue;
+            }
+            if let Some(any) = scratch.get_untyped(*tid) {
+                let _ = ctx.provide_untyped(*tid, any);
+            }
+        }
+
+        // Fresh registration fiber owns the swapped-in provider.
+        let fiber = std::sync::Arc::new(crate::Fiber::new());
+        fiber.set_state(crate::FiberState::Active {
+            epoch: entry.id.clone(),
+        });
+        let new_fid = registry.track_fiber(fiber);
+        registry.track_fiber_in_realm(new_fid, ctx);
+        journal.upsert(id, &entry.plugin, entry.config.clone(), Some(new_fid));
+        tracing::info!(entry_id = %id, plugin = %plugin_name, old_fiber_id = %old_fid,
+            new_fiber_id = %new_fid, swap_mode = "verified",
+            "Loader: hot-swapped provider with verification");
+        Ok(true)
+    }
+
+    /// Classic rebuild: dispose the old fiber, then instantiate the entry
+    /// through the normal factory path.
+    async fn retire_then_instantiate(
+        ctx: &Arc<crate::Context>,
+        entry: Entry,
+    ) -> Result<(), String> {
+        match Self::instantiate_entry(ctx, &entry) {
+            Ok(_fid) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     /// Instantiate one entry by plugin name through the [`crate::PluginRegistry`].
@@ -1320,6 +1509,213 @@ disabled = false
             current.0.is_empty(),
             "current tree must stay unchanged when any action failed"
         );
+    }
+
+    // --- verified hot-swap (item #3) ---
+
+    /// Shared service type both swap plugins provide.
+    #[derive(Debug)]
+    struct Swappable(std::sync::atomic::AtomicU64);
+    impl Service for Swappable {}
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rebuild_same_type_verified_swap() {
+        use crate::RegistryService;
+        use std::sync::atomic::Ordering;
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        // Two factories providing the SAME service TypeId; the counter marks
+        // which instance is live so we can observe continuity across the swap.
+        plugin_registry.register(
+            "SwapFactoryA",
+            Arc::new(|ctx: &Arc<crate::Context>, _cfg| {
+                let fut = ctx.plugin(Swappable(std::sync::atomic::AtomicU64::new(1)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+        plugin_registry.register(
+            "SwapFactoryB",
+            Arc::new(|ctx: &Arc<crate::Context>, _cfg| {
+                let fut = ctx.plugin(Swappable(std::sync::atomic::AtomicU64::new(2)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+
+        let desired_a = EntryTree(vec![Entry {
+            id: "swap".into(),
+            plugin: "SwapFactoryA".into(),
+            config: json!({}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }]);
+        let mut current = EntryTree(vec![]);
+        let actions = Loader::apply(&ctx, &mut current, &desired_a, &journal).await;
+        assert_eq!(actions[0].action, "begin");
+        assert!(actions[0].status.is_ok());
+        assert_eq!(actions[0].verified, true);
+        let svc = ctx.get::<Swappable>().expect("initial provider");
+        assert_eq!(svc.0.load(Ordering::SeqCst), 1);
+
+        // Plugin change with the same Provides TypeId -> RebuildFiber, and the
+        // live service must stay resolvable across the whole apply (probed
+        // from a concurrent task while the swap runs on this one).
+        let desired_b = EntryTree(vec![Entry {
+            id: "swap".into(),
+            plugin: "SwapFactoryB".into(),
+            config: json!({}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }]);
+        let ctx_probe = ctx.clone();
+        let prober = tokio::spawn(async move {
+            for _ in 0..200 {
+                if ctx_probe.get::<Swappable>().is_none() {
+                    return false;
+                }
+                tokio::task::yield_now().await;
+            }
+            true
+        });
+        let actions = Loader::apply(&ctx, &mut current, &desired_b, &journal).await;
+        assert_eq!(actions[0].action, "rebuild-fiber");
+        assert!(actions[0].status.is_ok(), "rebuild ok");
+        assert_eq!(actions[0].verified, true, "same-type swap must be verified");
+
+        let continuous = prober.await.expect("prober task");
+        assert!(continuous, "service must stay resolvable during swap");
+
+        // New instance is live and owned by a fresh Active fiber.
+        let svc = ctx.get::<Swappable>().expect("swapped provider");
+        assert_eq!(svc.0.load(Ordering::SeqCst), 2);
+        let rec = journal.get("swap").expect("journal record");
+        let fid = rec.fiber_id.expect("fiber recorded");
+        let registry = ctx.get::<RegistryService>().unwrap();
+        assert!(matches!(
+            registry.get_fiber(fid).unwrap().state(),
+            crate::FiberState::Active { .. }
+        ));
+        assert_eq!(current.0.len(), 1, "current tree advanced");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rebuild_failure_keeps_old() {
+        use crate::RegistryService;
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        #[derive(Debug)]
+        struct Keeper(u64);
+        impl Service for Keeper {}
+
+        plugin_registry.register(
+            "KeeperFactory",
+            Arc::new(|ctx: &Arc<crate::Context>, _cfg| {
+                let fut = ctx.plugin(Keeper(1));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+        plugin_registry.register(
+            "BrokenFactory",
+            Arc::new(|_ctx: &Arc<crate::Context>, _cfg| {
+                Err(crate::CordisError::Configuration(
+                    "intentional swap failure".into(),
+                ))
+            }),
+        );
+
+        let desired_ok = EntryTree(vec![Entry {
+            id: "keep".into(),
+            plugin: "KeeperFactory".into(),
+            config: json!({}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }]);
+        let mut current = EntryTree(vec![]);
+        Loader::apply(&ctx, &mut current, &desired_ok, &journal).await;
+        assert!(ctx.get::<Keeper>().is_some(), "old provider live");
+
+        // A failing candidate must leave the old provider serving untouched.
+        let desired_bad = EntryTree(vec![Entry {
+            id: "keep".into(),
+            plugin: "BrokenFactory".into(),
+            config: json!({}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }]);
+        let actions = Loader::apply(&ctx, &mut current, &desired_bad, &journal).await;
+        assert_eq!(actions[0].action, "rebuild-fiber");
+        assert!(actions[0].status.is_err(), "failed trial reported");
+        assert!(actions[0]
+            .status
+            .as_ref()
+            .unwrap_err()
+            .contains("intentional swap failure"));
+        assert!(
+            ctx.get::<Keeper>().is_some(),
+            "old fiber still Active after failed rebuild"
+        );
+        // Current tree unchanged so retry re-diffs cleanly.
+        assert_eq!(current.0[0].plugin, "KeeperFactory");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rebuild_without_tracked_fiber_reports_unverified() {
+        use crate::RegistryService;
+
+        // Journal WITHOUT fiber ids simulates an entry whose registration was
+        // never tracked: the fallback path must run and report verified=false.
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        #[derive(Debug)]
+        struct Fallback(u64);
+        impl Service for Fallback {}
+
+        plugin_registry.register(
+            "FallbackFactory",
+            Arc::new(|ctx: &Arc<crate::Context>, _cfg| {
+                let fut = ctx.plugin(Fallback(9));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+        // Seed the journal record by hand with no fiber id (as an untracked boot
+        // would have left it).
+        journal.upsert("fb", "FallbackFactory", json!({}), None);
+
+        let desired = EntryTree(vec![Entry {
+            id: "fb".into(),
+            plugin: "FallbackFactory".into(),
+            config: json!({}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }]);
+        let mut current = EntryTree(vec![Entry {
+            id: "fb".into(),
+            plugin: "OtherPlugin".into(),
+            config: json!({}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }]);
+        let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
+        assert_eq!(actions[0].action, "rebuild-fiber");
+        assert!(actions[0].status.is_ok());
+        assert_eq!(actions[0].verified, false, "fallback is unverified");
+        assert!(ctx.get::<Fallback>().is_some(), "entry instantiated");
     }
 
     #[test]

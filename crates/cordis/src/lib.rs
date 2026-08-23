@@ -94,7 +94,7 @@ pub mod fiber;
 pub mod service;
 
 pub use context::Context;
-pub use effect::{Disposable, Effect, EffectGuard};
+pub use effect::Disposable;
 pub use events::{Dispatch, EventsService};
 pub use fiber::{Fiber, FiberState};
 pub use service::{CordisError, Service, ServiceInitFuture};

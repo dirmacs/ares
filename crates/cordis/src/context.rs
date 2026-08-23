@@ -9,7 +9,6 @@ thread_local! {
     static ACTIVE_PROVIDER_FIBERS: RefCell<Vec<(usize, Arc<Fiber>)>> = const { RefCell::new(Vec::new()) };
 }
 
-use crate::effect::{Disposable, Effect};
 use crate::fiber::{Fiber, FiberState};
 use crate::registry::{Plugin, RegistryService};
 use crate::service::{CordisError, Service};
@@ -443,18 +442,6 @@ impl Context {
 
     pub fn fiber(&self) -> Arc<Fiber> {
         self.fiber.clone()
-    }
-
-    pub fn effect<E>(&self, eff: E) -> Box<dyn Disposable>
-    where
-        E: Effect,
-    {
-        let ctx_arc = self.root.upgrade().unwrap_or_else(|| {
-            // if root weak dead, try to create Arc from self? But self is &Self not Arc
-            // For spike, effect via &Self is not used; provide alternative
-            panic!("effect called on detached context without root")
-        });
-        eff.apply(&ctx_arc)
     }
 
     // Snapshot for temporal test: capture store length + versions

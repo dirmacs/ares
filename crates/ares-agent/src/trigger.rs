@@ -7,7 +7,6 @@
 use cordis::Service;
 use ares_store::agent_runs::{self, AgentRunMetadata};
 use ares_store::schedules::EventTrigger;
-use ares_types::types::AgentContext;
 use std::sync::Arc;
 
 
@@ -118,7 +117,9 @@ async fn fanout_pipelines(
 
 // Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
-use crate::execution::{Execute, AgentRequest};
+use crate::execution::Execute;
+use crate::context_provider::AgentRuntimeContext;
+use crate::execution::AgentRequest;
 // Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
 use cordis::{Context, Disposable};
@@ -134,7 +135,7 @@ use tokio::task::JoinHandle;
 /// Owns `db` (EventTriggerStore) + `execution` (Execute) and
 /// exposes `dispatch_webhook` / `dispatch_document_upload` /
 /// `dispatch_field_change` that lookup triggers then call
-/// `Execute::execute` (fallback to `self.execution`).
+/// `Execute::run` (fallback to `self.execution`).
 #[cfg(feature = "postgres")]
 pub struct TriggerService {
     pub db: Arc<PostgresClient>,
@@ -539,7 +540,7 @@ pub async fn execute_triggered_agent(
             return svc.execute_trigger(trigger, event_message, app_state).await;
         }
     }
-    // Fallback: legacy direct execution (preserves behavior before DI wiring).
+    // Fallback: legacy trigger dispatch (preserves behavior before DI wiring).
     execute_triggered_agent_legacy(trigger, event_message, app_state).await
 }
 
@@ -548,9 +549,6 @@ async fn execute_triggered_agent_legacy(
     event_message: &str,
     app_state: &std::sync::Arc<cordis::Context>,
 ) -> Result<(), String> {
-    use crate::Agent;
-    use crate::context_provider::AgentRuntimeContext;
-    use crate::tenant_agent;
     
     let pool = app_state.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
 
@@ -687,22 +685,12 @@ async fn execute_triggered_agent_legacy(
     }
 
     let scoped = tenant_scoped_ctx(app_state, &trigger.tenant_id);
-    let mut resolved_agent = tenant_agent::resolve_agent_from_ctx(
-        &pool,
-        &app_state.get::<crate::AgentRegistry>().expect("AgentRegistry not provided"),
-        &scoped,
-        &trigger.target_agent,
-        &app_state.get::<ares_store::FleetSecrets>().expect("not provided"),
-    )
-    .await
-    .map_err(|e| format!("Agent resolution failed: {}", e))?;
+    let execute = app_state
+        .get::<crate::Execute>()
+        .ok_or_else(|| "Execute not provided".to_string())?;
 
     // ── Regular agent execution ──────────────────────────────────────────
     // Observability sink lives in ares-http; engines log via run_history SQL instead.
-    if let Some(tools) = scoped.get::<ares_tools::Tools>() {
-        resolved_agent.agent.set_tools(tools);
-    }
-    resolved_agent.agent.bind_request_ctx(scoped.clone());
 
     let mut runtime_context = AgentRuntimeContext::new(
         trigger.tenant_id.clone(),
@@ -721,18 +709,11 @@ async fn execute_triggered_agent_legacy(
         event_message.to_string()
     };
 
-    let agent_context = AgentContext {
-        user_id: trigger.tenant_id.clone(),
-        session_id: run_id.clone(),
-        conversation_history: vec![],
-        user_memory: None,
-    };
-
     let metadata = triggered_agent_run_metadata(
         trigger,
         &run_id,
-        resolved_agent.source.as_str(),
-        resolved_agent.config_version.clone(),
+        "execute",
+        None,
         eruka_context_hit,
     );
 
@@ -757,9 +738,16 @@ async fn execute_triggered_agent_legacy(
 
     track_start(app_state, run_id.clone().as_str(), trigger.tenant_id.clone().as_str(), trigger.target_agent.clone().as_str(), Some("trigger"));
 
-    let result = resolved_agent
-        .agent
-        .execute(&effective_message, &agent_context)
+    let result = execute
+        .run(
+            &AgentRequest {
+                agent_name: trigger.target_agent.clone(),
+                message: effective_message.clone(),
+                history: Vec::new(),
+                ctx_provider: None,
+            },
+            &scoped,
+        )
         .await;
     let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -775,19 +763,19 @@ async fn execute_triggered_agent_legacy(
             status = "completed";
             error_msg = None;
             let (itok, otok) = llm_token_counts_u64(
-                response.usage.as_ref(),
+                response.response.usage.as_ref(),
                 &effective_message,
-                &response.content,
+                &response.response.content,
             );
             input_tokens = itok as i64;
             output_tokens = otok as i64;
             model_name = response
-                .metadata
+                .response.metadata
                 .as_ref()
                 .map(|m| m.model_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
             provider_name = response
-                .metadata
+                .response.metadata
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
@@ -795,7 +783,7 @@ async fn execute_triggered_agent_legacy(
 
             let _ = fanout_pipelines(
                 &trigger.target_agent,
-                &response.content,
+                &response.response.content,
                 &trigger.tenant_id,
                 trigger.id.clone(),
                 app_state,

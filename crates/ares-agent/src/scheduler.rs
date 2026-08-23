@@ -3,13 +3,12 @@
 //! Periodically checks `agent_schedules` table for agents whose `next_run_at`
 //! is in the past, runs them, and updates `last_run_at` / `next_run_at`.
 
-use ares_store::agent_runs::{self, AgentRunMetadata};
-use ares_store::schedules::{AgentSchedule, MissedRunAudit, ScheduleStore, compute_next_run};
-use ares_store::PostgresClient;
-use ares_types::types::AgentContext;
-use cordis::{Context, Disposable, ReflectService, Service};
 use crate::execution::Execute;
+use ares_store::agent_runs::{self, AgentRunMetadata};
+use ares_store::schedules::{compute_next_run, AgentSchedule, MissedRunAudit, ScheduleStore};
+use ares_store::PostgresClient;
 use chrono::{DateTime, Utc};
+use cordis::{Context, Disposable, ReflectService, Service};
 use cron::Schedule;
 use sqlx::PgPool;
 use std::any::TypeId;
@@ -21,7 +20,6 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
-
 
 fn format_message_with_context(context: &str, message: &str) -> String {
     format!("{context}\n\n---\nUser message: {message}")
@@ -42,11 +40,19 @@ fn llm_token_counts_u64(
     }
 }
 
-fn ctx_tracker(ctx: &std::sync::Arc<cordis::Context>) -> Option<std::sync::Arc<dyn crate::RunTracker>> {
+fn ctx_tracker(
+    ctx: &std::sync::Arc<cordis::Context>,
+) -> Option<std::sync::Arc<dyn crate::RunTracker>> {
     ctx.get::<crate::Execute>()?.run_tracker().cloned()
 }
 
-fn track_start(ctx: &std::sync::Arc<cordis::Context>, run_id: &str, tenant_id: &str, agent: &str, source: Option<&str>) {
+fn track_start(
+    ctx: &std::sync::Arc<cordis::Context>,
+    run_id: &str,
+    tenant_id: &str,
+    agent: &str,
+    source: Option<&str>,
+) {
     if let Some(t) = ctx_tracker(ctx) {
         t.start_run(run_id, tenant_id, agent, source);
     }
@@ -114,7 +120,9 @@ pub struct SchedulerConfig {
     pub tick_ms: u64,
 }
 
-fn default_scheduler_tick_ms() -> u64 { 60_000 }
+fn default_scheduler_tick_ms() -> u64 {
+    60_000
+}
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
@@ -180,11 +188,7 @@ pub struct SchedulerService {
 
 impl SchedulerService {
     /// Create a new service with explicit dependencies.
-    pub fn new(
-        db: Arc<PostgresClient>,
-        execution: Arc<Execute>,
-        tick_ms: u64,
-    ) -> Self {
+    pub fn new(db: Arc<PostgresClient>, execution: Arc<Execute>, tick_ms: u64) -> Self {
         Self {
             db,
             execution,
@@ -494,12 +498,17 @@ impl Service for SchedulerService {
                         None => {
                             ticker.tick().await;
                             if loop_control.is_disabled() {
-                                tracing::warn!("SchedulerService paused after repeated agent failures");
+                                tracing::warn!(
+                                    "SchedulerService paused after repeated agent failures"
+                                );
                                 continue;
                             }
                             let store = ScheduleStore::new(&db.pool);
                             let _ = store.get_due_schedules().await;
-                            tracing::debug!("SchedulerService tick (polling fallback, {}ms)", tick_ms);
+                            tracing::debug!(
+                                "SchedulerService tick (polling fallback, {}ms)",
+                                tick_ms
+                            );
                         }
                     }
                 }
@@ -594,7 +603,10 @@ pub async fn start_scheduler(pool: PgPool, app_state: std::sync::Arc<cordis::Con
     }
 }
 
-async fn run_due_schedules(pool: &PgPool, app_state: &std::sync::Arc<cordis::Context>) -> Result<(), String> {
+async fn run_due_schedules(
+    pool: &PgPool,
+    app_state: &std::sync::Arc<cordis::Context>,
+) -> Result<(), String> {
     let store = ScheduleStore::new(pool);
 
     // 1. First, handle catch-up for schedules that are past their grace window.
@@ -775,7 +787,11 @@ fn catchup_audit_action_failed() -> &'static str {
 }
 
 fn scheduled_usage_source(is_catchup: bool) -> &'static str {
-    if is_catchup { "catchup" } else { "scheduled" }
+    if is_catchup {
+        "catchup"
+    } else {
+        "scheduled"
+    }
 }
 
 /// Scope a request context to one tenant so Execute
@@ -789,77 +805,90 @@ async fn execute_scheduled_agent(
     app_state: &std::sync::Arc<cordis::Context>,
     is_catchup: bool,
 ) -> Result<(), String> {
-    use crate::Agent;
     use crate::context_provider::AgentRuntimeContext;
-    use crate::tenant_agent;
-    
-    // Phase 4 §15: prefer Execute for unified execution
-    if let Some(exec_svc) = app_state.get::<crate::Execute>() {
-        let req = crate::execution::AgentRequest {
-            agent_name: sched.agent_name.clone(),
-            message: String::new(),
-            history: Vec::new(),
-            ctx_provider: None,
-        };
-        let scoped = tenant_scoped_ctx(app_state, &sched.tenant_id);
-        match exec_svc.run(&req, &scoped).await {
-            Ok(_result) => {
-                tracing::info!(
-                    agent = %sched.agent_name,
-                    tenant = %sched.tenant_id,
-                    source = %_result.source.as_str(),
-                    "scheduled agent executed via Execute"
-                );
-                return Ok(());
-            }
-            Err(e) => {
-                tracing::debug!(
-                    agent = %sched.agent_name,
-                    error = %e,
-                    "Execute fallback to legacy scheduler path"
-                );
-                // Fall through to legacy path
-            }
-        }
-    }
 
-    let pool = app_state.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
-
-    let tenant_agent_record =
-        ares_store::tenant_agents::get_tenant_agent(&pool, &sched.tenant_id, &sched.agent_name)
-            .await
-            .map_err(|e| format!("Agent lookup failed: {}", e))?;
-
+    let pool = app_state
+        .get::<ares_store::TenantDb>()
+        .ok_or_else(|| "TenantDb not provided".to_string())?
+        .pool()
+        .clone();
+    let scoped = tenant_scoped_ctx(app_state, &sched.tenant_id);
+    let exec = scoped
+        .get::<Execute>()
+        .ok_or_else(|| "Execute not provided".to_string())?;
     let start = std::time::Instant::now();
     let run_id = uuid::Uuid::new_v4().to_string();
+    let request_source = scheduled_usage_source(is_catchup);
 
-    // 1. Skill-based agent execution.  This must bypass LLM provider
-    // resolution: a scheduled skill agent may have no model-tier mapping, and
-    // skill steps need the agent_runs row before run_tool_calls can satisfy
-    // their run_id foreign key.
-    if let Some(skill_id) = tenant_agent_record
-        .config
-        .get("skill_id")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    let skill_id = ares_store::tenant_agents::get_tenant_agent(
+        &pool,
+        &sched.tenant_id,
+        &sched.agent_name,
+    )
+    .await
+    .ok()
+    .and_then(|record| {
+        record
+            .config
+            .get("skill_id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    });
+
+    let mut runtime_context = AgentRuntimeContext::new(
+        sched.tenant_id.clone(),
+        sched.agent_name.clone(),
+        "scheduled",
+    );
+    runtime_context.session_id = Some(run_id.clone());
+    let external_context = app_state
+        .get::<crate::ContextProviderHandle>()
+        .map(|provider| provider.0.clone());
+    let external_context = match external_context {
+        Some(provider) => provider.get_context_for_run(&runtime_context).await,
+        None => None,
+    };
+    let effective_message = external_context
+        .as_deref()
+        .map(|context| format_message_with_context(context, "scheduled run"))
+        .unwrap_or_else(|| "scheduled run".to_string());
+    let request_ctx = if let Some(skill_id) = skill_id {
+        scoped.with_intercept(crate::execution::SkillDispatch::new(
+            skill_id,
+            sched.tenant_id.as_str(),
+            serde_json::json!({"message": "scheduled run"}),
+            &run_id,
+        ))
+    } else {
+        scoped.clone()
+    };
+    let req = crate::execution::AgentRequest {
+        agent_name: sched.agent_name.clone(),
+        message: effective_message.clone(),
+        history: Vec::new(),
+        ctx_provider: None,
+    };
+
+    // Skill runs need their id before tool steps can write run_tool_calls.
+    let skill_run = request_ctx.get::<crate::execution::SkillDispatch>().is_some();
+    if skill_run {
         let metadata = AgentRunMetadata {
             workspace_id: None,
             session_id: Some(run_id.clone()),
-            request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
+            request_source: Some(request_source.to_string()),
             product: None,
             agent_config_source: Some("tenant_db".to_string()),
             agent_config_version: None,
             eruka_binding_id: None,
-            eruka_context_hit: false,
-            eruka_read_count: 0,
+            eruka_context_hit: external_context.is_some(),
+            eruka_read_count: if external_context.is_some() { 1 } else { 0 },
             eruka_write_count: 0,
             pipeline_id: None,
             schedule_id: Some(sched.id.clone()),
             trigger_id: None,
         };
-
         agent_runs::insert_agent_run_with_id_and_metadata(
             &pool,
             &run_id,
@@ -877,318 +906,158 @@ async fn execute_scheduled_agent(
             Some(&metadata),
         )
         .await
-        .map_err(|e| e.to_string())?;
-
-        track_start(app_state, run_id.clone().as_str(), sched.tenant_id.clone().as_str(), sched.agent_name.clone().as_str(), Some("catchup"));
-
-        let skill_result = app_state.get::<crate::skills::SkillEngine>().expect("not provided")
-            .execute_skill(
-                skill_id,
-                &sched.tenant_id,
-                serde_json::json!({"message": "scheduled run"}),
-                &run_id,
-                app_state,
-            )
-            .await;
-
-        let duration_ms = start.elapsed().as_millis() as i64;
-        let active_status = if skill_result.is_ok() {
-            "completed"
-        } else {
-            "error"
-        };
-        track_finish(app_state, &run_id, active_status);
-
-        let status = if skill_result.is_ok() {
-            "completed"
-        } else {
-            "failed"
-        };
-        let (input_tokens, output_tokens) = skill_result
-            .as_ref()
-            .map(crate::skills::skill_result_token_counts)
-            .unwrap_or((0, 0));
-        let error_message = skill_result.as_ref().err().cloned();
-
-        sqlx::query(
-            "UPDATE agent_runs
-             SET status = $2, input_tokens = $3, output_tokens = $4,
-                 duration_ms = $5, error = $6
-             WHERE id = $1",
-        )
-        .bind(&run_id)
-        .bind(status)
-        .bind(input_tokens)
-        .bind(output_tokens)
-        .bind(duration_ms)
-        .bind(error_message.as_deref())
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        if let Ok(val) = &skill_result {
-            let output_str = serde_json::to_string(val).unwrap_or_default();
-            let trigger = scheduled_pipeline_trigger(sched, &output_str);
-            let _ = crate::pipeline::execute_pipeline_with_origin(
-                trigger.source_agent,
-                trigger.source_output,
-                trigger.tenant_id,
-                Some(crate::pipeline::PipelineOrigin::scheduled(
-                    sched.id.clone(),
-                    is_catchup,
-                )),
-                app_state,
-            )
-            .await;
-        }
-
-        spawn_run_cost_aggregation(
-            pool.clone(),
-            run_cost_aggregation_request(&run_id, &sched.tenant_id, &sched.agent_name, duration_ms),
-        );
-
-        let usage_pool = pool.clone();
-        let usage_tid = sched.tenant_id.clone();
-        let usage_agent = sched.agent_name.clone();
-        let usage_source = scheduled_usage_source(is_catchup);
-        let token_count = input_tokens + output_tokens;
-        tokio::spawn(async move {
-            let _ = sqlx::query(
-                "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
-            )
-            .bind(uuid::Uuid::new_v4().to_string())
-            .bind(usage_tid)
-            .bind(usage_source)
-            .bind(1i32)
-            .bind(token_count)
-            .bind(input_tokens)
-            .bind(output_tokens)
-            .bind(Some("skill".to_string()))
-            .bind(usage_agent)
-            .bind(Some("skill".to_string()))
-            .bind(chrono::Utc::now().timestamp())
-            .execute(&usage_pool)
-            .await;
-        });
-
-        return skill_result.map(|_| ());
+        .map_err(|error| error.to_string())?;
     }
 
-    // 2. Resolve and execute regular LLM-backed agents.
-    // Isolate is not in scope here: execute_agent's `scoped` lives inside the
-    // early-return block above. Recreate it so resolve/runtime tools read tenant
-    // from ctx rather than a leftover tenant_id argument.
-    let scoped = tenant_scoped_ctx(app_state, &sched.tenant_id);
-    let mut resolved_agent = match tenant_agent::resolve_agent_from_ctx(
-        &pool,
-        &app_state.get::<crate::AgentRegistry>().expect("AgentRegistry not provided"),
-        &scoped,
+    track_start(
+        app_state,
+        &run_id,
+        &sched.tenant_id,
         &sched.agent_name,
-        &app_state.get::<ares_store::FleetSecrets>().expect("not provided"),
-    )
-    .await
-    {
-        Ok(agent) => agent,
-        Err(e) => {
-            tracing::error!(
-                "Failed to resolve agent {} for tenant {}: {}",
-                sched.agent_name,
-                sched.tenant_id,
-                e
-            );
-            return Err(format!("Agent resolution failed: {}", e));
-        }
-    };
-
-    // 3. Regular agent execution
-    // Observability sink lives in ares-http; engines log via run_history SQL instead.
-    if let Some(tools) = scoped.get::<ares_tools::Tools>() {
-        resolved_agent.agent.set_tools(tools);
-    }
-    resolved_agent.agent.bind_request_ctx(scoped.clone());
-
-    let mut runtime_context = AgentRuntimeContext::new(
-        sched.tenant_id.clone(),
-        sched.agent_name.clone(),
-        "scheduled",
+        Some(request_source),
     );
-    runtime_context.session_id = Some(run_id.clone());
+    let execution = exec
+        .run(&req, &request_ctx)
+        .await
+        .map_err(|error| error.to_string());
+    let duration_ms = start.elapsed().as_millis() as u64;
 
-    let eruka_context = app_state.get::<crate::ContextProviderHandle>().expect("not provided").0
-        .get_context_for_run(&runtime_context)
-        .await;
-    let eruka_context_hit = eruka_context.is_some();
-    let effective_message = if let Some(ctx) = eruka_context.as_deref() {
-        tracing::info!(
-            agent = %sched.agent_name,
-            tenant = %sched.tenant_id,
-            ctx_len = ctx.len(),
-            "External context injected into scheduled agent run"
-        );
-        format_message_with_context(ctx, "scheduled run")
-    } else {
-        "scheduled run".to_string()
-    };
-
-    let agent_context = AgentContext {
-        user_id: sched.tenant_id.clone(),
-        session_id: run_id.clone(),
-        conversation_history: vec![],
-        user_memory: None,
-    };
+    let (status, error_msg, input_tokens, output_tokens, model_name, provider_name, output) =
+        match execution {
+            Ok(result) => {
+                let (input, output) = llm_token_counts_u64(
+                    result.response.usage.as_ref(),
+                    &effective_message,
+                    &result.response.content,
+                );
+                let model = result
+                    .response
+                    .metadata
+                    .as_ref()
+                    .map(|metadata| metadata.model_name.clone())
+                    .unwrap_or_else(|| if skill_run { "skill" } else { "unknown" }.to_string());
+                let provider = result
+                    .response
+                    .metadata
+                    .as_ref()
+                    .map(|metadata| metadata.provider_name.clone())
+                    .unwrap_or_else(|| if skill_run { "skill" } else { "unknown" }.to_string());
+                track_finish(app_state, &run_id, "completed");
+                (
+                    "completed",
+                    None,
+                    input as i64,
+                    output as i64,
+                    model,
+                    provider,
+                    result.response.content,
+                )
+            }
+            Err(error) => {
+                track_finish(app_state, &run_id, "error");
+                (
+                    "failed",
+                    Some(error),
+                    0,
+                    0,
+                    "unknown".to_string(),
+                    "unknown".to_string(),
+                    String::new(),
+                )
+            }
+        };
 
     let metadata = AgentRunMetadata {
         workspace_id: None,
         session_id: Some(run_id.clone()),
-        request_source: Some(if is_catchup { "catchup" } else { "scheduled" }.to_string()),
+        request_source: Some(request_source.to_string()),
         product: None,
-        agent_config_source: Some(resolved_agent.source.as_str().to_string()),
-        agent_config_version: resolved_agent.config_version.clone(),
+        agent_config_source: Some(if skill_run { "tenant_db" } else { "execute" }.to_string()),
+        agent_config_version: None,
         eruka_binding_id: None,
-        eruka_context_hit,
-        eruka_read_count: if eruka_context_hit { 1 } else { 0 },
+        eruka_context_hit: external_context.is_some(),
+        eruka_read_count: if external_context.is_some() { 1 } else { 0 },
         eruka_write_count: 0,
         pipeline_id: None,
         schedule_id: Some(sched.id.clone()),
         trigger_id: None,
     };
-
-    agent_runs::insert_agent_run_with_id_and_metadata(
+    if skill_run {
+        sqlx::query(
+            "UPDATE agent_runs SET status=$2, input_tokens=$3, output_tokens=$4, duration_ms=$5, error=$6 WHERE id=$1",
+        )
+        .bind(&run_id)
+        .bind(status)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(duration_ms as i64)
+        .bind(error_msg.as_deref())
+        .execute(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    } else {
+        agent_runs::insert_agent_run_with_id_and_metadata(
             &pool,
-        &run_id,
-        &sched.tenant_id,
-        &sched.agent_name,
-        None,
-        "running",
-        0,
-        0,
-        0,
-        None,
-        "unknown",
-        "unknown",
-        false,
-        Some(&metadata),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    track_start(app_state, run_id.clone().as_str(), sched.tenant_id.clone().as_str(), sched.agent_name.clone().as_str(), Some("catchup"));
-
-    let result = resolved_agent
-        .agent
-        .execute(&effective_message, &agent_context)
-        .await;
-    let duration_ms = start.elapsed().as_millis() as u64;
-
-    // Aggregate run costs (fire-and-forget)
-    spawn_run_cost_aggregation(
-        pool.clone(),
-        run_cost_aggregation_request(&run_id, &sched.tenant_id, &sched.agent_name, duration_ms as i64),
-    );
-
-    let (status, error_msg, input_tokens, output_tokens, model_name, provider_name);
-
-    match result {
-        Ok(response) => {
-            status = "completed";
-            error_msg = None;
-
-            let (itok, otok) = llm_token_counts_u64(
-                response.usage.as_ref(),
-                &effective_message,
-                &response.content,
-            );
-            input_tokens = itok as i64;
-            output_tokens = otok as i64;
-
-            model_name = response
-                .metadata
-                .as_ref()
-                .map(|m| m.model_name.clone())
-                .unwrap_or_else(|| "unknown".to_string());
-            provider_name = response
-                .metadata
-                .as_ref()
-                .map(|m| m.provider_name.clone())
-                .unwrap_or_else(|| "unknown".to_string());
-            track_finish(app_state, &run_id, "completed");
-
-            let trigger = scheduled_pipeline_trigger(sched, &response.content);
-            let _ = crate::pipeline::execute_pipeline_with_origin(
-                trigger.source_agent,
-                trigger.source_output,
-                trigger.tenant_id,
-                Some(crate::pipeline::PipelineOrigin::scheduled(
-                    sched.id.clone(),
-                    is_catchup,
-                )),
-                app_state,
-            )
-            .await;
-        }
-        Err(e) => {
-            status = "failed";
-            error_msg = Some(e.to_string());
-            input_tokens = 0;
-            output_tokens = 0;
-            model_name = "unknown".to_string();
-            provider_name = "unknown".to_string();
-
-            track_finish(app_state, &run_id, "error");
-        }
+            &run_id,
+            &sched.tenant_id,
+            &sched.agent_name,
+            None,
+            status,
+            input_tokens,
+            output_tokens,
+            duration_ms as i64,
+            error_msg.as_deref(),
+            &model_name,
+            &provider_name,
+            false,
+            Some(&metadata),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     }
 
-    sqlx::query(
-        "UPDATE agent_runs
-         SET status = $2, input_tokens = $3, output_tokens = $4,
-             duration_ms = $5, error = $6, model_name = $7, provider_name = $8
-         WHERE id = $1",
-    )
-    .bind(&run_id)
-    .bind(status)
-    .bind(input_tokens)
-    .bind(output_tokens)
-    .bind(duration_ms as i64)
-    .bind(error_msg.as_deref())
-    .bind(&model_name)
-    .bind(&provider_name)
-    .execute(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    spawn_run_cost_aggregation(
+        pool.clone(),
+        run_cost_aggregation_request(
+            &run_id,
+            &sched.tenant_id,
+            &sched.agent_name,
+            duration_ms as i64,
+        ),
+    );
 
-    // Clone model/provider for usage event recording.
-    let model_clone = model_name.clone();
-    let provider_clone = provider_name.clone();
+    if status == "completed" {
+        let trigger = scheduled_pipeline_trigger(sched, &output);
+        let _ = crate::pipeline::execute_pipeline_with_origin(
+            trigger.source_agent,
+            trigger.source_output,
+            trigger.tenant_id,
+            Some(crate::pipeline::PipelineOrigin::scheduled(
+                sched.id.clone(),
+                is_catchup,
+            )),
+            app_state,
+        )
+        .await;
+    }
 
-    // Record usage event (fire-and-forget) with scheduled/catchup source.
     let usage_pool = pool.clone();
     let usage_tid = sched.tenant_id.clone();
-    let usage_model = if model_clone != "unknown" {
-        Some(model_clone)
-    } else {
-        None
-    };
-    let usage_provider = if provider_clone != "unknown" {
-        Some(provider_clone)
-    } else {
-        None
-    };
     let usage_agent = sched.agent_name.clone();
-    let usage_source = scheduled_usage_source(is_catchup);
-    let input_tok = input_tokens;
-    let output_tok = output_tokens;
+    let usage_model = (model_name != "unknown").then_some(model_name);
+    let usage_provider = (provider_name != "unknown").then_some(provider_name);
     let token_total = input_tokens + output_tokens;
     tokio::spawn(async move {
         let _ = sqlx::query(
-            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(usage_tid)
-        .bind(usage_source)
-        .bind(1i32) // request_count
+        .bind(request_source)
+        .bind(1i32)
         .bind(token_total)
-        .bind(input_tok)
-        .bind(output_tok)
+        .bind(input_tokens)
+        .bind(output_tokens)
         .bind(usage_model)
         .bind(usage_agent)
         .bind(usage_provider)
@@ -1197,11 +1066,7 @@ async fn execute_scheduled_agent(
         .await;
     });
 
-    if let Some(err) = error_msg {
-        return Err(format!("Agent execution failed: {}", err));
-    }
-
-    Ok(())
+    error_msg.map_or(Ok(()), |error| Err(format!("Agent execution failed: {error}")))
 }
 
 #[cfg(test)]
@@ -1215,11 +1080,15 @@ mod tests {
         let root = Context::new_root();
         let scoped = tenant_scoped_ctx(&root, "acme");
         assert_eq!(
-            scoped.isolate_label(TypeId::of::<crate::Execute>()).as_deref(),
+            scoped
+                .isolate_label(TypeId::of::<crate::Execute>())
+                .as_deref(),
             Some("acme"),
         );
         assert_eq!(
-            scoped.isolate_label(TypeId::of::<ares_tools::Tools>()).as_deref(),
+            scoped
+                .isolate_label(TypeId::of::<ares_tools::Tools>())
+                .as_deref(),
             Some("acme"),
         );
     }
@@ -1428,7 +1297,11 @@ mod tests {
         let next = next_run_at("* * * * *");
         assert!(next > Utc::now(), "next_run_at should be in future");
         let diff = (next - Utc::now()).num_seconds();
-        assert!(diff > 0 && diff <= 120, "diff {} should be within 120s", diff);
+        assert!(
+            diff > 0 && diff <= 120,
+            "diff {} should be within 120s",
+            diff
+        );
     }
 
     #[test]
@@ -1436,7 +1309,11 @@ mod tests {
         let next = next_run_at("not-a-cron");
         assert!(next > Utc::now());
         let diff = (next - Utc::now()).num_seconds();
-        assert!(diff >= 55 && diff <= 65, "fallback diff {} should be ~60s", diff);
+        assert!(
+            diff >= 55 && diff <= 65,
+            "fallback diff {} should be ~60s",
+            diff
+        );
     }
 
     #[tokio::test]
@@ -1463,11 +1340,7 @@ mod tests {
             "event": "agent.failed",
         });
         events
-            .dispatch(
-                "agent.failed".into(),
-                payload,
-                cordis::Dispatch::Serial,
-            )
+            .dispatch("agent.failed".into(), payload, cordis::Dispatch::Serial)
             .await
             .expect("agent failure event should be handled");
 
@@ -1532,7 +1405,10 @@ mod tests {
         assert_eq!(denied, false, "deny:true payload should NOT be admitted");
 
         let admitted = service
-            .admit_run(&ctx, serde_json::json!({ "agent_name": "a", "deny": false }))
+            .admit_run(
+                &ctx,
+                serde_json::json!({ "agent_name": "a", "deny": false }),
+            )
             .await;
         assert_eq!(admitted, true, "deny:false payload should be admitted");
 
@@ -1546,7 +1422,11 @@ mod tests {
         let b = SchedulerService::next_run_at(cron);
         // allow 1s drift
         let diff = (a - b).num_seconds().abs();
-        assert!(diff <= 1, "service and free next_run_at should match, diff {}", diff);
+        assert!(
+            diff <= 1,
+            "service and free next_run_at should match, diff {}",
+            diff
+        );
     }
 
     #[test]
@@ -1588,8 +1468,9 @@ mod tests {
     }
 }
 
-
-fn inject_or_get<T: cordis::Service + 'static>(ctx: &std::sync::Arc<cordis::Context>) -> Result<std::sync::Arc<T>, cordis::CordisError> {
+fn inject_or_get<T: cordis::Service + 'static>(
+    ctx: &std::sync::Arc<cordis::Context>,
+) -> Result<std::sync::Arc<T>, cordis::CordisError> {
     if let Some(v) = ctx.get::<T>() {
         return Ok(v);
     }
@@ -1612,6 +1493,10 @@ impl cordis::Plugin for SchedulerPlugin {
     ) -> Result<std::sync::Arc<Self::Provides>, cordis::CordisError> {
         let execution = inject_or_get::<crate::Execute>(ctx)?;
         let db = inject_or_get::<ares_store::PostgresClient>(ctx)?;
-        Ok(std::sync::Arc::new(SchedulerService::new(db, execution, config.tick_ms)))
+        Ok(std::sync::Arc::new(SchedulerService::new(
+            db,
+            execution,
+            config.tick_ms,
+        )))
     }
 }

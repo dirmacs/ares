@@ -1,15 +1,13 @@
 //! Inter-agent pipeline execution engine.
 
-use cordis::{Context, Disposable, Service};
+use crate::execution::{AgentRequest, Execute};
 use ares_store::agent_runs::{self, AgentRunMetadata};
 use ares_store::schedules::{AgentPipeline, PipelineStore};
 use ares_store::PostgresClient;
-use crate::execution::{Execute, AgentRequest};
-use ares_types::types::AgentContext;
+use cordis::{Context, Disposable, Service};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-
 
 fn format_message_with_context(context: &str, message: &str) -> String {
     format!("{context}\n\n---\nUser message: {message}")
@@ -30,11 +28,19 @@ fn llm_token_counts_u64(
     }
 }
 
-fn ctx_tracker(ctx: &std::sync::Arc<cordis::Context>) -> Option<std::sync::Arc<dyn crate::RunTracker>> {
+fn ctx_tracker(
+    ctx: &std::sync::Arc<cordis::Context>,
+) -> Option<std::sync::Arc<dyn crate::RunTracker>> {
     ctx.get::<crate::Execute>()?.run_tracker().cloned()
 }
 
-fn track_start(ctx: &std::sync::Arc<cordis::Context>, run_id: &str, tenant_id: &str, agent: &str, source: Option<&str>) {
+fn track_start(
+    ctx: &std::sync::Arc<cordis::Context>,
+    run_id: &str,
+    tenant_id: &str,
+    agent: &str,
+    source: Option<&str>,
+) {
     if let Some(t) = ctx_tracker(ctx) {
         t.start_run(run_id, tenant_id, agent, source);
     }
@@ -115,7 +121,7 @@ impl PipelineService {
 
     /// Execute a single pipeline by id for a tenant, applying conditional
     /// evaluation against `input` and then delegating to
-    /// `ctx.get::<Execute>().run` (fallback: `self.execution`).
+    /// `ctx.get::<Execute>().run` on a tenant-scoped context.
     ///
     /// Lookup: `agent_pipelines` where `tenant_id=$1 AND id=$2` (enabled check
     /// enforced — disabled pipelines return `Err`).
@@ -143,13 +149,27 @@ impl PipelineService {
         use sqlx::Row;
         let pipeline = AgentPipeline {
             id: row.try_get::<String, _>("id").map_err(|e| e.to_string())?,
-            tenant_id: row.try_get::<String, _>("tenant_id").map_err(|e| e.to_string())?,
-            source_agent: row.try_get::<String, _>("source_agent").map_err(|e| e.to_string())?,
-            target_agent: row.try_get::<String, _>("target_agent").map_err(|e| e.to_string())?,
-            condition: row.try_get::<Option<String>, _>("condition").map_err(|e| e.to_string())?,
-            enabled: row.try_get::<bool, _>("enabled").map_err(|e| e.to_string())?,
-            created_at: row.try_get::<i64, _>("created_at").map_err(|e| e.to_string())?,
-            updated_at: row.try_get::<i64, _>("updated_at").map_err(|e| e.to_string())?,
+            tenant_id: row
+                .try_get::<String, _>("tenant_id")
+                .map_err(|e| e.to_string())?,
+            source_agent: row
+                .try_get::<String, _>("source_agent")
+                .map_err(|e| e.to_string())?,
+            target_agent: row
+                .try_get::<String, _>("target_agent")
+                .map_err(|e| e.to_string())?,
+            condition: row
+                .try_get::<Option<String>, _>("condition")
+                .map_err(|e| e.to_string())?,
+            enabled: row
+                .try_get::<bool, _>("enabled")
+                .map_err(|e| e.to_string())?,
+            created_at: row
+                .try_get::<i64, _>("created_at")
+                .map_err(|e| e.to_string())?,
+            updated_at: row
+                .try_get::<i64, _>("updated_at")
+                .map_err(|e| e.to_string())?,
         };
 
         if !pipeline.enabled {
@@ -169,10 +189,13 @@ impl PipelineService {
             }
         }
 
-        // Prefer Context-provided execution (DI), fallback to injected `self.execution`.
-        let exec: Arc<Execute> = ctx
+        // Execute is the only production execution boundary. The field is
+        // retained for constructor compatibility, but cannot bypass context
+        // isolation or admission.
+        let scoped = tenant_scoped_ctx(ctx, tenant);
+        let exec: Arc<Execute> = scoped
             .get::<Execute>()
-            .unwrap_or_else(|| self.execution.clone());
+            .ok_or_else(|| "Execute not provided".to_string())?;
 
         let req = AgentRequest {
             agent_name: pipeline.target_agent.clone(),
@@ -181,8 +204,6 @@ impl PipelineService {
             ctx_provider: None,
         };
 
-        // Isolate on scoped ctx is the tenant source.
-        let scoped = tenant_scoped_ctx(ctx, tenant);
         let resp = exec
             .run(&req, &scoped)
             .await
@@ -391,7 +412,11 @@ pub async fn execute_pipeline_with_origin(
     origin: Option<PipelineOrigin>,
     app_state: &std::sync::Arc<cordis::Context>,
 ) -> Result<Vec<String>, String> {
-    let __pool_1 = app_state.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_1 = app_state
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = PipelineStore::new(&__pool_1);
     let pipelines = store
         .get_pipelines_for_source(tenant_id, source_agent_name)
@@ -442,219 +467,140 @@ async fn execute_target_agent(
     app_state: &std::sync::Arc<cordis::Context>,
 ) -> Result<(), String> {
     use crate::context_provider::AgentRuntimeContext;
-    use crate::tenant_agent;
-    use crate::Agent;
-    
-    let pool = app_state.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+
+    let pool = app_state
+        .get::<ares_store::TenantDb>()
+        .ok_or_else(|| "TenantDb not provided".to_string())?
+        .pool()
+        .clone();
     let scoped = tenant_scoped_ctx(app_state, tenant_id);
-
-    let mut resolved_agent = tenant_agent::resolve_agent_from_ctx(&pool,
-        &app_state.get::<crate::AgentRegistry>().expect("AgentRegistry not provided"),
-        &scoped,
-        &pipeline.target_agent,
-        &app_state.get::<ares_store::FleetSecrets>().expect("not provided"),
-    )
-    .await
-    .map_err(|e| format!("Agent resolution failed: {}", e))?;
-
+    let exec = scoped
+        .get::<Execute>()
+            .ok_or_else(|| "Execute not provided".to_string())?;
     let start = std::time::Instant::now();
     let run_id = uuid::Uuid::new_v4().to_string();
-    let origin_ref = origin;
 
-    // Skill-based execution
-    if let Some(config) = &resolved_agent.config {
-        if let Some(skill_id) = config.get("skill_id").and_then(|v| v.as_str()) {
-            track_start(app_state, &run_id, tenant_id, &pipeline.target_agent, Some(PIPELINE_REQUEST_SOURCE));
+    // A skill is identified from tenant configuration, but execution still
+    // crosses Execute::run. The marker is request-local and cannot leak into
+    // another tenant's context.
+    let skill_id = ares_store::tenant_agents::get_tenant_agent(
+        &pool,
+        tenant_id,
+        &pipeline.target_agent,
+    )
+    .await
+    .ok()
+    .and_then(|record| {
+        record
+            .config
+            .get("skill_id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    });
 
-            let skill_result = app_state.get::<crate::skills::SkillEngine>().expect("not provided")
-                .execute_skill(
-                    skill_id,
-                    tenant_id,
-                    serde_json::json!({"message": source_output}),
-                    &run_id,
-                    app_state,
-                )
-                .await;
-
-            let duration_ms = start.elapsed().as_millis() as u64;
-            let skill_status = if skill_result.is_ok() {
-                "completed"
-            } else {
-                "error"
-            };
-            track_finish(app_state, &run_id, skill_status);
-
-            let (input_tokens, output_tokens) = skill_result
-                .as_ref()
-                .map(crate::skills::skill_result_token_counts)
-                .unwrap_or((0, 0));
-            let effects = pipeline_target_run_effects(
-                pipeline,
-                tenant_id,
-                &run_id,
-                origin_ref,
-                Some(resolved_agent.source.as_str()),
-                resolved_agent.config_version.clone(),
-                false,
-                input_tokens,
-                output_tokens,
-                "skill",
-                "skill",
-            );
-            let metadata = effects.metadata;
-            let usage = effects.usage;
-            let status = if skill_result.is_ok() {
-                "completed"
-            } else {
-                "failed"
-            };
-            let err_msg = skill_result.as_ref().err().cloned();
-
-            let pool_clone = pool.clone();
-            let tid = tenant_id.to_string();
-            let aname = pipeline.target_agent.clone();
-            let run_id_for_insert = run_id.clone();
-            tokio::spawn(async move {
-                let _ = agent_runs::insert_agent_run_with_id_and_metadata(
-                    &pool_clone,
-                    &run_id_for_insert,
-                    &tid,
-                    &aname,
-                    None,
-                    status,
-                    input_tokens,
-                    output_tokens,
-                    duration_ms as i64,
-                    err_msg.as_deref(),
-                    "skill",
-                    "skill",
-                    false,
-                    Some(&metadata),
-                )
-                .await;
-            });
-
-            spawn_run_cost_aggregation(
-                pool.clone(),
-                run_cost_aggregation_request(
-                    &run_id,
-                    tenant_id,
-                    &pipeline.target_agent,
-                    duration_ms as i64,
-                ),
-            );
-
-            let usage_pool = pool.clone();
-            tokio::spawn(async move {
-                let _ = sqlx::query(
-                    "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
-                )
-                .bind(uuid::Uuid::new_v4().to_string())
-                .bind(usage.tenant_id)
-                .bind(usage.source)
-                .bind(usage.request_count)
-                .bind(usage.token_count)
-                .bind(usage.input_tokens)
-                .bind(usage.output_tokens)
-                .bind(usage.model_name)
-                .bind(usage.agent_name)
-                .bind(usage.provider_name)
-                .bind(chrono::Utc::now().timestamp())
-                .execute(&usage_pool)
-                .await;
-            });
-
-            return skill_result.map(|_| ());
-        }
-    }
-
-    // Regular agent execution
-    // Observability sink lives in ares-http; engines log via run_history SQL instead.
-    if let Some(tools) = scoped.get::<ares_tools::Tools>() {
-        resolved_agent.agent.set_tools(tools);
-    }
-    resolved_agent.agent.bind_request_ctx(scoped.clone());
+    let request_ctx = if let Some(skill_id) = skill_id {
+        scoped.with_intercept(crate::execution::SkillDispatch::new(
+            skill_id,
+            tenant_id,
+            serde_json::json!({"message": source_output}),
+            &run_id,
+        ))
+    } else {
+        scoped.clone()
+    };
 
     let mut runtime_context = AgentRuntimeContext::new(
         tenant_id.to_string(),
         pipeline.target_agent.clone(),
-        "pipeline",
+        PIPELINE_REQUEST_SOURCE,
     );
     runtime_context.session_id = Some(run_id.clone());
-
-    let eruka_context = app_state.get::<crate::ContextProviderHandle>().expect("not provided").0
-        .get_context_for_run(&runtime_context)
-        .await;
+    let eruka_context = app_state
+        .get::<crate::ContextProviderHandle>()
+        .map(|provider| provider.0.clone());
+    let eruka_context = match eruka_context {
+        Some(provider) => provider.get_context_for_run(&runtime_context).await,
+        None => None,
+    };
     let eruka_context_hit = eruka_context.is_some();
-    let effective_message = if let Some(ctx) = eruka_context.as_deref() {
-        format_message_with_context(ctx, source_output)
-    } else {
-        source_output.to_string()
+    let effective_message = eruka_context
+        .as_deref()
+        .map(|context| format_message_with_context(context, source_output))
+        .unwrap_or_else(|| source_output.to_string());
+
+    let req = AgentRequest {
+        agent_name: pipeline.target_agent.clone(),
+        message: effective_message.clone(),
+        history: Vec::new(),
+        ctx_provider: None,
     };
-
-    let agent_context = AgentContext {
-        user_id: tenant_id.to_string(),
-        session_id: run_id.clone(),
-        conversation_history: vec![],
-        user_memory: None,
-    };
-
-    track_start(app_state, &run_id, tenant_id, &pipeline.target_agent, Some(PIPELINE_REQUEST_SOURCE));
-
-    let result = resolved_agent
-        .agent
-        .execute(&effective_message, &agent_context)
-        .await;
+    track_start(
+        app_state,
+        &run_id,
+        tenant_id,
+        &pipeline.target_agent,
+        Some(PIPELINE_REQUEST_SOURCE),
+    );
+    let execution = exec
+        .run(&req, &request_ctx)
+        .await
+        .map_err(|error| error.to_string());
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    spawn_run_cost_aggregation(
-        pool.clone(),
-        run_cost_aggregation_request(&run_id, tenant_id, &pipeline.target_agent, duration_ms as i64),
-    );
-
-    let (status, error_msg, input_tokens, output_tokens, model_name, provider_name);
-
-    match result {
-        Ok(response) => {
-            status = "completed";
-            error_msg = None;
-            let (itok, otok) = llm_token_counts_u64(
-                response.usage.as_ref(),
-                &effective_message,
-                &response.content,
-            );
-            input_tokens = itok as i64;
-            output_tokens = otok as i64;
-            model_name = response
-                .metadata
-                .as_ref()
-                .map(|m| m.model_name.clone())
-                .unwrap_or_else(|| "unknown".to_string());
-            provider_name = response
-                .metadata
-                .as_ref()
-                .map(|m| m.provider_name.clone())
-                .unwrap_or_else(|| "unknown".to_string());
-            track_finish(app_state, &run_id, "completed");
-        }
-        Err(e) => {
-            status = "failed";
-            error_msg = Some(e.to_string());
-            input_tokens = 0;
-            output_tokens = 0;
-            model_name = "unknown".to_string();
-            provider_name = "unknown".to_string();
-            track_finish(app_state, &run_id, "error");
-        }
-    }
+    let (status, error_msg, input_tokens, output_tokens, model_name, provider_name, output) =
+        match execution {
+            Ok(result) => {
+                let (input, output) = llm_token_counts_u64(
+                    result.response.usage.as_ref(),
+                    &effective_message,
+                    &result.response.content,
+                );
+                let model = result
+                    .response
+                    .metadata
+                    .as_ref()
+                    .map(|metadata| metadata.model_name.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let provider = result
+                    .response
+                    .metadata
+                    .as_ref()
+                    .map(|metadata| metadata.provider_name.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+                track_finish(app_state, &run_id, "completed");
+                (
+                    "completed",
+                    None,
+                    input as i64,
+                    output as i64,
+                    model,
+                    provider,
+                    result.response.content,
+                )
+            }
+            Err(error) => {
+                track_finish(app_state, &run_id, "error");
+                (
+                    "failed",
+                    Some(error),
+                    0,
+                    0,
+                    "unknown".to_string(),
+                    "unknown".to_string(),
+                    String::new(),
+                )
+            }
+        };
 
     let effects = pipeline_target_run_effects(
         pipeline,
         tenant_id,
         &run_id,
-        origin_ref,
-        Some(resolved_agent.source.as_str()),
-        resolved_agent.config_version.clone(),
+        origin,
+        Some("execute"),
+        None,
         eruka_context_hit,
         input_tokens,
         output_tokens,
@@ -663,24 +609,23 @@ async fn execute_target_agent(
     );
     let metadata = effects.metadata;
     let usage = effects.usage;
-
     let pool_clone = pool.clone();
-    let tid = tenant_id.to_string();
-    let aname = pipeline.target_agent.clone();
-    let err_clone = error_msg.clone();
+    let tenant = tenant_id.to_string();
+    let agent_name = pipeline.target_agent.clone();
+    let error_for_insert = error_msg.clone();
     let run_id_for_insert = run_id.clone();
     tokio::spawn(async move {
         let _ = agent_runs::insert_agent_run_with_id_and_metadata(
             &pool_clone,
             &run_id_for_insert,
-            &tid,
-            &aname,
+            &tenant,
+            &agent_name,
             None,
             status,
             input_tokens,
             output_tokens,
             duration_ms as i64,
-            err_clone.as_deref(),
+            error_for_insert.as_deref(),
             &model_name,
             &provider_name,
             false,
@@ -692,7 +637,7 @@ async fn execute_target_agent(
     let usage_pool = pool.clone();
     tokio::spawn(async move {
         let _ = sqlx::query(
-            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(usage.tenant_id)
@@ -709,8 +654,8 @@ async fn execute_target_agent(
         .await;
     });
 
-    if let Some(err) = error_msg {
-        return Err(format!("Agent execution failed: {}", err));
+    if let Some(error) = error_msg {
+        return Err(format!("Agent execution failed: {error}"));
     }
     Ok(())
 }
@@ -772,11 +717,15 @@ mod tests {
         let root = Context::new_root();
         let scoped = tenant_scoped_ctx(&root, "acme");
         assert_eq!(
-            scoped.isolate_label(TypeId::of::<crate::Execute>()).as_deref(),
+            scoped
+                .isolate_label(TypeId::of::<crate::Execute>())
+                .as_deref(),
             Some("acme"),
         );
         assert_eq!(
-            scoped.isolate_label(TypeId::of::<ares_tools::Tools>()).as_deref(),
+            scoped
+                .isolate_label(TypeId::of::<ares_tools::Tools>())
+                .as_deref(),
             Some("acme"),
         );
         assert!(root.isolate_label(TypeId::of::<crate::Execute>()).is_none());
@@ -927,7 +876,6 @@ mod tests {
     }
 }
 
-
 /// Origin metadata for a downstream pipeline run (HTTP/trigger fan-out).
 #[async_trait::async_trait]
 pub trait PipelineFanout: Send + Sync {
@@ -992,7 +940,9 @@ pub struct PipelineConfig {}
 
 pub struct PipelinePlugin;
 
-fn inject_or_get<T: cordis::Service + 'static>(ctx: &std::sync::Arc<cordis::Context>) -> Result<std::sync::Arc<T>, cordis::CordisError> {
+fn inject_or_get<T: cordis::Service + 'static>(
+    ctx: &std::sync::Arc<cordis::Context>,
+) -> Result<std::sync::Arc<T>, cordis::CordisError> {
     if let Some(v) = ctx.get::<T>() {
         return Ok(v);
     }
@@ -1010,7 +960,9 @@ impl cordis::Plugin for PipelinePlugin {
         ctx: &std::sync::Arc<cordis::Context>,
         _config: Self::Config,
     ) -> Result<std::sync::Arc<Self::Provides>, cordis::CordisError> {
-        ctx.provide(PipelineFanoutHandle::new(std::sync::Arc::new(FnPipelineFanout)));
+        ctx.provide(PipelineFanoutHandle::new(std::sync::Arc::new(
+            FnPipelineFanout,
+        )));
         let execution = inject_or_get::<crate::Execute>(ctx)?;
         let db = inject_or_get::<ares_store::PostgresClient>(ctx)?;
         Ok(std::sync::Arc::new(PipelineService::new(db, execution)))

@@ -80,7 +80,7 @@ pub async fn set_tenant_model_tier(
     Path((tenant_id, tier_name)): Path<(String, String)>,
     Json(req): Json<db_tiers::SetTenantModelTierRequest>,
 ) -> Result<Json<db_tiers::TenantModelTier>> {
-    if !ctx.get::<ares_llm::ProviderRegistry>().expect("not provided")
+    if !ctx.get::<ares_llm::Llm>().expect("not provided")
         .has_provider_for_tenant(&req.provider_name, Some(&tenant_id))
     {
         return Err(HttpError::from(AppError::InvalidInput(format!(

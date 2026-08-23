@@ -71,42 +71,85 @@ impl RegistryService {
     ) -> Result<FiberId, CordisError> {
         let tid = TypeId::of::<P::Provides>();
         let isolate = ctx.isolate_label(tid);
-        let key = (tid, isolate.clone());
-        {
-            let provided = self.provided.read();
-            if provided.contains_key(&key) {
+        let key = (tid, isolate);
+        if let Some(existing) = self.provided.read().get(&key).copied() {
+            let active = self
+                .fibers
+                .read()
+                .get(&existing)
+                .map(|fiber| {
+                    matches!(
+                        fiber.state(),
+                        crate::FiberState::Active { .. }
+                            | crate::FiberState::Loading
+                            | crate::FiberState::Reloading
+                    )
+                })
+                .unwrap_or(false);
+            if active {
                 return Err(CordisError::Configuration(format!(
                     "duplicate provider for {:?}",
                     tid
                 )));
             }
+            self.provided.write().remove(&key);
         }
+
         let fid = self.next_fiber_id();
         let fiber = Arc::new(Fiber::new());
-        // The fiber that represents this registration is tracked from the
-        // moment it starts Loading so a later failure is observable as Failed
-        // (guarded withdrawal per Cordis). A failure keeps the fiber in the
-        // registry but never records a provider mapping.
         fiber.set_state(crate::FiberState::Loading);
+        fiber.set_reload_context(ctx);
+        fiber.set_id(fid);
         self.fibers.write().insert(fid, fiber.clone());
-        let provides = match plugin.apply(ctx, config) {
-            Ok(p) => p,
-            Err(e) => {
+
+        let config_value = serde_json::to_value(&config).map_err(|error| {
+            let message = format!("cannot serialize plugin config: {error}");
+            fiber.set_state(crate::FiberState::Failed {
+                error: Some(message.clone()),
+            });
+            CordisError::Configuration(message)
+        })?;
+        let plugin = Arc::new(plugin);
+        let weak_fiber = Arc::downgrade(&fiber);
+        fiber.set_reload_runner(Box::new(move |ctx| {
+            let config =
+                serde_json::from_value::<P::Config>(config_value.clone()).map_err(|error| {
+                    CordisError::Configuration(format!("cannot deserialize plugin config: {error}"))
+                })?;
+            let owner = weak_fiber
+                .upgrade()
+                .ok_or_else(|| CordisError::Fiber("registration fiber was dropped".into()))?;
+            let provides = ctx.with_provider_fiber(&owner, || plugin.apply(ctx, config))?;
+            let healthy = provides.check();
+            ctx.provide_on_fiber(provides, &owner);
+            Ok(healthy)
+        }));
+
+        let healthy = match fiber.run_runner(ctx) {
+            Ok(healthy) => healthy,
+            Err(error) => {
                 fiber.set_state(crate::FiberState::Failed {
-                    error: Some(e.to_string()),
+                    error: Some(error.to_string()),
                 });
-                return Err(e);
+                return Err(error);
             }
         };
-        fiber.set_state(crate::FiberState::Active {
-            epoch: String::new(),
+        let epoch = fiber.compute_epoch(ctx);
+        fiber.set_epoch(epoch.clone());
+        fiber.set_state(if healthy {
+            crate::FiberState::Active { epoch }
+        } else {
+            crate::FiberState::Inactive { error: None }
         });
-        // Insert the service into the context. The context tracks its own
-        // version and undo on its fiber, while the registry tracks the fiber
-        // that represents this registration.
-        ctx.provide_arc(provides);
-
         self.provided.write().insert(key, fid);
+
+        if let Some(reflect) = ctx.get::<crate::ReflectService>() {
+            for dependency in fiber.injected_type_ids() {
+                reflect.register_dependent(dependency, fid);
+            }
+            let _ = reflect.ensure_notifier(tid);
+            reflect.register_fiber(fid, fiber.clone(), tid);
+        }
         Ok(fid)
     }
 
@@ -163,7 +206,7 @@ pub static REGISTRY_PLUGINS: [fn(&Arc<Context>) -> Result<FiberId, CordisError>]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, Service};
+    use crate::{Context, FiberState, Service};
 
     #[derive(Debug)]
     struct FooService(pub i32);
@@ -259,10 +302,15 @@ mod tests {
             .register(&ctx, FailingPlugin, ())
             .expect_err("failing plugin should be rejected");
         assert!(err.to_string().contains("intentional failure"));
-        let existing = registry.get_fiber(1).expect("failed fiber should be tracked");
+        let existing = registry
+            .get_fiber(1)
+            .expect("failed fiber should be tracked");
         match existing.state() {
             FiberState::Failed { error } => {
-                assert!(error.as_deref().unwrap_or("").contains("intentional failure"));
+                assert!(error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("intentional failure"));
             }
             other => panic!("expected Failed state, got {other:?}"),
         }
@@ -335,8 +383,12 @@ mod tests {
     /// Shared helper that verifies a plugin registers, its fiber is tracked,
     /// and the provided service is retrievable via `ctx.get`. Extracted to
     /// eliminate near-duplicate test bodies (88% alike) reported by rust-doctor.
-    fn assert_plugin_retrievable<T, P>(registry: &RegistryService, ctx: &Arc<Context>, plugin: P, expect: impl FnOnce(&T))
-    where
+    fn assert_plugin_retrievable<T, P>(
+        registry: &RegistryService,
+        ctx: &Arc<Context>,
+        plugin: P,
+        expect: impl FnOnce(&T),
+    ) where
         T: Service + std::fmt::Debug,
         P: Plugin<Provides = T, Config = ()>,
     {
@@ -361,6 +413,102 @@ mod tests {
         assert_eq!(registry.len(), 1);
     }
 
+    #[tokio::test]
+    async fn registration_fiber_disposal_removes_only_its_service() {
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+        let foo = registry
+            .register(&ctx, FooPlugin, ())
+            .expect("foo registration");
+        let bar = registry
+            .register(&ctx, BarPlugin, ())
+            .expect("bar registration");
+        assert!(ctx.get::<FooService>().is_some());
+        assert!(ctx.get::<BarService>().is_some());
+        registry.get_fiber(foo).unwrap().dispose().await;
+        assert!(ctx.get::<FooService>().is_none());
+        assert_eq!(ctx.get::<BarService>().unwrap().0, 99);
+        assert!(matches!(
+            registry.get_fiber(bar).unwrap().state(),
+            FiberState::Active { .. }
+        ));
+        registry.get_fiber(foo).unwrap().refresh(&ctx).await;
+        assert!(ctx.get::<FooService>().is_none());
+    }
+
+    struct Dependency;
+    impl Service for Dependency {}
+
+    struct CountingPlugin {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Plugin for CountingPlugin {
+        type Config = ();
+        type Provides = FooService;
+
+        fn apply(
+            &self,
+            _ctx: &Arc<Context>,
+            _cfg: Self::Config,
+        ) -> Result<Arc<Self::Provides>, CordisError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Arc::new(FooService(7)))
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_reruns_provider_after_dependency_version_change() {
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fid = registry
+            .register(
+                &ctx,
+                CountingPlugin {
+                    calls: calls.clone(),
+                },
+                (),
+            )
+            .expect("registration");
+        let fiber = registry.get_fiber(fid).unwrap();
+        fiber.declare_inject::<Dependency>();
+        ctx.provide(Dependency);
+        fiber.refresh(&ctx).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(matches!(fiber.state(), FiberState::Active { .. }));
+    }
+
+    #[tokio::test]
+    async fn missing_dependency_deactivates_then_provide_reactivates() {
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+        let fid = registry
+            .register(&ctx, FooPlugin, ())
+            .expect("registration");
+        let fiber = registry.get_fiber(fid).unwrap();
+        fiber.declare_inject::<Dependency>();
+        fiber.refresh(&ctx).await;
+        assert!(matches!(fiber.state(), FiberState::Inactive { .. }));
+        assert!(ctx.get::<FooService>().is_none());
+        ctx.provide(Dependency);
+        fiber.refresh(&ctx).await;
+        assert!(matches!(fiber.state(), FiberState::Active { .. }));
+        assert!(ctx.get::<FooService>().is_some());
+    }
+
+    #[test]
+    fn isolate_lookup_does_not_cross_realms() {
+        let root = Context::new_root();
+        root.provide(FooService(1));
+        let tenant = root.isolate::<FooService>("tenant:a");
+        assert!(tenant.get::<FooService>().is_none());
+        tenant.provide(FooService(2));
+        assert_eq!(tenant.get::<FooService>().unwrap().0, 2);
+        let other = root.isolate::<FooService>("tenant:b");
+        assert!(other.get::<FooService>().is_none());
+    }
+
     #[test]
     fn plugin_alias_behaves_like_register() {
         // Intentionally spelled out without the shared helper to keep the two
@@ -372,7 +520,9 @@ mod tests {
             .plugin(&ctx, FooPlugin, ())
             .expect("plugin alias ok");
         assert!(registry.get_fiber(fid).is_some());
-        let svc = ctx.get::<FooService>().expect("FooService should be present");
+        let svc = ctx
+            .get::<FooService>()
+            .expect("FooService should be present");
         assert_eq!(svc.0, 1);
         // Extra distinct check: FooService isolate should not have created BarService.
         assert!(ctx.get::<BarService>().is_none());

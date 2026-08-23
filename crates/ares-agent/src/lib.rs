@@ -85,7 +85,8 @@ pub mod skills;
 #[cfg(feature = "workflows")]
 pub mod workflows;
 pub use execution::{
-    tenant_scope, user_id_from_ctx, AgentRequest, AgentSource, Execute, ExecutionResult, RunTracker,
+    request_tenant_ctx, request_user_scope, tenant_scope, user_id_from_ctx, AgentRequest,
+    AgentSource, Execute, ExecutionResult, RunTracker,
 };
 pub use admit::admit;
 pub use plugins::register_plugins;

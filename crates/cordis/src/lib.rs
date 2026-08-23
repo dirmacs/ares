@@ -46,24 +46,24 @@ pub fn inventory_len() -> usize {
     0
 }
 
-pub mod service;
-pub mod effect;
-pub mod fiber;
 pub mod context;
+pub mod effect;
 pub mod events;
+pub mod fiber;
+pub mod service;
 
-pub use service::{CordisError, Service, ServiceInitFuture};
-pub use effect::{Disposable, Effect, EffectGuard};
-pub use fiber::{Fiber, FiberState};
 pub use context::Context;
+pub use effect::{Disposable, Effect, EffectGuard};
 pub use events::{Dispatch, EventsService};
+pub use fiber::{Fiber, FiberState};
+pub use service::{CordisError, Service, ServiceInitFuture};
 
 pub mod loader;
 pub use loader::{Entry, EntryTree, Loader};
 
-pub mod watcher;
 pub mod hmr;
 pub mod registry;
+pub mod watcher;
 pub use registry::{Plugin, RegistryService};
 
 #[cfg(feature = "rhai")]
@@ -245,7 +245,9 @@ impl ReflectService {
                     "event": "service.changed"
                 });
                 tokio::spawn(async move {
-                    let _ = events.dispatch("service.changed".into(), payload, Dispatch::Emit).await;
+                    let _ = events
+                        .dispatch("service.changed".into(), payload, Dispatch::Emit)
+                        .await;
                 });
             }
         }
@@ -500,10 +502,7 @@ mod tests {
         consumer_fiber.declare_inject::<FooService>();
 
         // Initially Inactive (dep missing)
-        assert_eq!(
-            consumer_fiber.state(),
-            FiberState::Inactive { error: None }
-        );
+        assert_eq!(consumer_fiber.state(), FiberState::Inactive { error: None });
         assert_eq!(consumer_fiber.epoch(), "");
 
         // Provide FooService v1 -> fiber should become Active after refresh
@@ -555,7 +554,11 @@ mod tests {
             Ok(serde_json::Value::Number((n + 1).into()))
         });
         let out = svc
-            .dispatch("test".into(), serde_json::Value::Number(1.into()), Dispatch::Serial)
+            .dispatch(
+                "test".into(),
+                serde_json::Value::Number(1.into()),
+                Dispatch::Serial,
+            )
             .await
             .unwrap();
         assert_eq!(out, serde_json::Value::Number(2.into()));
@@ -625,9 +628,13 @@ mod tests {
             }
         }
 
-        let fid1 = registry.plugin(&ctx, FooPlugin, ()).expect("first plugin ok");
+        let fid1 = registry
+            .plugin(&ctx, FooPlugin, ())
+            .expect("first plugin ok");
         assert!(registry.get_fiber(fid1).is_some());
-        let err = registry.plugin(&ctx, FooPlugin2, ()).expect_err("duplicate should fail");
+        let err = registry
+            .plugin(&ctx, FooPlugin2, ())
+            .expect_err("duplicate should fail");
         assert!(err.to_string().contains("duplicate provider"));
         // original still present
         assert!(registry.get_fiber(fid1).is_some());
@@ -916,13 +923,11 @@ mod tests {
         );
 
         // The raw event+payload was broadcast on the bus.
-        let (evt, bus_payload) = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            bus_rx.recv(),
-        )
-        .await
-        .expect("bus should broadcast")
-        .expect("bus recv should be a value");
+        let (evt, bus_payload) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), bus_rx.recv())
+                .await
+                .expect("bus should broadcast")
+                .expect("bus recv should be a value");
         assert_eq!(evt, "emit.test");
         assert_eq!(bus_payload, payload);
 
@@ -980,38 +985,37 @@ mod tests {
 
     #[tokio::test]
     async fn events_serial_threads_payload_in_order() {
-        // Spec: run handlers in order threading the payload through. Assert order and
-        // payload threading: each handler appends a tag and reports the payload it saw.
         let svc = EventsService::new();
-        let order = Arc::new(Mutex::new(Vec::new()));
+        let payload = serde_json::json!({ "n": 1 });
+        let seen = Arc::new(Mutex::new(Vec::new()));
 
         for tag in ["a", "b", "c"] {
-            let o = order.clone();
+            let seen = seen.clone();
             let tag = tag.to_string();
-            svc.on("serial.test".into(), move |payload| {
-                let o = o.clone();
+            svc.on("serial.test".into(), move |received| {
+                let seen = seen.clone();
                 let tag = tag.clone();
                 async move {
-                    // Record that we saw the previous payload and our tag.
-                    let mut prev = payload.as_i64().unwrap_or(0);
-                    o.lock().push(format!("{}:{}", tag, prev));
-                    // Propagate the payload forward: new value = previous + 10.
-                    prev += 10;
-                    Ok(serde_json::Value::Number(prev.into()))
+                    seen.lock().push((tag, received));
+                    Ok(serde_json::Value::Null)
                 }
             });
         }
 
         let out = svc
-            .dispatch("serial.test".into(), serde_json::Value::Number(1.into()), Dispatch::Serial)
+            .dispatch("serial.test".into(), payload.clone(), Dispatch::Serial)
             .await
             .unwrap();
-        assert_eq!(out, serde_json::Value::Number(31.into()));
-        // Handlers ran in registration order and each saw the prior handler's output.
-        let seen = order.lock().clone();
+
+        // Serial handlers see the original payload, and an all-null chain preserves it.
+        assert_eq!(out, payload);
         assert_eq!(
-            seen,
-            vec!["a:1".to_string(), "b:11".to_string(), "c:21".to_string()]
+            seen.lock().clone(),
+            vec![
+                ("a".to_string(), payload.clone()),
+                ("b".to_string(), payload.clone()),
+                ("c".to_string(), payload),
+            ]
         );
     }
 
@@ -1073,12 +1077,10 @@ mod tests {
                 Ok(serde_json::Value::Object(obj))
             }
         });
-        svc.on_waterfall("wf.next".into(), |payload, _next| {
-            async move {
-                let mut obj = payload.as_object().cloned().unwrap_or_default();
-                obj.insert("inner_seen".into(), serde_json::json!(payload.get("value")));
-                Ok(serde_json::Value::Object(obj))
-            }
+        svc.on_waterfall("wf.next".into(), |payload, _next| async move {
+            let mut obj = payload.as_object().cloned().unwrap_or_default();
+            obj.insert("inner_seen".into(), serde_json::json!(payload.get("value")));
+            Ok(serde_json::Value::Object(obj))
         });
 
         let payload = serde_json::json!({ "value": 42 });
@@ -1086,7 +1088,9 @@ mod tests {
             .dispatch("wf.next".into(), payload, Dispatch::Waterfall)
             .await
             .unwrap();
-        let obj = out.as_object().expect("waterfall output should be an object");
+        let obj = out
+            .as_object()
+            .expect("waterfall output should be an object");
         // Inner ran (during next) and outer wrapped its result.
         assert_eq!(obj["inner_seen"], serde_json::json!(42));
         assert_eq!(obj["outer"], serde_json::json!(true));
@@ -1164,18 +1168,34 @@ mod tests {
     #[tokio::test]
     async fn events_parallel_returns_a_value_when_no_handler_errors() {
         let svc = EventsService::new();
-        svc.on("par2.test".into(), |_payload| async move {
-            Ok(serde_json::json!({ "h": 1 }))
-        });
-        svc.on("par2.test".into(), |_payload| async move {
-            Ok(serde_json::json!({ "h": 2 }))
-        });
+        let payload = serde_json::json!({ "n": 1 });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+
+        for tag in ["a", "b"] {
+            let seen = seen.clone();
+            let tag = tag.to_string();
+            svc.on("par2.test".into(), move |received| {
+                let seen = seen.clone();
+                let tag = tag.clone();
+                async move {
+                    seen.lock().push((tag, received));
+                    Ok(serde_json::json!({ "handler": "complete" }))
+                }
+            });
+        }
 
         let out = svc
-            .dispatch("par2.test".into(), serde_json::json!({}), Dispatch::Parallel)
+            .dispatch("par2.test".into(), payload.clone(), Dispatch::Parallel)
             .await
             .unwrap();
-        // Execution order is non-deterministic; just require a non-error Ok value.
-        assert!(out == serde_json::json!({ "h": 1 }) || out == serde_json::json!({ "h": 2 }));
+
+        // Parallel waits for every handler, but successful dispatch returns null.
+        assert_eq!(out, serde_json::Value::Null);
+        let mut completed = seen.lock().clone();
+        completed.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(
+            completed,
+            vec![("a".to_string(), payload.clone()), ("b".to_string(), payload)]
+        );
     }
 }

@@ -1,4 +1,6 @@
 use ares_store::tenants::TenantDb;
+use ares_agent::admit::{admit_with_details, quota_exceeded, AdmissionError, UsagePeriod};
+use cordis::{Context, EventsService};
 use ares_types::models::{QuotaExceeded, TenantContext};
 use axum::{
     extract::Request,
@@ -74,7 +76,7 @@ pub(crate) fn check_quota(
     monthly_usage: u64,
     daily_usage: u64,
 ) -> Option<QuotaExceeded> {
-    tenant_ctx.admit(monthly_usage, daily_usage).err()
+    quota_exceeded(tenant_ctx, monthly_usage, daily_usage)
 }
 
 fn auth_error_response(err: ApiKeyAuthError) -> Response {
@@ -128,25 +130,38 @@ pub async fn api_key_auth_middleware(req: Request, next: Next) -> Response {
         }
     };
 
-    let monthly_usage = match tenant_db.get_monthly_requests(&tenant_ctx.tenant_id).await {
-        Ok(m) => m,
-        Err(_) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to check usage");
-        }
-    };
+    let base_ctx = req
+        .extensions()
+        .get::<Arc<Context>>()
+        .cloned()
+        .unwrap_or_else(Context::new_root);
+    let admission_ctx = base_ctx.with_intercept(tenant_ctx.clone());
+    if admission_ctx.get::<TenantDb>().is_none() {
+        admission_ctx.provide_arc(tenant_db.clone());
+    }
+    if admission_ctx.get::<EventsService>().is_none() {
+        admission_ctx.provide(EventsService::new());
+    }
 
-    let daily_usage = match tenant_db.get_daily_requests(&tenant_ctx.tenant_id).await {
-        Ok(d) => d,
-        Err(_) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to check rate limit",
-            );
+    if let Err(error) = admit_with_details(&admission_ctx).await {
+        match error {
+            AdmissionError::Quota(exceeded) => return quota_exceeded_response(exceeded),
+            AdmissionError::Usage { period: UsagePeriod::Monthly, .. } => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to check usage");
+            }
+            AdmissionError::Usage { period: UsagePeriod::Daily, .. } => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to check rate limit",
+                );
+            }
+            AdmissionError::Event(_) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to check usage",
+                );
+            }
         }
-    };
-
-    if let Err(exceeded) = tenant_ctx.admit(monthly_usage, daily_usage) {
-        return quota_exceeded_response(exceeded);
     }
 
     let mut req = req;
@@ -242,6 +257,21 @@ mod tests {
                     }
                 },
             ))
+    }
+
+    fn build_app_with_context(tenant_db: Arc<TenantDb>, ctx: Arc<Context>) -> Router {
+        Router::new()
+            .route("/protected", get(protected_handler))
+            .layer(axum::middleware::from_fn(api_key_auth_middleware))
+            .layer(axum::middleware::from_fn(move |mut req: Request<Body>, next: Next| {
+                let db = tenant_db.clone();
+                let ctx = ctx.clone();
+                async move {
+                    req.extensions_mut().insert(db);
+                    req.extensions_mut().insert(ctx);
+                    next.run(req).await
+                }
+            }))
     }
 
     async fn ensure_test_schema(db: &PostgresClient) {
@@ -774,6 +804,38 @@ mod tests {
             "Monthly request quota exceeded"
         );
     }
+    #[tokio::test]
+    async fn test_middleware_event_denial_maps_to_quota_response() {
+        let _db_guard = DB_TEST_LOCK.lock().await;
+
+        let db = Arc::new(create_test_db().await);
+        let tenant_db = Arc::new(TenantDb::new(db));
+        let (_tenant_id, api_key) = provision_tenant(&tenant_db, "auth-event-deny").await;
+        let ctx = Context::new_root();
+        let events = ctx.provide(cordis::EventsService::new());
+        events.on("agent.admit".into(), |_payload| async {
+            Ok::<_, cordis::CordisError>(serde_json::json!({ "deny": "monthly" }))
+        });
+        let app = build_app_with_context(tenant_db, ctx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response_error_message(response).await,
+            "Monthly request quota exceeded"
+        );
+    }
+
     #[tokio::test]
     async fn test_middleware_daily_quota_exceeded() {
         let _db_guard = DB_TEST_LOCK.lock().await;

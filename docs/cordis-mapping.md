@@ -249,7 +249,7 @@ impl Fiber {
 - `CommittedView` is `HashMap<TypeId, Arc<dyn Any>>` snapshot taken at `Active` entry; used for rollback on failure.
 - `notify` (see §7) triggers `Fiber::refresh()` via BFS over dependent fibers.
 
-The fiber lifecycle adds `Loading` and `Failed`: `Loading` marks a fiber mid-instantiation and `Failed` records a terminal error from a plugin activation. A failed fiber remains observable via the registry so a loader or admin tool can report why a registration did not become `Active`; a later successful re-registration starts a fresh fiber that reaches `Active`.
+The fiber lifecycle adds `Loading` and `Failed`: `Loading` marks a fiber mid-instantiation and `Failed` records a terminal error from a plugin activation. A failed fiber remains observable via the registry so a loader or admin tool can report why a registration did not become `Active`; a later successful re-registration starts a fresh fiber that reaches `Active`. In 0.9.0, `Fiber::refresh` still compares epochs, then undoes prior effects and reruns the registered plugin `apply` when a reload is required.
 
 File placement: `crates/cordis/src/fiber.rs` (spike) → later `crates/ares-context/src/fiber.rs`.
 
@@ -362,15 +362,15 @@ Mapping from TS Harness (12 layers, ~60 packages), in Rust, one crate suffices; 
 
 The `dispatch` implementation follows the five modes exactly:
 
-- `Emit`: every handler is spawned and not awaited (fire-and-forget); `dispatch` returns immediately after broadcasting the event and payload on the bus. A caller that needs completion should listen on the bus or use a oneshot channel, not await this.
-- `Parallel`: handlers run concurrently via `tokio::task::JoinSet`; the first error observed is propagated (a joined panic surfaces as `CordisError::Fiber`).
-- `Serial`: the payload is threaded through each handler in order; a handler error aborts the chain and propagates.
+- `Emit`: every handler is spawned and not awaited (fire-and-forget); `dispatch` returns JSON `null` after broadcasting the event and payload on the bus. A caller that needs completion should listen on the bus or use a oneshot channel, not await this.
+- `Parallel`: handlers run concurrently via `tokio::task::JoinSet`; successful dispatch returns JSON `null` (handler values are discarded). The first error observed is propagated (a joined panic surfaces as `CordisError::Fiber`).
+- `Serial`: handlers run in registration order with the original payload; the first non-null result bails and is returned. An all-null chain returns the original payload. `Serial` and `Bail` share this path.
 - `Bail`: stops at the first handler that returns a non-null result and returns that value without running later handlers; a null result means not bailing and the chain continues with the original payload.
 - `Waterfall`: each handler transforms the payload and passes the result to the next; a handler short-circuits by returning an object whose `waterfall_stop` field is `true`. This is the Rust static-dispatch analogue of the TS `next()` closure: instead of passing a `next` function, a handler opts out by returning the sentinel.
 
 ### Event-first skill execution (0.9.0)
 
-Each skill receives the request `Context`. Tool steps run on a tenant-scoped context created with `ctx.isolate::<Tools>(tenant_id)` and invoke `Tools::execute` through `tools.execute`. Every Skill `LlmCall` step uses strict `Llm::complete` through `llm.complete`; `SkillEngine` and `SkillsService` do not call providers directly or fall back to `generate_with_history`. When `EventsService` is present, `waterfall_around` wraps these capability calls.
+Each skill receives the request `Context`. Tool steps run on a tenant-scoped context created with `ctx.isolate::<Tools>(tenant_id)` and invoke `Tools::execute` through `tools.execute`. Every Skill `LlmCall` step uses strict `Llm::complete` through `llm.complete`; `SkillEngine` and `SkillsService` do not call providers directly or fall back to `generate_with_history`. When `EventsService` is present, `waterfall_around` wraps these capability calls. `Tools`, `Llm`, and `Execute` public methods stay on the same event-first path.
 
 ---
 
@@ -480,3 +480,48 @@ Per YAGNI (Phase 1, §8) + HMR deferral above:
 - If `async fn in trait` causes `dyn` issues, use `async_trait` only for that trait and document why (Rust 1.98 floor, 1.75+ stable for `async fn in trait`, but `dyn Service` may need `async_trait`, prefer `impl Future` return).
 - If `TypeId` + `HashMap` proves too coarse (downcasting ergonomics), evaluate `anymap`/`typemap` crates, but hand-rolled `HashMap<TypeId, Box<dyn Any>>` is sufficient for spike.
 - If epoch String concatenation bloats logs, switch to `sha2` digest and keep `:uid1:uid2` only in `tracing::debug!`.
+
+---
+
+## 14. Current architecture (0.9.0)
+
+This section describes the shipped 0.9.0 runtime. Earlier sections remain the Phase 0 mapping and 0.8 spike record.
+
+### Fiber refresh
+
+`Fiber::refresh` recomputes the dependency epoch. When the epoch changes, or the fiber is not already Active with dependencies satisfied, it undoes prior effects and reruns the registered plugin `apply`. Dispose still LIFO-undoes and passes through Unloading.
+
+### EventsService dispatch
+
+Shipped behavior in `crates/cordis/src/events.rs`:
+
+- `Emit`: fire-and-forget; `dispatch` returns JSON `null`.
+- `Parallel`: handlers run on a `JoinSet`; successful dispatch returns JSON `null`. Handler return values are not collected. The first join or handler error is propagated.
+- `Serial`: handlers run in registration order with the original payload. The first non-null result bails and is returned. An all-null chain returns the original payload. `Serial` and `Bail` share this path.
+- `Waterfall`: around-middleware with `next`; skipping `next` skips later handlers and core.
+
+### Event-first product path
+
+`Tools`, `Llm`, `Execute`, and skills stay event-first. Public methods go through `EventsService::waterfall_around` when the bus is on ctx (`tools.execute`, `llm.complete`, `agent.run`). Skill tool and LLM steps use those same events on a tenant isolate. They do not call providers or the tool registry directly.
+
+### agent.admit
+
+`agent.admit` (`Dispatch::Bail`) is the shared quota gate. `Execute::run`, JWT chat, API-key middleware, and MCP all dispatch it before work. The default handler denies monthly or daily quota for non-enterprise tenants. HTTP maps deny to 429; MCP maps deny to a tool error.
+
+### Store, Overlay, TOON
+
+The Store loader factory connects, runs `sqlx` migrations, and seeds default agent templates, then provides `Store`. Overlay fills empty loader `entry.config` from `ares.toml` sections and leaves non-empty configs unchanged. TOON file changes notify `TypeId::of::<Tools>()` and `TypeId::of::<Execute>()` so those fibers refresh.
+
+### TenantRealms
+
+Request paths open the tenant realm then intercept `TenantContext` (`open` then `with_intercept`). Background jobs open or isolate only and do not attach a request intercept. Admin tenant delete calls `TenantRealms::dispose` before SQL delete.
+
+### Facade
+
+The default `ares` crate has no axum. `Context`, `Execute`, `Tools`, `Llm`, and `register_plugins` are enough to run an agent. Enable feature `http` to pull `ares-http`.
+
+### Honest residuals
+
+- `ProviderRegistry` still exists because `Llm::new` / `AgentRegistry::from_config` still take one during construction.
+- `run_server` still instantiates Overlay first, fills empty loader configs, then instantiates remaining `config/cordis-entries.toml` entries.
+- Scheduler, pipeline, and trigger domain loops remain native ARES engines. They inject `Execute` and run behind it; they are not a second public agent API.

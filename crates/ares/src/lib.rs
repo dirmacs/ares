@@ -9,16 +9,24 @@
 //!
 //! Enable `http` to pull the optional Axum adapter. Default features are empty:
 //! no `axum`, no postgres, no engines.
+//!
+//! Public surface: [`Context`], [`Execute`], [`Tools`], [`Llm`], [`Store`]
+//! (postgres), [`Plugin`], [`Loader`], [`Dispatch`], [`register_plugins`].
+//! Construction helpers used by `tests/no_http.rs` stay exported so the
+//! library proof can provide in-memory [`Llm`] / [`Tools`] / [`Execute`].
 
-pub use ares_agent::{
-    admit, AgentConfig, AgentRegistry, AgentRequest, Execute, ExecutionResult,
-};
+pub use ares_agent::{AgentConfig, AgentRegistry, AgentRequest, Execute, ExecutionResult};
 pub use ares_llm::coordinator::ConversationMessage;
-pub use ares_llm::{ClientPool, Llm, LLMClient, LLMResponse, ProviderRegistry};
+pub use ares_llm::{ClientPool, Llm, LLMClient, LLMResponse};
 pub use ares_tools::{Calculator, Tool, Tools};
 pub use ares_types::types::ToolDefinition;
 pub use ares_types::{AppError, TenantContext, TenantTier};
 pub use cordis::{Context, Dispatch, Loader, Plugin, PluginRegistry, Service};
+
+/// Leftover: [`Llm::new`] and [`AgentRegistry::from_config`] still take a
+/// `ProviderRegistry`. `crates/ares/tests/no_http.rs` constructs one; keep
+/// this re-export until those constructors take only [`Llm`].
+pub use ares_llm::ProviderRegistry;
 
 /// Tenant database. Gated so default features do not enable postgres.
 #[cfg(feature = "postgres")]

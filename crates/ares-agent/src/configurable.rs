@@ -1527,7 +1527,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ares_tools::registry::Tool for EchoArgsTool {
+    impl ares_tools::Tool for EchoArgsTool {
         fn name(&self) -> &str {
             &self.name
         }
@@ -1543,7 +1543,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ares_tools::registry::Tool for MockTool {
+    impl ares_tools::Tool for MockTool {
         fn name(&self) -> &str {
             &self.name
         }
@@ -2168,7 +2168,7 @@ mod tests {
         // Register a tool that always errors
         struct FailingTool;
         #[async_trait]
-        impl ares_tools::registry::Tool for FailingTool {
+        impl ares_tools::Tool for FailingTool {
             fn name(&self) -> &str {
                 "fail_tool"
             }

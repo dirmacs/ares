@@ -348,8 +348,7 @@ mod tests {
         use crate::config::{AuthConfig, ServerConfig};
         use ares_agent::AgentRegistry;
         use ares_llm::ProviderRegistry;
-        use ares_tools::ToolRegistry;
-        use crate::{AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager};
+        use crate::{AresConfigManager, DynamicConfigManager};
         use std::collections::HashMap;
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;

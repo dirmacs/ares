@@ -87,13 +87,17 @@ pub async fn deep_research(
     let config = ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
     let (depth, max_iterations, model_name) = plan_research_run(&config, &payload);
 
-    let llm_client = match ctx.get::<ares_llm::ProviderRegistry>().expect("not provided")
-        .create_client_for_model_ctx(&ctx, model_name)
-        .await
-    {
-        Ok(client) => client,
-        Err(_) => ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>().expect("LlmFactory not provided").create_default().await?,
-    };
+    let llm = ctx.get::<ares_llm::Llm>().ok_or_else(|| {
+        HttpError::from(ares_types::types::AppError::Configuration(
+            "Llm service is not provided on the request context".to_string(),
+        ))
+    })?;
+    let model_ctx = ctx.with_intercept(ares_llm::ModelOverride {
+        model: model_name.to_string(),
+    });
+    let llm_client = llm
+        .get_client_boxed(&model_ctx, ares_llm::CapabilityRequirements::default())
+        .await?;
 
     let coordinator = ResearchCoordinator::new(llm_client, depth, max_iterations);
 

@@ -85,13 +85,16 @@ async fn intercept_jwt_tenant(
     tenant_ext: Option<Extension<ares_types::models::TenantContext>>,
 ) -> Arc<Context> {
     if let Some(Extension(tc)) = tenant_ext {
-        return ctx.with_intercept(tc);
+        return ares_agent::request_tenant_ctx(&ctx, tc);
     }
     let Some(tenant_id) = claims.tenant_id.clone() else {
-        return ctx;
+        return ares_agent::request_user_scope(&ctx, &claims.sub);
     };
     let tier = jwt_tenant_tier(&ctx, &tenant_id).await;
-    ctx.with_intercept(ares_types::models::TenantContext::new(tenant_id, tier))
+    ares_agent::request_tenant_ctx(
+        &ctx,
+        ares_types::models::TenantContext::new(tenant_id, tier),
+    )
 }
 
 /// Converts a resolved user agent record into runtime agent configuration.
@@ -255,20 +258,23 @@ pub async fn chat(
     let agent_type = if let Some(at) = payload.agent_type {
         at
     } else {
-        // Get router model from config, or use default
+        // Select the configured router model through the request-scoped Llm service.
         let config = ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
         let router_model = config
             .get_agent("router")
             .map(|a| a.model.as_str())
             .unwrap_or("fast");
-
-        let router_llm = match ctx.get::<ares_llm::ProviderRegistry>().expect("not provided")
-            .create_client_for_model_ctx(&ctx, router_model)
-            .await
-        {
-            Ok(client) => client,
-            Err(_) => ctx.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>().expect("LlmFactory not provided").create_default().await?,
-        };
+        let llm = ctx.get::<ares_llm::Llm>().ok_or_else(|| {
+            HttpError::from(AppError::Configuration(
+                "Llm service is not provided on the request context".to_string(),
+            ))
+        })?;
+        let router_ctx = ctx.with_intercept(ares_llm::ModelOverride {
+            model: router_model.to_string(),
+        });
+        let router_llm = llm
+            .get_client_boxed(&router_ctx, ares_llm::CapabilityRequirements::default())
+            .await?;
 
         let router = RouterAgent::new(router_llm);
         router.route(&payload.message, &agent_context).await?
@@ -385,9 +391,7 @@ async fn execute_agent(
     let exec_ctx = if let Some(tc) = ctx.get::<ares_types::models::TenantContext>() {
         ares_agent::tenant_scope(ctx, &tc.tenant_id)
     } else {
-        let label = format!("user:{}", context.user_id);
-        ctx.isolate::<ares_tools::Tools>(&label)
-            .isolate::<ares_agent::Execute>(&label)
+        ares_agent::request_user_scope(ctx, &context.user_id)
     };
     let exec_result = exec_svc.run(&req, &exec_ctx).await?;
     Ok((
@@ -461,32 +465,35 @@ impl From<ChatStreamQuery> for ChatRequest {
 pub async fn chat_stream(
     State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
+    tenant_ctx: Option<Extension<ares_types::models::TenantContext>>,
     Json(payload): Json<ChatRequest>,
 ) -> axum::response::Sse<
     impl futures::Stream<
         Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
     >,
 > {
-    chat_stream_response(ctx, claims, payload)
+    chat_stream_response(ctx, claims, payload, tenant_ctx)
 }
 
 /// Stream a chat response using EventSource-compatible query parameters.
 pub async fn chat_stream_get(
     State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
+    tenant_ctx: Option<Extension<ares_types::models::TenantContext>>,
     Query(query): Query<ChatStreamQuery>,
 ) -> axum::response::Sse<
     impl futures::Stream<
         Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
     >,
 > {
-    chat_stream_response(ctx, claims, query.into())
+    chat_stream_response(ctx, claims, query.into(), tenant_ctx)
 }
 
 fn chat_stream_response(
     ctx: Arc<Context>,
     claims: Claims,
     payload: ChatRequest,
+    tenant_ext: Option<Extension<ares_types::models::TenantContext>>,
 ) -> axum::response::Sse<
     impl futures::Stream<
         Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
@@ -512,7 +519,7 @@ fn chat_stream_response(
 
     let stream = async_stream::stream! {
         let mut state_clone = state_clone;
-        state_clone = intercept_jwt_tenant(state_clone, &claims_clone, None).await;
+        state_clone = intercept_jwt_tenant(state_clone, &claims_clone, tenant_ext.clone()).await;
         if let Err(e) = ares_agent::admit(&state_clone).await {
             let event = stream_error_event(&e.to_string(), None);
             yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
@@ -521,14 +528,23 @@ fn chat_stream_response(
         // Cordis: hold Context-derived services for stream (avoid temp dropped)
         let db = state_clone.get::<ares_store::PostgresClient>().expect("not provided");
         let config_manager = state_clone.get::<crate::overlay::AresConfigManager>().expect("not provided").clone();
-        let provider_registry = state_clone.get::<ares_llm::ProviderRegistry>().expect("not provided").clone();
-        let llm_factory = state_clone.get::<ares_llm::provider_registry::ConfigBasedLLMFactory>().expect("LlmFactory not provided").clone();
         let tenant_db = state_clone.get::<ares_store::TenantDb>().expect("not provided").clone();
         if let Some(e) = &validation_error {
             let event = stream_error_event(&e.to_string(), None);
             yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
             return;
         }
+        let llm = match state_clone.get::<ares_llm::Llm>() {
+            Some(llm) => llm,
+            None => {
+                let event = stream_error_event(
+                    "Llm service is not provided on the request context",
+                    Some(&context_id_clone),
+                );
+                yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
+                return;
+            }
+        };
 
         // Setup conversation
         if !db.conversation_exists(&context_id_clone).await.unwrap_or(false) {
@@ -577,22 +593,22 @@ fn chat_stream_response(
                 .map(|a| a.model.as_str())
                 .unwrap_or("fast");
 
-            let router_llm = match provider_registry
-                .create_client_for_model_ctx(&state_clone, router_model)
-                .await
-            {
+            let router_ctx = state_clone.with_intercept(ares_llm::ModelOverride {
+                model: router_model.to_string(),
+            });
+            let router_llm = match llm.get_client_boxed(
+                &router_ctx,
+                ares_llm::CapabilityRequirements::default(),
+            ).await {
                 Ok(client) => client,
-                Err(_) => match llm_factory.create_default().await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let event = stream_error_event(
-                            &format!("Failed to create LLM client: {}", e),
-                            Some(&context_id_clone),
-                        );
-                        yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
-                        return;
-                    }
-                },
+                Err(e) => {
+                    let event = stream_error_event(
+                        &format!("Failed to create LLM client: {}", e),
+                        Some(&context_id_clone),
+                    );
+                    yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
+                    return;
+                }
             };
 
             let router = RouterAgent::new(router_llm);
@@ -649,23 +665,23 @@ fn chat_stream_response(
             }
         };
 
-        // Get LLM client for streaming
-        let llm = match provider_registry
-            .create_client_for_model_ctx(&state_clone, &user_agent.model)
-            .await
-        {
-            Ok(c) => c,
-            Err(_) => match llm_factory.create_default().await {
-                Ok(c) => c,
-                Err(e) => {
-                    let event = stream_error_event(
-                        &format!("Failed to create LLM: {}", e),
-                        Some(&context_id_clone),
-                    );
-                    yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
-                    return;
-                }
-            },
+        // Get the configured agent model through the request-scoped Llm service.
+        let model_ctx = state_clone.with_intercept(ares_llm::ModelOverride {
+            model: user_agent.model.clone(),
+        });
+        let llm_client = match llm.get_client_boxed(
+            &model_ctx,
+            ares_llm::CapabilityRequirements::default(),
+        ).await {
+            Ok(client) => client,
+            Err(e) => {
+                let event = stream_error_event(
+                    &format!("Failed to create LLM: {}", e),
+                    Some(&context_id_clone),
+                );
+                yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
+                return;
+            }
         };
 
         // Build the prompt with system message and history
@@ -677,7 +693,7 @@ fn chat_stream_response(
         // Stream tokens
         use futures::StreamExt;
         let mut full_response = String::new();
-        match llm.stream(&full_prompt).await {
+        match llm_client.stream(&full_prompt).await {
             Ok(mut token_stream) => {
                 while let Some(token_result) = token_stream.next().await {
                     match token_result {
@@ -1237,5 +1253,68 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"error\":\"bad request\""));
         assert!(!json.contains("context_id"));
+    }
+
+    #[tokio::test]
+    async fn intercept_jwt_tenant_user_isolate_skips_dummy_tenant_context() {
+        let ctx = Context::new_root();
+        let claims = Claims {
+            sub: "user-1".into(),
+            email: "u@example.com".into(),
+            exp: 0,
+            iat: 0,
+            jti: String::new(),
+            tenant_id: None,
+        };
+        let scoped = intercept_jwt_tenant(ctx, &claims, None).await;
+        assert!(scoped.get::<ares_types::models::TenantContext>().is_none());
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<ares_agent::Execute>())
+                .as_deref(),
+            Some("user:user-1")
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn intercept_jwt_tenant_opens_realm_then_intercepts() {
+        let ctx = Context::new_root();
+        ctx.provide(ares_store::TenantRealms::new(
+            std::any::TypeId::of::<ares_tools::Tools>(),
+            std::any::TypeId::of::<ares_agent::Execute>(),
+        ));
+        let tc = ares_types::models::TenantContext::new(
+            "acme".into(),
+            ares_types::models::TenantTier::Pro,
+        );
+        let claims = Claims {
+            sub: "user-1".into(),
+            email: "u@example.com".into(),
+            exp: 0,
+            iat: 0,
+            jti: String::new(),
+            tenant_id: Some("acme".into()),
+        };
+        let scoped =
+            intercept_jwt_tenant(ctx.clone(), &claims, Some(Extension(tc))).await;
+        assert_eq!(
+            scoped
+                .get::<ares_types::models::TenantContext>()
+                .expect("intercept")
+                .tenant_id,
+            "acme"
+        );
+        let realm = ctx
+            .get::<ares_store::TenantRealms>()
+            .expect("TenantRealms")
+            .open(&ctx, "acme");
+        assert!(realm.get::<ares_types::models::TenantContext>().is_none());
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<ares_tools::Tools>())
+                .as_deref(),
+            Some("acme")
+        );
     }
 }

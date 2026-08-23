@@ -770,8 +770,10 @@ pub fn tenant_scope(ctx: &Arc<Context>, tenant_id: &str) -> Arc<Context> {
     if let Some(realms) = ctx.get::<ares_store::TenantRealms>() {
         return realms.open(ctx, tenant_id);
     }
+    // Only data-bearing services are realm-isolated. `Execute` is a shared
+    // stateless engine; isolating it hid the root instance and broke every
+    // request path resolving it post-scope (v1/chat 503 regression).
     ctx.isolate::<ares_tools::Tools>(tenant_id)
-        .isolate::<Execute>(tenant_id)
 }
 
 /// Request-path tenant: open the realm (or isolate) then intercept `TenantContext`.
@@ -787,7 +789,6 @@ pub fn request_tenant_ctx(
 pub fn request_user_scope(ctx: &Arc<Context>, user_id: &str) -> Arc<Context> {
     let label = format!("user:{user_id}");
     ctx.isolate::<ares_tools::Tools>(&label)
-        .isolate::<Execute>(&label)
 }
 
 /// Derive user/tenant scope: `Execute` isolate label (strip `tenant:`/`user:`),
@@ -1076,6 +1077,25 @@ mod tests {
     #[tokio::test]
     async fn execute_uses_ctx_tenant_without_request_field() {
         execute_with_tenant_context_intercept("acme").await;
+    }
+
+    #[tokio::test]
+    async fn request_tenant_ctx_keeps_root_execute_resolvable() {
+        // Regression guard for v1/chat: the handler resolves `Execute` from the
+        // tenant-scoped context. Root-provided Execute must stay visible inside
+        // the realm (Tools stays isolated; Execute is the shared engine).
+        let root = Context::new_root();
+        let _fid = root.plugin(cordis::EventsService::new()).await;
+        root.provide_arc(Arc::new(Execute::new()) as Arc<Execute>);
+        let tc = ares_types::models::TenantContext::new(
+            "acme".into(),
+            ares_types::models::TenantTier::Pro,
+        );
+        let scoped = crate::request_tenant_ctx(&root, tc);
+        assert!(
+            scoped.get::<Execute>().is_some(),
+            "root-provided Execute must resolve inside tenant scope"
+        );
     }
 
     #[tokio::test]

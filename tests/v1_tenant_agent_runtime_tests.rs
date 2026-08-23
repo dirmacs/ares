@@ -236,6 +236,8 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
     state.provide(ares_store::FleetSecrets::new());
         state.provide(ares_http::active_runs::ActiveRuns::new());
     state.provide_arc(skill_engine);
+    // v1 chat/run delegate to Execute (capability cutover); without it handlers 503.
+    state.provide_arc(Arc::new(ares_agent::execution::Execute::new()));
 
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))
@@ -253,6 +255,12 @@ async fn provision_tenant(tenant_db: &Arc<TenantDb>, prefix: &str) -> (String, S
         .create_tenant(unique_name(prefix), TenantTier::Enterprise)
         .await
         .expect("create tenant");
+    // Agent creation enforces the per-tenant model allowlist; seed it so the
+    // fixture's mock model is usable, matching production provisioning.
+    ares_store::tenant_allowlist::TenantAllowlistStore::new(tenant_db.pool())
+        .allow_model(&tenant.id, "mock-model")
+        .await
+        .expect("allow mock-model");
     let (_, api_key) = tenant_db
         .create_api_key(&tenant.id, format!("{}-key", prefix))
         .await
@@ -321,7 +329,7 @@ async fn test_v1_chat_falls_back_to_registry_when_tenant_agent_missing() {
         }))
         .await;
 
-    assert_eq!(response.status_code(), 200);
+    assert_eq!(response.status_code(), 200, "body: {}", response.text());
     let body: Value = response.json();
     assert_eq!(body["agent"], "product (registry)");
     assert_eq!(body["response"], "SYSTEM_PROMPT=registry-product-prompt");
@@ -427,20 +435,28 @@ async fn test_v1_chat_rejects_invalid_tenant_agent_config_without_fallback() {
     let (server, tenant_db) = create_v1_test_server().await;
     let (tenant_id, api_key) = provision_tenant(&tenant_db, "invalid-agent").await;
 
+    // The store rejects configs without `model` at insert time now; insert a
+    // valid one and corrupt it afterwards to simulate the legacy bad row.
     create_tenant_agent(
         tenant_db.pool(),
         &tenant_id,
         CreateTenantAgentRequest {
             agent_name: "product".to_string(),
-            display_name: "invalid product".to_string(),
+            display_name: "product to corrupt".to_string(),
             description: None,
             config: json!({
-                "system_prompt": "broken"
+                "model": "default",
+                "system_prompt": "to-be-corrupted"
             }),
         },
     )
     .await
-    .expect("insert invalid tenant agent");
+    .expect("insert valid tenant agent");
+    sqlx::query("UPDATE tenant_agents SET config = '{\"system_prompt\": \"broken\"}' WHERE tenant_id = $1 AND agent_name = 'product'")
+        .bind(&tenant_id)
+        .execute(tenant_db.pool())
+        .await
+        .expect("corrupt tenant agent config");
 
     let response = server
         .post("/api/v1/chat")

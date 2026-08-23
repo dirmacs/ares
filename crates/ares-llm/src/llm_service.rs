@@ -276,12 +276,6 @@ impl Llm {
         self.provider_registry()
     }
 
-    /// Clone the config-based factory when one was attached at construction.
-    #[allow(dead_code)]
-    pub(crate) fn factory(&self) -> Option<Arc<ConfigBasedLLMFactory>> {
-        self.factory.clone()
-    }
-
     /// Create with explicit breaker (e.g. `Open` for testing).
     pub fn with_breaker(
         provider_registry: Arc<ProviderRegistry>,
@@ -717,10 +711,6 @@ mod tests {
         );
         let llm = Llm::new(Arc::clone(&registry), pool, None).with_factory(Arc::clone(&factory));
         assert!(Arc::ptr_eq(&llm.provider_registry(), &registry));
-        assert!(Arc::ptr_eq(
-            &llm.factory().expect("factory attached"),
-            &factory
-        ));
     }
 
     #[tokio::test]

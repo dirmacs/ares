@@ -28,8 +28,10 @@ impl TenantRealms {
 
     /// Return the cached child for `tenant_id`, creating it on first open.
     ///
-    /// The child is `root.extend()` isolated on the Tools and Execute TypeIds.
-    /// No `TenantContext` intercept is applied.
+    /// The child is `root.extend()` isolated on the Tools TypeId only: tools
+    /// carry per-tenant data, while `Execute` is a stateless shared engine that
+    /// must stay resolvable from inside the realm (its tenancy comes from the
+    /// context it is handed). No `TenantContext` intercept is applied.
     pub fn open(&self, root: &Arc<Context>, tenant_id: &str) -> Arc<Context> {
         if let Some(existing) = self.realms.read().get(tenant_id) {
             return existing.clone();
@@ -38,10 +40,8 @@ impl TenantRealms {
         if let Some(existing) = map.get(tenant_id) {
             return existing.clone();
         }
-        let child = root
-            .extend()
-            .isolate_type(self.tools, tenant_id)
-            .isolate_type(self.execute, tenant_id);
+        let _ = self.execute;
+        let child = root.extend().isolate_type(self.tools, tenant_id);
         map.insert(tenant_id.to_string(), child.clone());
         child
     }

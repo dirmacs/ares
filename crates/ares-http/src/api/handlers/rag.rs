@@ -1,4 +1,3 @@
-use crate::HttpError;
 //! RAG (Retrieval Augmented Generation) API handlers.
 //!
 //! Provides endpoints for:
@@ -20,11 +19,12 @@ use crate::{
         RagDeleteCollectionResponse, RagIngestRequest, RagIngestResponse, RagSearchRequest,
         RagSearchResponse, RagSearchResult, Result,
     },
+    HttpError,
 };
 use axum::{extract::State, Json};
 use chrono::Utc;
-use std::sync::Arc;
 use cordis::Context;
+use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -77,8 +77,8 @@ fn filter_collections_by_allowed_sources(
 async fn construct_embedding_service() -> Result<Arc<EmbeddingService>> {
     // Pre-download ONNX model via lancor before fastembed tries with ureq
     let model = EmbeddingModelType::default();
-    let cache_dir = std::env::var("FASTEMBED_CACHE_DIR")
-        .unwrap_or_else(|_| ".fastembed_cache".to_string());
+    let cache_dir =
+        std::env::var("FASTEMBED_CACHE_DIR").unwrap_or_else(|_| ".fastembed_cache".to_string());
     let cache_path = std::path::PathBuf::from(&cache_dir);
 
     match lancor::hub::HubClient::with_cache_dir(cache_path.clone()) {
@@ -93,8 +93,7 @@ async fn construct_embedding_service() -> Result<Arc<EmbeddingService>> {
             ] {
                 // Build HF cache path
                 let folder = format!("models--{}", repo_id.replace('/', "--"));
-                let snapshot_dir =
-                    cache_path.join(&folder).join("snapshots").join("lancor");
+                let snapshot_dir = cache_path.join(&folder).join("snapshots").join("lancor");
                 let target = snapshot_dir.join(filename);
 
                 if target.exists()
@@ -184,22 +183,33 @@ pub async fn ingest(
 
     // Validate input
     if payload.collection.is_empty() {
-        return Err(HttpError::from(AppError::InvalidInput("Collection name required".to_string())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            "Collection name required".to_string(),
+        )));
     }
     if payload.content.is_empty() {
-        return Err(HttpError::from(AppError::InvalidInput("Content required".to_string())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            "Content required".to_string(),
+        )));
     }
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let allowlist_store = allowlist::TenantAllowlistStore::new(&pool);
     if !allowlist_store
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
     {
-        return Err(HttpError::from(AppError::Auth(format!(
-            "RAG source '{}' is not allowed for this tenant",
-            payload.collection
-        ).into())));
+        return Err(HttpError::from(AppError::Auth(
+            format!(
+                "RAG source '{}' is not allowed for this tenant",
+                payload.collection
+            )
+            .into(),
+        )));
     }
 
     // Scope collection to user for isolation
@@ -207,7 +217,10 @@ pub async fn ingest(
 
     // Get services
     let embedding_service = embedding_service_from_ctx(&ctx).await?;
-    let config = ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
+    let config = ctx
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config();
     let vector_path = &config.rag.vector.vector_path;
     let vector_store = vector_store_from_ctx(&ctx, vector_path).await?;
 
@@ -230,7 +243,9 @@ pub async fn ingest(
     let chunks = chunker.chunk_with_metadata(&payload.content);
 
     if chunks.is_empty() {
-        return Err(HttpError::from(AppError::InvalidInput("Content too small to chunk".to_string())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            "Content too small to chunk".to_string(),
+        )));
     }
 
     // Ensure collection exists
@@ -300,22 +315,36 @@ pub async fn search(
 ) -> Result<Json<RagSearchResponse>> {
     let start = Instant::now();
     // Respect RAG feature flag
-    if !ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config().rag.vector.enabled {
+    if !ctx
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config()
+        .rag
+        .vector
+        .enabled
+    {
         return Err(HttpError::from(AppError::FeatureDisabled(
-            "RAG feature is disabled. Set `[rag.vector] enabled = true` in ares.toml".into()
+            "RAG feature is disabled. Set `[rag.vector] enabled = true` in ares.toml".into(),
         )));
     }
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let allowlist_store = allowlist::TenantAllowlistStore::new(&pool);
     if !allowlist_store
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
     {
-        return Err(HttpError::from(AppError::Auth(format!(
-            "RAG source '{}' is not allowed for this tenant",
-            payload.collection
-        ).into())));
+        return Err(HttpError::from(AppError::Auth(
+            format!(
+                "RAG source '{}' is not allowed for this tenant",
+                payload.collection
+            )
+            .into(),
+        )));
     }
 
     // Validate input
@@ -324,16 +353,18 @@ pub async fn search(
 
     // Get services
     let embedding_service = embedding_service_from_ctx(&ctx).await?;
-    let config = ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
+    let config = ctx
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config();
     let vector_path = &config.rag.vector.vector_path;
     let vector_store = vector_store_from_ctx(&ctx, vector_path).await?;
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
-        return Err(HttpError::from(AppError::NotFound(format!(
-            "Collection '{}' not found",
-            payload.collection
-        ).into())));
+        return Err(HttpError::from(AppError::NotFound(
+            format!("Collection '{}' not found", payload.collection).into(),
+        )));
     }
 
     // Parse search strategy
@@ -503,34 +534,45 @@ pub async fn delete_collection(
 ) -> Result<Json<RagDeleteCollectionResponse>> {
     // Validate input
     if payload.collection.is_empty() {
-        return Err(HttpError::from(AppError::InvalidInput("Collection name required".to_string())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            "Collection name required".to_string(),
+        )));
     }
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let allowlist_store = allowlist::TenantAllowlistStore::new(&pool);
     if !allowlist_store
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
     {
-        return Err(HttpError::from(AppError::Auth(format!(
-            "RAG source '{}' is not allowed for this tenant",
-            payload.collection
-        ).into())));
+        return Err(HttpError::from(AppError::Auth(
+            format!(
+                "RAG source '{}' is not allowed for this tenant",
+                payload.collection
+            )
+            .into(),
+        )));
     }
 
     // Scope collection to user for isolation
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
-    let config = ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
+    let config = ctx
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config();
     let vector_path = &config.rag.vector.vector_path;
     let vector_store = vector_store_from_ctx(&ctx, vector_path).await?;
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
-        return Err(HttpError::from(AppError::NotFound(format!(
-            "Collection '{}' not found",
-            payload.collection
-        ).into())));
+        return Err(HttpError::from(AppError::NotFound(
+            format!("Collection '{}' not found", payload.collection).into(),
+        )));
     }
 
     // Get document count before deletion
@@ -563,7 +605,10 @@ pub async fn list_collections(
     State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<Vec<ares_store::CollectionInfo>>> {
-    let config = ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
+    let config = ctx
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config();
     let vector_path = &config.rag.vector.vector_path;
     let vector_store = vector_store_from_ctx(&ctx, vector_path).await?;
     let all_collections = vector_store.list_collections().await?;
@@ -579,7 +624,11 @@ pub async fn list_collections(
         })
         .collect();
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let allowlist_store = allowlist::TenantAllowlistStore::new(&pool);
     let db_sources = allowlist_store.list_rag_sources(&claims.sub).await?;
     let user_collections = filter_collections_by_allowed_sources(user_collections, &db_sources);

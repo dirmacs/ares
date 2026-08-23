@@ -3,6 +3,8 @@
 //! File-watch + `Fiber::reload` (`crate::watcher::watch_many`) remains the
 //! default production path. Enabling `--features hmr` additionally `dlopen`s a
 //! `.so`/`.dylib`/`.dll` on watcher events and calls `cordis_plugin_apply`.
+//! Rebuilds hot-swap because each load reads a process-unique copy of the
+//! library (glibc caches dlopen handles by path).
 //!
 //! **ABI contract:** the `.so` must be built with the same Rust toolchain as
 //! the server. The entry point is `extern "C"` and must not store the `ctx`
@@ -10,6 +12,8 @@
 //! [`HmrRegistry`] until drop (`dlclose` via RAII, no leak).
 
 use std::path::Path;
+#[cfg(feature = "hmr")]
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::{Context, CordisError};
@@ -55,11 +59,43 @@ pub fn load_plugin_so(
         )));
     }
 
+    // glibc caches dlopen handles by absolute path: re-loading an already
+    // loaded path hands back the SAME handle, silently ignoring rebuilds.
+    // Copy to a process-unique sibling first so every load is fresh.
+    let seq = HMR_LOAD_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let unique = path.with_file_name(format!(
+        "{}.{}.{}.hmr-load{ext}",
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("plugin"),
+        std::process::id(),
+        seq,
+    ));
+    std::fs::copy(path, &unique).map_err(|e| {
+        CordisError::Configuration(format!("HMR copy {} failed: {e}", path.display()))
+    })?;
+
     // SAFETY: caller guarantees ABI compatibility; documented above.
     let lib = unsafe {
-        Library::new(path).map_err(|e| {
-            CordisError::Configuration(format!("dlopen {} failed: {e}", path.display()))
-        })?
+        Library::new(&unique).map_err(|e| {
+            CordisError::Configuration(format!(
+                "dlopen {} (copy of {}) failed: {e}",
+                unique.display(),
+                path.display()
+            ))
+        })
+    };
+    let lib = match lib {
+        Ok(l) => l,
+        Err(e) => {
+            let _ = std::fs::remove_file(&unique);
+            return Err(e);
+        }
     };
 
     let rc = unsafe {
@@ -75,9 +111,13 @@ pub fn load_plugin_so(
         return Err(CordisError::Configuration(format!("HMR entry {rc} != 0")));
     }
 
-    tracing::info!(path = %path.display(), "HMR plugin loaded via libloading");
-    Ok(HmrLibrary::new(lib))
+    tracing::info!(path = %path.display(), via = %unique.display(), "HMR plugin loaded via libloading");
+    Ok(HmrLibrary::new(lib, Some(unique)))
 }
+
+/// Monotonic suffix source for per-process unique load copies.
+#[cfg(feature = "hmr")]
+static HMR_LOAD_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// `dlopen`, invoke the entry, and retain the library on `ctx`.
 #[cfg(feature = "hmr")]
@@ -109,6 +149,11 @@ pub fn apply_plugin_so_if_dylib(ctx: &Arc<Context>, path: &Path) -> Result<bool,
 #[cfg(feature = "hmr")]
 pub struct HmrLibrary {
     _lib: libloading::Library,
+    /// Process-unique copy backing `_lib`; removed on drop (best effort).
+    /// On Windows the mapped file may not be removable until after dlclose —
+    /// acceptable: stale copies live in the watched directory's namespace
+    /// only until the next successful unload cycle.
+    temp_path: Option<PathBuf>,
 }
 
 #[cfg(feature = "hmr")]
@@ -121,8 +166,23 @@ impl std::fmt::Debug for HmrLibrary {
 #[cfg(feature = "hmr")]
 impl HmrLibrary {
     /// Retain a loaded library so it is not unloaded until this holder drops.
-    pub fn new(lib: libloading::Library) -> Self {
-        Self { _lib: lib }
+    pub fn new(lib: libloading::Library, temp_path: Option<PathBuf>) -> Self {
+        Self {
+            _lib: lib,
+            temp_path,
+        }
+    }
+}
+
+#[cfg(feature = "hmr")]
+impl Drop for HmrLibrary {
+    fn drop(&mut self) {
+        if let Some(tmp) = self.temp_path.take() {
+            // Best effort: ignore errors (mapped files on Windows, races with
+            // an external observer deleting the copy first).
+            let _ = std::fs::remove_file(&tmp);
+        }
+        // `_lib` drops right after this body → dlclose follows cleanup.
     }
 }
 
@@ -161,7 +221,7 @@ impl crate::Service for HmrRegistry {
     }
 }
 
-/// No-op when `hmr` feature is disabled — documents the deferral.
+/// Errors when `hmr` feature is disabled — dylib loading is strictly opt-in.
 #[cfg(not(feature = "hmr"))]
 pub fn load_plugin_so(
     _so_path: impl AsRef<Path>,
@@ -169,7 +229,7 @@ pub fn load_plugin_so(
     _entry_symbol: &[u8],
 ) -> Result<(), CordisError> {
     Err(CordisError::Configuration(
-        "HMR via libloading is deferred (ABI fragility); use file-watch + Fiber::reload via watcher (90% value). Enable with --features hmr".into(),
+        "HMR dylib loading is disabled by default; use file-watch + Fiber::reload via watcher. Enable --features hmr (same-toolchain cdylibs are required)".into(),
     ))
 }
 
@@ -217,6 +277,45 @@ mod tests {
         apply_plugin_so(&ctx, &so, DEFAULT_ENTRY_SYMBOL).expect("test plugin should apply");
         let registry = ctx.get::<HmrRegistry>().expect("HmrRegistry after apply");
         assert_eq!(registry.len(), 1);
+    }
+
+    // Simulates a rebuild over the SAME path: each apply must load a fresh
+    // copy (unique per-process name), so two loads yield registry len 2 —
+    // impossible with glibc's by-path handle cache. Temp copies are cleaned
+    // when the registry (and its context) drops.
+    #[cfg(feature = "hmr")]
+    #[test]
+    fn rebuild_same_path_loads_twice_via_unique_copy() {
+        let so = compile_test_plugin();
+        let dir = so.parent().expect("so parent").to_path_buf();
+        let fixed = dir.join(lib_name("watched_plugin"));
+        std::fs::copy(&so, &fixed).expect("stage watched plugin");
+
+        let ctx = Context::new_root();
+        apply_plugin_so(&ctx, &fixed, DEFAULT_ENTRY_SYMBOL).expect("first load");
+        // Overwrite the same path, as a rebuild would.
+        std::fs::copy(&so, &fixed).expect("rebuild overwrite");
+        apply_plugin_so(&ctx, &fixed, DEFAULT_ENTRY_SYMBOL).expect("second load");
+
+        let registry = ctx.get::<HmrRegistry>().expect("HmrRegistry after applies");
+        assert_eq!(
+            registry.len(),
+            2,
+            "rebuild over same path must swap, not cache-hit"
+        );
+
+        drop(registry);
+        drop(ctx); // last Arc to the service: HmrLibrary Drop removes temp copies
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .expect("list dir")
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".hmr-load"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp copies must be cleaned: {leftovers:?}"
+        );
     }
 
     #[cfg(feature = "hmr")]

@@ -37,25 +37,25 @@ pub mod active_runs;
 pub mod observability;
 
 #[cfg(feature = "postgres")]
-pub use ares_agent::trigger as trigger_engine;
-#[cfg(feature = "postgres")]
 pub use ares_agent::skills as skill_engine;
 #[cfg(any(feature = "postgres", feature = "skills"))]
 pub use ares_agent::skills;
 #[cfg(feature = "postgres")]
+pub use ares_agent::trigger as trigger_engine;
+#[cfg(feature = "postgres")]
 pub use ares_agent::workflows;
 pub use ares_agent::EmergencyStop;
 
+pub use ares_llm::ConfigBasedLLMFactory;
+pub use ares_types::{models, types};
 pub use config::{AuthConfig, ServerConfig};
 pub use error::{app_error_into_response, HttpError};
 pub use overlay::{
     AresConfig, AresConfigManager, ConfigError, Overlay, OverlayConfig, OverlayPlugin,
 };
-pub use toon_config::DynamicConfigManager;
 #[cfg(feature = "postgres")]
 pub use pipeline_hook::{PipelineFanout, PipelineFanoutHandle, PipelineOrigin};
-pub use ares_types::{models, types};
-pub use ares_llm::ConfigBasedLLMFactory;
+pub use toon_config::DynamicConfigManager;
 
 /// Compatibility paths so moved handlers can keep `crate::agents` / `crate::db`.
 pub use ares_agent as agents;
@@ -185,9 +185,7 @@ fn factory_auth(
     let auth = if let Some(mgr) = ctx.get::<AresConfigManager>() {
         let cfg = mgr.config();
         let jwt_secret = cfg.jwt_secret().map_err(|e| {
-            CordisError::Configuration(format!(
-                "JWT_SECRET environment variable must be set: {e}"
-            ))
+            CordisError::Configuration(format!("JWT_SECRET environment variable must be set: {e}"))
         })?;
         AuthService::new(
             jwt_secret,
@@ -195,15 +193,14 @@ fn factory_auth(
             cfg.auth.jwt_refresh_expiry,
         )
     } else {
-        let auth_cfg: AuthConfig = if config.is_null()
-            || config.as_object().is_some_and(|o| o.is_empty())
-        {
-            AuthConfig::default()
-        } else {
-            serde_json::from_value(config.clone()).map_err(|e| {
-                CordisError::Configuration(format!("invalid AuthService config: {e}"))
-            })?
-        };
+        let auth_cfg: AuthConfig =
+            if config.is_null() || config.as_object().is_some_and(|o| o.is_empty()) {
+                AuthConfig::default()
+            } else {
+                serde_json::from_value(config.clone()).map_err(|e| {
+                    CordisError::Configuration(format!("invalid AuthService config: {e}"))
+                })?
+            };
         let jwt_secret = std::env::var(&auth_cfg.jwt_secret_env).map_err(|_| {
             CordisError::Configuration(format!(
                 "JWT_SECRET environment variable must be set ({})",
@@ -224,19 +221,17 @@ fn factory_http(
     ctx: &Arc<Context>,
     config: &serde_json::Value,
 ) -> std::result::Result<cordis::FiberId, CordisError> {
-    let server_cfg: ServerConfig = if config.is_null()
-        || config.as_object().is_some_and(|o| o.is_empty())
-    {
-        if let Some(mgr) = ctx.get::<AresConfigManager>() {
-            mgr.config().server.clone()
+    let server_cfg: ServerConfig =
+        if config.is_null() || config.as_object().is_some_and(|o| o.is_empty()) {
+            if let Some(mgr) = ctx.get::<AresConfigManager>() {
+                mgr.config().server.clone()
+            } else {
+                ServerConfig::default()
+            }
         } else {
-            ServerConfig::default()
-        }
-    } else {
-        serde_json::from_value(config.clone()).map_err(|e| {
-            CordisError::Configuration(format!("invalid Http config: {e}"))
-        })?
-    };
+            serde_json::from_value(config.clone())
+                .map_err(|e| CordisError::Configuration(format!("invalid Http config: {e}")))?
+        };
     let _ = server_cfg;
     block_on_plugin(
         ctx,
@@ -258,6 +253,16 @@ pub fn register_plugins(reg: &PluginRegistry) {
 inventory::submit! { cordis::CordisInventory { name: "Http" } }
 #[cfg(all(feature = "inventory", feature = "postgres"))]
 inventory::submit! { cordis::CordisInventory { name: "AuthService" } }
+
+// Factory submits — same gates as the manual registrations above.
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "Http", make: factory_http }
+}
+#[cfg(all(feature = "inventory", feature = "postgres"))]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "AuthService", make: factory_auth }
+}
 
 #[cfg(test)]
 mod tests {
@@ -282,5 +287,18 @@ mod tests {
         let server = axum_test::TestServer::new(router).expect("test server");
         let response = server.get("/health/context").await;
         response.assert_status_ok();
+    }
+}
+
+#[cfg(all(test, feature = "inventory"))]
+mod inventory_probe_tests {
+    #[test]
+    fn probe_names_in_lib_target() {
+        let mut v: Vec<&'static str> = inventory::iter::<cordis::CordisInventory>
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        v.sort();
+        println!("LIBNAMES: {:?}", v);
     }
 }

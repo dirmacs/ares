@@ -9,6 +9,8 @@ publish = true
 description = "Database and vector store clients for ARES"
 [features]
 default = []
+# Compile-time factory collection (mirrors the server root feature)
+inventory = ["dep:inventory", "cordis/inventory"]
 postgres = ["dep:sqlx"]
 turso = ["dep:libsql"]
 ares-vector = ["dep:ares-vector"]
@@ -20,6 +22,7 @@ pgvector = ["postgres"]
 [dependencies]
 ares-types = { workspace = true }
 cordis = { workspace = true }
+inventory = { workspace = true, optional = true }
 aes-gcm = "0.10"
 arc-swap = "1.7.1"
 thiserror = { workspace = true }

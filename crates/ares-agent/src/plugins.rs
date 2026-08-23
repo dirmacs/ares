@@ -100,9 +100,9 @@ fn factory_execute(
     ctx: &Arc<cordis::Context>,
     config: &Value,
 ) -> Result<cordis::FiberId, cordis::CordisError> {
-    let tools = ctx.get::<ares_tools::Tools>().ok_or_else(|| {
-        cordis::CordisError::Configuration("Tools is not on context".into())
-    })?;
+    let tools = ctx
+        .get::<ares_tools::Tools>()
+        .ok_or_else(|| cordis::CordisError::Configuration("Tools is not on context".into()))?;
     #[cfg(feature = "postgres")]
     if ctx.get::<ares_store::TenantRealms>().is_none() {
         ctx.provide(ares_store::TenantRealms::new(
@@ -183,9 +183,24 @@ pub fn register_plugins(reg: &cordis::PluginRegistry) {
     reg.register("TriggerService", Arc::new(factory_trigger));
 }
 
-fn inject_sync<T: cordis::Service + 'static>(
-    ctx: &Arc<cordis::Context>,
-) -> Arc<T> {
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "Execute", make: factory_execute }
+}
+#[cfg(all(feature = "inventory", feature = "scheduler"))]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "SchedulerService", make: factory_scheduler }
+}
+#[cfg(all(feature = "inventory", feature = "pipeline"))]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "PipelineService", make: factory_pipeline }
+}
+#[cfg(all(feature = "inventory", feature = "trigger"))]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "TriggerService", make: factory_trigger }
+}
+
+fn inject_sync<T: cordis::Service + 'static>(ctx: &Arc<cordis::Context>) -> Arc<T> {
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(ctx.inject::<T>()))
 }
 
@@ -194,13 +209,12 @@ fn factory_scheduler(
     ctx: &Arc<cordis::Context>,
     config: &Value,
 ) -> Result<cordis::FiberId, cordis::CordisError> {
-    let cfg: crate::scheduler::SchedulerConfig = if config.is_null()
-        || config.as_object().is_some_and(|o| o.is_empty())
-    {
-        crate::scheduler::SchedulerConfig::default()
-    } else {
-        serde_json::from_value(config.clone()).unwrap_or_default()
-    };
+    let cfg: crate::scheduler::SchedulerConfig =
+        if config.is_null() || config.as_object().is_some_and(|o| o.is_empty()) {
+            crate::scheduler::SchedulerConfig::default()
+        } else {
+            serde_json::from_value(config.clone()).unwrap_or_default()
+        };
     let db = inject_sync::<ares_store::PostgresClient>(ctx);
     let execution = inject_sync::<Execute>(ctx);
     block_on_plugin(
@@ -214,13 +228,12 @@ fn factory_pipeline(
     ctx: &Arc<cordis::Context>,
     config: &Value,
 ) -> Result<cordis::FiberId, cordis::CordisError> {
-    let cfg: crate::pipeline::PipelineConfig = if config.is_null()
-        || config.as_object().is_some_and(|o| o.is_empty())
-    {
-        crate::pipeline::PipelineConfig::default()
-    } else {
-        serde_json::from_value(config.clone()).unwrap_or_default()
-    };
+    let cfg: crate::pipeline::PipelineConfig =
+        if config.is_null() || config.as_object().is_some_and(|o| o.is_empty()) {
+            crate::pipeline::PipelineConfig::default()
+        } else {
+            serde_json::from_value(config.clone()).unwrap_or_default()
+        };
     let _ = crate::pipeline::PipelinePlugin.apply(ctx, cfg)?;
     let db = inject_sync::<ares_store::PostgresClient>(ctx);
     let execution = inject_sync::<Execute>(ctx);

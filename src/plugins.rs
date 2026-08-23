@@ -10,9 +10,9 @@ use std::sync::Arc;
 use cordis::{Context, CordisError, FiberId, PluginRegistry, Service};
 use serde_json::Value;
 
+use ares_agent::AgentRegistry;
 use ares_http::overlay::{AresConfigManager, Overlay, OverlayConfig};
 use ares_http::toon_config::DynamicConfigManager;
-use ares_agent::AgentRegistry;
 use ares_store::TenantDb;
 
 /// Minimal no-op service behind the `noop_probe` loader factory.
@@ -183,17 +183,13 @@ fn postgres_from_ctx(ctx: &Arc<Context>) -> Result<Arc<ares_store::PostgresClien
     Ok(inject_sync::<ares_store::PostgresClient>(ctx))
 }
 
-fn factory_overlay(
-    ctx: &Arc<Context>,
-    config: &Value,
-) -> Result<FiberId, CordisError> {
-    let overlay_cfg: OverlayConfig = if config.is_null()
-        || config.as_object().is_some_and(|o| o.is_empty())
-    {
-        OverlayConfig::default()
-    } else {
-        serde_json::from_value(config.clone()).unwrap_or_default()
-    };
+fn factory_overlay(ctx: &Arc<Context>, config: &Value) -> Result<FiberId, CordisError> {
+    let overlay_cfg: OverlayConfig =
+        if config.is_null() || config.as_object().is_some_and(|o| o.is_empty()) {
+            OverlayConfig::default()
+        } else {
+            serde_json::from_value(config.clone()).unwrap_or_default()
+        };
     let overlay = Overlay::new(&overlay_cfg.toml_path)
         .map_err(|e| CordisError::Configuration(e.to_string()))?;
     overlay
@@ -256,7 +252,10 @@ fn provide_overlay_extras(ctx: &Arc<Context>) {
         }
     }
     if let Some(overlay) = ctx.get::<AresConfigManager>() {
-        if ctx.get::<ares_agent::plugins::OverlayAgentConfigs>().is_none() {
+        if ctx
+            .get::<ares_agent::plugins::OverlayAgentConfigs>()
+            .is_none()
+        {
             ctx.provide(ares_agent::plugins::OverlayAgentConfigs(
                 overlay.config().agents.clone(),
             ));
@@ -268,10 +267,16 @@ fn provide_overlay_extras(ctx: &Arc<Context>) {
         ctx.provide(ares_agent::ContextProviderHandle::new(context_provider));
     }
 
-    if ctx.get::<ares_http::api::handlers::deploy::DeployRegistry>().is_none() {
+    if ctx
+        .get::<ares_http::api::handlers::deploy::DeployRegistry>()
+        .is_none()
+    {
         ctx.provide(ares_http::api::handlers::deploy::new_deploy_registry());
     }
-    if ctx.get::<ares_http::api::handlers::loops::LoopRegistry>().is_none() {
+    if ctx
+        .get::<ares_http::api::handlers::loops::LoopRegistry>()
+        .is_none()
+    {
         ctx.provide(ares_http::api::handlers::loops::LoopRegistry::new());
     }
 
@@ -357,10 +362,9 @@ fn provide_postgres_stack(ctx: &Arc<Context>, config: &Value) -> Result<(), Cord
             }
         }
     } else if ctx.get::<ares_agent::skills::SkillEngine>().is_none() {
-        if let (Some(tools), Some(llm)) = (
-            ctx.get::<ares_tools::Tools>(),
-            ctx.get::<ares_llm::Llm>(),
-        ) {
+        if let (Some(tools), Some(llm)) =
+            (ctx.get::<ares_tools::Tools>(), ctx.get::<ares_llm::Llm>())
+        {
             ctx.provide_arc(Arc::new(ares_agent::skills::SkillEngine::new(
                 pg.pool.clone(),
                 tools,
@@ -371,37 +375,42 @@ fn provide_postgres_stack(ctx: &Arc<Context>, config: &Value) -> Result<(), Cord
     Ok(())
 }
 
-fn factory_server_runtime(
-    ctx: &Arc<Context>,
-    config: &Value,
-) -> Result<FiberId, CordisError> {
+fn factory_server_runtime(ctx: &Arc<Context>, config: &Value) -> Result<FiberId, CordisError> {
     provide_overlay_extras(ctx);
     provide_postgres_stack(ctx, config)?;
     block_on_plugin(ctx, ServerRuntime)
 }
 
-fn factory_health_job(
-    ctx: &Arc<Context>,
-    _config: &Value,
-) -> Result<FiberId, CordisError> {
+fn factory_health_job(ctx: &Arc<Context>, _config: &Value) -> Result<FiberId, CordisError> {
     block_on_plugin(ctx, HealthJobService::default())
 }
 
 /// Register server-owned loader keys. `Execute` stays on ares-agent;
 /// extras are Overlay (always) and optional `ServerRuntime`.
+fn factory_noop_probe(
+    ctx: &Arc<Context>,
+    _config: &serde_json::Value,
+) -> Result<FiberId, CordisError> {
+    block_on_plugin(
+        ctx,
+        LoaderProbeService {
+            created_at: std::time::SystemTime::now(),
+        },
+    )
+}
+
 pub fn register_plugins(reg: &PluginRegistry) {
-    reg.register(
-        "noop_probe",
-        Arc::new(|ctx, _config| {
-            block_on_plugin(
-                ctx,
-                LoaderProbeService {
-                    created_at: std::time::SystemTime::now(),
-                },
-            )
-        }),
-    );
+    reg.register("noop_probe", Arc::new(factory_noop_probe));
     reg.register("Overlay", Arc::new(factory_overlay));
     reg.register("ServerRuntime", Arc::new(factory_server_runtime));
     reg.register("HealthJobService", Arc::new(factory_health_job));
+}
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "Overlay", make: factory_overlay }
+}
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "HealthJobService", make: factory_health_job }
 }

@@ -10,8 +10,8 @@ description = "ARES agent library"
 
 [features]
 default = []
-http = ["dep:ares-http"]
-postgres = ["ares-store/postgres", "ares-agent/postgres"]
+http = ["dep:ares-http", "ares-http/inventory"]
+postgres = ["ares-store/postgres", "ares-agent/postgres", "ares-http/postgres"]
 openai = ["ares-llm/openai"]
 mcp = ["ares-tools/mcp"]
 scheduler = ["ares-agent/scheduler"]
@@ -19,6 +19,15 @@ pipeline = ["ares-agent/pipeline"]
 trigger = ["ares-agent/trigger"]
 skills = ["ares-agent/skills"]
 workflows = ["ares-agent/workflows"]
+# Compile-time factory collection (mirrors the server root feature)
+inventory = [
+    "cordis/inventory",
+    "ares-agent/inventory",
+    "ares-tools/inventory",
+    "ares-llm/inventory",
+    "ares-store/inventory",
+]
+rhai = ["cordis/rhai"]
 
 [dependencies]
 cordis = { workspace = true }

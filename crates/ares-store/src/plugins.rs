@@ -22,7 +22,7 @@ fn block_on_plugin<S: cordis::Service + 'static>(
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(ctx.plugin(svc)))
 }
 
-/// Register this crate's loader factories on `reg`.
+/// Register this crate's loader factories on `reg` (manual fallback path).
 pub fn register_plugins(reg: &cordis::PluginRegistry) {
     #[cfg(feature = "postgres")]
     {
@@ -32,6 +32,11 @@ pub fn register_plugins(reg: &cordis::PluginRegistry) {
     {
         let _ = reg;
     }
+}
+
+#[cfg(all(feature = "inventory", feature = "postgres"))]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "Store", make: factory_store }
 }
 
 #[cfg(feature = "postgres")]
@@ -56,11 +61,12 @@ fn factory_store(
     let tenant = crate::TenantDb::new(pg_arc.clone());
     let fid = block_on_plugin(ctx, tenant)?;
 
-    let pg = ctx.get::<crate::TenantDb>().ok_or_else(|| {
-        CordisError::Configuration("TenantDb missing after Store factory".into())
+    let pg = ctx
+        .get::<crate::TenantDb>()
+        .ok_or_else(|| CordisError::Configuration("TenantDb missing after Store factory".into()))?;
+    block_on_async(sqlx::migrate!("../../migrations").run(pg.pool())).map_err(|e| {
+        CordisError::Configuration(format!("Failed to run database migrations: {e}"))
     })?;
-    block_on_async(sqlx::migrate!("../../migrations").run(pg.pool()))
-        .map_err(|e| CordisError::Configuration(format!("Failed to run database migrations: {e}")))?;
     tracing::info!("Database migrations applied");
     block_on_async(crate::tenant_agents::seed_default_templates(pg.pool()))
         .map_err(|e| CordisError::Configuration(format!("Failed to seed agent templates: {e}")))?;

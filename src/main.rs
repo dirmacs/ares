@@ -16,18 +16,23 @@
 //! ares-server --config my-config.toml
 //! ```
 
-#![allow(deprecated, reason = "CLI init bridge re-export deprecated shims for one release")]
-#![allow(dead_code, reason = "CLI init/rag paths unused in lib build; keep for binary")]
+#![allow(
+    deprecated,
+    reason = "CLI init bridge re-export deprecated shims for one release"
+)]
+#![allow(
+    dead_code,
+    reason = "CLI init/rag paths unused in lib build; keep for binary"
+)]
 
 #[cfg(feature = "postgres")]
 mod cli;
 #[cfg(feature = "postgres")]
-mod plugins;
-#[cfg(feature = "postgres")]
 mod health_metrics_job;
 #[cfg(feature = "postgres")]
 mod mcp_agent_runner;
-
+#[cfg(feature = "postgres")]
+mod plugins;
 
 #[cfg(feature = "postgres")]
 use crate::cli::{init, output::Output, rag, AgentCommands, Cli, Commands};
@@ -38,9 +43,9 @@ use ares_store::PostgresClient;
 #[cfg(feature = "postgres")]
 use axum::routing::get;
 #[cfg(feature = "postgres")]
-use std::sync::Arc;
-#[cfg(feature = "postgres")]
 use cordis::Context;
+#[cfg(feature = "postgres")]
+use std::sync::Arc;
 #[cfg(feature = "postgres")]
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 #[cfg(feature = "postgres")]
@@ -297,7 +302,6 @@ fn init_tracing(log_filter: &str) {
         .init();
 }
 
-
 #[cfg(feature = "postgres")]
 fn block_on_async<F: std::future::Future>(fut: F) -> F::Output {
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
@@ -323,9 +327,25 @@ fn register_loader_factories(root_ctx: &Arc<Context>) {
         return;
     };
 
-    ares::register_plugins(&registry); // facade: cordis, store, tools, llm, agent
-    ares_http::register_plugins(&registry);
-    crate::plugins::register_plugins(&registry); // Overlay, Execute overwrite, HealthJob
+    #[cfg(feature = "inventory")]
+    {
+        // Primary path: compile-time collected factories from every crate
+        // linked into the binary. The manual chains below stay compiled as
+        // the fallback for `--no-default-features` builds and unit tests.
+        //
+        // `std::hint::black_box` keeps this crate's own factory submits
+        // (Overlay, HealthJobService, noop_probe in `plugins.rs`) alive:
+        // without a runtime reference the linker drops their inventory
+        // registration nodes along with the rest of the code.
+        std::hint::black_box(crate::plugins::register_plugins as fn(&cordis::PluginRegistry));
+        cordis::register_inventory_factories(&registry);
+    }
+    #[cfg(not(feature = "inventory"))]
+    {
+        ares::register_plugins(&registry); // facade: cordis, store, tools, llm, agent
+        ares_http::register_plugins(&registry);
+        crate::plugins::register_plugins(&registry); // Overlay, Execute overwrite, HealthJob
+    }
 }
 
 /// Boot as one ordered pass over the entries file (the program).
@@ -454,8 +474,12 @@ fn reload_cordis_entries(ctx: &Arc<Context>, path: &std::path::Path) -> bool {
     };
     let mut current = current_entries.tree.lock().expect("entries lock").clone();
     let actions = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(Loader::reload_current(ctx, path, &mut current, &journal))
+        tokio::runtime::Handle::current().block_on(Loader::reload_current(
+            ctx,
+            path,
+            &mut current,
+            &journal,
+        ))
     });
     let Some(actions) = actions else {
         return false;
@@ -550,11 +574,8 @@ async fn run_server(
     // 4. Boot: one ordered pass over cordis-entries.toml (the program).
     {
         let entries_path = std::path::Path::new("config/cordis-entries.toml");
-        if let Err(e) = boot_loader_program(
-            &root_ctx,
-            entries_path,
-            &config_path.to_string_lossy(),
-        ) {
+        if let Err(e) = boot_loader_program(&root_ctx, entries_path, &config_path.to_string_lossy())
+        {
             tracing::error!(error = %e, "Cordis Loader: boot failed");
             std::process::exit(1);
         }
@@ -629,9 +650,7 @@ async fn run_server(
     // services — prooving reactive recomputation fans out across both keys.
     {
         use std::any::TypeId;
-        let reflect = root_ctx
-            .get::<cordis::ReflectService>()
-            .expect("reflect");
+        let reflect = root_ctx.get::<cordis::ReflectService>().expect("reflect");
 
         // Dependents on EventsService (admin retire/provide flow).
         let fiber_events = std::sync::Arc::new(cordis::Fiber::new());
@@ -652,10 +671,7 @@ async fn run_server(
         let fiber_tools = std::sync::Arc::new(cordis::Fiber::new());
         fiber_tools.declare_inject::<ares_tools::Tools>();
         let fid_tools = 990_002u64;
-        reflect.register_dependent(
-            TypeId::of::<ares_tools::Tools>(),
-            fid_tools,
-        );
+        reflect.register_dependent(TypeId::of::<ares_tools::Tools>(), fid_tools);
         reflect.register_fiber(
             fid_tools,
             fiber_tools.clone(),
@@ -669,10 +685,17 @@ async fn run_server(
     // Agent Config Versioning (Sprint 11)
     // =================================================================
     {
-        let pool = state.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+        let pool = state
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone();
 
         // Startup snapshot: record all currently loaded agent configs
-        let startup_agents = state.get::<DynamicConfigManager>().expect("not provided").agents();
+        let startup_agents = state
+            .get::<DynamicConfigManager>()
+            .expect("not provided")
+            .agents();
         if !startup_agents.is_empty() {
             let inputs: Vec<ares_store::AgentVersionInput> = startup_agents
                 .iter()
@@ -684,8 +707,7 @@ async fn run_server(
                 })
                 .collect();
             if let Err(e) =
-                ares_store::agent_versions::record_agent_versions(&pool, &inputs, "startup")
-                    .await
+                ares_store::agent_versions::record_agent_versions(&pool, &inputs, "startup").await
             {
                 tracing::warn!("Failed to snapshot agent versions on startup: {}", e);
             } else {
@@ -697,10 +719,12 @@ async fn run_server(
         }
 
         // Hot-reload version tracking: background task drains mpsc channel
-        let (version_tx, mut version_rx) = tokio::sync::mpsc::unbounded_channel::<
-            Vec<ares_http::toon_config::ToonAgentConfig>,
-        >();
-        state.get::<DynamicConfigManager>().expect("not provided").set_version_tx(version_tx);
+        let (version_tx, mut version_rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<ares_http::toon_config::ToonAgentConfig>>();
+        state
+            .get::<DynamicConfigManager>()
+            .expect("not provided")
+            .set_version_tx(version_tx);
 
         tokio::spawn(async move {
             while let Some(agents) = version_rx.recv().await {
@@ -928,8 +952,7 @@ async fn run_server(
             .layer(TraceLayer::new_for_http())
     } else {
         tracing::warn!("Rate limiting is disabled - not recommended for production");
-        app.layer(cors)
-            .layer(TraceLayer::new_for_http())
+        app.layer(cors).layer(TraceLayer::new_for_http())
     };
 
     // =================================================================
@@ -1092,7 +1115,9 @@ async fn health_check_detailed(
     }; */
 
     // Get provider info
-    let providers: Vec<String> = state.get::<AresConfigManager>().expect("not provided")
+    let providers: Vec<String> = state
+        .get::<AresConfigManager>()
+        .expect("not provided")
         .config()
         .providers
         .keys()
@@ -1100,7 +1125,9 @@ async fn health_check_detailed(
         .collect();
 
     // Get agent info
-    let agents: Vec<String> = state.get::<AresConfigManager>().expect("not provided")
+    let agents: Vec<String> = state
+        .get::<AresConfigManager>()
+        .expect("not provided")
         .config()
         .agents
         .keys()
@@ -1135,7 +1162,10 @@ async fn health_check_detailed(
 async fn config_info(
     axum::extract::State(state): axum::extract::State<Arc<Context>>,
 ) -> axum::Json<serde_json::Value> {
-    let config = state.get::<AresConfigManager>().expect("not provided").config();
+    let config = state
+        .get::<AresConfigManager>()
+        .expect("not provided")
+        .config();
     axum::Json(serde_json::json!({
         "server": {
             "host": config.server.host,
@@ -1166,8 +1196,8 @@ mod ui {
     };
     use rust_embed::Embed;
 
-    use std::sync::Arc;
     use cordis::Context;
+    use std::sync::Arc;
 
     #[derive(Embed)]
     #[folder = "ui/dist/"]
@@ -1235,9 +1265,9 @@ fn ui_routes() -> axum::Router<Arc<Context>> {
 #[cfg(all(test, feature = "postgres"))]
 mod tests {
     use super::*;
+    use ares_tools::Tool;
     use cordis::loader::Loader;
     use cordis::{Context, PluginRegistry, Service};
-    use ares_tools::Tool;
     use serde_json::json;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1440,8 +1470,11 @@ mod boot_tests {
         let config_path = "ares.toml";
         let entries_path = std::path::Path::new("config/cordis-entries.toml");
         std::fs::create_dir_all(dir.join("config")).expect("config dir");
-        std::fs::copy(dir.join("cordis-entries.toml"), dir.join("config/cordis-entries.toml"))
-            .expect("place entries");
+        std::fs::copy(
+            dir.join("cordis-entries.toml"),
+            dir.join("config/cordis-entries.toml"),
+        )
+        .expect("place entries");
 
         // Surface any Overlay instantiation error directly first.
         if let Err(e) = cordis::loader::Loader::load_from_file(entries_path) {
@@ -1455,7 +1488,9 @@ mod boot_tests {
         assert!(store.is_some(), "store instantiated after overlay fill");
 
         // CurrentEntries published and tracks the applied tree (3 entries).
-        let current = ctx.get::<cordis::loader::CurrentEntries>().expect("current");
+        let current = ctx
+            .get::<cordis::loader::CurrentEntries>()
+            .expect("current");
         {
             let tree = current.tree.lock().expect("lock");
             assert_eq!(tree.0.len(), 3);

@@ -103,7 +103,7 @@ path = "src/main.rs"
 
 [features]
 # Default features for NVIDIA NIM cloud inference
-default = ["postgres", "openai", "ares-vector", "mcp", "inventory"]
+default = ["postgres", "openai", "ares-vector", "mcp", "inventory", "rhai-policy"]
 # Cordis static registration via inventory (compile-time)
 inventory = ["dep:inventory", "cordis/inventory", "ares-http/inventory"]
 
@@ -169,6 +169,8 @@ local-embeddings = ["ares-rag/local-embeddings", "ares-http/local-embeddings"]
 
 # HMR via libloading — off by default. Forwards to cordis/hmr (dlopen plugin .so).
 hmr = ["cordis/hmr"]
+# Cordis Rhai policy scripting (event listeners backed by sandboxed scripts)
+rhai-policy = ["cordis/rhai"]
 
 # Skills - SKILL.md file discovery and loading via thulp
 skills = ["dep:thulp-skill-files", "ares-http/skills", "ares-agent/skills"]

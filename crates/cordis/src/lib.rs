@@ -67,13 +67,13 @@ pub use events_payload::{
     AgentStartedEvent, AgentStartedPayload, AgentUsageEvent, AgentUsagePayload, LlmCompleteEvent,
     LlmCompleteRequest, LlmCompleteResult, LlmGenerateEvent, LlmGeneratePayload,
     LlmGenerateToolsEvent, LlmGenerateToolsPayload, LlmGetClientEvent, LlmGetClientPayload,
-    LlmMessage, SchedulerAdmitEvent, SchedulerAdmitPayload, SchedulerBeforeRunEvent,
-    SchedulerBeforeRunPayload, ServiceChangedEvent, ServiceChangedPayload, ToolsExecuteEvent,
-    ToolsExecutePayload, ToolsListEvent, ToolsListRequest, ToolsListResult, ToolsResolveEvent,
-    ToolsResolveRequest, TriggerFiredEvent, TriggerFiredPayload, TypedEvent,
-    PipelineFanoutCompletedEvent, PipelineFanoutCompletedPayload, PipelineStepFinishedEvent,
-    PipelineStepFinishedPayload, PipelineStepStartedEvent, PipelineStepStartedPayload,
-    ScheduleDispatchedEvent, ScheduleDispatchedPayload, SchedulerTickEvent, SchedulerTickPayload,
+    LlmMessage, PipelineFanoutCompletedEvent, PipelineFanoutCompletedPayload,
+    PipelineStepFinishedEvent, PipelineStepFinishedPayload, PipelineStepStartedEvent,
+    PipelineStepStartedPayload, ScheduleDispatchedEvent, ScheduleDispatchedPayload,
+    SchedulerAdmitEvent, SchedulerAdmitPayload, SchedulerBeforeRunEvent, SchedulerBeforeRunPayload,
+    SchedulerTickEvent, SchedulerTickPayload, ServiceChangedEvent, ServiceChangedPayload,
+    ToolsExecuteEvent, ToolsExecutePayload, ToolsListEvent, ToolsListRequest, ToolsListResult,
+    ToolsResolveEvent, ToolsResolveRequest, TriggerFiredEvent, TriggerFiredPayload, TypedEvent,
 };
 pub mod loader;
 pub use loader::{
@@ -89,7 +89,7 @@ pub use registry::{Plugin, RegistryService};
 #[cfg(feature = "rhai")]
 pub mod rhai_service;
 #[cfg(feature = "rhai")]
-pub use rhai_service::{RhaiPlugin, RhaiService, RhaiServiceConfig};
+pub use rhai_service::{RhaiListenerConfig, RhaiPlugin, RhaiService, RhaiServiceConfig};
 
 pub type Symbol = String;
 pub type EventId = String;
@@ -164,6 +164,17 @@ pub fn register_plugins(reg: &PluginRegistry) {
         "EventsService",
         Arc::new(|ctx, _config| {
             let future = ctx.plugin(EventsService::new());
+            tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+        }),
+    );
+    #[cfg(feature = "rhai")]
+    reg.register(
+        "RhaiPolicy",
+        Arc::new(|ctx, config| {
+            let cfg: RhaiServiceConfig = serde_json::from_value(config.clone()).map_err(|e| {
+                CordisError::Configuration(format!("invalid RhaiPolicy config: {e}"))
+            })?;
+            let future = ctx.plugin_with(RhaiPlugin, cfg);
             tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
         }),
     );

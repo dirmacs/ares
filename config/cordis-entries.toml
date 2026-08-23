@@ -100,3 +100,17 @@ plugin = "Http"
 disabled = false
 
 [entry.config]
+
+# RhaiPolicy — sandboxed script listeners on catalog events (feature "rhai").
+# Returning ()/null passes through or delegates to the chain; any other value
+# becomes the dispatch result (Bail deny marker, or waterfall short-circuit).
+# [[entry]]
+# id = "policy-example"
+# plugin = "RhaiPolicy"
+# [entry.config]
+# script = """
+# fn gate(p) { if p.tenant_id == "banned-tenant" { #{deny: "banned"} } else { () } }
+# """
+# [[entry.config.listen]]
+# event = "scheduler.admit"
+# fn_name = "gate"

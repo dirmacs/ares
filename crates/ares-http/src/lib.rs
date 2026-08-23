@@ -1,8 +1,4 @@
-//! HTTP adapter plugin: Axum router, JWT auth, middleware.
-//!
-//! Overlay / toon / engines stay as files under `src/` (server tree) and are
-//! compiled into this crate so handlers can `ctx.get` them without depending
-//! on `ares-server`. Overlay *factory* registration stays in the server.
+//! HTTP adapter plugin: Axum router, JWT auth, middleware, Overlay, TOON.
 
 #![allow(missing_docs)]
 #![allow(dead_code)]
@@ -25,9 +21,7 @@ pub mod config;
 pub mod error;
 pub mod pipeline_hook;
 
-#[path = "../../../src/overlay.rs"]
 pub mod overlay;
-#[path = "../../../src/toon_config.rs"]
 pub mod toon_config;
 
 #[cfg(feature = "postgres")]
@@ -38,10 +32,8 @@ pub mod auth;
 pub mod middleware;
 
 #[cfg(feature = "postgres")]
-#[path = "../../../src/active_runs.rs"]
 pub mod active_runs;
 #[cfg(feature = "postgres")]
-#[path = "../../../src/observability.rs"]
 pub mod observability;
 
 #[cfg(feature = "postgres")]
@@ -164,7 +156,7 @@ pub fn build_router(ctx: Arc<Context>) -> Router {
     let _ = ctx.get::<ares_agent::Execute>();
     let _ = ctx.get::<ares_tools::Tools>();
     // Copy the root context into request extensions so JWT middleware can
-    // isolate/intercept without a blocking Store lookup.
+    // isolate/intercept and fail-closed Store-lookup tenant claims.
     app = app.layer(axum::middleware::from_fn_with_state(
         Arc::clone(&ctx),
         |axum::extract::State(ctx): axum::extract::State<Arc<Context>>,

@@ -70,7 +70,10 @@ pub use events_payload::{
     LlmMessage, SchedulerAdmitEvent, SchedulerAdmitPayload, SchedulerBeforeRunEvent,
     SchedulerBeforeRunPayload, ServiceChangedEvent, ServiceChangedPayload, ToolsExecuteEvent,
     ToolsExecutePayload, ToolsListEvent, ToolsListRequest, ToolsListResult, ToolsResolveEvent,
-    ToolsResolveRequest, TypedEvent,
+    ToolsResolveRequest, TriggerFiredEvent, TriggerFiredPayload, TypedEvent,
+    PipelineFanoutCompletedEvent, PipelineFanoutCompletedPayload, PipelineStepFinishedEvent,
+    PipelineStepFinishedPayload, PipelineStepStartedEvent, PipelineStepStartedPayload,
+    ScheduleDispatchedEvent, ScheduleDispatchedPayload, SchedulerTickEvent, SchedulerTickPayload,
 };
 pub mod loader;
 pub use loader::{

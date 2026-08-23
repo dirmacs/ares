@@ -390,9 +390,12 @@ impl Llm {
         let Some(events) = ctx.get::<EventsService>() else {
             return self.get_client_inner(ctx, capability).await;
         };
-        let payload = serde_json::json!({
-            "capability": format!("{:?}", capability),
-        });
+        let payload = serde_json::to_value(cordis::LlmGetClientPayload {
+            capability: format!("{capability:?}"),
+            deny: None,
+            model: None,
+        })
+        .unwrap_or(serde_json::Value::Null);
         let result = events
             .waterfall_around( cordis::events_catalog::ev::LLM_GET_CLIENT.to_string(), payload, |payload| async move {
                 Ok(payload)
@@ -501,7 +504,10 @@ impl Llm {
         let Some(events) = ctx.get::<EventsService>() else {
             return client.generate(prompt).await;
         };
-        let payload = serde_json::json!({ "prompt": prompt });
+        let payload = serde_json::to_value(cordis::LlmCompleteRequest {
+            prompt: prompt.to_string(),
+        })
+        .unwrap_or(serde_json::Value::Null);
         let out = events
             .waterfall_around( cordis::events_catalog::ev::LLM_COMPLETE.to_string(), payload, move |payload| {
                 let client = Arc::clone(&client);

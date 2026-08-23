@@ -282,6 +282,30 @@ impl SchedulerService {
             .unwrap_or(run)
     }
 
+    /// Typed variant of [`before_run_payload`]: constructs the catalog-bound
+    /// [`cordis::SchedulerBeforeRunPayload`], serializes it for the waterfall,
+    /// and returns the (possibly handler-enriched) JSON.
+    pub async fn before_run_typed(
+        &self,
+        ctx: &Arc<Context>,
+        payload: &cordis::SchedulerBeforeRunPayload,
+    ) -> serde_json::Value {
+        let value = serde_json::to_value(payload).unwrap_or(serde_json::Value::Null);
+        let Some(events) = ctx.get::<cordis::EventsService>() else {
+            return value;
+        };
+        // Around-middleware chain on the serialized form so raw-JSON handlers
+        // keep working; the typed binding only governs construction.
+        events
+            .dispatch(
+                cordis::events_catalog::ev::SCHEDULER_BEFORE_RUN.to_string(),
+                value.clone(),
+                cordis::Dispatch::Waterfall,
+            )
+            .await
+            .unwrap_or(value)
+    }
+
     /// Consult the Cordis `scheduler.admit` policy via `Dispatch::Bail`. A
     /// handler returning a non-null value bails (denies) the run and its returned
     /// value replaces the payload; a null result means the handler did not bail,

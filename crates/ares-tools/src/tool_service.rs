@@ -89,7 +89,11 @@ impl Tools {
         let Some(events) = ctx.get::<EventsService>() else {
             return self.resolve_named(name, tenant.as_deref());
         };
-        let payload = json!({ "name": name, "tenant": tenant });
+        let payload = serde_json::to_value(cordis::ToolsResolveRequest {
+            name: name.to_string(),
+            tenant: tenant.clone(),
+        })
+        .unwrap_or(serde_json::Value::Null);
         let this = self.clone();
         let out = match run_waterfall(&events, "tools.resolve", payload, move |p| {
             async move {
@@ -123,7 +127,8 @@ impl Tools {
         let Some(events) = ctx.get::<EventsService>() else {
             return self.list_named(tenant.as_deref());
         };
-        let payload = json!({ "tenant": tenant });
+        let payload = serde_json::to_value(cordis::ToolsListRequest { tenant: tenant.clone() })
+            .unwrap_or(serde_json::Value::Null);
         let this = self.clone();
         let out = match run_waterfall(&events, "tools.list", payload, move |p| {
             async move {
@@ -162,7 +167,9 @@ impl Tools {
         let Some(events) = ctx.get::<EventsService>() else {
             return tool.execute(args).await;
         };
-        let payload = json!({ "name": name, "args": args });
+        let payload =
+            serde_json::to_value(cordis::ToolsExecutePayload { name: name.to_string(), args })
+                .unwrap_or(serde_json::Value::Null);
         let out = events
             .waterfall_around( cordis::events_catalog::ev::TOOLS_EXECUTE.to_string(), payload, move |p| {
                 async move {

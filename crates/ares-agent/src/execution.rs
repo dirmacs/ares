@@ -160,18 +160,19 @@ impl Execute {
     pub async fn emit_agent_started(
         &self,
         ctx: &Arc<Context>,
-        payload: serde_json::Value,
+        payload: cordis::AgentStartedPayload,
     ) -> serde_json::Value {
+        let value = match serde_json::to_value(&payload) {
+            Ok(v) => v,
+            Err(_) => return serde_json::to_value(payload).unwrap_or(serde_json::Value::Null),
+        };
         let Some(events) = ctx.get::<cordis::EventsService>() else {
-            return payload;
+            return value;
         };
         events
-            .dispatch( cordis::events_catalog::ev::AGENT_STARTED.to_string(),
-                payload.clone(),
-                cordis::Dispatch::Parallel,
-            )
+            .dispatch_typed::<cordis::AgentStartedEvent>(&payload)
             .await
-            .unwrap_or(payload)
+            .unwrap_or(value)
     }
 
     /// Fire-and-forget observability event via Cordis `Dispatch::Emit`.
@@ -191,6 +192,19 @@ impl Execute {
         let _ = events
             .dispatch(event.into(), payload, cordis::Dispatch::Emit)
             .await;
+    }
+
+    /// Typed fire-and-forget variant of [`emit_observability`]: dispatches the
+    /// payload struct for its catalog-bound event via `Dispatch::Emit`.
+    pub async fn emit_observability_typed<E: cordis::TypedEvent>(
+        &self,
+        ctx: &Arc<Context>,
+        payload: &E::Payload,
+    ) {
+        let Some(events) = ctx.get::<cordis::EventsService>() else {
+            return;
+        };
+        let _ = events.dispatch_typed::<E>(payload).await;
     }
 
     /// Attach a context provider for memory injection.
@@ -237,10 +251,11 @@ impl Execute {
         let Some(events) = ctx.get::<EventsService>() else {
             return self.run_resolved_or_execute(req, ctx).await;
         };
-        let payload = serde_json::json!({
-            "agent_name": req.agent_name,
-            "message": req.message,
-        });
+        let payload = serde_json::to_value(cordis::AgentRunRequest {
+            agent_name: req.agent_name.clone(),
+            message: req.message.clone(),
+        })
+        .unwrap_or(serde_json::Value::Null);
         let execute = self.clone();
         let ctx_owned = Arc::clone(ctx);
         let orig = req.clone();
@@ -468,13 +483,17 @@ impl Execute {
         }
 
         if ctx.get::<cordis::EventsService>().is_some() {
-            let payload = serde_json::json!({
-                "agent_name": req.agent_name,
-                "run_id": run_id,
-                "tenant": user_id,
-                "event": "agent.started"
-            });
-            let _ = self.emit_agent_started(ctx, payload).await;
+            let _ = self
+                .emit_agent_started(
+                    ctx,
+                    cordis::AgentStartedPayload {
+                        agent_name: req.agent_name.clone(),
+                        run_id: run_id.clone(),
+                        tenant: user_id.to_string(),
+                        event: cordis::events_catalog::ev::AGENT_STARTED.to_string(),
+                    },
+                )
+                .await;
         }
 
         let agent_context = ares_types::types::AgentContext {
@@ -497,41 +516,38 @@ impl Execute {
 
         if let Ok(response) = result.as_ref() {
             if let Some(usage) = &response.usage {
-                self.emit_observability(
+                self.emit_observability_typed::<cordis::AgentUsageEvent>(
                     ctx,
-                    cordis::events_catalog::ev::AGENT_USAGE,
-                    serde_json::json!({
-                        "tenant": user_id,
-                        "prompt": usage.prompt_tokens,
-                        "completion": usage.completion_tokens,
-                        "total": usage.total_tokens,
-                    }),
+                    &cordis::AgentUsagePayload {
+                        tenant: Some(user_id.to_string()),
+                        prompt: usage.prompt_tokens as i64,
+                        completion: usage.completion_tokens as i64,
+                        total: usage.total_tokens as i64,
+                    },
                 )
                 .await;
             }
         }
 
-        self.emit_observability(
+        self.emit_observability_typed::<cordis::AgentCompletedEvent>(
             ctx,
-            cordis::events_catalog::ev::AGENT_COMPLETED,
-            serde_json::json!({
-                "agent_name": req.agent_name,
-                "run_id": run_id,
-                "status": if result.is_ok() { "completed" } else { "failed" },
-                "event": "agent.completed"
-            }),
+            &cordis::AgentCompletedPayload {
+                agent_name: req.agent_name.clone(),
+                run_id: run_id.clone(),
+                status: if result.is_ok() { "completed" } else { "failed" }.to_string(),
+                event: cordis::events_catalog::ev::AGENT_COMPLETED.to_string(),
+            },
         )
         .await;
         if result.is_err() {
-            self.emit_observability(
+            self.emit_observability_typed::<cordis::AgentFailedEvent>(
                 ctx,
-                cordis::events_catalog::ev::AGENT_FAILED,
-                serde_json::json!({
-                    "agent_name": req.agent_name,
-                    "run_id": run_id,
-                    "tenant": user_id,
-                    "event": cordis::events_catalog::ev::AGENT_FAILED,
-                }),
+                &cordis::AgentFailedPayload {
+                    agent_name: req.agent_name.clone(),
+                    run_id: run_id.clone(),
+                    tenant: user_id.to_string(),
+                    event: cordis::events_catalog::ev::AGENT_FAILED.to_string(),
+                },
             )
             .await;
         }
@@ -673,15 +689,14 @@ You are {}.",
                                 );
                                 let _ = _pool;
                             }
-                            self.emit_observability(
+                            self.emit_observability_typed::<cordis::AgentUsageEvent>(
                                 ctx,
-                                cordis::events_catalog::ev::AGENT_USAGE,
-                                serde_json::json!({
-                                    "tenant": tenant,
-                                    "prompt": usage.prompt_tokens,
-                                    "completion": usage.completion_tokens,
-                                    "total": usage.total_tokens,
-                                }),
+                                &cordis::AgentUsagePayload {
+                                    tenant: tenant.clone(),
+                                    prompt: usage.prompt_tokens as i64,
+                                    completion: usage.completion_tokens as i64,
+                                    total: usage.total_tokens as i64,
+                                },
                             )
                             .await;
                             let mut detector = crate::loop_detector::LoopDetector::new();

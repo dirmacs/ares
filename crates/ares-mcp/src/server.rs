@@ -434,16 +434,16 @@ impl AresMcpServer {
         };
 
         if let Some(events) = ctx.get::<cordis::EventsService>() {
-            let payload = json!({
-                "tenant_id": session.tenant_id(),
-                "monthly": monthly,
-                "daily": daily,
-                "requests_per_month": session.tenant.quota.requests_per_month,
-                "requests_per_day": session.tenant.quota.requests_per_day,
-                "tier": session.tier(),
-            });
+            let payload = cordis::AgentAdmitPayload {
+                tenant_id: session.tenant_id().to_string(),
+                monthly,
+                daily,
+                requests_per_month: Some(session.tenant.quota.requests_per_month),
+                requests_per_day: Some(session.tenant.quota.requests_per_day),
+                tier: session.tier().to_string(),
+            };
             let result = events
-                .dispatch( cordis::events_catalog::ev::AGENT_ADMIT.to_string(), payload, cordis::Dispatch::Bail)
+                .dispatch_typed::<cordis::AgentAdmitEvent>(&payload)
                 .await
                 .map_err(|source| format!("Quota check failed: {source}"))?;
             if let Some(exceeded) = Self::quota_denial(&result) {

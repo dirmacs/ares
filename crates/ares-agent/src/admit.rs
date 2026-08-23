@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ares_types::models::{QuotaExceeded, TenantContext};
 use ares_types::types::AppError;
-use cordis::{Context, Dispatch, EventsService, CordisError};
+use cordis::{Context, EventsService, CordisError};
 use serde_json::{json, Value};
 
 /// Which usage query failed while preparing the admission payload.
@@ -60,16 +60,16 @@ pub async fn admit_with_details(ctx: &Arc<Context>) -> Result<(), AdmissionError
     };
     let (monthly, daily) = usage_counts(ctx, &tc.tenant_id).await?;
     if let Some(events) = ctx.get::<EventsService>() {
-        let payload = json!({
-            "tenant_id": tc.tenant_id,
-            "monthly": monthly,
-            "daily": daily,
-            "requests_per_month": tc.quota.requests_per_month,
-            "requests_per_day": tc.quota.requests_per_day,
-            "tier": tc.tier.as_str(),
-        });
+        let payload = cordis::AgentAdmitPayload {
+            tenant_id: tc.tenant_id.clone(),
+            monthly,
+            daily,
+            requests_per_month: Some(tc.quota.requests_per_month),
+            requests_per_day: Some(tc.quota.requests_per_day),
+            tier: tc.tier.as_str().to_string(),
+        };
         let result = events
-            .dispatch( cordis::events_catalog::ev::AGENT_ADMIT.to_string(), payload, Dispatch::Bail)
+            .dispatch_typed::<cordis::AgentAdmitEvent>(&payload)
             .await
             .map_err(AdmissionError::Event)?;
         if let Some(err) = deny_from_bail(&result) {

@@ -326,6 +326,79 @@ impl EventsService {
         });
         run_waterfall_chain(handlers, 0, payload, Some(core)).await
     }
+
+    /// Typed dispatch: serialize the payload struct for `E`'s event and
+    /// dispatch with the declared mode. Equivalent to
+    /// [`dispatch`](EventsService::dispatch) with a pre-validated name/mode
+    /// pair; serialization failure is a [`CordisError::Configuration`].
+    pub async fn dispatch_typed<E: crate::events_payload::TypedEvent>(
+        &self,
+        payload: &E::Payload,
+    ) -> Result<serde_json::Value, CordisError> {
+        let value = serde_json::to_value(payload)
+            .map_err(|e| CordisError::Configuration(e.to_string()))?;
+        self.dispatch(E::NAME.to_string(), value, E::MODE).await
+    }
+
+    /// Typed flat listener: the handler receives the deserialized payload
+    /// struct instead of raw JSON.
+    ///
+    /// A payload that fails to deserialize is skipped with a warning and the
+    /// incoming value passes through unchanged (for Serial/Bail chains this
+    /// preserves pass-through semantics). Registration still goes through the
+    /// same debug contract enforcement as [`on`](EventsService::on).
+    pub fn on_typed<E, F, Fut>(&self, handler: F) -> Box<dyn Disposable>
+    where
+        E: crate::events_payload::TypedEvent,
+        F: Fn(E::Payload) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
+    {
+        debug_enforce_listener(&E::NAME.to_string(), E::AROUND);
+        let wrapped = move |v: serde_json::Value| {
+            let fut = match serde_json::from_value::<E::Payload>(v.clone()) {
+                Ok(payload) => handler(payload),
+                Err(err) => {
+                    tracing::warn!(event = E::NAME, error = %err, "typed listener skipped malformed payload");
+                    return Box::pin(async { Ok(v) })
+                        as Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>;
+                }
+            };
+            Box::pin(fut)
+                as Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
+        };
+        self.on(E::NAME.to_string(), wrapped)
+    }
+
+    /// Typed around-middleware waterfall: the handler receives the
+    /// deserialized payload struct plus the raw-JSON [`WaterfallNext`]
+    /// continuation. The rest of the chain keeps working on serialized values;
+    /// delegating handlers re-parse inside `next`, mirroring upstream TS where
+    /// `next` carries serialized args.
+    pub fn on_typed_waterfall<E, F, Fut>(&self, handler: F) -> Box<dyn Disposable>
+    where
+        E: crate::events_payload::TypedEvent,
+        F: Fn(E::Payload, WaterfallNext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
+    {
+        debug_enforce_listener(&E::NAME.to_string(), E::AROUND);
+        let wrapped = move |v: serde_json::Value, next: WaterfallNext| {
+            let fut = match serde_json::from_value::<E::Payload>(v.clone()) {
+                Ok(payload) => handler(payload, next),
+                Err(err) => {
+                    tracing::warn!(event = E::NAME, error = %err, "typed listener skipped malformed payload");
+                    return Box::pin(async move {
+                        // Preserve chain semantics: hand the untouched value to
+                        // the continuation so downstream handlers still run.
+                        next(v).await
+                    })
+                        as Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>;
+                }
+            };
+            Box::pin(fut)
+                as Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
+        };
+        self.on_waterfall(E::NAME.to_string(), wrapped)
+    }
 }
 
 impl Default for EventsService {
@@ -688,4 +761,106 @@ mod tests {
             "core must not run when handler short-circuits"
         );
     }
+
+    // -- typed wrappers (events_payload) -----------------------------------
+
+    /// dispatch_typed -> on_typed round trip on an Emit event: the handler
+    /// observes the deserialized struct, not raw JSON.
+    #[tokio::test]
+    async fn typed_dispatch_and_listener_round_trip() {
+        let svc = EventsService::new();
+        let seen = Arc::new(parking_lot::Mutex::new(
+            None::<crate::events_payload::AgentUsagePayload>,
+        ));
+        let slot = seen.clone();
+        let _d = svc.on_typed::<crate::events_payload::AgentUsageEvent, _, _>(move |p| {
+            let slot = slot.clone();
+            async move {
+                *slot.lock() = Some(p);
+                Ok(serde_json::Value::Null)
+            }
+        });
+        svc.dispatch_typed::<crate::events_payload::AgentUsageEvent>(&crate::events_payload::AgentUsagePayload {
+            tenant: Some("acme".into()),
+            prompt: 3,
+            completion: 4,
+            total: 7,
+        })
+        .await
+        .unwrap();
+        // Emit spawns handlers; poll briefly for the handler to land.
+        for _ in 0..100 {
+            if seen.lock().is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let got = seen.lock().clone().expect("handler must observe payload");
+        assert_eq!(got.tenant.as_deref(), Some("acme"));
+        assert_eq!(got.total, 7);
+    }
+
+    /// A malformed payload skips the typed handler and passes the value
+    /// through unchanged (Bail passthrough semantics preserved).
+    #[tokio::test]
+    async fn typed_listener_skips_malformed_payload_passthrough() {
+        let svc = EventsService::new();
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = ran.clone();
+        let _d = svc.on_typed::<crate::events_payload::AgentAdmitEvent, _, _>(move |_p| {
+            let flag = flag.clone();
+            async move {
+                flag.store(true, Ordering::SeqCst);
+                Ok(serde_json::json!({ "deny": "daily" }))
+            }
+        });
+        let out = svc
+            .dispatch(
+                crate::events_catalog::ev::AGENT_ADMIT.into(),
+                serde_json::json!({ "tenant_id": 42 }), // wrong type: not a string
+                Dispatch::Bail,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "malformed payload must skip the typed handler"
+        );
+        assert_eq!(out["tenant_id"], 42, "value must pass through unchanged");
+    }
+
+    /// Typed waterfall listener can short-circuit by not calling next; the
+    /// returned value is the chain result.
+    #[tokio::test]
+    async fn typed_waterfall_short_circuit() {
+        use crate::events::WaterfallNext;
+        let svc = EventsService::new();
+        let _d = svc.on_typed_waterfall::<crate::events_payload::LlmGetClientEvent, _, _>(
+            |p, next: WaterfallNext| async move {
+                if p.capability == "blocked" {
+                    return Ok(serde_json::json!({ "deny": true }));
+                }
+                next(serde_json::json!({ "capability": p.capability })).await
+            },
+        );
+        let denied = svc
+            .dispatch(
+                crate::events_catalog::ev::LLM_GET_CLIENT.into(),
+                serde_json::json!({ "capability": "blocked" }),
+                Dispatch::Waterfall,
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied["deny"], true);
+        let passed = svc
+            .dispatch(
+                crate::events_catalog::ev::LLM_GET_CLIENT.into(),
+                serde_json::json!({ "capability": "chat" }),
+                Dispatch::Waterfall,
+            )
+            .await
+            .unwrap();
+        assert_eq!(passed["capability"], "chat");
+    }
 }
+

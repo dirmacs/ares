@@ -611,11 +611,16 @@ Handle employee info, policies, and benefits."#
             return self.generate_with_history_direct(messages).await;
         };
         let orig: Vec<(String, String)> = messages.to_vec();
-        let payload = serde_json::json!({
-            "messages": orig.iter().map(|(role, content)| {
-                serde_json::json!({ "role": role, "content": content })
-            }).collect::<Vec<_>>(),
-        });
+        let payload = serde_json::to_value(cordis::LlmGeneratePayload {
+            messages: orig
+                .iter()
+                .map(|(role, content)| cordis::LlmMessage {
+                    role: role.clone(),
+                    content: serde_json::Value::String(content.clone()),
+                })
+                .collect(),
+        })
+        .unwrap_or(serde_json::Value::Null);
         let out = run_events_waterfall(&events, cordis::events_catalog::ev::LLM_GENERATE, payload, |payload| async move {
             let parsed = history_messages_from_payload(&payload);
             let msgs = if parsed.is_empty() { orig } else { parsed };
@@ -693,10 +698,17 @@ Handle employee info, policies, and benefits."#
         };
         let orig_messages = messages.to_vec();
         let orig_tools = tools.to_vec();
-        let payload = serde_json::json!({
-            "messages": orig_messages,
-            "tools": orig_tools,
-        });
+        let payload = serde_json::to_value(cordis::LlmGenerateToolsPayload {
+            messages: orig_messages
+                .iter()
+                .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                .collect(),
+            tools: orig_tools
+                .iter()
+                .map(|t| serde_json::to_value(t).unwrap_or(serde_json::Value::Null))
+                .collect(),
+        })
+        .unwrap_or(serde_json::Value::Null);
         let out = run_events_waterfall(&events, cordis::events_catalog::ev::LLM_GENERATE_TOOLS, payload, |payload| async move {
             let parsed_msgs = conversation_messages_from_payload(&payload);
             let msgs = if parsed_msgs.is_empty() {

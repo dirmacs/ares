@@ -60,6 +60,18 @@ pub use service::{CordisError, Service, ServiceInitFuture};
 
 pub mod events_catalog;
 pub use events_catalog::{contract_for, validate_dispatch, validate_listener, EventContract};
+pub mod events_payload;
+pub use events_payload::{
+    AgentAdmitEvent, AgentAdmitPayload, AgentCompletedEvent, AgentCompletedPayload,
+    AgentFailedEvent, AgentFailedPayload, AgentRunEvent, AgentRunRequest, AgentRunResult,
+    AgentStartedEvent, AgentStartedPayload, AgentUsageEvent, AgentUsagePayload,
+    LlmCompleteEvent, LlmCompleteRequest, LlmCompleteResult, LlmGenerateEvent,
+    LlmGeneratePayload, LlmGenerateToolsEvent, LlmGenerateToolsPayload, LlmGetClientEvent,
+    LlmGetClientPayload, LlmMessage, SchedulerAdmitEvent, SchedulerAdmitPayload,
+    SchedulerBeforeRunEvent, SchedulerBeforeRunPayload, ServiceChangedEvent,
+    ServiceChangedPayload, ToolsExecuteEvent, ToolsExecutePayload, ToolsListEvent,
+    ToolsListRequest, ToolsListResult, ToolsResolveEvent, ToolsResolveRequest, TypedEvent,
+};
 pub mod loader;
 pub use loader::{
     AppliedAction, CurrentEntries, Entry, EntryConfigFiller, EntryConfigFillerHandle,
@@ -245,17 +257,13 @@ impl ReflectService {
         // Emit service.changed event via EventsService (fire-and-forget)
         if let Some(ctx) = &ctx_opt {
             if let Some(events) = ctx.get::<EventsService>() {
-                let payload = serde_json::json!({
-                    "type_id": format!("{:?}", tid),
-                    "event": crate::events_catalog::ev::SERVICE_CHANGED
-                });
+                let payload = crate::ServiceChangedPayload {
+                    type_id: format!("{tid:?}"),
+                    event: crate::events_catalog::ev::SERVICE_CHANGED.to_string(),
+                };
                 tokio::spawn(async move {
                     let _ = events
-                        .dispatch(
-                            crate::events_catalog::ev::SERVICE_CHANGED.to_string(),
-                            payload,
-                            Dispatch::Emit,
-                        )
+                        .dispatch_typed::<crate::ServiceChangedEvent>(&payload)
                         .await;
                 });
             }

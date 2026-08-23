@@ -26,8 +26,10 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - Store loader factory runs SQL migrations and seeds agent templates
 - Overlay fills empty loader `entry.config` from `ares.toml`; TOON reloads notify `Tools` and `Execute`
 - `TenantRealms` open-then-intercept on request paths; dispose on admin tenant delete
-- `agent.admit` as the shared quota gate for `Execute`, JWT chat, API-key middleware, and MCP
-- Default `ares` facade has no axum (`http` is optional)
+- JWT research plus remaining v1 stream/agent handlers open the tenant realm before intercept
+- Isolate labels win over intercept for the same `TypeId`; unlabeled types still intercept
+- Leftover `execution_stack` dual `Execute` installer removed
+- Default `ares` facade has no axum (`http` is optional) and no longer re-exports `ProviderRegistry`
 
 ### Changed
 
@@ -42,7 +44,8 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - `Tools`, `Llm`, `Execute`, and skills remain event-first on `EventsService` waterfalls
 - `run_server` still instantiates Overlay first, then remaining loader entries
 - Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`
-- `ProviderRegistry` remains for `AgentRegistry` construction
+- `ProviderRegistry` remains on `ares-llm` for `Llm::new` / `AgentRegistry::from_config`
+- Root `ares-server` remains a library; Overlay still compiles into `ares-http` via `#[path]`
 
 ---
 

@@ -83,8 +83,9 @@ impl HttpTool {
 
     /// Parse execution_config JSONB into [`HttpToolConfig`].
     pub fn parse_config(execution_config: &Value) -> Result<HttpToolConfig> {
-        serde_json::from_value(execution_config.clone())
-            .map_err(|e| ares_types::AppError::Configuration(format!("Invalid HTTP tool config: {e}")))
+        serde_json::from_value(execution_config.clone()).map_err(|e| {
+            ares_types::AppError::Configuration(format!("Invalid HTTP tool config: {e}"))
+        })
     }
 }
 
@@ -103,9 +104,9 @@ impl Tool for HttpTool {
     }
 
     async fn execute(&self, args: Value) -> Result<Value> {
-        let args_map = args
-            .as_object()
-            .ok_or_else(|| ares_types::AppError::InvalidInput("args must be a JSON object".to_string()))?;
+        let args_map = args.as_object().ok_or_else(|| {
+            ares_types::AppError::InvalidInput("args must be a JSON object".to_string())
+        })?;
 
         // --- Build URL ---
         let url = substitute_template_string(&self.config.url_template, args_map)?;
@@ -126,11 +127,11 @@ impl Tool for HttpTool {
             let substituted = substitute_template_value(headers, args_map)?;
             if let Some(obj) = substituted.as_object() {
                 for (key, value) in obj {
-                    let header_value = value
-                        .as_str()
-                        .ok_or_else(|| ares_types::AppError::InvalidInput(
-                            format!("header '{key}' must resolve to a string"),
-                        ))?;
+                    let header_value = value.as_str().ok_or_else(|| {
+                        ares_types::AppError::InvalidInput(format!(
+                            "header '{key}' must resolve to a string"
+                        ))
+                    })?;
                     request = request.header(key, header_value);
                 }
             }
@@ -166,15 +167,9 @@ impl Tool for HttpTool {
             .unwrap_or("");
 
         let body_value = if content_type.contains("application/json") {
-            response
-                .json::<Value>()
-                .await
-                .unwrap_or_else(|_| json!(null))
+            response.json::<Value>().await.unwrap_or(Value::Null)
         } else {
-            let text = response
-                .text()
-                .await
-                .unwrap_or_default();
+            let text = response.text().await.unwrap_or_default();
             json!(text)
         };
 
@@ -191,10 +186,13 @@ impl Tool for HttpTool {
 // =============================================================================
 
 /// Replace `{{key}}` placeholders in `template` with values from `args`.
-fn substitute_template_string(template: &str, args: &serde_json::Map<String, Value>) -> Result<String> {
+fn substitute_template_string(
+    template: &str,
+    args: &serde_json::Map<String, Value>,
+) -> Result<String> {
     let mut result = template.to_string();
     for (key, value) in args {
-        let placeholder = format!("{{{{{}}}}}" , key);
+        let placeholder = format!("{{{{{}}}}}", key);
         let replacement = value_to_string(value)?;
         result = result.replace(&placeholder, &replacement);
     }
@@ -202,7 +200,10 @@ fn substitute_template_string(template: &str, args: &serde_json::Map<String, Val
 }
 
 /// Recursively replace `{{key}}` placeholders inside a JSON value.
-fn substitute_template_value(value: &Value, args: &serde_json::Map<String, Value>) -> Result<Value> {
+fn substitute_template_value(
+    value: &Value,
+    args: &serde_json::Map<String, Value>,
+) -> Result<Value> {
     match value {
         Value::String(s) => Ok(Value::String(substitute_template_string(s, args)?)),
         Value::Object(map) => {
@@ -231,7 +232,8 @@ fn value_to_string(value: &Value) -> Result<String> {
         Value::Bool(b) => Ok(b.to_string()),
         Value::Null => Ok(String::new()),
         _ => Err(ares_types::AppError::InvalidInput(
-            "Template substitution does not support objects or arrays as scalar replacements".to_string(),
+            "Template substitution does not support objects or arrays as scalar replacements"
+                .to_string(),
         )),
     }
 }

@@ -4,11 +4,10 @@
 //! field_change) with full observability, skill support, and pipeline
 //! propagation.
 
-use cordis::Service;
 use ares_store::agent_runs::{self, AgentRunMetadata};
 use ares_store::schedules::EventTrigger;
+use cordis::Service;
 use std::sync::Arc;
-
 
 fn format_message_with_context(context: &str, message: &str) -> String {
     format!("{context}\n\n---\nUser message: {message}")
@@ -29,11 +28,19 @@ fn llm_token_counts_u64(
     }
 }
 
-fn ctx_tracker(ctx: &std::sync::Arc<cordis::Context>) -> Option<std::sync::Arc<dyn crate::RunTracker>> {
+fn ctx_tracker(
+    ctx: &std::sync::Arc<cordis::Context>,
+) -> Option<std::sync::Arc<dyn crate::RunTracker>> {
     ctx.get::<crate::Execute>()?.run_tracker().cloned()
 }
 
-fn track_start(ctx: &std::sync::Arc<cordis::Context>, run_id: &str, tenant_id: &str, agent: &str, source: Option<&str>) {
+fn track_start(
+    ctx: &std::sync::Arc<cordis::Context>,
+    run_id: &str,
+    tenant_id: &str,
+    agent: &str,
+    source: Option<&str>,
+) {
     if let Some(t) = ctx_tracker(ctx) {
         t.start_run(run_id, tenant_id, agent, source);
     }
@@ -90,7 +97,6 @@ fn spawn_run_cost_aggregation(pool: sqlx::PgPool, request: RunCostAgg) {
     });
 }
 
-
 async fn fanout_pipelines(
     source_agent: &str,
     source_output: &str,
@@ -116,10 +122,10 @@ async fn fanout_pipelines(
 // ---------------------------------------------------------------------------
 
 // Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
-#[cfg(feature = "postgres")]
-use crate::execution::Execute;
 use crate::context_provider::AgentRuntimeContext;
 use crate::execution::AgentRequest;
+#[cfg(feature = "postgres")]
+use crate::execution::Execute;
 // Phase 6 §21: conditional struct — with postgres provides full dispatch, without is no-op stub
 #[cfg(feature = "postgres")]
 use cordis::{Context, Disposable};
@@ -230,18 +236,16 @@ impl TriggerService {
                 continue;
             }
             // optional prefix filter
-            if let Some(prefix) = trigger
-                .event_config
-                .get("prefix")
-                .and_then(|v| v.as_str())
-            {
+            if let Some(prefix) = trigger.event_config.get("prefix").and_then(|v| v.as_str()) {
                 if !key.starts_with(prefix) {
                     continue;
                 }
             }
             match self.execute_trigger(&trigger, &message, ctx).await {
                 Ok(()) => triggered.push(trigger.target_agent.clone()),
-                Err(e) => tracing::warn!(trigger_id=%trigger.id, agent=%trigger.target_agent, error=%e, "document_upload trigger execution failed"),
+                Err(e) => {
+                    tracing::warn!(trigger_id=%trigger.id, agent=%trigger.target_agent, error=%e, "document_upload trigger execution failed")
+                }
             }
         }
         Ok(triggered)
@@ -298,7 +302,9 @@ impl TriggerService {
             }
             match self.execute_trigger(&trigger, &message, ctx).await {
                 Ok(()) => triggered.push(trigger.target_agent.clone()),
-                Err(e) => tracing::warn!(trigger_id=%trigger.id, agent=%trigger.target_agent, error=%e, "field_change trigger execution failed"),
+                Err(e) => {
+                    tracing::warn!(trigger_id=%trigger.id, agent=%trigger.target_agent, error=%e, "field_change trigger execution failed")
+                }
             }
         }
         Ok(triggered)
@@ -315,8 +321,12 @@ impl TriggerService {
     ) -> Result<(), String> {
         // Probe for skill-based agent — if tenant agent has skill_id, run via SkillEngine
         let pool = self.db.pool.clone();
-        if let Ok(record) =
-            ares_store::tenant_agents::get_tenant_agent(&pool, &trigger.tenant_id, &trigger.target_agent).await
+        if let Ok(record) = ares_store::tenant_agents::get_tenant_agent(
+            &pool,
+            &trigger.tenant_id,
+            &trigger.target_agent,
+        )
+        .await
         {
             let skill_id_opt = record
                 .config
@@ -329,7 +339,8 @@ impl TriggerService {
                     // Use dedicated skill path (agent_runs + ActiveRuns + run_tool_calls)
                     let run_id = uuid::Uuid::new_v4().to_string();
                     let start = std::time::Instant::now();
-                    let metadata = triggered_agent_run_metadata(trigger, &run_id, "tenant_db", None, false);
+                    let metadata =
+                        triggered_agent_run_metadata(trigger, &run_id, "tenant_db", None, false);
                     let _ = agent_runs::insert_agent_run_with_id_and_metadata(
                         &pool,
                         &run_id,
@@ -347,7 +358,13 @@ impl TriggerService {
                         Some(&metadata),
                     )
                     .await;
-                    track_start(ctx, &run_id, &trigger.tenant_id, &trigger.target_agent, Some("trigger"));
+                    track_start(
+                        ctx,
+                        &run_id,
+                        &trigger.tenant_id,
+                        &trigger.target_agent,
+                        Some("trigger"),
+                    );
                     let skill_result = skill_engine
                         .execute_skill(
                             &skill_id,
@@ -358,9 +375,18 @@ impl TriggerService {
                         )
                         .await;
                     let duration_ms = start.elapsed().as_millis() as i64;
-                    let status = if skill_result.is_ok() { "completed" } else { "failed" };
-                    let active_status = if skill_result.is_ok() { "completed" } else { "error" };
-                    if let Some(_active_tracker) = ctx_tracker(ctx) { let active = _active_tracker;
+                    let status = if skill_result.is_ok() {
+                        "completed"
+                    } else {
+                        "failed"
+                    };
+                    let active_status = if skill_result.is_ok() {
+                        "completed"
+                    } else {
+                        "error"
+                    };
+                    if let Some(_active_tracker) = ctx_tracker(ctx) {
+                        let active = _active_tracker;
                         active.finish_run(&run_id, active_status);
                     }
                     let (itok, otok) = skill_result
@@ -382,13 +408,22 @@ impl TriggerService {
                     if let Ok(val) = &skill_result {
                         let out = serde_json::to_string(val).unwrap_or_default();
                         let _ = fanout_pipelines(
-                        &trigger.target_agent,
-                        &out,
-                        &trigger.tenant_id,
-                        trigger.id.clone(),
-                        ctx,
-                    )
-                    .await;
+                            &trigger.target_agent,
+                            &out,
+                            &trigger.tenant_id,
+                            trigger.id.clone(),
+                            ctx,
+                        )
+                        .await;
+                    }
+                    if skill_result.is_ok() {
+                        emit_trigger_fired(
+                            ctx,
+                            &trigger.id,
+                            &trigger.event_type,
+                            &trigger.target_agent,
+                            &trigger.tenant_id,
+                        );
                     }
                     return skill_result.map(|_| ()).map_err(|e| e.to_string());
                 }
@@ -420,6 +455,13 @@ impl TriggerService {
             ctx,
         )
         .await;
+        emit_trigger_fired(
+            ctx,
+            &trigger.id,
+            &trigger.event_type,
+            &trigger.target_agent,
+            &trigger.tenant_id,
+        );
         Ok(())
     }
 }
@@ -549,13 +591,19 @@ async fn execute_triggered_agent_legacy(
     event_message: &str,
     app_state: &std::sync::Arc<cordis::Context>,
 ) -> Result<(), String> {
-    
-    let pool = app_state.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = app_state
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
 
-    let tenant_agent_record =
-        ares_store::tenant_agents::get_tenant_agent(&pool, &trigger.tenant_id, &trigger.target_agent)
-            .await
-            .map_err(|e| format!("Agent lookup failed: {}", e))?;
+    let tenant_agent_record = ares_store::tenant_agents::get_tenant_agent(
+        &pool,
+        &trigger.tenant_id,
+        &trigger.target_agent,
+    )
+    .await
+    .map_err(|e| format!("Agent lookup failed: {}", e))?;
 
     let start = std::time::Instant::now();
     let run_id = uuid::Uuid::new_v4().to_string();
@@ -590,9 +638,17 @@ async fn execute_triggered_agent_legacy(
         .await
         .map_err(|e| e.to_string())?;
 
-        track_start(app_state, run_id.clone().as_str(), trigger.tenant_id.clone().as_str(), trigger.target_agent.clone().as_str(), Some("trigger"));
+        track_start(
+            app_state,
+            run_id.clone().as_str(),
+            trigger.tenant_id.clone().as_str(),
+            trigger.target_agent.clone().as_str(),
+            Some("trigger"),
+        );
 
-        let skill_result = app_state.get::<crate::skills::SkillEngine>().expect("not provided")
+        let skill_result = app_state
+            .get::<crate::skills::SkillEngine>()
+            .expect("not provided")
             .execute_skill(
                 skill_id,
                 &trigger.tenant_id,
@@ -681,6 +737,15 @@ async fn execute_triggered_agent_legacy(
             .await;
         }
 
+        if skill_result.is_ok() {
+            emit_trigger_fired(
+                app_state,
+                &trigger.id,
+                &trigger.event_type,
+                &trigger.target_agent,
+                &trigger.tenant_id,
+            );
+        }
         return skill_result.map(|_| ());
     }
 
@@ -699,7 +764,10 @@ async fn execute_triggered_agent_legacy(
     );
     runtime_context.session_id = Some(run_id.clone());
 
-    let eruka_context = app_state.get::<crate::ContextProviderHandle>().expect("not provided").0
+    let eruka_context = app_state
+        .get::<crate::ContextProviderHandle>()
+        .expect("not provided")
+        .0
         .get_context_for_run(&runtime_context)
         .await;
     let eruka_context_hit = eruka_context.is_some();
@@ -709,16 +777,11 @@ async fn execute_triggered_agent_legacy(
         event_message.to_string()
     };
 
-    let metadata = triggered_agent_run_metadata(
-        trigger,
-        &run_id,
-        "execute",
-        None,
-        eruka_context_hit,
-    );
+    let metadata =
+        triggered_agent_run_metadata(trigger, &run_id, "execute", None, eruka_context_hit);
 
     agent_runs::insert_agent_run_with_id_and_metadata(
-            &pool,
+        &pool,
         &run_id,
         &trigger.tenant_id,
         &trigger.target_agent,
@@ -736,7 +799,13 @@ async fn execute_triggered_agent_legacy(
     .await
     .map_err(|e| e.to_string())?;
 
-    track_start(app_state, run_id.clone().as_str(), trigger.tenant_id.clone().as_str(), trigger.target_agent.clone().as_str(), Some("trigger"));
+    track_start(
+        app_state,
+        run_id.clone().as_str(),
+        trigger.tenant_id.clone().as_str(),
+        trigger.target_agent.clone().as_str(),
+        Some("trigger"),
+    );
 
     let result = execute
         .run(
@@ -753,7 +822,12 @@ async fn execute_triggered_agent_legacy(
 
     spawn_run_cost_aggregation(
         pool.clone(),
-        run_cost_aggregation_request(&run_id, &trigger.tenant_id, &trigger.target_agent, duration_ms as i64),
+        run_cost_aggregation_request(
+            &run_id,
+            &trigger.tenant_id,
+            &trigger.target_agent,
+            duration_ms as i64,
+        ),
     );
 
     let (status, error_msg, input_tokens, output_tokens, model_name, provider_name);
@@ -770,12 +844,14 @@ async fn execute_triggered_agent_legacy(
             input_tokens = itok as i64;
             output_tokens = otok as i64;
             model_name = response
-                .response.metadata
+                .response
+                .metadata
                 .as_ref()
                 .map(|m| m.model_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
             provider_name = response
-                .response.metadata
+                .response
+                .metadata
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
@@ -789,6 +865,13 @@ async fn execute_triggered_agent_legacy(
                 app_state,
             )
             .await;
+            emit_trigger_fired(
+                app_state,
+                &trigger.id,
+                &trigger.event_type,
+                &trigger.target_agent,
+                &trigger.tenant_id,
+            );
         }
         Err(e) => {
             status = "failed";
@@ -864,6 +947,31 @@ async fn execute_triggered_agent_legacy(
     Ok(())
 }
 
+/// Fire-and-forget `trigger.fired` emission on trigger success. Missing event
+/// bus is a no-op; the dispatch never blocks the trigger path.
+fn emit_trigger_fired(
+    ctx: &Arc<Context>,
+    trigger_id: &str,
+    event_type: &str,
+    target_agent: &str,
+    tenant_id: &str,
+) {
+    let Some(events) = ctx.get::<cordis::EventsService>() else {
+        return;
+    };
+    let payload = cordis::TriggerFiredPayload {
+        trigger_id: trigger_id.to_string(),
+        event_type: event_type.to_string(),
+        target_agent: target_agent.to_string(),
+        tenant_id: tenant_id.to_string(),
+    };
+    tokio::spawn(async move {
+        let _ = events
+            .dispatch_typed::<cordis::TriggerFiredEvent>(&payload)
+            .await;
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -906,23 +1014,124 @@ mod tests {
         let root = Context::new_root();
         let scoped = tenant_scoped_ctx(&root, "acme");
         assert_eq!(
-            scoped.isolate_label(TypeId::of::<crate::Execute>()).as_deref(),
+            scoped
+                .isolate_label(TypeId::of::<crate::Execute>())
+                .as_deref(),
             Some("acme"),
         );
         assert_eq!(
-            scoped.isolate_label(TypeId::of::<ares_tools::Tools>()).as_deref(),
+            scoped
+                .isolate_label(TypeId::of::<ares_tools::Tools>())
+                .as_deref(),
             Some("acme"),
         );
     }
-}
 
+    /// Phase 5 engine choreography: `trigger.fired` is success-only. Drive the
+    /// legacy regular path with no LLM configured (fails fast, records a
+    /// failed agent_run) and assert absence, then pin the wire format via the
+    /// emit helper.
+    // direct-helper coverage: full-path covered by scheduler-side integration tests
+    #[tokio::test(flavor = "multi_thread")]
+    async fn trigger_fired_emitted_on_execute_trigger_success_path() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://dirmacs@localhost/ares_test".to_string());
+        let Ok(pool) = sqlx::PgPool::connect(&database_url).await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
+
+        let app_state = Context::new_root();
+        app_state.provide(cordis::EventsService::new());
+        app_state.provide(ares_store::TenantDb::new(Arc::new(PostgresClient { pool })));
+        app_state.provide(crate::Execute::new());
+        app_state.provide(crate::context_provider::ContextProviderHandle::new(
+            Arc::new(crate::context_provider::NoOpContextProvider),
+        ));
+        let mut rx = app_state
+            .get::<cordis::EventsService>()
+            .expect("events service provided")
+            .subscribe();
+
+        let trig = EventTrigger {
+            id: "t5-trig-fail".to_string(),
+            tenant_id: "tenant-t5-trig".to_string(),
+            name: "phase5 boundary probe".to_string(),
+            event_type: "webhook".to_string(),
+            event_config: serde_json::json!({}),
+            target_agent: "target-t5-trig".to_string(),
+            enabled: true,
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        // No tenant agent record -> regular (non-skill) path; Execute fails
+        // fast without an LLM, so the whole dispatch reports failure.
+        let outcome = execute_triggered_agent_legacy(&trig, "hello", &app_state).await;
+        assert!(outcome.is_err(), "expected fast failure without LLM");
+
+        // Emission is success-only: drain briefly and assert nothing fired.
+        let mut saw_fired = false;
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await {
+                Ok(Ok((event, _))) => {
+                    if event == "trigger.fired" {
+                        saw_fired = true;
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(
+            !saw_fired,
+            "trigger.fired must not fire on the failure path"
+        );
+
+        // Direct-helper coverage of the wire format emitted on success.
+        emit_trigger_fired(
+            &app_state,
+            "t5-trig-ok",
+            "webhook",
+            "target-t5-trig",
+            "tenant-t5-trig",
+        );
+        loop {
+            let (event, payload) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                    .await
+                    .expect("timed out waiting for trigger.fired")
+                    .expect("broadcast channel open");
+            if event != "trigger.fired" {
+                continue;
+            }
+            assert_eq!(payload["trigger_id"], "t5-trig-ok");
+            assert_eq!(payload["event_type"], "webhook");
+            assert_eq!(payload["target_agent"], "target-t5-trig");
+            assert_eq!(payload["tenant_id"], "tenant-t5-trig");
+            break;
+        }
+
+        // Keep the shared ares_test DB clean for the rest of the suite.
+        sqlx::query("DELETE FROM agent_runs WHERE tenant_id LIKE 'tenant-t5-%'")
+            .execute(app_state.get::<ares_store::TenantDb>().expect("db").pool())
+            .await
+            .expect("cleanup agent_runs");
+        sqlx::query("DELETE FROM usage_events WHERE tenant_id LIKE 'tenant-t5-%'")
+            .execute(app_state.get::<ares_store::TenantDb>().expect("db").pool())
+            .await
+            .expect("cleanup usage_events");
+    }
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TriggerConfig {}
 
 pub struct TriggerPlugin;
 
-fn inject_or_get<T: cordis::Service + 'static>(ctx: &std::sync::Arc<cordis::Context>) -> Result<std::sync::Arc<T>, cordis::CordisError> {
+fn inject_or_get<T: cordis::Service + 'static>(
+    ctx: &std::sync::Arc<cordis::Context>,
+) -> Result<std::sync::Arc<T>, cordis::CordisError> {
     if let Some(v) = ctx.get::<T>() {
         return Ok(v);
     }

@@ -43,10 +43,16 @@ pub mod ev {
     pub const TOOLS_RESOLVE: &str = "tools.resolve";
     pub const SCHEDULER_BEFORE_RUN: &str = "scheduler.before_run";
     pub const SCHEDULER_ADMIT: &str = "scheduler.admit";
+    pub const SCHEDULER_TICK: &str = "scheduler.tick";
+    pub const SCHEDULER_SCHEDULE_DISPATCHED: &str = "scheduler.schedule.dispatched";
+    pub const PIPELINE_STEP_STARTED: &str = "pipeline.step.started";
+    pub const PIPELINE_STEP_FINISHED: &str = "pipeline.step.finished";
+    pub const PIPELINE_FANOUT_COMPLETED: &str = "pipeline.fanout.completed";
+    pub const TRIGGER_FIRED: &str = "trigger.fired";
     pub const SERVICE_CHANGED: &str = "service.changed";
 }
 
-/// The 16 production events, verified by inventory across all crates.
+/// The production events, verified by inventory across all crates.
 pub const CONTRACTS: &[EventContract] = &[
     EventContract {
         name: ev::AGENT_ADMIT,
@@ -123,6 +129,12 @@ pub const CONTRACTS: &[EventContract] = &[
         mode: Dispatch::Bail,
         around: false,
     },
+    EventContract { name: ev::SCHEDULER_TICK, mode: Dispatch::Emit, around: false },
+    EventContract { name: ev::SCHEDULER_SCHEDULE_DISPATCHED, mode: Dispatch::Emit, around: false },
+    EventContract { name: ev::PIPELINE_STEP_STARTED, mode: Dispatch::Emit, around: false },
+    EventContract { name: ev::PIPELINE_STEP_FINISHED, mode: Dispatch::Emit, around: false },
+    EventContract { name: ev::PIPELINE_FANOUT_COMPLETED, mode: Dispatch::Emit, around: false },
+    EventContract { name: ev::TRIGGER_FIRED, mode: Dispatch::Emit, around: false },
     EventContract {
         name: ev::SERVICE_CHANGED,
         mode: Dispatch::Emit,
@@ -194,7 +206,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "duplicate contract names");
-        assert_eq!(total, 16);
+        assert_eq!(total, 22);
     }
 
     #[test]

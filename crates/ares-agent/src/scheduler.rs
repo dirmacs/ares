@@ -333,6 +333,71 @@ impl SchedulerService {
     }
 }
 
+/// Free-function form of [`SchedulerService::before_run_typed`] for call
+/// sites that hold only the context (e.g. `execute_scheduled_agent`).
+async fn scheduler_before_run(
+    ctx: &Arc<Context>,
+    payload: &cordis::SchedulerBeforeRunPayload,
+) -> serde_json::Value {
+    let value = serde_json::to_value(payload).unwrap_or(serde_json::Value::Null);
+    let Some(events) = ctx.get::<cordis::EventsService>() else {
+        return value;
+    };
+    events
+        .dispatch(
+            cordis::events_catalog::ev::SCHEDULER_BEFORE_RUN.to_string(),
+            value.clone(),
+            cordis::Dispatch::Waterfall,
+        )
+        .await
+        .unwrap_or(value)
+}
+
+/// Free-function form of [`SchedulerService::admit_run`]: consults the
+/// `scheduler.admit` Bail chain; a run is admitted unless some handler bailed.
+async fn scheduler_admit(ctx: &Arc<Context>, run: serde_json::Value) -> bool {
+    let Some(events) = ctx.get::<cordis::EventsService>() else {
+        return true;
+    };
+    let result = events
+        .dispatch(
+            cordis::events_catalog::ev::SCHEDULER_ADMIT.to_string(),
+            run.clone(),
+            cordis::Dispatch::Bail,
+        )
+        .await
+        .unwrap_or_else(|_| run.clone());
+    result == run
+}
+
+/// Fire-and-forget `scheduler.schedule.dispatched` emission; missing or failed
+/// event bus never affects the tick path.
+fn emit_schedule_dispatched(ctx: &Arc<Context>, payload: cordis::ScheduleDispatchedPayload) {
+    let Some(events) = ctx.get::<cordis::EventsService>() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let _ = events
+            .dispatch_typed::<cordis::ScheduleDispatchedEvent>(&payload)
+            .await;
+    });
+}
+
+/// Fire-and-forget `scheduler.tick` emission for one completed pass.
+fn emit_scheduler_tick(ctx: &Arc<Context>, due_count: u64, catchup_count: u64) {
+    let Some(events) = ctx.get::<cordis::EventsService>() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let _ = events
+            .dispatch_typed::<cordis::SchedulerTickEvent>(&cordis::SchedulerTickPayload {
+                due_count,
+                catchup_count,
+            })
+            .await;
+    });
+}
+
 // Guard that aborts the tick task on dispose (LIFO accumulator).
 struct SchedulerGuard {
     handle: Arc<parking_lot::Mutex<Option<JoinHandle<()>>>>,
@@ -654,6 +719,7 @@ async fn run_due_schedules(
     } else {
         skip_catchup_attempted_due_schedules(due, &catchup_attempted)
     };
+    let due_count = due.len() as u64;
     for sched in due {
         tracing::info!(
             "Scheduler: running agent {} for tenant {}",
@@ -683,6 +749,7 @@ async fn run_due_schedules(
             }
         }
     }
+    emit_scheduler_tick(app_state, due_count, catchup_attempted.len() as u64);
     Ok(())
 }
 
@@ -888,9 +955,62 @@ async fn execute_scheduled_agent(
     } else {
         scoped.clone()
     };
+    // Cordis choreography: scheduled runs pass through the same declared
+    // policy events as every other execution surface — `scheduler.before_run`
+    // around-middleware enrichment, then `scheduler.admit` Bail admission.
+    // Handler-provided `agent_name`/`message` overrides flow into the executed
+    // request (audit identity stays tied to the schedule). A denial skips
+    // execution entirely; callers (due-pass loop / catch-up pass) still
+    // advance next_run, so the schedule stays healthy and no agent_runs row
+    // is recorded.
+    let run_request_value = scheduler_before_run(
+        app_state,
+        &cordis::SchedulerBeforeRunPayload {
+            agent_name: sched.agent_name.clone(),
+            run_id: run_id.clone(),
+            tenant: Some(sched.tenant_id.clone()),
+        },
+    )
+    .await;
+    let admitted = scheduler_admit(app_state, run_request_value.clone()).await;
+    if !admitted {
+        tracing::info!(
+            schedule_id = %sched.id,
+            agent = %sched.agent_name,
+            "scheduled run denied by admission policy"
+        );
+        emit_schedule_dispatched(
+            app_state,
+            cordis::ScheduleDispatchedPayload {
+                schedule_id: sched.id.clone(),
+                agent_name: sched.agent_name.clone(),
+                tenant_id: sched.tenant_id.clone(),
+                is_catchup,
+                ok: false,
+                denied: true,
+                error: None,
+            },
+        );
+        // Callers (due-pass loop / catch-up pass) own next_run advancement;
+        // returning Ok keeps the schedule healthy without recording a run.
+        return Ok(());
+    }
+    let exec_agent_name = run_request_value
+        .get("agent_name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| sched.agent_name.clone());
+    let exec_message = run_request_value
+        .get("message")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| effective_message.clone());
+
     let req = crate::execution::AgentRequest {
-        agent_name: sched.agent_name.clone(),
-        message: effective_message.clone(),
+        agent_name: exec_agent_name,
+        message: exec_message,
         history: Vec::new(),
         ctx_provider: None,
     };
@@ -1050,6 +1170,19 @@ async fn execute_scheduled_agent(
             &sched.agent_name,
             duration_ms as i64,
         ),
+    );
+
+    emit_schedule_dispatched(
+        app_state,
+        cordis::ScheduleDispatchedPayload {
+            schedule_id: sched.id.clone(),
+            agent_name: sched.agent_name.clone(),
+            tenant_id: sched.tenant_id.clone(),
+            is_catchup,
+            ok: status == "completed",
+            denied: false,
+            error: error_msg.clone(),
+        },
     );
 
     if status == "completed" {
@@ -1518,6 +1651,223 @@ mod tests {
             .before_run_payload(&ctx, serde_json::json!({"agent_name":"a","run_id":"r1"}))
             .await;
         assert_eq!(enriched["enriched"], serde_json::json!(true));
+    }
+
+    // ── Phase 5 choreography: policy events through the real tick path ────
+
+    /// Real Postgres-backed [`ares_store::TenantDb`] built from
+    /// `TEST_DATABASE_URL`. Note that `PostgresClient::new_test()`'s lazy
+    /// pool points at a placeholder URL that can never execute queries, so
+    /// tests asserting persisted rows must connect through the env URL.
+    async fn live_tenant_db() -> ares_store::TenantDb {
+        let url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres:///ares_test".to_string());
+        let client = ares_store::PostgresClient::new_remote(url, String::new())
+            .await
+            .expect("test database should be reachable");
+        ares_store::TenantDb::new(std::sync::Arc::new(client))
+    }
+
+    /// `agent_runs.tenant_id` carries a FK to `tenants(id)`, so fabricated
+    /// schedule tenants must exist as real tenant rows before execution.
+    async fn create_fixture_tenant(tenant_db: &ares_store::TenantDb, name: &str) -> String {
+        tenant_db
+            .create_tenant(name.to_string(), ares_types::TenantTier::Free)
+            .await
+            .expect("fixture tenant insert should succeed")
+            .id
+    }
+
+    async fn delete_fixture_tenant(pool: &sqlx::PgPool, tenant_id: &str) {
+        sqlx::query("DELETE FROM tenants WHERE id=$1")
+            .bind(tenant_id)
+            .execute(pool)
+            .await
+            .expect("bounded cleanup tenant delete should succeed");
+    }
+
+    async fn agent_runs_count(pool: &sqlx::PgPool, tenant_id: &str, agent_name: &str) -> i64 {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM agent_runs WHERE tenant_id=$1 AND agent_name=$2",
+        )
+        .bind(tenant_id)
+        .bind(agent_name)
+        .fetch_one(pool)
+        .await
+        .expect("agent_runs count query should succeed")
+    }
+
+    async fn cleanup_agent_runs(pool: &sqlx::PgPool, tenant_id: &str) {
+        sqlx::query("DELETE FROM agent_runs WHERE tenant_id=$1")
+            .bind(tenant_id)
+            .execute(pool)
+            .await
+            .expect("bounded cleanup delete should succeed");
+    }
+
+    /// Wait (≤5s per poll) for a `scheduler.schedule.dispatched` emission
+    /// belonging to `schedule_id`, tolerating unrelated broadcasts.
+    async fn wait_for_dispatched(
+        rx: &mut tokio::sync::broadcast::Receiver<(String, serde_json::Value)>,
+        schedule_id: &str,
+    ) -> serde_json::Value {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+                Ok(Ok((_, payload)))
+                    if payload["schedule_id"] == serde_json::json!(schedule_id) =>
+                {
+                    return payload;
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(other) => panic!("broadcast channel closed unexpectedly: {other:?}"),
+                Err(_) => {
+                    panic!("scheduler.schedule.dispatched for {schedule_id} not observed within 5s")
+                }
+            }
+        }
+    }
+
+    // Multi-thread runtime: the execution path uses block_in_place internally.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scheduled_run_dispatched_event_observed_on_execution_path() {
+        let tenant_db = live_tenant_db().await;
+        let pool = tenant_db.pool().clone();
+
+        let app_state = Context::new_root();
+        let events = app_state.provide(cordis::EventsService::new());
+
+        let tenant_id = create_fixture_tenant(&tenant_db, "t5-disp-ok").await;
+        app_state.provide(tenant_db);
+        app_state.provide(crate::Execute::new());
+
+        let mut rx = events.subscribe();
+        let mut sched = schedule("t5-disp-ok");
+        sched.id = "t5-disp-ok".to_string();
+        sched.agent_name = "t5-agent-disp".to_string();
+        sched.tenant_id = tenant_id;
+
+        // The Execute engine's fallback path completes scheduled runs even
+        // without a configured model; the observable contract is a
+        // dispatched emission with ok=true plus an agent_runs row.
+        let result = execute_scheduled_agent(&sched, &app_state, false).await;
+        assert!(
+            result.is_ok(),
+            "scheduled execution should succeed: {result:?}"
+        );
+
+        let payload = wait_for_dispatched(&mut rx, &sched.id).await;
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        assert_eq!(payload["denied"], serde_json::json!(false));
+        assert_eq!(payload["agent_name"], serde_json::json!(sched.agent_name));
+        assert_eq!(payload["tenant_id"], serde_json::json!(sched.tenant_id));
+        assert!(payload["error"].is_null(), "success must carry no error");
+
+        let count = agent_runs_count(&pool, &sched.tenant_id, &sched.agent_name).await;
+        assert!(count > 0, "scheduled run must record an agent_runs row");
+
+        cleanup_agent_runs(&pool, &sched.tenant_id).await;
+        delete_fixture_tenant(&pool, &sched.tenant_id).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scheduled_run_denied_by_admission_skips_execution_and_reports_denied() {
+        let tenant_db = live_tenant_db().await;
+        let pool = tenant_db.pool().clone();
+
+        let app_state = Context::new_root();
+        let events = app_state.provide(cordis::EventsService::new());
+
+        // Admission policy denies every candidate run.
+        let _deny = events.on(
+            cordis::events_catalog::ev::SCHEDULER_ADMIT.to_string(),
+            |_payload| async { Ok(serde_json::json!({"deny": true})) },
+        );
+        let tenant_id = create_fixture_tenant(&tenant_db, "t5-disp-deny").await;
+        app_state.provide(tenant_db);
+        app_state.provide(crate::Execute::new());
+
+        let mut rx = events.subscribe();
+
+        let mut sched = schedule("t5-disp-deny");
+        sched.id = "t5-disp-deny".to_string();
+        sched.agent_name = "t5-agent-deny".to_string();
+        sched.tenant_id = tenant_id;
+
+        let result = execute_scheduled_agent(&sched, &app_state, false).await;
+        assert!(
+            result.is_ok(),
+            "denial must not fail the caller: {result:?}"
+        );
+
+        let payload = wait_for_dispatched(&mut rx, &sched.id).await;
+        assert_eq!(payload["denied"], serde_json::json!(true));
+        assert_eq!(payload["ok"], serde_json::json!(false));
+        assert!(payload["error"].is_null(), "denial is not an error");
+
+        let count = agent_runs_count(&pool, &sched.tenant_id, &sched.agent_name).await;
+        assert_eq!(count, 0, "denied runs must not record agent_runs rows");
+
+        cleanup_agent_runs(&pool, &sched.tenant_id).await;
+        delete_fixture_tenant(&pool, &sched.tenant_id).await;
+    }
+
+    #[tokio::test]
+    async fn scheduled_before_run_enrichment_reaches_admission_through_tick_helpers() {
+        let ctx = Context::new_root();
+        let events = ctx.provide(cordis::EventsService::new());
+
+        // Around-middleware injects a marker into the before_run payload.
+        let _enrich = events.on_waterfall(
+            cordis::events_catalog::ev::SCHEDULER_BEFORE_RUN.to_string(),
+            |payload, next| async move {
+                let mut obj = payload.as_object().cloned().unwrap_or_default();
+                obj.insert("message".into(), serde_json::json!("deny-me-marker"));
+                next(serde_json::Value::Object(obj)).await
+            },
+        );
+        // Admission bails only when the enrichment reached its input.
+        let _policy = events.on(
+            cordis::events_catalog::ev::SCHEDULER_ADMIT.to_string(),
+            |payload| async move {
+                if payload.get("message") == Some(&serde_json::json!("deny-me-marker")) {
+                    Ok(serde_json::json!({"deny": true}))
+                } else {
+                    Ok(serde_json::Value::Null)
+                }
+            },
+        );
+
+        // Tick-path flow: the before_run helper's waterfall output feeds the
+        // admission helper exactly as execute_scheduled_agent wires them.
+        let enriched = scheduler_before_run(
+            &ctx,
+            &cordis::SchedulerBeforeRunPayload {
+                agent_name: "t5-agent-flow".to_string(),
+                run_id: "t5-run-enriched".to_string(),
+                tenant: Some("t5-tenant-flow".to_string()),
+            },
+        )
+        .await;
+        assert_eq!(
+            enriched["message"],
+            serde_json::json!("deny-me-marker"),
+            "waterfall must inject the marker"
+        );
+        assert!(
+            !scheduler_admit(&ctx, enriched).await,
+            "marker injected by scheduler.before_run must drive admission denial"
+        );
+
+        let plain = serde_json::to_value(cordis::SchedulerBeforeRunPayload {
+            agent_name: "t5-agent-flow".to_string(),
+            run_id: "t5-run-plain".to_string(),
+            tenant: Some("t5-tenant-flow".to_string()),
+        })
+        .expect("payload serializes");
+        assert!(
+            scheduler_admit(&ctx, plain).await,
+            "run without the injected marker must be admitted"
+        );
     }
 }
 

@@ -463,6 +463,154 @@ pub struct ServiceChangedPayload {
     pub event: String,
 }
 
+// ---------------------------------------------------------------------------
+// Engine boundary events — Dispatch::Emit (fire-and-forget observability)
+// ---------------------------------------------------------------------------
+
+/// Payload for [`SchedulerTickEvent`]: counts from one due-schedule pass.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SchedulerTickPayload {
+    #[serde(default)]
+    pub due_count: u64,
+    #[serde(default)]
+    pub catchup_count: u64,
+}
+
+/// `scheduler.tick` — emitted once per completed scheduler execution pass
+/// (`Dispatch::Emit`).
+#[derive(Debug, Clone, Copy)]
+pub struct SchedulerTickEvent;
+impl TypedEvent for SchedulerTickEvent {
+    type Payload = SchedulerTickPayload;
+    const NAME: &'static str = crate::events_catalog::ev::SCHEDULER_TICK;
+    const MODE: Dispatch = Dispatch::Emit;
+    const AROUND: bool = false;
+}
+
+/// Payload for [`ScheduleDispatchedEvent`]: outcome of one scheduled run.
+/// `denied: true` means admission policy skipped the run; a denial is not a
+/// failure and still advances the schedule's next_run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScheduleDispatchedPayload {
+    pub schedule_id: String,
+    #[serde(default)]
+    pub agent_name: String,
+    #[serde(default)]
+    pub tenant_id: String,
+    #[serde(default)]
+    pub is_catchup: bool,
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub denied: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// `scheduler.schedule.dispatched` — emitted after each scheduled-run attempt
+/// (`Dispatch::Emit`).
+#[derive(Debug, Clone, Copy)]
+pub struct ScheduleDispatchedEvent;
+impl TypedEvent for ScheduleDispatchedEvent {
+    type Payload = ScheduleDispatchedPayload;
+    const NAME: &'static str = crate::events_catalog::ev::SCHEDULER_SCHEDULE_DISPATCHED;
+    const MODE: Dispatch = Dispatch::Emit;
+    const AROUND: bool = false;
+}
+
+/// Payload for [`PipelineStepStartedEvent`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineStepStartedPayload {
+    pub pipeline_id: String,
+    pub target_agent: String,
+    #[serde(default)]
+    pub tenant_id: String,
+    #[serde(default)]
+    pub run_id: String,
+}
+
+/// `pipeline.step.started` — emitted just before each pipeline target runs
+/// (`Dispatch::Emit`).
+#[derive(Debug, Clone, Copy)]
+pub struct PipelineStepStartedEvent;
+impl TypedEvent for PipelineStepStartedEvent {
+    type Payload = PipelineStepStartedPayload;
+    const NAME: &'static str = crate::events_catalog::ev::PIPELINE_STEP_STARTED;
+    const MODE: Dispatch = Dispatch::Emit;
+    const AROUND: bool = false;
+}
+
+/// Payload for [`PipelineStepFinishedEvent`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineStepFinishedPayload {
+    pub pipeline_id: String,
+    pub target_agent: String,
+    #[serde(default)]
+    pub tenant_id: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// `pipeline.step.finished` — emitted after each pipeline target's status is
+/// known (`Dispatch::Emit`).
+#[derive(Debug, Clone, Copy)]
+pub struct PipelineStepFinishedEvent;
+impl TypedEvent for PipelineStepFinishedEvent {
+    type Payload = PipelineStepFinishedPayload;
+    const NAME: &'static str = crate::events_catalog::ev::PIPELINE_STEP_FINISHED;
+    const MODE: Dispatch = Dispatch::Emit;
+    const AROUND: bool = false;
+}
+
+/// Payload for [`PipelineFanoutCompletedEvent`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineFanoutCompletedPayload {
+    #[serde(default)]
+    pub source_agent: String,
+    #[serde(default)]
+    pub tenant_id: String,
+    #[serde(default)]
+    pub triggered: Vec<String>,
+}
+
+/// `pipeline.fanout.completed` — emitted at the end of a pipeline fan-out
+/// (`Dispatch::Emit`).
+#[derive(Debug, Clone, Copy)]
+pub struct PipelineFanoutCompletedEvent;
+impl TypedEvent for PipelineFanoutCompletedEvent {
+    type Payload = PipelineFanoutCompletedPayload;
+    const NAME: &'static str = crate::events_catalog::ev::PIPELINE_FANOUT_COMPLETED;
+    const MODE: Dispatch = Dispatch::Emit;
+    const AROUND: bool = false;
+}
+
+/// Payload for [`TriggerFiredEvent`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerFiredPayload {
+    pub trigger_id: String,
+    #[serde(default)]
+    pub event_type: String,
+    #[serde(default)]
+    pub target_agent: String,
+    #[serde(default)]
+    pub tenant_id: String,
+}
+
+/// `trigger.fired` — emitted when a trigger executes its target agent
+/// successfully (`Dispatch::Emit`).
+#[derive(Debug, Clone, Copy)]
+pub struct TriggerFiredEvent;
+impl TypedEvent for TriggerFiredEvent {
+    type Payload = TriggerFiredPayload;
+    const NAME: &'static str = crate::events_catalog::ev::TRIGGER_FIRED;
+    const MODE: Dispatch = Dispatch::Emit;
+    const AROUND: bool = false;
+}
+
 /// `service.changed` — hot-reload notification emitted by ReflectService
 /// (`Dispatch::Emit`).
 #[derive(Debug, Clone, Copy)]
@@ -563,6 +711,36 @@ mod tests {
                 ToolsResolveEvent::NAME,
                 ToolsResolveEvent::MODE,
                 ToolsResolveEvent::AROUND,
+            ),
+            (
+                SchedulerTickEvent::NAME,
+                SchedulerTickEvent::MODE,
+                SchedulerTickEvent::AROUND,
+            ),
+            (
+                ScheduleDispatchedEvent::NAME,
+                ScheduleDispatchedEvent::MODE,
+                ScheduleDispatchedEvent::AROUND,
+            ),
+            (
+                PipelineStepStartedEvent::NAME,
+                PipelineStepStartedEvent::MODE,
+                PipelineStepStartedEvent::AROUND,
+            ),
+            (
+                PipelineStepFinishedEvent::NAME,
+                PipelineStepFinishedEvent::MODE,
+                PipelineStepFinishedEvent::AROUND,
+            ),
+            (
+                PipelineFanoutCompletedEvent::NAME,
+                PipelineFanoutCompletedEvent::MODE,
+                PipelineFanoutCompletedEvent::AROUND,
+            ),
+            (
+                TriggerFiredEvent::NAME,
+                TriggerFiredEvent::MODE,
+                TriggerFiredEvent::AROUND,
             ),
         ];
         for (name, mode, around) in bindings {

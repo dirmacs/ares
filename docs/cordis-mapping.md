@@ -531,3 +531,51 @@ The default `ares` crate has no axum. `Context`, `Execute`, `Tools`, `Llm`, and 
 - Scheduler, pipeline, and trigger domain loops remain native ARES engines. They inject `Execute` and run behind it; they are not a second public agent API.
 - Root `ares-server` is a binary. Overlay lives in `crates/ares-http/src/overlay.rs`; the server still registers the Overlay factory.
 - Overlay / optional `ServerRuntime` provide host extras (ActiveRuns, SkillEngine, MCP). `Execute` is registered once, by `ares-agent`.
+
+---
+
+## 15. Round 4 (0.9.x): policies, HMR finish, static factories, metrics, atomic saves
+
+### Typed event payloads
+
+All 22 catalog events in `crates/cordis/src/events_catalog.rs` (`CONTRACTS`, `contract_for`) carry typed payload structs in `crates/cordis/src/events_payload.rs`. Each implements the `TypedEvent` trait (`type Payload: Serialize + DeserializeOwned + Clone + Send + Sync`, plus `NAME`/`MODE`/`AROUND` const-linked to the catalog). `EventsService::dispatch_typed<E>` serializes and dispatches with the declared mode; `on_typed` / `on_typed_waterfall` deliver deserialized payloads to listeners, skipping malformed ones with a warning. A consistency test asserts every binding matches `CONTRACTS` and that no event is unbound. The raw `Value` API remains for kernel and dynamic cases.
+
+### Engine choreography
+
+Scheduler admission is scriptable through two waterfall events: `scheduler.before_run` output overrides `agent_name`/`message` on the executed request (audit identity stays schedule-tied); a Bail denial emits `{ok:false, denied:true}` and returns without running — due-pass callers solely advance `next_run`. Boundary events `SCHEDULER_TICK`, `SCHEDULER_SCHEDULE_DISPATCHED`, `PIPELINE_STEP_STARTED/FINISHED`, `PIPELINE_FANOUT_COMPLETED`, and `TRIGGER_FIRED` are emitted from scheduler/pipeline/trigger engines, completing full-catalog adoption.
+
+### RhaiPolicy scripting (default-on)
+
+`RhaiServiceConfig.listen: Vec<RhaiListenerConfig { event, fn_name }>` lets a declarative entry attach sandboxed Rhai functions to any catalog event:
+
+```toml
+[[entry]]
+id = "policy-example"
+plugin = "RhaiPolicy"
+[entry.config]
+script = "fn gate(p) { if p.tenant_id == \"banned\" { #{deny: \"banned\"} } else { () } }"
+[[entry.config.listen]]
+event = "scheduler.admit"
+fn_name = "gate"
+```
+
+Semantics: the payload arrives as an object map (plain property access). Returning `()`/null passes through (Bail) or delegates via `next` (waterfall); any other value becomes the dispatch result — deny marker or short-circuit. Script runtime errors log a warning and pass through/delegate. Init validates each event against the catalog (unknown ⇒ Configuration error, recorded per-entry at boot). All listener disposables combine with the init guard so fiber dispose unregisters them. Enabled by default through root feature `rhai-policy`; factory key `"RhaiPolicy"` registered under the `rhai` feature.
+
+### Static registration (inventory-collected factories)
+
+`cordis::CordisPluginFactory { name, make }` (make is a plain `fn(&Arc<Context>, &Value) -> Result<FiberId, CordisError>`) is inventory-collected; `cordis::register_inventory_factories(reg)` installs every submission and is the server's primary boot path (`src/main.rs`). The hand-written `register_plugins` chains remain compiled as the `--no-default-features` fallback and for tests. Each capability crate declares an optional `inventory` feature forwarded from root/facade; because inventory nodes live in linker sections, a crate with no otherwise-referenced code loses its submissions — tests force linkage by calling the manual chains before collecting. Parity proofs: `crates/ares/tests/inventory_parity.rs` (library crates) and `tests/server_inventory_probe.rs` (server dependency graph). Server-owned factories (`Overlay`, `HealthJobService`, `noop_probe`) are binary-crate submits verified at boot. The name-only `CordisInventory` health loop is unchanged.
+
+### Admin surface
+
+- `POST /admin/cordis/services/{name}/retire` / `provide` — runtime retire/re-provide.
+- `GET|PUT /admin/cordis/entries`, `DELETE /admin/cordis/entries/{id}`, `POST /admin/cordis/entries/{id}/toggle` — declarative entries management (Null configs normalize to `{}`), 503 when loader state is absent.
+- `POST /admin/cordis/entries/reload` — reload from disk through the shared apply flow.
+- `GET /admin/cordis/events` — per-event dispatch counters `{total_dispatched, by_event}` from `EventsService::dispatch_snapshot()` (counts every mode via the single `dispatch` choke point).
+
+### Atomic entries persistence
+
+`EntryTree::save_to_toml_file` writes `<name>.tmp-<pid>` then renames over the target (atomic on POSIX), preserving leading comment headers verbatim; the temp file is removed on failure so crashes mid-write leave either the previous or the new file, never a truncated one.
+
+### HMR resolution
+
+The §10/§11 "defer" decision above is superseded. The dylib path is finished and correct, still opt-in: `apply_plugin_so` copies the library to a process-unique sibling (`<stem>.<pid>.<seq>.hmr-load`) before dlopen — glibc caches handles by path, so without this a rebuilt `.so` would never swap — and `HmrLibrary::drop` removes the copy after dlclose (best effort). Watcher hook `apply_plugin_so_if_dylib` benefits automatically. Production reload stays watcher + TOML reconcile; enable dylib loading with `--features hmr` only with same-toolchain cdylibs.

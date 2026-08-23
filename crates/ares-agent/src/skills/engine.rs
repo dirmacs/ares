@@ -803,9 +803,7 @@ mod tests {
         let reached = Arc::new(AtomicBool::new(false));
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        ctx.provide(Tools::from_static([
-            Arc::new(EventProbeTool(Arc::clone(&reached))) as Arc<dyn Tool>,
-        ]));
+        let _ = &reached;
         events.on_waterfall("tools.execute".into(), |_payload, _next| async move {
             Ok(json!({"result": {"cached": true}}))
         });
@@ -815,9 +813,14 @@ mod tests {
             Arc::new(ClientPool::with_defaults()),
             None,
         ));
+        // Scope lookup misses (no per-tenant Tools on ctx) fall back to the
+        // engine's own registry — which holds the event probe.
+        let engine_tools = Tools::from_static([
+            Arc::new(EventProbeTool(Arc::clone(&reached))) as Arc<dyn Tool>,
+        ]);
         let engine = SkillEngine::new(
             PgPool::connect_lazy("postgres://localhost/ares_test").expect("lazy pool"),
-            Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())),
+            Arc::new(engine_tools),
             llm,
         );
         let result = engine

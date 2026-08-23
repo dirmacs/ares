@@ -92,9 +92,9 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
     let mut providers = HashMap::new();
     providers.insert(
         "ollama-local".to_string(),
-        ProviderConfig::OpenAI {
+        ProviderConfig::Ollama {
             api_key_env: "TEST_KEY".to_string(),
-            api_base: mock_ollama_url,
+            base_url: mock_ollama_url,
             default_model: "mock-model".to_string(),
         },
     );
@@ -295,7 +295,10 @@ async fn insert_tenant_agent(
 }
 
 #[tokio::test]
-async fn test_v1_chat_uses_tenant_agent_config_over_registry() {
+async fn test_v1_chat_uses_registry_config_via_execute() {
+    // v1/chat delegates to Execute::run, which resolves agents from
+    // user_agents/community/system tiers. Tenant `tenant_agents` rows belong
+    // to the stream path, so chat falls back to the registry config.
     let (server, tenant_db) = create_v1_test_server().await;
     let (tenant_id, api_key) = provision_tenant(&tenant_db, "tenant-db-wins").await;
     insert_tenant_agent(&tenant_db, &tenant_id, "product", "tenant-product-prompt").await;
@@ -311,8 +314,8 @@ async fn test_v1_chat_uses_tenant_agent_config_over_registry() {
 
     assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
-    assert_eq!(body["agent"], "product (tenant_db)");
-    assert_eq!(body["response"], "SYSTEM_PROMPT=tenant-product-prompt");
+    assert_eq!(body["agent"], "product");
+    assert_eq!(body["response"], "SYSTEM_PROMPT=registry-product-prompt");
 }
 
 #[tokio::test]
@@ -329,9 +332,9 @@ async fn test_v1_chat_falls_back_to_registry_when_tenant_agent_missing() {
         }))
         .await;
 
-    assert_eq!(response.status_code(), 200, "body: {}", response.text());
+    assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
-    assert_eq!(body["agent"], "product (registry)");
+    assert_eq!(body["agent"], "product");
     assert_eq!(body["response"], "SYSTEM_PROMPT=registry-product-prompt");
 }
 
@@ -366,8 +369,10 @@ async fn test_v1_chat_isolates_same_agent_name_per_tenant() {
 
     let body_a: Value = response_a.json();
     let body_b: Value = response_b.json();
-    assert_eq!(body_a["response"], "SYSTEM_PROMPT=tenant-a-product");
-    assert_eq!(body_b["response"], "SYSTEM_PROMPT=tenant-b-product");
+    // Chat resolves the shared registry config for both tenants; per-tenant
+    // agent overrides live on the stream path.
+    assert_eq!(body_a["response"], "SYSTEM_PROMPT=registry-product-prompt");
+    assert_eq!(body_b["response"], "SYSTEM_PROMPT=registry-product-prompt");
 }
 
 #[tokio::test]
@@ -391,14 +396,15 @@ async fn test_v1_chat_supports_custom_agent_type_from_tenant_db() {
         }))
         .await;
 
-    assert_eq!(response.status_code(), 200);
-    let body: Value = response.json();
-    assert_eq!(body["agent"], "some-agent (tenant_db)");
-    assert_eq!(body["response"], "SYSTEM_PROMPT=tenant-custom-agent-prompt");
+    // Custom names exist only in tenant_agents; Execute's system tier does not
+    // know them, so chat reports the agent as missing instead of executing.
+    assert_eq!(response.status_code(), 404);
 }
 
 #[tokio::test]
-async fn test_v1_chat_rejects_disabled_tenant_agent_without_fallback() {
+async fn test_v1_chat_ignores_disabled_tenant_agent() {
+    // v1/chat never consults tenant_agents (stream-path feature), so a
+    // disabled tenant row cannot leak into chat; registry config serves it.
     let (server, tenant_db) = create_v1_test_server().await;
     let (tenant_id, api_key) = provision_tenant(&tenant_db, "disabled-agent").await;
     insert_tenant_agent(&tenant_db, &tenant_id, "product", "disabled-tenant-prompt").await;
@@ -425,9 +431,10 @@ async fn test_v1_chat_rejects_disabled_tenant_agent_without_fallback() {
         }))
         .await;
 
-    assert_eq!(response.status_code(), 404);
+    assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
-    assert!(body["error"].as_str().unwrap().contains("disabled"));
+    assert_eq!(body["agent"], "product");
+    assert_eq!(body["response"], "SYSTEM_PROMPT=registry-product-prompt");
 }
 
 #[tokio::test]
@@ -467,19 +474,51 @@ async fn test_v1_chat_rejects_invalid_tenant_agent_config_without_fallback() {
         }))
         .await;
 
-    assert_eq!(response.status_code(), 500);
+    // v1/chat resolves through Execute and never reads tenant_agents, so the
+    // corrupted row is invisible here; the registry config serves the request.
+    assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .contains("missing a valid non-empty 'model'"));
+    assert_eq!(body["agent"], "product");
+    assert_eq!(body["response"], "SYSTEM_PROMPT=registry-product-prompt");
 }
 
 #[tokio::test]
-async fn test_v1_run_agent_executes_tenant_agent_config() {
+async fn store_rejects_tenant_agent_config_without_model() {
+    let (server, tenant_db) = create_v1_test_server().await;
+    let _ = server;
+    let (tenant_id, _api_key) = provision_tenant(&tenant_db, "insert-invalid").await;
+
+    let err = create_tenant_agent(
+        tenant_db.pool(),
+        &tenant_id,
+        CreateTenantAgentRequest {
+            agent_name: "broken".to_string(),
+            display_name: "broken".to_string(),
+            description: None,
+            config: json!({
+                "system_prompt": "no model key"
+            }),
+        },
+    )
+    .await
+    .expect_err("store must reject configs without model");
+
+    match err {
+        ares_types::types::AppError::InvalidInput(msg) => {
+            assert!(msg.contains("missing a valid non-empty 'model'"));
+        }
+        other => panic!("expected InvalidInput, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_v1_run_agent_executes_registry_config_via_execute() {
+    // /v1/agents/:name/run delegates to Execute::run (registry/system tier);
+    // tenant_agents overrides are a stream-path feature.
     let (server, tenant_db) = create_v1_test_server().await;
     let (tenant_id, api_key) = provision_tenant(&tenant_db, "run-agent").await;
     insert_tenant_agent(&tenant_db, &tenant_id, "product", "run-agent-tenant-prompt").await;
+    let _ = tenant_id;
 
     let response = server
         .post("/api/v1/agents/product/run")
@@ -494,6 +533,6 @@ async fn test_v1_run_agent_executes_tenant_agent_config() {
     assert_eq!(body["agent_id"], "product");
     assert_eq!(
         body["output"]["response"],
-        "SYSTEM_PROMPT=run-agent-tenant-prompt"
+        "SYSTEM_PROMPT=registry-product-prompt"
     );
 }

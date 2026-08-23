@@ -616,7 +616,7 @@ Handle employee info, policies, and benefits."#
                 serde_json::json!({ "role": role, "content": content })
             }).collect::<Vec<_>>(),
         });
-        let out = run_events_waterfall(&events, "llm.generate", payload, |payload| async move {
+        let out = run_events_waterfall(&events, cordis::events_catalog::ev::LLM_GENERATE, payload, |payload| async move {
             let parsed = history_messages_from_payload(&payload);
             let msgs = if parsed.is_empty() { orig } else { parsed };
             match self.generate_with_history_direct(&msgs).await {
@@ -626,7 +626,7 @@ Handle employee info, policies, and benefits."#
         })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-        self.generate_attempt_from_payload(out, "llm.generate")
+        self.generate_attempt_from_payload(out, cordis::events_catalog::ev::LLM_GENERATE)
     }
 
     async fn generate_with_history_direct(
@@ -697,7 +697,7 @@ Handle employee info, policies, and benefits."#
             "messages": orig_messages,
             "tools": orig_tools,
         });
-        let out = run_events_waterfall(&events, "llm.generate_tools", payload, |payload| async move {
+        let out = run_events_waterfall(&events, cordis::events_catalog::ev::LLM_GENERATE_TOOLS, payload, |payload| async move {
             let parsed_msgs = conversation_messages_from_payload(&payload);
             let msgs = if parsed_msgs.is_empty() {
                 orig_messages
@@ -720,7 +720,7 @@ Handle employee info, policies, and benefits."#
         })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-        self.generate_attempt_from_payload(out, "llm.generate_tools")
+        self.generate_attempt_from_payload(out, cordis::events_catalog::ev::LLM_GENERATE_TOOLS)
     }
 
     async fn generate_with_tools_and_history_direct(
@@ -2655,7 +2655,7 @@ mod tests {
     async fn configurable_generate_waterfall_rewrites_last_message() {
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        events.on_waterfall("llm.generate".into(), |mut payload, next| async move {
+        events.on_waterfall( cordis::events_catalog::ev::LLM_GENERATE.to_string(), |mut payload, next| async move {
             if let Some(arr) = payload.get_mut("messages").and_then(|v| v.as_array_mut()) {
                 if let Some(last) = arr.last_mut() {
                     last["content"] = serde_json::json!("rewritten-hello");
@@ -2682,7 +2682,7 @@ mod tests {
     async fn configurable_generate_short_circuit_skips_llm() {
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        events.on_waterfall("llm.generate".into(), |_payload, _next| async move {
+        events.on_waterfall( cordis::events_catalog::ev::LLM_GENERATE.to_string(), |_payload, _next| async move {
             Ok(serde_json::json!({ "content": "cached" }))
         });
 
@@ -2702,6 +2702,47 @@ mod tests {
         assert!(
             !generated.load(Ordering::SeqCst),
             "dummy generate must stay false when handler skips next"
+        );
+    }
+
+    #[tokio::test]
+    async fn configurable_generate_tools_short_circuit_skips_llm() {
+        // Closes the llm.generate_tools coverage gap: an around handler that
+        // skips `next` must prevent any provider call.
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall(
+            cordis::events_catalog::ev::LLM_GENERATE_TOOLS.to_string(),
+            |_payload, _next| async move {
+                Ok(serde_json::json!({
+                    "content": "tools-cached",
+                    "provider": "cache",
+                    "model": "cached-model",
+                    "tool_calls": [],
+                }))
+            },
+        );
+
+        let (llm, generated) = MockLLM::with_generated_flag();
+        // A Tools capability on the bound ctx routes execute() into the
+        // tool-calling path (has_tools), which dispatches llm.generate_tools.
+        ctx.provide(ares_tools::Tools::from_static(
+            Vec::<Arc<dyn ares_tools::Tool>>::new(),
+        ));
+        let mut agent = ConfigurableAgent::new(
+            "router",
+            &make_config(vec![], Some("system")),
+            Box::new(llm),
+            None,
+        );
+        agent.bind_request_ctx(ctx);
+        let resp = Agent::execute(&agent, "would-call-llm", &make_context())
+            .await
+            .expect("execute");
+        assert_eq!(resp.content, "tools-cached");
+        assert!(
+            !generated.load(Ordering::SeqCst),
+            "mock client must never be called when generate_tools handler skips next"
         );
     }
 }

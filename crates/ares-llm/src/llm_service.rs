@@ -394,7 +394,7 @@ impl Llm {
             "capability": format!("{:?}", capability),
         });
         let result = events
-            .waterfall_around("llm.get_client".into(), payload, |payload| async move {
+            .waterfall_around( cordis::events_catalog::ev::LLM_GET_CLIENT.to_string(), payload, |payload| async move {
                 Ok(payload)
             })
             .await
@@ -503,7 +503,7 @@ impl Llm {
         };
         let payload = serde_json::json!({ "prompt": prompt });
         let out = events
-            .waterfall_around("llm.complete".into(), payload, move |payload| {
+            .waterfall_around( cordis::events_catalog::ev::LLM_COMPLETE.to_string(), payload, move |payload| {
                 let client = Arc::clone(&client);
                 async move {
                     let prompt = payload
@@ -1013,7 +1013,7 @@ mod tests {
         let llm = Llm::for_test(std::sync::Arc::new(client));
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        events.on_waterfall("llm.complete".into(), |mut payload, next| async move {
+        events.on_waterfall( cordis::events_catalog::ev::LLM_COMPLETE.to_string(), |mut payload, next| async move {
             if let Some(p) = payload.get("prompt").and_then(|v| v.as_str()) {
                 payload["prompt"] = serde_json::json!(format!("WRAP:{p}"));
             }
@@ -1029,7 +1029,7 @@ mod tests {
         let llm = Llm::for_test(std::sync::Arc::new(client));
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        events.on_waterfall("llm.complete".into(), |_payload, _next| async move {
+        events.on_waterfall( cordis::events_catalog::ev::LLM_COMPLETE.to_string(), |_payload, _next| async move {
             Ok(serde_json::json!({ "content": "cached" }))
         });
         let out = llm.complete(&ctx, "hi").await.expect("complete");
@@ -1046,7 +1046,7 @@ mod tests {
         let llm = Llm::for_test(std::sync::Arc::new(client));
         let ctx = Context::new_root();
         let events = ctx.provide(EventsService::new());
-        events.on_waterfall("llm.get_client".into(), |_payload, _next| async move {
+        events.on_waterfall( cordis::events_catalog::ev::LLM_GET_CLIENT.to_string(), |_payload, _next| async move {
             Ok(serde_json::json!({ "deny": true }))
         });
         let err = match llm

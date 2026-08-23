@@ -36,9 +36,7 @@ fn parse_config(config: &Value) -> LlmPluginConfig {
     match serde_json::from_value::<LlmPluginConfig>(config.clone()) {
         Ok(parsed) => parsed,
         Err(err) => {
-            tracing::warn!(
-                "Llm loader config deserialize failed ({err}); using empty defaults"
-            );
+            tracing::warn!("Llm loader config deserialize failed ({err}); using empty defaults");
             LlmPluginConfig::default()
         }
     }
@@ -72,14 +70,9 @@ fn factory_llm(
         nvidia.as_ref(),
     )
     .with_catalog(catalog.clone());
-    let factory = ConfigBasedLLMFactory::from_config(
-        parsed.providers,
-        parsed.models,
-        nvidia.as_ref(),
-    )
-    .map_err(|err| {
-        cordis::CordisError::Configuration(format!("LLM factory: {err}"))
-    })?;
+    let factory =
+        ConfigBasedLLMFactory::from_config(parsed.providers, parsed.models, nvidia.as_ref())
+            .map_err(|err| cordis::CordisError::Configuration(format!("LLM factory: {err}")))?;
     tracing::info!(
         "LLM factory initialized with default model: {}",
         factory.default_model()
@@ -90,9 +83,15 @@ fn factory_llm(
     block_on_plugin(ctx, llm)
 }
 
-/// Register this crate's loader factories. Only `"Llm"` is published.
+/// Register this crate's loader factories. Only `"Llm"` is published
+/// (manual fallback path; inventory carries the same key).
 pub fn register_plugins(reg: &cordis::PluginRegistry) {
     reg.register("Llm", Arc::new(factory_llm));
+}
+
+#[cfg(feature = "inventory")]
+inventory::submit! {
+    cordis::CordisPluginFactory { name: "Llm", make: factory_llm }
 }
 
 #[cfg(test)]

@@ -38,6 +38,7 @@ impl Service for EntryIntercept {
 /// TOML wrapper struct for `[[entry]]` array deserialization.
 #[derive(Debug, Deserialize)]
 struct TomlEntries {
+    #[serde(default)]
     entry: Vec<Entry>,
 }
 
@@ -160,6 +161,152 @@ pub enum LoaderAction {
 pub struct Loader;
 
 impl Service for Loader {}
+
+/// Shared, mutable view of the last successfully applied entry tree plus the
+/// file it was loaded from. Provided as a Service so the file watcher, admin
+/// reload endpoint, and boot all operate on the same state.
+#[derive(Clone)]
+pub struct CurrentEntries {
+    pub tree: std::sync::Arc<std::sync::Mutex<EntryTree>>,
+    pub path: std::path::PathBuf,
+}
+
+impl Service for CurrentEntries {}
+
+/// Optional boot-time hook letting the loader fill empty entry configs before
+/// later entries instantiate. The server binary provides an implementation
+/// backed by its Overlay; library users may provide their own or none.
+pub trait EntryConfigFiller: Send + Sync {
+    fn fill_empty_entry_configs(&self, tree: &mut EntryTree);
+}
+
+/// Service wrapper so `Context::get` can resolve the hook.
+#[derive(Clone)]
+pub struct EntryConfigFillerHandle(pub std::sync::Arc<dyn EntryConfigFiller>);
+
+impl Service for EntryConfigFillerHandle {}
+
+/// Per-action outcome reported by [`Loader::apply`].
+#[derive(Debug, Clone)]
+pub struct AppliedAction {
+    pub id: String,
+    /// `"begin" | "update-config" | "retire" | "rebuild-fiber"`
+    pub action: &'static str,
+    pub status: Result<(), String>,
+}
+
+impl Loader {
+    /// Reconcile `current` toward `desired`, executing every action for real.
+    ///
+    /// Unlike [`Loader::execute_action`] (kept for compatibility), this
+    /// orchestrator resolves entry payloads from `desired` so `Begin` and
+    /// `RebuildFiber` instantiate with the entry's actual config (fixing
+    /// the log-only/`Value::Null` behavior), and `Retire` disposes the live
+    /// fiber recorded in `journal`.
+    ///
+    /// Failure policy: per-entry failures are recorded in that action's
+    /// status and the batch CONTINUES; on any failure `current` is left
+    /// unchanged so a retry re-diffs cleanly. Returns per-action outcomes.
+    pub async fn apply(
+        ctx: &Arc<crate::Context>,
+        current: &mut EntryTree,
+        desired: &EntryTree,
+        journal: &crate::LoaderJournal,
+    ) -> Vec<AppliedAction> {
+        let loader = Loader::new();
+        let actions = loader.reconcile(current, desired);
+        let mut results: Vec<AppliedAction> = Vec::with_capacity(actions.len());
+        let mut any_failure = false;
+
+        for action in &actions {
+            let outcome: Result<(), String> = match action {
+                LoaderAction::Retire { id } => {
+                    // Dispose the live fiber (undo effects) before clearing.
+                    if let Some(record) = journal.get(id) {
+                        if let Some(fid) = record.fiber_id {
+                            if let Some(fiber) =
+                                ctx.get::<crate::RegistryService>()
+                                    .and_then(|rs| rs.get_fiber(fid))
+                            {
+                                fiber.dispose().await;
+                            }
+                        }
+                    }
+                    journal.retire(id);
+                    tracing::info!(id = %id, "Loader: retired entry");
+                    Ok(())
+                }
+                LoaderAction::UpdateConfig { id, new_config } => {
+                    journal.update_config(id, new_config.clone(), None);
+                    // Drive Fiber::update when a live fiber is known.
+                    let recorded = journal.get(id).and_then(|r| r.fiber_id);
+                    if let Some(fiber) = recorded.and_then(|fid| {
+                        ctx.get::<crate::RegistryService>().and_then(|rs| rs.get_fiber(fid))
+                    }) {
+                        match tokio::runtime::Handle::try_current() {
+                            Ok(handle) => {
+                                let ctx_ref = ctx.clone();
+                                let fiber_ref = fiber.clone();
+                                tokio::task::block_in_place(move || {
+                                    handle.block_on(async move {
+                                        fiber_ref.update(&ctx_ref).await
+                                    })
+                                });
+                                Ok(())
+                            }
+                            Err(_) => Err(
+                                "no tokio runtime for live fiber update".to_string()
+                            ),
+                        }
+                    } else {
+                        Ok(())
+                    }
+                }
+                LoaderAction::Begin { id } | LoaderAction::RebuildFiber { id, .. } => {
+                    let entry = match desired.0.iter().find(|e| &e.id == id) {
+                        Some(e) => e.clone(),
+                        None => {
+                            results.push(AppliedAction {
+                                id: id.clone(),
+                                action: "begin",
+                                status: Err(format!(
+                                    "entry '{id}' not found in desired tree"
+                                )),
+                            });
+                            any_failure = true;
+                            continue;
+                        }
+                    };
+                    match Self::instantiate_entry(ctx, &entry) {
+                        Ok(_fid) => Ok(()),
+                        Err(e) => Err(e.to_string()),
+                    }
+                }
+            };
+            if outcome.is_err() {
+                any_failure = true;
+            }
+            let kind = match action {
+                LoaderAction::Begin { .. } => "begin",
+                LoaderAction::UpdateConfig { .. } => "update-config",
+                LoaderAction::Retire { .. } => "retire",
+                LoaderAction::RebuildFiber { .. } => "rebuild-fiber",
+            };
+            let id = match action {
+                LoaderAction::Begin { id }
+                | LoaderAction::UpdateConfig { id, .. }
+                | LoaderAction::Retire { id }
+                | LoaderAction::RebuildFiber { id, .. } => id.clone(),
+            };
+            results.push(AppliedAction { id, action: kind, status: outcome });
+        }
+
+        if !any_failure {
+            *current = desired.clone();
+        }
+        results
+    }
+}
 
 impl Loader {
     pub fn new() -> Self {
@@ -388,6 +535,31 @@ impl Loader {
         }
     }
 
+    /// Load `path`, fill via optional Overlay-independent hook is caller-side;
+    /// diff against `CurrentEntries`-style current tree and apply for real.
+    ///
+    /// This is the runtime hot-reload primitive shared by the file watcher and
+    /// the admin reload endpoint. Returns `None` when the file cannot be read
+    /// or parsed; otherwise per-action outcomes (possibly empty).
+    pub async fn reload_current(
+        ctx: &Arc<crate::Context>,
+        path: &std::path::Path,
+        current: &mut EntryTree,
+        journal: &crate::LoaderJournal,
+    ) -> Option<Vec<AppliedAction>> {
+        let mut desired = match Self::load_from_file(path) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(error = %e, "Cordis hot-reload: parse failed");
+                return None;
+            }
+        };
+        if let Some(handle) = ctx.get::<crate::loader::EntryConfigFillerHandle>() {
+            handle.0.fill_empty_entry_configs(&mut desired);
+        }
+        Some(Self::apply(ctx, current, &desired, journal).await)
+    }
+
     /// Instantiate one entry by plugin name through the [`crate::PluginRegistry`].
     ///
     /// Looks up the factory registered under `plugin_name`, invokes it with
@@ -440,7 +612,41 @@ impl Loader {
                 entry.plugin
             )));
         };
-        let fid = factory(ctx, &entry.config)?;
+        // Dedicated registration fiber: every provide the factory performs is
+        // owned by this fiber, so `apply`'s Retire can dispose exactly this
+        // entry's effects without touching unrelated services.
+        let fiber = std::sync::Arc::new(crate::Fiber::new());
+        fiber.set_state(crate::FiberState::Loading);
+        // RegistryService is optional: when absent (library deployments),
+        // effects still land on the dedicated fiber but disposal-by-retire
+        // cannot resolve it later.
+        let tracked = ctx.get::<crate::RegistryService>().map(|rs| rs.track_fiber(fiber.clone()));
+        // When RegistryService is absent, mint a placeholder id so the journal
+        // record still exists (retire will be journal-only in that mode).
+        #[allow(unused_variables)]
+        let fid = tracked.unwrap_or_else(|| {
+            crate::context::NEXT_FIBER_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst) as u64
+        });
+        // Mark the registration fiber active before the factory runs so nested
+        // provides (e.g. Store → TenantDb) are immediately resolvable; flip to
+        // Failed if the factory errors afterwards.
+        fiber.set_state(crate::FiberState::Active { epoch: entry.id.clone() });
+        let outcome = ctx.with_provider_fiber(&fiber, || factory(ctx, &entry.config));
+        // The TRACKED fiber id identifies this registration for later
+        // retirement; the factory's own return value (often from an inner
+        // `ctx.plugin`) is irrelevant to the loader's lifecycle bookkeeping.
+        let fid = match outcome {
+            Ok(_factory_fid) => tracked.unwrap_or_else(|| {
+                crate::context::NEXT_FIBER_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    as u64
+            }),
+            Err(e) => {
+                fiber.set_state(crate::FiberState::Failed {
+                    error: Some(e.to_string()),
+                });
+                return Err(e);
+            }
+        };
         if let Some(label) = entry.isolate.as_deref() {
             for tid in ctx.provided_type_ids() {
                 if !before.contains(&tid) {
@@ -883,5 +1089,112 @@ disabled = false
         assert!(ctx.get::<Svc>().is_some(), "boot get still sees the plugin");
         let overlay = ctx.get::<EntryIntercept>().expect("EntryIntercept bound");
         assert_eq!(overlay.0.get("timeout"), Some(&json!(5)));
+    }
+
+    #[allow(dead_code)]
+    fn _assert_exports() {
+        let _: AppliedAction;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_begins_instantiate_and_journals() {
+        use crate::RegistryService;
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        #[derive(Debug)]
+        struct SvcA(u64);
+        impl Service for SvcA {}
+        #[derive(Debug)]
+        struct SvcB(u64);
+        impl Service for SvcB {}
+
+        plugin_registry.register(
+            "FactoryA",
+            Arc::new(|ctx, _cfg| {
+                let future = ctx.plugin(SvcA(0));
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(future)
+                })
+            }),
+        );
+        plugin_registry.register(
+            "FactoryB",
+            Arc::new(|ctx, _cfg| {
+                let future = ctx.plugin(SvcB(0));
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(future)
+                })
+            }),
+        );
+
+        let desired = EntryTree(vec![
+            Entry { id: "a:one".into(), plugin: "FactoryA".into(), config: json!({}), disabled: false, isolate: None, intercept: HashMap::new() },
+            Entry { id: "b:two".into(), plugin: "FactoryB".into(), config: json!({}), disabled: false, isolate: None, intercept: HashMap::new() },
+        ]);
+        let mut current = EntryTree(vec![]);
+
+        let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
+        assert_eq!(actions.len(), 2);
+        assert!(actions.iter().all(|a| a.action == "begin" && a.status.is_ok()));
+        assert_eq!(current.0.len(), 2);
+        assert!(ctx.get::<SvcA>().is_some());
+        assert!(ctx.get::<SvcB>().is_some());
+        let rec_a = journal.get("a:one").expect("journal has a");
+        assert!(rec_a.fiber_id.is_some());
+
+        // Retire `a`, keep `b`.
+        let desired2 = EntryTree(vec![desired.0[1].clone()]);
+        let actions = Loader::apply(&ctx, &mut current, &desired2, &journal).await;
+        assert_eq!(actions[0].action, "retire");
+        assert_eq!(actions[0].status, Ok(()));
+        assert!(ctx.get::<SvcA>().is_none(), "retired fiber disposed");
+        assert!(ctx.get::<SvcB>().is_some(), "kept entry still live");
+        assert!(journal.get("a:one").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_reports_partial_failure_and_keeps_current() {
+        use crate::RegistryService;
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        #[derive(Debug)]
+        struct Good(u64);
+        impl Service for Good {}
+
+        plugin_registry.register(
+            "GoodFactory",
+            Arc::new(|ctx, _cfg| {
+                let future = ctx.plugin(Good(0));
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(future)
+                })
+            }),
+        );
+        // No factory for "GhostFactory".
+
+        let desired = EntryTree(vec![
+            Entry { id: "good:one".into(), plugin: "GoodFactory".into(), config: json!({}), disabled: false, isolate: None, intercept: HashMap::new() },
+            Entry { id: "ghost:x".into(), plugin: "GhostFactory".into(), config: json!({}), disabled: false, isolate: None, intercept: HashMap::new() },
+        ]);
+        let mut current = EntryTree(vec![]);
+
+        let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
+        let failed = actions.iter().find(|a| a.id == "ghost:x").expect("ghost action");
+        assert!(failed.status.is_err(), "unknown factory must fail its action");
+        let good = actions.iter().find(|a| a.id == "good:one").expect("good action");
+        assert_eq!(good.status, Ok(()));
+        assert!(ctx.get::<Good>().is_some(), "good entry instantiated despite sibling failure");
+        assert!(
+            current.0.is_empty(),
+            "current tree must stay unchanged when any action failed"
+        );
     }
 }

@@ -61,7 +61,10 @@ pub use service::{CordisError, Service, ServiceInitFuture};
 pub mod events_catalog;
 pub use events_catalog::{contract_for, validate_dispatch, validate_listener, EventContract};
 pub mod loader;
-pub use loader::{Entry, EntryTree, Loader};
+pub use loader::{
+    AppliedAction, CurrentEntries, Entry, EntryConfigFiller, EntryConfigFillerHandle,
+    EntryTree, Loader,
+};
 
 pub mod hmr;
 pub mod registry;
@@ -390,6 +393,13 @@ pub struct LoaderJournal {
 impl LoaderJournal {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct the journal and provide it on `ctx` in one step.
+    pub fn provide_new(ctx: &std::sync::Arc<Context>) -> std::sync::Arc<Self> {
+        let journal = std::sync::Arc::new(Self::default());
+        ctx.provide_arc(journal.clone());
+        journal
     }
 
     /// Insert or replace a record, bumping generation by 1 from the prior value

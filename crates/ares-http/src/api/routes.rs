@@ -422,6 +422,10 @@ pub fn create_router(auth_service: Arc<AuthService>, tenant_db: Arc<TenantDb>) -
             "/admin/cordis/services/{name}/provide",
             post(crate::api::handlers::admin::provide_cordis_service),
         )
+        .route(
+            "/admin/cordis/entries/reload",
+            post(crate::api::handlers::admin::reload_cordis_entries),
+        )
         // Runtime Providers
         .route(
             "/admin/runtime_providers",
@@ -841,6 +845,8 @@ mod route_path_tests {
 
 #[cfg(all(test, feature = "postgres"))]
 mod tests {
+    use std::sync::Mutex;
+    static ADMIN_ENV_LOCK: Mutex<()> = Mutex::new(());
     use super::*;
     use ares_agent::context_provider::NoOpContextProvider;
     use crate::overlay::{
@@ -1014,6 +1020,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_admin_deploys_rejects_missing_secret() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         server
@@ -1031,6 +1038,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_deploy_post_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server
@@ -1043,6 +1051,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_run_history_llm_calls_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server.get("/admin/run-history/llm-calls").await;
@@ -1052,6 +1061,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_run_history_budget_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server.get("/admin/run-history/budgets/tenant-1").await;
@@ -1061,6 +1071,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_schedule_update_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server
@@ -1080,6 +1091,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_tenant_pipeline_update_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server
@@ -1100,6 +1112,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_tenant_trigger_update_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server
@@ -1121,6 +1134,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_tenant_schedule_routes() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let update_response = server
@@ -1150,6 +1164,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_emergency_stop_status_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server.get("/admin/agents/emergency-stop").await;
@@ -1158,6 +1173,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_runtime_tool_capabilities_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server.get("/admin/runtime-tools/capabilities").await;
@@ -1166,6 +1182,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_cordis_service_retire_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         // No env manipulation: other admin tests set/unset ADMIN_API_KEY
         // concurrently. Whether the middleware rejects (401) or the handler
         // runs (200), a non-404 proves the route segment reached the layer.
@@ -1211,6 +1228,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_schedule_missed_runs_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server
@@ -1221,6 +1239,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_connector_update_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server
@@ -1240,6 +1259,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_does_not_register_unscoped_pipeline_delete_route() {
+        let _env = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::set_var("ADMIN_API_KEY", "test-admin-secret");
         let server = test_server(test_app_state());
         let response = server
@@ -1251,6 +1271,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_tenant_connector_delete_route() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         let response = server
@@ -1262,6 +1283,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_billing_routes() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         for path in [
@@ -1278,6 +1300,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_token_budget_routes() {
+        let _env_guard = ADMIN_ENV_LOCK.lock().expect("env lock");
         std::env::remove_var("ADMIN_API_KEY");
         let server = test_server(test_app_state());
         for path in [

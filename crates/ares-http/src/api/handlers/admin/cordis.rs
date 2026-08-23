@@ -136,6 +136,77 @@ pub fn routes() -> axum::Router<Arc<Context>> {
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;
 
+
+/// POST /admin/cordis/entries/reload — reload `cordis-entries.toml` through
+/// `Loader::reload_current`, diffing against the boot-applied tree. Shares the
+/// same journal/current-tree state as the file watcher. Returns per-action
+/// outcomes; 503 when loader state is missing (library deployments without a
+/// file program).
+pub async fn reload_cordis_entries(
+    State(ctx): State<Arc<Context>>,
+) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
+    use cordis::loader::Loader;
+
+    let Some(journal) = ctx.get::<cordis::LoaderJournal>() else {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "reloaded": false,
+                "error": "LoaderJournal is not provided on this context",
+            })),
+        ));
+    };
+    let Some(current_entries) = ctx.get::<cordis::CurrentEntries>() else {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "reloaded": false,
+                "error": "CurrentEntries is not provided on this context",
+            })),
+        ));
+    };
+
+    let mut current = current_entries
+        .tree
+        .lock()
+        .expect("entries lock")
+        .clone();
+    let actions = Loader::reload_current(
+        &ctx,
+        &current_entries.path,
+        &mut current,
+        &journal,
+    )
+    .await;
+
+    let Some(actions) = actions else {
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({
+                "reloaded": false,
+                "error": format!(
+                    "failed to read or parse {}",
+                    current_entries.path.display()
+                ),
+            })),
+        ));
+    };
+
+    let applied: Vec<serde_json::Value> = actions
+        .iter()
+        .map(|a| match &a.status {
+            Ok(()) => serde_json::json!({
+                "id": a.id, "action": a.action, "ok": true,
+            }),
+            Err(err) => serde_json::json!({
+                "id": a.id, "action": a.action, "ok": false, "error": err,
+            }),
+        })
+        .collect();
+    *current_entries.tree.lock().expect("entries lock") = current;
+    Ok((StatusCode::OK, Json(serde_json::json!({ "applied": applied }))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +299,89 @@ mod tests {
             .expect("handler");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(matches!(fiber.state(), ::cordis::FiberState::Active { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reload_endpoint_applies_add_and_retire_from_file() {
+        use cordis::loader::{Entry, EntryTree, Loader};
+        let loader = Loader;
+
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        cordis::LoaderJournal::provide_new(&ctx);
+        ctx.provide(cordis::RegistryService::new());
+        // Minimal plugin factory the reload can instantiate.
+        let registry = ctx.provide(cordis::PluginRegistry::new());
+
+        #[derive(Debug)]
+        struct Probe(u64);
+        impl Service for Probe {}
+        registry.register(
+            "CalculatorService",
+            Arc::new(|ctx, _cfg| {
+                let fut = ctx.plugin(Probe(0));
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(fut)
+                })
+            }),
+        );
+
+        let dir = std::env::temp_dir().join(format!(
+            "cordis-reload-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("tmpdir");
+        let path = dir.join("cordis-entries.toml");
+        std::fs::write(&path, "").expect("empty entries file");
+
+        // Seed: boot applied an empty tree.
+        let seed = cordis::CurrentEntries {
+            tree: Arc::new(std::sync::Mutex::new(EntryTree(vec![]))),
+            path: path.clone(),
+        };
+        ctx.provide_arc(Arc::new(seed));
+        let current_entries = ctx.get::<cordis::CurrentEntries>().unwrap();
+
+        // 1) add a calculator entry → Begin-ok
+        std::fs::write(
+            &path,
+            "[[entry]]\nid = \"calc\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n",
+        )
+        .expect("write entries v2");
+        let (status, Json(body)) =
+            reload_cordis_entries(State(ctx.clone())).await.expect("resp");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["applied"][0]["action"], "begin");
+        assert_eq!(body["applied"][0]["ok"], true);
+        assert!(ctx.get::<Probe>().is_some(), "calculator instantiated");
+
+        // 2) remove it → Retire-ok
+        std::fs::write(&path, "").expect("write entries v3");
+        let (status, Json(body)) =
+            reload_cordis_entries(State(ctx.clone())).await.expect("resp");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["applied"][0]["action"], "retire");
+        assert_eq!(body["applied"][0]["ok"], true);
+        assert!(ctx.get::<Probe>().is_none(), "retired service removed");
+
+        // current tree tracks desired across both applies
+        {
+            let tree = current_entries.tree.lock().unwrap();
+            assert_eq!(tree.0.len(), 0);
+            assert_eq!(
+                Loader.reconcile(&tree, &EntryTree(vec![Entry {
+                    id: "calc".into(),
+                    plugin: "CalculatorService".into(),
+                    config: serde_json::Value::Null,
+                    disabled: false,
+                    isolate: None,
+                    intercept: Default::default(),
+                }])).len(),
+                1,
+                "sanity: diff detects a re-add"
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

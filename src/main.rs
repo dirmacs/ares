@@ -328,34 +328,162 @@ fn register_loader_factories(root_ctx: &Arc<Context>) {
     crate::plugins::register_plugins(&registry); // Overlay, Execute overwrite, HealthJob
 }
 
-/// Reload `config/cordis-entries.toml` through the Loader reconcile path.
-/// Returns true when at least one reconcile action ran.
+/// Boot as one ordered pass over the entries file (the program).
+///
+/// - Provides `LoaderJournal` + `CurrentEntries` so hot-reload/admin share state.
+/// - Preserves only the legacy `--config` injection into an empty Overlay config
+///   (factory_overlay would otherwise default to `ares.toml`).
+/// - Instantiates entries in file order; when it reaches the Overlay entry it
+///   immediately runs `fill_empty_entry_configs` so every later entry (Store,
+///   Llm, ...) sees filled configs. Overlay precedes those in the TOML by design.
+/// - Exits(1) when no Overlay entry exists or fails, matching prior behavior.
 #[cfg(feature = "postgres")]
-fn reload_cordis_entries(ctx: &Arc<Context>, path: &std::path::Path) -> bool {
-    use cordis::loader::{EntryTree, Loader};
-    match Loader::load_from_file(path) {
-        Ok(mut desired) => {
-            if let Some(overlay) = ctx.get::<AresConfigManager>() {
-                overlay.fill_empty_entry_configs(&mut desired);
+fn boot_loader_program(
+    ctx: &Arc<Context>,
+    entries_path: &std::path::Path,
+    config_path: &str,
+) -> Result<(), String> {
+    use cordis::loader::Loader;
+
+    let journal = cordis::LoaderJournal::provide_new(ctx);
+    if ctx.get::<cordis::RegistryService>().is_none() {
+        ctx.provide(cordis::RegistryService::new());
+    }
+    let mut desired = Loader::load_from_file(entries_path)
+        .map_err(|e| format!("failed to load {}: {e}", entries_path.display()))?;
+
+    // Legacy --config injection: empty Overlay config + non-default path.
+    if config_path != "ares.toml" {
+        if let Some(entry) = desired.0.iter_mut().find(|e| e.plugin == "Overlay") {
+            let empty = match &entry.config {
+                serde_json::Value::Null => true,
+                serde_json::Value::Object(map) => map.is_empty(),
+                serde_json::Value::Array(arr) => arr.is_empty(),
+                _ => false,
+            };
+            if empty {
+                entry.config = serde_json::json!({ "toml_path": config_path });
             }
-            let current = EntryTree(vec![]);
-            let actions = Loader::new().reconcile(&current, &desired);
-            for action in &actions {
-                Loader::execute_action(action, ctx);
-            }
-            if !actions.is_empty() {
-                tracing::info!(
-                    actions = actions.len(),
-                    "Cordis hot-reload: reconciled entries change"
-                );
-            }
-            !actions.is_empty()
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Cordis hot-reload: parse failed");
-            false
         }
     }
+
+    let mut overlay_done = false;
+    let mut ok = 0usize;
+    let mut failed = 0usize;
+    for idx in 0..desired.0.len() {
+        let entry = desired.0[idx].clone();
+        if entry.disabled {
+            tracing::info!(entry_id=%entry.id, "Cordis Loader: skipping disabled entry");
+            continue;
+        }
+        match Loader::instantiate_entry(ctx, &entry) {
+            Ok(_fid) => {
+                ok += 1;
+                if entry.plugin == "Overlay" {
+                    overlay_done = true;
+                    if let Some(overlay) = ctx.get::<AresConfigManager>() {
+                        overlay.fill_empty_entry_configs(&mut desired);
+                    } else {
+                        return Err(
+                            "Overlay instantiated but AresConfigManager missing".to_string()
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                failed += 1;
+                tracing::warn!(entry_id=%entry.id, plugin=%entry.plugin, error=%err,
+                    "Cordis Loader: instantiation failed for entry (continuing)");
+            }
+        }
+    }
+
+    if !overlay_done {
+        let output = Output::new();
+        output.banner();
+        output.error("No active Overlay entry found!");
+        output.newline();
+        output.info("A.R.E.S requires an Overlay entry to load its configuration.");
+        output.info("Add an [[entry]] with plugin = \"Overlay\" to:");
+        output.newline();
+        output.command(entries_path.to_string_lossy().as_ref());
+        output.newline();
+        std::process::exit(1);
+    }
+
+    // Publish shared state for hot reload + admin endpoint.
+    if let Some(overlay) = ctx.get::<AresConfigManager>() {
+        struct OverlayFiller(Arc<AresConfigManager>);
+        impl cordis::loader::EntryConfigFiller for OverlayFiller {
+            fn fill_empty_entry_configs(&self, tree: &mut cordis::loader::EntryTree) {
+                self.0.fill_empty_entry_configs(tree);
+            }
+        }
+        ctx.provide_arc(Arc::new(cordis::loader::EntryConfigFillerHandle(Arc::new(
+            OverlayFiller(overlay),
+        ))));
+    }
+    let current_entries = cordis::loader::CurrentEntries {
+        tree: Arc::new(std::sync::Mutex::new(desired.clone())),
+        path: entries_path.to_path_buf(),
+    };
+    ctx.provide_arc(Arc::new(current_entries));
+    let _ = journal;
+
+    tracing::info!(
+        total_entries = desired.0.len(),
+        instantiated = ok,
+        failed = failed,
+        "Cordis Loader: startup reconciliation complete"
+    );
+    Ok(())
+}
+
+/// Reload the entries file through `Loader::apply`, diffing against the last
+/// applied tree. Returns true when at least one reconcile action ran.
+#[cfg(feature = "postgres")]
+fn reload_cordis_entries(ctx: &Arc<Context>, path: &std::path::Path) -> bool {
+    use cordis::loader::Loader;
+    let Some(journal) = ctx.get::<cordis::LoaderJournal>() else {
+        tracing::warn!("Cordis hot-reload: LoaderJournal missing; skipping");
+        return false;
+    };
+    let Some(current_entries) = ctx.get::<cordis::loader::CurrentEntries>() else {
+        tracing::warn!("Cordis hot-reload: CurrentEntries missing; skipping");
+        return false;
+    };
+    let mut current = current_entries.tree.lock().expect("entries lock").clone();
+    let actions = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current()
+            .block_on(Loader::reload_current(ctx, path, &mut current, &journal))
+    });
+    let Some(actions) = actions else {
+        return false;
+    };
+    let ran = !actions.is_empty();
+    for action in &actions {
+        match &action.status {
+            Ok(()) => tracing::info!(
+                entry_id = %action.id,
+                action = action.action,
+                "Cordis hot-reload: applied"
+            ),
+            Err(err) => tracing::warn!(
+                entry_id = %action.id,
+                action = action.action,
+                error = %err,
+                "Cordis hot-reload: action failed"
+            ),
+        }
+    }
+    if ran {
+        *current_entries.tree.lock().expect("entries lock") = current;
+        tracing::info!(
+            actions = actions.len(),
+            "Cordis hot-reload: reconciled entries change"
+        );
+    }
+    ran
 }
 
 /// Forward cordis-entries.toml onto `watch_many_with` so HMR dylib apply
@@ -419,109 +547,15 @@ async fn run_server(
     // 3. PluginRegistry + register_plugins (loader is the program)
     register_loader_factories(&root_ctx);
 
-    // 4-7. Load cordis-entries.toml, instantiate Overlay first, fill, then the rest.
+    // 4. Boot: one ordered pass over cordis-entries.toml (the program).
     {
-        use cordis::loader::{EntryTree, Loader};
         let entries_path = std::path::Path::new("config/cordis-entries.toml");
-        if entries_path.exists() {
-            match Loader::load_from_file(entries_path) {
-                Ok(mut desired) => {
-                    if let Some(entry) = desired.0.iter_mut().find(|e| e.plugin == "Overlay") {
-                        let empty = match &entry.config {
-                            serde_json::Value::Null => true,
-                            serde_json::Value::Object(map) => map.is_empty(),
-                            serde_json::Value::Array(arr) => arr.is_empty(),
-                            _ => false,
-                        };
-                        if empty {
-                            entry.config = serde_json::json!({
-                                "toml_path": config_path.to_string_lossy(),
-                            });
-                        }
-                    }
-                    if let Some(overlay_entry) = desired
-                        .0
-                        .iter()
-                        .find(|e| e.plugin == "Overlay" && !e.disabled)
-                        .cloned()
-                    {
-                        match Loader::instantiate_entry(&root_ctx, &overlay_entry) {
-                            Ok(_) => {}
-                            Err(err) => {
-                                tracing::warn!(error=%err, "Cordis Loader: Overlay instantiate failed");
-                            }
-                        }
-                    }
-                    if let Some(overlay) = root_ctx.get::<AresConfigManager>() {
-                        overlay.fill_empty_entry_configs(&mut desired);
-                    } else {
-                        let output = Output::new();
-                        output.banner();
-                        output.error(&format!(
-                            "Configuration file '{}' not found!",
-                            config_path.display()
-                        ));
-                        output.newline();
-                        output.info("A.R.E.S requires a configuration file to run.");
-                        output.info("You can create one by running:");
-                        output.newline();
-                        output.command("ares-server init");
-                        output.newline();
-                        output.hint("This will create ares.toml and all necessary configuration files");
-                        std::process::exit(1);
-                    }
-                    let current = EntryTree(vec![]);
-                    let loader = Loader::new();
-                    let actions = loader.reconcile(&current, &desired);
-                    for action in &actions {
-                        Loader::execute_action(action, &root_ctx);
-                    }
-                    let mut ok = 0usize;
-                    let mut failed = 0usize;
-                    for e in &desired.0 {
-                        if e.disabled {
-                            tracing::info!(entry_id=%e.id, "Cordis Loader: skipping disabled entry");
-                            continue;
-                        }
-                        if e.plugin == "Overlay" {
-                            ok += 1;
-                            continue;
-                        }
-                        match Loader::instantiate_entry(&root_ctx, e) {
-                            Ok(_fid) => ok += 1,
-                            Err(err) => {
-                                failed += 1;
-                                tracing::warn!(entry_id=%e.id, plugin=%e.plugin, error=%err,
-                                    "Cordis Loader: instantiation failed for entry (continuing)");
-                            }
-                        }
-                    }
-                    tracing::info!(
-                        total_actions = actions.len(),
-                        total_entries = desired.0.len(),
-                        instantiated = ok,
-                        failed = failed,
-                        "Cordis Loader: startup reconciliation complete"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Cordis Loader: failed to load entries, continuing without");
-                }
-            }
-        } else if !config_path.exists() {
-            let output = Output::new();
-            output.banner();
-            output.error(&format!(
-                "Configuration file '{}' not found!",
-                config_path.display()
-            ));
-            output.newline();
-            output.info("A.R.E.S requires a configuration file to run.");
-            output.info("You can create one by running:");
-            output.newline();
-            output.command("ares-server init");
-            output.newline();
-            output.hint("This will create ares.toml and all necessary configuration files");
+        if let Err(e) = boot_loader_program(
+            &root_ctx,
+            entries_path,
+            &config_path.to_string_lossy(),
+        ) {
+            tracing::error!(error = %e, "Cordis Loader: boot failed");
             std::process::exit(1);
         }
     }
@@ -1351,5 +1385,85 @@ disabled = false
             handle.is_some(),
             "start_cordis_entries_watch must return Some for an existing toml"
         );
+    }
+}
+
+#[cfg(all(test, feature = "postgres"))]
+mod boot_tests {
+    use super::*;
+
+    /// Boot-order proof: Overlay as an ordinary entry feeds later entries.
+    /// events → overlay → store; the Store entry has an empty config that only
+    /// Overlay's fill_empty_entry_configs can populate (from ares.toml), so a
+    /// live Store after boot proves the ordering contract.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn boot_loader_program_instantiates_store_after_overlay_fill() {
+        let dir = std::env::temp_dir().join(format!(
+            "ares-boot-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("tmpdir");
+
+        let db_url = std::env::var("TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .unwrap_or_else(|_| "postgres://dirmacs@%2Fvar%2Frun%2Fpostgresql/ares_test".into());
+
+        std::fs::write(
+            dir.join("ares.toml"),
+            format!(
+                "[server]\nhost = \"127.0.0.1\"\nport = 39471\nlog_level = \"info\"\n\n[database]\nurl = \"{db_url}\"\n\n[auth]\njwt_secret_env = \"JWT_SECRET_TEST_BOOT\"\njwt_access_expiry = 900\njwt_refresh_expiry = 604800\napi_key_env = \"API_KEY_TEST_BOOT\"\n"
+            ),
+        )
+        .expect("write ares.toml");
+
+        std::fs::write(
+            dir.join("cordis-entries.toml"),
+            "[[entry]]\nid = \"events\"\nplugin = \"EventsService\"\ndisabled = false\n\n[[entry]]\nid = \"overlay\"\nplugin = \"Overlay\"\ndisabled = false\n\n[[entry]]\nid = \"store\"\nplugin = \"Store\"\ndisabled = false\n",
+        )
+        .expect("write entries");
+
+        let _ = init_tracing("debug");
+        let ctx = Context::new_root();
+        ctx.plugin(cordis::ReflectService::new())
+            .await
+            .expect("reflect");
+        register_loader_factories(&ctx);
+
+        // chdir so relative paths in factories/config resolution land in tmpdir.
+        let original = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(&dir).expect("chdir");
+
+        let config_path = "ares.toml";
+        let entries_path = std::path::Path::new("config/cordis-entries.toml");
+        std::fs::create_dir_all(dir.join("config")).expect("config dir");
+        std::fs::copy(dir.join("cordis-entries.toml"), dir.join("config/cordis-entries.toml"))
+            .expect("place entries");
+
+        // Surface any Overlay instantiation error directly first.
+        if let Err(e) = cordis::loader::Loader::load_from_file(entries_path) {
+            panic!("entries parse failed: {e}");
+        }
+        let result = boot_loader_program(&ctx, entries_path, config_path);
+        assert!(result.is_ok(), "boot failed: {result:?}");
+
+        assert!(ctx.get::<cordis::EventsService>().is_some(), "events live");
+        let store = ctx.get::<ares_store::Store>();
+        assert!(store.is_some(), "store instantiated after overlay fill");
+
+        // CurrentEntries published and tracks the applied tree (3 entries).
+        let current = ctx.get::<cordis::loader::CurrentEntries>().expect("current");
+        {
+            let tree = current.tree.lock().expect("lock");
+            assert_eq!(tree.0.len(), 3);
+            assert_eq!(tree.0[2].plugin, "Store");
+            assert!(!tree.0[2].config.is_null(), "overlay filled store config");
+        }
+
+        std::env::set_current_dir(original).ok();
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

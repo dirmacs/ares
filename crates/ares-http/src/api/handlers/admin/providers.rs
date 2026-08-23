@@ -44,8 +44,13 @@ pub async fn reload_runtime_provider_registry(ctx: &Arc<Context>) -> Result<()> 
         });
     }
 
-    ctx.get::<ares_llm::Llm>().expect("not provided")
-        .reload_runtime_providers(entries, names);
+    let Some(llm) = ctx.get::<ares_llm::Llm>() else {
+        tracing::info!(
+            "Runtime providers preload skipped: no Llm service on this context"
+        );
+        return Ok(());
+    };
+    llm.reload_runtime_providers(entries, names);
     Ok(())
 }
 

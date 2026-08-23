@@ -165,6 +165,17 @@ impl RegistryService {
         self.register(ctx, plugin, config)
     }
 
+    /// Track an externally-created registration fiber under a fresh id.
+    ///
+    /// The loader uses this so plugin-factory fibers created outside
+    /// [`RegistryService::register`](Self::register) still resolve through
+    /// [`Self::get_fiber`] for retirement/disposal.
+    pub fn track_fiber(&self, fiber: Arc<Fiber>) -> FiberId {
+        let fid = self.next_fiber_id();
+        self.fibers.write().insert(fid, fiber);
+        fid
+    }
+
     pub fn get_fiber(&self, id: FiberId) -> Option<Arc<Fiber>> {
         self.fibers.read().get(&id).cloned()
     }

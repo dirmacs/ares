@@ -553,11 +553,12 @@ mod tests {
         let ctx = Context::new_root();
         let scoped = intercept_jwt_tenant(ctx, &sample_claims("user-1", None), None).await;
         assert!(scoped.get::<ares_types::models::TenantContext>().is_none());
+        // Execute is the shared engine: no realm label, always resolvable.
         assert_eq!(
             scoped
                 .isolate_label(std::any::TypeId::of::<ares_agent::Execute>())
                 .as_deref(),
-            Some("user:user-1")
+            None
         );
     }
 

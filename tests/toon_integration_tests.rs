@@ -5,7 +5,7 @@
 //! - DynamicConfigManager provides correct access to configs
 //! - TOON format serialization/deserialization works correctly
 
-use ares_server::utils::toon_config::{
+use ares_http::toon_config::{
     DynamicConfigManager, ToonAgentConfig, ToonModelConfig, ToonToolConfig, ToonWorkflowConfig,
 };
 use std::path::PathBuf;
@@ -273,7 +273,7 @@ fn test_empty_directories_work() {
 
 #[test]
 fn test_toon_mcp_roundtrip() {
-    use ares_server::utils::toon_config::ToonMcpConfig;
+    use ares_http::toon_config::ToonMcpConfig;
 
     let mcp = ToonMcpConfig {
         name: "filesystem".to_string(),

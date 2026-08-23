@@ -10,18 +10,20 @@ fn unique_email(prefix: &str) -> String {
     format!("{}+{}@test.example.com", prefix, Uuid::new_v4())
 }
 
-use ares_server::{
+use ares_http::{
     auth::jwt::AuthService,
-    llm::LLMClient,
-    types::{ToolCall, ToolDefinition},
-    utils::toml_config::{
-        AgentConfig, AresConfig, AuthConfig as TomlAuthConfig, BillingConfig,
-        DatabaseConfig as TomlDatabaseConfig, DynamicConfigPaths, ModelConfig, ProviderConfig,
-        RagConfig, ServerConfig as TomlServerConfig,
+    config::{AuthConfig as TomlAuthConfig, ServerConfig as TomlServerConfig},
+    overlay::{
+        AgentConfig, AresConfig, BillingConfig, DatabaseConfig as TomlDatabaseConfig,
+        DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig,
     },
-    AgentRegistry, AresConfigManager, ConfigBasedLLMFactory, Context,
-    DynamicConfigManager, ProviderRegistry, ToolRegistry,
+    AresConfigManager, DynamicConfigManager,
 };
+use ares_llm::{ConfigBasedLLMFactory, LLMClient, ProviderRegistry};
+use ares_types::types::{ToolCall, ToolDefinition};
+use ares_agent::AgentRegistry;
+use ares_tools::Tools;
+use cordis::Context;
 use futures::StreamExt;
 
 // Import common test utilities
@@ -140,13 +142,13 @@ async fn create_test_app() -> Router {
     ));
 
     // Create tool registry
-    let tool_registry = Arc::new(ToolRegistry::with_config(&config_manager.config().tools));
+    let tools = Arc::new(Tools::from_static([]));
 
     // Create agent registry
     let agent_registry = Arc::new(AgentRegistry::from_config(
         config_manager.config().agents.clone(),
         provider_registry.clone(),
-        Arc::new(ares_tools::Tools::new(tool_registry.clone())),
+        tools.clone(),
     ));
 
     // Create dynamic config manager with temp directories for testing
@@ -171,24 +173,20 @@ async fn create_test_app() -> Router {
     );
 
     let db = Arc::new(db);
-    let tenant_db = Arc::new(ares_server::db::TenantDb::new(db.clone()));
+    let tenant_db = Arc::new(ares_store::TenantDb::new(db.clone()));
     let auth_service = Arc::new(auth_service);
-    let runtime_tool_registry = Arc::new(ares_server::RuntimeToolRegistry::new(db.pool.clone()));
-    let skill_engine = Arc::new(ares_server::skill_engine::SkillEngine::new(
+    let llm = Arc::new(
+        ares_llm::Llm::new(
+            provider_registry.clone(),
+            Arc::new(ares_llm::ClientPool::with_defaults()),
+            None,
+        )
+        .with_factory(llm_factory.clone()),
+    );
+    let skill_engine = Arc::new(ares_agent::skills::SkillEngine::new(
         db.pool.clone(),
-        Arc::new(ares_tools::Tools::with_runtime(
-            tool_registry.clone(),
-            Some(Arc::new(ares_server::RuntimeToolRegistry::new(db.pool.clone()))),
-        )),
-        Arc::new(
-            ares_llm::Llm::new(
-                llm_factory.registry().clone(),
-                Arc::new(ares_llm::ClientPool::with_defaults()),
-                None,
-            )
-            .with_factory(llm_factory.clone()),
-        ),
-        config_manager.clone(),
+        tools.clone(),
+        llm,
     ));
 
     let state: Arc<Context> = Context::new_root();
@@ -199,16 +197,15 @@ async fn create_test_app() -> Router {
     state.provide_arc(llm_factory.clone());
     state.provide_arc(provider_registry.clone());
     state.provide_arc(agent_registry);
-    state.provide_arc(tool_registry.clone());
+    state.provide_arc(tools.clone());
     state.provide_arc(auth_service.clone());
     #[cfg(feature = "mcp")]
-    state.provide(ares_server::api::handlers::deploy::DeployRegistry::default());
-    state.provide(ares_server::api::handlers::loops::LoopRegistry::new());
-    state.provide(ares_server::context_services::EmergencyStop::new(false));
-    state.provide(ares_server::agents::ContextProviderHandle::new(std::sync::Arc::new(ares_server::agents::context_provider::NoOpContextProvider)));
+    state.provide(ares_http::api::handlers::deploy::DeployRegistry::default());
+    state.provide(ares_http::api::handlers::loops::LoopRegistry::new());
+    state.provide(ares_agent::EmergencyStop::new(false));
+    state.provide(ares_agent::ContextProviderHandle::new(std::sync::Arc::new(ares_agent::context_provider::NoOpContextProvider)));
     state.provide(ares_store::FleetSecrets::new());
-    state.provide_arc(runtime_tool_registry.clone());
-    state.provide(ares_server::active_runs::ActiveRuns::new());
+        state.provide(ares_http::active_runs::ActiveRuns::new());
     state.provide_arc(skill_engine);
 
     // Build a minimal router for testing
@@ -216,7 +213,7 @@ async fn create_test_app() -> Router {
         .route("/health", get(|| async { "OK" }))
         .nest(
             "/api",
-            ares_server::api::routes::create_router(auth_service.clone(), tenant_db.clone()),
+            ares_http::api::routes::create_router(auth_service.clone(), tenant_db.clone()),
         )
         .with_state(state)
 }

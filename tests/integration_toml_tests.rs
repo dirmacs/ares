@@ -10,8 +10,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Test helper: Create a minimal valid configuration
-fn create_test_config() -> ares_server::utils::toml_config::AresConfig {
-    use ares_server::utils::toml_config::{DynamicConfigPaths, *};
+fn create_test_config() -> ares_http::overlay::AresConfig {
+    use ares_http::config::{AuthConfig as TomlAuthConfig, ServerConfig as TomlServerConfig};
+    use ares_http::overlay::{DynamicConfigPaths, *};
 
     // Set required environment variables for validation
     // SAFETY: Tests should be run single-threaded for env var safety
@@ -91,8 +92,8 @@ fn create_test_config() -> ares_server::utils::toml_config::AresConfig {
     );
 
     AresConfig {
-        server: ServerConfig::default(),
-        auth: AuthConfig {
+        server: TomlServerConfig::default(),
+        auth: TomlAuthConfig {
             jwt_secret_env: "TEST_JWT_SECRET".to_string(),
             jwt_access_expiry: 900,
             jwt_refresh_expiry: 604800,
@@ -125,7 +126,7 @@ fn test_config_creation_and_validation() {
 
 #[test]
 fn test_config_with_warnings() {
-    use ares_server::utils::toml_config::*;
+    use ares_http::overlay::*;
 
     let mut config = create_test_config();
 
@@ -152,18 +153,18 @@ fn test_config_with_warnings() {
 
 #[test]
 fn test_agent_registry_from_config() {
-    use ares_server::agents::AgentRegistry;
-    use ares_server::llm::ProviderRegistry;
-    use ares_server::tools::registry::ToolRegistry;
+    use ares_agent::AgentRegistry;
+    use ares_llm::ProviderRegistry;
+    use ares_tools::Tools;
 
     let config = create_test_config();
 
     // Create registries
     let provider_registry = Arc::new(ProviderRegistry::from_config(config.providers.clone(), config.models.clone(), config.nvidia.as_ref()));
-    let tool_registry = Arc::new(ToolRegistry::new());
+    let tool_registry = Arc::new(Tools::from_static([]));
 
     // Create agent registry from config
-    let agent_registry = AgentRegistry::from_config(config.agents.clone(), provider_registry, Arc::new(ares_tools::Tools::new(tool_registry)));
+    let agent_registry = AgentRegistry::from_config(config.agents.clone(), provider_registry, tool_registry.clone());
 
     // Verify agents are registered
     assert!(agent_registry.has_agent("test-agent"));
@@ -180,7 +181,7 @@ fn test_agent_registry_from_config() {
 
 #[test]
 fn test_provider_registry_from_config() {
-    use ares_server::llm::ProviderRegistry;
+    use ares_llm::ProviderRegistry;
 
     let config = create_test_config();
     let registry = ProviderRegistry::from_config(config.providers.clone(), config.models.clone(), config.nvidia.as_ref());
@@ -191,21 +192,23 @@ fn test_provider_registry_from_config() {
 
 #[tokio::test]
 async fn test_workflow_engine_from_config() {
-    use ares_server::agents::AgentRegistry;
-    use ares_server::llm::ProviderRegistry;
-    use ares_server::tools::registry::ToolRegistry;
-    use ares_server::workflows::WorkflowEngine;
-    use ares_server::{AresConfigManager, ConfigBasedLLMFactory, Context, DynamicConfigManager};
+    use ares_agent::AgentRegistry;
+    use ares_llm::ProviderRegistry;
+    use ares_tools::Tools;
+    use ares_agent::workflows::WorkflowEngine;
+    use ares_http::{AresConfigManager, DynamicConfigManager};
+    use ares_llm::ConfigBasedLLMFactory;
+    use cordis::Context;
 
     let config = create_test_config();
 
     // Create registries
     let provider_registry = Arc::new(ProviderRegistry::from_config(config.providers.clone(), config.models.clone(), config.nvidia.as_ref()));
-    let tool_registry = Arc::new(ToolRegistry::new());
+    let tool_registry = Arc::new(Tools::from_static([]));
     let agent_registry = Arc::new(AgentRegistry::from_config(
-        &config,
+        config.agents.clone(),
         provider_registry.clone(),
-        Arc::new(ares_tools::Tools::new(tool_registry.clone())),
+        tool_registry.clone(),
     ));
 
     let config_manager = Arc::new(AresConfigManager::from_config(config));
@@ -213,8 +216,6 @@ async fn test_workflow_engine_from_config() {
         provider_registry.clone(),
         "test-model",
     ));
-    let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool");
-    let runtime_tool_registry = Arc::new(ares_server::RuntimeToolRegistry::new(pool.clone()));
 
     let dynamic_config = Arc::new(
         DynamicConfigManager::new(
@@ -227,30 +228,27 @@ async fn test_workflow_engine_from_config() {
         )
         .unwrap(),
     );
-    let db = Arc::new(ares_server::db::PostgresClient::new_test());
-    let tenant_db = Arc::new(ares_server::db::TenantDb::new(Arc::new(
-        ares_server::db::PostgresClient::new_test(),
+    let db = Arc::new(ares_store::PostgresClient::new_test());
+    let tenant_db = Arc::new(ares_store::TenantDb::new(Arc::new(
+        ares_store::PostgresClient::new_test(),
     )));
-    let auth_service = Arc::new(ares_server::auth::jwt::AuthService::new(
+    let auth_service = Arc::new(ares_http::auth::jwt::AuthService::new(
         "secret".to_string(),
         900,
         604800,
     ));
-    let skill_engine = Arc::new(ares_server::skill_engine::SkillEngine::new(
-        pool,
-        Arc::new(ares_tools::Tools::with_runtime(
-            tool_registry.clone(),
-            Some(runtime_tool_registry.clone()),
-        )),
-        Arc::new(
-            ares_llm::Llm::new(
-                llm_factory.registry().clone(),
-                Arc::new(ares_llm::ClientPool::with_defaults()),
-                None,
-            )
-            .with_factory(llm_factory.clone()),
-        ),
-        config_manager.clone(),
+    let llm = Arc::new(
+        ares_llm::Llm::new(
+            provider_registry.clone(),
+            Arc::new(ares_llm::ClientPool::with_defaults()),
+            None,
+        )
+        .with_factory(llm_factory.clone()),
+    );
+    let skill_engine = Arc::new(ares_agent::skills::SkillEngine::new(
+        tenant_db.pool().clone(),
+        tool_registry.clone(),
+        llm,
     ));
 
     let state: Arc<Context> = Context::new_root();
@@ -264,13 +262,12 @@ async fn test_workflow_engine_from_config() {
     state.provide_arc(tool_registry.clone());
     state.provide_arc(auth_service.clone());
     #[cfg(feature = "mcp")]
-    state.provide(ares_server::api::handlers::deploy::DeployRegistry::default());
-    state.provide(ares_server::api::handlers::loops::LoopRegistry::new());
-    state.provide(ares_server::context_services::EmergencyStop::new(false));
-    state.provide(ares_server::agents::ContextProviderHandle::new(std::sync::Arc::new(ares_server::agents::context_provider::NoOpContextProvider)));
+    state.provide(ares_http::api::handlers::deploy::DeployRegistry::default());
+    state.provide(ares_http::api::handlers::loops::LoopRegistry::new());
+    state.provide(ares_agent::EmergencyStop::new(false));
+    state.provide(ares_agent::ContextProviderHandle::new(std::sync::Arc::new(ares_agent::context_provider::NoOpContextProvider)));
     state.provide(ares_store::FleetSecrets::new());
-    state.provide_arc(runtime_tool_registry.clone());
-    state.provide(ares_server::active_runs::ActiveRuns::new());
+    state.provide(ares_http::active_runs::ActiveRuns::new());
     state.provide_arc(skill_engine);
 
     // Create workflow engine
@@ -290,7 +287,7 @@ async fn test_workflow_engine_from_config() {
 
 #[test]
 fn test_circular_reference_rejected() {
-    use ares_server::utils::toml_config::*;
+    use ares_http::overlay::*;
 
     let mut config = create_test_config();
 
@@ -321,7 +318,7 @@ fn test_circular_reference_rejected() {
 
 #[test]
 fn test_missing_reference_rejected() {
-    use ares_server::utils::toml_config::*;
+    use ares_http::overlay::*;
 
     let mut config = create_test_config();
 
@@ -353,7 +350,7 @@ fn test_missing_reference_rejected() {
 
 #[test]
 fn test_tool_filtering_in_agent() {
-    use ares_server::utils::toml_config::AgentConfig;
+    use ares_http::overlay::AgentConfig;
 
     // Agent with restricted tools
     let agent_config = AgentConfig {
@@ -374,7 +371,7 @@ fn test_tool_filtering_in_agent() {
 
 #[test]
 fn test_config_manager_access() {
-    use ares_server::utils::toml_config::AresConfigManager;
+    use ares_http::overlay::AresConfigManager;
 
     let config = create_test_config();
     let manager = AresConfigManager::from_config(config.clone());
@@ -390,17 +387,17 @@ fn test_config_manager_access() {
 
 #[test]
 fn test_full_integration_config_to_agent() {
-    use ares_server::agents::AgentRegistry;
-    use ares_server::llm::ProviderRegistry;
-    use ares_server::tools::registry::ToolRegistry;
+    use ares_agent::AgentRegistry;
+    use ares_llm::ProviderRegistry;
+    use ares_tools::Tools;
 
     let config = create_test_config();
 
     // Create full stack of registries
     let provider_registry = Arc::new(ProviderRegistry::from_config(config.providers.clone(), config.models.clone(), config.nvidia.as_ref()));
-    let tool_registry = Arc::new(ToolRegistry::new());
+    let tool_registry = Arc::new(Tools::from_static([]));
     let agent_registry =
-        AgentRegistry::from_config(config.agents.clone(), provider_registry.clone(), Arc::new(ares_tools::Tools::new(tool_registry.clone())));
+        AgentRegistry::from_config(config.agents.clone(), provider_registry.clone(), tool_registry.clone());
 
     // Verify the full chain works
     // 1. Config has agent

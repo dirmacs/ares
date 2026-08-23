@@ -31,7 +31,7 @@ impl ExecutionAgentRunner {
 
     /// Build a root context, attach tenant DB, provide the execution service.
     #[cfg(feature = "postgres")]
-    pub fn with_tenant_db(tenant_db: Arc<crate::TenantDb>) -> Self {
+    pub fn with_tenant_db(tenant_db: Arc<ares_store::TenantDb>) -> Self {
         let ctx = Context::new_root();
         ctx.provide_arc(tenant_db);
         ctx.provide_arc(Arc::new(ares_agent::execution::Execute::new()));

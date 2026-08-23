@@ -10,10 +10,10 @@ use std::sync::Arc;
 use cordis::{Context, CordisError, FiberId, PluginRegistry, Service};
 use serde_json::Value;
 
-use crate::auth::jwt::AuthService;
-use crate::overlay::{AresConfigManager, Overlay, OverlayConfig};
-use crate::toon_config::DynamicConfigManager;
-use crate::{AgentRegistry, TenantDb};
+use ares_http::overlay::{AresConfigManager, Overlay, OverlayConfig};
+use ares_http::toon_config::DynamicConfigManager;
+use ares_agent::AgentRegistry;
+use ares_store::TenantDb;
 
 /// Minimal no-op service behind the `noop_probe` loader factory.
 pub struct LoaderProbeService {
@@ -179,8 +179,8 @@ fn missing(what: &str) -> CordisError {
     ))
 }
 
-fn postgres_from_ctx(ctx: &Arc<Context>) -> Result<Arc<crate::PostgresClient>, CordisError> {
-    Ok(inject_sync::<crate::PostgresClient>(ctx))
+fn postgres_from_ctx(ctx: &Arc<Context>) -> Result<Arc<ares_store::PostgresClient>, CordisError> {
+    Ok(inject_sync::<ares_store::PostgresClient>(ctx))
 }
 
 fn factory_overlay(
@@ -238,10 +238,10 @@ impl Service for ServerRuntime {
 /// `cordis-entries.toml` has no `ServerRuntime` entry, so Overlay must provide
 /// ActiveRuns and Overlay-adjacent handles here. Skip types already on ctx.
 fn provide_overlay_extras(ctx: &Arc<Context>) {
-    if ctx.get::<crate::active_runs::ActiveRuns>().is_none() {
-        let _ = block_on_plugin(ctx, crate::active_runs::ActiveRuns::new());
+    if ctx.get::<ares_http::active_runs::ActiveRuns>().is_none() {
+        let _ = block_on_plugin(ctx, ares_http::active_runs::ActiveRuns::new());
     }
-    if let Some(runs) = ctx.get::<crate::active_runs::ActiveRuns>() {
+    if let Some(runs) = ctx.get::<ares_http::active_runs::ActiveRuns>() {
         if ctx.get::<ares_agent::plugins::RunTrackerHandle>().is_none() {
             ctx.provide(ares_agent::plugins::RunTrackerHandle::new(
                 runs as Arc<dyn ares_agent::RunTracker>,
@@ -268,20 +268,20 @@ fn provide_overlay_extras(ctx: &Arc<Context>) {
         ctx.provide(ares_agent::ContextProviderHandle::new(context_provider));
     }
 
-    if ctx.get::<crate::api::handlers::deploy::DeployRegistry>().is_none() {
-        ctx.provide(crate::api::handlers::deploy::new_deploy_registry());
+    if ctx.get::<ares_http::api::handlers::deploy::DeployRegistry>().is_none() {
+        ctx.provide(ares_http::api::handlers::deploy::new_deploy_registry());
     }
-    if ctx.get::<crate::api::handlers::loops::LoopRegistry>().is_none() {
-        ctx.provide(crate::api::handlers::loops::LoopRegistry::new());
+    if ctx.get::<ares_http::api::handlers::loops::LoopRegistry>().is_none() {
+        ctx.provide(ares_http::api::handlers::loops::LoopRegistry::new());
     }
 
     #[cfg(feature = "mcp")]
-    if ctx.get::<crate::mcp::McpRegistry>().is_none() {
+    if ctx.get::<ares_mcp::McpRegistry>().is_none() {
         let mcps_dir = ctx
             .get::<AresConfigManager>()
             .map(|mgr| mgr.config().config.mcps_dir.clone())
             .unwrap_or_else(|| std::path::PathBuf::from("config/mcps"));
-        match crate::mcp::McpRegistry::from_dir(mcps_dir.to_string_lossy().as_ref()) {
+        match ares_mcp::McpRegistry::from_dir(mcps_dir.to_string_lossy().as_ref()) {
             Ok(registry) => {
                 tracing::info!(
                     "MCP registry initialized with {} clients",
@@ -297,7 +297,7 @@ fn provide_overlay_extras(ctx: &Arc<Context>) {
 }
 
 fn provide_postgres_stack(ctx: &Arc<Context>, config: &Value) -> Result<(), CordisError> {
-    let Some(pg) = ctx.get::<crate::PostgresClient>() else {
+    let Some(pg) = ctx.get::<ares_store::PostgresClient>() else {
         return Ok(());
     };
     if ctx.get::<ares_agent::EmergencyStop>().is_none() {

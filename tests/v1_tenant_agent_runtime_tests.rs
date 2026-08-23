@@ -8,24 +8,27 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use ares_server::{
+use ares_http::{
     auth::jwt::AuthService,
-    db::{
-        tenant_agents::{
-            create_tenant_agent, update_tenant_agent, CreateTenantAgentRequest,
-            UpdateTenantAgentRequest,
-        },
-        TenantDb,
+    overlay::{
+        AgentConfig, AresConfig, BillingConfig, DatabaseConfig as TomlDatabaseConfig,
+        DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig,
     },
-    models::TenantTier,
-    utils::toml_config::{
-        AgentConfig, AresConfig, AuthConfig as TomlAuthConfig, BillingConfig,
-        DatabaseConfig as TomlDatabaseConfig, DynamicConfigPaths, ModelConfig, ProviderConfig,
-        RagConfig, ServerConfig as TomlServerConfig,
-    },
-    AgentRegistry, AresConfigManager, ConfigBasedLLMFactory, Context,
-    DynamicConfigManager, ProviderRegistry, ToolRegistry,
+    config::{AuthConfig as TomlAuthConfig, ServerConfig as TomlServerConfig},
+    AresConfigManager, DynamicConfigManager,
 };
+use ares_store::{
+    tenant_agents::{
+        create_tenant_agent, update_tenant_agent, CreateTenantAgentRequest,
+        UpdateTenantAgentRequest,
+    },
+    TenantDb,
+};
+use ares_types::models::TenantTier;
+use ares_agent::AgentRegistry;
+use ares_llm::{ConfigBasedLLMFactory, ProviderRegistry};
+use ares_tools::Tools;
+use cordis::Context;
 
 mod common;
 
@@ -172,11 +175,11 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
         provider_registry.clone(),
         "default",
     ));
-    let tool_registry = Arc::new(ToolRegistry::with_config(&config_manager.config().tools));
+    let tool_registry = Arc::new(Tools::from_static([]));
     let agent_registry = Arc::new(AgentRegistry::from_config(
         config_manager.config().agents.clone(),
         provider_registry.clone(),
-        Arc::new(ares_tools::Tools::new(tool_registry.clone())),
+        tool_registry.clone(),
     ));
 
     let temp_dir = tempfile::TempDir::new().expect("temp dir");
@@ -200,24 +203,20 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
     );
 
     let db = Arc::new(db);
-    let tenant_db = Arc::new(ares_server::db::TenantDb::new(db.clone()));
+    let tenant_db = Arc::new(ares_store::TenantDb::new(db.clone()));
     let auth_service = Arc::new(auth_service);
-    let runtime_tool_registry = Arc::new(ares_server::RuntimeToolRegistry::new(tenant_db.pool().clone()));
-    let skill_engine = Arc::new(ares_server::skill_engine::SkillEngine::new(
-        tenant_db.pool().clone(),
-        Arc::new(ares_tools::Tools::with_runtime(
-            tool_registry.clone(),
-            Some(Arc::new(ares_server::RuntimeToolRegistry::new(tenant_db.pool().clone()))),
-        )),
-        Arc::new(
-            ares_llm::Llm::new(
-                llm_factory.registry().clone(),
-                Arc::new(ares_llm::ClientPool::with_defaults()),
-                None,
-            )
-            .with_factory(llm_factory.clone()),
-        ),
-        config_manager.clone(),
+        let llm = Arc::new(
+        ares_llm::Llm::new(
+            provider_registry.clone(),
+            Arc::new(ares_llm::ClientPool::with_defaults()),
+            None,
+        )
+        .with_factory(llm_factory.clone()),
+    );
+    let skill_engine = Arc::new(ares_agent::skills::SkillEngine::new(
+        db.pool.clone(),
+        tool_registry.clone(),
+        llm,
     ));
 
     let state: Arc<Context> = Context::new_root();
@@ -230,20 +229,19 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
     state.provide_arc(agent_registry);
     state.provide_arc(tool_registry.clone());
     state.provide_arc(auth_service.clone());
-    state.provide(ares_server::api::handlers::deploy::DeployRegistry::default());
-    state.provide(ares_server::api::handlers::loops::LoopRegistry::new());
-    state.provide(ares_server::context_services::EmergencyStop::new(false));
-    state.provide(ares_server::agents::ContextProviderHandle::new(std::sync::Arc::new(ares_server::agents::context_provider::NoOpContextProvider)));
+    state.provide(ares_http::api::handlers::deploy::DeployRegistry::default());
+    state.provide(ares_http::api::handlers::loops::LoopRegistry::new());
+    state.provide(ares_agent::EmergencyStop::new(false));
+    state.provide(ares_agent::ContextProviderHandle::new(std::sync::Arc::new(ares_agent::context_provider::NoOpContextProvider)));
     state.provide(ares_store::FleetSecrets::new());
-    state.provide_arc(runtime_tool_registry.clone());
-    state.provide(ares_server::active_runs::ActiveRuns::new());
+        state.provide(ares_http::active_runs::ActiveRuns::new());
     state.provide_arc(skill_engine);
 
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))
         .nest(
             "/api",
-            ares_server::api::routes::create_router(auth_service.clone(), tenant_db.clone()),
+            ares_http::api::routes::create_router(auth_service.clone(), tenant_db.clone()),
         )
         .with_state(state);
 

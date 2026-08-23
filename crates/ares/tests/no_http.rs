@@ -1,14 +1,11 @@
 //! Library proof: `Execute::run` with no HTTP / axum on the graph.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use ares::{
-    AgentConfig, AgentRegistry, AgentRequest, AppError, Calculator, ClientPool, Context,
-    ConversationMessage, Execute, Llm, LLMClient, LLMResponse, PluginRegistry,
-    TenantContext, TenantTier, Tool, ToolDefinition, Tools,
+    AgentRequest, AppError, Calculator, Context, ConversationMessage, Execute, Llm, LLMClient,
+    LLMResponse, PluginRegistry, TenantContext, TenantTier, Tool, ToolDefinition, Tools,
 };
-use ares_llm::ProviderRegistry;
 use async_trait::async_trait;
 
 /// Minimal in-test LLM: never performs network I/O.
@@ -100,25 +97,13 @@ impl LLMClient for MockLLMClient {
     }
 }
 
-fn ping_agent() -> AgentConfig {
-    AgentConfig {
-        model: "mock".into(),
-        system_prompt: Some("You are ping.".into()),
-        tools: vec!["calculator".into()],
-        allowed_tools: None,
-        max_tool_iterations: 10,
-        parallel_tools: false,
-        extra: HashMap::new(),
-    }
-}
-
 fn static_tools() -> Tools {
     Tools::from_static([Arc::new(Calculator) as Arc<dyn Tool>])
 }
 
 #[tokio::test]
 async fn execute_runs_without_http() {
-    let _mock = MockLLMClient::new("mock");
+    let mock = Arc::new(MockLLMClient::new("mock"));
 
     let reg = PluginRegistry::new();
     ares::register_plugins(&reg);
@@ -128,21 +113,9 @@ async fn execute_runs_without_http() {
         TenantTier::Pro,
     ));
 
-    let tools = static_tools();
-    ctx.provide(tools);
-
-    let providers = Arc::new(ProviderRegistry::new());
-    let llm = Llm::new(Arc::clone(&providers), Arc::new(ClientPool::default()), None);
-    ctx.provide(llm);
-
-    let mut agents = HashMap::new();
-    agents.insert("ping".into(), ping_agent());
-    let registry = Arc::new(AgentRegistry::from_config(
-        agents,
-        providers,
-        Arc::new(static_tools()),
-    ));
-    let execute = ctx.provide(Execute::new().with_agent_registry(registry));
+    ctx.provide(static_tools());
+    ctx.provide(Llm::from_client(mock));
+    let execute = ctx.provide(Execute::new());
 
     let req = AgentRequest {
         agent_name: "ping".into(),

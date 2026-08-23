@@ -874,20 +874,10 @@ impl DynamicConfigManager {
             std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<ToonAgentConfig>>>>,
         > = Arc::new(std::sync::Mutex::new(None));
 
-        // Set up file watcher if hot reload is enabled
-        let watcher = if hot_reload {
-            Some(Self::setup_watcher(
-                config.clone(),
-                agents_dir.clone(),
-                models_dir.clone(),
-                tools_dir.clone(),
-                workflows_dir.clone(),
-                mcps_dir.clone(),
-                version_tx.clone(),
-            )?)
-        } else {
-            None
-        };
+        // Overlay::watch_cordis owns the single watch_many_with stack.
+        // Do not start a second notify watcher from DynamicConfigManager.
+        let _ = hot_reload;
+        let watcher = None;
 
         Ok(Self {
             config,
@@ -909,7 +899,8 @@ impl DynamicConfigManager {
         }
     }
 
-    /// Set up file watcher for hot-reload
+    /// Set up file watcher for hot-reload (unused: Overlay owns watch_many_with).
+    #[allow(dead_code)]
     fn setup_watcher(
         config: Arc<ArcSwap<DynamicConfig>>,
         agents_dir: PathBuf,

@@ -215,8 +215,9 @@ pub struct Llm {
     breaker: RwLock<Breaker>,
     /// Consecutive failure count for thresholded transition.
     failures: RwLock<u32>,
-    /// Test-only client used by `complete` / `get_client_inner` when set.
-    #[cfg(test)]
+    /// Pinned client used by `complete` / `get_client_inner` when set.
+    ///
+    /// Set by [`Llm::from_client`] for in-process tests and library proofs.
     test_client: Option<Arc<dyn LLMClient>>,
 }
 
@@ -234,7 +235,6 @@ impl Llm {
             factory: None,
             breaker: RwLock::new(Breaker::Closed),
             failures: RwLock::new(0),
-            #[cfg(test)]
             test_client: None,
         }
     }
@@ -245,9 +245,10 @@ impl Llm {
         self
     }
 
-    /// Test helper: pin a client used by `complete` / `get_client_inner`.
-    #[cfg(test)]
-    pub(crate) fn for_test(client: Arc<dyn LLMClient>) -> Self {
+    /// Pin a client used by [`get_client`](Self::get_client) / [`complete`](Self::complete).
+    ///
+    /// Intended for in-process tests and the library proof (`Execute` with no HTTP).
+    pub fn from_client(client: Arc<dyn LLMClient>) -> Self {
         let mut llm = Self::new(
             Arc::new(ProviderRegistry::new()),
             Arc::new(ClientPool::with_defaults()),
@@ -257,13 +258,27 @@ impl Llm {
         llm
     }
 
+    /// Test helper: pin a client used by `complete` / `get_client_inner`.
+    #[cfg(test)]
+    pub(crate) fn for_test(client: Arc<dyn LLMClient>) -> Self {
+        Self::from_client(client)
+    }
+
     /// Clone the provider registry for named-provider lookup.
-    pub fn provider_registry(&self) -> Arc<ProviderRegistry> {
+    pub(crate) fn provider_registry(&self) -> Arc<ProviderRegistry> {
         Arc::clone(&self.provider_registry)
     }
 
+    /// Handle for `AgentRegistry` construction in `ares-agent`.
+    ///
+    /// Application code should use [`get_client`](Self::get_client).
+    pub fn registry(&self) -> Arc<ProviderRegistry> {
+        self.provider_registry()
+    }
+
     /// Clone the config-based factory when one was attached at construction.
-    pub fn factory(&self) -> Option<Arc<ConfigBasedLLMFactory>> {
+    #[allow(dead_code)]
+    pub(crate) fn factory(&self) -> Option<Arc<ConfigBasedLLMFactory>> {
         self.factory.clone()
     }
 
@@ -281,7 +296,6 @@ impl Llm {
             factory: None,
             breaker: RwLock::new(breaker),
             failures: RwLock::new(0),
-            #[cfg(test)]
             test_client: None,
         }
     }
@@ -411,7 +425,6 @@ impl Llm {
         ctx: &Arc<Context>,
         capability: CapabilityRequirements,
     ) -> Result<Arc<dyn LLMClient>, AppError> {
-        #[cfg(test)]
         if let Some(c) = &self.test_client {
             return Ok(Arc::clone(c));
         }

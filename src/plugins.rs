@@ -1,8 +1,9 @@
-//! Server-owned Cordis string factories (Overlay, Auth, engines, probe, Execute extras).
+//! Server-owned Cordis string factories (Overlay, Auth, engines, probe, ServerRuntime extras).
 //!
-//! Capability crates register EventsService / Store / Tools / Llm / Execute core.
-//! This module registers the remaining production keys and overwrites `Execute`
-//! with the server-side factory (ActiveRuns, SkillEngine).
+//! Capability crates register EventsService / Store / Tools / Llm / Execute.
+//! This module registers remaining production keys. Host extras (ActiveRuns,
+//! SkillEngine, MCP, dynamic AgentRegistry) live on Overlay and `ServerRuntime`,
+//! not a second `Execute` factory.
 
 use std::sync::Arc;
 
@@ -219,60 +220,110 @@ fn factory_overlay(
     };
     let fid = block_on_plugin(ctx, overlay)?;
     let _ = block_on_plugin(ctx, dynamic);
+    provide_overlay_extras(ctx);
     Ok(fid)
 }
 
-fn factory_execute(ctx: &Arc<Context>, config: &Value) -> Result<FiberId, CordisError> {
-    let _ = block_on_plugin(ctx, crate::active_runs::ActiveRuns::new());
+/// Marker service for the optional `ServerRuntime` loader key.
+pub struct ServerRuntime;
 
-    if let Some(pg) = ctx.get::<crate::PostgresClient>() {
+impl Service for ServerRuntime {
+    fn name(&self) -> &'static str {
+        "ServerRuntime"
+    }
+}
+
+/// Host extras that Overlay can install before Store / Tools / Llm exist.
+///
+/// `cordis-entries.toml` has no `ServerRuntime` entry, so Overlay must provide
+/// ActiveRuns and Overlay-adjacent handles here. Skip types already on ctx.
+fn provide_overlay_extras(ctx: &Arc<Context>) {
+    if ctx.get::<crate::active_runs::ActiveRuns>().is_none() {
+        let _ = block_on_plugin(ctx, crate::active_runs::ActiveRuns::new());
+    }
+    if let Some(runs) = ctx.get::<crate::active_runs::ActiveRuns>() {
+        if ctx.get::<ares_agent::plugins::RunTrackerHandle>().is_none() {
+            ctx.provide(ares_agent::plugins::RunTrackerHandle::new(
+                runs as Arc<dyn ares_agent::RunTracker>,
+            ));
+        }
+    }
+    if let Some(dynamic) = ctx.get::<DynamicConfigManager>() {
+        if ctx.get::<ares_agent::plugins::ToonAgentsHandle>().is_none() {
+            ctx.provide(ares_agent::plugins::ToonAgentsHandle::new(
+                dynamic as Arc<dyn ares_agent::ToonAgents>,
+            ));
+        }
+    }
+    if let Some(overlay) = ctx.get::<AresConfigManager>() {
+        if ctx.get::<ares_agent::plugins::OverlayAgentConfigs>().is_none() {
+            ctx.provide(ares_agent::plugins::OverlayAgentConfigs(
+                overlay.config().agents.clone(),
+            ));
+        }
+    }
+    if ctx.get::<ares_agent::ContextProviderHandle>().is_none() {
+        let context_provider: Arc<dyn ares_agent::ContextProvider> =
+            Arc::new(ares_agent::NoOpContextProvider);
+        ctx.provide(ares_agent::ContextProviderHandle::new(context_provider));
+    }
+
+    if ctx.get::<crate::api::handlers::deploy::DeployRegistry>().is_none() {
         ctx.provide(crate::api::handlers::deploy::new_deploy_registry());
+    }
+    if ctx.get::<crate::api::handlers::loops::LoopRegistry>().is_none() {
         ctx.provide(crate::api::handlers::loops::LoopRegistry::new());
-        ctx.provide(ares_agent::EmergencyStop::new(false));
-        let context_provider: Arc<dyn crate::agents::context_provider::ContextProvider> =
-            Arc::new(crate::agents::NoOpContextProvider);
-        ctx.provide(crate::agents::ContextProviderHandle::new(context_provider));
+    }
 
-        #[cfg(feature = "mcp")]
-        {
-            let mcps_dir = ctx
-                .get::<AresConfigManager>()
-                .map(|mgr| mgr.config().config.mcps_dir.clone())
-                .unwrap_or_else(|| std::path::PathBuf::from("config/mcps"));
-            match crate::mcp::McpRegistry::from_dir(mcps_dir.to_string_lossy().as_ref()) {
-                Ok(registry) => {
-                    tracing::info!(
-                        "MCP registry initialized with {} clients",
-                        registry.client_names().len()
-                    );
-                    ctx.provide(registry);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to initialize MCP registry: {}", e);
-                }
+    #[cfg(feature = "mcp")]
+    if ctx.get::<crate::mcp::McpRegistry>().is_none() {
+        let mcps_dir = ctx
+            .get::<AresConfigManager>()
+            .map(|mgr| mgr.config().config.mcps_dir.clone())
+            .unwrap_or_else(|| std::path::PathBuf::from("config/mcps"));
+        match crate::mcp::McpRegistry::from_dir(mcps_dir.to_string_lossy().as_ref()) {
+            Ok(registry) => {
+                tracing::info!(
+                    "MCP registry initialized with {} clients",
+                    registry.client_names().len()
+                );
+                ctx.provide(registry);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize MCP registry: {}", e);
             }
         }
+    }
+}
 
+fn provide_postgres_stack(ctx: &Arc<Context>, config: &Value) -> Result<(), CordisError> {
+    let Some(pg) = ctx.get::<crate::PostgresClient>() else {
+        return Ok(());
+    };
+    if ctx.get::<ares_agent::EmergencyStop>().is_none() {
+        ctx.provide(ares_agent::EmergencyStop::new(false));
+    }
+    if ctx.get::<ares_store::TenantRealms>().is_none() {
+        ctx.provide(ares_store::TenantRealms::new(
+            std::any::TypeId::of::<ares_tools::Tools>(),
+            std::any::TypeId::of::<ares_agent::Execute>(),
+        ));
+    }
+    if ctx.get::<AgentRegistry>().is_none() {
         let tools = ctx
             .get::<ares_tools::Tools>()
             .ok_or_else(|| missing("Tools"))?;
-        #[cfg(feature = "postgres")]
-        if ctx.get::<ares_store::TenantRealms>().is_none() {
-            ctx.provide(ares_store::TenantRealms::new(
-                std::any::TypeId::of::<ares_tools::Tools>(),
-                std::any::TypeId::of::<ares_agent::Execute>(),
-            ));
-        }
         let overlay = ctx
             .get::<AresConfigManager>()
             .ok_or_else(|| missing("Overlay"))?;
         let agents = if let Some(map) = config.get("agents") {
             serde_json::from_value(map.clone()).unwrap_or_default()
         } else {
-            serde_json::from_value(config.clone()).unwrap_or_else(|_| overlay.config().agents.clone())
+            serde_json::from_value(config.clone())
+                .unwrap_or_else(|_| overlay.config().agents.clone())
         };
         let providers = if let Some(llm) = ctx.get::<ares_llm::Llm>() {
-            llm.provider_registry()
+            llm.registry()
         } else {
             let cfg = overlay.config();
             Arc::new(ares_llm::ProviderRegistry::from_config(
@@ -295,28 +346,38 @@ fn factory_execute(ctx: &Arc<Context>, config: &Value) -> Result<FiberId, Cordis
             "Agent registry initialized with {} agents (TOML + TOON)",
             agent_registry.agent_names().len()
         );
-        ctx.provide_arc(agent_registry.clone());
-
-        if let Some(llm) = ctx.get::<ares_llm::Llm>() {
-            let skill_engine = Arc::new(ares_agent::skills::SkillEngine::new(
+        ctx.provide_arc(agent_registry);
+        if ctx.get::<ares_agent::skills::SkillEngine>().is_none() {
+            if let Some(llm) = ctx.get::<ares_llm::Llm>() {
+                ctx.provide_arc(Arc::new(ares_agent::skills::SkillEngine::new(
+                    pg.pool.clone(),
+                    tools,
+                    llm,
+                )));
+            }
+        }
+    } else if ctx.get::<ares_agent::skills::SkillEngine>().is_none() {
+        if let (Some(tools), Some(llm)) = (
+            ctx.get::<ares_tools::Tools>(),
+            ctx.get::<ares_llm::Llm>(),
+        ) {
+            ctx.provide_arc(Arc::new(ares_agent::skills::SkillEngine::new(
                 pg.pool.clone(),
                 tools,
                 llm,
-            ));
-            ctx.provide_arc(skill_engine);
+            )));
         }
-        let _ = pg;
     }
+    Ok(())
+}
 
-    let agent_registry = ctx
-        .get::<AgentRegistry>()
-        .ok_or_else(|| missing("AgentRegistry"))?;
-    let active_runs = inject_sync::<crate::active_runs::ActiveRuns>(ctx)
-        as Arc<dyn ares_agent::RunTracker>;
-    let execute = ares_agent::Execute::new()
-        .with_agent_registry(agent_registry)
-        .with_run_tracker(active_runs);
-    block_on_plugin(ctx, execute)
+fn factory_server_runtime(
+    ctx: &Arc<Context>,
+    config: &Value,
+) -> Result<FiberId, CordisError> {
+    provide_overlay_extras(ctx);
+    provide_postgres_stack(ctx, config)?;
+    block_on_plugin(ctx, ServerRuntime)
 }
 
 fn factory_health_job(
@@ -326,8 +387,8 @@ fn factory_health_job(
     block_on_plugin(ctx, HealthJobService::default())
 }
 
-/// Register server-owned loader keys. Call after capability `register_plugins`
-/// so `Execute` overwrites the crate-core factory.
+/// Register server-owned loader keys. `Execute` stays on ares-agent;
+/// extras are Overlay (always) and optional `ServerRuntime`.
 pub fn register_plugins(reg: &PluginRegistry) {
     reg.register(
         "noop_probe",
@@ -341,6 +402,6 @@ pub fn register_plugins(reg: &PluginRegistry) {
         }),
     );
     reg.register("Overlay", Arc::new(factory_overlay));
-    reg.register("Execute", Arc::new(factory_execute));
+    reg.register("ServerRuntime", Arc::new(factory_server_runtime));
     reg.register("HealthJobService", Arc::new(factory_health_job));
 }

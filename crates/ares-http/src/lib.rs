@@ -163,6 +163,17 @@ pub fn build_router(ctx: Arc<Context>) -> Router {
     let _ = ctx.get::<cordis::RegistryService>();
     let _ = ctx.get::<ares_agent::Execute>();
     let _ = ctx.get::<ares_tools::Tools>();
+    // Copy the root context into request extensions so JWT middleware can
+    // isolate/intercept without a blocking Store lookup.
+    app = app.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(&ctx),
+        |axum::extract::State(ctx): axum::extract::State<Arc<Context>>,
+         mut req: axum::extract::Request,
+         next: axum::middleware::Next| async move {
+            req.extensions_mut().insert(ctx);
+            next.run(req).await
+        },
+    ));
     app.with_state(ctx)
 }
 

@@ -512,16 +512,22 @@ Shipped behavior in `crates/cordis/src/events.rs`:
 
 The Store loader factory connects, runs `sqlx` migrations, and seeds default agent templates, then provides `Store`. Overlay fills empty loader `entry.config` from `ares.toml` sections and leaves non-empty configs unchanged. TOON file changes notify `TypeId::of::<Tools>()` and `TypeId::of::<Execute>()` so those fibers refresh.
 
+### Isolate vs intercept
+
+For the same `TypeId`, an isolate label wins: `get` skips intercept and walks the isolated store/parent. Unlabeled types still intercept, so request `TenantContext` and `ModelOverride` keep working on a Tools/Execute realm.
+
 ### TenantRealms
 
-Request paths open the tenant realm then intercept `TenantContext` (`open` then `with_intercept`). Background jobs open or isolate only and do not attach a request intercept. Admin tenant delete calls `TenantRealms::dispose` before SQL delete.
+Request paths open the tenant realm then intercept `TenantContext` (`open` then `with_intercept`), including JWT chat/research and v1 chat/stream/agents. JWT `user:` isolate does not invent a dummy Free tenant. Background jobs open or isolate only and do not attach a request intercept. Admin tenant delete calls `TenantRealms::dispose` before SQL delete.
 
 ### Facade
 
-The default `ares` crate has no axum. `Context`, `Execute`, `Tools`, `Llm`, and `register_plugins` are enough to run an agent. Enable feature `http` to pull `ares-http`.
+The default `ares` crate has no axum. `Context`, `Execute`, `Tools`, `Llm`, and `register_plugins` are enough to run an agent. Enable feature `http` to pull `ares-http`. `ProviderRegistry` is not re-exported from `ares`; construction tests import it from `ares-llm`.
 
 ### Honest residuals
 
-- `ProviderRegistry` still exists because `Llm::new` / `AgentRegistry::from_config` still take one during construction.
+- `ProviderRegistry` still exists on `ares-llm` because `Llm::new` / `AgentRegistry::from_config` still take one during construction.
 - `run_server` still instantiates Overlay first, fills empty loader configs, then instantiates remaining `config/cordis-entries.toml` entries.
 - Scheduler, pipeline, and trigger domain loops remain native ARES engines. They inject `Execute` and run behind it; they are not a second public agent API.
+- Root `ares-server` remains a library. Overlay still lives in `src/overlay.rs` and is compiled into `ares-http` via `#[path]`.
+- Server loader extras still wrap the capability `Execute` factory (ActiveRuns, SkillEngine) after capability crates register the core.

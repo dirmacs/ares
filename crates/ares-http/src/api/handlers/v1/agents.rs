@@ -29,8 +29,8 @@ pub async fn list_agents(
     Query(q): Query<PaginationQuery>,
 ) -> Result<Json<Paginated<V1Agent>>> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
@@ -52,8 +52,8 @@ pub async fn get_agent(
     Path(name): Path<String>,
 ) -> Result<Json<V1Agent>> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
@@ -72,8 +72,8 @@ pub async fn run_agent(
     Json(input): Json<serde_json::Value>,
 ) -> Result<Response> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
@@ -541,8 +541,8 @@ pub async fn list_agent_runs(
     Query(q): Query<PaginationQuery>,
 ) -> Result<Json<Paginated<V1AgentRun>>> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
@@ -578,8 +578,8 @@ pub async fn get_usage(
     usage: Option<Extension<crate::middleware::usage::UsageContext>>,
 ) -> Result<Json<V1Usage>> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
@@ -612,8 +612,8 @@ pub async fn list_api_keys(
     usage: Option<Extension<crate::middleware::usage::UsageContext>>,
 ) -> Result<Json<Vec<V1ApiKey>>> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
@@ -644,8 +644,8 @@ pub async fn create_api_key(
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
@@ -675,8 +675,8 @@ pub async fn revoke_api_key(
     Path(key_id): Path<String>,
 ) -> Result<StatusCode> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
@@ -695,8 +695,8 @@ pub async fn delete_tenant_data(
     usage: Option<Extension<crate::middleware::usage::UsageContext>>,
 ) -> Result<Json<serde_json::Value>> {
     let tc = extract_tenant(ctx)?;
-    // Cordis intercept: publish tenant scope so downstream ctx.get::<TenantContext>() reads it.
-    let state_ctx = state_ctx.with_intercept(tc.clone());
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,

@@ -30,6 +30,7 @@ ares-store = { workspace = true }
 ares-http = { workspace = true, optional = true }
 
 [dev-dependencies]
+ares-llm = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

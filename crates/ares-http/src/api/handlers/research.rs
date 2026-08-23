@@ -3,13 +3,44 @@ use crate::HttpError;
 use crate::{
     auth::middleware::AuthUser,
     research::coordinator::ResearchCoordinator,
-    types::{ResearchRequest, ResearchResponse, Source},
+    types::{Claims, ResearchRequest, ResearchResponse, Source},
     utils::toml_config::{AresConfig, WorkflowConfig},
 };
 use std::sync::Arc;
 use cordis::Context;
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Extension, State},
+    Json,
+};
 use std::time::Instant;
+
+async fn jwt_tenant_tier(ctx: &Arc<Context>, tenant_id: &str) -> ares_types::models::TenantTier {
+    let Some(db) = ctx.get::<ares_store::TenantDb>() else {
+        return ares_types::models::TenantTier::Free;
+    };
+    match db.get_tenant(tenant_id).await {
+        Ok(Some(tenant)) => tenant.tier,
+        _ => ares_types::models::TenantTier::Free,
+    }
+}
+
+async fn intercept_jwt_tenant(
+    ctx: Arc<Context>,
+    claims: &Claims,
+    tenant_ext: Option<Extension<ares_types::models::TenantContext>>,
+) -> Arc<Context> {
+    if let Some(Extension(tc)) = tenant_ext {
+        return ares_agent::request_tenant_ctx(&ctx, tc);
+    }
+    let Some(tenant_id) = claims.tenant_id.clone() else {
+        return ares_agent::request_user_scope(&ctx, &claims.sub);
+    };
+    let tier = jwt_tenant_tier(&ctx, &tenant_id).await;
+    ares_agent::request_tenant_ctx(
+        &ctx,
+        ares_types::models::TenantContext::new(tenant_id, tier),
+    )
+}
 
 /// Resolves research depth and iteration limits from request overrides and workflow config.
 fn resolve_research_limits(
@@ -78,9 +109,11 @@ pub(crate) fn finalize_research_response(
 /// Perform deep research on a query
 pub async fn deep_research(
     State(ctx): State<Arc<Context>>,
-    AuthUser(_claims): AuthUser,
+    AuthUser(claims): AuthUser,
+    tenant_ctx: Option<Extension<ares_types::models::TenantContext>>,
     Json(payload): Json<ResearchRequest>,
 ) -> Result<Json<ResearchResponse>> {
+    let ctx = intercept_jwt_tenant(ctx, &claims, tenant_ctx).await;
     let start = Instant::now();
     ensure_research_emergency_stop_inactive(&ctx.get::<ares_agent::EmergencyStop>().expect("not provided"))?;
 
@@ -502,5 +535,67 @@ mod tests {
     fn research_request_rejects_missing_query() {
         let err = serde_json::from_str::<ResearchRequest>(r#"{}"#).unwrap_err();
         assert!(err.to_string().contains("query"));
+    }
+
+    fn sample_claims(sub: &str, tenant_id: Option<&str>) -> Claims {
+        Claims {
+            sub: sub.into(),
+            email: "u@example.com".into(),
+            exp: 0,
+            iat: 0,
+            jti: String::new(),
+            tenant_id: tenant_id.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn intercept_jwt_tenant_user_isolate_skips_dummy_tenant_context() {
+        let ctx = Context::new_root();
+        let scoped = intercept_jwt_tenant(ctx, &sample_claims("user-1", None), None).await;
+        assert!(scoped.get::<ares_types::models::TenantContext>().is_none());
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<ares_agent::Execute>())
+                .as_deref(),
+            Some("user:user-1")
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn intercept_jwt_tenant_opens_realm_then_intercepts() {
+        let ctx = Context::new_root();
+        ctx.provide(ares_store::TenantRealms::new(
+            std::any::TypeId::of::<ares_tools::Tools>(),
+            std::any::TypeId::of::<ares_agent::Execute>(),
+        ));
+        let tc = ares_types::models::TenantContext::new(
+            "acme".into(),
+            ares_types::models::TenantTier::Pro,
+        );
+        let scoped = intercept_jwt_tenant(
+            ctx.clone(),
+            &sample_claims("user-1", Some("acme")),
+            Some(Extension(tc)),
+        )
+        .await;
+        assert_eq!(
+            scoped
+                .get::<ares_types::models::TenantContext>()
+                .expect("intercept")
+                .tenant_id,
+            "acme"
+        );
+        let realm = ctx
+            .get::<ares_store::TenantRealms>()
+            .expect("TenantRealms")
+            .open(&ctx, "acme");
+        assert!(realm.get::<ares_types::models::TenantContext>().is_none());
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<ares_tools::Tools>())
+                .as_deref(),
+            Some("acme")
+        );
     }
 }

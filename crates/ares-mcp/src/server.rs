@@ -443,7 +443,7 @@ impl AresMcpServer {
                 "tier": session.tier(),
             });
             let result = events
-                .dispatch("agent.admit".into(), payload, cordis::Dispatch::Bail)
+                .dispatch( cordis::events_catalog::ev::AGENT_ADMIT.to_string(), payload, cordis::Dispatch::Bail)
                 .await
                 .map_err(|source| format!("Quota check failed: {source}"))?;
             if let Some(exceeded) = Self::quota_denial(&result) {
@@ -2210,7 +2210,7 @@ mod tests {
     async fn enforce_quota_event_denial_preserves_mcp_error() {
         let base = cordis::Context::new_root();
         let events = base.provide(cordis::EventsService::new());
-        events.on("agent.admit".into(), |_payload| async {
+        events.on( cordis::events_catalog::ev::AGENT_ADMIT.to_string(), |_payload| async {
             Ok::<_, cordis::CordisError>(serde_json::json!({ "deny": "daily" }))
         });
         let server = test_server_with_session_tier(TenantTier::Pro).await

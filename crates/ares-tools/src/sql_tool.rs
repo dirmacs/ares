@@ -241,8 +241,14 @@ fn pg_value_to_json(row: &sqlx::postgres::PgRow, i: usize) -> Result<Value> {
         return Ok(opt.map_or(Value::Null, Value::String));
     }
 
-    // Nullable integer
+    // Nullable integers (INT2/INT4 decode separately from INT8)
     if let Ok(opt) = row.try_get::<Option<i64>, _>(i) {
+        return Ok(opt.map_or(Value::Null, |v| Value::Number(v.into())));
+    }
+    if let Ok(opt) = row.try_get::<Option<i32>, _>(i) {
+        return Ok(opt.map_or(Value::Null, |v| Value::Number(v.into())));
+    }
+    if let Ok(opt) = row.try_get::<Option<i16>, _>(i) {
         return Ok(opt.map_or(Value::Null, |v| Value::Number(v.into())));
     }
 
@@ -411,6 +417,7 @@ mod tests {
             .ok()
     }
 
+
     #[tokio::test]
     async fn test_simple_select() {
         let Some(pool) = try_test_pool().await else {
@@ -518,8 +525,9 @@ mod tests {
         let Some(pool) = try_test_pool().await else {
             return;
         };
+        // Args bind alphabetically: flag→$1, name→$2, num→$3.
         let config = SqlToolConfig {
-            query_template: "SELECT $1::boolean as flag, $2::int as num, $3::text as name"
+            query_template: "SELECT $1::boolean as flag, $2::text as name, $3::int as num"
                 .to_string(),
             ..Default::default()
         };

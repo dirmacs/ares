@@ -590,7 +590,11 @@ description = "Calc tool"
         let ctx = cordis::Context::new_root();
         ctx.provide(crate::Tools::new(Arc::new(ToolRegistry::new())));
         assert!(ctx.get::<crate::Tools>().is_some());
+        // Realm boundary: the root registry must not leak into an isolated
+        // tenant scope; tools resolve only once provided inside that scope.
         let isolated = ctx.isolate::<crate::Tools>("tenant:acme");
+        assert!(isolated.get::<crate::Tools>().is_none());
+        isolated.provide(crate::Tools::new(Arc::new(ToolRegistry::new())));
         let tools = isolated.get::<crate::Tools>().expect("Tools on isolated ctx");
         assert!(tools.list(&isolated).is_empty());
         assert!(tools.resolve(&isolated, "missing").is_none());

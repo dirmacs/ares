@@ -274,8 +274,7 @@ impl SchedulerService {
             return run;
         };
         events
-            .dispatch(
-                "scheduler.before_run".into(),
+            .dispatch( cordis::events_catalog::ev::SCHEDULER_BEFORE_RUN.to_string(),
                 run.clone(),
                 cordis::Dispatch::Waterfall,
             )
@@ -298,8 +297,7 @@ impl SchedulerService {
             return true;
         };
         let result = events
-            .dispatch(
-                "scheduler.admit".into(),
+            .dispatch( cordis::events_catalog::ev::SCHEDULER_ADMIT.to_string(),
                 run.clone(),
                 cordis::Dispatch::Bail,
             )
@@ -352,7 +350,7 @@ impl Service for SchedulerService {
             });
 
             let failure_control = Arc::clone(&control);
-            events.on("agent.failed".into(), move |payload| {
+            events.on(cordis::events_catalog::ev::AGENT_FAILED.to_string(), move |payload| {
                 let failure_control = Arc::clone(&failure_control);
                 Box::pin(async move {
                     let agent = payload
@@ -1079,11 +1077,12 @@ mod tests {
         use std::any::TypeId;
         let root = Context::new_root();
         let scoped = tenant_scoped_ctx(&root, "acme");
+        // Execute is the shared engine: no realm label, always resolvable.
         assert_eq!(
             scoped
                 .isolate_label(TypeId::of::<crate::Execute>())
                 .as_deref(),
-            Some("acme"),
+            None,
         );
         assert_eq!(
             scoped
@@ -1091,6 +1090,7 @@ mod tests {
                 .as_deref(),
             Some("acme"),
         );
+        assert!(root.isolate_label(TypeId::of::<crate::Execute>()).is_none());
     }
 
     #[test]
@@ -1333,6 +1333,21 @@ mod tests {
 
         assert_eq!(service.control().failure_count(), 0);
         assert!(!service.control().is_disabled());
+
+        // Production emits agent.failed fire-and-forget; the handler updates
+        // control state asynchronously, so wait for each observed count with a
+        // bounded poll instead of relying on Serial ordering.
+        async fn wait_for(control: &SchedulerControl, expected: usize) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+            while control.failure_count() < expected {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timeout waiting for failure_count >= {expected}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+
         let payload = serde_json::json!({
             "agent_name": "scheduled-agent",
             "run_id": "run-1",
@@ -1340,29 +1355,34 @@ mod tests {
             "event": "agent.failed",
         });
         events
-            .dispatch("agent.failed".into(), payload, cordis::Dispatch::Serial)
+            .dispatch(
+                cordis::events_catalog::ev::AGENT_FAILED.to_string(),
+                payload,
+                cordis::Dispatch::Emit,
+            )
             .await
-            .expect("agent failure event should be handled");
+            .expect("emit dispatch should succeed");
+        wait_for(&service.control(), 1).await;
 
-        assert_eq!(service.control().failure_count(), 1);
         assert!(!service.control().is_disabled());
 
         // Repeated failures cross the deterministic pause threshold.
         for run_id in ["run-2", "run-3"] {
             events
                 .dispatch(
-                    "agent.failed".into(),
+                    cordis::events_catalog::ev::AGENT_FAILED.to_string(),
                     serde_json::json!({
                         "agent_name": "scheduled-agent",
                         "run_id": run_id,
                         "tenant": "tenant-a",
                         "event": "agent.failed",
                     }),
-                    cordis::Dispatch::Serial,
+                    cordis::Dispatch::Emit,
                 )
                 .await
-                .expect("agent failure event should be handled");
+                .expect("emit dispatch should succeed");
         }
+        wait_for(&service.control(), 3).await;
         assert_eq!(service.control().failure_count(), 3);
         assert!(service.control().is_disabled());
         service.control().reset();
@@ -1384,8 +1404,7 @@ mod tests {
         // A Cordis `Dispatch::Bail` admission policy on `scheduler.admit`: a
         // handler that returns a non-null value bails (denies) the run, while a
         // null result means "did not bail" (the run is admitted).
-        let disposable = events.on(
-            "scheduler.admit".into(),
+        let disposable = events.on( cordis::events_catalog::ev::SCHEDULER_ADMIT.to_string(),
             |payload: serde_json::Value| async move {
                 if payload
                     .get("deny")
@@ -1455,7 +1474,7 @@ mod tests {
         );
         let ctx = Context::new_root();
         let events = ctx.provide(cordis::EventsService::new());
-        events.on_waterfall("scheduler.before_run".into(), |payload, next| async move {
+        events.on_waterfall( cordis::events_catalog::ev::SCHEDULER_BEFORE_RUN.to_string(), |payload, next| async move {
             let mut obj = payload.as_object().cloned().unwrap_or_default();
             obj.insert("enriched".into(), serde_json::json!(true));
             next(serde_json::Value::Object(obj)).await

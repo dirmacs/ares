@@ -166,8 +166,7 @@ impl Execute {
             return payload;
         };
         events
-            .dispatch(
-                "agent.started".into(),
+            .dispatch( cordis::events_catalog::ev::AGENT_STARTED.to_string(),
                 payload.clone(),
                 cordis::Dispatch::Parallel,
             )
@@ -246,7 +245,7 @@ impl Execute {
         let ctx_owned = Arc::clone(ctx);
         let orig = req.clone();
         let out = events
-            .waterfall_around("agent.run".into(), payload, move |payload| async move {
+            .waterfall_around( cordis::events_catalog::ev::AGENT_RUN.to_string(), payload, move |payload| async move {
                 let mut run_req = orig;
                 if let Some(name) = payload.get("agent_name").and_then(|v| v.as_str()) {
                     run_req.agent_name = name.to_string();
@@ -500,7 +499,7 @@ impl Execute {
             if let Some(usage) = &response.usage {
                 self.emit_observability(
                     ctx,
-                    "agent.usage",
+                    cordis::events_catalog::ev::AGENT_USAGE,
                     serde_json::json!({
                         "tenant": user_id,
                         "prompt": usage.prompt_tokens,
@@ -514,7 +513,7 @@ impl Execute {
 
         self.emit_observability(
             ctx,
-            "agent.completed",
+            cordis::events_catalog::ev::AGENT_COMPLETED,
             serde_json::json!({
                 "agent_name": req.agent_name,
                 "run_id": run_id,
@@ -526,12 +525,12 @@ impl Execute {
         if result.is_err() {
             self.emit_observability(
                 ctx,
-                "agent.failed",
+                cordis::events_catalog::ev::AGENT_FAILED,
                 serde_json::json!({
                     "agent_name": req.agent_name,
                     "run_id": run_id,
                     "tenant": user_id,
-                    "event": "agent.failed",
+                    "event": cordis::events_catalog::ev::AGENT_FAILED,
                 }),
             )
             .await;
@@ -676,7 +675,7 @@ You are {}.",
                             }
                             self.emit_observability(
                                 ctx,
-                                "agent.usage",
+                                cordis::events_catalog::ev::AGENT_USAGE,
                                 serde_json::json!({
                                     "tenant": tenant,
                                     "prompt": usage.prompt_tokens,
@@ -907,7 +906,7 @@ mod tests {
 
         // Handler 1 — `Dispatch::Parallel` must run it before returning.
         let c1 = count.clone();
-        let _d1 = events.on("agent.started".into(), move |payload: serde_json::Value| {
+        let _d1 = events.on( cordis::events_catalog::ev::AGENT_STARTED.to_string(), move |payload: serde_json::Value| {
             let c = c1.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -917,7 +916,7 @@ mod tests {
 
         // Handler 2 — also must be run before the dispatch returns.
         let c2 = count.clone();
-        let _d2 = events.on("agent.started".into(), move |payload: serde_json::Value| {
+        let _d2 = events.on( cordis::events_catalog::ev::AGENT_STARTED.to_string(), move |payload: serde_json::Value| {
             let c = c2.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -947,7 +946,7 @@ mod tests {
 
         let ran = Arc::new(AtomicBool::new(false));
         let flag = ran.clone();
-        let _d = events.on("agent.usage".into(), move |payload: serde_json::Value| {
+        let _d = events.on( cordis::events_catalog::ev::AGENT_USAGE.to_string(), move |payload: serde_json::Value| {
             let flag = flag.clone();
             async move {
                 tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -957,7 +956,7 @@ mod tests {
         });
 
         let start = std::time::Instant::now();
-        svc.emit_observability(&ctx, "agent.usage", serde_json::json!({}))
+        svc.emit_observability(&ctx, cordis::events_catalog::ev::AGENT_USAGE, serde_json::json!({}))
             .await;
         let elapsed = start.elapsed();
         assert!(
@@ -980,7 +979,7 @@ mod tests {
 
         let ran = Arc::new(AtomicBool::new(false));
         let mut _guards = Vec::new();
-        for event in ["agent.completed", "agent.failed"] {
+        for event in [cordis::events_catalog::ev::AGENT_COMPLETED, "agent.failed"] {
             let flag = ran.clone();
             _guards.push(events.on(event.into(), move |payload: serde_json::Value| {
                 let flag = flag.clone();
@@ -993,9 +992,9 @@ mod tests {
         }
 
         let start = std::time::Instant::now();
-        svc.emit_observability(&ctx, "agent.completed", serde_json::json!({}))
+        svc.emit_observability(&ctx, cordis::events_catalog::ev::AGENT_COMPLETED, serde_json::json!({}))
             .await;
-        svc.emit_observability(&ctx, "agent.failed", serde_json::json!({}))
+        svc.emit_observability(&ctx, cordis::events_catalog::ev::AGENT_FAILED, serde_json::json!({}))
             .await;
         let elapsed = start.elapsed();
         assert!(
@@ -1162,7 +1161,7 @@ mod tests {
         let svc = Execute::new();
         let ctx = Context::new_root();
         let events = ctx.provide(cordis::EventsService::new());
-        events.on_waterfall("agent.run".into(), |mut payload, next| async move {
+        events.on_waterfall( cordis::events_catalog::ev::AGENT_RUN.to_string(), |mut payload, next| async move {
             payload["message"] = serde_json::json!("rewritten-hello");
             next(payload).await
         });
@@ -1184,7 +1183,7 @@ mod tests {
         let svc = Execute::new();
         let ctx = Context::new_root();
         let events = ctx.provide(cordis::EventsService::new());
-        events.on_waterfall("agent.run".into(), |_payload, _next| async move {
+        events.on_waterfall( cordis::events_catalog::ev::AGENT_RUN.to_string(), |_payload, _next| async move {
             Ok(serde_json::json!({
                 "content": "short-circuit",
                 "source": "system",

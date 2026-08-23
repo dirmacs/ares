@@ -69,7 +69,7 @@ pub async fn admit_with_details(ctx: &Arc<Context>) -> Result<(), AdmissionError
             "tier": tc.tier.as_str(),
         });
         let result = events
-            .dispatch("agent.admit".into(), payload, Dispatch::Bail)
+            .dispatch( cordis::events_catalog::ev::AGENT_ADMIT.to_string(), payload, Dispatch::Bail)
             .await
             .map_err(AdmissionError::Event)?;
         if let Some(err) = deny_from_bail(&result) {
@@ -132,7 +132,7 @@ mod tests {
     fn ctx_with_deny(deny: &'static str) -> (Arc<Context>, Box<dyn cordis::Disposable>) {
         let root = Context::new_root();
         let events = root.provide(EventsService::new());
-        let keep = events.on("agent.admit".into(), move |_payload| async move {
+        let keep = events.on( cordis::events_catalog::ev::AGENT_ADMIT.to_string(), move |_payload| async move {
             Ok(json!({ "deny": deny }))
         });
         let ctx = root.with_intercept(free_tenant());

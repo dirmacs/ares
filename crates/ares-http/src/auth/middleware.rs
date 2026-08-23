@@ -1,5 +1,5 @@
 use crate::auth::jwt::AuthService;
-use ares_types::models::{TenantContext, TenantTier};
+use ares_types::models::TenantContext;
 use ares_types::types::Claims;
 use axum::{extract::Request, http::StatusCode, middleware::Next, response::Response};
 use cordis::Context;
@@ -7,22 +7,47 @@ use std::sync::Arc;
 
 /// Isolate + intercept the request `Context` from verified JWT claims.
 ///
-/// Tenant claims open `TenantRealms` (when provided) then intercept `TenantContext`
-/// via [`ares_agent::request_tenant_ctx`]. User claims isolate only — no dummy Free
-/// `TenantContext`. Does not query SQL.
-pub(crate) fn apply_jwt_scope(ctx: &Arc<Context>, claims: &Claims) -> Arc<Context> {
+/// Tenant claims open `TenantRealms` (when provided) then intercept `tenant`.
+/// User claims isolate only — no dummy Free `TenantContext`.
+pub(crate) fn apply_jwt_scope(
+    ctx: &Arc<Context>,
+    claims: &Claims,
+    tenant: Option<TenantContext>,
+) -> Arc<Context> {
     match claims.tenant_id.as_deref() {
         Some(tenant_id) => {
-            let tc = ctx
-                .get::<TenantContext>()
-                .map(|existing| (*existing).clone())
-                .unwrap_or_else(|| TenantContext::new(tenant_id.to_string(), TenantTier::Free));
+            let Some(tc) = tenant else {
+                return ctx.clone();
+            };
             if let Some(realms) = ctx.get::<ares_store::TenantRealms>() {
                 return realms.open(ctx, tenant_id).with_intercept(tc);
             }
             ares_agent::request_tenant_ctx(ctx, tc)
         }
         None => ares_agent::request_user_scope(ctx, &claims.sub),
+    }
+}
+
+/// Resolve JWT tenant claims from a matching `TenantContext` already on `ctx`,
+/// else `TenantDb`. Missing tenant or missing store is fail-closed.
+pub(crate) async fn resolve_jwt_tenant(
+    ctx: &Arc<Context>,
+    claims: &Claims,
+) -> Result<Option<TenantContext>, StatusCode> {
+    let Some(tenant_id) = claims.tenant_id.as_deref() else {
+        return Ok(None);
+    };
+    if let Some(existing) = ctx.get::<TenantContext>() {
+        if existing.tenant_id == tenant_id {
+            return Ok(Some((*existing).clone()));
+        }
+    }
+    let Some(db) = ctx.get::<ares_store::TenantDb>() else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    match db.get_tenant(tenant_id).await {
+        Ok(Some(row)) => Ok(Some(TenantContext::new(row.id, row.tier))),
+        _ => Err(StatusCode::UNAUTHORIZED),
     }
 }
 
@@ -62,7 +87,17 @@ pub async fn auth_middleware(auth_service: Arc<AuthService>, req: Request, next:
             Ok(claims) => {
                 let mut req = req;
                 if let Some(root) = req.extensions().get::<Arc<Context>>().cloned() {
-                    let scoped = apply_jwt_scope(&root, &claims);
+                    let tenant = match resolve_jwt_tenant(&root, &claims).await {
+                        Ok(tenant) => tenant,
+                        Err(_) => {
+                            return Response::builder()
+                                .status(StatusCode::UNAUTHORIZED)
+                                .header("Content-Type", "application/json")
+                                .body(r#"{"error":"Unauthorized"}"#.into())
+                                .unwrap();
+                        }
+                    };
+                    let scoped = apply_jwt_scope(&root, &claims, tenant);
                     if let Some(tc) = scoped.get::<TenantContext>() {
                         req.extensions_mut().insert((*tc).clone());
                     }
@@ -126,6 +161,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ares_types::models::TenantTier;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -477,7 +513,8 @@ mod tests {
             std::any::TypeId::of::<ares_agent::Execute>(),
         ));
         let claims = sample_claims("user-1", Some("acme"));
-        let scoped = apply_jwt_scope(&ctx, &claims);
+        let tc = TenantContext::new("acme".into(), TenantTier::Pro);
+        let scoped = apply_jwt_scope(&ctx, &claims, Some(tc));
         assert_eq!(
             scoped
                 .get::<TenantContext>()
@@ -510,7 +547,7 @@ mod tests {
     #[test]
     fn jwt_user_claims_isolate_without_dummy_tenant_context() {
         let ctx = Context::new_root();
-        let scoped = apply_jwt_scope(&ctx, &sample_claims("user-1", None));
+        let scoped = apply_jwt_scope(&ctx, &sample_claims("user-1", None), None);
         assert!(scoped.get::<TenantContext>().is_none());
         assert_eq!(
             scoped
@@ -524,5 +561,70 @@ mod tests {
                 .as_deref(),
             Some("user:user-1")
         );
+    }
+
+    #[tokio::test]
+    async fn jwt_unknown_tenant_without_store_is_unauthorized() {
+        let ctx = Context::new_root();
+        let claims = sample_claims("user-1", Some("ghost"));
+        assert_eq!(
+            resolve_jwt_tenant(&ctx, &claims).await.unwrap_err(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn jwt_existing_tenant_context_skips_store() {
+        let ctx = Context::new_root();
+        ctx.provide(TenantContext::new("acme".into(), TenantTier::Pro));
+        let claims = sample_claims("user-1", Some("acme"));
+        let tc = resolve_jwt_tenant(&ctx, &claims)
+            .await
+            .expect("resolved")
+            .expect("tenant");
+        assert_eq!(tc.tier, TenantTier::Pro);
+        assert_eq!(tc.tenant_id, "acme");
+    }
+
+    fn encode_tenant_token(secret: &str, tenant_id: &str) -> String {
+        jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &sample_claims("user-1", Some(tenant_id)),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .expect("sign tenant token")
+    }
+
+    fn create_test_app_with_ctx(auth_service: Arc<AuthService>, ctx: Arc<Context>) -> Router {
+        Router::new()
+            .route("/protected", get(protected_handler))
+            .layer(axum::middleware::from_fn(move |mut req: axum::extract::Request, next: axum::middleware::Next| {
+                let auth = auth_service.clone();
+                let ctx = ctx.clone();
+                async move {
+                    req.extensions_mut().insert(ctx);
+                    auth_middleware(auth, req, next).await
+                }
+            }))
+    }
+
+    #[tokio::test]
+    async fn jwt_unknown_tenant_with_context_returns_401() {
+        let secret = "test-secret-key-that-is-at-least-32-chars";
+        let auth_service = Arc::new(AuthService::new(secret.to_string(), 900, 604800));
+        let ctx = Context::new_root();
+        let app = create_test_app_with_ctx(auth_service, ctx);
+        let token = encode_tenant_token(secret, "ghost");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

@@ -519,5 +519,5 @@ The default `ares` crate has no axum. `Context`, `Execute`, `Tools`, `Llm`, and 
 - `ProviderRegistry` still exists on `ares-llm` because `Llm::new` / `AgentRegistry::from_config` still take one during construction.
 - `run_server` still instantiates Overlay first, fills empty loader configs, then instantiates remaining `config/cordis-entries.toml` entries.
 - Scheduler, pipeline, and trigger domain loops remain native ARES engines. They inject `Execute` and run behind it; they are not a second public agent API.
-- Root `ares-server` is a binary. Overlay still lives in `src/overlay.rs` and is compiled into `ares-http` via `#[path]`.
+- Root `ares-server` is a binary. Overlay lives in `crates/ares-http/src/overlay.rs`; the server still registers the Overlay factory.
 - Overlay / optional `ServerRuntime` provide host extras (ActiveRuns, SkillEngine, MCP). `Execute` is registered once, by `ares-agent`.

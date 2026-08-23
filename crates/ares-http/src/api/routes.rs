@@ -443,6 +443,11 @@ pub fn create_router(
             "/admin/cordis/entries/{id}/toggle",
             post(crate::api::handlers::admin::toggle_cordis_entry),
         )
+        // Per-event dispatch metrics from EventsService
+        .route(
+            "/admin/cordis/events",
+            get(crate::api::handlers::admin::cordis::cordis_event_metrics),
+        )
         // Runtime Providers
         .route(
             "/admin/runtime_providers",

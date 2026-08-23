@@ -30,6 +30,9 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - Isolate labels win over intercept for the same `TypeId`; unlabeled types still intercept
 - Leftover `execution_stack` dual `Execute` installer removed
 - Default `ares` facade has no axum (`http` is optional) and no longer re-exports `ProviderRegistry`
+- Single `Execute` loader key (ares-agent); Overlay/`ServerRuntime` provide host extras
+- JWT middleware opens `TenantRealms` then intercepts `TenantContext`; user claims isolate with no dummy Free tenant
+- `Llm::from_client` is the public test constructor; `no_http` no longer builds `ProviderRegistry`
 
 ### Changed
 

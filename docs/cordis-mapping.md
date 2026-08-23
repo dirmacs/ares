@@ -518,7 +518,7 @@ For the same `TypeId`, an isolate label wins: `get` skips intercept and walks th
 
 ### TenantRealms
 
-Request paths open the tenant realm then intercept `TenantContext` (`open` then `with_intercept`), including JWT chat/research and v1 chat/stream/agents. JWT `user:` isolate does not invent a dummy Free tenant. Background jobs open or isolate only and do not attach a request intercept. Admin tenant delete calls `TenantRealms::dispose` before SQL delete.
+Request paths open the tenant realm then intercept `TenantContext` (`open` then `with_intercept`), including JWT middleware (tenant claims), JWT chat/research, and v1 chat/stream/agents. JWT `user:` isolate does not invent a dummy Free tenant. Background jobs open or isolate only and do not attach a request intercept. Admin tenant delete calls `TenantRealms::dispose` before SQL delete.
 
 ### Facade
 
@@ -530,4 +530,4 @@ The default `ares` crate has no axum. `Context`, `Execute`, `Tools`, `Llm`, and 
 - `run_server` still instantiates Overlay first, fills empty loader configs, then instantiates remaining `config/cordis-entries.toml` entries.
 - Scheduler, pipeline, and trigger domain loops remain native ARES engines. They inject `Execute` and run behind it; they are not a second public agent API.
 - Root `ares-server` remains a library. Overlay still lives in `src/overlay.rs` and is compiled into `ares-http` via `#[path]`.
-- Server loader extras still wrap the capability `Execute` factory (ActiveRuns, SkillEngine) after capability crates register the core.
+- Overlay / optional `ServerRuntime` provide host extras (ActiveRuns, SkillEngine, MCP). `Execute` is registered once, by `ares-agent`.

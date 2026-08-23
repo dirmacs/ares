@@ -749,78 +749,19 @@ impl AresConfigManager {
         Ok(())
     }
 
-    /// Start watching for configuration file changes
+    /// Start watching for configuration file changes.
+    ///
+    /// Overlay is the only `ares.toml` program. This forwards to
+    /// [`Self::watch_cordis`] when a context is already captured and does
+    /// not start a second `notify` watcher stack.
     pub fn start_watching(&mut self) -> Result<(), ConfigError> {
         if self.cordis_watch.read().is_some() {
-            // Overlay::watch_cordis already owns watch_many_with for ares.toml.
             return Ok(());
         }
-        let (tx, mut rx) = mpsc::unbounded_channel::<()>();
-        self.reload_tx = Some(tx.clone());
-
-        let config_path = self.config_path.clone();
-        let config_arc = Arc::clone(&self.config);
-
-        // Create debounced file watcher
-        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            match res {
-                Ok(event) => {
-                    if event.kind.is_modify() || event.kind.is_create() {
-                        // Send reload signal (debounced in the receiver)
-                        let _ = tx.send(());
-                    }
-                }
-                Err(e) => {
-                    error!("Config watcher error: {:?}", e);
-                }
-            }
-        })?;
-
-        // Watch the config file's parent directory
-        if let Some(parent) = self.config_path.parent() {
-            watcher.watch(parent, RecursiveMode::NonRecursive)?;
+        if let Some(ctx) = self.watch_ctx.read().clone() {
+            return self.watch_cordis(&ctx);
         }
-
-        *self.watcher.write() = Some(watcher);
-
-        // Spawn reload handler with debouncing
-        let config_path_clone = config_path.clone();
-        let watch_ctx = Arc::clone(&self.watch_ctx);
-        tokio::spawn(async move {
-            let mut last_reload = std::time::Instant::now();
-            let debounce_duration = Duration::from_millis(500);
-
-            while rx.recv().await.is_some() {
-                // Debounce: only reload if enough time has passed
-                if last_reload.elapsed() < debounce_duration {
-                    continue;
-                }
-
-                // Wait a bit for file write to complete
-                tokio::time::sleep(Duration::from_millis(100)).await;
-
-                match AresConfig::load(&config_path_clone) {
-                    Ok(new_config) => {
-                        config_arc.store(Arc::new(new_config));
-                        info!("Configuration hot-reloaded successfully");
-                        if let Some(ctx) = watch_ctx.read().clone() {
-                            if let Some(reflect) = ctx.get::<cordis::ReflectService>() {
-                                reflect.notify(TypeId::of::<Overlay>());
-                            }
-                        }
-                        last_reload = std::time::Instant::now();
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to hot-reload config: {}. Keeping previous config.",
-                            e
-                        );
-                    }
-                }
-            }
-        });
-
-        info!("Configuration hot-reload watcher started");
+        info!("ares.toml watch is owned by Overlay::watch_cordis; skipping standalone watcher");
         Ok(())
     }
 
@@ -874,9 +815,10 @@ pub type Overlay = AresConfigManager;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OverlayConfig {
     /// Path to `ares.toml`.
-    #[serde(default = "default_overlay_toml_path")]
+    #[serde(default = "default_overlay_toml_path", alias = "toml_path")]
     pub toml_path: PathBuf,
 }
+
 
 fn default_overlay_toml_path() -> PathBuf {
     PathBuf::from("ares.toml")
@@ -1009,10 +951,12 @@ impl Overlay {
             }
         }
     }
+
 }
 
 /// Typed installer for [`Overlay`].
 pub struct OverlayPlugin;
+
 
 impl cordis::Plugin for OverlayPlugin {
     type Config = OverlayConfig;

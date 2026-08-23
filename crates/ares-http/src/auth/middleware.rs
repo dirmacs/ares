@@ -1,7 +1,30 @@
 use crate::auth::jwt::AuthService;
+use ares_types::models::{TenantContext, TenantTier};
 use ares_types::types::Claims;
 use axum::{extract::Request, http::StatusCode, middleware::Next, response::Response};
+use cordis::Context;
 use std::sync::Arc;
+
+/// Isolate + intercept the request `Context` from verified JWT claims.
+///
+/// Tenant claims open `TenantRealms` (when provided) then intercept `TenantContext`
+/// via [`ares_agent::request_tenant_ctx`]. User claims isolate only — no dummy Free
+/// `TenantContext`. Does not query SQL.
+pub(crate) fn apply_jwt_scope(ctx: &Arc<Context>, claims: &Claims) -> Arc<Context> {
+    match claims.tenant_id.as_deref() {
+        Some(tenant_id) => {
+            let tc = ctx
+                .get::<TenantContext>()
+                .map(|existing| (*existing).clone())
+                .unwrap_or_else(|| TenantContext::new(tenant_id.to_string(), TenantTier::Free));
+            if let Some(realms) = ctx.get::<ares_store::TenantRealms>() {
+                return realms.open(ctx, tenant_id).with_intercept(tc);
+            }
+            ares_agent::request_tenant_ctx(ctx, tc)
+        }
+        None => ares_agent::request_user_scope(ctx, &claims.sub),
+    }
+}
 
 /// Axum middleware that validates JWT tokens from the Authorization header
 /// or from the `?token=` query parameter (used by EventSource which cannot
@@ -9,6 +32,8 @@ use std::sync::Arc;
 ///
 /// Expects tokens in the format: `Authorization: Bearer <token>`
 /// On success, injects `Claims` into request extensions for downstream handlers.
+/// When `Arc<Context>` is in extensions, the request context is isolated/intercepted
+/// from those claims before the handler runs.
 pub async fn auth_middleware(auth_service: Arc<AuthService>, req: Request, next: Next) -> Response {
     // Try Authorization header first
     let token = req
@@ -36,6 +61,13 @@ pub async fn auth_middleware(auth_service: Arc<AuthService>, req: Request, next:
         match auth_service.verify_token(&token) {
             Ok(claims) => {
                 let mut req = req;
+                if let Some(root) = req.extensions().get::<Arc<Context>>().cloned() {
+                    let scoped = apply_jwt_scope(&root, &claims);
+                    if let Some(tc) = scoped.get::<TenantContext>() {
+                        req.extensions_mut().insert((*tc).clone());
+                    }
+                    req.extensions_mut().insert(scoped);
+                }
                 req.extensions_mut().insert(claims);
                 return next.run(req).await;
             }
@@ -426,4 +458,71 @@ mod tests {
         }
     }
 
+    fn sample_claims(sub: &str, tenant_id: Option<&str>) -> Claims {
+        Claims {
+            sub: sub.into(),
+            email: "u@example.com".into(),
+            exp: 4_000_000_000,
+            iat: 1_700_000_000,
+            jti: "jti-1".into(),
+            tenant_id: tenant_id.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn jwt_tenant_claims_open_realm_then_intercept() {
+        let ctx = Context::new_root();
+        ctx.provide(ares_store::TenantRealms::new(
+            std::any::TypeId::of::<ares_tools::Tools>(),
+            std::any::TypeId::of::<ares_agent::Execute>(),
+        ));
+        let claims = sample_claims("user-1", Some("acme"));
+        let scoped = apply_jwt_scope(&ctx, &claims);
+        assert_eq!(
+            scoped
+                .get::<TenantContext>()
+                .expect("TenantContext intercept")
+                .tenant_id,
+            "acme"
+        );
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<ares_tools::Tools>())
+                .as_deref(),
+            Some("acme")
+        );
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<ares_agent::Execute>())
+                .as_deref(),
+            Some("acme")
+        );
+        let realm = ctx
+            .get::<ares_store::TenantRealms>()
+            .expect("TenantRealms")
+            .open(&ctx, "acme");
+        assert!(
+            realm.get::<TenantContext>().is_none(),
+            "cached realm must stay intercept-free"
+        );
+    }
+
+    #[test]
+    fn jwt_user_claims_isolate_without_dummy_tenant_context() {
+        let ctx = Context::new_root();
+        let scoped = apply_jwt_scope(&ctx, &sample_claims("user-1", None));
+        assert!(scoped.get::<TenantContext>().is_none());
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<ares_agent::Execute>())
+                .as_deref(),
+            Some("user:user-1")
+        );
+        assert_eq!(
+            scoped
+                .isolate_label(std::any::TypeId::of::<ares_tools::Tools>())
+                .as_deref(),
+            Some("user:user-1")
+        );
+    }
 }

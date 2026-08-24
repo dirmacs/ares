@@ -21,6 +21,10 @@ pub struct Context {
     isolate: RwLock<HashMap<TypeId, Symbol>>,
     intercept: RwLock<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
     versions: RwLock<HashMap<TypeId, u64>>,
+    /// Semantic peer-dependency versions declared alongside a value by
+    /// [`Context::provide_versioned`]. Legacy `provide` paths keep this map
+    /// empty, so an absent entry reads as provider version 0.
+    provided_versions: RwLock<HashMap<TypeId, u64>>,
     // Providers installed by a registration fiber are hidden while that fiber
     // is inactive, reloading, or failed. Direct `provide` values remain
     // permissive for existing root/test APIs.
@@ -67,6 +71,7 @@ impl Context {
             isolate: RwLock::new(HashMap::new()),
             intercept: RwLock::new(HashMap::new()),
             versions: RwLock::new(HashMap::new()),
+            provided_versions: RwLock::new(HashMap::new()),
             owners: RwLock::new(HashMap::new()),
             fiber: Arc::new(Fiber::new()),
             parent: None,
@@ -80,6 +85,7 @@ impl Context {
             isolate: RwLock::new(HashMap::new()),
             intercept: RwLock::new(HashMap::new()),
             versions: RwLock::new(HashMap::new()),
+            provided_versions: RwLock::new(HashMap::new()),
             owners: RwLock::new(HashMap::new()),
             fiber: Arc::new(Fiber::new()),
             parent: Some(self.clone()),
@@ -95,6 +101,7 @@ impl Context {
             isolate: RwLock::new(parent_isolate),
             intercept: RwLock::new(HashMap::new()),
             versions: RwLock::new(HashMap::new()),
+            provided_versions: RwLock::new(HashMap::new()),
             owners: RwLock::new(HashMap::new()),
             fiber: Arc::new(Fiber::new()),
             parent: Some(self.clone()),
@@ -115,10 +122,62 @@ impl Context {
         child
     }
 
+    /// Semantic peer-dependency versioning scheme (paper §open-problems,
+    /// peer dependencies).
+    ///
+    /// A provider's version is a plain `u64`. The **major** component lives in
+    /// the high bits: `major(v) = v / 100_000`, and the **minimum compatible
+    /// floor** is the remainder `v % 100_000` within that major. An inject
+    /// constrained with `requirement = M * 100_000 + f` is satisfied by a
+    /// provider of version `p` if and only if
+    ///
+    /// * the provider exists and is available, and
+    /// * `major(p) == major(requirement)` (same-major compatibility — peer
+    ///   dependencies never bind across a breaking boundary), and
+    /// * `p >= requirement` (the provider is at least the requested floor;
+    ///   under equal majors this is exactly "remainder >= floor").
+    ///
+    /// Any mismatch leaves the inject **unsatisfied**: the dependent fiber
+    /// goes, and stays, `Inactive` rather than silently binding a wrong
+    /// version. Providers installed through legacy [`Self::provide`] carry
+    /// version 0, so they satisfy only unconstrained injects; migrate them to
+    /// [`Self::provide_versioned`] to opt into constraint matching.
+    pub const VERSION_MAJOR_SCALE: u64 = 100_000;
+
+    /// Provide `value` under `T` together with a semantic peer-dependency
+    /// version. See the [`Self::VERSION_MAJOR_SCALE`] documentation for the
+    /// exact satisfaction scheme. Ownership/undo semantics are identical to
+    /// [`Self::provide`].
+    pub fn provide_versioned<T: Any + Send + Sync>(
+        self: &Arc<Self>,
+        value: T,
+        version: u64,
+    ) -> Arc<T> {
+        let owner = self.active_provider_fiber();
+        self.provide_impl(Arc::new(value), owner.as_ref(), Some(version))
+    }
+
+    /// The semantic peer-dependency version recorded for `tid`, walking the
+    /// parent chain like [`Self::get_version`]. Returns 0 when no value was
+    /// provided or when it was installed through an unversioned path.
+    ///
+    /// Distinct from [`Self::get_version`], which counts structural store
+    /// mutations of `tid` and drives epoch strings; this reads the declared
+    /// compatibility contract used by version-constrained injects.
+    pub fn provider_version(&self, tid: TypeId) -> u64 {
+        if let Some(v) = self.provided_versions.read().get(&tid) {
+            return *v;
+        }
+        if let Some(parent) = &self.parent {
+            return parent.provider_version(tid);
+        }
+        0
+    }
+
     // Direct providers are owned by this context's fiber for compatibility.
     pub fn provide<T: Service>(self: &Arc<Self>, svc: T) -> Arc<T> {
         let owner = self.active_provider_fiber();
-        self.provide_impl(Arc::new(svc), owner.as_ref())
+        self.provide_impl(Arc::new(svc), owner.as_ref(), None)
     }
 
     /// Install a provider and record its undo on an explicit registration
@@ -129,13 +188,23 @@ impl Context {
         svc: Arc<T>,
         owner: &Arc<Fiber>,
     ) -> Arc<T> {
-        self.provide_impl(svc, Some(owner))
+        self.provide_impl(svc, Some(owner), None)
     }
 
-    fn provide_impl<T: Service>(
+    /// Install a service value in this context's store.
+    ///
+    /// `semantic_version` carries the peer-dependency contract from
+    /// [`Context::provide_versioned`]: `Some(v)` records `v` in the
+    /// [`Self::provided_versions`] map (visible to [`Self::provider_version`]
+    /// and to inject satisfaction checks), `None` clears any entry so legacy
+    /// `provide` paths read as provider version 0. This is independent of the
+    /// structural mutation counter in `versions`, which keeps ticking on every
+    /// store change.
+    fn provide_impl<T: Any + Send + Sync>(
         self: &Arc<Self>,
         svc: Arc<T>,
         owner: Option<&Arc<Fiber>>,
+        semantic_version: Option<u64>,
     ) -> Arc<T> {
         let tid = TypeId::of::<T>();
         let any: Arc<dyn Any + Send + Sync> = svc.clone();
@@ -154,6 +223,10 @@ impl Context {
             let mut versions = self.versions.write();
             *versions.entry(tid).or_insert(0) += 1;
         }
+        let prev_semantic = match semantic_version {
+            Some(v) => self.provided_versions.write().insert(tid, v),
+            None => self.provided_versions.write().remove(&tid),
+        };
         if let Some(reflect) = self.get::<ReflectService>() {
             reflect.notify(tid);
         }
@@ -181,6 +254,17 @@ impl Context {
                         *v = v.saturating_sub(1);
                         if *v == 0 {
                             versions.remove(&tid);
+                        }
+                    }
+                    // Restore the semantic peer-version entry the provide
+                    // replaced (or clear it when none existed), mirroring the
+                    // store/owners LIFO discipline.
+                    match prev_semantic {
+                        Some(v) => {
+                            ctx.provided_versions.write().insert(tid, v);
+                        }
+                        None => {
+                            ctx.provided_versions.write().remove(&tid);
                         }
                     }
                 }
@@ -519,7 +603,7 @@ impl Context {
 
     pub fn provide_arc<T: Service>(self: &Arc<Self>, svc: Arc<T>) -> Arc<T> {
         let owner = self.active_provider_fiber();
-        self.provide_impl(svc, owner.as_ref())
+        self.provide_impl(svc, owner.as_ref(), None)
     }
 
     pub fn fiber(&self) -> Arc<Fiber> {

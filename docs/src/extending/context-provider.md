@@ -2,6 +2,8 @@
 
 ARES provides the `ContextProvider` trait. Extension crates implement it to inject external context into every agent call before the LLM invocation.
 
+> **Scope:** this trait is one focused hook, not the general extension mechanism of ARES. The general mechanism is the Cordis plugin model: implement `Plugin`, register through inventory factories or loader entries, and provide services on the typed `Context` (see [Platform architecture](../platform/architecture.md)). Use `ContextProvider` when your only need is pre-LLM context injection.
+
 ## How it works
 
 Before every LLM call, ARES calls `get_context(agent_name, tenant_id)` on the configured provider. If it returns `Some(context)`, ARES prepends the context to the system prompt of the agent.

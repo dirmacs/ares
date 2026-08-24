@@ -212,10 +212,7 @@ mod tests {
             enabled: false,
             description: Some("Custom web search".into()),
             timeout_secs: 45,
-            extra: HashMap::from([(
-                "region".to_string(),
-                toml::Value::String("us".to_string()),
-            )]),
+            extra: HashMap::from([("region".to_string(), toml::Value::String("us".to_string()))]),
         };
 
         let encoded = serde_json::to_string(&tool).unwrap();

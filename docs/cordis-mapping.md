@@ -579,3 +579,31 @@ Semantics: the payload arrives as an object map (plain property access). Returni
 ### HMR resolution
 
 The §10/§11 "defer" decision above is superseded. The dylib path is finished and correct, still opt-in: `apply_plugin_so` copies the library to a process-unique sibling (`<stem>.<pid>.<seq>.hmr-load`) before dlopen — glibc caches handles by path, so without this a rebuilt `.so` would never swap — and `HmrLibrary::drop` removes the copy after dlclose (best effort). Watcher hook `apply_plugin_so_if_dylib` benefits automatically. Production reload stays watcher + TOML reconcile; enable dylib loading with `--features hmr` only with same-toolchain cdylibs.
+
+---
+
+## 16. Round 5–6 (0.9.x): policy activation, effect removal, lifecycle hardening, composition
+
+### Round 5 — RhaiPolicy production activation
+
+`RhaiListenerConfig` gained `on_error: passthrough | deny` (serde default = passthrough, byte-compatible with round-4 configs). `deny` is fail-closed: a flat-listener script error returns the built-in deny-marker shape instead of the payload; a waterfall-listener error vetoes without calling `next`. Multi-instance policies must use isolate realms (a pass-through handler on a shared Bail chain terminates every dispatch); each realm keeps its own `EventsService`. `config/cordis-entries.toml` ships an ACTIVE `policy-admission-audit` entry logging `scheduler.admit` agent names. The paper's witnessed-effect primitive (`Effect`, `EffectGuard`, `Context::effect`) was DELETED in round 5 — zero users ever; revertibility lives entirely in `Disposable` + Fiber LIFO accumulation.
+
+### Round 6 — Guarded withdrawal (§4.3.1 reliedₙ)
+
+`RegistryService::reliance_count(&(TypeId, label))` derives (never seeds) how many ACTIVE fibers other than the provider resolve a key at its isolate label and declare an inject on it — always current under late `declare_inject`, no stale rows. A per-fiber realms ledger (`FiberId -> Weak<Context>`) captured at registration supplies context for label resolution. `Context::remove<T>` refuses while consumers remain ("guarded withdrawal: N active consumer(s)…"); internal rollback uses `remove_forced` (undo never blocks). Admin retire maps refusal to 409 `{retired:false, reason:"guarded", consumers:N}`.
+
+### Round 6 — Verified hot-swap
+
+`LoaderAction::RebuildFiber` applies the new plugin OUT-OF-BAND on a scratch child context first: failure ⇒ old provider untouched. Success bridges via intercept (new values win instantly), disposes old while the bridge covers stale store rows, promotes peeked values store-first, then drops the bridge — `get::<T>` resolves at every instant (test probes from a concurrent task). Falls back to classic dispose+instantiate (reported `verified=false`) for untracked old fibers, isolated entries, or side-effectful factories (Store migrations run twice across trial+promotion). AppliedAction carries `verified` through admin PUT responses.
+
+### Round 6 — Typed listeners adopted
+
+Scheduler's three prod listeners (`agent.completed` observability, `agent.failed` runtime-control, legacy shim) use `on_typed::<AgentCompletedEvent/AgentFailedEvent>`. rhai_service intentionally stays on the raw Value API (dynamic script maps are its purpose).
+
+### Round 6 — Dependency-cycle detection
+
+`cordis::cycles::{find_dependency_cycle, DependencyGraph}` — colored-DFS over the fiber inject graph with deterministic node ordering; `CycleLedger` maps (TypeId,label)→provider-fiber and entry-id↔fiber so loader-side callers can reconstruct edges without registry internals. Unit-tested for self-loops, 2/3-cycles, nested-behind-prefix, disconnected components, cross-edge false positives.
+
+### Round 6 — Entry composition (@include / @group / ${rhai:})
+
+`cordis::compose` (load-time, before the Loader sees entries): `resolve_includes` splices reserved-sentinel `@include` entries ({path}) recursively with canonical-path cycle guards; `@group` entries flatten nested children in place with id-dedupe checks; `interpolate_config` evaluates whole-value `${rhai: …}` markers against `$entry` metadata using the sandboxed engine and the JSON⇄Dynamic bridge (feature-gated; strings pass through when rhai off). `compose_all` chains include→group→interpolation. Wired examples live commented in `config/cordis-entries.toml`.

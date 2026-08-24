@@ -14,7 +14,7 @@ Version: 0.6.0
 
 ## Executive summary
 
-A.R.E.S (Agentic Retrieval Enhanced Server) is now a local-first, production-ready agentic chatbot server. It supports many LLM providers, tool calling, hybrid TOML + TOON configuration, RAG with a pure-Rust vector store, and a strong test infrastructure.
+A.R.E.S (Agentic Runtime Extensible Server) is now a local-first, production-ready agentic chatbot server. It supports many LLM providers, tool calling, hybrid TOML + TOON configuration, RAG with a pure-Rust vector store, and a strong test infrastructure.
 
 ### Key achievements
 

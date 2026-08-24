@@ -1,0 +1,73 @@
+# Cordis shared service entries — spliced by the "@include" sentinel in
+# cordis-entries.toml (between "store" and "http"). Same [[entry]] schema as
+# the top-level file; order here IS effective boot order within the splice.
+
+[[entry]]
+id = "tools"
+plugin = "Tools"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "llm"
+plugin = "Llm"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "execute"
+plugin = "Execute"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "auth"
+plugin = "AuthService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "scheduler"
+plugin = "SchedulerService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "pipeline"
+plugin = "PipelineService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "trigger"
+plugin = "TriggerService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "health"
+plugin = "HealthJobService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "calculator"
+plugin = "CalculatorService"
+disabled = false
+
+[entry.config]
+
+[[entry]]
+id = "probe"
+plugin = "noop_probe"
+disabled = false
+
+[entry.config]

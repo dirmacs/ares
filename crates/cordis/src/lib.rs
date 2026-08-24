@@ -125,6 +125,8 @@ pub use loader::{
 pub mod cycles;
 pub use cycles::{find_dependency_cycle, DependencyGraph};
 
+pub mod metatheory;
+
 pub mod hmr;
 pub mod registry;
 pub mod watcher;

@@ -65,7 +65,7 @@ ares = "0.9"
 Basic usage (default features: no axum, no postgres, no engines):
 
 ```rust
-use ares::{Context, Execute, Tools, Llm};
+use ares_server::{Context, Execute, Tools, Llm};
 ```
 
 `ares` with default features does not depend on axum. Enable `http` to pull `ares-http`. `ProviderRegistry` remains on the constructor path for `AgentRegistry` / `Llm` until those take `Llm` only.
@@ -509,7 +509,7 @@ ARES is designed as a library. The default `ares` facade injects `Execute`, `Too
 ### Library (no axum)
 
 ```rust
-use ares::{Context, Execute, Tools, Llm, register_plugins};
+use ares_server::{Context, Execute, Tools, Llm, register_plugins};
 use cordis::PluginRegistry;
 
 let ctx = Context::new_root();

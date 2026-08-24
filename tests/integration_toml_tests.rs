@@ -160,11 +160,19 @@ fn test_agent_registry_from_config() {
     let config = create_test_config();
 
     // Create registries
-    let provider_registry = Arc::new(ProviderRegistry::from_config(config.providers.clone(), config.models.clone(), config.nvidia.as_ref()));
+    let provider_registry = Arc::new(ProviderRegistry::from_config(
+        config.providers.clone(),
+        config.models.clone(),
+        config.nvidia.as_ref(),
+    ));
     let tool_registry = Arc::new(Tools::from_static([]));
 
     // Create agent registry from config
-    let agent_registry = AgentRegistry::from_config(config.agents.clone(), provider_registry, tool_registry.clone());
+    let agent_registry = AgentRegistry::from_config(
+        config.agents.clone(),
+        provider_registry,
+        tool_registry.clone(),
+    );
 
     // Verify agents are registered
     assert!(agent_registry.has_agent("test-agent"));
@@ -184,7 +192,11 @@ fn test_provider_registry_from_config() {
     use ares_llm::ProviderRegistry;
 
     let config = create_test_config();
-    let registry = ProviderRegistry::from_config(config.providers.clone(), config.models.clone(), config.nvidia.as_ref());
+    let registry = ProviderRegistry::from_config(
+        config.providers.clone(),
+        config.models.clone(),
+        config.nvidia.as_ref(),
+    );
 
     // Should have the test provider registered
     assert!(registry.has_model("test-model"));
@@ -192,18 +204,22 @@ fn test_provider_registry_from_config() {
 
 #[tokio::test]
 async fn test_workflow_engine_from_config() {
-    use ares_agent::AgentRegistry;
-    use ares_llm::ProviderRegistry;
-    use ares_tools::Tools;
     use ares_agent::workflows::WorkflowEngine;
+    use ares_agent::AgentRegistry;
     use ares_http::{AresConfigManager, DynamicConfigManager};
     use ares_llm::ConfigBasedLLMFactory;
+    use ares_llm::ProviderRegistry;
+    use ares_tools::Tools;
     use cordis::Context;
 
     let config = create_test_config();
 
     // Create registries
-    let provider_registry = Arc::new(ProviderRegistry::from_config(config.providers.clone(), config.models.clone(), config.nvidia.as_ref()));
+    let provider_registry = Arc::new(ProviderRegistry::from_config(
+        config.providers.clone(),
+        config.models.clone(),
+        config.nvidia.as_ref(),
+    ));
     let tool_registry = Arc::new(Tools::from_static([]));
     let agent_registry = Arc::new(AgentRegistry::from_config(
         config.agents.clone(),
@@ -265,13 +281,17 @@ async fn test_workflow_engine_from_config() {
     state.provide(ares_http::api::handlers::deploy::DeployRegistry::default());
     state.provide(ares_http::api::handlers::loops::LoopRegistry::new());
     state.provide(ares_agent::EmergencyStop::new(false));
-    state.provide(ares_agent::ContextProviderHandle::new(std::sync::Arc::new(ares_agent::context_provider::NoOpContextProvider)));
+    state.provide(ares_agent::ContextProviderHandle::new(std::sync::Arc::new(
+        ares_agent::context_provider::NoOpContextProvider,
+    )));
     state.provide(ares_store::FleetSecrets::new());
     state.provide(ares_http::active_runs::ActiveRuns::new());
     state.provide_arc(skill_engine);
 
-    // Create workflow engine
-    let engine = WorkflowEngine::new(state);
+    // Create workflow engine — feed the config's workflows the way the
+    // prod handler does (AresConfigManager.config().workflows).
+    let engine =
+        WorkflowEngine::with_config(state.clone(), config_manager.config().workflows.clone());
 
     // Verify workflow is available
     let workflows = engine.available_workflows();
@@ -336,16 +356,20 @@ fn test_missing_reference_rejected() {
         },
     );
 
+    // Since the dynamic NVIDIA catalog (2026-08-23), validate() only WARNS
+    // about agent->model references not in the static [models] table — they
+    // resolve against the live catalog at runtime. The strict guarantee moved
+    // to validate_with_warnings-style checks; here we assert the config is
+    // ACCEPTED and the reference survives for the runtime resolver.
     let result = config.validate();
-    assert!(result.is_err(), "Should reject missing model reference");
-
-    match result {
-        Err(ConfigError::MissingModel(model, agent)) => {
-            assert_eq!(model, "nonexistent-model");
-            assert_eq!(agent, "broken-agent");
-        }
-        _ => panic!("Expected MissingModel error"),
-    }
+    assert!(
+        result.is_ok(),
+        "missing static model reference must NOT fail validation (runtime-resolved)"
+    );
+    assert_eq!(
+        config.agents["broken-agent"].model, "nonexistent-model",
+        "the unresolved reference must survive for runtime resolution"
+    );
 }
 
 #[test]
@@ -394,10 +418,17 @@ fn test_full_integration_config_to_agent() {
     let config = create_test_config();
 
     // Create full stack of registries
-    let provider_registry = Arc::new(ProviderRegistry::from_config(config.providers.clone(), config.models.clone(), config.nvidia.as_ref()));
+    let provider_registry = Arc::new(ProviderRegistry::from_config(
+        config.providers.clone(),
+        config.models.clone(),
+        config.nvidia.as_ref(),
+    ));
     let tool_registry = Arc::new(Tools::from_static([]));
-    let agent_registry =
-        AgentRegistry::from_config(config.agents.clone(), provider_registry.clone(), tool_registry.clone());
+    let agent_registry = AgentRegistry::from_config(
+        config.agents.clone(),
+        provider_registry.clone(),
+        tool_registry.clone(),
+    );
 
     // Verify the full chain works
     // 1. Config has agent

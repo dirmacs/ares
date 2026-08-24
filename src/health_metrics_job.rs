@@ -6,7 +6,7 @@
 
 use ares_store::run_history::{AgentHealthMetrics, ModelHealthMetrics, RunHistoryStore};
 use rust_decimal::Decimal;
-use sqlx::{PgPool, Row, postgres::PgRow};
+use sqlx::{postgres::PgRow, PgPool, Row};
 use std::time::Duration;
 use tokio::time::interval;
 use uuid::Uuid;

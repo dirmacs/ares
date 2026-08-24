@@ -18,13 +18,8 @@ impl ExecutionAgentRunner {
 
     /// Provide Execute::new() if missing, then wrap.
     pub fn attach(ctx: Arc<Context>) -> Self {
-        if ctx
-            .get::<ares_agent::execution::Execute>()
-            .is_none()
-        {
-            ctx.provide_arc(Arc::new(
-                ares_agent::execution::Execute::new(),
-            ));
+        if ctx.get::<ares_agent::execution::Execute>().is_none() {
+            ctx.provide_arc(Arc::new(ares_agent::execution::Execute::new()));
         }
         Self { ctx }
     }
@@ -60,10 +55,7 @@ impl ares_mcp::AgentRunner for ExecutionAgentRunner {
             history: vec![],
             ctx_provider: None,
         };
-        let exec_result = exec
-            .run(&req, &self.ctx)
-            .await
-            .map_err(|e| e.to_string())?;
+        let exec_result = exec.run(&req, &self.ctx).await.map_err(|e| e.to_string())?;
         Ok(ares_mcp::tools::RunAgentOutput {
             response: exec_result.response.content,
             agent: input.agent_name.clone(),

@@ -196,7 +196,8 @@ use ::cordis::Service;
 /// outcomes; 503 when loader state is missing (library deployments without a
 /// file program).
 /// Shared apply flow behind the reload endpoint and the entries mutations:
-/// clone the current tree, diff-apply the on-disk file through
+/// parse + compose the on-disk file (`@include` splices, `@group` flattening,
+/// `${rhai: …}` interpolation), diff-apply it through
 /// [`cordis::loader::Loader::reload_current`], then store the updated tree
 /// back into `CurrentEntries`.
 ///
@@ -227,8 +228,44 @@ async fn apply_entries_from_disk(
         ));
     };
 
+    // Compose the freshly parsed file (includes/groups/interpolation) before
+    // diffing; on composition failure fall back to the raw entries so a bad
+    // include cannot brick the admin reload path either.
+    let desired = match Loader::load_from_file(&current_entries.path) {
+        Ok(mut tree) => {
+            if let Err(e) = ::cordis::compose_all(
+                &mut tree.0,
+                current_entries
+                    .path
+                    .parent()
+                    .unwrap_or(std::path::Path::new(".")),
+            ) {
+                tracing::error!(
+                    path = %current_entries.path.display(),
+                    error = %e,
+                    "Cordis compose failed on admin reload; proceeding with raw entries"
+                );
+                tree = Loader::load_from_file(&current_entries.path).unwrap_or_default();
+            }
+            tree
+        }
+        Err(_) => {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                serde_json::json!({
+                    "reloaded": false,
+                    "error": format!(
+                        "failed to read or parse {}",
+                        current_entries.path.display()
+                    ),
+                }),
+            ))
+        }
+    };
+
     let mut current = current_entries.tree.lock().expect("entries lock").clone();
-    let actions = Loader::reload_current(ctx, &current_entries.path, &mut current, &journal).await;
+    let actions =
+        Loader::reload_current(ctx, &current_entries.path, &mut current, &desired, &journal).await;
 
     let Some(actions) = actions else {
         return Err((
@@ -394,12 +431,17 @@ pub async fn list_cordis_entries(
         .map(|e| serde_json::to_value(e).unwrap_or(serde_json::Value::Null))
         .collect();
 
+    // Post-apply cycle report (additive response key): every fiber resolved to
+    // its owning entry id; empty for a healthy graph.
+    let dependency_cycles: Vec<Vec<String>> = cordis::loader::Loader::detect_cycle_entry_ids(&ctx);
+
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({
             "current": current_json,
             "pending": pending,
             "path": current_entries.path.display().to_string(),
+            "dependency_cycles": dependency_cycles,
         })),
     ))
 }
@@ -912,6 +954,32 @@ mod tests {
                 .iter()
                 .any(|p| p["id"] == "calc2" && p["action"] == "Begin"),
             "pending diff should contain Begin for calc2, got {pending:?}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The listing always carries `dependency_cycles`; a healthy (acyclic)
+    /// graph — including library deployments without ledger state — reports
+    /// an empty array.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn list_cordis_entries_reports_dependency_cycles_key() {
+        use cordis::loader::EntryTree;
+
+        let (ctx, dir) = build_entries_fixture(
+            "list-cycles",
+            CALC_TOML_BLOCK,
+            vec![probe_entry("calc", false)],
+        );
+
+        let (status, Json(body)) = list_cordis_entries(State(ctx.clone())).await.expect("resp");
+        assert_eq!(status, StatusCode::OK);
+        let cycles = body["dependency_cycles"]
+            .as_array()
+            .expect("dependency_cycles key present");
+        assert!(
+            cycles.is_empty(),
+            "acyclic fixture must report an empty array, got {cycles:?}"
         );
 
         std::fs::remove_dir_all(&dir).ok();

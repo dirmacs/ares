@@ -135,6 +135,7 @@ pub use registry::{Plugin, RegistryService};
 pub mod compose;
 #[cfg(feature = "rhai")]
 pub mod rhai_service;
+pub mod worker;
 
 #[cfg(feature = "rhai")]
 pub use compose::{

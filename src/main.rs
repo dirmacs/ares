@@ -130,6 +130,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         None => {
+            // Supervised mode: this process becomes the daemon. It re-execs
+            // itself as a supervised child (CORDIS_SUPERVISED set) holding
+            // the child's stdin write end; exit 51 respawns, anything else
+            // ends the loop with the child's code surfaced.
+            if cli.supervise && !ares_server::supervisor::is_supervised() {
+                supervise_forever(&cli).await?;
+                return Ok(());
+            }
             // No subcommand - run the server
             #[cfg(feature = "mcp")]
             if cli.mcp {
@@ -1013,6 +1021,58 @@ async fn run_server(
 
     tracing::info!("Server shut down gracefully");
     Ok(())
+}
+
+/// Daemon half of the supervised-worker protocol: re-exec this binary as a
+/// child with CORDIS_SUPERVISED set, hold its stdin write end, and interpret
+/// exit codes — 51 respawns (bounded against rapid loops), anything else
+/// ends supervision and the process returns the child's code. Dropping the
+/// child's stdin signals EOF so the child tears down gracefully even after
+/// a daemon SIGKILL.
+#[cfg(feature = "postgres")]
+async fn supervise_forever(_cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::Arc;
+
+    let held_stdin: Arc<std::sync::Mutex<Option<std::process::ChildStdin>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let last_code = Arc::new(AtomicI32::new(0));
+    let result = {
+        let held_stdin = held_stdin.clone();
+        let last_code = last_code.clone();
+        ares_server::supervisor::supervise(move || {
+            // Clone the Arcs into each future; the closure itself stays Fn.
+            let held_stdin = held_stdin.clone();
+            let last_code = last_code.clone();
+            async move {
+                // Release the previous child's stdin first: EOF tells it to
+                // stop before we spawn its replacement.
+                held_stdin.lock().expect("stdin guard").take();
+                match ares_server::supervisor::spawn_self_supervised() {
+                    Ok(mut sc) => {
+                        let status = sc.child.wait();
+                        *held_stdin.lock().expect("stdin guard") = Some(sc.stdin);
+                        let code = status.ok().and_then(|s| s.code()).unwrap_or(0);
+                        last_code.store(code, Ordering::SeqCst);
+                        Some(code)
+                    }
+                    Err(e) => {
+                        tracing::error!("failed to spawn supervised worker: {e}");
+                        last_code.store(cordis::worker::EXIT_BOOT, Ordering::SeqCst);
+                        Some(cordis::worker::EXIT_BOOT)
+                    }
+                }
+            }
+        })
+        .await
+    };
+    // Final child still running (clean quit path): close stdin, wait it out.
+    drop(held_stdin);
+    if let Err(e) = result {
+        eprintln!("supervisor: {e}");
+        return Err(e.into());
+    }
+    std::process::exit(last_code.load(Ordering::SeqCst) & 0xff)
 }
 
 /// Signal handler for graceful shutdown.

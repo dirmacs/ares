@@ -46,6 +46,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub mcp: bool,
 
+    /// Run the server under the built-in supervisor: respawn on hot-restart
+    /// exits (51), stop on clean exits, surface boot failures (53) non-zero
+    #[arg(long, global = true)]
+    pub supervise: bool,
+
     /// Subcommand to execute
     #[command(subcommand)]
     pub command: Option<Commands>,

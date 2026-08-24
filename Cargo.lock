@@ -218,23 +218,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ares"
-version = "0.9.1"
-dependencies = [
- "ares-agent",
- "ares-cordis",
- "ares-http",
- "ares-llm",
- "ares-store",
- "ares-tools",
- "ares-types",
- "async-trait",
- "futures",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "ares-agent"
 version = "0.9.1"
 dependencies = [
@@ -417,7 +400,6 @@ version = "0.9.1"
 dependencies = [
  "anyhow",
  "arc-swap",
- "ares",
  "ares-agent",
  "ares-cordis",
  "ares-http",

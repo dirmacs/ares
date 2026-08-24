@@ -1,5 +1,7 @@
 # Deprecated agents migration guide
 
+> **STATUS (2026-08-24):** Historical document — the `ares::agents::*` API it references belonged to the pre-round-4 facade crate `ares` (deleted; the crates.io name is squatted). Current entry point: the `ares_server` lib (see README "Use as a library").
+
 Version: 0.2.0 
 Date: 2024-12-15 
 Updated: 2024-12-19 (TOON format support)

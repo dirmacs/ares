@@ -7,10 +7,10 @@
 //! use ares_server::{Context, Execute, Tools, Llm};
 //! ```
 //!
-//! The `ares-server` binary (same package) binds the Axum router when the
-//! `http` feature is enabled. Default features are the server defaults:
-//! postgres, openai, ares-vector, mcp, inventory, rhai-policy. For an
-//! embed-only build use `--no-default-features`.
+//! The `ares-server` binary (same package) binds the Axum router; the HTTP
+//! stack is an unconditional dependency of this package. Default features are
+//! the server defaults: postgres, openai, ares-vector, mcp, inventory,
+//! rhai-policy. For an embed-only build use `--no-default-features`.
 //!
 //! Public surface: [`Context`], [`Execute`], [`Tools`], [`Llm`], [`Store`]
 //! (postgres), [`Plugin`], [`Loader`], [`Dispatch`], [`register_plugins`].
@@ -31,13 +31,11 @@ pub use ares_store::Store;
 
 /// Register capability-crate loader factories on `reg`.
 ///
-/// `ares_http` is included only when the `http` feature is enabled.
 pub fn register_plugins(reg: &PluginRegistry) {
     cordis::register_plugins(reg);
     ares_store::register_plugins(reg);
     ares_tools::register_plugins(reg);
     ares_llm::register_plugins(reg);
     ares_agent::register_plugins(reg);
-    #[cfg(feature = "http")]
     ares_http::register_plugins(reg);
 }

@@ -607,3 +607,19 @@ Scheduler's three prod listeners (`agent.completed` observability, `agent.failed
 ### Round 6 — Entry composition (@include / @group / ${rhai:})
 
 `cordis::compose` (load-time, before the Loader sees entries): `resolve_includes` splices reserved-sentinel `@include` entries ({path}) recursively with canonical-path cycle guards; `@group` entries flatten nested children in place with id-dedupe checks; `interpolate_config` evaluates whole-value `${rhai: …}` markers against `$entry` metadata using the sandboxed engine and the JSON⇄Dynamic bridge (feature-gated; strings pass through when rhai off). `compose_all` chains include→group→interpolation. Wired examples live commented in `config/cordis-entries.toml`.
+
+---
+
+## 17. Round 7 (0.9.x): wiring composition and detection, drain-and-shift
+
+### Cycle detection wired
+
+`Loader::apply` now reconstructs the post-apply inject graph via the CycleLedger (fresh-provide diff at `instantiate_entry` records providers; `fiber.injected_type_ids()` + `ctx.isolate_label()` resolve edges) and runs `find_dependency_cycle`. Detection never fails the apply — a found ring logs a warning naming entry ids; `Loader::detect_cycle_entry_ids(&ctx)` queries it, and `GET /admin/cordis/entries` carries an additive `dependency_cycles` key (entry-id rings, empty when healthy).
+
+### Composition wired at boot + reload
+
+Both entry-load sites (boot_loader_program parse, watcher/poll reload via `reload_current(ctx, path, &mut current, desired_composed, &journal)` — callers own parsing+composition now) run `cordis::compose_all` (@include splice → @group flatten → `${rhai: …}` interpolation) with the entries file's parent as base dir. Fail-open: composition errors log loudly naming path+error and proceed with the RAW entries. Interpolation scope variable is `entry` (rhai reserves `$`). Commented examples live in `config/cordis-entries.toml`.
+
+### Drain-and-shift provider replacement
+
+`Loader::replace_provider(ctx, plugin_name, config, journal)`: trial new provider out-of-band → intercept bridge → dispose old → promote store-first → fresh Active fiber journaled. Zero absence window (concurrent-get probe test). Shared tail extracted into SwapPromotion used by both verified rebuild and replace; fixing it closed a latent double-swap bug (promoted values had no undo, blocking any second swap). replace_provider bypasses Context::remove's guard legitimately — the bridge guarantees continuous resolution, which is exactly what the guard protects; genuine retire keeps the guarded path. Root-realm only; no dispose-then-rebuild fallback.

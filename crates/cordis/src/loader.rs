@@ -826,57 +826,167 @@ impl Loader {
                 .map(|_| false);
         }
 
-        // Preserve the entry-intercept overlay exactly as instantiate_entry
-        // would have installed it.
-        if !entry.intercept.is_empty() {
-            ctx.bind_intercept(EntryIntercept(entry.intercept.clone()));
+        let new_fid = SwapPromotion {
+            ctx,
+            registry: registry.as_ref(),
+            scratch: &scratch,
+            epoch: &entry.id,
+            intercept_overlay: Some(&entry.intercept),
+            built: &built,
+            replaced: &replaced,
+            old_fiber,
+            old_fid,
         }
-
-        // Bridge: intercept overrides win over store lookups, so installing
-        // here makes the new instances resolvable instantly.
-        for tid in &replaced {
-            if let Some(any) = scratch.get_untyped(*tid) {
-                ctx.bind_intercept_untyped(*tid, any);
-            }
-        }
-
-        // Retire the old registration fiber: its undos clear the stale store
-        // entries while the bridge keeps serving the new values.
-        old_fiber.dispose().await;
-        registry.remove(old_fid);
-
-        // Promote bridge values into the store. Peek-before-remove keeps every
-        // lookup satisfied at every instant (store insert precedes intercept
-        // removal, and intercept is consulted first).
-        for tid in &replaced {
-            if let Some(any) = ctx.peek_intercept_untyped(*tid) {
-                let _ = ctx.provide_untyped(*tid, any);
-                ctx.remove_intercept_untyped(*tid);
-            }
-        }
-        // Types the new build introduces that the old one did not provide are
-        // simply added to the store.
-        for tid in &built {
-            if replaced.contains(tid) || ctx.get_untyped(*tid).is_some() {
-                continue;
-            }
-            if let Some(any) = scratch.get_untyped(*tid) {
-                let _ = ctx.provide_untyped(*tid, any);
-            }
-        }
-
-        // Fresh registration fiber owns the swapped-in provider.
-        let fiber = std::sync::Arc::new(crate::Fiber::new());
-        fiber.set_state(crate::FiberState::Active {
-            epoch: entry.id.clone(),
-        });
-        let new_fid = registry.track_fiber(fiber);
-        registry.track_fiber_in_realm(new_fid, ctx);
+        .run()
+        .await;
         journal.upsert(id, &entry.plugin, entry.config.clone(), Some(new_fid));
         tracing::info!(entry_id = %id, plugin = %plugin_name, old_fiber_id = %old_fid,
             new_fiber_id = %new_fid, swap_mode = "verified",
             "Loader: hot-swapped provider with verification");
         Ok(true)
+    }
+
+    /// Broker a rolling provider replacement with zero absence window
+    /// (paper §6 semantics).
+    ///
+    /// Resolves the live registration from the [`crate::LoaderJournal`] by
+    /// plugin label (first journaled entry whose `plugin` matches — the same
+    /// label also selects the replacement factory from the
+    /// [`crate::PluginRegistry`], mirroring how admins name a running
+    /// provider), trials that factory with the NEW config OUT-OF-BAND on a
+    /// scratch child context exactly like [`Self::rebuild_fiber_verified`],
+    /// and only then swaps: the new
+    /// instances are bridged in as intercept overrides (intercept lookups
+    /// precede store lookups, so `get` keeps resolving), the old fiber
+    /// retires, and the bridged values are promoted into the store under a
+    /// fresh registration fiber before the bridge drops. Consumers observe no
+    /// gap: every lookup stays satisfied at every instant because the key
+    /// never becomes unprovided.
+    ///
+    /// The old fiber is disposed DIRECTLY through its registration fiber
+    /// instead of going through [`Context::remove`] — this deliberately
+    /// bypasses the public guarded-withdrawal check. The guard exists to
+    /// refuse removals that would leave active consumers UNRESOLVED; here
+    /// resolution stays continuous by construction (the bridge is installed
+    /// before disposal), which is precisely why the broker may bypass it.
+    /// Genuine withdrawals (the admin retire endpoint) must keep using the
+    /// guarded path.
+    ///
+    /// Failure policy: a failing trial returns `Err` and leaves the old
+    /// provider serving untouched; the journal advances only on success
+    /// (generation bump + new fiber id).
+    ///
+    /// Root-realm only for now: if the trial produces services carrying an
+    /// isolate label, the call fails with [`CordisError::Configuration`]
+    /// naming the limitation — isolated lookups skip intercept overrides, so
+    /// the bridge mechanism cannot cover them.
+    pub async fn replace_provider(
+        &self,
+        ctx: &Arc<crate::Context>,
+        plugin_name: &str,
+        config: serde_json::Value,
+        journal: &crate::LoaderJournal,
+    ) -> Result<crate::FiberId, CordisError> {
+        // Resolve the old registration by plugin label from the journal.
+        let (id, record) = journal
+            .records
+            .read()
+            .iter()
+            .find(|(_, rec)| rec.plugin == plugin_name)
+            .map(|(id, rec)| (id.clone(), rec.clone()))
+            .ok_or_else(|| {
+                CordisError::Configuration(format!(
+                    "replace_provider: no journaled entry for plugin '{plugin_name}'"
+                ))
+            })?;
+        let old_fid = record.fiber_id.ok_or_else(|| {
+            CordisError::Configuration(format!(
+                "replace_provider: entry '{id}' has no tracked fiber"
+            ))
+        })?;
+        let registry = ctx
+            .get::<crate::RegistryService>()
+            .ok_or_else(|| CordisError::Configuration("RegistryService missing".into()))?;
+        let old_fiber = registry.get_fiber(old_fid).ok_or_else(|| {
+            CordisError::Configuration(format!(
+                "replace_provider: fiber {old_fid} for entry '{id}' not tracked"
+            ))
+        })?;
+
+        // Out-of-band trial: identical discipline to rebuild_fiber_verified —
+        // the candidate is built on an empty scratch child of the live
+        // context, so a failing factory cannot touch the serving provider.
+        let scratch = ctx.extend();
+        let Some(plugin_registry) = scratch.get::<crate::PluginRegistry>() else {
+            return Err(CordisError::Configuration("PluginRegistry missing".into()));
+        };
+        let Some(factory) = plugin_registry.get(plugin_name) else {
+            return Err(CordisError::Configuration(format!(
+                "no factory registered for plugin '{plugin_name}'"
+            )));
+        };
+        let trial_fiber = std::sync::Arc::new(crate::Fiber::new());
+        trial_fiber.set_state(crate::FiberState::Loading);
+        let trial = scratch.with_provider_fiber(&trial_fiber, || factory(&scratch, &config));
+        // A trial factory calling Context::plugin re-points ReflectService at
+        // the scratch context; restore the authoritative root binding.
+        if let Some(reflect) = ctx.get::<crate::ReflectService>() {
+            reflect.set_context(ctx);
+        }
+        let built: Vec<TypeId> = match trial {
+            Ok(_) => scratch.provided_type_ids(),
+            Err(e) => {
+                tracing::warn!(entry_id = %id, plugin = %plugin_name, error = %e,
+                    "Loader: replace_provider trial failed; old provider kept");
+                return Err(e);
+            }
+        };
+
+        // Root realm only: isolated lookups bypass intercepts, so the bridge
+        // cannot serve them. Nothing has been mutated yet — fail clean.
+        if let Some(isolated) = built
+            .iter()
+            .copied()
+            .find(|tid| ctx.isolate_label(*tid).is_some())
+        {
+            return Err(CordisError::Configuration(format!(
+                "replace_provider: isolated providers not supported yet \
+                 (trial built an isolated service, e.g. {isolated:?})"
+            )));
+        }
+        let replaced: Vec<TypeId> = built
+            .iter()
+            .copied()
+            .filter(|tid| ctx.get_untyped(*tid).is_some())
+            .collect();
+        if replaced.is_empty() {
+            // Unlike rebuild_fiber_verified there is NO dispose-then-rebuild
+            // fallback here: blind disposal is exactly the absence window the
+            // broker exists to eliminate.
+            return Err(CordisError::Configuration(format!(
+                "replace_provider: trial produced no comparable services for '{plugin_name}'"
+            )));
+        }
+
+        let new_fid = SwapPromotion {
+            ctx,
+            registry: registry.as_ref(),
+            scratch: &scratch,
+            epoch: &id,
+            intercept_overlay: None,
+            built: &built,
+            replaced: &replaced,
+            old_fiber,
+            old_fid,
+        }
+        .run()
+        .await;
+
+        journal.upsert(&id, plugin_name, config, Some(new_fid));
+        tracing::info!(entry_id = %id, plugin = %plugin_name, old_fiber_id = %old_fid,
+            new_fiber_id = %new_fid, swap_mode = "verified",
+            "Loader: replace_provider swapped provider with zero absence window");
+        Ok(new_fid)
     }
 
     /// Classic rebuild: dispose the old fiber, then instantiate the entry
@@ -1010,6 +1120,103 @@ impl Loader {
         }
         tracing::info!(entry_id=%entry.id, plugin=%entry.plugin, fiber_id=%fid, "Loader: instantiated plugin");
         Ok(fid)
+    }
+}
+
+/// Shared tail of the verified hot-swap paths ([`Loader::rebuild_fiber_verified`]
+/// and [`Loader::replace_provider`]): bridge → dispose old → promote → fresh
+/// registration fiber.
+///
+/// Ordering guarantees the zero-absence-window invariant:
+/// 1. Intercept overrides for every replaced TypeId are installed FIRST, so
+///    lookups resolve to the new instances immediately.
+/// 2. The old fiber is disposed directly (bypassing the public
+///    guarded-withdrawal check in [`Context::remove`] on purpose): resolution
+///    stays continuous by construction because the bridge already serves the
+///    new values while the disposal undos clear the stale store entries.
+/// 3. Bridge values are promoted into the store peek-before-remove (store
+///    insert precedes intercept removal; intercept is consulted first), so no
+///    lookup ever observes an empty slot.
+/// 4. Types the new build introduces beyond what it replaces are added from
+///    the scratch context.
+/// 5. A fresh `Active` registration fiber is tracked and realm-registered;
+///    the caller journals the swap outcome against its returned fiber id.
+struct SwapPromotion<'a> {
+    ctx: &'a Arc<crate::Context>,
+    registry: &'a crate::RegistryService,
+    scratch: &'a Arc<crate::Context>,
+    /// Epoch label for the new registration fiber (`Active { epoch }`).
+    epoch: &'a str,
+    /// Optional entry-intercept overlay preserved exactly as
+    /// `instantiate_entry` would have installed it (rebuild path only).
+    intercept_overlay: Option<&'a HashMap<String, serde_json::Value>>,
+    /// Every TypeId freshly built in the scratch context.
+    built: &'a [TypeId],
+    /// The subset of `built` currently served by the root context — the
+    /// types this swap replaces.
+    replaced: &'a [TypeId],
+    old_fiber: Arc<crate::Fiber>,
+    old_fid: crate::FiberId,
+}
+
+impl SwapPromotion<'_> {
+    async fn run(&self) -> crate::FiberId {
+        // Preserve the entry-intercept overlay exactly as instantiate_entry
+        // would have installed it.
+        if let Some(overlay) = self.intercept_overlay.filter(|o| !o.is_empty()) {
+            self.ctx.bind_intercept(EntryIntercept(overlay.clone()));
+        }
+
+        // Bridge: intercept overrides win over store lookups, so installing
+        // here makes the new instances resolvable instantly.
+        for tid in self.replaced {
+            if let Some(any) = self.scratch.get_untyped(*tid) {
+                self.ctx.bind_intercept_untyped(*tid, any);
+            }
+        }
+
+        // Retire the old registration fiber: its undos clear the stale store
+        // entries while the bridge keeps serving the new values. This is the
+        // deliberate guarded-withdrawal bypass documented on both callers:
+        // consumers never lose resolution, which is exactly the condition the
+        // guard exists to protect.
+        self.old_fiber.dispose().await;
+        self.registry.remove(self.old_fid);
+
+        // Promote bridge values into the store. Peek-before-remove keeps every
+        // lookup satisfied at every instant (store insert precedes intercept
+        // removal, and intercept is consulted first).
+        for tid in self.replaced {
+            if let Some(any) = self.ctx.peek_intercept_untyped(*tid) {
+                // A previously-promoted swap carries NO disposal undo
+                // (`provide_untyped` bypasses the undo stack), so the retired
+                // fiber cannot clear it. Take any such stale entry first;
+                // the bridge stays up until the new value is inserted, so
+                // lookups never observe a gap.
+                self.ctx.take_untyped(*tid);
+                let _ = self.ctx.provide_untyped(*tid, any);
+                self.ctx.remove_intercept_untyped(*tid);
+            }
+        }
+        // Types the new build introduces that the old one did not provide are
+        // simply added to the store.
+        for tid in self.built {
+            if self.replaced.contains(tid) || self.ctx.get_untyped(*tid).is_some() {
+                continue;
+            }
+            if let Some(any) = self.scratch.get_untyped(*tid) {
+                let _ = self.ctx.provide_untyped(*tid, any);
+            }
+        }
+
+        // Fresh registration fiber owns the swapped-in provider.
+        let fiber = std::sync::Arc::new(crate::Fiber::new());
+        fiber.set_state(crate::FiberState::Active {
+            epoch: self.epoch.to_string(),
+        });
+        let new_fid = self.registry.track_fiber(fiber);
+        self.registry.track_fiber_in_realm(new_fid, self.ctx);
+        new_fid
     }
 }
 
@@ -2102,5 +2309,252 @@ plugin = "Bar"
         let ring: std::collections::HashSet<u64> = cycles[0].iter().copied().collect();
         let expected: std::collections::HashSet<u64> = [fid_a, fid_b].into_iter().collect();
         assert_eq!(ring, expected, "closed 2-ring over both fibers");
+    }
+
+    // --- rolling drain-and-shift provider replacement (replace_provider) ---
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replace_provider_zero_absence_window() {
+        use crate::RegistryService;
+        use std::sync::atomic::Ordering;
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        plugin_registry.register(
+            "SwapFactoryA",
+            Arc::new(|ctx: &Arc<crate::Context>, _cfg| {
+                let fut = ctx.plugin(Swappable(std::sync::atomic::AtomicU64::new(1)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+        plugin_registry.register(
+            "SwapFactory",
+            Arc::new(|ctx: &Arc<crate::Context>, cfg| {
+                // The instance value comes from the config, so replacing the
+                // provider under the SAME factory label with a NEW config
+                // still flips the observable instance.
+                let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
+                let fut = ctx.plugin(Swappable(std::sync::atomic::AtomicU64::new(v)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+
+        let entry_a = Entry {
+            id: "swap".into(),
+            plugin: "SwapFactory".into(),
+            config: json!({"v": 1}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        };
+        let mut current = EntryTree(vec![]);
+        Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_a]), &journal).await;
+        let old_rec = journal.get("swap").expect("journal record after begin");
+        let old_fid = old_rec.fiber_id.expect("fiber tracked");
+        let old_gen = old_rec.generation;
+        assert_eq!(
+            ctx.get::<Swappable>().unwrap().0.load(Ordering::SeqCst),
+            1,
+            "old provider serving"
+        );
+
+        // Concurrent get-probe: the service must NEVER be unresolvable while
+        // the replacement runs — the key never becomes unprovided.
+        let ctx_probe = ctx.clone();
+        let prober = tokio::spawn(async move {
+            for _ in 0..300 {
+                if ctx_probe.get::<Swappable>().is_none() {
+                    return false;
+                }
+                tokio::task::yield_now().await;
+            }
+            true
+        });
+
+        let loader = Loader::new();
+        let new_fid = loader
+            .replace_provider(&ctx, "SwapFactory", json!({"v": 2}), &journal)
+            .await
+            .expect("replace_provider swap");
+
+        let continuous = prober.await.expect("prober task");
+        assert!(continuous, "get must stay satisfied during the whole swap");
+
+        // New instance is live under a fresh Active fiber; the old fiber is gone.
+        let svc = ctx.get::<Swappable>().expect("swapped provider");
+        assert_eq!(svc.0.load(Ordering::SeqCst), 2, "instance flipped");
+        let registry = ctx.get::<RegistryService>().unwrap();
+        assert!(matches!(
+            registry
+                .get_fiber(new_fid)
+                .expect("new fiber tracked")
+                .state(),
+            crate::FiberState::Active { .. }
+        ));
+        assert!(
+            registry.get_fiber(old_fid).is_none(),
+            "old registration removed"
+        );
+        // Same entry id retained (plugin label keyed), generation advanced.
+        let rec = journal.get("swap").expect("journal record after replace");
+        assert_eq!(rec.fiber_id, Some(new_fid));
+        assert_eq!(rec.generation, old_gen + 1);
+        assert_ne!(rec.fiber_id, Some(old_fid));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replace_provider_failure_keeps_old() {
+        use crate::RegistryService;
+
+        #[derive(Debug)]
+        struct Keeper(u64);
+        impl Service for Keeper {}
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        plugin_registry.register(
+            "KeeperFactory",
+            Arc::new(|ctx: &Arc<crate::Context>, cfg| {
+                // Same dual-mode shape as the success tests: a healthy
+                // instance when the config asks for it, an intentional
+                // failure otherwise. replace_provider resolves BOTH the old
+                // record and the replacement factory through this one label.
+                if cfg.get("fail").and_then(|x| x.as_bool()) == Some(true) {
+                    return Err(crate::CordisError::Configuration(
+                        "intentional replace failure".into(),
+                    ));
+                }
+                let fut = ctx.plugin(Keeper(1));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+
+        let entry_ok = Entry {
+            id: "keep".into(),
+            plugin: "KeeperFactory".into(),
+            config: json!({}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        };
+        let mut current = EntryTree(vec![]);
+        Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_ok]), &journal).await;
+        let before = journal.get("keep").expect("journal record");
+        let old_fid = before.fiber_id.expect("old fiber tracked");
+
+        let loader = Loader::new();
+        let err = loader
+            .replace_provider(&ctx, "KeeperFactory", json!({"fail": true}), &journal)
+            .await
+            .expect_err("failing trial must error");
+        assert!(
+            err.to_string().contains("intentional replace failure"),
+            "error carries the factory failure: {err}"
+        );
+
+        // Old provider fully intact: still resolving, same tracked fiber, no
+        // intercept residue from the aborted swap.
+        assert!(
+            ctx.get::<Keeper>().is_some(),
+            "old provider kept after failed replace"
+        );
+        let registry = ctx.get::<RegistryService>().unwrap();
+        assert!(registry.get_fiber(old_fid).is_some(), "old fiber tracked");
+        assert!(
+            !matches!(
+                registry.get_fiber(old_fid).unwrap().state(),
+                crate::FiberState::Failed { .. }
+            ),
+            "old fiber untouched by the failed trial"
+        );
+        let after = journal.get("keep").expect("journal record retained");
+        assert_eq!(after.generation, before.generation, "generation frozen");
+        assert_eq!(after.fiber_id, Some(old_fid), "fiber id unchanged");
+        assert!(
+            !current.0.is_empty() && current.0[0].plugin == "KeeperFactory",
+            "current tree unchanged"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replace_provider_updates_journal() {
+        use crate::RegistryService;
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        plugin_registry.register(
+            "SwapFactory",
+            Arc::new(|ctx: &Arc<crate::Context>, cfg| {
+                let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
+                let fut = ctx.plugin(Swappable(std::sync::atomic::AtomicU64::new(v)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+
+        let entry_a = Entry {
+            id: "svc:swap".into(),
+            plugin: "SwapFactory".into(),
+            config: json!({"v": 1}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        };
+        let mut current = EntryTree(vec![]);
+        Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_a]), &journal).await;
+        let before = journal.get("svc:swap").expect("record present");
+        assert_eq!(before.generation, 1);
+        assert_eq!(before.config, json!({"v": 1}));
+
+        let loader = Loader::new();
+        let new_config = json!({"v": 7});
+        let new_fid = loader
+            .replace_provider(&ctx, "SwapFactory", new_config.clone(), &journal)
+            .await
+            .expect("replace ok");
+
+        let rec = journal.get("svc:swap").expect("record retained");
+        assert_eq!(
+            rec.fiber_id,
+            Some(new_fid),
+            "new fiber id recorded in the journal"
+        );
+        assert_ne!(rec.fiber_id, before.fiber_id, "fiber id flipped");
+        assert_eq!(
+            rec.generation,
+            before.generation + 1,
+            "generation bumped exactly once per successful replace"
+        );
+        assert_eq!(rec.config, new_config, "new config stored on the record");
+        assert_eq!(rec.plugin, "SwapFactory", "plugin label retained");
+        // The promoted instance actually carries the new config's value.
+        let svc = ctx.get::<Swappable>().expect("swapped provider");
+        assert_eq!(svc.0.load(std::sync::atomic::Ordering::SeqCst), 7);
+
+        // Second replace against the SAME plugin label exercises the
+        // self-replacement path (old and new resolve through one label).
+        let again = loader
+            .replace_provider(&ctx, "SwapFactory", json!({"v": 8}), &journal)
+            .await
+            .expect("self-replace ok");
+        let rec2 = journal.get("svc:swap").expect("record retained");
+        assert_eq!(rec2.fiber_id, Some(again));
+        assert_eq!(rec2.generation, rec.generation + 1);
+        assert_eq!(
+            ctx.get::<Swappable>()
+                .unwrap()
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst),
+            8,
+            "second swap live"
+        );
     }
 }

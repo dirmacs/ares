@@ -95,8 +95,8 @@ pub mod service;
 
 pub use context::Context;
 pub use effect::Disposable;
-pub use events::{Dispatch, EventsService};
-pub use fiber::{Fiber, FiberState};
+pub use events::{AggregateError, Dispatch, EventsService, summarize_listener_errors};
+pub use fiber::{Fiber, FiberState, UndoMeta};
 pub use service::{CordisError, Service, ServiceInitFuture};
 
 pub mod events_catalog;
@@ -124,6 +124,9 @@ pub use loader::{
 
 pub mod cycles;
 pub use cycles::{find_dependency_cycle, DependencyGraph};
+
+pub mod stamp;
+pub use stamp::FileStamp;
 
 pub mod metatheory;
 
@@ -334,6 +337,7 @@ impl ReflectService {
     /// registry reload is now triggered by `notify` via `watch` channel on DB
     /// `NOTIFY`/`LISTEN` or file change, not a timer.
     pub fn notify(&self, tid: TypeId) {
+        self.prune_disposed();
         // Snapshot context weakly; if no context, still notify watch channels
         let ctx_opt = self.ctx.read().as_ref().and_then(|w| w.upgrade());
 
@@ -395,6 +399,7 @@ impl ReflectService {
     /// Async variant that `await`s each `Fiber::refresh` directly (for tests / direct callers that have `ctx`).
     #[allow(clippy::await_holding_lock)]
     pub async fn notify_with_ctx(&self, tid: TypeId, ctx: &Arc<Context>) {
+        self.prune_disposed();
         let mut queue = VecDeque::new();
         let mut visited_type = HashSet::new();
         let mut visited_fiber = HashSet::new();
@@ -425,6 +430,35 @@ impl ReflectService {
                 }
             }
         }
+    }
+
+    /// Drop `fibers` / `fiber_provides` entries whose disposal already ran.
+    ///
+    /// The BFS walk never drops entries on its own, so disposed fibers used
+    /// to accumulate here forever. Pruning runs opportunistically at the top
+    /// of each notify: a pruned fiber can no longer be refreshed, which is
+    /// exactly right — disposal already ran its undos. `Failed{error}`
+    /// fibers are NOT disposed (see [`Fiber::is_disposed`]) and stay
+    /// inspectable by design.
+    pub fn prune_disposed(&self) -> usize {
+        let dead: Vec<FiberId> = self
+            .fibers
+            .read()
+            .iter()
+            .filter(|(_, fiber)| fiber.is_disposed())
+            .map(|(fid, _)| *fid)
+            .collect();
+        let mut removed = 0;
+        {
+            let mut fibers = self.fibers.write();
+            for fid in &dead {
+                if fibers.remove(fid).is_some() {
+                    removed += 1;
+                }
+            }
+        }
+        self.fiber_provides.write().retain(|fid, _| !dead.contains(fid));
+        removed
     }
 
     /// Get a `watch::Receiver` if already created (no creation).
@@ -596,7 +630,7 @@ mod tests {
         assert_eq!(ctx.snapshot_len(), pre_len + 1);
 
         // dispose fiber should LIFO revert
-        ctx.fiber().dispose().await;
+        let _ = ctx.fiber().dispose().await;
         assert!(ctx.get::<BarService>().is_none());
         assert_eq!(ctx.snapshot_len(), pre_len);
     }
@@ -1365,5 +1399,43 @@ mod tests {
             seen,
             "service.changed broadcast not observed within timeout"
         );
+    }
+
+    /// ReflectService bookkeeping must not leak disposed fibers: pruning
+    /// drops `fibers` / `fiber_provides` entries whose disposal already ran
+    /// (opportunistic sweep at the top of every notify), while live and
+    /// Failed fibers stay tracked.
+    #[tokio::test]
+    async fn reflect_prune_disposed_drops_dead_fibers_only() {
+        let ctx = Context::new_root();
+        let reflect = ReflectService::new();
+
+        let dead = Arc::new(Fiber::new());
+        let live = Arc::new(Fiber::new());
+        let failed = Arc::new(Fiber::new());
+        failed.set_state(crate::FiberState::Failed { error: None });
+
+        reflect.register_fiber(1, dead.clone(), TypeId::of::<u64>());
+        reflect.register_fiber(2, live.clone(), TypeId::of::<u64>());
+        reflect.register_fiber(3, failed.clone(), TypeId::of::<u64>());
+
+        // Nothing pruned before any disposal.
+        assert_eq!(reflect.prune_disposed(), 0);
+
+        let _ = dead.dispose().await;
+        assert_eq!(
+            reflect.prune_disposed(),
+            1,
+            "exactly the disposed fiber is dropped"
+        );
+        // Live + Failed remain; the disposed one is gone.
+        assert!(matches!(live.state(), crate::FiberState::Inactive { .. }));
+        assert!(matches!(
+            failed.state(),
+            crate::FiberState::Failed { .. }
+        ));
+
+        // The opportunistic path: notify() sweeps again before walking.
+        reflect.notify(TypeId::of::<u64>());
     }
 }

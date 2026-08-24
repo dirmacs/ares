@@ -3,12 +3,118 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::context::Context;
 use crate::service::{CordisError, Service};
 
 pub(crate) type ReloadResult = Result<bool, CordisError>;
 pub(crate) type ReloadRunner = Box<dyn FnMut(&Arc<Context>) -> ReloadResult + Send>;
+
+/// Maximum time a lifecycle transition waits for the fiber's inertia guard
+/// before giving up with [`CordisError::Fiber`]. Bounds the blast radius of a
+/// hung plugin apply: dispose and refresh fail fast (naming the stuck fiber)
+/// instead of parking forever behind a transition that never yields.
+pub const TRANSITION_WAIT: Duration = Duration::from_secs(10);
+
+#[cfg(test)]
+pub(crate) static TRANSITION_WAIT_OVERRIDE: std::sync::OnceLock<Duration> =
+    std::sync::OnceLock::new();
+
+fn transition_wait() -> Duration {
+    #[cfg(test)]
+    if let Some(wait) = TRANSITION_WAIT_OVERRIDE.get() {
+        return *wait;
+    }
+    TRANSITION_WAIT
+}
+
+/// Same-thread reentrancy ledger for the inertia guard.
+///
+/// The sync-callback model (reload runners invoke plugin code synchronously,
+/// which can call back into `provide`/`notify`) makes recursive deadlock a
+/// same-thread phenomenon: `tokio::sync::Mutex` blocks the whole thread on a
+/// second acquisition. This set records `(thread id, fiber id)` pairs while a
+/// bounded acquisition holds the guard; acquiring again for a pair already
+/// present is an immediate "reentrant" error rather than a bounded wait that
+/// would burn its whole timeout on itself.
+///
+/// Honest scope: this detects SAME-THREAD reentrancy only. Cross-task
+/// contention is handled by the bounded wait and reported as "stuck".
+type HeldTransitions = Mutex<std::collections::HashSet<(std::thread::ThreadId, u64)>>;
+static HELD_TRANSITIONS: std::sync::LazyLock<HeldTransitions> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// RAII marker for one held transition: inserts `(current thread, fid)` on
+/// construction, removes it on drop (including early returns and panics).
+struct TransitionGuard {
+    fid: u64,
+}
+
+/// Held transition: owns both the inertia guard and the reentrancy-ledger
+/// slot. Fields are declared ledger-first so drop unregisters `(thread, fid)`
+/// BEFORE releasing the mutex — a successor acquiring the guard never
+/// observes a stale ledger entry from the previous holder.
+struct TransitionLease {
+    _ledger: TransitionGuard,
+    _lock: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl TransitionGuard {
+    fn acquire(fid: u64) -> Result<Self, CordisError> {
+        let mut held = HELD_TRANSITIONS.lock();
+        let key = (std::thread::current().id(), fid);
+        if !held.insert(key) {
+            return Err(CordisError::Fiber(format!(
+                "reentrant transition on fiber {fid}"
+            )));
+        }
+        Ok(Self { fid })
+    }
+}
+
+impl Drop for TransitionGuard {
+    fn drop(&mut self) {
+        HELD_TRANSITIONS
+            .lock()
+            .remove(&(std::thread::current().id(), self.fid));
+    }
+}
+
+/// Debug label + registration timestamp for one entry on a fiber's undo
+/// accumulator. Our undos are anonymous closures; this is the minimal
+/// introspection surface (labels only) — deliberately NOT an effect tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UndoMeta {
+    pub label: String,
+    /// Milliseconds since the Unix epoch at push time.
+    pub registered_at_ms: u64,
+}
+
+impl Default for UndoMeta {
+    fn default() -> Self {
+        Self {
+            label: "unnamed".into(),
+            registered_at_ms: unix_now_ms(),
+        }
+    }
+}
+
+impl UndoMeta {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            registered_at_ms: unix_now_ms(),
+        }
+    }
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FiberState {
@@ -30,10 +136,13 @@ pub enum FiberState {
     },
 }
 
+/// One registered undo: its introspection metadata plus the teardown closure.
+type UndoEntry = (UndoMeta, Box<dyn FnOnce() + Send>);
+
 pub struct Fiber {
     state: RwLock<FiberState>,
     inertia: Arc<tokio::sync::Mutex<()>>,
-    acc: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+    acc: Mutex<Vec<UndoEntry>>,
     epoch: RwLock<String>,
     injects: RwLock<HashMap<TypeId, String>>, // TypeId -> type_name
     reload_runner: Mutex<Option<ReloadRunner>>,
@@ -259,12 +368,20 @@ impl Fiber {
     /// `pending_declare` flag: the loop re-runs until a pass observes no
     /// pending declaration, so a late `declare_inject` can never be lost
     /// between two refreshes.
+    ///
+    /// The inertia guard is acquired through [`Self::acquire_transition`]:
+    /// same-thread reentrancy errors immediately and cross-task contention is
+    /// bounded by [`TRANSITION_WAIT`]. A timed-out refresh surfaces the error
+    /// as a `Failed` state so the fiber stays inspectable.
     pub async fn refresh(&self, ctx: &Arc<Context>) {
         if self.disposed.load(Ordering::Acquire) {
             return;
         }
+        let fid = *self.id.lock().get_or_insert(0);
+        let Ok(_guard) = self.acquire_transition(fid).await else {
+            return;
+        };
         loop {
-            let _guard = self.inertia.lock().await;
             if self.disposed.load(Ordering::Acquire) {
                 return;
             }
@@ -326,6 +443,65 @@ impl Fiber {
         }
     }
 
+    /// Non-blocking probe of the inertia guard: `true` when no lifecycle
+    /// transition (refresh/update/dispose) currently holds it. Never blocks;
+    /// a momentary `false` only means a transition was mid-flight at probe
+    /// time, not that one is stuck.
+    pub fn is_idle(&self) -> bool {
+        // tokio's TryLockError is a unit struct; Err(_) means contended.
+        self.inertia.try_lock().is_ok()
+    }
+
+    /// Bounded acquisition of the inertia guard for one lifecycle transition:
+    /// same-thread reentrancy on an already-held fiber errors immediately,
+    /// otherwise the wait for a contending holder is capped at
+    /// [`transition_wait()`] before failing with [`CordisError::Fiber`]
+    /// naming the fiber id. The returned guard releases both the ledger entry
+    /// and the mutex on drop.
+    async fn acquire_transition(&self, fid: u64) -> Result<TransitionLease, CordisError> {
+        // Same-thread reentrancy pre-check: a live ledger entry for
+        // (this thread, fid) means an ancestor transition on this fiber is
+        // executing in this very call stack. Waiting could never succeed on a
+        // non-reentrant mutex, so fail immediately instead of burning the
+        // whole [`transition_wait()`] on ourselves.
+        if HELD_TRANSITIONS
+            .lock()
+            .contains(&(std::thread::current().id(), fid))
+        {
+            return Err(CordisError::Fiber(format!(
+                "reentrant transition on fiber {fid}"
+            )));
+        }
+        let lock = match Arc::clone(&self.inertia).try_lock_owned() {
+            Ok(lock) => lock,
+            Err(_) => {
+                match tokio::time::timeout(
+                    transition_wait(),
+                    Arc::clone(&self.inertia).lock_owned(),
+                )
+                .await
+                {
+                    Ok(lock) => lock,
+                    Err(_elapsed) => {
+                        let ms = transition_wait().as_millis();
+                        tracing::error!("fiber {fid} stuck in transition over {ms}ms");
+                        return Err(CordisError::Fiber(format!(
+                            "fiber {fid} stuck in transition over {ms}ms"
+                        )));
+                    }
+                }
+            }
+        };
+        // Registered only once the guard is owned; the insert cannot collide
+        // because the pre-check above ran on this same thread and the entry
+        // is removed before the mutex is ever released (drop order).
+        let ledger = TransitionGuard::acquire(fid)?;
+        Ok(TransitionLease {
+            _ledger: ledger,
+            _lock: lock,
+        })
+    }
+
     /// A declared inject is satisfied iff its provider is available and — for
     /// injects declared via [`Self::declare_inject_versioned`] with a
     /// requirement — the provider's semantic peer version matches it:
@@ -354,20 +530,27 @@ impl Fiber {
         // Pop before invoking user/plugin cleanup. Cleanup may provide another
         // service and push a new undo onto this fiber; holding acc while it
         // runs would recursively lock the same non-reentrant mutex.
-        while let Some(undo) = { self.acc.lock().pop() } {
+        while let Some((_, undo)) = { self.acc.lock().pop() } {
             undo();
         }
     }
 
-    pub async fn dispose(&self) {
-        let _guard = self.inertia.lock().await;
+    /// Dispose this fiber: mark it disposed, undo its effects LIFO, and rest
+    /// it as pristine `Inactive`. The inertia guard is acquired through
+    /// [`Self::acquire_transition`] (bounded wait, same-thread reentrancy
+    /// detection), so dispose can never park forever behind a hung
+    /// transition — it instead returns the named-fiber error to the caller.
+    pub async fn dispose(&self) -> Result<(), CordisError> {
+        let fid = *self.id.lock().get_or_insert(0);
+        let _guard = self.acquire_transition(fid).await?;
         self.disposed.store(true, Ordering::Release);
         self.set_state(FiberState::Unloading { error: None });
-        while let Some(undo) = { self.acc.lock().pop() } {
+        while let Some((_, undo)) = { self.acc.lock().pop() } {
             undo();
         }
         self.set_state(FiberState::Inactive { error: None });
         self.set_epoch(String::new());
+        Ok(())
     }
 
     /// Apply a config change through the same dependency reload runner used by
@@ -377,9 +560,33 @@ impl Fiber {
         self.refresh(ctx).await;
     }
 
-    // Called by Context::provide to push undo onto this fiber's acc
+    // Called by Context::provide to push undo onto this fiber's acc under a
+    // default "unnamed" label.
     pub(crate) fn push_undo(&self, undo: Box<dyn FnOnce() + Send>) {
-        self.acc.lock().push(undo);
+        self.push_undo_labeled(UndoMeta::default(), undo);
+    }
+
+    /// Push an undo closure carrying explicit introspection metadata.
+    pub fn push_undo_labeled(&self, meta: UndoMeta, undo: Box<dyn FnOnce() + Send>) {
+        self.acc.lock().push((meta, undo));
+    }
+
+    /// Snapshot of the pending undo labels in registration (FIFO) order.
+    ///
+    /// Execution order is the reverse (LIFO); see [`Self::dispose`].
+    pub fn pending_undo_labels(&self) -> Vec<String> {
+        self.acc
+            .lock()
+            .iter()
+            .map(|(meta, _)| meta.label.clone())
+            .collect()
+    }
+
+    /// True once [`Self::dispose`] has run on this fiber. Disposed fibers are
+    /// prunable from tracking maps; `Failed` fibers are not disposed and stay
+    /// inspectable by design.
+    pub fn is_disposed(&self) -> bool {
+        self.disposed.load(Ordering::Acquire)
     }
 }
 
@@ -484,9 +691,169 @@ mod tests {
         fiber.push_undo(Box::new(move || {
             *snap2.lock() = Some(f.state());
         }));
-        fiber.dispose().await;
+        let _ = fiber.dispose().await;
         let during = snap.lock().clone();
         assert_eq!(during, Some(FiberState::Unloading { error: None }));
         assert_eq!(fiber.state(), FiberState::Inactive { error: None });
+    }
+
+    /// Undo introspection: three labeled undos report their labels in
+    /// registration (FIFO) order via `pending_undo_labels`; the default
+    /// label for the historical `push_undo` path is "unnamed".
+    #[test]
+    fn pending_undo_labels_reports_registration_order() {
+        let fiber = Fiber::new();
+        assert!(fiber.pending_undo_labels().is_empty());
+        fiber.push_undo_labeled(UndoMeta::new("provide:events"), Box::new(|| {}));
+        fiber.push_undo(Box::new(|| {}));
+        fiber.push_undo_labeled(UndoMeta::new("provide:store"), Box::new(|| {}));
+
+        let labels = fiber.pending_undo_labels();
+        assert_eq!(
+            labels,
+            vec![
+                "provide:events".to_string(),
+                "unnamed".to_string(),
+                "provide:store".to_string()
+            ]
+        );
+    }
+
+    /// Dispose still runs every undo exactly once, in reverse registration
+    /// (LIFO) order — the pre-existing contract, now over labeled entries.
+    #[tokio::test]
+    async fn dispose_runs_labeled_undos_in_lifo_order() {
+        let fiber = Arc::new(Fiber::new());
+        let ran = Arc::new(ParkingMutex::new(Vec::new()));
+        for name in ["first", "second", "third"] {
+            let r = ran.clone();
+            fiber.push_undo_labeled(
+                UndoMeta::new(name),
+                Box::new(move || {
+                    r.lock().push(name.to_string());
+                }),
+            );
+        }
+        // Introspection works while undos are still pending.
+        assert_eq!(
+            fiber.pending_undo_labels(),
+            vec!["first", "second", "third"]
+        );
+        let _ = fiber.dispose().await;
+        assert_eq!(*ran.lock(), ["third", "second", "first"]);
+        // The accumulator drained; nothing left to introspect.
+        assert!(fiber.pending_undo_labels().is_empty());
+        assert!(fiber.is_disposed());
+    }
+
+    // ------------------------------------------------------------------
+    // Bounded transitions: reentrancy vs contention classification
+    // ------------------------------------------------------------------
+
+    fn set_test_transition_wait(wait: Duration) {
+        // Tests run multi-threaded in ONE process: whichever test sets first
+        // wins, and both bounds satisfy every assertion here (< 1s).
+        let _ = TRANSITION_WAIT_OVERRIDE.set(wait);
+    }
+
+    /// A transition attempted from within a live transition on the SAME
+    /// thread (the recursive-deadlock shape of our sync-callback model) must
+    /// be classified immediately as reentrant — no waiting on a mutex that
+    /// can never free up.
+    #[tokio::test]
+    async fn reentrant_transition_detected_fast() {
+        set_test_transition_wait(Duration::from_millis(50));
+        let ctx = Context::new_root();
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(90_001);
+
+        // Simulate the ancestor transition holding the ledger slot.
+        let _ancestor = TransitionGuard::acquire(90_001).unwrap();
+
+        let start = std::time::Instant::now();
+        // Refresh swallows acquisition failures into state changes; probe
+        // both public paths and require the reentrant classification fast.
+        let dispose_err = fiber.dispose().await.unwrap_err();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "reentrant detection must not wait out the budget, took {elapsed:?}"
+        );
+        match dispose_err {
+            CordisError::Fiber(msg) => {
+                assert!(
+                    msg.contains("reentrant") && msg.contains("90001"),
+                    "expected reentrant naming the fiber, got: {msg}"
+                );
+            }
+            other => panic!("expected CordisError::Fiber, got {other:?}"),
+        }
+        fiber.refresh(&ctx).await;
+        match fiber.state() {
+            // Refresh cannot return the error; it rests untouched because
+            // the reentrant attempt happens before any transition runs.
+            FiberState::Inactive { error: None } => {}
+            other => panic!("unexpected refresh state under reentrancy: {other:?}"),
+        }
+    }
+
+    /// Cross-task contention is bounded: when the holder never yields, the
+    /// waiter gives up after [`TRANSITION_WAIT`] with an error naming the
+    /// stuck fiber id instead of parking forever.
+    #[tokio::test]
+    async fn contention_times_out_named() {
+        set_test_transition_wait(Duration::from_millis(100));
+        let ctx = Context::new_root();
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(90_002);
+
+        // Hold the inertia guard from another task until we say otherwise.
+        let inertia = Arc::clone(&fiber.inertia);
+        let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let releaser = release.clone();
+        let holder = tokio::spawn(async move {
+            let _guard = inertia.lock_owned().await;
+            while !releaser.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        // Let the holder win the race for the guard.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let start = std::time::Instant::now();
+        fiber.refresh(&ctx).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "contended refresh must time out fast, took {elapsed:?}"
+        );
+        let dispose_err = fiber.dispose().await.unwrap_err();
+        match dispose_err {
+            CordisError::Fiber(msg) => {
+                assert!(
+                    msg.contains("stuck") && msg.contains("90002") && msg.contains("ms"),
+                    "expected stuck-in-transition naming the fiber, got: {msg}"
+                );
+            }
+            other => panic!("expected CordisError::Fiber, got {other:?}"),
+        }
+
+        release.store(true, Ordering::Release);
+        holder.await.unwrap();
+    }
+
+    /// [`Fiber::is_idle`] mirrors the inertia guard without blocking.
+    #[tokio::test]
+    async fn is_idle_reflects_lock_state() {
+        let fiber = Arc::new(Fiber::new());
+        assert!(fiber.is_idle(), "free guard must report idle");
+        let held = Arc::clone(&fiber.inertia)
+            .try_lock_owned()
+            .expect("guard should be free");
+        assert!(!fiber.is_idle(), "held guard must not report idle");
+        drop(held);
+        assert!(fiber.is_idle(), "released guard must report idle again");
     }
 }

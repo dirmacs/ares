@@ -9,6 +9,49 @@ use crate::effect::Disposable;
 use crate::service::{CordisError, Service};
 use crate::EventId;
 
+/// Collected failures from one parallel event dispatch.
+///
+/// `Dispatch::Parallel` fans out to every registered listener and joins all
+/// tasks; instead of surfacing only the first error, every failure is
+/// recorded here as a `(listener name, message)` pair. Rendering goes through
+/// [`summarize_listener_errors`], and the dispatch result carries the summary
+/// text wrapped in [`CordisError::Internal`].
+#[derive(Debug)]
+pub struct AggregateError {
+    pub errors: Vec<(String, String)>,
+}
+
+impl std::fmt::Display for AggregateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", format_listener_errors(&self.errors))
+    }
+}
+
+impl std::error::Error for AggregateError {}
+
+/// Pure formatter shared by [`AggregateError`] and the parallel-dispatch warn
+/// line: `"N listener failures: name: message; name: message"` (singular
+/// wording for exactly one entry).
+pub fn summarize_listener_errors(errors: Vec<(String, String)>) -> String {
+    format_listener_errors(&errors)
+}
+
+fn format_listener_errors(errors: &[(String, String)]) -> String {
+    if errors.is_empty() {
+        return "0 listener failures".to_string();
+    }
+    let joined = errors
+        .iter()
+        .map(|(name, message)| format!("{name}: {message}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if errors.len() == 1 {
+        format!("1 listener failure: {joined}")
+    } else {
+        format!("{} listener failures: {joined}", errors.len())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dispatch {
     Emit,
@@ -38,6 +81,8 @@ const MECHANICS_TEST_EVENTS: &[&str] = &[
     "wf.empty",
     "par.test",
     "par2.test",
+    "par.agg",
+    "par.solo",
     "around.empty",
     "around.wrap",
     "around.short",
@@ -281,30 +326,38 @@ impl EventsService {
             // successful dispatch has no meaningful result and returns null.
             Dispatch::Parallel => {
                 let mut set = tokio::task::JoinSet::new();
-                for h in handlers {
+                for (name, h) in handlers.into_iter().enumerate() {
                     let p = payload.clone();
-                    set.spawn(async move { h(p).await });
+                    set.spawn(async move { (name, h(p).await) });
                 }
-                let mut first_error = None;
+                let mut failures: Vec<(String, String)> = Vec::new();
                 while let Some(res) = set.join_next().await {
                     match res {
                         Err(join_err) => {
-                            if first_error.is_none() {
-                                first_error = Some(CordisError::Fiber(join_err.to_string()));
-                            }
+                            // Consume the JoinError exactly once: unwrap the
+                            // panic payload when the task panicked, otherwise
+                            // render the (returned) cancelled-task error.
+                            let message = match join_err.try_into_panic() {
+                                Ok(payload) => panic_payload_message(&payload),
+                                Err(cancelled) => cancelled.to_string(),
+                            };
+                            failures.push(("listener-task".to_string(), message));
                         }
-                        Ok(Err(err)) => {
-                            if first_error.is_none() {
-                                first_error = Some(err);
-                            }
+                        Ok((name, Err(err))) => {
+                            failures.push((format!("listener[{name}]"), err.message()))
                         }
-                        Ok(Ok(_)) => {}
+                        Ok((_, Ok(_))) => {}
                     }
                 }
-                match first_error {
-                    Some(err) => Err(err),
-                    None => Ok(serde_json::Value::Null),
+                if failures.is_empty() {
+                    return Ok(serde_json::Value::Null);
                 }
+                tracing::warn!(
+                    event = %event,
+                    failures = %format_listener_errors(&failures),
+                    "parallel dispatch collected listener failures"
+                );
+                Err(CordisError::Internal(format_listener_errors(&failures)))
             }
             // Serial invokes handlers in registration order with the original
             // payload. A non-null result bails out immediately; null means the
@@ -424,6 +477,18 @@ impl EventsService {
 impl Default for EventsService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Best-effort message extraction from a panicked listener's panic payload,
+/// used when a spawned parallel listener task panics before joining.
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "listener panicked".to_string()
     }
 }
 
@@ -883,5 +948,103 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(passed["capability"], "chat");
+    }
+
+    #[test]
+    fn summarize_listener_errors_formats_multiple_failures() {
+        let summary = crate::events::summarize_listener_errors(vec![
+            ("quota".to_string(), "monthly cap reached".to_string()),
+            ("audit".to_string(), "db write failed".to_string()),
+        ]);
+        assert_eq!(
+            summary,
+            "2 listener failures: quota: monthly cap reached; audit: db write failed"
+        );
+    }
+
+    #[test]
+    fn summarize_listener_errors_formats_single_failure() {
+        let summary = crate::events::summarize_listener_errors(vec![(
+            "solo".to_string(),
+            "boom".to_string(),
+        )]);
+        assert_eq!(summary, "1 listener failure: solo: boom");
+        assert_eq!(
+            crate::events::summarize_listener_errors(Vec::new()),
+            "0 listener failures"
+        );
+    }
+
+    #[test]
+    fn aggregate_error_display_and_error_impl() {
+        let agg = AggregateError {
+            errors: vec![
+                ("a".to_string(), "x".to_string()),
+                ("b".to_string(), "y".to_string()),
+            ],
+        };
+        assert_eq!(agg.to_string(), "2 listener failures: a: x; b: y");
+        // std::error::Error is object-safe usable via dyn.
+        let dyn_err: &dyn std::error::Error = &agg;
+        assert!(dyn_err.to_string().contains("b: y"));
+    }
+
+    /// Parallel dispatch aggregates EVERY failed listener (not just the first)
+    /// into one Internal error whose message is the shared summary format;
+    /// successes still run to completion and the failure names each listener
+    /// position with its message.
+    #[tokio::test]
+    async fn parallel_dispatch_aggregates_all_listener_failures() {
+        use crate::CordisError as Err;
+        let svc = EventsService::new();
+        let completed = Arc::new(AtomicBool::new(false));
+        let c = completed.clone();
+        svc.on("par.agg".into(), move |_p| {
+            let c = c.clone();
+            async move {
+                c.store(true, Ordering::SeqCst);
+                Ok(serde_json::json!({ "ok": true }))
+            }
+        });
+        svc.on("par.agg".into(), |_p| async move {
+            Err::<serde_json::Value, _>(Err::Configuration("first failure".into()))
+        });
+        svc.on("par.agg".into(), |_p| async move {
+            Err::<serde_json::Value, _>(Err::Fiber("second failure".into()))
+        });
+
+        let err = svc
+            .dispatch("par.agg".into(), serde_json::json!({}), Dispatch::Parallel)
+            .await
+            .unwrap_err();
+        let text = err.message();
+        assert!(
+            text.starts_with("internal kernel error: 2 listener failures:")
+                && text.contains("listener[1]: configuration error: first failure")
+                && text.contains("listener[2]: fiber error: second failure"),
+            "aggregate must list every failing listener, got: {text}"
+        );
+        assert!(
+            completed.load(Ordering::SeqCst),
+            "healthy listener still ran"
+        );
+    }
+
+    /// A single failing listener yields the singular summary wording through
+    /// the same dispatch path.
+    #[tokio::test]
+    async fn parallel_dispatch_single_failure_uses_singular_summary() {
+        let svc = EventsService::new();
+        svc.on("par.solo".into(), |_p| async move {
+            Err::<serde_json::Value, _>(crate::CordisError::Internal("only one".into()))
+        });
+        let err = svc
+            .dispatch("par.solo".into(), serde_json::json!({}), Dispatch::Parallel)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.message(),
+            "internal kernel error: 1 listener failure: listener[0]: internal kernel error: only one"
+        );
     }
 }

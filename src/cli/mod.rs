@@ -10,7 +10,7 @@ pub mod rag;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// A.R.E.S - Agentic Retrieval Enhanced Server
+/// A.R.E.S - Agentic Runtime Extensible Server
 ///
 /// A production-grade agentic chatbot server with multi-provider LLM support,
 /// tool calling, RAG, and MCP integration.
@@ -19,7 +19,7 @@ use std::path::PathBuf;
     name = "ares-server",
     author = "Dirmacs <build@dirmacs.com>",
     version,
-    about = "A.R.E.S - Agentic Retrieval Enhanced Server",
+    about = "A.R.E.S - Agentic Runtime Extensible Server",
     long_about = "A production-grade agentic chatbot server with multi-provider LLM support,\n\
                   tool calling, RAG (Retrieval Augmented Generation), and MCP integration.\n\n\
                   Run without arguments to start the server, or use 'init' to scaffold a new project.",

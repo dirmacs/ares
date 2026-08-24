@@ -1,6 +1,6 @@
 # Contributing to A.R.E.S
 
-Thank you for your interest in contributing to A.R.E.S (Agentic Retrieval Enhanced Server). This document gives the guidelines and instructions for contributions.
+Thank you for your interest in contributing to A.R.E.S (Agentic Runtime Extensible Server). This document gives the guidelines and instructions for contributions.
 
 ## Table of contents
 

@@ -1,9 +1,10 @@
 <p align="center">
- <img src="docs/img/ares-logo.svg" width="400" alt="A.R.E.S — Agentic Retrieval Enhanced Server">
+ <img src="docs/img/ares-logo.svg" width="400" alt="A.R.E.S — Agentic Runtime Extensible Server">
 </p>
 
 <p align="center">
-Agentic Retrieval Enhanced Server. Rust. Multi-provider LLM. Tool calling. RAG. MCP.<br>
+Agentic Runtime Extensible Server. Rust. A composable AI agent runtime built on the Cordis framework.<br>
+Multi-provider LLM. Tool calling. RAG. MCP.
 Extensible via ContextProvider trait. Run standalone or embed as a library.
 </p>
 
@@ -15,7 +16,7 @@ Extensible via ContextProvider trait. Run standalone or embed as a library.
 
 ---
 
-**ARES** is a production-grade agentic AI server built in Rust. Features include multi-provider LLM routing, structured tool calling, RAG, MCP integration, multi-tenant auth, and workflow orchestration. You embed the library facade of the `ares-server` package (`Context`, `Execute`, `Tools`, `Llm`). The `ares-server` binary serves the Axum HTTP layer.
+**A.R.E.S** (Agentic Runtime Extensible Server) is a composable AI agent runtime in Rust, built on the Cordis framework. Features include multi-provider LLM routing, structured tool calling, RAG, MCP integration, multi-tenant auth, and workflow orchestration. You embed the library facade of the `ares-server` package (`Context`, `Execute`, `Tools`, `Llm`). The `ares-server` binary serves the Axum HTTP layer.
 
 Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.github.io/ares)**
 

@@ -22,6 +22,9 @@ pub use ares_llm::{LLMClient, LLMResponse, Llm};
 pub use ares_tools::{Calculator, Tool, Tools};
 pub use ares_types::types::ToolDefinition;
 pub use ares_types::{AppError, TenantContext, TenantTier};
+
+/// Daemon-side supervised-worker protocol: restart loop and child spawn.
+pub mod supervisor;
 pub use cordis::{Context, Dispatch, Loader, Plugin, PluginRegistry, Service};
 
 /// Tenant database. Gated so `--no-default-features` builds do not enable

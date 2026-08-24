@@ -4,33 +4,33 @@
 
 Status: Compiles against async-openai 0.31.1; needs live API verification
 
-Issue: The provider was updated to the 0.31.1 API (tool enums, tool list conversion, and tool-call parsing). Compile errors are resolved; runtime/tool-calling correctness still needs validation with a real OpenAI endpoint.
+Issue: The provider now uses the 0.31.1 API (tool enums, tool list conversion, and tool-call parsing). The compile errors are resolved; runtime/tool-calling correctness still needs validation with a real OpenAI endpoint.
 
 Impact: 
-- Builds now succeed with the `openai` feature
-- Tool calling should work, but has not been exercised against the real API
-- Further adjustments may be needed after end-to-end testing
+- Builds succeed with the `openai` feature
+- Tool calling will probably work, but no one has exercised it against the real API
+- Further adjustments can become necessary after end-to-end testing
 
 Workaround:
 - Prefer Ollama or LlamaCpp for local-first workflows
-- If using OpenAI, run targeted E2E tests with a real API key
+- If you use OpenAI, run targeted E2E tests with a real API key
 
 Next Steps:
 1. Run live tests with a real OpenAI key to validate tool calling and streaming
-2. Add mocked/OpenAI-contract tests if feasible
+2. Add mocked/OpenAI-contract tests if the project can add them
 3. Update docs with any model-specific nuances
 
 ## GPU backend compilation
 
 Status: Requires platform-specific SDKs
 
-Issue: Building with GPU features requires installed SDKs:
+Issue: GPU feature builds require installed SDKs:
 - `llamacpp-cuda`: Requires CUDA Toolkit
 - `llamacpp-metal`: macOS only, requires Xcode
 - `llamacpp-vulkan`: Requires Vulkan SDK
 
 Impact:
-- `--all-features` builds will fail without SDKs installed
+- `--all-features` builds fail without SDKs installed
 - Per-platform builds work fine
 
 Workaround:
@@ -55,9 +55,9 @@ cargo build --features "llamacpp-cuda"  # if CUDA is available
 - OpenAI: Tests disabled pending API fixes
 
 **Recommendations**:
-1. Add E2E tests with real Ollama instance in CI
-2. Add LlamaCpp tests with tiny test model
-3. Fix OpenAI and re-enable tests
+1. Add E2E tests with a real Ollama instance in CI
+2. Add LlamaCpp tests with a tiny test model
+3. Fix OpenAI and re-enable the tests
 
 ## Windows-specific
 
@@ -66,7 +66,7 @@ cargo build --features "llamacpp-cuda"  # if CUDA is available
 **Notes**:
 - PowerShell script provided: `scripts/dev-setup.ps1`
 - CUDA requires Visual Studio Build Tools
-- Long path support may be needed for some GGUF models
+- Some GGUF models need long path support
 
 **Fix**:
 ```powershell
@@ -81,7 +81,7 @@ Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name
 **Notes**:
 - GPU passthrough requires `nvidia-docker2` on Linux
 - Windows/Mac GPU support varies by Docker Desktop version
-- Health checks may timeout on slow systems
+- On slow systems health checks can time out
 
 **Workaround**:
 ```yaml
@@ -153,7 +153,7 @@ Turso cloud dependency removed (local-first by default)
 Qdrant cloud dependency removed (optional feature) 
 Ollama tool calling implemented and tested 
 LlamaCpp streaming working 
- 175+ tests passing for core features 
+175+ tests passing for core features 
 CI/CD pipeline configured 
 Documentation complete 
 MCP server fully implemented 
@@ -171,7 +171,7 @@ Embedding cache implemented - In-memory LRU cache for embeddings (commit c6c25dd
 
 ## Dependency security sweep (2026-08-22)
 
-Status: All open Dependabot alerts on the default branch were triaged in one pass. Every high, critical, and medium severity alert is resolved in the current `Cargo.lock` and `ui/` lockfiles.
+Status: One pass triaged all open Dependabot alerts on the default branch. Every high, critical, and medium severity alert is resolved in the current `Cargo.lock` and `ui/` lockfiles.
 
 Resolved (verified against locked versions):
 - openssl @ 0.10.81 (was 0.10.76; CVE-2026-41676/41678/41898/42327/41681/41677/45784/44662)

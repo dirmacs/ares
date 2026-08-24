@@ -1,23 +1,23 @@
 # Loop detection & safety
 
-ARES includes built-in safety mechanisms to prevent agents from getting stuck in infinite loops or crashing mid-execution.
+ARES includes built-in safety mechanisms. They stop agents from getting stuck in infinite loops or crashing mid-execution.
 
 ## Loop detection
 
-The `LoopDetector` monitors agent tool-calling conversations for repetitive patterns using a sliding-window hash approach.
+The `LoopDetector` monitors agent tool-calling conversations for repetitive patterns with a sliding-window hash approach.
 
 ### How it works
 
-1. Each agent response is hashed (after whitespace normalization)
-2. Hashes are stored in a sliding window (configurable size, default 10)
-3. When duplicate hashes exceed a threshold, a loop is detected
-4. The detector escalates through 3 tiers of intervention
+1. The detector hashes each agent response (after whitespace normalization).
+2. It stores hashes in a sliding window (configurable size, default 10).
+3. When duplicate hashes exceed a threshold, the detector reports a loop.
+4. The detector escalates through 3 tiers of intervention.
 
 ### Escalation tiers
 
 | Tier | Action | Description |
 |------|--------|-------------|
-| 1 | `InjectWarning` | Adds a system message warning the agent it's repeating itself |
+| 1 | `InjectWarning` | Adds a system message that warns the agent about its repetition |
 | 2 | `ForceAlternative` | Forces the agent to take a different approach |
 | 3 | `HaltAgent` | Stops the agent entirely and returns an error to the caller |
 
@@ -37,7 +37,7 @@ let mut detector = LoopDetector::new(config);
 
 ### Usage in agents
 
-Loop detection is automatically applied during multi-turn tool-calling conversations. The `ConfigurableAgent` checks the detector after each response.
+Loop detection runs automatically during multi-turn tool-calling conversations. The `ConfigurableAgent` checks the detector after each response.
 
 ## Crash recovery
 
@@ -78,7 +78,7 @@ manager.cleanup(Duration::from_secs(86400))?;
 
 ## Emergency stop
 
-The emergency stop is a global kill switch that immediately rejects all agent requests with HTTP 503.
+The emergency stop is a global kill switch. It immediately rejects all agent requests with HTTP 503.
 
 ```bash
 # Activate emergency stop

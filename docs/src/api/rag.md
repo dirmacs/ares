@@ -1,8 +1,8 @@
 # RAG (Retrieval-Augmented Generation)
 
-The RAG API lets you ingest documents, search them using multiple retrieval strategies, and manage document collections. RAG powers knowledge-grounded responses by retrieving relevant context from your documents before generating answers.
+The RAG API ingests documents, searches them with multiple retrieval strategies, and manages document collections. RAG gives knowledge-grounded responses: the system retrieves relevant context from your documents before it generates an answer.
 
-> **Feature flag:** The RAG API requires ARES to be built with the `ares-vector` feature. If your deployment does not include this feature, these endpoints will return `404`.
+> **Feature flag:** The RAG API requires a build of ARES with the `ares-vector` and `local-embeddings` features. If your deployment lacks these features, these endpoints return `404`.
 
 ---
 
@@ -12,7 +12,7 @@ The RAG API lets you ingest documents, search them using multiple retrieval stra
 POST /api/rag/ingest
 ```
 
-Ingest content into a named collection. The content is automatically chunked and indexed for retrieval.
+This endpoint ingests content into a named collection. ARES automatically chunks the content and indexes it for retrieval.
 
 ### Authentication
 
@@ -22,8 +22,8 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 
 | Parameter | Type | Required | Default | Description |
 |--------------------|--------|----------|----------|-------------------------------------------------------------------------|
-| `collection` | string | Yes |, | Name of the collection to ingest into. Created automatically if it doesn't exist. |
-| `content` | string | Yes |, | The text content to ingest. |
+| `collection` | string | Yes | — | Name of the collection for ingestion. ARES creates the collection automatically when it does not exist. |
+| `content` | string | Yes | — | The text content to ingest. |
 | `title` | string | No | `null` | Optional display title for the document. |
 | `source` | string | No | `null` | Optional source URL or path. |
 | `tags` | array | No | `[]` | Optional tags attached to the document. |
@@ -112,7 +112,7 @@ console.log(`Created ${result.chunks_created} chunks in '${result.collection}'`)
 POST /api/rag/search
 ```
 
-Search a collection using one of several retrieval strategies. Returns the most relevant document chunks.
+This endpoint searches a collection with one of several retrieval strategies. It returns the most relevant document chunks.
 
 ### Authentication
 
@@ -200,7 +200,7 @@ results.results.forEach(result => console.log(result));
 GET /api/rag/collections
 ```
 
-Returns all document collections for the authenticated user.
+This endpoint returns all document collections for the authenticated user.
 
 ### Authentication
 
@@ -219,7 +219,7 @@ curl http://localhost:3000/api/rag/collections \
 DELETE /api/rag/collection
 ```
 
-Permanently delete a collection and all its indexed documents.
+This endpoint permanently deletes a collection and all its indexed documents.
 
 ### Authentication
 

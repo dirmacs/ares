@@ -1,17 +1,17 @@
 # ContextProvider Trait
 
-ARES provides a `ContextProvider` trait that lets extension crates inject external context into every agent call before LLM invocation.
+ARES provides the `ContextProvider` trait. Extension crates implement it to inject external context into every agent call before the LLM invocation.
 
 ## How it works
 
-Before every LLM call, ARES checks `state.context_provider.get_context(agent_name, tenant_id)`. If it returns `Some(context)`, the context is prepended to the agent's system prompt.
+Before every LLM call, ARES calls `get_context(agent_name, tenant_id)` on the configured provider. If it returns `Some(context)`, ARES prepends the context to the system prompt of the agent.
 
-By default, ARES uses `NoOpContextProvider` which returns `None`, agents run with their configured system prompt only.
+By default, ARES uses `NoOpContextProvider`, which returns `None`. Agents then run with only their configured system prompt.
 
 ## Implementing your own
 
 ```rust
-use ares::agents::context_provider::ContextProvider;
+use ares_agent::context_provider::ContextProvider;
 use async_trait::async_trait;
 
 struct MyKnowledgeProvider {
@@ -33,22 +33,24 @@ impl ContextProvider for MyKnowledgeProvider {
 }
 ```
 
-## Wiring into AppState
+## Registering the provider
+
+Provide a `ContextProviderHandle` on the Cordis `Context`. The `ares_server` facade re-exports `Context`:
 
 ```rust
 use std::sync::Arc;
+use ares_agent::ContextProviderHandle;
+use ares_server::Context;
 
-let state = AppState {
-    context_provider: Arc::new(MyKnowledgeProvider {
-        api_url: "http://localhost:8081".to_string(),
-    }),
-    // ... other fields
-};
+let ctx = Context::new_root();
+ctx.provide(ContextProviderHandle::new(Arc::new(MyKnowledgeProvider {
+    api_url: "http://localhost:8081".to_string(),
+})));
 ```
 
 ## Use cases
 
-- **Knowledge base injection**, fetch relevant docs per agent and tenant
-- **User preference injection**, personalize agent behavior based on user history
-- **Compliance constraints**, inject regulatory rules into agent prompts
-- **RAG augmentation**, supplement the built-in RAG with external retrieval
+- **Knowledge base injection:** fetch relevant docs for each agent and tenant
+- **User preference injection:** personalize agent behavior from user history
+- **Compliance constraints:** inject regulatory rules into agent prompts
+- **RAG augmentation:** supplement the built-in RAG with external retrieval

@@ -26,7 +26,7 @@ This document tracks features that are planned but deferred to future iterations
 
 ### Rationale
 
-GPU acceleration for embedding models would significantly improve throughput for batch document ingestion. However, it requires:
+GPU acceleration for embedding models can significantly improve throughput for batch document ingestion. But it requires:
 
 1. Platform-specific setup (CUDA drivers, Metal framework, Vulkan SDK)
 2. Additional feature flags and conditional compilation
@@ -102,7 +102,7 @@ directml = ["ort/directml"]
 
 ### Status: implemented (In-Memory LRU)
 
-The in-memory LRU embedding cache is now fully implemented. See `src/rag/cache.rs`.
+The in-memory LRU embedding cache is now fully implemented. See `crates/ares-rag/src/cache.rs`.
 
 ### Current implementation
 
@@ -138,14 +138,14 @@ println!("Hit rate: {:.1}%", stats.hit_rate());
 
 ### Future backend options
 
-Additional backends can be added by implementing the `EmbeddingCache` trait:
+Developers can add more backends by implementing the `EmbeddingCache` trait:
 
 | Backend | Pros | Cons |
 |---------|------|------|
 | In-memory (LRU) | Fast, no dependencies | Limited capacity, lost on restart |
 | Redis | Distributed, persistent | External dependency |
 | Disk (sled/rocksdb) | Large capacity, persistent | Slower than memory |
-| SQLite | Simple, persistent | May conflict with main DB |
+| SQLite | Simple, persistent | Can conflict with the main DB |
 
 ### Configuration
 
@@ -161,8 +161,8 @@ let config = CacheConfig {
 
 ### Implementation location
 
-- `src/rag/cache.rs` - `EmbeddingCache` trait, `LruEmbeddingCache`, and `NoOpCache` implementations
-- `src/rag/embeddings.rs` - `CachedEmbeddingService` wrapper
+- `crates/ares-rag/src/cache.rs` - `EmbeddingCache` trait, `LruEmbeddingCache`, and `NoOpCache` implementations
+- `crates/ares-rag/src/embeddings.rs` - `CachedEmbeddingService` wrapper
 
 ### Future configuration (proposed TOML)
 
@@ -225,7 +225,7 @@ These are emerging protocols for agent-to-agent communication and UI integration
 
 ### Rationale
 
-As users may switch between vector store providers (e.g., from Qdrant to LanceDB), a migration utility would help preserve indexed data.
+Users can switch between vector store providers (for example, from Qdrant to LanceDB). A migration utility would help preserve indexed data.
 
 ### Proposed features
 
@@ -348,18 +348,18 @@ impl QueryExpander {
 
 ### Status: implemented
 
-Connection pooling for LLM clients has been implemented to enable efficient connection reuse across requests, reducing latency and resource consumption.
+Connection pooling for LLM clients is implemented. It enables efficient connection reuse across requests, reduces latency, and lowers resource consumption.
 
 ### Implementation details
 
-**Location**: `src/llm/pool.rs`
+**Location**: `crates/ares-llm/src/pool.rs`
 
 **Features**:
 - Pool management with configurable max connections per provider
-- Connection reuse across requests via `PooledClientGuard` RAII pattern
+- Connection reuse across requests via the `PooledClientGuard` RAII pattern
 - Health checking for stale connections (idle timeout + max lifetime)
 - Graceful cleanup on shutdown
-- Background cleanup task for removing stale connections
+- Background cleanup task that removes stale connections
 - Thread-safe with `parking_lot::RwLock` and `tokio::sync::Semaphore`
 - Builder pattern for pool configuration
 
@@ -411,12 +411,12 @@ let config = PoolConfig {
 
 ### Implementation location
 
-- `src/llm/pool.rs` - Core pooling implementation
-- `src/llm/mod.rs` - Public exports
+- `crates/ares-llm/src/pool.rs` - Core pooling implementation
+- `crates/ares-llm/src/lib.rs` - Public exports
 
 ### References
 
-- [DIR-44 Implementation](../src/llm/pool.rs)
+- [DIR-44 Implementation](../crates/ares-llm/src/pool.rs)
 
 ---
 

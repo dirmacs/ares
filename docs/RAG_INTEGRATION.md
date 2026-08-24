@@ -2,7 +2,7 @@
 
 ## Overview
 
-The ARES RAG (Retrieval-Augmented Generation) pipeline provides semantic search and context injection capabilities for document-based knowledge bases. This document describes the integration points, usage patterns, and implementation details.
+The ARES RAG (Retrieval-Augmented Generation) pipeline provides semantic search and context injection for document knowledge bases. This document describes the integration points. It also describes usage patterns and implementation details.
 
 ## Architecture
 
@@ -63,27 +63,20 @@ The ARES RAG (Retrieval-Augmented Generation) pipeline provides semantic search 
 
 ## Feature flags
 
-The RAG pipeline requires two features to be enabled:
+The RAG pipeline requires two features at compile time:
 
 ```bash
 # Build with RAG support
 cargo build --features "ares-vector,local-embeddings" --no-default-features
 
 # Full feature set
-cargo build --features "ares-vector,local-embeddings,postgres,ollama,openai,mcp"
+cargo build --features "ares-vector,local-embeddings,postgres,openai,mcp"
 ```
 
 ### Feature dependencies
 
-- **`ares-vector`**: Pure Rust HNSW vector database
- - No native dependencies
- - Compiles anywhere Rust works
- - Persistent or in-memory storage
- 
-- **`local-embeddings`**: ONNX-based embedding models
- - Uses `fastembed` crate
- - Pre-downloads models via `lancor` (handles HuggingFace CDN correctly)
- - **NOT supported on Windows MSVC** (use WSL, Linux, or macOS)
+- `ares-vector`: HNSW vector database written in Rust. It has no native dependencies, it compiles anywhere Rust works, and it stores data persistently or in memory.
+- `local-embeddings`: ONNX embedding models through the fastembed crate. Model downloads go through lancor, which handles the HuggingFace CDN correctly. Windows MSVC does not work. Use WSL, Linux, or macOS.
 
 ## API endpoints
 
@@ -170,15 +163,14 @@ Authorization: Bearer <jwt_token>
 
 ## User isolation
 
-All RAG collections are automatically scoped per-user to prevent data leakage:
-
+All RAG collections get a per-user scope to prevent data leakage:
 - Collection `my_kb` for user `user_123` becomes `user_123_my_kb` internally
-- Users can only access their own collections
-- Collection names in API responses are unscoped (user-facing)
+- Users access only their own collections
+- API responses show unscoped collection names
 
 ## CLI ingestion and search
 
-Use the generic Rust CLI for local document ingestion. The CLI has no built-in corpus paths or collection names; provide deployment-specific values explicitly or from your own wrapper outside the OSS repository.
+Use the generic Rust CLI for local document ingestion. The CLI has no built-in corpus paths or collection names. Provide deployment-specific values explicitly. Alternatively, pass them from your own wrapper outside this repository.
 
 ```bash
 # Preview the documents that would be ingested
@@ -216,11 +208,11 @@ ares-server rag search \
   --top-k 5
 ```
 
-Managed deployments should keep site-specific defaults in their private wrapper repository and pass them to `ares-server rag ingest-dir`; do not add private paths, customer names, or secrets to this OSS repository.
+Managed deployments keep site-specific defaults in their private wrapper repositories. Pass those values to `ares-server rag ingest-dir`. Do not add private paths to this public repository. Do not add customer names or secrets either.
 
 ### Context injection pattern
 
-For LLM context injection, use the search results like this:
+Format the search results for LLM context injection like this:
 
 ```rust
 // After searching
@@ -246,29 +238,29 @@ let prompt = format!(
 
 ### Integration tests
 
-Run the EHB ingestion tests:
+Run the live ingestion tests with these commands:
 
 ```bash
 # Enable live tests
-export EHB_INGESTION_TESTS=1
+export LIVE_INGESTION_TESTS=1
 
-# Run all EHB tests
-cargo test --features "ares-vector,local-embeddings" --test rag_ehb_ingestion_tests -- --ignored
+# Run all live ingestion tests
+cargo test --test rag_live_ingestion_tests -- --ignored
 
 # Run specific test
-cargo test --features "ares-vector,local-embeddings" --test rag_ehb_ingestion_tests \
-  -- --ignored test_ehb_batch_ingestion
+cargo test --test rag_live_ingestion_tests \
+  -- --ignored test_live_batch_ingestion
 ```
 
 ### Test coverage
 
 The test suite covers:
-- Document discovery (finds all markdown files)
-- Batch ingestion (processes all documents)
-- Semantic search (queries with relevance scoring)
-- Context injection (formats results for LLM)
-- Collection stats (verifies storage)
-- Search accuracy (validates relevance)
+- Document discovery across all markdown files
+- Batch ingestion of every document
+- Semantic search with relevance scores
+- Context injection formatting for the LLM
+- Collection statistics that confirm storage
+- Search accuracy checks
 
 ## Performance characteristics
 
@@ -291,24 +283,32 @@ The test suite covers:
 ### Common issues
 
 **Issue**: "Collection already exists"
-- Fix: Use a different collection name or delete the existing one first
+
+Fix: Use a different name, or delete the existing collection first.
 
 **Issue**: "Embedding failed"
-- Check: Ensure `local-embeddings` feature is enabled
-- Check: Verify model cache at `.fastembed_cache/`
+
+Check these items:
+- The build includes the `local-embeddings` feature
+- The model cache exists at `.fastembed_cache/`
 
 **Issue**: "Search returns no results"
-- Check: Verify documents were ingested (`GET /api/rag/collections`)
-- Check: Lower the `threshold` parameter
-- Check: Ensure query is similar to ingested content
+
+Check these items:
+- Documents were ingested (`GET /api/rag/collections`)
+- The `threshold` parameter is low enough
+- The query resembles the ingested content
 
 **Issue**: "OOM on reranker"
-- Fix: Disable reranking (`"rerank": false`)
-- Fix: Use smaller reranker model (`"bge-reranker-small"`)
+
+Fixes:
+- Disable reranking (`"rerank": false`)
+- Select a smaller reranker (`"bge-reranker-small"`)
 
 ### Debug mode
 
 Enable verbose logging:
+
 ```bash
 RUST_LOG=debug ares-server
 ```
@@ -324,8 +324,8 @@ RUST_LOG=debug ares-server
 
 ## References
 
-- [RAG Handlers](../src/api/handlers/rag.rs)
-- [Embedding Service](../src/rag/embeddings.rs)
-- [Search Strategies](../src/rag/search.rs)
-- [Vector Store](../src/db/ares_vector.rs)
-- [Integration Tests](../tests/rag_ehb_ingestion_tests.rs)
+- [RAG handlers](../crates/ares-http/src/api/handlers/rag.rs)
+- [Embedding service](../crates/ares-rag/src/embeddings.rs)
+- [Search strategies](../crates/ares-rag/src/search.rs)
+- [Vector store](../crates/ares-vector/src/lib.rs)
+- [Integration tests](../tests/rag_live_ingestion_tests.rs)

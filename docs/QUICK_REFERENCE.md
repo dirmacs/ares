@@ -1,6 +1,6 @@
 # A.R.E.S quick reference card
 
-Fast reference for common development tasks and commands.
+Fast reference for common development tasks.
 
 ## Quick start
 
@@ -55,9 +55,9 @@ ares-server init --help                   # Show init options
 ares-server --version                     # Show version
 ```
 
-## Just commands (recommended)
+## Just commands
 
-Run `just --list` for all available commands. Here are the most common:
+Run `just --list` for all commands. This card shows the most common commands:
 
 ```bash
 # Build
@@ -122,7 +122,7 @@ just --list             # All commands
 ## Build commands (cargo)
 
 ```bash
-# Default build (ollama + local-db)
+# Default build (postgres, openai, ares-vector, mcp, inventory, rhai-policy)
 cargo build
 # Or: just build
 
@@ -279,7 +279,7 @@ echo "LLAMACPP_MODEL_PATH=./models/Llama-3.2-3B-Instruct-Q4_K_M.gguf" >> .env
 cargo run --features llamacpp
 ```
 
-##  configuration (TOML + TOON)
+## Configuration (TOML + TOON)
 
 A.R.E.S uses a hybrid configuration system:
 
@@ -353,18 +353,19 @@ nano .env
 HOST=127.0.0.1
 PORT=3000
 
-# Database
-TURSO_URL=file:local.db
+# Database (postgres by default; TURSO_URL selects Turso instead)
+DATABASE_URL=postgres://localhost/ares
 
-# Ollama (default)
+# OpenAI-compatible provider (default feature)
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4
+
+# Ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=ministral-3:3b
 
-# LlamaCpp (takes priority)
+# LlamaCpp (takes priority when set)
 LLAMACPP_MODEL_PATH=/path/to/model.gguf
-
-# OpenAI
-OPENAI_API_KEY=sk-...
 
 # Anthropic
 ANTHROPIC_API_KEY=sk-ant-...
@@ -477,7 +478,7 @@ curl -X POST http://localhost:3000/api/chat \
 
 ### Swagger UI
 
-> **Note:** Requires the `swagger-ui` feature to be enabled at build time.
+The build must include the `swagger-ui` feature.
 
 ```bash
 # Build with Swagger UI
@@ -486,45 +487,48 @@ cargo build --features "swagger-ui"
 cargo build --features "full"
 ```
 
-Then access at: `http://localhost:3000/swagger-ui/`
+Then open `http://localhost:3000/swagger-ui/`.
 
 ## Feature flags
 
 ### LLM providers
-- `ollama` (default) - Local Ollama inference
-- `openai` - OpenAI API
-- `anthropic` - Anthropic Claude API
-- `llamacpp` - Direct GGUF loading
-- `llamacpp-cuda` - GGUF with NVIDIA GPU
-- `llamacpp-metal` - GGUF with Apple GPU
-- `llamacpp-vulkan` - GGUF with Vulkan
+- `openai` (default) - OpenAI API and compatible endpoints such as NVIDIA NIM
+- `azure` - Azure AI Foundry chat completions
+- `bedrock` - Claude on AWS Bedrock
 
-### Databases
-- `local-db` (default) - SQLite/libsql
-- `turso` - Remote Turso database
-- `qdrant` - Vector database
+Ollama, Anthropic, and LlamaCpp support lives in `crates/ares-llm` behind the features of that crate.
+
+### Databases and vector stores
+- `postgres` (default) - PostgreSQL through sqlx
+- `turso` - Turso/libSQL database
+- `ares-vector` (default) - Embedded vector database with HNSW, written in Rust
+- `qdrant` - Qdrant vector database
+- `pgvector` - PostgreSQL vector extension
+- `chromadb` - ChromaDB vector database
+- `pinecone` - Pinecone vector database (alpha)
+- `lancedb` - LanceDB vector database
 
 ### Embeddings
-- `local-embeddings` - Local embedding models via ort (ONNX Runtime)
+- `local-embeddings` - Local ONNX embedding models through fastembed
 
-> **Windows MSVC:** The `local-embeddings` feature does NOT work on Windows with the MSVC toolchain due to ort-sys linker errors. Use WSL2 or the GNU toolchain instead.
+> **Windows MSVC:** `local-embeddings` does not work with the MSVC toolchain because of ort-sys linker errors. Use WSL2 or the GNU toolchain.
 
 ### UI & documentation
-- `ui` - Embedded Leptos web UI served from backend
-- `swagger-ui` - Interactive Swagger UI API documentation at `/swagger-ui/`
+- `ui` - Embedded Leptos web UI served by the backend
+- `swagger-ui` - Interactive API documentation at `/swagger-ui/`
 
-> **Note:** `swagger-ui` was made optional in v0.2.5 to reduce binary size and build time. It requires network access during build to download Swagger UI assets.
+`swagger-ui` became optional in v0.2.5 to reduce binary size and build time. The build downloads Swagger UI assets from the network.
 
 ### Bundles
-- `all-llm` - All LLM providers (ollama, openai, anthropic, llamacpp)
-- `all-db` - All databases
-- `full` - Everything except UI and local-embeddings: ollama, openai, anthropic, llamacpp, turso, qdrant, mcp, swagger-ui
-- `full-ui` - Everything including UI (excludes local-embeddings)
-- `full-local-embeddings` - Full + local-embeddings (Linux/macOS only)
-- `full-ui-local-embeddings` - Full + UI + local-embeddings (Linux/macOS only)
-- `minimal` - Nothing optional
+- `all-llm` - openai, azure, bedrock
+- `all-db` - postgres
+- `full` - openai, azure, bedrock, postgres, qdrant, ares-vector, mcp, swagger-ui
+- `full-ui` - `full` plus `ui`
+- `full-local-embeddings` - `full` plus `local-embeddings` (Linux/macOS)
+- `full-ui-local-embeddings` - `full-ui` plus `local-embeddings` (Linux/macOS)
+- `minimal` - no optional features
 
-> **Note:** `local-embeddings` was removed from `full` and `full-ui` bundles in v0.4.0 due to Windows MSVC compatibility issues. Use `full-local-embeddings` or `full-ui-local-embeddings` on Linux/macOS if you need local embedding support.
+v0.4.0 removed `local-embeddings` from the `full` and `full-ui` bundles because of Windows MSVC compatibility. Use `full-local-embeddings` or `full-ui-local-embeddings` on Linux or macOS.
 
 ## Troubleshooting
 
@@ -679,14 +683,14 @@ cargo run --features anthropic
 
 ## Security checklist
 
-- [ ] JWT_SECRET is 32+ characters
-- [ ] API_KEY is unique and secure
-- [ ] .env is in .gitignore
-- [ ] No hardcoded secrets in code
-- [ ] HTTPS enabled in production
-- [ ] Rate limiting configured
-- [ ] Input validation on all endpoints
-- [ ] Regular `cargo audit` runs
+- [ ] Set `JWT_SECRET` to 32 characters or more
+- [ ] Set a unique, strong value for `API_KEY`
+- [ ] Add `.env` to `.gitignore`
+- [ ] Remove hardcoded secrets from code
+- [ ] Enable HTTPS in production
+- [ ] Configure rate limiting
+- [ ] Validate input on every endpoint
+- [ ] Run `cargo audit` at regular intervals
 
 ## Performance tips
 
@@ -712,9 +716,9 @@ nvidia-smi  # NVIDIA
 ```
 
 ### Model selection
-- Fast: 1B-3B models with Q4_K_M
-- Balanced: 7B with Q4_K_M or Q5_K_M
-- Quality: 13B+ with Q6_K or Q8_0
+- Fast: 1B-3B models with `Q4_K_M`
+- Balanced: 7B models with `Q4_K_M` or `Q5_K_M`
+- Quality: 13B+ models with `Q6_K` or `Q8_0`
 
 ## Quick wins
 
@@ -741,31 +745,31 @@ open http://localhost:3000/
 
 ## Pro tips
 
-1. Use `ares-server init`: Fastest way to get started
-2. Use feature flags wisely: Don't build with `full` unless needed
-3. Cache Ollama models: They download once and persist
-4. Use Q4_K_M quantization: Best quality/size ratio
-5. Monitor RAM usage: Large models can consume 8GB+
-6. Enable GPU when available: 5-10x speed boost
-7. Use docker-compose.dev.yml: Easiest local setup
-8. Check CI before pushing: Run `cargo clippy` and `cargo test`
-9. Build with `--features ui`: Get a web interface bundled in
-10. Build with `--features swagger-ui`: Get interactive API docs at `/swagger-ui/`
-11. Default build is lighter: Core server doesn't include swagger-ui by default for faster builds
+1. Start with `ares-server init` for the fastest setup
+2. Select only the features that you need
+3. Reuse downloaded Ollama models across runs
+4. Choose `Q4_K_M` quantization for the best ratio of quality to size
+5. Track RAM use with large models. Plan for 8 GB or more
+6. Enable GPU acceleration for a 5-10x speed gain
+7. Use docker-compose.dev.yml for the easiest local setup
+8. Run `cargo clippy` and `cargo test` before each push
+9. Build with `--features ui` to bundle the web interface
+10. Build with `--features swagger-ui` for API docs at `/swagger-ui/`
+11. Leave `swagger-ui` out of default builds to compile faster
 
-##  getting help
+## Getting help
 
 1. Run `ares-server --help` for CLI options
 2. Run `ares-server init --help` for init options
-3. Check `docs/` directory for guides
+3. Read the guides in `docs/`
 4. Search closed issues on GitHub
 5. Run `cargo doc --open` for API docs
-6. Enable debug logging: `RUST_LOG=debug ares-server`
+6. Enable debug logging with `RUST_LOG=debug ares-server`
 
 ---
 
-Quick Links:
--  [Full Documentation](../README.md)
--  [Issue Tracker](https://github.com/dirmacs/ares/issues)
--  [Discussions](https://github.com/dirmacs/ares/discussions)
-- [Latest Release](https://github.com/dirmacs/ares/releases)
+Quick links:
+- [Full documentation](../README.md)
+- [Issue tracker](https://github.com/dirmacs/ares/issues)
+- [Discussions](https://github.com/dirmacs/ares/discussions)
+- [Latest release](https://github.com/dirmacs/ares/releases)

@@ -5,7 +5,7 @@ Pure-Rust embedded vector database with HNSW indexing for ARES.
 ## Features
 
 - HNSW (Hierarchical Navigable Small World) index for fast approximate nearest neighbor search
-- Pure Rust — no external dependencies or services required
+- Pure Rust: no external dependency or service required
 - Persistent storage with memory-mapped files
 - Collection-based organization
 - Cosine similarity search with configurable top-k and threshold

@@ -1,6 +1,6 @@
 # Research
 
-The Research API performs deep, multi-step research on a topic using parallel sub-agents. Unlike a single chat request, a research query spawns multiple agents that independently explore facets of the question, synthesize findings, and produce a thorough result with source attribution.
+The Research API does deep multi-step research on a topic with parallel sub-agents. A single chat request uses one agent. A research query spawns multiple agents. Each agent explores one part of the question, and the system synthesizes the findings into one result with source attribution.
 
 ---
 
@@ -10,7 +10,7 @@ The Research API performs deep, multi-step research on a topic using parallel su
 POST /api/research
 ```
 
-Submit a research query for deep, multi-step investigation.
+This endpoint submits a research query for deep multi-step investigation.
 
 ### Authentication
 
@@ -20,13 +20,13 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 
 | Parameter | Type | Required | Default | Description |
 |-----------------|---------|----------|---------|-------------------------------------------------------------------------|
-| `query` | string | Yes |, | The research question or topic. |
-| `depth` | integer | No | 3 | How many levels deep the research goes. Higher values explore sub-topics more thoroughly. |
-| `max_iterations` | integer | No | 5 | Maximum total agent calls. Acts as a cost/time ceiling. |
+| `query` | string | Yes | — | The research question or topic. |
+| `depth` | integer | No | 3 | The number of levels in the research tree. Higher values explore sub-topics more thoroughly. |
+| `max_iterations` | integer | No | 5 | The maximum total number of agent calls. This value is a limit on cost and time. |
 
-**Understanding `depth`:** At depth 1, the research agent answers the query directly. At depth 2, it identifies sub-questions, spawns agents to answer each, then synthesizes. At depth 3+, sub-agents can spawn their own sub-agents, creating a tree of investigation.
+**About `depth`:** At depth 1, the research agent answers the query directly. At depth 2, it identifies sub-questions, spawns agents for them, and synthesizes their answers. At depth 3 and higher, sub-agents can spawn more sub-agents. The result is a tree of investigation.
 
-**Understanding `max_iterations`:** This is a hard cap on total agent invocations across all depth levels. If the research tree would require more calls than `max_iterations`, it stops expanding and synthesizes what it has. Use this to control cost and response time.
+**About `max_iterations`:** This value is a hard cap on the total agent invocations across all depth levels. If the research tree needs more calls than `max_iterations`, it stops expansion and synthesizes its current findings. Use this value to control cost and response time.
 
 ### Response
 
@@ -44,7 +44,7 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 
 | Field | Type | Description |
 |--------------|----------|---------------------------------------------------------|
-| `findings` | string | The synthesized research output, typically in Markdown. |
+| `findings` | string | The synthesized research output, usually in Markdown format. |
 | `sources` | string[] | References and sources discovered during research. |
 | `duration_ms` | integer | Total time taken for the research in milliseconds. |
 
@@ -120,4 +120,4 @@ console.log(`Sources: ${result.sources.join(", ")}`);
 | Deep competitive analysis | 3 | 10 |
 | Exhaustive literature review | 4+ | 15+ |
 
-Higher depth and iteration values produce more thorough results but take longer and consume more API quota. For most use cases, the defaults (`depth: 3`, `max_iterations: 5`) provide a good balance of thoroughness and speed.
+Higher depth and iteration values produce more thorough results. They take longer and use more API quota. For most use cases, the defaults (`depth: 3`, `max_iterations: 5`) give a good balance of thoroughness and speed.

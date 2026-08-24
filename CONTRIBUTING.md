@@ -1,6 +1,6 @@
 # Contributing to A.R.E.S
 
-Thank you for your interest in contributing to A.R.E.S (Agentic Retrieval Enhanced Server)! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to A.R.E.S (Agentic Retrieval Enhanced Server). This document gives the guidelines and instructions for contributions.
 
 ## Table of contents
 
@@ -18,17 +18,17 @@ Thank you for your interest in contributing to A.R.E.S (Agentic Retrieval Enhanc
 
 ## Code of conduct
 
-This project follows the [Rust Code of Conduct](https://www.rust-lang.org/policies/code-of-conduct). Please be respectful and constructive in all interactions.
+This project follows the [Rust Code of Conduct](https://www.rust-lang.org/policies/code-of-conduct). Be respectful and constructive in all interactions.
 
 ## Getting started
 
 ### Prerequisites
 
-- Rust 1.98+: Install via [rustup](https://rustup.rs/)
-- Git: For version control
-- **just** (recommended): Command runner - [Install just](https://just.systems)
-- **Docker** (optional): For running Qdrant vector database
-- **Ollama** (optional): For local LLM inference
+- Rust 1.98+: Install through [rustup](https://rustup.rs/)
+- Git: for version control
+- **just** (recommended): command runner — [Install just](https://just.systems)
+- **Docker** (optional): for the Qdrant vector database
+- **Ollama** (optional): for local LLM inference
 - **Node.js runtime** (for UI development): bun, npm, or deno
 
 ### Fork and clone
@@ -36,13 +36,13 @@ This project follows the [Rust Code of Conduct](https://www.rust-lang.org/polici
 1. Fork the repository on GitHub
 2. Clone your fork:
  ```bash
-   git clone https://github.com/dirmacs/ares.git
-   cd ares
-   ```
+  git clone https://github.com/dirmacs/ares.git
+  cd ares
+  ```
 3. Add the upstream remote:
- ```bash
-   git remote add upstream https://github.com/dirmacs/ares.git
-   ```
+```bash
+  git remote add upstream https://github.com/dirmacs/ares.git
+  ```
 
 ## Development setup
 
@@ -54,15 +54,16 @@ Create a `.env` file from the example:
 cp .env.example .env
 ```
 
-Configure the following variables based on your setup:
+Set these variables for your setup:
 
 ```bash
 # Server Configuration
 HOST=127.0.0.1
 PORT=3000
 
-# Database (local SQLite for development)
-TURSO_URL=file:local.db
+# Database (PostgreSQL via DATABASE_URL; Turso/libSQL optional)
+DATABASE_URL=postgres://localhost/ares
+TURSO_URL=
 TURSO_AUTH_TOKEN=
 
 # LLM Provider (choose one or more)
@@ -90,7 +91,7 @@ QDRANT_URL=http://localhost:6334
 ### Building the project
 
 ```bash
-# Build with default features (local-db + ollama)
+# Build with default features (postgres + openai + ares-vector + mcp)
 cargo build
 # Or: just build
 
@@ -115,8 +116,8 @@ cargo run
 # Or: just run
 
 # Run with specific features
-cargo run --features "ollama"
-# Or: just run-features "ollama"
+cargo run --features "openai"
+# Or: just run-features "openai"
 
 # With debug logging
 RUST_LOG=debug cargo run
@@ -129,55 +130,70 @@ RUST_LOG=trace cargo run
 
 ## Feature flags
 
-A.R.E.S uses feature flags for conditional compilation. Understanding these is important for development:
+A.R.E.S uses feature flags for conditional compilation. Know these flags before you develop:
 
 ### LLM providers
 
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
-| `ollama` | Ollama integration | `ollama-rs` |
 | `openai` | OpenAI API support | `async-openai` |
-| `llamacpp` | Direct GGUF loading | `llama-cpp-2` |
+| `azure` | Azure AI Foundry chat completions | Foundry credentials |
+| `bedrock` | AWS Bedrock Runtime | AWS credentials |
+| `ollama` | Ollama integration (ares-llm crate) | `ollama-rs` |
+| `llamacpp` | Direct GGUF loading (ares-llm crate) | `llama-cpp-2` |
 | `llamacpp-cuda` | LlamaCpp + CUDA | GPU drivers |
 | `llamacpp-metal` | LlamaCpp + Metal | macOS only |
+
+The root package forwards `openai`, `azure`, and `bedrock`. The `ollama` and `llamacpp` families live on the ares-llm crate.
 
 ### Database backends
 
 | Feature | Description |
 |---------|-------------|
-| `local-db` | Local SQLite via libsql (default) |
-| `turso` | Remote Turso database |
+| `postgres` | PostgreSQL through sqlx (default) |
+| `turso` | Remote Turso / libSQL database |
+
+### Vector stores
+
+| Feature | Description |
+|---------|-------------|
+| `ares-vector` | Embedded pure-Rust vector store (default) |
 | `qdrant` | Qdrant vector database |
+| `lancedb` | LanceDB embedded store |
+| `pgvector` | pgvector through PostgreSQL |
+| `chromadb` | ChromaDB client |
+| `pinecone` | Pinecone client (alpha) |
 
 ### UI & documentation features
 
 | Feature | Description |
 |---------|-------------|
-| `ui` | Embedded Leptos web UI served from backend |
+| `ui` | Embedded Leptos web UI served from the backend |
 | `swagger-ui` | Interactive Swagger UI API documentation at `/swagger-ui/` |
 
-> **Note:** The `swagger-ui` feature was made optional in v0.2.5 to reduce binary size and build time. It requires network access during build to download Swagger UI assets.
+> **Note:** v0.2.5 made the `swagger-ui` feature optional to reduce binary size and build time. It requires network access during the build to download Swagger UI assets.
 
 ### Feature bundles
 
 | Feature | Includes |
 |---------|----------|
-| `all-llm` | ollama + openai + llamacpp |
-| `all-db` | local-db + turso + qdrant |
-| `full` | All optional features (except UI): ollama, openai, llamacpp, turso, qdrant, mcp, swagger-ui |
-| `full-ui` | All optional features + UI |
+| `all-llm` | openai + azure + bedrock |
+| `all-db` | postgres |
+| `all-vectorstores` | ares-vector + qdrant + pgvector + chromadb + pinecone |
+| `full` | All main optional features: openai, azure, bedrock, postgres, qdrant, ares-vector, mcp, swagger-ui |
+| `full-ui` | full + ui |
 | `minimal` | No optional features |
 
 ### Working with features
 
 ```bash
 # Test with specific feature combination
-cargo test --features "ollama,qdrant"
+cargo test --features "openai,qdrant"
 
 # Check that code compiles with minimal features
 cargo check --features "minimal"
 
-# Run clippy on all feature combinations (except UI)
+# Run clippy with the full feature set (except UI)
 cargo clippy --features "full"
 # Or: just lint-all
 
@@ -192,7 +208,7 @@ cargo build --features "swagger-ui"
 cargo build --features "ui,swagger-ui"
 ```
 
-> **Note about docs.rs:** Some features (`llamacpp`, `qdrant`, `swagger-ui`) cannot be built on docs.rs due to their build requirements (native compilation, network access, or filesystem writes). Documentation is built with: `ollama`, `openai`, `local-db`, `turso`, `mcp`.
+> **Note about docs.rs:** Some features (`llamacpp`, `qdrant`, `swagger-ui`) cannot build on docs.rs because of their build requirements (native compilation, network access, or filesystem writes).
 
 ## Using just (recommended)
 
@@ -212,7 +228,7 @@ just build-ui              # Build with embedded UI
 just test                  # Run tests
 just lint                  # Run clippy
 just fmt                   # Format code
-just quality               # Run all quality checks (fmt + lint)
+just quality               # Run all quality checks (fmt-check + lint)
 just ci                    # Run full CI checks
 
 # CLI commands
@@ -250,7 +266,7 @@ just pre-commit            # Format, lint, and test
 Use descriptive branch names:
 
 - `feature/add-anthropic-provider`
-- `fix/ollama-streaming-bug`
+- `fix/openai-streaming-bug`
 - `docs/update-readme`
 - `refactor/llm-client-trait`
 
@@ -267,17 +283,17 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 ```
 
 Types:
-- `feat`: New feature
-- `fix`: Bug fix
-- `docs`: Documentation changes
-- `style`: Code style changes (formatting, etc.)
-- `refactor`: Code refactoring
-- `test`: Adding or updating tests
-- `chore`: Maintenance tasks
+- `feat`: new feature
+- `fix`: bug fix
+- `docs`: documentation changes
+- `style`: code style changes (formatting and more)
+- `refactor`: code refactoring
+- `test`: added or updated tests
+- `chore`: maintenance tasks
 
 Examples:
 ```
-feat(llm): add streaming support for LlamaCpp
+feat(llm): add streaming support for Bedrock
 
 Implements token-by-token streaming using tokio channels.
 Resolves #123
@@ -289,32 +305,32 @@ test(api): add concurrent login tests
 
 ### Adding new features
 
-1. **Discuss First**: For significant changes, open an issue to discuss the approach
-2. **Feature Gate**: Use Cargo features for optional functionality
-3. **Document**: Update README and add doc comments
-4. **Test**: Add unit and integration tests
-5. **Example**: Consider adding usage examples
+1. For significant changes, open an issue first to discuss the approach
+2. Gate optional functionality behind Cargo features
+3. Update README and add doc comments
+4. Add unit and integration tests
+5. Consider usage examples where they help
 
 ### Adding a new LLM provider
 
-1. Create `src/llm/your_provider.rs`
+1. Create `crates/ares-llm/src/your_provider.rs`
 2. Implement the `LLMClient` trait
-3. Add feature flag in `Cargo.toml`
-4. Update `Provider` enum in `src/llm/client.rs`
+3. Add the feature flag in `Cargo.toml`
+4. Extend the `Provider` enum in `crates/ares-llm/src/client.rs`
 5. Add tests
-6. Document environment variables
+6. Document the environment variables
 
 ### Adding a new tool
 
-1. Create `src/tools/your_tool.rs`
+1. Create `crates/ares-tools/src/tools/your_tool.rs`
 2. Implement the `Tool` trait
-3. Register in the tool registry
+3. Register the tool in the tool registry factory
 4. Add tests
-5. Document the tool's purpose and parameters
+5. Document the tool purpose and parameters
 
 ### Adding a new agent (via TOML)
 
-New agents can be added purely via configuration in `ares.toml`:
+New agents need only configuration in `ares.toml`:
 
 ```toml
 [agents.my_custom_agent]
@@ -326,11 +342,11 @@ Your role is to...
 """
 ```
 
-The `ConfigurableAgent` will automatically pick up this configuration.
+The `ConfigurableAgent` picks up this configuration automatically.
 
 ### Adding a new workflow
 
-Workflows are also defined in `ares.toml`:
+Workflows also live in `ares.toml`:
 
 ```toml
 [workflows.my_workflow]
@@ -341,18 +357,19 @@ max_depth = 5                          # Maximum routing depth
 
 ## CLI development
 
-The CLI is implemented in `src/cli/` with the following structure:
+The CLI lives in `src/cli/` with this structure:
 
 ```
 src/cli/
  mod.rs      # CLI argument parsing with clap
  init.rs     # Init command scaffolding logic
  output.rs   # Colored TUI output helpers
+ rag.rs      # RAG subcommands
 ```
 
 ### Adding a new CLI command
 
-1. Add the command variant to `Commands` enum in `src/cli/mod.rs`
+1. Add the command variant to the `Commands` enum in `src/cli/mod.rs`
 2. Implement the command handler in `src/main.rs`
 3. Add tests in `tests/cli_tests.rs`
 
@@ -365,7 +382,7 @@ cargo test --lib cli::
 # Run CLI integration tests
 cargo test --test cli_tests
 
-# Test init command manually
+# Test the init command manually
 cargo run -- init /tmp/test-project
 cargo run -- config --config /tmp/test-project/ares.toml
 cargo run -- agent list --config /tmp/test-project/ares.toml
@@ -429,33 +446,33 @@ ui/
 
 ### Node.js runtime detection
 
-The build system automatically detects available runtimes:
+The build system detects available runtimes automatically:
 
-1. bun (preferred) - Fastest, recommended
-2. npm - Standard Node.js package manager
-3. deno - Alternative runtime
+1. bun (preferred) — fastest
+2. npm — standard Node.js package manager
+3. deno — alternative runtime
 
-If no runtime is found, the build will fail with instructions.
+If no runtime exists, the build fails with instructions.
 
 ### Architecture: key registries
 
-When contributing code, understand these core components:
+Know these core components when you contribute code:
 
-- `AresConfigManager` (`src/utils/toml_config.rs`): Thread-safe config access with hot-reload
-- `ProviderRegistry` (`src/llm/provider_registry.rs`): Creates LLM clients from config
-- `AgentRegistry` (`src/agents/registry.rs`): Creates agents from TOML definitions
-- `ToolRegistry` (`src/tools/registry.rs`): Manages tool availability and configuration
-- `WorkflowEngine` (`src/workflows/engine.rs`): Executes declarative workflows
-- `ConfigurableAgent` (`src/agents/configurable.rs`): Generic config-driven agent
+- `AresConfigManager` (`crates/ares-http/src/overlay.rs`): Thread-safe configuration access with hot-reload. Also aliased as `Overlay` for the loader
+- `ProviderRegistry` (`crates/ares-llm/src/provider_registry.rs`): creates LLM clients from configuration
+- `AgentRegistry` (`crates/ares-agent/src/registry.rs`): creates agents from TOML definitions
+- `ToolRegistry` (`crates/ares-tools/src/registry.rs`): manages tool availability and configuration
+- `WorkflowEngine` (`crates/ares-agent/src/workflows/engine.rs`): executes declarative workflows
+- `ConfigurableAgent` (`crates/ares-agent/src/configurable.rs`): generic configuration-driven agent
 
 ### Configuration validation
 
 The configuration system validates:
 - Reference integrity (models → providers, agents → models, workflows → agents)
-- Circular reference detection in workflows
+- Circular references in workflows
 - Environment variable availability
 
-Use `config.validate_with_warnings()` to also get warnings about unused config items.
+Use `config.validate_with_warnings()` to also get warnings about unused configuration items.
 
 ## Testing
 
@@ -472,7 +489,7 @@ cargo test --test cli_tests
 # Or: just test-filter cli
 
 # Run with specific features
-cargo test --features "ollama,openai"
+cargo test --features "openai,openai"
 
 # Run a specific test
 cargo test test_name
@@ -493,16 +510,16 @@ cargo test --lib
 
 ### Live Ollama tests
 
-There are additional tests that connect to a **real Ollama instance**. These tests are **ignored by default** and must be explicitly enabled.
+Additional tests connect to a **real Ollama instance**. These tests are **ignored by default**, and an explicit flag enables them.
 
 #### Prerequisites
 
 1. A running Ollama server (default: `http://localhost:11434`)
-2. A model pulled (e.g., `ollama pull ministral-3:3b`)
+2. A pulled model (for example, `ollama pull ministral-3:3b`)
 
 #### Running live tests
 
-**Option 1: Using just (recommended)**
+**Option 1: use just (recommended)**
 
 ```bash
 # Run all ignored tests (including live Ollama tests)
@@ -515,7 +532,7 @@ just test-ignored-verbose
 just test-all
 ```
 
-**Option 2: Set environment variable in your shell**
+**Option 2: set the environment variable in your shell**
 
 ```bash
 # Bash/Zsh
@@ -528,7 +545,7 @@ $env.OLLAMA_LIVE_TESTS = "1"; cargo test --test ollama_live_tests -- --ignored
 $env:OLLAMA_LIVE_TESTS = "1"; cargo test --test ollama_live_tests -- --ignored
 ```
 
-**Option 2: Add to your `.env` file**
+**Option 3: add to your `.env` file**
 
 ```bash
 # Add to .env
@@ -543,7 +560,7 @@ cargo test --test ollama_live_tests -- --ignored
 
 #### Configuring live tests
 
-You can customize the Ollama connection:
+Customize the Ollama connection:
 
 ```bash
 # Custom Ollama URL
@@ -580,11 +597,11 @@ cargo llvm-cov --lcov --output-path lcov.info
 
 ### Writing tests
 
-- Place unit tests in the same file using `#[cfg(test)]` modules
+- Place unit tests in the same file inside `#[cfg(test)]` modules
 - Place integration tests in the `tests/` directory
-- Use `mockall` for mocking traits
-- Use `wiremock` for HTTP mocking
-- Use `tempfile` for temporary file/database tests
+- Use `mockall` to mock traits
+- Use `wiremock` to mock HTTP endpoints
+- Use `tempfile` for temporary file and database tests
 
 Example test structure:
 ```rust
@@ -619,7 +636,7 @@ mod tests {
 # Format code
 cargo fmt
 
-# Check formatting (CI will fail if not formatted)
+# Check formatting (CI fails on unformatted code)
 cargo fmt -- --check
 ```
 
@@ -638,10 +655,10 @@ cargo clippy --all-features -- -D warnings
 
 ### Documentation
 
-- All public items should have doc comments
+- All public items carry doc comments
 - Use `///` for item documentation
 - Use `//!` for module-level documentation
-- Include examples in doc comments when helpful
+- Include examples in doc comments where they help
 - Update CHANGELOG.md for notable changes
 - Update README.md for user-facing features
 - Update docs/QUICK_REFERENCE.md for new commands
@@ -676,15 +693,15 @@ pub async fn create_client(provider: Provider) -> Result<Box<dyn LLMClient>> {
 
 ## Pull request process
 
-### Before submitting
+### Before you submit
 
-1. [ ] Rebase on latest `main`
-2. [ ] Run `cargo fmt`
-3. [ ] Run `cargo clippy --features "full"`
-4. [ ] Run `cargo test`
-5. [ ] Run `cargo test --test cli_tests` (if CLI changes)
-6. [ ] Update documentation if needed (README, QUICK_REFERENCE, CHANGELOG)
-7. [ ] Add/update tests for changes
+1. Rebase on latest `main`
+2. Run `cargo fmt`
+3. Run `cargo clippy --features "full"`
+4. Run `cargo test`
+5. Run `cargo test --test cli_tests` for CLI changes
+6. Update documentation if needed (README, QUICK_REFERENCE, CHANGELOG)
+7. Add or update tests for the changes
 
 ### PR description template
 
@@ -720,39 +737,39 @@ Describe testing done.
 ### Review process
 
 1. Automated CI checks must pass
-2. At least one maintainer approval required
+2. At least one maintainer must approve
 3. Address review feedback
-4. Squash commits if requested
-5. Maintainer will merge when ready
+4. Squash commits on request
+5. A maintainer merges when ready
 
 ## Release process
 
-Releases are managed by maintainers:
+Maintainers manage releases:
 
-1. Update version in `Cargo.toml`
+1. Update the version in `Cargo.toml`
 2. Update CHANGELOG.md
-3. Create git tag: `git tag v0.x.y`
-4. Push tag: `git push origin v0.x.y`
-5. GitHub Actions will create release
+3. Create the git tag: `git tag v0.x.y`
+4. Push the tag: `git push origin v0.x.y`
+5. GitHub Actions creates the release
 
 ### Versioning
 
 We follow [Semantic Versioning](https://semver.org/):
 
-- MAJOR: Breaking API changes
-- MINOR: New features, backward compatible
-- PATCH: Bug fixes, backward compatible
+- MAJOR: breaking API changes
+- MINOR: new features, backward compatible
+- PATCH: bug fixes, backward compatible
 
 ## Getting help
 
-- Issues: Search existing issues or create a new one
-- Discussions: For questions and ideas
+- Issues: search existing issues or create a new one
+- Discussions: for questions and ideas
 
 ## Recognition
 
-Contributors will be recognized in:
+Contributors receive recognition in:
 - CHANGELOG.md for their specific contributions
 - README.md contributors section
 - GitHub release notes
 
-Thank you for contributing to A.R.E.S! 
+Thank you for contributing to A.R.E.S!

@@ -1,15 +1,15 @@
 # Agents
 
-ARES agents are autonomous units that process requests using a configured LLM model, a system prompt, and a set of tools. Each agent is specialized for a particular domain or task, routing, research, product knowledge, risk analysis, and more.
+ARES agents are autonomous units that process requests. Each agent uses one LLM model, one system prompt, and one set of tools. Each agent specializes in one domain or task: routing, research, product knowledge, risk analysis, and more.
 
 Agents are defined by four properties:
 
-- **Model**, The LLM that powers the agent (e.g., `llama-3.3-70b`, `claude-3-5-sonnet`, `deepseek-r1`).
-- **System prompt**, Instructions that shape the agent's behavior, personality, and domain knowledge.
-- **Tools**, Capabilities the agent can invoke during processing (e.g., `calculator`, `web_search`, `code_interpreter`).
-- **Name**, A unique identifier used to route requests to this agent.
+- **Model**, the LLM that powers the agent (for example, `llama-3.3-70b`, `claude-3-5-sonnet`, `deepseek-r1`).
+- **System prompt**, instructions that shape the behavior, personality, and domain knowledge of the agent.
+- **Tools**, capabilities that the agent can invoke during processing (for example, `calculator`, `web_search`, `code_interpreter`).
+- **Name**, a unique identifier that routes requests to this agent.
 
-Agents can be platform-provided (available to all users) or user-defined (private, created via API or TOON config).
+An agent is either platform-provided (available to all users) or user-defined (private to the creator). Users create user agents via the API or via TOON configuration.
 
 ---
 
@@ -19,7 +19,7 @@ Agents can be platform-provided (available to all users) or user-defined (privat
 GET /api/agents
 ```
 
-Returns all available agents on the platform. This endpoint does not require authentication.
+This endpoint returns all available agents on the platform. It does not require authentication.
 
 ### Response
 
@@ -81,9 +81,9 @@ agents.forEach(agent => {
 
 ## User agents
 
-Create and manage your own custom agents. User agents are private to your account and can be configured with any available model, custom system prompts, and tool selections.
+These endpoints create and manage custom agents. User agents are private to your account. You configure each user agent with any available model, a custom system prompt, and a tool selection.
 
-All user agent endpoints require JWT authentication: `Authorization: Bearer <jwt_access_token>`
+All user agent endpoints require JWT authentication with this header: `Authorization: Bearer <jwt_access_token>`.
 
 ### List your agents
 
@@ -91,7 +91,7 @@ All user agent endpoints require JWT authentication: `Authorization: Bearer <jwt
 GET /api/user/agents
 ```
 
-Returns all custom agents owned by the authenticated user.
+This endpoint returns all custom agents owned by the authenticated user.
 
 ```bash
 curl http://localhost:3000/api/user/agents \
@@ -104,7 +104,7 @@ curl http://localhost:3000/api/user/agents \
 POST /api/user/agents
 ```
 
-Create a new custom agent.
+This endpoint creates a new custom agent.
 
 #### Request body
 
@@ -153,7 +153,7 @@ requests.post(
 GET /api/user/agents/{name}
 ```
 
-Retrieve the full configuration of a specific user agent.
+This endpoint returns the full configuration of one user agent.
 
 | Parameter | Type | In | Description |
 |-----------|--------|------|------------------|
@@ -170,7 +170,7 @@ curl http://localhost:3000/api/user/agents/code-reviewer \
 PUT /api/user/agents/{name}
 ```
 
-Update an existing agent's configuration. You can modify the model, system prompt, or tools.
+This endpoint updates the configuration of an existing agent. You can change the model, the system prompt, and the tools.
 
 ```bash
 curl -X PUT http://localhost:3000/api/user/agents/code-reviewer \
@@ -189,7 +189,7 @@ curl -X PUT http://localhost:3000/api/user/agents/code-reviewer \
 DELETE /api/user/agents/{name}
 ```
 
-Permanently delete a user agent.
+This endpoint permanently deletes a user agent.
 
 ```bash
 curl -X DELETE http://localhost:3000/api/user/agents/code-reviewer \
@@ -200,7 +200,7 @@ curl -X DELETE http://localhost:3000/api/user/agents/code-reviewer \
 
 ## TOON import/export
 
-TOON is ARES's agent configuration format. You can import and export agent configs as TOON to share agent definitions, back up configurations, or migrate agents between environments.
+TOON is the ARES agent configuration format. You import and export agent configurations as TOON files to share agent definitions, back up configurations, or move agents between environments.
 
 ### Import a TOON config
 
@@ -208,7 +208,7 @@ TOON is ARES's agent configuration format. You can import and export agent confi
 POST /api/user/agents/import
 ```
 
-Import an agent definition from a TOON configuration file.
+This endpoint imports an agent definition from a TOON configuration file.
 
 ```bash
 curl -X POST http://localhost:3000/api/user/agents/import \
@@ -223,7 +223,7 @@ curl -X POST http://localhost:3000/api/user/agents/import \
 GET /api/user/agents/{name}/export
 ```
 
-Export an agent's configuration in TOON format. Useful for sharing agent definitions or version-controlling them alongside your codebase.
+This endpoint exports the agent configuration in TOON format. Use it to share agent definitions or to version them next to your codebase.
 
 ```bash
 curl http://localhost:3000/api/user/agents/code-reviewer/export \

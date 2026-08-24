@@ -1,22 +1,22 @@
 # Rate limits and quotas
 
-ARES enforces two independent layers of rate limiting to protect the platform and ensure fair resource allocation across tenants.
+ARES enforces two independent layers of rate limiting. The layers protect the platform and give all tenants fair resource allocation.
 
 ---
 
 ## Layer 1: IP-Based rate limiting
 
-Every incoming request is subject to per-IP rate limiting via [tower_governor](https://docs.rs/tower_governor). This layer protects against abuse, brute-force attacks, and accidental request floods regardless of authentication status.
+Every incoming request passes through per-IP rate limiting via [tower_governor](https://docs.rs/tower_governor). This layer protects against abuse, brute-force attacks, and accidental request floods regardless of authentication status.
 
-IP-based limits apply to all routes, including unauthenticated endpoints like `/health`. The specific thresholds are configured server-side and are intentionally generous for normal usage patterns.
+IP-based limits apply to all routes, including unauthenticated endpoints like `/health`. The server configuration sets the specific thresholds. Normal usage patterns stay well below them.
 
-If you hit the IP rate limit, you will receive a `429 Too Many Requests` response. Back off and retry after a short delay.
+If you hit the IP rate limit, you receive a `429 Too Many Requests` response. Back off and retry after a short delay.
 
 ---
 
 ## Layer 2: tenant quotas
 
-Authenticated requests to `/v1/*` are also subject to tenant-level quotas based on the tenant's tier. These quotas reset at the beginning of each calendar month.
+Authenticated requests to `/v1/*` also pass through tenant-level quotas based on the tier of the tenant. These quotas reset at the beginning of each calendar month.
 
 | Tier | Monthly Requests | Monthly Tokens | Daily Rate Limit |
 |---|---|---|---|
@@ -38,7 +38,7 @@ Read-only endpoints like `GET /v1/usage` and `GET /v1/api-keys` are metered but 
 
 ### What counts as tokens
 
-Token usage is tracked per request based on the combined input and output token count from the LLM provider. Both the prompt tokens and completion tokens are summed.
+Token usage is tracked per request from the combined input and output token count of the LLM provider. Prompt tokens and completion tokens are summed.
 
 ---
 
@@ -77,7 +77,7 @@ Content-Type: application/json
 }
 ```
 
-The error message indicates which limit was hit:
+The error message indicates which limit you hit:
 
 | Error Message | Cause | Resolution |
 |---|---|---|
@@ -90,7 +90,7 @@ The error message indicates which limit was hit:
 
 ## Checking your usage
 
-You can proactively monitor your consumption to avoid hitting limits:
+You can monitor your consumption before you hit limits:
 
 ```bash
 curl http://localhost:3000/v1/usage \
@@ -114,15 +114,15 @@ curl http://localhost:3000/v1/usage \
 }
 ```
 
-Compare `total_runs` against `quota_runs` and `total_tokens` against `quota_tokens` to see how much headroom you have.
+Compare `total_runs` with `quota_runs` and `total_tokens` with `quota_tokens` to see how much headroom you have.
 
 ---
 
 ## Best practices
 
-1. **Monitor usage proactively.** Poll `GET /v1/usage` periodically rather than waiting for 429 errors.
+1. **Monitor usage proactively.** Poll `GET /v1/usage` periodically rather than wait for 429 errors.
 
-2. **Implement exponential backoff.** When you receive a 429, wait before retrying. A simple strategy: wait 1s, then 2s, then 4s, up to a maximum of 30s.
+2. **Implement exponential backoff.** When you receive a 429, wait before you retry. A simple strategy: wait 1s, then 2s, then 4s, up to a maximum of 30s.
 
 3. **Cache where possible.** Agent listings and model metadata change infrequently. Cache these responses to reduce unnecessary API calls.
 

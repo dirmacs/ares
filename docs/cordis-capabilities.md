@@ -1,5 +1,9 @@
 # Capability preservation checklist (phase 0, step 7)
 
+> **STATUS (2026-08-24):** Historical planning document from the pre-round-4 Cordis migration.
+> Rounds 4–9 have since shipped everything relevant; the branch references below are deleted or merged.
+> Current state of record: `docs/cordis-mapping.md` (§10–§19) and `ARCHITECTURE.md`.
+
 Rule: Every externally observable capability at `e4f3bcc` must survive the rewrite (or have intentional behavior change documented in Phase 7 step 24). This checklist groups by route namespace and background job, per plan step 7. Each row is a concrete input → expected observable output, not just `cargo test` passing.
 
 ---

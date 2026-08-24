@@ -41,9 +41,9 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 - Config validation: circular reference detection and unused config warnings
 - Loop detection: 3-tier escalation (warn, force alternative, halt) for repetitive outputs
 - Crash recovery: checkpoint serialization, save agent state at each step, restore on restart
-- Service-based architecture (0.9.0): dependency injection via typed `Context`, services register with `ctx.plugin()` or `ctx.provide()`, handlers pull deps with `ctx.get::<T>()`. `Fiber::refresh` recomputes the dependency epoch and reruns plugin `apply`.
+- Service-based architecture (0.9.x): dependency injection via typed `Context`, services register with `ctx.plugin()` or `ctx.provide()`, handlers pull deps with `ctx.get::<T>()`. `Fiber::refresh` recomputes the dependency epoch and reruns plugin `apply`.
 - Unified execution: single `Execute` handles resolve, create, and execute for chat, v1 API, JWT chat, MCP, scheduler, pipeline, and trigger. Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`.
-- Event-first skills (0.9.0): `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`), falling back to a 5ms poll only when the notifier is unavailable. Skills carry the request `Context`, isolate tools with `ctx.isolate::<Tools>(tenant_id)`, and call `Tools::execute` on that tenant isolate. Skill `LlmCall` steps strictly use `Llm::complete` through `llm.complete`, with no direct provider `generate_with_history` fallback. `Tools`, `Llm`, `Execute`, and skills stay event-first on `EventsService` waterfalls.
+- Event-first skills (0.9.x): `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`), falling back to a 5ms poll only when the notifier is unavailable. Skills carry the request `Context`, isolate tools with `ctx.isolate::<Tools>(tenant_id)`, and call `Tools::execute` on that tenant isolate. Skill `LlmCall` steps strictly use `Llm::complete` through `llm.complete`, with no direct provider `generate_with_history` fallback. `Tools`, `Llm`, `Execute`, and skills stay event-first on `EventsService` waterfalls.
 - Quota: `agent.admit` (`Dispatch::Bail`) is the shared gate for `Execute`, JWT chat, API-key middleware, and MCP.
 - Store / Overlay / realms: Store factory runs migrations and seeds templates. Overlay fills empty loader configs from `ares.toml`. TOON changes notify `Tools` and `Execute`. `TenantRealms` open-then-intercept on request paths and dispose on tenant delete.
 - Hot-reload: file-watch triggers automatic service refresh without restart. `Fiber::refresh` reruns plugin apply when the epoch changes.
@@ -55,7 +55,7 @@ A.R.E.S can be used as a **standalone server** or as a **library** in your Rust 
 
 ### As a library
 
-Add to your project (0.9.0):
+Add to your project (0.9.1):
 
 ```toml
 [dependencies]
@@ -74,10 +74,10 @@ use ares::{Context, Execute, Tools, Llm};
 
 ```bash
 # Install from crates.io
-cargo install ares-server --version 0.9.0
+cargo install ares-server --version 0.9.1
 
 # Install with embedded Web UI
-cargo install ares-server --version 0.9.0 --features ui
+cargo install ares-server --version 0.9.1 --features ui
 
 # Initialize a new project (creates ares.toml and config files)
 ares-server init

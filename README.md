@@ -41,9 +41,9 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 - Configuration validation: circular reference detection and warnings for unused items
 - Loop detection: 3-tier escalation (warn, force alternative, halt) for repetitive outputs
 - Crash recovery: checkpoint serialization, save agent state at each step, restore on restart
-- Service-based architecture (0.9.x): services register with `ctx.plugin()` or `ctx.provide()`. Handlers pull dependencies with `ctx.get::<T>()` on a typed `Context`. `Fiber::refresh` recomputes the dependency epoch and reruns plugin `apply`.
+- Service-based architecture: services register with `ctx.plugin()` or `ctx.provide()`. Handlers pull dependencies with `ctx.get::<T>()` on a typed `Context`. `Fiber::refresh` recomputes the dependency epoch and reruns plugin `apply`.
 - Unified execution: single `Execute` handles resolve, create, and execute for chat, v1 API, JWT chat, MCP, scheduler, pipeline, and trigger. Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`.
-- Event-first skills (0.9.x): `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`). A 5ms poll runs only when the notifier is unavailable. Skills carry the request `Context`, isolate tools with `ctx.isolate::<Tools>(tenant_id)`, and call `Tools::execute` on that tenant isolate. Skill `LlmCall` steps strictly use `Llm::complete` through `llm.complete`, with no direct provider `generate_with_history` fallback. `Tools`, `Llm`, `Execute`, and skills stay event-first on `EventsService` waterfalls.
+- Event-first skills: `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`). A 5ms poll runs only when the notifier is unavailable. Skills carry the request `Context`, isolate tools with `ctx.isolate::<Tools>(tenant_id)`, and call `Tools::execute` on that tenant isolate. Skill `LlmCall` steps strictly use `Llm::complete` through `llm.complete`, with no direct provider `generate_with_history` fallback. `Tools`, `Llm`, `Execute`, and skills stay event-first on `EventsService` waterfalls.
 - Quota: `agent.admit` (`Dispatch::Bail`) is the shared gate for `Execute`, JWT chat, API-key middleware, and MCP.
 - Store / Overlay / realms: Store factory runs migrations and seeds templates. Overlay fills empty loader configurations from `ares.toml`. TOON changes notify `Tools` and `Execute`. `TenantRealms` open-then-intercept on request paths and dispose on tenant delete.
 - Hot-reload: a file watch triggers automatic service refresh without restart. When the epoch changes, `Fiber::refresh` reruns plugin `apply`.
@@ -55,7 +55,7 @@ You can run ARES as a **standalone server**. You can also use it as a **library*
 
 ### As a library
 
-Add this dependency to your project (version 0.9.1):
+Add this dependency to your project:
 
 ```toml
 [dependencies]
@@ -551,7 +551,7 @@ By default ARES uses `NoOpContextProvider`, which returns `None`.
 
 ## Architecture
 
-Version 0.9.x composition is a Cordis `Context` plus loader entries. Components register into a typed `Context`. Handlers and engines pull `Execute`, `Tools`, `Llm`, and `Store` at call time. The `ares_server` lib has no axum on its graph. The kernel follows the hardening rules of the [Cordis model](https://github.com/cordiverse/paper). Guarded withdrawal protects providers against removal under active consumers. Verified hot-swap and drain-and-shift replacement give zero-downtime rebuilds through `POST /admin/cordis/services/{name}/replace`. Peer-dependency versioning uses `provide_versioned`/`declare_inject_versioned`. Incompatible versions leave dependents Inactive instead of a silent bind. Inject reconciliation runs eagerly. Cycle detection at load reports rings through `GET /admin/cordis/entries`. A metatheory property suite proves quiescence, confluence, LIFO, and reactive invariants. RhaiPolicy scripting ships default-on. TOML entries attach sandboxed script gates to capability events with fail-closed semantics. `docs/cordis-mapping.md` documents the full Cordis surface (§10–§19).
+Composition is a Cordis `Context` plus loader entries. Components register into a typed `Context`. Handlers and engines pull `Execute`, `Tools`, `Llm`, and `Store` at call time. The `ares_server` lib has no axum on its graph. The kernel follows the hardening rules of the [Cordis model](https://github.com/cordiverse/paper). Guarded withdrawal protects providers against removal under active consumers. Verified hot-swap and drain-and-shift replacement give zero-downtime rebuilds through `POST /admin/cordis/services/{name}/replace`. Peer-dependency versioning uses `provide_versioned`/`declare_inject_versioned`. Incompatible versions leave dependents Inactive instead of a silent bind. Inject reconciliation runs eagerly. Cycle detection at load reports rings through `GET /admin/cordis/entries`. A metatheory property suite proves quiescence, confluence, LIFO, and reactive invariants. RhaiPolicy scripting ships default-on. TOML entries attach sandboxed script gates to capability events with fail-closed semantics. `docs/cordis-mapping.md` documents the full Cordis surface (§10–§19).
 
 ```
 request / job

@@ -273,7 +273,7 @@ pub fn compute_epoch(injects: &CoeffectTable) -> String {
 // Example: epoch = ":ares_llm::LlmService:tenant_acme:ares_tools::ToolService:tenant_acme"
 ```
 
-- Epoch is String, not hash, paper uses concatenation for debuggability; if perf matters, switch to `sha2` hash later.
+- The epoch type is `String`, not a hash. The paper uses concatenation for debuggability; if perf matters, switch to `sha2` hash later.
 - `Fiber::refresh` compares `self.epoch.read()` vs `compute_epoch(&self.injects)`; logs diff via `tracing::debug!`.
 
 ---

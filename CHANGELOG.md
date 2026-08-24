@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.1] - 2026-08-24
 
+### Changed — library facade
+
+- **The `ares` facade crate is folded into the `ares-server` package as a `[lib]` target**; `crates/ares` is deleted. The crates.io name `ares` is occupied by an unrelated 2015 package and could never be published, so the published entry point for embedding ARES as a library is now `ares-server = "0.9.1"`: `use ares_server::{Context, Execute, Tools, Llm, Plugin, Loader, Dispatch, register_plugins};`. `Store` re-export remains behind the `postgres` feature. The inventory-parity guarantee moved to a root-package test (`tests/inventory_parity.rs`) with force-linking of every capability crate including `ares-http`.
+
 ### Added — Cordis rounds 4–9
 
 Nine hardening/feature rounds on the Cordis kernel and its use across the server (full narrative in `docs/cordis-mapping.md` §10–§19):

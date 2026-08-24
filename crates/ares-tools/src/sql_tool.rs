@@ -161,12 +161,8 @@ impl Tool for SqlTool {
         let fut = query.fetch_all(pool);
         let rows = timeout(self.timeout(), fut)
             .await
-            .map_err(|_| {
-                ares_types::AppError::External("SQL query timed out".to_string())
-            })?
-            .map_err(|e| {
-                ares_types::AppError::Database(format!("SQL execution failed: {e}"))
-            })?;
+            .map_err(|_| ares_types::AppError::External("SQL query timed out".to_string()))?
+            .map_err(|e| ares_types::AppError::Database(format!("SQL execution failed: {e}")))?;
 
         let max_rows = self.max_rows() as usize;
         if rows.len() > max_rows {
@@ -417,7 +413,6 @@ mod tests {
             .ok()
     }
 
-
     #[tokio::test]
     async fn test_simple_select() {
         let Some(pool) = try_test_pool().await else {
@@ -429,7 +424,10 @@ mod tests {
         };
         let tool = make_test_tool(config, Some(pool));
         // Alphabetic order => "a" = $1, "b" = $2
-        let result = tool.execute(json!({ "a": 42, "b": "hello" })).await.unwrap();
+        let result = tool
+            .execute(json!({ "a": 42, "b": "hello" }))
+            .await
+            .unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["a"], 42);
@@ -447,7 +445,10 @@ mod tests {
         };
         let tool = make_test_tool(config, Some(pool));
         // "x" is ignored because there is no $2 in the query.
-        let result = tool.execute(json!({ "n": 7, "x": "ignored" })).await.unwrap();
+        let result = tool
+            .execute(json!({ "n": 7, "x": "ignored" }))
+            .await
+            .unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["n"], 7);

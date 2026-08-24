@@ -1,5 +1,5 @@
-use ares_types::types::{Result, ToolDefinition};
 use crate::config::ToolConfig;
+use ares_types::types::{Result, ToolDefinition};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -212,7 +212,6 @@ mod tests {
         }
     }
 
-
     struct SlowTool {
         delay: Duration,
     }
@@ -387,8 +386,7 @@ mod tests {
         registry.register(mock_tool("gamma", "Gamma"));
         registry.set_config("beta", disabled_config());
 
-        let mut definitions =
-            registry.get_tool_definitions_for(&["beta", "gamma", "missing"]);
+        let mut definitions = registry.get_tool_definitions_for(&["beta", "gamma", "missing"]);
         definitions.sort_by(|a, b| a.name.cmp(&b.name));
 
         assert_eq!(definitions.len(), 1);
@@ -460,10 +458,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_not_found() {
         let registry = ToolRegistry::new();
-        let err = registry
-            .execute("missing", json!({}))
-            .await
-            .unwrap_err();
+        let err = registry.execute("missing", json!({})).await.unwrap_err();
         assert!(matches!(err, AppError::NotFound(msg) if msg.contains("missing")));
     }
 
@@ -473,10 +468,7 @@ mod tests {
         registry.register(mock_tool("blocked", "Blocked"));
         registry.set_config("blocked", disabled_config());
 
-        let err = registry
-            .execute("blocked", json!({}))
-            .await
-            .unwrap_err();
+        let err = registry.execute("blocked", json!({})).await.unwrap_err();
         assert!(matches!(
             err,
             AppError::InvalidInput(msg) if msg.contains("disabled")
@@ -488,10 +480,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(FailingTool));
 
-        let err = registry
-            .execute("failing", json!({}))
-            .await
-            .unwrap_err();
+        let err = registry.execute("failing", json!({})).await.unwrap_err();
         assert!(matches!(
             err,
             AppError::InvalidInput(msg) if msg.contains("execution failed")
@@ -525,7 +514,10 @@ timeout_secs = 12
 description = "Calc tool"
 "#;
         let parsed: toml::Value = toml::from_str(content).unwrap();
-        let tools_tbl = parsed.get("tools").cloned().unwrap_or(toml::Value::Table(Default::default()));
+        let tools_tbl = parsed
+            .get("tools")
+            .cloned()
+            .unwrap_or(toml::Value::Table(Default::default()));
         let config: HashMap<String, ToolConfig> = tools_tbl.try_into().unwrap_or_default();
         let registry = ToolRegistry::with_config(&config);
 
@@ -584,7 +576,6 @@ description = "Calc tool"
         ));
     }
 
-
     #[test]
     fn tools_readable_via_cordis_provide() {
         let ctx = cordis::Context::new_root();
@@ -595,7 +586,9 @@ description = "Calc tool"
         let isolated = ctx.isolate::<crate::Tools>("tenant:acme");
         assert!(isolated.get::<crate::Tools>().is_none());
         isolated.provide(crate::Tools::new(Arc::new(ToolRegistry::new())));
-        let tools = isolated.get::<crate::Tools>().expect("Tools on isolated ctx");
+        let tools = isolated
+            .get::<crate::Tools>()
+            .expect("Tools on isolated ctx");
         assert!(tools.list(&isolated).is_empty());
         assert!(tools.resolve(&isolated, "missing").is_none());
     }

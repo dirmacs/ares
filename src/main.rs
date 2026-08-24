@@ -342,7 +342,7 @@ fn register_loader_factories(root_ctx: &Arc<Context>) {
     }
     #[cfg(not(feature = "inventory"))]
     {
-        ares::register_plugins(&registry); // facade: cordis, store, tools, llm, agent
+        ares_server::register_plugins(&registry); // facade: cordis, store, tools, llm, agent
         ares_http::register_plugins(&registry);
         crate::plugins::register_plugins(&registry); // Overlay, Execute overwrite, HealthJob
     }

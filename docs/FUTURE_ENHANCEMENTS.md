@@ -191,7 +191,7 @@ path = "./data/embedding_cache"
 
 ### Rationale
 
-These are emerging protocols for agent-to-agent communication and UI integration. They are not yet standardized or widely adopted.
+These protocols for agent-to-agent communication and UI integration are in an early stage. They are not yet standardized or widely adopted.
 
 ### Protocols to research
 
@@ -225,7 +225,7 @@ These are emerging protocols for agent-to-agent communication and UI integration
 
 ### Rationale
 
-Users can switch between vector store providers (for example, from Qdrant to LanceDB). A migration utility would help preserve indexed data.
+Users can switch between vector store providers (for example, from Qdrant to LanceDB). A migration utility preserves indexed data during the switch. We plan it before the first multi-backend release.
 
 ### Proposed features
 
@@ -291,7 +291,7 @@ ares-server migrate \
 tantivy = { version = "0.25.0", optional = true }
 ```
 
-Tantivy is a Lucene-like full-text search engine in Rust. It would provide:
+Tantivy is a Lucene-like full-text search engine in Rust. It provides:
 - Advanced query parsing
 - Faceted search
 - Phrase queries

@@ -31,7 +31,7 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - Leftover `execution_stack` dual `Execute` installer removed
 - Default `ares-server` library build has no axum (`http` is optional) and no longer re-exports `ProviderRegistry`
 - Single `Execute` loader key (ares-agent); Overlay/`ServerRuntime` provide host extras
-- JWT middleware looks up tenant claims in Store, fail-closes 401 when the tenant is missing, then opens `TenantRealms` and intercepts `TenantContext`; user claims isolate with no dummy Free tenant
+- JWT middleware looks up tenant claims in Store, fail-closes 401 when the tenant does not exist, then opens `TenantRealms` and intercepts `TenantContext`; user claims isolate with no dummy Free tenant
 - `Llm::from_client` is the public test constructor; `no_http` no longer builds `ProviderRegistry`
 - Root `ares-server` package keeps its binary; the library target serves embedders; integration tests depend on `ares-server` / `ares-http`
 

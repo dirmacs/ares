@@ -36,7 +36,7 @@
 - [Error Handling](./platform/errors.md)
 - [Self-Hosting](./platform/self-hosting.md)
 
-# Architecture (0.9.0)
+# Architecture
 
 - [Mapping, Γ^∞ → Rust](./cordis/cordis-mapping.md)
 - [Remedies, P0-P10](./cordis/cordis-remedies.md)

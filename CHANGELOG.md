@@ -232,7 +232,7 @@ See `sops/deployment-checklist.md` for complete VPS deployment instructions.
 
 ### Migration guide
 
-If you were using any of the removed APIs:
+If your code used any of the removed APIs:
 
 1. **OllamaToolCoordinator** → Use `ToolCoordinator` from `src/llm/coordinator.rs`
  ```rust
@@ -517,7 +517,7 @@ If you were using any of the removed APIs:
 
 - Improved docs.rs compatibility: Documentation builds now work on docs.rs
  - Removed problematic dependencies from docs.rs builds (`llamacpp`, `qdrant`, `swagger-ui`)
- - These features require native compilation or network access docs.rs doesn't support
+ - These features require native compilation or network access. docs.rs does not support them
 
 ### Fixed
 

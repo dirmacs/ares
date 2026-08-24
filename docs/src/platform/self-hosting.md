@@ -109,7 +109,7 @@ See [Feature Flags](#feature-flags) for all available options.
 curl http://localhost:3000/health
 ```
 
-You receive a `200 OK` response. ARES is running.
+You receive a `200 OK` response. ARES runs.
 
 ---
 

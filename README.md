@@ -551,7 +551,7 @@ By default, ARES uses `NoOpContextProvider` (returns `None`).
 
 ## Architecture
 
-0.9.0 composition is Cordis `Context` plus loader entries. Components register into a typed `Context`. Handlers and engines pull `Execute`, `Tools`, `Llm`, and `Store` at call time. The default `ares` facade has no axum.
+0.9.x composition is Cordis `Context` plus loader entries. Components register into a typed `Context`. Handlers and engines pull `Execute`, `Tools`, `Llm`, and `Store` at call time. The default `ares` facade has no axum. The kernel is hardened per the [Cordis model](https://github.com/cordiverse/paper): guarded withdrawal (providers can't be removed under active consumers), verified hot-swap and drain-and-shift provider replacement (zero-downtime rebuilds, `POST /admin/cordis/services/{name}/replace`), peer-dependency versioning (`provide_versioned`/`declare_inject_versioned` — incompatible versions leave dependents Inactive instead of silently binding), eager inject reconciliation, dependency-cycle detection at load (`GET /admin/cordis/entries` reports rings), and a metatheory property suite proving quiescence/confluence/LIFO/reactive invariants. RhaiPolicy scripting ships default-on: TOML entries attach sandboxed script gates to capability events with fail-closed semantics. See `docs/cordis-mapping.md` for the full Cordis surface (§10–§19).
 
 ```
 request / job
@@ -578,7 +578,7 @@ The Store loader factory connects, runs SQL migrations, and seeds default agent 
 
 `TenantRealms` open-then-intercept on request paths. Background jobs open/isolate only. Admin tenant delete calls `dispose` then SQL delete.
 
-`run_server` still instantiates Overlay first, fills empty loader configs, then instantiates remaining `config/cordis-entries.toml` entries. `ProviderRegistry` still exists for `AgentRegistry` construction. Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`.
+`run_server` composes the entries program at boot (`@include` splice, `@group` flatten, `${rhai: …}` config interpolation — fail-open) and re-composes on every watched reload, then applies the diff via the loader journal: verified hot-swap for same-provider rebuilds, guarded withdrawal for retire. Inventory-collected factories are the primary registration path (manual chains are the no-default-features fallback). Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`, emitting boundary events on the typed catalog.
 
 ### Key services
 

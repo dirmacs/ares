@@ -28,15 +28,15 @@ use async_openai::{
     types::chat::{
         ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
         ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
-        ReasoningEffort,
         ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestToolMessageArgs,
         ChatCompletionRequestUserMessageArgs, ChatCompletionTool, ChatCompletionTools,
-        CreateChatCompletionRequestArgs, FunctionCall, FunctionObject,
+        CreateChatCompletionRequestArgs, FunctionCall, FunctionObject, ReasoningEffort,
     },
     Client,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
+use std::time::Duration;
 
 /// OpenAI client for API-based inference
 pub struct OpenAIClient {
@@ -71,7 +71,13 @@ impl OpenAIClient {
         model: String,
         params: ModelParams,
     ) -> Self {
-        Self::with_params_and_headers(api_key, api_base, model, params, std::collections::HashMap::new())
+        Self::with_params_and_headers(
+            api_key,
+            api_base,
+            model,
+            params,
+            std::collections::HashMap::new(),
+        )
     }
 
     /// Create a new OpenAI client with model parameters and custom headers.
@@ -96,15 +102,18 @@ impl OpenAIClient {
 
         let mut header_map = reqwest::header::HeaderMap::new();
         for (k, v) in headers {
-            if let (Ok(name), Ok(value)) =
-                (reqwest::header::HeaderName::from_bytes(k.as_bytes()), reqwest::header::HeaderValue::from_str(&v))
-            {
+            if let (Ok(name), Ok(value)) = (
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                reqwest::header::HeaderValue::from_str(&v),
+            ) {
                 header_map.insert(name, value);
             }
         }
 
         let http_client = reqwest::ClientBuilder::new()
             .default_headers(header_map)
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(300))
             .build()
             .expect("failed to build reqwest client");
 
@@ -897,7 +906,6 @@ mod tests {
         body
     }
 
-
     fn chat_stream_tool_call_delta_json() -> String {
         serde_json::json!({
             "id": "chatcmpl-tools-stream",
@@ -923,7 +931,6 @@ mod tests {
     fn sse_stream_response(body: &str) -> ResponseTemplate {
         ResponseTemplate::new(200).set_body_raw(body.as_bytes(), "text/event-stream")
     }
-
 
     #[test]
     fn test_client_creation() {
@@ -968,10 +975,7 @@ mod tests {
                     chat_tool.function.description,
                     Some("Performs math operations".to_string())
                 );
-                assert_eq!(
-                    chat_tool.function.parameters,
-                    Some(tool.parameters.clone())
-                );
+                assert_eq!(chat_tool.function.parameters, Some(tool.parameters.clone()));
             }
             ChatCompletionTools::Custom(_) => {
                 panic!("Expected Function variant, got Custom");
@@ -1128,8 +1132,8 @@ mod tests {
 
     #[test]
     fn test_openai_from_config_missing_api_key_env() {
-        use crate::ProviderConfig;
         use crate::client::Provider;
+        use crate::ProviderConfig;
 
         std::env::remove_var("TEST_OPENAI_MISSING_KEY_OPENAI_RS");
         let config = ProviderConfig::OpenAI {
@@ -1150,9 +1154,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(chat_completion_json("hello")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("hello")))
             .mount(&server)
             .await;
 
@@ -1173,10 +1175,7 @@ mod tests {
             .await;
 
         let client = openai_client(&server, "gpt-4");
-        let out = client
-            .generate_with_system("system", "user")
-            .await
-            .unwrap();
+        let out = client.generate_with_system("system", "user").await.unwrap();
         assert_eq!(out, "sys reply");
     }
 
@@ -1185,9 +1184,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(chat_completion_json("hist")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("hist")))
             .mount(&server)
             .await;
 
@@ -1230,9 +1227,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(chat_completion_json("done")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("done")))
             .mount(&server)
             .await;
 
@@ -1245,15 +1240,12 @@ mod tests {
         assert_eq!(response.content, "done");
     }
 
-
     #[tokio::test]
     async fn test_gpt5_sets_reasoning_effort_in_request() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")))
             .expect(1)
             .mount(&server)
             .await;
@@ -1266,7 +1258,6 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(body["reasoning_effort"], "low");
     }
-
 
     #[test]
     fn test_openai_config_api_base_roundtrip() {
@@ -1372,10 +1363,7 @@ mod tests {
             .await;
 
         let client = openai_client(&server, "gpt-4");
-        let mut stream = client
-            .stream_with_system("system", "user")
-            .await
-            .unwrap();
+        let mut stream = client.stream_with_system("system", "user").await.unwrap();
         assert_eq!(stream.next().await.unwrap().unwrap(), "sys");
         assert_eq!(stream.next().await.unwrap().unwrap(), "-out");
         assert!(stream.next().await.is_none());
@@ -1452,19 +1440,28 @@ mod tests {
     #[test]
     fn test_tool_choice_mode_none_serializes() {
         let choice = ChatCompletionToolChoiceOption::Mode(ToolChoiceOptions::None);
-        assert_eq!(serde_json::to_value(choice).unwrap(), serde_json::json!("none"));
+        assert_eq!(
+            serde_json::to_value(choice).unwrap(),
+            serde_json::json!("none")
+        );
     }
 
     #[test]
     fn test_tool_choice_mode_auto_serializes() {
         let choice = ChatCompletionToolChoiceOption::Mode(ToolChoiceOptions::Auto);
-        assert_eq!(serde_json::to_value(choice).unwrap(), serde_json::json!("auto"));
+        assert_eq!(
+            serde_json::to_value(choice).unwrap(),
+            serde_json::json!("auto")
+        );
     }
 
     #[test]
     fn test_tool_choice_mode_required_serializes() {
         let choice = ChatCompletionToolChoiceOption::Mode(ToolChoiceOptions::Required);
-        assert_eq!(serde_json::to_value(choice).unwrap(), serde_json::json!("required"));
+        assert_eq!(
+            serde_json::to_value(choice).unwrap(),
+            serde_json::json!("required")
+        );
     }
 
     #[test]
@@ -1545,8 +1542,8 @@ mod tests {
 
     #[test]
     fn test_openai_from_config_reads_api_key_from_env() {
-        use crate::ProviderConfig;
         use crate::client::Provider;
+        use crate::ProviderConfig;
 
         std::env::set_var("TEST_OPENAI_KEY_PRESENT_OPENAI_RS", "sk-test-value");
         let config = ProviderConfig::OpenAI {
@@ -1556,11 +1553,7 @@ mod tests {
         };
         let provider = Provider::from_config(&config, None).unwrap();
         match provider {
-            Provider::OpenAI {
-                api_key,
-                model,
-                ..
-            } => {
+            Provider::OpenAI { api_key, model, .. } => {
                 assert_eq!(api_key, "sk-test-value");
                 assert_eq!(model, "gpt-4o-mini");
             }
@@ -1574,9 +1567,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")))
             .mount(&server)
             .await;
 
@@ -1595,9 +1586,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")))
             .mount(&server)
             .await;
 
@@ -1776,9 +1765,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")))
             .mount(&server)
             .await;
 
@@ -1804,9 +1791,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(chat_completion_json("final")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("final")))
             .mount(&server)
             .await;
 
@@ -1991,7 +1976,6 @@ mod tests {
         assert!(stream.next().await.is_none());
     }
 
-
     // ── Constructor tests ───────────────────────────────────────────────
 
     #[test]
@@ -2032,7 +2016,10 @@ mod tests {
             "https://custom.api.com/v1".to_string(),
             "gpt-4".to_string(),
         );
-        assert_eq!(client.client.config().api_base(), "https://custom.api.com/v1");
+        assert_eq!(
+            client.client.config().api_base(),
+            "https://custom.api.com/v1"
+        );
     }
 
     #[test]
@@ -2196,15 +2183,15 @@ mod tests {
     #[test]
     fn extract_tool_calls_filters_custom_calls() {
         // Custom tool calls should be filtered out
-        let calls = vec![
-            ChatCompletionMessageToolCalls::Function(async_openai::types::chat::ChatCompletionMessageToolCall {
+        let calls = vec![ChatCompletionMessageToolCalls::Function(
+            async_openai::types::chat::ChatCompletionMessageToolCall {
                 id: "call_1".to_string(),
                 function: async_openai::types::chat::FunctionCall {
                     name: "test".to_string(),
                     arguments: "{}".to_string(),
                 },
-            }),
-        ];
+            },
+        )];
         let extracted = OpenAIClient::extract_tool_calls(&calls);
         assert_eq!(extracted.len(), 1);
         assert_eq!(extracted[0].id, "call_1");
@@ -2217,6 +2204,4 @@ mod tests {
         let extracted = OpenAIClient::extract_tool_calls(&calls);
         assert!(extracted.is_empty());
     }
-
-
 }

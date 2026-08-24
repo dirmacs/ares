@@ -6,7 +6,7 @@
 //! point fragility across Rust versions). The production hot-reload path that
 //! already covers ~90% of self-evolution value is **file-watch + full `Fiber::reload`**
 //! via re-reading TOON/JSON: the watcher below uses the `notify` crate
-//! (`RecommendedWatcher`, debounced 500 ms + 100 ms write settle) to watch
+//! (`RecommendedWatcher`, 500 ms defer-not-drop settle window) to watch
 //! `config/agents/*.toon` and `config/entries.json` (or `config/cordis-entries.toon`).
 //! On `Modify`/`Create` it calls `ReflectService::notify(TypeId)` which BFS-walks
 //! `dependents` and spawns `Fiber::refresh` for each dependent fiber — the same
@@ -56,7 +56,9 @@ pub struct WatchHandle {
 /// `TypeId::of::<RuntimeToolRegistry>()`). Callers that need multiple `TypeId`s
 /// can call `watch_many` or spawn multiple watchers.
 ///
-/// Debounce: 500 ms gate + 100 ms settle (same as `AresConfigManager::start_watching`).
+/// Debounce: defer-not-drop — every change arriving inside the 500 ms settle
+/// window accumulates into one batch applied once the window settles; no event
+/// is discarded.
 /// Logs `Configuration hot-reloaded successfully via Cordis watch` on each reload.
 pub fn watch_cordis_entries(
     ctx: Arc<Context>,
@@ -133,26 +135,24 @@ pub fn watch_many_with(
     let reflect_clone = reflect.clone();
     let ctx_clone = ctx.clone();
     let task = tokio::spawn(async move {
-        let mut last_reload = std::time::Instant::now() - Duration::from_secs(10);
         let debounce = Duration::from_millis(500);
         while let Some(path) = rx.recv().await {
-            if last_reload.elapsed() < debounce {
-                continue;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            // Drain coalesced events; keep every unique path so a .so is not
-            // dropped when a toml event arrives in the same debounce window.
-            let mut batch = vec![path];
+            // DEFER-NOT-DROP: every received path lands in `pending`; nothing
+            // arriving inside the settle window is discarded. Sleep out the
+            // window once, then drain everything that queued behind the first
+            // event and apply one combined batch.
+            let mut pending = vec![path];
+            tokio::time::sleep(debounce).await;
             while let Ok(p) = rx.try_recv() {
-                if !batch.iter().any(|e| e == &p) {
-                    batch.push(p);
+                if !pending.iter().any(|e| e == &p) {
+                    pending.push(p);
                 }
             }
-            let path = batch.last().cloned().unwrap_or_default();
+            let path = pending.last().cloned().unwrap_or_default();
 
             tracing::info!(path = %path.display(), tid = ?tid, "Cordis config change detected, notifying dependents");
             #[cfg(feature = "hmr")]
-            for p in &batch {
+            for p in &pending {
                 match crate::hmr::apply_plugin_so_if_dylib(&ctx_clone, p) {
                     Ok(true) => {
                         tracing::info!(path = %p.display(), "HMR dylib applied via libloading");
@@ -172,7 +172,6 @@ pub fn watch_many_with(
             // proves reload without restart in tests).
             reflect_clone.notify_with_ctx(tid, &ctx_clone).await;
             tracing::info!("Configuration hot-reloaded successfully via Cordis watch");
-            last_reload = std::time::Instant::now();
         }
     });
 
@@ -332,7 +331,7 @@ mod tests {
         // e. write a file to the temp dir
         std::fs::write(&watched_file, "v2").unwrap();
 
-        // f. wait ~1s for notify crate to pick it up (debounce 500ms + 100ms settle)
+        // f. wait ~1s for notify crate to pick it up (500 ms defer-not-drop window)
         let notified = tokio::time::timeout(Duration::from_secs(3), rx.changed())
             .await
             .is_ok();
@@ -409,12 +408,101 @@ mod tests {
 
         assert!(
             notified,
-            "on_change did not fire within 3s (debounce 500ms + 100ms settle)"
+            "on_change did not fire within 3s (500 ms defer-not-drop settle window)"
         );
         assert!(
             count.load(Ordering::SeqCst) >= 1,
             "on_change should run at least once"
         );
+        drop(_handle);
+    }
+
+    /// DEFER-NOT-DROP proof: writes arriving inside the 500 ms debounce window
+    /// must be DEFERRED into the next applied batch, never dropped.
+    ///
+    /// Regression shape: phase 1 applies a change, which (under the old gate)
+    /// armed `last_reload`; phase 2 then writes file A and file B <100 ms
+    /// apart while that window is still open and goes quiet. The old code hit
+    /// `continue` for both events, discarding them — the final state stayed
+    /// unapplied indefinitely because nothing else ever touched the watched
+    /// paths. The new code defers them: the task loops back, accumulates both
+    /// paths into one pending set, settles 500 ms, and applies one combined
+    /// batch. The callback records the LAST path of each batch, so file B's
+    /// path appearing proves its in-window event survived.
+    #[tokio::test]
+    async fn rapid_successive_events_all_apply() {
+        use parking_lot::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_a = dir.path().join("a.toml");
+        let file_b = dir.path().join("b.toml");
+        std::fs::write(&file_a, "a-v1").unwrap();
+        std::fs::write(&file_b, "b-v1").unwrap();
+
+        let ctx = Context::new_root();
+        let reflect = ctx.provide(ReflectService::new());
+
+        let calls = Arc::new(Mutex::new(0usize));
+        let seen = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let calls_cb = calls.clone();
+        let seen_cb = seen.clone();
+        let on_change: WatchOnChange = Arc::new(move |_ctx, path| {
+            *calls_cb.lock() += 1;
+            seen_cb.lock().push(path.to_path_buf());
+        });
+
+        let _handle = watch_many_with(
+            ctx,
+            reflect,
+            vec![file_a.clone(), file_b.clone()],
+            TypeId::of::<ReflectService>(),
+            on_change,
+        )
+        .expect("watch_many_with should succeed for existing temp files");
+
+        // Let the watcher start.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Phase 1: apply one change so the (old-style) debounce window arms.
+        std::fs::write(&file_a, "a-v2").unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if seen.lock().iter().any(|p| p == &file_a) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("phase 1: first change must be applied");
+
+        // Phase 2: two writes <100 ms apart, inside the still-open debounce
+        // window, then silence.
+        std::fs::write(&file_a, "a-v3").unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        std::fs::write(&file_b, "b-final").unwrap();
+
+        // File B's event must surface in the callback records: deferred into
+        // the next batch under the new semantics, silently dropped forever
+        // under the old `continue`.
+        let b_applied = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if seen.lock().iter().any(|p| p == &file_b) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+
+        let seen_paths = seen.lock().clone();
+        assert!(
+            b_applied,
+            "in-window event for file B must be deferred, not dropped; \
+             seen = {seen_paths:?}"
+        );
+        assert!(*calls.lock() >= 1, "on_change should run at least once");
         drop(_handle);
     }
 

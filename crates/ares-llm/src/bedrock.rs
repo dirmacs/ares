@@ -9,6 +9,7 @@ use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 
 const DEFAULT_MAX_TOKENS: u32 = 1024;
 
@@ -170,8 +171,13 @@ impl BedrockClient {
         model: String,
         params: ModelParams,
     ) -> Self {
+        let http = reqwest::ClientBuilder::new()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(300))
+            .build()
+            .expect("failed to build reqwest client");
         Self {
-            http: reqwest::Client::new(),
+            http,
             api_key,
             region,
             model: strip_model_prefix(&model).to_string(),

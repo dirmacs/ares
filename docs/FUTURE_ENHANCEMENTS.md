@@ -1,5 +1,7 @@
 # Future enhancements
 
+> **STATUS (2026-08-24):** Historical planning document. Code snippets reference the deleted facade crate `ares` (crates.io name squatted); the live entry point is the `ares_server` lib in the `ares-server` package (see README "Use as a library"). Paths like `ares::rag::*` and `ares::llm::pool` are aspirational module layouts, not current exports.
+
 This document tracks features that are planned but deferred to future iterations. Each section includes:
 - Current status (stub, not started, etc.)
 - Rationale for deferral

@@ -77,6 +77,8 @@ pub mod capabilities;
 pub mod client;
 /// Generic tool coordinator for multi-turn tool calling.
 pub mod coordinator;
+/// Small-call orchestration primitive over a single client.
+pub mod micro;
 /// Observability callbacks for LLM and tool call logging.
 pub mod observability;
 /// Connection pooling for LLM clients (DIR-44).
@@ -112,6 +114,7 @@ pub use pool::{ClientPool, ClientPoolBuilder, PoolConfig, PoolStats, PooledClien
 pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
 pub use llm_service::{Breaker, Llm, ModelOverride, TenantModelPolicy};
 pub use plugins::register_plugins;
+pub use micro::{MicroEngine, MicroOutcome, MicroTask};
 
 pub mod config;
 pub mod nvidia_catalog;

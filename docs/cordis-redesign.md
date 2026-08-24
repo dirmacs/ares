@@ -4,7 +4,7 @@
 > Rounds 4–9 have since shipped everything relevant; the branch references below are deleted or merged.
 > Current state of record: `docs/cordis-mapping.md` (§10–§19) and `ARCHITECTURE.md`.
 
-Branch: `cordis-handler-migration` (`3d0c6ad` + bulk 177 State migration + shared.rs 2905 + shrink 165/161, forked from `cordis-redesign` `607b562` → `main` `2c8bd86`)
+Branch: `cordis-handler-migration` — **DELETED 2026-08-24** (archived as tag `archive/cordis-handler-migration`, tip `64145da`; Rhai-as-default-tool experiment superseded by shipped RhaiPolicy in `crates/cordis`)
 Spec: `docs/cordis-mapping.md`, `docs/cordis-remedies.md`, `docs/cordis-capabilities.md`, `docs/cordis-baseline.md`, `docs/cordis-yagni.md`
 Spike: `crates/cordis` (leaf, zero ARES deps), proves temporal & spatial composability.
 

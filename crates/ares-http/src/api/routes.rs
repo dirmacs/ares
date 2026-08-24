@@ -425,6 +425,11 @@ pub fn create_router(
             "/admin/cordis/services/{name}/provide",
             post(crate::api::handlers::admin::provide_cordis_service),
         )
+        // Cordis provider replacement (rolling drain-and-shift, zero absence)
+        .route(
+            "/admin/cordis/services/{name}/replace",
+            post(crate::api::handlers::admin::replace_cordis_service),
+        )
         .route(
             "/admin/cordis/entries/reload",
             post(crate::api::handlers::admin::reload_cordis_entries),

@@ -1,5 +1,9 @@
 # Cordis redesign, yagni ladder (phase -1, step 3)
 
+> **STATUS (2026-08-24):** Historical planning document from the pre-round-4 Cordis migration.
+> Rounds 4–9 have since shipped everything relevant; the branch references below are deleted or merged.
+> Current state of record: `docs/cordis-mapping.md` (§10–§19) and `ARCHITECTURE.md`.
+
 Date: 2026-08-20
 Commit: `e4f3bcc` (11 workspace crates + `ares-server` root)
 Rule: `rust-safe-large` YAGNI ladder, walk each crate before writing any new crate. No code change in this step.

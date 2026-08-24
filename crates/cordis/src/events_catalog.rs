@@ -129,12 +129,36 @@ pub const CONTRACTS: &[EventContract] = &[
         mode: Dispatch::Bail,
         around: false,
     },
-    EventContract { name: ev::SCHEDULER_TICK, mode: Dispatch::Emit, around: false },
-    EventContract { name: ev::SCHEDULER_SCHEDULE_DISPATCHED, mode: Dispatch::Emit, around: false },
-    EventContract { name: ev::PIPELINE_STEP_STARTED, mode: Dispatch::Emit, around: false },
-    EventContract { name: ev::PIPELINE_STEP_FINISHED, mode: Dispatch::Emit, around: false },
-    EventContract { name: ev::PIPELINE_FANOUT_COMPLETED, mode: Dispatch::Emit, around: false },
-    EventContract { name: ev::TRIGGER_FIRED, mode: Dispatch::Emit, around: false },
+    EventContract {
+        name: ev::SCHEDULER_TICK,
+        mode: Dispatch::Emit,
+        around: false,
+    },
+    EventContract {
+        name: ev::SCHEDULER_SCHEDULE_DISPATCHED,
+        mode: Dispatch::Emit,
+        around: false,
+    },
+    EventContract {
+        name: ev::PIPELINE_STEP_STARTED,
+        mode: Dispatch::Emit,
+        around: false,
+    },
+    EventContract {
+        name: ev::PIPELINE_STEP_FINISHED,
+        mode: Dispatch::Emit,
+        around: false,
+    },
+    EventContract {
+        name: ev::PIPELINE_FANOUT_COMPLETED,
+        mode: Dispatch::Emit,
+        around: false,
+    },
+    EventContract {
+        name: ev::TRIGGER_FIRED,
+        mode: Dispatch::Emit,
+        around: false,
+    },
     EventContract {
         name: ev::SERVICE_CHANGED,
         mode: Dispatch::Emit,

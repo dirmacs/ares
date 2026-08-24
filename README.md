@@ -8,7 +8,7 @@ Multi-provider LLM. Tool calling. RAG. MCP. Run standalone or embed the library.
 </p>
 
 <p align="center">
- <a href="docs/assets/cli-demo.cast"><img src="docs/assets/cli-demo.svg" width="820" alt="ARES CLI demo: scaffold a project, validate the configuration, and inspect the agent fleet"></a>
+ <a href="docs/assets/cli-demo.cast"><img src="docs/assets/cli-demo.svg" width="820" alt="ARES × Cordis demo: the live service graph, zero-downtime provider replacement, guarded operations, and fail-closed policy gates"></a>
 </p>
 
 <p align="center">

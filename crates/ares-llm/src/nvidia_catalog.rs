@@ -158,11 +158,16 @@ impl NvidiaCatalogCache {
         let cfg_snapshot = self.cfg.load_full();
         let cfg_ref: &NvidiaConfig = cfg_snapshot.as_ref();
 
-        let api_key = std::env::var(&cfg_ref.api_key_env).map_err(|_| {
-            NvidiaCatalogError::MissingApiKey(cfg_ref.api_key_env.clone())
-        })?;
+        let api_key = std::env::var(&cfg_ref.api_key_env)
+            .map_err(|_| NvidiaCatalogError::MissingApiKey(cfg_ref.api_key_env.clone()))?;
 
-        let client = reqwest::Client::new();
+        // Client-level timeouts are belt-and-braces: the request below also
+        // carries its own total timeout, but future fetch paths may not.
+        let client = reqwest::ClientBuilder::new()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("failed to build reqwest client");
         let resp = client
             .get(&cfg_ref.models_url)
             .header("Authorization", format!("Bearer {}", api_key))
@@ -274,9 +279,19 @@ impl NvidiaCatalogCache {
 fn is_chat_model(id: &str) -> bool {
     let lower = id.to_lowercase();
     let denied = [
-        "embed", "rerank", "retriev", "parse", "reward",
-        "safety", "guard", "detect", "asr", "tts",
-        "kosmos", "vila", "vision-encoder",
+        "embed",
+        "rerank",
+        "retriev",
+        "parse",
+        "reward",
+        "safety",
+        "guard",
+        "detect",
+        "asr",
+        "tts",
+        "kosmos",
+        "vila",
+        "vision-encoder",
     ];
     !denied.iter().any(|d| lower.contains(d))
 }
@@ -295,7 +310,11 @@ fn quality_score_for(id: &str) -> u8 {
         score = score.saturating_add(8);
     } else if lower.contains("gemma-3") || lower.contains("nemotron") {
         score = score.saturating_add(6);
-    } else if lower.contains("glm") || lower.contains("phi") || lower.contains("step") || lower.contains("granite") {
+    } else if lower.contains("glm")
+        || lower.contains("phi")
+        || lower.contains("step")
+        || lower.contains("granite")
+    {
         score = score.saturating_add(3);
     }
 

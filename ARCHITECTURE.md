@@ -1,6 +1,6 @@
 # Architecture
 
-ARES is a multi-tenant AI agent runtime. It uses a service-based architecture where components register themselves into a shared `Context` and handlers pull what they need at request time.
+ARES is a multi-tenant AI agent runtime. Components register as services in a shared Cordis `Context`. Handlers pull the services they need at request time.
 
 ## Core concepts
 
@@ -8,9 +8,9 @@ ARES is a multi-tenant AI agent runtime. It uses a service-based architecture wh
 |---------|-------------|
 | Context | Typed service container. Holds all shared state. Handlers receive `Arc<Context>` and call `ctx.get::<T>()` to access services. |
 | Service | Any `Send + Sync + 'static` type registered in the context. Implements `name()`, `init()`, and `check()`. |
-| Fiber | Lifecycle state machine for a service instance. Tracks whether a service is active, reloading, or inactive. Epoch-based change detection triggers refresh when dependencies change. |
-| Plugin | Registers a service into the context. Returns a disposable that undoes registration on drop. |
-| Loader | Reads the composed `config/cordis-entries.toml` program (TOML; supports `@include` splice, `@group` flatten, `${rhai: …}` config interpolation) and reconciles desired state with current state (rebuild, update, retire, or begin), journaling every action. |
+| Fiber | Lifecycle state machine for a service instance. Tracks the `Active`, `Loading`, `Reloading`, `Unloading`, `Inactive`, and `Failed` states. Epoch-based change detection triggers a refresh when dependencies change. |
+| Plugin | Declarative unit that provides a service into the context. Its `apply` method builds the service from the context and the entry configuration. Registration returns a fiber id. |
+| Loader | Reads the composed `config/cordis-entries.toml` program (TOML with `@include` splice, `@group` flatten, `${rhai: …}` interpolation) and reconciles desired state with current state (`Begin`, `RebuildFiber`, `UpdateConfig`, `Retire`). Every action lands in the loader journal. |
 
 ## Request flow
 
@@ -18,11 +18,11 @@ ARES is a multi-tenant AI agent runtime. It uses a service-based architecture wh
 HTTP request
   -> Axum router
   -> Handler extracts `State<Arc<Context>>`
-  -> Handler calls ctx.get::<AgentExecutionService>()
-  -> AgentExecutionService resolves agent (tenant DB -> community -> system)
-  -> Creates agent via AgentRegistry
-  -> Calls agent.execute(message, context)
-  -> Agent uses ToolCoordinator for multi-turn tool calling
+  -> Handler calls ctx.get::<Execute>()
+  -> Execute resolves the agent (tenant DB -> community -> system)
+  -> Creates the agent via AgentRegistry
+  -> Calls Execute::run(request, context)
+  -> Execute drives the multi-turn loop via ToolCoordinator
   -> Response returned
 ```
 
@@ -32,94 +32,90 @@ HTTP request
 |-------|---------|
 | `ares-types` | Shared types, error definitions |
 | `ares-store` | PostgreSQL client, migrations, tenant DB, fleet secrets |
-| `ares-llm` | Provider registry, LLM clients (OpenAI, Anthropic, Ollama, Nvidia) |
-| `ares-agent` | Agent trait, ConfigurableAgent, AgentExecutionService, AgentResolverService |
+| `ares-llm` | Provider registry, LLM clients (OpenAI-compatible, Azure, Bedrock, Ollama) |
+| `ares-agent` | Agent trait, ConfigurableAgent, Execute service, 3-tier resolver |
 | `ares-tools` | Tool trait, built-in tools, runtime tool registry |
 | `ares-mcp` | MCP client integration |
 | `ares-rag` | Vector search, BM25, hybrid retrieval |
 | `ares-vector` | Pure-Rust vector store |
-| `cordis` | Context, Fiber, Service, Registry, Loader, Events, ReflectService |
+| `cordis` | Cordis kernel: Context, Fiber, Service, Registry, Loader, Events, ReflectService |
 
 ## Key services
 
-**AgentExecutionService** (in `ares-agent`): The single entry point for running agents. Resolves the agent config, creates the agent, tracks the run via `RunTracker`, and executes. All five call sites (chat, v1 API, scheduler, pipeline, trigger) delegate here.
+**Execute** (in `ares-agent`): The single entry point to run agents. It resolves the agent configuration through the 3-tier resolver, creates the agent through `AgentRegistry`, tracks the run through `RunTracker`, and drives the multi-turn loop. All call sites (chat, v1 API, scheduler, pipeline, trigger, MCP runner) delegate here.
 
-**AgentResolverService** (in `ares-agent`): 3-tier agent resolution. Queries tenant DB first, then community agents, then system config. Returns the resolved agent config and source tier.
+**Agent resolver** (in `ares-agent`): 3-tier agent resolution. It queries the tenant DB first, then community agents, then system configuration. It returns the resolved agent configuration and the source tier.
 
-**LlmService** (in `ares-llm`): LLM provider management with circuit breaker (closed/open/half-open). Supports per-request model override without mutating global state.
+**Llm** (in `ares-llm`): LLM provider management with a circuit breaker (`Closed`/`Open`/`HalfOpen`). It supports a per-request model override through `ModelOverride` without mutation of global state. It also caches the NVIDIA model catalog for capability-based selection.
 
-**UnifiedToolService** (in `ares-tools`): Merges static tools, runtime DB tools, and MCP tools behind one interface. Precedence: tenant runtime, fleet runtime, MCP bridge, static.
+**Tools** (in `ares-tools`): Merges static tools, tenant runtime tools, fleet runtime tools, and MCP bridge registrations behind one interface. Precedence: tenant runtime, fleet runtime, static. Static registrations include the MCP bridge.
 
-**ReflectService** (in `cordis`): Coordinates hot-reload. When a file changes or DB row updates, `notify(type_id)` walks dependent fibers and triggers refresh.
+**ReflectService** (in `cordis`): Coordinates hot-reload. On a file change or a DB row update, `notify(type_id)` walks dependent fibers and triggers a refresh.
 
 ## Server bootstrap
 
-`src/main.rs` creates a root context, registers services via `plugin()` and `provide()` calls, then builds the Axum router:
+`src/main.rs` creates the root context and registers the loader factories. The loader then applies `config/cordis-entries.toml` in order. Plugins such as EventsService, Overlay, Store, Tools, Llm, Execute, and Http register through it. The `Http` plugin owns `/health` and `/api`. The binary merges extra routes on top and binds the listener:
 
 ```rust
 let root_ctx = Context::new_root();
-// Register plugins (services with lifecycle)
-root_ctx.plugin(ConfigService).await?;
-root_ctx.plugin(CalculatorService).await?;
-// ...
-// Provide data services
-root_ctx.provide_arc(agent_registry.clone());
-root_ctx.provide_arc(llm_factory.clone());
-root_ctx.provide(AgentResolverService::new(tenant_db, registry, config));
-root_ctx.provide(AgentExecutionService::new()
-    .with_db(db).with_tenant_db(tdb).with_agent_registry(reg)
-    .with_fleet_secrets(secrets).with_run_tracker(active_runs));
-// Build router
-let app = build_router(root_ctx.clone());
+root_ctx.plugin(cordis::ReflectService::new()).await?;
+// Register loader factories (capability crates + server extras)
+register_loader_factories(&root_ctx);
+// Boot: one ordered pass over config/cordis-entries.toml
+boot_loader_program(&root_ctx, entries_path, &config_path)?;
+// The Http plugin serves the router. The binary merges extra routes
+let mut app = http.router.clone().merge(extra);
+axum::serve(listener, app.into_make_service_with_connect_info())
+    .await?;
 ```
 
-## Hot-reload
+## Hot reload
 
-File changes are detected via `notify` crate with 500ms debounce. When a watched file changes:
-1. Watcher calls `ReflectService::notify(type_id)`
-2. ReflectService walks dependent fibers via BFS
-3. Each fiber recomputes its epoch from dependency versions
-4. If epoch changed, fiber reloads with new config
+The `notify` crate watches files with a 500 ms debounce. When a watched file changes:
+1. The watcher calls `ReflectService::notify(type_id)`
+2. ReflectService walks the dependent fibers through BFS
+3. Each fiber recomputes its epoch from the dependency versions
+4. If the epoch changed, the fiber reloads with the new configuration
 
-No polling loops. No 60-second stale windows.
+A watcher failure falls back to a 30-second poll for `cordis-entries.toml`.
 
 ## Dispatcher parity
 
-The events dispatcher (`EventsService`) mirrors the Cordis five dispatch modes. `Emit` invokes every handler fire-and-forget on the runtime and broadcasts the event and payload on the bus, returning immediately. `Parallel` fans handlers out across a `JoinSet` and propagates the first error it observes. `Serial` threads the payload through each handler in order and aborts on the first error. `Bail` stops at the first handler that returns a non-null result, without running later handlers. `Waterfall` is a serial around-middleware chain: each handler receives `(payload, next)`; calling `next` delegates downstream, returning without it short-circuits — the Rust analogue of the TS `next()` closure. All 22 catalog events are typed (`TypedEvent` payloads, consistency-test-enforced against the catalog), every dispatch is counted (`GET /admin/cordis/events`), and RhaiPolicy entries can attach sandboxed script listeners to any catalog event.
+The event dispatcher (`EventsService`) mirrors the five Cordis dispatch modes. `Emit` invokes every handler fire-and-forget on the runtime and broadcasts the event on the bus. It returns immediately. `Parallel` fans the handlers out across a `JoinSet` and propagates the first observed error. `Serial` threads the payload through each handler in order and aborts on the first error. `Bail` stops at the first handler that returns a non-null result. Later handlers do not run. `Waterfall` is a serial around-middleware chain. Each handler receives `(payload, next)`. A call to `next` delegates downstream. A return without `next` short-circuits. All 22 catalog events carry typed payloads. A consistency test enforces the binding against the catalog. Every dispatch increments a counter exposed at `GET /admin/cordis/events`. `RhaiPolicy` entries attach sandboxed script listeners to any catalog event.
 
 ## Loader journal
 
-`LoaderJournal` keeps live bookkeeping for loader entries. Each record stores the plugin label, the last applied config, the live fiber id when known, and a monotonically increasing generation counter. `Loader::execute_action` and `Loader::instantiate` use it: `RebuildFiber` and `instantiate` upsert a record, `UpdateConfig` bumps generation and reaches the live fiber (via `RegistryService::get_fiber`) to call `Fiber::update`, and `Retire` clears the record. It is provided as a service with `ctx.provide(LoaderJournal::new())`; when absent, the loader actions degrade to log-only.
+`LoaderJournal` keeps live bookkeeping for loader entries. Each record stores the plugin label, the last applied configuration, the live fiber id, and a monotonically increasing generation counter. `Loader::execute_action` and `Loader::instantiate` update it. `RebuildFiber` and `instantiate` upsert a record. `UpdateConfig` bumps the generation and reaches the live fiber through `RegistryService::get_fiber` to call `Fiber::update`. `Retire` clears the record. Provide the journal as a service with `ctx.provide(LoaderJournal::new())`. Without it, loader actions degrade to log-only.
 
 ## Fiber lifecycle
 
-A fiber transitions through lifecycle states as services are provided and reloaded. `Active` and `Inactive` reflect a service whose dependencies are satisfied or missing, while `Reloading` and `Unloading` cover in-flight change and teardown. `Loading` marks a fiber mid-instantiation and `Failed{error}` records a terminal registration failure — failed fibers stay wired into `ReflectService` (dependents are notified) and remain inspectable via the admin Cordis endpoints and the loader journal; re-registering the same key supersedes with a fresh fiber id.
+A fiber moves through lifecycle states as services arrive and reload. `Active` and `Inactive` mean satisfied or missing dependencies. `Reloading` and `Unloading` cover in-flight change and teardown. `Loading` marks a fiber mid-instantiation. `Failed { error }` records a terminal activation failure. Failed fibers stay wired into `ReflectService`, so their dependents receive notifications. The admin Cordis endpoints and the loader journal expose them for inspection. Re-registration of the same key supersedes the failed fiber with a fresh fiber id.
 
-Kernel guarantees, each backed by a property test in `cordis::metatheory`: guarded withdrawal (providers cannot be removed while active consumers exist), eager inject reconciliation (declarations on Active fibers take effect immediately, race-free), peer-dependency versioning (`provide_versioned`/`declare_inject_versioned` — incompatible versions leave dependents Inactive rather than silently binding), LIFO disposal, order-confluent registration, and quiescence after every operation.
+The kernel guarantees in `cordis::metatheory` cover guarded withdrawal (providers cannot retire while active consumers exist), eager inject reconciliation (declarations on Active fibers take effect immediately and race-free), peer-dependency versioning (`provide_versioned` / `declare_inject_versioned` keep dependents Inactive on incompatible versions), LIFO disposal, order-confluent registration, and quiescence after every operation. Each guarantee has a property test.
 
 ## Adding a new tool
 
 1. Implement the `Tool` trait in `crates/ares-tools/src/tools/`
-2. Register in `tool_registry.register(Arc::new(MyTool))` in main.rs
-3. Optionally implement `Service` and register via `ctx.plugin(MyToolService)`
+2. Register the tool in the registry that the ares-tools plugin factory builds
+3. Optionally implement `Service` and register through `ctx.plugin(MyToolService)`
 
 ## Adding a new LLM provider
 
-1. Implement `LLMClient` trait in `crates/ares-llm/src/`
-2. Add to provider registry in config
+1. Implement the `LLMClient` trait in `crates/ares-llm/src/`
+2. Add the provider to the provider registry in configuration
 3. The circuit breaker wraps it automatically
 
 ## Build
 
 ```bash
-# Development (all features)
-cargo build --features openai,postgres,mcp
+# Default build (postgres, openai, ares-vector, mcp, inventory, rhai-policy)
+cargo build
 
-# Minimal (no external deps)
-cargo build --no-default-features
+# Embed-only build without the server defaults
+cargo build --no-default-features --features openai,postgres,mcp
 
 # Release
-cargo build --release --features openai,postgres,mcp
+cargo build --release
 ```
 
-Rust 1.98 required (`rust-toolchain.toml` pins it).
+The build requires Rust 1.98. `rust-toolchain.toml` pins the version.

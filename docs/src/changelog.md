@@ -10,8 +10,8 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ### Added
 
-- `Execute::run` with full resolve-create-execute pipeline and `RunTracker` observability
-- `EventsService::waterfall_around`: around-middleware waterfall that runs `core` at the end; skipping `next` skips core
+- `Execute::run` with the full resolve-create-execute pipeline and `RunTracker` observability
+- `EventsService::waterfall_around`: around-middleware waterfall that runs `core` at the end; a skip of `next` skips core
 - `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`); if ReflectService is absent or the sender is dropped, it falls through to a 5ms poll
 - Product events: `tools.list` / `tools.resolve` / `tools.execute`, `llm.get_client` / `llm.complete`, `llm.generate` / `llm.generate_tools` (`ConfigurableAgent`), `agent.run` (waterfall), `agent.admit` (`Dispatch::Bail`), `agent.started` (`Dispatch::Parallel`)
 - Skills isolate the request `ctx` (`isolate::<Tools>(tenant_id)`) instead of opening a new root
@@ -29,11 +29,11 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - JWT research plus remaining v1 stream/agent handlers open the tenant realm before intercept
 - Isolate labels win over intercept for the same `TypeId`; unlabeled types still intercept
 - Leftover `execution_stack` dual `Execute` installer removed
-- Default `ares` facade has no axum (`http` is optional) and no longer re-exports `ProviderRegistry`
+- Default `ares-server` library build has no axum (`http` is optional) and no longer re-exports `ProviderRegistry`
 - Single `Execute` loader key (ares-agent); Overlay/`ServerRuntime` provide host extras
-- JWT middleware Store-looks-up tenant claims, fail-closes 401 when the tenant is missing, then opens `TenantRealms` and intercepts `TenantContext`; user claims isolate with no dummy Free tenant
+- JWT middleware looks up tenant claims in Store, fail-closes 401 when the tenant is missing, then opens `TenantRealms` and intercepts `TenantContext`; user claims isolate with no dummy Free tenant
 - `Llm::from_client` is the public test constructor; `no_http` no longer builds `ProviderRegistry`
-- Root `ares-server` is binary-only (no `[lib]`); integration tests depend on `ares` / `ares-http`
+- Root `ares-server` package keeps its binary; the library target serves embedders; integration tests depend on `ares-server` / `ares-http`
 
 ### Changed
 
@@ -70,7 +70,7 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 ### Changed
 
 - `AppState` god-struct (17-22 fields) replaced by `pub type AppState = Arc<Context>`.
-- `build_router(ctx)` is the primary router constructor; `base_router` retained as deprecated shim.
+- `build_router(ctx)` is the primary router constructor; `base_router` remains as deprecated shim.
 - Rust toolchain updated to 1.98.
 - All docs humanized (removed AI-sounding prose patterns).
 - `docs/src/SUMMARY.md` now includes Cordis chapters (mapping, remedies, capabilities, baseline, YAGNI, redesign) plus Architecture.
@@ -90,15 +90,15 @@ This release transforms ARES from a single-provider system into a full multi-pro
 
 ### Added
 
-- **Multi-provider LLM routing**, Support for 4 providers (Groq, Anthropic, NVIDIA DeepSeek, Ollama) and 11 models through a unified API.
-- **Model tier system**, `fast`, `balanced`, `powerful`, `deepseek`, and `local` tiers with automatic provider routing.
-- **Tenant agent system**, Agents stored in the database per tenant. Template-based provisioning with full CRUD via admin API.
-- **Agent templates**, Seed templates applied automatically on startup. New tenants receive a default agent set.
-- **Usage metering**, `usage_events` table, `monthly_usage_cache`, and `daily_rate_limits` for tracking tokens, requests, and costs per tenant.
-- **API key authentication**, `Authorization: Bearer ares_xxx` on `/v1/*` routes with tenant scoping.
-- **Kasino enterprise agents**, 4 specialized agent templates (`kasino-classifier`, `kasino-risk`, `kasino-transaction`, `kasino-report`) for the first enterprise client.
-- **Kasino API routes**, Both JWT-protected (`/api/kasino/*`) and API-key (`/v1/kasino/*`) endpoints.
-- **Admin provisioning API**, Atomic tenant creation: schema + agents + API key in a single operation.
+- **Multi-provider LLM routing**: support for 4 providers (Groq, Anthropic, NVIDIA DeepSeek, Ollama) and 11 models through a unified API.
+- **Model tier system**: `fast`, `balanced`, `powerful`, `deepseek`, and `local` tiers with automatic provider routing.
+- **Tenant agent system**: agents stored in the database per tenant. Template-based provisioning with full CRUD via admin API.
+- **Agent templates**: seed templates applied automatically on startup. New tenants receive a default agent set.
+- **Usage metering**: `usage_events` table, `monthly_usage_cache`, and `daily_rate_limits` for tracking tokens, requests, and costs per tenant.
+- **API key authentication**: `Authorization: Bearer ares_xxx` on `/v1/*` routes with tenant scoping.
+- **Enterprise agent templates**: 4 specialized agent templates (`trade-classifier`, `trade-risk`, `trade-monitor`, `trade-reporter`) for the first enterprise deployment.
+- **Tenant-scoped API routes**: both JWT-protected (`/api/trading/*`) and API-key (`/v1/trading/*`) endpoints.
+- **Admin provisioning API**: atomic tenant creation: schema + agents + API key in a single operation.
 
 ### Changed
 
@@ -118,9 +118,9 @@ This release transforms ARES from a single-provider system into a full multi-pro
 
 ### Added
 
-- **Server-Sent Events streaming**, `POST /v1/chat/stream` endpoint for real-time, token-by-token responses.
-- **Stream handler**, Unified streaming across all providers with consistent SSE format.
-- **Context continuation**, `context_id` parameter for maintaining conversation history across requests.
+- **Server-Sent Events streaming**: `POST /v1/chat/stream` endpoint for real-time token-by-token responses.
+- **Stream handler**: unified streaming across all providers with consistent SSE format.
+- **Context continuation**: `context_id` parameter for maintaining conversation history across requests.
 
 ### Changed
 
@@ -134,9 +134,9 @@ This release transforms ARES from a single-provider system into a full multi-pro
 
 ### Added
 
-- **Tool calling framework**, Define tools per agent. ARES manages the tool-call loop, execution, and response assembly.
-- **RAG pipeline**, Retrieval-augmented generation with pluggable document stores.
-- **Workflow engine**, Chain multiple agents into multi-step workflows with deterministic execution.
+- **Tool calling framework**: define tools per agent. ARES manages the tool-call loop, execution, and response assembly.
+- **RAG pipeline**: retrieval-augmented generation with pluggable document stores.
+- **Workflow engine**: chain multiple agents into multi-step workflows with deterministic execution.
 
 ### Changed
 
@@ -150,10 +150,10 @@ This release transforms ARES from a single-provider system into a full multi-pro
 
 ### Added
 
-- **User registration and login**, `POST /api/auth/register`, `POST /api/auth/login`.
-- **JWT token lifecycle**, 15-minute access tokens, refresh token rotation, logout/invalidation.
-- **Role-based access**, User roles with permission checks on protected routes.
-- **Admin authentication**, `X-Admin-Secret` header for internal administration endpoints.
+- **User registration and login**: `POST /api/auth/register`, `POST /api/auth/login`.
+- **JWT token lifecycle**: 15-minute access tokens, refresh token rotation, logout/invalidation.
+- **Role-based access**: user roles with permission checks on protected routes.
+- **Admin authentication**: `X-Admin-Secret` header for internal administration endpoints.
 
 ### Changed
 
@@ -168,10 +168,10 @@ This release transforms ARES from a single-provider system into a full multi-pro
 
 ### Added
 
-- **PostgreSQL integration**, Full migration from in-memory storage to PostgreSQL with `sqlx`.
-- **Auto-migration**, `sqlx::migrate!()` runs on startup. No manual SQL required.
-- **Tenant schema**, `tenants`, `tenant_agents`, and `api_keys` tables with foreign key relationships.
-- **Tenant tiers**, Free, Dev, Pro, and Enterprise tiers with configurable limits.
+- **PostgreSQL integration**: full migration from in-memory storage to PostgreSQL with `sqlx`.
+- **Auto-migration**: `sqlx::migrate!()` runs on startup. No manual SQL required.
+- **Tenant schema**: `tenants`, `tenant_agents`, and `api_keys` tables with foreign key relationships.
+- **Tenant tiers**: Free, Dev, Pro, and Enterprise tiers with configurable limits.
 
 ### Changed
 

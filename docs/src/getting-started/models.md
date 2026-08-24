@@ -1,6 +1,6 @@
 # Models & providers
 
-ARES routes LLM requests across multiple providers through a single API. You do not call providers directly, ARES selects the appropriate model based on the agent configuration and handles credentials, rate limits, and failover transparently.
+ARES routes LLM requests across multiple providers through a single API. You do not call providers directly. ARES selects the model from the agent configuration and handles credentials, rate limits, and failover.
 
 ## Available models
 
@@ -14,7 +14,7 @@ ARES routes LLM requests across multiple providers through a single API. You do 
 
 ## How model selection works
 
-You do not specify a model directly in your API calls. Instead, you specify an `agent_type`, and each agent is configured with a model tier.
+You do not name a model in your API calls. You pass an `agent_type`, and each agent has a configured model tier.
 
 ```bash
 # This request is routed to whichever model the "product" agent is configured to use
@@ -24,7 +24,7 @@ curl -X POST http://localhost:3000/v1/chat \
   -d '{"message": "Compare these two options", "agent_type": "product"}'
 ```
 
-The mapping between agents and models is configured by your tenant administrator. A typical setup might look like:
+Your tenant administrator configures the mapping between agents and models. A typical setup looks like this:
 
 | Agent | Model tier | Rationale |
 |---|---|---|
@@ -33,11 +33,11 @@ The mapping between agents and models is configured by your tenant administrator
 | `analyst` | `powerful` | Complex reasoning required |
 | `code-review` | `deepseek` | Specialized for code tasks |
 
-This design means you can upgrade an agent's underlying model without changing any client code.
+With this design, you upgrade the model behind an agent without changes to client code.
 
 ## Provider architecture
 
-ARES uses a named-provider system. Each provider is configured with its API endpoint, credentials, and rate limits. Models reference their provider by name.
+ARES uses a named-provider system. Each provider has a configured API endpoint, credentials, and rate limits. Models reference their provider by name.
 
 ```
 ┌─────────────┐
@@ -62,24 +62,24 @@ ARES uses a named-provider system. Each provider is configured with its API endp
 
 ### Provider details
 
-**Groq**, High-throughput inference on custom LPUs. Extremely fast response times. Hosts open-source models (Llama, Mixtral). Free tier available with rate limits.
+**Groq**: high-throughput inference on custom LPUs with fast response times. It hosts open-source models (Llama, Mixtral). A free tier is available with rate limits.
 
-**Anthropic**, Claude models. Best-in-class for complex reasoning, instruction following, and safety. Requires a paid API key.
+**Anthropic**: Claude models. These models lead in complex reasoning, instruction following, and safety. This provider requires a paid API key.
 
-**NVIDIA (DeepSeek)**, NVIDIA-hosted DeepSeek models via the NVIDIA AI API. Strong at code generation and structured technical output.
+**NVIDIA (DeepSeek)**: NVIDIA-hosted DeepSeek models over the NVIDIA AI API. They are strong at code generation and structured technical output.
 
-**Ollama**, Self-hosted, local inference. No external API calls. Useful for development, air-gapped environments, or when you need to keep data on-premises.
+**Ollama**: self-hosted local inference with no external API calls. It fits development, air-gapped environments, or on-premises data requirements.
 
 ## Rate limits
 
-Rate limits are enforced per provider and per tenant. The following are default limits for the Groq free tier:
+ARES enforces rate limits per provider and per tenant. These are the default limits for the Groq free tier:
 
 | Model tier | Requests per day | Tokens per minute |
 |---|---|---|
 | `fast` (llama-3.1-8b) | 14,400 | 20,000 |
 | `balanced` (llama-3.3-70b) | 6,000 | 6,000 |
 
-Anthropic and NVIDIA rate limits depend on your API plan with those providers. ARES surfaces rate limit errors transparently:
+Anthropic and NVIDIA rate limits depend on your API plan with those providers. ARES surfaces provider rate limit errors unchanged:
 
 ```json
 {
@@ -89,11 +89,11 @@ Anthropic and NVIDIA rate limits depend on your API plan with those providers. A
 }
 ```
 
-Tenant-level rate limits and quotas are configured separately by your administrator and enforced by ARES regardless of provider limits.
+Your administrator configures tenant-level rate limits and quotas separately. ARES enforces them regardless of provider limits.
 
 ## Adding your own providers
 
-If you are self-hosting ARES, you can add providers in your `ares.toml` configuration:
+If you self-host ARES, add providers to your `ares.toml` configuration:
 
 ```toml
 [[providers]]
@@ -109,7 +109,7 @@ model_id = "gpt-4o"
 tier = "powerful"
 ```
 
-Any provider that exposes an OpenAI-compatible API (vLLM, Together AI, Fireworks, etc.) can be added using the `openai` provider kind.
+Any provider that exposes an OpenAI-compatible API (vLLM, Together AI, Fireworks, and more) works through the `openai` provider kind.
 
 ## Choosing the right tier
 
@@ -121,4 +121,4 @@ Any provider that exposes an OpenAI-compatible API (vLLM, Together AI, Fireworks
 | Code generation or technical tasks | `deepseek` |
 | Offline or local development | `local` |
 
-When in doubt, start with `balanced`. It provides the best trade-off between quality, speed, and cost for most use cases.
+Start with `balanced` when unsure. For most use cases it gives the best trade-off between quality, speed, and cost.

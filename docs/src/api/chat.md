@@ -1,6 +1,6 @@
 # Chat & conversations
 
-Send messages to ARES agents and manage multi-turn conversations.
+The Chat API sends messages to ARES agents and manages multi-turn conversations.
 
 ---
 
@@ -10,7 +10,7 @@ Send messages to ARES agents and manage multi-turn conversations.
 POST /api/chat
 ```
 
-Send a message to an agent and receive a response. ARES routes the message to the appropriate agent based on the `agent_type` parameter, or uses the default router agent if none is specified.
+This endpoint sends a message to an agent and returns the response. ARES selects the appropriate agent from the `agent_type` parameter. If you omit `agent_type`, ARES uses the default router agent.
 
 ### Authentication
 
@@ -21,7 +21,7 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 | Parameter | Type | Required | Description |
 |-------------|--------|----------|-----------------------------------------------------------------------------|
 | `message` | string | Yes | The user's message or prompt. |
-| `agent_type` | string | No | Which agent handles the request (e.g., `"product"`, `"research"`, `"router"`). Defaults to the router agent. |
+| `agent_type` | string | No | The agent that handles the request (for example, `"product"`, `"research"`, `"router"`). The default is the router agent. |
 | `context_id` | string | No | Conversation context ID. Pass this value back on subsequent requests to continue a multi-turn conversation. |
 
 ### Response
@@ -130,7 +130,7 @@ const followUp = await fetch("http://localhost:3000/api/chat", {
 POST /api/chat/stream
 ```
 
-Send a message and receive the response as a stream of Server-Sent Events (SSE). Each event contains a text chunk. This is the recommended approach for user-facing applications where you want to display the response as it is generated.
+This endpoint sends a message and returns the response as a stream of Server-Sent Events (SSE). Each event contains one text chunk. Use this endpoint in user-facing applications that display the response while the system generates it.
 
 The request body is identical to `POST /api/chat`.
 
@@ -140,7 +140,7 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 
 ### Response format
 
-The response uses the `text/event-stream` content type. Each SSE event contains a chunk of the agent's response:
+The response uses the `text/event-stream` content type. Each SSE event contains one chunk of the response from the agent:
 
 ```
 data: Here's
@@ -231,7 +231,7 @@ while (true) {
 
 ## Conversations
 
-Manage stored conversations and their message history.
+These endpoints manage stored conversations and their message history.
 
 ### List conversations
 
@@ -273,7 +273,7 @@ curl http://localhost:3000/api/conversations/conv_abc123 \
 PUT /api/conversations/{id}
 ```
 
-Update the title of a conversation.
+This endpoint updates the title of a conversation.
 
 **Authentication:** JWT required.
 
@@ -298,7 +298,7 @@ curl -X PUT http://localhost:3000/api/conversations/conv_abc123 \
 DELETE /api/conversations/{id}
 ```
 
-Permanently delete a conversation and all its messages.
+This endpoint permanently deletes a conversation and all its messages.
 
 **Authentication:** JWT required.
 
@@ -315,7 +315,7 @@ curl -X DELETE http://localhost:3000/api/conversations/conv_abc123 \
 GET /api/memory
 ```
 
-Retrieve memory and preferences that ARES has learned from your conversations. This includes user preferences, context, and behavioral patterns the system has observed.
+This endpoint returns the memory and preferences that ARES learned from your conversations. The data includes user preferences, context, and behavior patterns observed by the system.
 
 **Authentication:** JWT required.
 

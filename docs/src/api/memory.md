@@ -1,20 +1,20 @@
 # Memory
 
-ARES provides conversation memory and user context management for maintaining state across agent interactions.
+ARES manages conversation memory and user context across agent interactions.
 
 ## Features
 
-- Sliding window over conversation history (`DEFAULT_HISTORY_WINDOW = 10`)
-- Token-budget-aware history truncation
-- User memory formatting (facts, preferences) for system prompts
-- Integration with Eruka for persistent cross-session context
+- Sliding window over the conversation history (`DEFAULT_HISTORY_WINDOW = 10`)
+- History truncation within a token budget
+- Formatting of user memory (facts and preferences) for system prompts
+- Integration with Eruka for persistent context across sessions
 
 ## Core functions
 
-### History management
+### History functions
 
 ```rust
-use ares::memory::{truncate_history, truncate_history_to_tokens};
+use ares_agent::memory::{truncate_history, truncate_history_to_tokens};
 
 // Keep last N messages
 let recent = truncate_history(&messages, 10);
@@ -26,19 +26,19 @@ let within_budget = truncate_history_to_tokens(&messages, 4096);
 ### Context building
 
 ```rust
-use ares::memory::{build_context, format_memory_for_prompt};
+use ares_agent::memory::{build_context, format_memory_for_prompt};
 
 // Format user memory (facts + preferences) into a system prompt section
 let memory_text = format_memory_for_prompt(&user_memory);
 
 // Build full context with history window and memory injection
-let context = build_context(&user_memory, &history, window_size);
+let context = build_context(user_id, session_id, history, Some(user_memory), None);
 ```
 
 ### Filtering
 
 ```rust
-use ares::memory::{filter_facts_by_category, filter_preferences_by_category};
+use ares_agent::memory::{filter_facts_by_category, filter_preferences_by_category};
 
 // Filter facts by category (e.g., "health", "technical")
 let health_facts = filter_facts_by_category(&facts, "health");
@@ -58,7 +58,7 @@ let prefs = filter_preferences_by_category(&preferences, "communication");
 ## Token estimation
 
 ```rust
-use ares::memory::estimate_tokens;
+use ares_agent::memory::estimate_tokens;
 
 let tokens = estimate_tokens("Hello, how are you?");
 // Rough estimate: ~5 tokens (word count * 1.3)
@@ -66,7 +66,7 @@ let tokens = estimate_tokens("Hello, how are you?");
 
 ## Eruka integration
 
-When ARES is paired with Eruka (via the `ContextProvider` trait), the memory flow becomes:
+When you pair ARES with Eruka through the `ContextProvider` trait, the memory flow has these steps:
 
 1. On session start, `ContextProvider::get_context()` fetches user state from Eruka
 2. Facts and preferences are formatted and injected into the agent system prompt

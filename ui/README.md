@@ -1,37 +1,40 @@
 # A.R.E.S Chat UI
 
-A modern, sleek chat interface for the A.R.E.S (Agentic Reasoning & Execution System) server, built with **Leptos** and **Tailwind CSS**.
+A modern chat interface for the A.R.E.S (Agentic Reasoning & Execution System) server. The UI uses **Leptos** and **Tailwind CSS**.
 
 ## Features
 
-- 🎨 **Modern Dark Theme** - Clean, professional design with smooth animations
-- 💬 **Real-time Chat** - Send messages and receive AI responses
-- 🤖 **Agent Selection** - Choose specific agents or use auto-routing
-- 🔧 **Tool Call Display** - See when the AI uses tools (calculator, search, etc.)
-- 📝 **Markdown Support** - Code blocks and inline code rendering
+- 🎨 **Modern Dark Theme** - clean, professional design with smooth animations
+- 💬 **Real-time Chat** - send messages and receive AI responses
+- 🤖 **Agent Selection** - choose a specific agent or use auto-routing
+- 🔧 **Tool Call Display** - see when the AI uses tools (calculator, search, and more)
+- 📝 **Markdown Support** - code blocks and inline code rendering
 - 💾 **Persistent Auth** - JWT-based authentication with localStorage
-- 📱 **Responsive Design** - Works on desktop and mobile
+- 📱 **Responsive Design** - works on desktop and mobile
 
 ## Tech Stack
 
-- **[Leptos](https://leptos.dev/)** - Rust-based reactive web framework
-- **[Tailwind CSS](https://tailwindcss.com/)** - Utility-first CSS framework
+- **[Leptos](https://leptos.dev/)** - reactive web framework in Rust
+- **[Tailwind CSS](https://tailwindcss.com/)** - utility-first CSS framework
 - **[Trunk](https://trunkrs.dev/)** - WASM web application bundler
-- **[gloo](https://gloo-rs.web.app/)** - Web API bindings for Rust/WASM
+- **[gloo](https://gloo-rs.web.app/)** - web API bindings for Rust/WASM
 
 ## Prerequisites
 
 1. **Rust** with the `wasm32-unknown-unknown` target:
+
    ```bash
    rustup target add wasm32-unknown-unknown
    ```
 
 2. **Trunk** bundler:
+
    ```bash
    cargo install trunk --locked
    ```
 
 3. **Node.js** (for Tailwind CSS):
+
    ```bash
    npm install
    ```
@@ -40,7 +43,7 @@ A modern, sleek chat interface for the A.R.E.S (Agentic Reasoning & Execution Sy
 
 ### Quick Start
 
-From the project root:
+Run these commands from the project root:
 
 ```bash
 # Install all dependencies
@@ -70,7 +73,7 @@ trunk build --release
 
 ### Running with Backend
 
-Start both the ARES server and UI:
+Start the ARES server and the UI:
 
 ```bash
 # Terminal 1: Start backend
@@ -80,7 +83,7 @@ just run
 just ui-dev
 ```
 
-Or use the combined command:
+Alternatively, use the combined command:
 
 ```bash
 just dev
@@ -111,7 +114,6 @@ ui/
     │   ├── chat_message.rs
     │   ├── header.rs
     │   ├── loading.rs
-    │   ├── agent_selector.rs
     │   └── sidebar.rs
     └── pages/          # Page components
         ├── mod.rs
@@ -124,11 +126,11 @@ ui/
 
 ### API Base URL
 
-The UI defaults to `http://localhost:3000`. To change it, modify the `api_base` in `src/state.rs` or implement environment-based configuration.
+The UI defaults to `http://localhost:3000`. To change the URL, modify `api_base` in `src/state.rs` or implement environment-based configuration.
 
 ### CORS
 
-Ensure the ARES backend has CORS configured to allow requests from the UI origin (typically `http://localhost:8080` in development).
+The ARES backend must allow requests from the UI origin through its `cors_origins` configuration. In development, the UI origin is typically `http://localhost:8080`.
 
 ## Production Build
 
@@ -139,27 +141,28 @@ cd ui && trunk build --release
 # Output is in ui/dist/
 ```
 
-The `dist/` folder contains static files that can be served by any web server (nginx, Caddy, S3, etc.).
+The `dist/` folder contains static files. Any web server (nginx, Caddy, S3, and more) can serve them.
 
 ## Troubleshooting
 
 ### Tailwind styles not applying
 
-1. Ensure `npm install` was run
-2. Check that `dist/output.css` is generated
-3. Run `npm run build:css` manually
+1. Run `npm install`.
+2. Make sure that `dist/output.css` exists.
+3. If the file does not exist, run `npm run build:css` manually.
 
 ### WASM compilation errors
 
-1. Ensure `wasm32-unknown-unknown` target is installed:
+1. If the `wasm32-unknown-unknown` target is not installed, install it:
+
    ```bash
    rustup target add wasm32-unknown-unknown
    ```
 
 ### Connection refused errors
 
-1. Ensure the ARES backend is running on port 3000
-2. Check browser console for CORS errors
+1. Make sure that the ARES backend runs on port 3000.
+2. Check the browser console for CORS errors.
 
 ## License
 

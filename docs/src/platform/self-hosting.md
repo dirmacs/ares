@@ -50,7 +50,7 @@ Copy the example config and customize it:
 cp ares.example.toml ares.toml
 ```
 
-Edit `ares.toml` to configure your providers and models. At minimum, you need one LLM provider:
+Edit `ares.toml` to configure your providers and models. You need at least one LLM provider:
 
 ```toml
 [server]
@@ -109,13 +109,13 @@ See [Feature Flags](#feature-flags) for all available options.
 curl http://localhost:3000/health
 ```
 
-You should receive a `200 OK` response. ARES is running.
+You receive a `200 OK` response. ARES is running.
 
 ---
 
 ## Feature flags
 
-ARES uses Cargo feature flags to control which capabilities are compiled into the binary. This keeps the binary lean, only include what you need.
+ARES uses Cargo feature flags to control which capabilities are compiled into the binary. This keeps the binary lean; include only what you need.
 
 | Feature | Default | Description |
 |---|---|---|
@@ -209,7 +209,7 @@ sudo systemctl enable caddy
 sudo systemctl start caddy
 ```
 
-Caddy automatically provisions and renews TLS certificates. No manual certificate management is needed.
+Caddy provisions and renews TLS certificates automatically. No manual certificate management is needed.
 
 ### PostgreSQL Setup
 
@@ -328,13 +328,13 @@ Database migrations run automatically on startup. No manual migration steps are 
 ```
 Error: Address already in use (os error 98)
 ```
-Another process is using port 3000. Either stop it or change the port in `ares.toml`.
+Another process uses port 3000. Stop that process or change the port in `ares.toml`.
 
 **Database connection failed:**
 ```
 Error: error communicating with database
 ```
-Verify PostgreSQL is running and your `DATABASE_URL` is correct. Check that the database user has permissions on the database.
+Make sure that PostgreSQL runs and your `DATABASE_URL` is correct. Check that the database user has permissions on the database.
 
 **Provider API key missing:**
 ```

@@ -1,6 +1,6 @@
 # Guide: build a chat agent
 
-This guide walks you through creating a custom chat agent on ARES, from defining its behavior to testing it in production.
+This guide shows how to create a custom chat agent on ARES, from the behavior definition to the production test.
 
 ---
 
@@ -8,11 +8,11 @@ This guide walks you through creating a custom chat agent on ARES, from defining
 
 An ARES agent is a configured LLM endpoint with a specific personality, instructions, and tool access. Each agent has:
 
-- A **name**, unique identifier used in API calls
-- A **model**, which LLM powers it (e.g., `llama-3.3-70b`, `claude-3.5-sonnet`)
-- A **system prompt**, instructions that define the agent's behavior
+- A **name**, a unique identifier for API calls
+- A **model**, the LLM that powers it (e.g., `llama-3.3-70b`, `claude-3.5-sonnet`)
+- A **system prompt**, instructions that define the behavior of the agent
 - **Tools**, optional capabilities like `calculator` or `web_search`
-- **Configuration**, max tokens, temperature, and other parameters
+- A **configuration**, max tokens, temperature, and other parameters
 
 You can create agents in two ways: via the configuration file or via the API.
 
@@ -40,7 +40,7 @@ tools = ["calculator"]
 max_tokens = 4096
 ```
 
-Restart ARES to load the new agent. It will be available immediately at `/api/chat` using `agent_type: "financial-analyst"`.
+Restart ARES to load the new agent. The agent is then immediately available at `/api/chat` with `agent_type: "financial-analyst"`.
 
 ### TOON config format
 
@@ -63,13 +63,13 @@ constraints = [
 tools = ["web_search"]
 ```
 
-The TOON format structures the system prompt into semantic fields that ARES assembles into a coherent prompt. This makes agent behavior easier to reason about and modify.
+The TOON format structures the system prompt into semantic fields. ARES assembles these fields into a coherent prompt. This structure makes the agent behavior easier to reason about and modify.
 
 ---
 
 ## Option 2: create via API
 
-For tenant-specific agents or agents you want to manage programmatically, use the API.
+For tenant-specific agents, or for programmatic management, use the API.
 
 ### As a platform admin
 
@@ -152,7 +152,7 @@ curl -X POST http://localhost:3000/api/chat \
 
 ### With tool usage
 
-If your agent has tools enabled, ARES handles the tool calling loop automatically. You send a normal chat message, and the agent uses tools as needed:
+If you enable tools on your agent, ARES handles the tool-calling loop automatically. You send a normal chat message, and the agent uses tools as needed:
 
 ```bash
 curl -X POST http://localhost:3000/api/chat \
@@ -164,7 +164,7 @@ curl -X POST http://localhost:3000/api/chat \
   }'
 ```
 
-The agent will internally call the calculator tool to compute `50000 * (1.15)^10` and return the formatted result.
+The agent calls the calculator tool internally to compute `50000 * (1.15)^10` and returns the formatted result.
 
 ### Streaming
 
@@ -180,13 +180,13 @@ curl -X POST http://localhost:3000/api/chat/stream \
   }'
 ```
 
-This returns a Server-Sent Events stream. See the [V1 API docs](../enterprise/v1-api.md) for client-side streaming examples.
+This endpoint returns a Server-Sent Events stream. See the [V1 API docs](../enterprise/v1-api.md) for client-side streaming examples.
 
 ---
 
 ## Iterating on the system prompt
 
-The system prompt is the most important part of your agent. Here are practical guidelines:
+The system prompt is the most important part of your agent. Use these practical guidelines:
 
 ### Be specific about format
 
@@ -207,7 +207,7 @@ You are a financial analyst. When presenting calculations:
 
 ### Define boundaries
 
-Tell the agent what it should *not* do:
+Tell the agent what it must *not* do:
 
 ```
 Constraints:
@@ -219,7 +219,7 @@ Constraints:
 
 ### Include examples
 
-For complex formatting requirements, show the agent what you want:
+For complex formatting requirements, show the agent an example of the output that you want:
 
 ```
 When comparing metrics, use this format:
@@ -232,12 +232,12 @@ When comparing metrics, use this format:
 
 ### Test edge cases
 
-After writing your system prompt, test these scenarios:
+After you write the system prompt, test these scenarios:
 
-1. **Off-topic requests**, Does the agent stay in character or helpfully redirect?
-2. **Ambiguous inputs**, Does the agent ask for clarification?
-3. **Tool failures**, Does the agent handle tool errors gracefully?
-4. **Long conversations**, Does the agent maintain context over multiple turns?
+1. **Off-topic requests:** Does the agent stay in character or redirect helpfully?
+2. **Ambiguous inputs:** Does the agent ask for clarification?
+3. **Tool failures:** Does the agent handle tool errors gracefully?
+4. **Long conversations:** Does the agent keep context over multiple turns?
 
 ---
 
@@ -260,13 +260,13 @@ Available built-in tools:
 | `calculator` | Evaluate mathematical expressions |
 | `web_search` | Search the web for current information |
 
-See the [Tool Calling guide](./tool-calling.md) for details on how tool execution works.
+See the [Tool Calling guide](./tool-calling.md) for details on tool execution.
 
 ---
 
 ## Choosing a model
 
-Different models have different strengths. Consider these factors when choosing:
+Different models have different strengths. Consider these factors in your choice:
 
 | Model | Provider | Best For |
 |---|---|---|
@@ -275,9 +275,9 @@ Different models have different strengths. Consider these factors when choosing:
 | `deepseek-r1` | NVIDIA | Complex reasoning, chain-of-thought |
 | `claude-3.5-sonnet` | Anthropic | Nuanced writing, careful analysis |
 
-Start with `llama-3.3-70b` for most use cases. It offers a strong balance of capability, speed, and cost. Move to a specialized model only if you have a specific need.
+Start with `llama-3.3-70b` for most use cases. It gives a strong balance of capability, speed, and cost. Move to a specialized model only for a specific need.
 
-Check available models with:
+Check the available models with:
 
 ```bash
 curl http://localhost:3000/api/admin/models \

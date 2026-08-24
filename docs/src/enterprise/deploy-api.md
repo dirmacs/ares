@@ -1,6 +1,6 @@
 # Deployment API
 
-The Deployment API allows you to trigger, monitor, and inspect deployments of ARES platform services. Deployments run server-side on the VPS and stream build output for observability.
+The Deployment API lets you trigger, monitor, and inspect deployments of ARES platform services. Deployments run server-side on the VPS and stream build output for observability.
 
 **Base URL:** `http://localhost:3000`
 
@@ -20,7 +20,7 @@ X-Admin-Secret: <secret>
 POST /api/admin/deploy
 ```
 
-Starts a deployment for the specified target service. The deployment runs asynchronously, you receive a deployment ID immediately and poll for completion.
+The endpoint starts a deployment for the specified target service. The deployment runs asynchronously. You immediately receive a deployment ID, then you poll for completion.
 
 **Request Body:**
 
@@ -63,7 +63,7 @@ curl -X POST http://localhost:3000/api/admin/deploy \
 GET /api/admin/deploy/{id}
 ```
 
-Returns the current status of a deployment. Poll this endpoint until `status` is no longer `"running"`.
+The response shows the current status of a deployment. Poll this endpoint until `status` is no longer `"running"`.
 
 **Response:**
 
@@ -84,11 +84,11 @@ Returns the current status of a deployment. Poll this endpoint until `status` is
 |---|---|
 | `running` | Deployment is in progress |
 | `success` | Deployment completed successfully |
-| `failed` | Deployment failed, check `output` for details |
+| `failed` | Deployment failed. Read `output` for details |
 
 ### Polling pattern
 
-The recommended approach is to trigger a deployment, then poll every 3 seconds until it completes:
+Recommended approach: trigger a deployment first. Then poll every 3 seconds until it completes.
 
 ```bash
 # 1. Trigger deployment
@@ -162,7 +162,7 @@ while True:
 GET /api/admin/deploys
 ```
 
-Returns the 20 most recent deployments, newest first.
+The response lists the 20 most recent deployments, newest first.
 
 **Response:**
 
@@ -204,7 +204,7 @@ curl http://localhost:3000/api/admin/deploys \
 GET /api/admin/services
 ```
 
-Returns the runtime status of all managed services.
+The response shows the runtime status of all managed services.
 
 **Response:**
 
@@ -247,7 +247,7 @@ curl http://localhost:3000/api/admin/services \
 GET /api/admin/services/{name}/logs
 ```
 
-Returns recent log output from the service's systemd journal.
+The response shows recent log output from the systemd journal for the service.
 
 **Response:**
 

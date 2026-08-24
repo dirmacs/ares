@@ -6,7 +6,7 @@ ARES uses conventional HTTP status codes and a consistent JSON error format acro
 
 ## Error response format
 
-All errors return a JSON object with an `error` field containing a human-readable message:
+All errors return a JSON object with an `error` field that contains a human-readable message:
 
 ```json
 {
@@ -14,7 +14,7 @@ All errors return a JSON object with an `error` field containing a human-readabl
 }
 ```
 
-The HTTP status code indicates the category of error. The `error` string provides specific details about what went wrong.
+The HTTP status code indicates the category of the error. The `error` string gives specific details about what went wrong.
 
 ---
 
@@ -34,10 +34,10 @@ The HTTP status code indicates the category of error. The `error` string provide
 |---|---|---|
 | `400` | Bad Request | Malformed JSON, missing required fields, invalid parameter types |
 | `401` | Unauthorized | Missing or invalid authentication credentials |
-| `403` | Forbidden | Valid credentials but insufficient permissions for this operation |
+| `403` | Forbidden | Valid credentials with insufficient permissions for this operation |
 | `404` | Not Found | Resource does not exist, or does not belong to your tenant |
 | `409` | Conflict | Resource already exists (e.g., duplicate tenant name or agent name) |
-| `422` | Unprocessable Entity | Request is well-formed but contains invalid values (e.g., unknown tier, invalid model name) |
+| `422` | Unprocessable Entity | Well-formed request with invalid values (e.g., unknown tier, invalid model name) |
 | `429` | Too Many Requests | Rate limit or quota exceeded |
 
 ### Server error codes
@@ -64,7 +64,7 @@ Add the `Authorization: Bearer ares_xxx` header to your request.
 HTTP 401
 {"error": "Invalid API key"}
 ```
-Verify that the API key is correct and has not been revoked. API keys start with `ares_`.
+Make sure that the API key is correct and not revoked. API keys start with `ares_`.
 
 **Missing admin secret:**
 ```
@@ -78,7 +78,7 @@ Admin endpoints require the `X-Admin-Secret` header, not the `Authorization` hea
 HTTP 401
 {"error": "Invalid admin secret"}
 ```
-Verify the admin secret matches the value configured in `ares.toml`.
+Make sure that the admin secret matches the value configured in `ares.toml`.
 
 ### Resource errors
 
@@ -117,14 +117,14 @@ Use one of the supported tier values.
 HTTP 400
 {"error": "Missing required field: name"}
 ```
-Include all required fields in your request body. Refer to the API documentation for the specific endpoint.
+Include all required fields in your request body. See the API documentation for the specific endpoint.
 
 **Invalid JSON:**
 ```
 HTTP 400
 {"error": "Invalid JSON in request body"}
 ```
-Ensure your request body is valid JSON. Check for trailing commas, unquoted keys, or mismatched brackets. Verify the `Content-Type: application/json` header is set.
+Make sure that your request body is valid JSON. Check for trailing commas, unquoted keys, or mismatched brackets. Make sure that you set the `Content-Type: application/json` header.
 
 ### Rate limit errors
 
@@ -133,14 +133,14 @@ Ensure your request body is valid JSON. Check for trailing commas, unquoted keys
 HTTP 429
 {"error": "Monthly request quota exceeded"}
 ```
-Your tenant has used all allocated requests for the current billing period. Wait until the period resets or contact your administrator to upgrade your tier.
+Your tenant used all allocated requests for the current billing period. Wait until the period resets or contact your administrator to upgrade your tier.
 
 **Daily limit:**
 ```
 HTTP 429
-{"error": "Daily request limit reached for your tier"}
+{"error": "Daily rate limit exceeded"}
 ```
-Your tenant has hit the daily rate cap. Wait until the next UTC day or upgrade your tier.
+Your tenant hit its daily rate cap. Wait until the next UTC day or upgrade your tier.
 
 See [Rate Limits and Quotas](../platform/rate-limits.md) for details on limits by tier.
 
@@ -151,21 +151,21 @@ See [Rate Limits and Quotas](../platform/rate-limits.md) for details on limits b
 HTTP 500
 {"error": "Internal server error"}
 ```
-An unexpected error occurred on the server. These are not caused by your request. If the error persists, check service health via `GET /api/admin/services` or inspect server logs.
+An unexpected error occurred on the server. Your request did not cause it. If the error persists, check service health via `GET /api/admin/services` or inspect server logs.
 
 ---
 
 ## Error handling best practices
 
-1. **Always check the HTTP status code first.** The status code tells you the error category before you parse the response body.
+1. **Check the HTTP status code first.** The status code tells you the error category before you parse the response body.
 
 2. **Parse the error message for user display.** The `error` field is written to be human-readable and safe to show to end users.
 
-3. **Retry on 429 and 500.** Rate limit errors (429) should be retried with exponential backoff. Server errors (500) may be transient, retry once or twice before treating as a permanent failure.
+3. **Retry on 429 and 500.** Retry rate limit errors (429) with exponential backoff. Server errors (500) can be transient; retry once or twice before you treat the failure as permanent.
 
-4. **Do not retry on 400, 401, 403, 404, 409, or 422.** These indicate problems with the request itself. Fix the request before retrying.
+4. **Do not retry on 400, 401, 403, 404, 409, or 422.** These codes indicate problems with the request itself. Fix the request before you retry.
 
-5. **Log the full response.** When debugging, log both the HTTP status code and the response body. The error message often contains the specific field or value that caused the problem.
+5. **Log the full response.** When you debug, log both the HTTP status code and the response body. The error message often contains the specific field or value that caused the problem.
 
 ### Example: reliable error handling (Python)
 

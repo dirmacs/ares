@@ -14,13 +14,13 @@ Version: 0.6.0
 
 ## Executive summary
 
-A.R.E.S (Agentic Retrieval Enhanced Server) has been successfully transformed into a local-first, production-ready agentic chatbot server with complete LLM provider support, tool calling, hybrid TOML + TOON configuration, RAG with pure-Rust vector store, and robust testing infrastructure.
+A.R.E.S (Agentic Retrieval Enhanced Server) is now a local-first, production-ready agentic chatbot server. It supports many LLM providers, tool calling, hybrid TOML + TOON configuration, RAG with a pure-Rust vector store, and a strong test infrastructure.
 
 ### Key achievements
 
 Local-First by Default: Ollama + SQLite, no external APIs required 
 Direct GGUF Support: Full LlamaCpp integration with streaming 
-complete Tool Calling: Multi-turn orchestration with Ollama 
+Complete Tool Calling: Multi-turn orchestration with Ollama 
 Feature-Gated Architecture: Flexible compilation with 15+ feature flags 
 Hybrid Configuration: TOML for infrastructure, TOON for behavioral configs (30-60% token savings) 
 Hot Reloading: Configuration changes apply without server restart 
@@ -28,10 +28,10 @@ Workflow Engine: Multi-agent orchestration with declarative workflows
 ConfigurableAgent: Dynamic agent creation from TOON files (legacy agents removed) 
 RAG System: Pure-Rust ares-vector store, multi-strategy search, reranking 
 Model Capabilities (DIR-43): Intelligent model selection based on task requirements 
- 458 Passing Tests: Unit, integration, mocked network tests, RAG, and MCP tests 
+458 Passing Tests: Unit, integration, mocked network tests, RAG, and MCP tests 
 CI/CD Pipeline: Multi-platform testing with GitHub Actions 
 Developer Documentation: Setup guides, contributing guidelines, GGUF usage 
- [daedra](https://github.com/dirmacs/daedra) Integration: Local web search without proprietary APIs 
+[daedra](https://github.com/dirmacs/daedra) Integration: Local web search without proprietary APIs 
 MCP Server Implementation: Full Model Context Protocol support with tools 
 
 ---
@@ -39,10 +39,10 @@ MCP Server Implementation: Full Model Context Protocol support with tools
 ## Iteration 1: Investigation & decoupling
 
 ### Objectives
-- Remove dependency on Turso and Qdrant cloud services
-- Integrate [daedra](https://github.com/dirmacs/daedra) crate for local web search
+- Remove the dependency on Turso and Qdrant cloud services
+- Integrate the [daedra](https://github.com/dirmacs/daedra) crate for local web search
 - Complete or remove TODOs/FIXMEs
-- Ensure test coverage and quality
+- Give tests adequate coverage and quality
 
 ### Completed tasks
 
@@ -60,9 +60,9 @@ MCP Server Implementation: Full Model Context Protocol support with tools
 
 #### 3. Code cleanup
 - Anthropic Provider: Removed unimplemented stub
-- Provider Enum: Cleaned up to only include implemented providers
+- Provider Enum: Contains only implemented providers
 - TODOs: Addressed or documented all critical TODOs
-- FIXMEs: Resolved implementation stubs
+- FIXMEs: Resolved the implementation stubs
 
 #### 4. Test infrastructure
 - API Tests: `tests/api_tests.rs` - 37 tests covering auth, chat, agents, errors
@@ -74,7 +74,7 @@ MCP Server Implementation: Full Model Context Protocol support with tools
 - Provider Registry Tests: `src/llm/provider_registry.rs` - 3 tests
 - Agent Registry Tests: `src/agents/registry.rs` - 1 test
 - Tool Registry Tests: `src/tools/registry.rs` - 3 tests
-- Coverage: All core functionality tested
+- Coverage: Tests cover all core functionality
 - Status: 458 tests passing
 
 #### 5. CI/CD & quality
@@ -96,8 +96,8 @@ MCP Server Implementation: Full Model Context Protocol support with tools
 ### Objectives
 - Implement direct GGUF model loading with llama.cpp
 - Add full tool calling support for Ollama
-- Research ecosystem for best practices
-- Design complete feature gating system
+- Research ecosystem best practices
+- Design a complete feature gating system
 
 ### Completed tasks
 
@@ -106,10 +106,10 @@ MCP Server Implementation: Full Model Context Protocol support with tools
 Crate Selected: `llama-cpp-2` v0.1.129
 
 Rationale:
-- Most actively maintained bindings
+- The most actively maintained bindings
 - Direct llama.cpp FFI with safety wrappers
 - GPU backend support (CUDA, Metal, Vulkan)
-- Proven in production
+- Proven in production use
 
 Implementation: `src/llm/llamacpp.rs`
 - Model loading from GGUF files
@@ -163,8 +163,8 @@ Testing: 15 mocked integration tests using wiremock
 GGUF Ecosystem:
 - Primary options: `llama-cpp-2`, `llama_cpp`, `candle`
 - `llama-cpp-2` chosen for safety + performance balance
-- Quantization formats: Q4_K_M recommended for most users
-- GPU acceleration adds 5-10x performance boost
+- Quantization formats: Q4_K_M suits most users
+- GPU acceleration gives a 5-10x speed increase
 
 Ollama Capabilities:
 - Native tool calling in ministral-3, granite 4, qwen3, etc.
@@ -299,11 +299,11 @@ README.md Enhancements:
 ## Iteration 4: Hybrid TOML + TOON configuration
 
 ### Objectives
-- Replace hardcoded agent and model configurations with declarative config
-- Enable hot-reloading of configuration without server restart
+- Replace hardcoded agent and model configurations with declarative configuration
+- Enable hot reload of configuration without a server restart
 - Support named providers, models, agents, tools, and workflows
 - Validate configuration integrity (references between components)
-- Use TOON format for behavioral configs (30-60% token savings over JSON/TOML)
+- Use the TOON format for behavioral configs (30-60% token savings over JSON/TOML)
 
 ### Architecture split
 
@@ -340,8 +340,8 @@ README.md Enhancements:
 **Key Features**:
 - Environment variable references for secrets (`api_key_env = "OPENAI_API_KEY"`)
 - Named provider references
-- complete validation
-- Hot-reloading via `AresConfigManager`
+- Complete validation
+- Hot reload via `AresConfigManager`
 
 #### 2. Toon configuration (`src/utils/toon_config.rs`)
 
@@ -369,19 +369,19 @@ system_prompt: "You are an orchestrator agent..."
 - `ToonToolConfig`: Tool enable/disable
 - `ToonWorkflowConfig`: Workflow definitions
 - `ToonMcpConfig`: MCP server configurations
-- `DynamicConfigManager`: Hot-reload for all TOON files
+- `DynamicConfigManager`: Hot reload for all TOON files
 
 #### 3. Hot reloading
 
 **TOML** (`AresConfigManager`):
-- Uses `arc-swap` for lockless reads
-- File watcher via `notify` crate
+- Lockless reads through `arc-swap`
+- File watching through the `notify` crate
 - Debounced reloads (500ms)
 
 **TOON** (`DynamicConfigManager`):
 - Watches `config/` directories
-- Per-file reloading
-- Validation on reload
+- Reloads each file separately
+- Validates on each reload
 
 #### 4. Provider Registry (`src/llm/provider_registry.rs`)
 
@@ -493,7 +493,7 @@ ares/
 ### Overall
 - Total Tests: 72
 - Pass Rate: 100%
-- Coverage: Core functionality fully tested
+- Coverage: Tests cover core functionality fully
 - Mocking: wiremock for network, mockall for traits
 
 ---
@@ -589,7 +589,7 @@ Recommendations:
 ## Known limitations & future work
 
 ### Current limitations
-1. LlamaCpp Tool Calling: Basic implementation, not as robust as Ollama
+1. LlamaCpp Tool Calling: Basic implementation, weaker than the Ollama implementation
 2. GPU Memory: Large models (70B+) require significant VRAM
 3. Windows GPU: CUDA/Vulkan setup requires manual driver configuration
 
@@ -599,11 +599,11 @@ High Priority:
 1. ~~Merge changes and open PR~~ (ready)
 2. ~~Enable GitHub Actions CI~~ (complete)
 3. ~~Complete MCP server implementation~~ (complete)
-4. improve LlamaCpp tool calling (parity with Ollama)
-5. Add E2E tests with real Ollama instance in CI
+4. Improve LlamaCpp tool calling (reach parity with Ollama)
+5. Add E2E tests with a real Ollama instance in CI
 
 Medium Priority:
-1. Add more specialized agents (research, coding, etc.)
+1. Add more specialized agents (for example, research and coding agents)
 2. Implement conversation summarization for long contexts
 3. Add metrics and monitoring (Prometheus/OpenTelemetry)
 
@@ -629,8 +629,8 @@ Recommended for Production:
 - Use RS256 JWT (asymmetric keys)
 - Implement request rate limiting
 - Add API key rotation
-- Security headers middleware
-- Regular dependency audits (`cargo audit`)
+- Add security header middleware
+- Run `cargo audit` regularly
 
 ---
 
@@ -778,9 +778,9 @@ RUST_LOG=info,ares=debug
 ## Iteration 4: Workflow engine & dynamic agents (v0.2.0)
 
 ### Objectives
-- Complete workflow engine for multi-agent orchestration
+- Complete the workflow engine for multi-agent orchestration
 - Replace hardcoded agents with ConfigurableAgent
-- Improve router agent for reliable delegation
+- Improve the router agent for reliable delegation
 - Remove deprecated legacy agents
 
 ### Completed tasks
@@ -790,12 +790,12 @@ RUST_LOG=info,ares=debug
 **Location**: `src/workflows/engine.rs`
 
 **Features**:
-- Execute declarative workflows from TOML configuration
-- Multi-agent routing via router agents
-- Fallback agent support when routing fails
-- Depth and iteration limits for workflow execution
-- Detailed execution tracking (steps, timing, reasoning path)
-- Robust router output parsing (handles various LLM output formats)
+- Runs declarative workflows from configuration
+- Multi-agent routing through router agents
+- Support for a fallback agent when routing fails
+- Depth and iteration limits for workflow runs
+- Detailed run tracking (steps, timing, reasoning path)
+- Reliable router output parsing (handles many LLM output formats)
 
 **Workflow Output Structure**:
 ```json
@@ -820,7 +820,7 @@ RUST_LOG=info,ares=debug
 
 **Location**: `src/agents/configurable.rs`
 
-All agents are now created dynamically from TOML configuration:
+The server creates all agents dynamically from configuration:
 - Model selection via `model` reference
 - Custom system prompts
 - Per-agent tool filtering
@@ -839,12 +839,12 @@ system_prompt = "You are a Product Agent..."
 Location: `src/agents/router.rs`
 
 - Returns lowercase agent names for workflow compatibility
-- Robust output parsing handles:
+- Reliable output parsing handles:
  - Clean output: "product"
  - Whitespace: " product "
  - Extra text: "I would route this to product"
  - Agent suffix: "product agent"
-- Falls back to orchestrator for unrecognized routing
+- Falls back to the orchestrator for unrecognized routing
 
 #### 4. Legacy agent removal
 
@@ -855,7 +855,7 @@ Removed Files (previously deprecated):
 - `src/agents/finance.rs`
 - `src/agents/hr.rs`
 
-These are fully replaced by `ConfigurableAgent` with TOML configuration.
+`ConfigurableAgent` fully replaces these agents.
 
 #### 5. Api endpoints
 
@@ -887,8 +887,8 @@ Hurl Test Coverage:
 ## Iteration 5: RAG pipeline & vector store (v0.3.0 / DIR-24)
 
 ### Objectives
-- Implement pure-Rust vector database for local-first operation
-- Add complete RAG pipeline with document ingestion
+- Implement a pure-Rust vector database for local-first operation
+- Add a complete RAG pipeline with document ingestion
 - Support multiple search strategies (semantic, BM25, fuzzy, hybrid)
 - Add reranking for improved search relevance
 - Maintain zero external service dependencies
@@ -906,7 +906,7 @@ Features:
 - Collection management (create, delete, list)
 - Batch operations for efficient ingestion
 - Thread-safe with `parking_lot` RwLocks
-- No external dependencies (no Qdrant/Milvus/etc.)
+- No external vector database (not Qdrant or Milvus)
 
 Key Files:
 - `lib.rs`: Public API
@@ -1029,7 +1029,7 @@ chunk_overlap = 50
 
 ## Conclusion
 
-All objectives from the five iterations have been successfully completed:
+All iteration objectives are complete:
 
 Iteration 1: Local-first architecture, daedra integration, code cleanup, complete testing 
 Iteration 2: GGUF/LlamaCpp implementation, full Ollama tool calling, feature gating 
@@ -1043,7 +1043,7 @@ The A.R.E.S project is production-ready for local-first LLM applications with ex
 ### What's new in v0.6.0
 - Model Capabilities (DIR-43): Intelligent model selection based on task requirements
  - New `ModelCapabilities` struct with auto-detection for popular models
- - `CapabilityRequirements` builder for specifying task needs (tools, vision, context, etc.)
+ - `CapabilityRequirements` builder for specifying task needs (tools, vision, context, and more)
  - `ProviderRegistry::find_models()` returns models matching requirements, sorted by score
  - `ProviderRegistry::find_best_model()` returns the optimal model for a task
  - `ProviderRegistry::create_client_for_requirements()` creates client for best-matching model
@@ -1059,7 +1059,7 @@ The A.R.E.S project is production-ready for local-first LLM applications with ex
  - Works with any `LLMClient` implementation (OpenAI, Anthropic, Ollama, LlamaCpp)
  - `ToolCallingConfig` for configuring max iterations, parallel execution, timeouts
  - New `generate_with_tools_and_history()` method added to `LLMClient` trait
- - Breaking: `OllamaToolCoordinator` removed - migrate to `ToolCoordinator`
+ - Breaking: `OllamaToolCoordinator` is removed. Migrate to `ToolCoordinator`.
 
 ### What's new in v0.4.0
 - Anthropic Claude Provider: Full support for Claude models via the Anthropic API

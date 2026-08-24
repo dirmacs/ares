@@ -1,6 +1,6 @@
 # V1 Client API
 
-The V1 API is the primary interface for enterprise clients integrating ARES into their applications. All endpoints are scoped to the authenticated tenant, you only see your own agents, runs, and usage.
+The V1 API is the primary interface for enterprise clients that integrate ARES into their applications. All endpoints are scoped to the authenticated tenant: you see only your own agents, runs, and usage.
 
 **Base URL:** `http://localhost:3000`
 
@@ -12,7 +12,7 @@ Every request to `/v1/*` must include your API key in the `Authorization` header
 Authorization: Bearer ares_xxx
 ```
 
-API keys are issued during tenant provisioning. You can create additional keys via the API or request them from your platform administrator.
+The platform issues API keys during tenant provisioning. You can create additional keys through the API, or you can request them from your platform administrator.
 
 ---
 
@@ -24,7 +24,7 @@ API keys are issued during tenant provisioning. You can create additional keys v
 GET /v1/agents?page=1&per_page=20
 ```
 
-Returns a paginated list of agents configured for your tenant.
+The response is a paginated list of the agents that are configured for your tenant.
 
 **Query Parameters:**
 
@@ -62,7 +62,7 @@ Returns a paginated list of agents configured for your tenant.
 GET /v1/agents/{name}
 ```
 
-Returns full details for a single agent.
+The response shows full details for one agent.
 
 **Response:**
 
@@ -91,7 +91,7 @@ Returns full details for a single agent.
 POST /v1/agents/{name}/run
 ```
 
-Execute an agent with the provided input. This is the core endpoint for triggering agent work.
+Run an agent with the provided input. This endpoint is the core way to trigger agent work.
 
 **Request Body:**
 
@@ -129,7 +129,7 @@ Execute an agent with the provided input. This is the core endpoint for triggeri
 }
 ```
 
-If the agent fails, `status` will be `"failed"` and `error` will contain a description.
+When the agent fails, `status` is `"failed"` and `error` contains a description.
 
 ### List agent runs
 
@@ -137,7 +137,7 @@ If the agent fails, `status` will be `"failed"` and `error` will contain a descr
 GET /v1/agents/{name}/runs?page=1&per_page=20
 ```
 
-Returns the run history for a specific agent, newest first.
+The response lists the run history for one agent, newest first.
 
 ---
 
@@ -149,7 +149,7 @@ Returns the run history for a specific agent, newest first.
 POST /v1/chat
 ```
 
-Send a message to a model or agent and receive a complete response.
+Send a message to a model or agent, and receive a complete response.
 
 **Request Body:**
 
@@ -181,7 +181,7 @@ Send a message to a model or agent and receive a complete response.
 POST /v1/chat/stream
 ```
 
-Same request body as `/v1/chat`, but returns a Server-Sent Events (SSE) stream.
+This endpoint takes the same request body as `/v1/chat`, but it returns a Server-Sent Events (SSE) stream.
 
 ```
 data: {"delta": "Based on", "finish_reason": null}
@@ -201,7 +201,7 @@ data: {"delta": "", "finish_reason": "stop", "tokens_used": 312}
 GET /v1/usage
 ```
 
-Returns your tenant's usage for the current billing period.
+The response shows the usage of your tenant for the current billing period.
 
 **Response:**
 
@@ -231,7 +231,7 @@ Returns your tenant's usage for the current billing period.
 GET /v1/api-keys
 ```
 
-Returns all API keys for your tenant. The full key secret is never returned after creation.
+The response lists all API keys for your tenant. The full key secret is never shown again after creation.
 
 **Response:**
 
@@ -265,7 +265,7 @@ POST /v1/api-keys
 }
 ```
 
-`expires_in_days` is optional. If omitted, the key does not expire.
+`expires_in_days` is optional. When you omit it, the key does not expire.
 
 **Response:**
 
@@ -276,7 +276,7 @@ POST /v1/api-keys
 }
 ```
 
-> **Important:** The `secret` field is only returned once at creation time. Store it securely, it cannot be retrieved again.
+> **Important:** The response contains `secret` only once at creation time. Store it securely. You cannot retrieve it again.
 
 ### Revoke API key
 
@@ -284,7 +284,7 @@ POST /v1/api-keys
 DELETE /v1/api-keys/{id}
 ```
 
-Immediately invalidates the key. Returns `204 No Content` on success.
+The endpoint invalidates the key immediately. It returns `204 No Content` on success.
 
 ---
 

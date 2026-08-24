@@ -1,6 +1,6 @@
 # Guide: tool calling
 
-ARES supports tool calling (also known as function calling), allowing agents to use external tools during a conversation. When an agent needs to perform a calculation, search the web, or interact with an external system, it requests a tool call. ARES executes the tool and feeds the result back to the agent, which then incorporates it into its response.
+ARES supports tool calling, also known as function calling. It lets agents use external tools during a conversation. When an agent needs to run a calculation, search the web, or interact with an external system, the agent requests a tool call. ARES executes the tool and feeds the result back to the agent. The agent then puts the result into its response.
 
 ---
 
@@ -28,7 +28,7 @@ Agent (LLM) generates response
         Agent generates next response (may call more tools or return final text)
 ```
 
-This loop continues until the agent produces a final text response or the maximum iteration limit is reached. The entire process is transparent to the caller, you send a chat message and receive a complete response.
+The loop continues until the agent produces a final text response or reaches the maximum iteration limit. The process is transparent to the caller: you send one chat message and receive one complete response.
 
 ---
 
@@ -38,7 +38,7 @@ ARES ships with two built-in tools:
 
 ### calculator
 
-Evaluates mathematical expressions and returns the result.
+The tool evaluates mathematical expressions and returns the result.
 
 **Capabilities:**
 - Basic arithmetic: `+`, `-`, `*`, `/`
@@ -66,7 +66,7 @@ Evaluates mathematical expressions and returns the result.
 
 ### web_search
 
-Searches the web and returns relevant results.
+The tool searches the web and returns relevant results.
 
 **Example tool call from agent:**
 ```json
@@ -97,7 +97,7 @@ Searches the web and returns relevant results.
 
 ### Per-Agent tool filtering
 
-Each agent specifies which tools it can use. An agent without tools configured cannot make tool calls, even if the underlying model supports them.
+Each agent specifies its usable tools. An agent without configured tools cannot make tool calls, even when the underlying model supports them.
 
 **In ares.toml:**
 
@@ -143,30 +143,30 @@ curl -X POST http://localhost:3000/api/admin/tenants/{id}/agents \
 
 ## ToolCoordinator
 
-The ToolCoordinator is the internal component that manages the tool calling loop. It handles:
+The ToolCoordinator is the internal component that manages the tool-calling loop. It handles:
 
-- **Multi-turn orchestration**, Sending tool results back to the model and processing follow-up tool calls
-- **Parallel execution**, When the model requests multiple tools in a single turn, they execute concurrently
-- **Timeout enforcement**, Individual tool calls are bounded by a configurable timeout
-- **Iteration limits**, Prevents infinite tool-calling loops
+- **Multi-turn orchestration:** it sends tool results back to the model and processes follow-up tool calls
+- **Parallel execution:** when the model requests multiple tools in one turn, they run concurrently
+- **Timeout enforcement:** each tool call runs within a configurable timeout
+- **Iteration limits:** they prevent infinite tool-calling loops
 
 ### Configuration
 
-Tool calling behavior is configured at the server level:
+You configure the tool-calling behavior at the server level:
 
 | Setting | Default | Description |
 |---|---|---|
 | `max_iterations` | `10` | Maximum tool-calling rounds before forcing a text response |
-| `parallel_execution` | `true` | Execute multiple tool calls concurrently within a single turn |
+| `parallel_execution` | `true` | Runs multiple tool calls concurrently within one turn |
 | `tool_timeout` | `30s` | Maximum time for a single tool execution |
 
-If an agent hits the iteration limit, ARES instructs the model to produce a final response using the information gathered so far.
+When an agent hits the iteration limit, ARES instructs the model to produce a final response from the information gathered so far.
 
 ---
 
 ## Provider compatibility
 
-Tool calling requires model support. Not all providers and models support function calling:
+Tool calling needs model support. Not all providers and models support function calling:
 
 | Provider | Models | Tool Calling |
 |---|---|---|
@@ -175,13 +175,13 @@ Tool calling requires model support. Not all providers and models support functi
 | NVIDIA | deepseek-r1 | Not supported |
 | Ollama | Varies by model | Model-dependent |
 
-If you assign tools to an agent using a model that does not support tool calling, the tools will be ignored and the agent will respond with text only.
+If you assign tools to an agent with a model that does not support tool calling, ARES ignores the tools. The agent then responds with text only.
 
 ---
 
 ## Example: conversation with tool calls
 
-Here is what happens internally when a user asks a question that requires tool use.
+This section shows what happens internally when a user asks a question that needs a tool.
 
 **User sends:**
 
@@ -199,7 +199,7 @@ curl -X POST http://localhost:3000/v1/chat \
 
 **Internal flow:**
 
-1. ARES sends the message to the LLM with the calculator tool definition
+1. ARES sends the message to the LLM together with the calculator tool definition
 2. The LLM responds with a tool call:
  ```json
    {
@@ -209,9 +209,9 @@ curl -X POST http://localhost:3000/v1/chat \
      }]
    }
    ```
-3. ARES executes the calculator and gets `2528.27`
+3. ARES runs the calculator and gets `2528.27`
 4. ARES sends the result back to the LLM
-5. The LLM produces a final text response incorporating the calculated value
+5. The LLM puts the calculated value into a final text response
 
 **User receives:**
 
@@ -223,13 +223,13 @@ curl -X POST http://localhost:3000/v1/chat \
 }
 ```
 
-The tool-calling steps are invisible to the caller. You send a question and receive a complete answer.
+The tool-calling steps are invisible to the caller. You send one question and receive one complete answer.
 
 ---
 
 ## Example: multiple tool calls in one turn
 
-Models can request multiple tools simultaneously. For example, a research agent asked to "Compare the population of Tokyo and New York" might request two web searches in parallel:
+Models can request multiple tools at the same time. For example, a research agent with the question "Compare the population of Tokyo and New York" can request two web searches in parallel:
 
 ```json
 {
@@ -240,13 +240,13 @@ Models can request multiple tools simultaneously. For example, a research agent 
 }
 ```
 
-With `parallel_execution` enabled (the default), both searches execute concurrently. The results are sent back to the model together, and it produces a response comparing both cities.
+With `parallel_execution` enabled (the default), the two searches run concurrently. ARES sends both results back to the model together. The model then produces a response that compares the two cities.
 
 ---
 
 ## Example: Multi-Turn tool usage
 
-Some questions require multiple rounds of tool use. For example:
+Some questions need multiple rounds of tool use. For example:
 
 **User:** "What is 15% of the GDP of France?"
 
@@ -271,7 +271,7 @@ Each round counts toward the `max_iterations` limit.
 
 ## Error handling
 
-If a tool call fails (timeout, invalid input, etc.), ARES returns an error result to the model:
+When a tool call fails (timeout, invalid input), ARES returns an error result to the model:
 
 ```json
 {
@@ -282,9 +282,10 @@ If a tool call fails (timeout, invalid input, etc.), ARES returns an error resul
 }
 ```
 
-The model can then decide to:
-- Retry the tool call with different parameters
-- Use a different tool
-- Respond with what it knows, noting the tool failure
+The model can then:
 
-Well-designed system prompts should instruct the agent on how to handle tool failures gracefully.
+- retry the tool call with different parameters
+- use a different tool
+- respond from its own knowledge and note the tool failure
+
+A good system prompt tells the agent how to handle tool failures gracefully.

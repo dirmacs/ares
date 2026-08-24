@@ -1,6 +1,6 @@
 # Admin API
 
-The Admin API provides full platform management capabilities for ARES operators. Use it to provision tenants, manage agents, monitor usage, and operate the platform.
+ARES operators use the Admin API for full platform management. Use the API to provision tenants, manage agents, monitor usage, and operate the platform.
 
 **Base URL:** `http://localhost:3000`
 
@@ -12,7 +12,7 @@ Every request to `/api/admin/*` must include the admin secret:
 X-Admin-Secret: <secret>
 ```
 
-This secret is set in your `ares.toml` configuration. Guard it carefully, it grants full platform access.
+You set this secret in your `ares.toml` configuration file. Guard it carefully because it grants full platform access.
 
 ---
 
@@ -33,7 +33,7 @@ POST /api/admin/tenants
 }
 ```
 
-Valid tiers: `free`, `dev`, `pro`, `enterprise`.
+Valid tiers are `free`, `dev`, `pro`, and `enterprise`.
 
 **Response:**
 
@@ -103,7 +103,7 @@ PUT /api/admin/tenants/{id}/quota
 }
 ```
 
-**Response:** Updated tenant object.
+**Response:** The updated tenant object.
 
 ---
 
@@ -115,7 +115,7 @@ PUT /api/admin/tenants/{id}/quota
 POST /api/admin/provision-client
 ```
 
-This is the recommended way to onboard a new enterprise client. It atomically creates a tenant, clones the appropriate agent templates, and generates an API key, all in a single transaction. If any step fails, everything is rolled back.
+This is the recommended way to onboard a new enterprise client. The endpoint creates a tenant, clones the correct agent templates, and generates an API key in one database transaction. If one step fails, ARES rolls back everything.
 
 **Request Body:**
 
@@ -123,16 +123,16 @@ This is the recommended way to onboard a new enterprise client. It atomically cr
 {
   "name": "acme-corp",
   "tier": "pro",
-  "product_type": "kasino",
+  "product_type": "trading",
   "api_key_name": "production"
 }
 ```
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | Yes | Unique tenant name (lowercase, alphanumeric + hyphens) |
+| `name` | string | Yes | Unique tenant name with lowercase letters, numbers, and hyphens |
 | `tier` | string | Yes | One of: `free`, `dev`, `pro`, `enterprise` |
-| `product_type` | string | Yes | Template set to clone: `generic`, `kasino`, `ehb` |
+| `product_type` | string | Yes | Template set to clone. The shipped set contains `generic`; additional templates are site-configured |
 | `api_key_name` | string | Yes | Label for the initial API key |
 
 **Response:**
@@ -142,20 +142,20 @@ This is the recommended way to onboard a new enterprise client. It atomically cr
   "tenant_id": "tenant-uuid",
   "tenant_name": "acme-corp",
   "tier": "pro",
-  "product_type": "kasino",
+  "product_type": "trading",
   "api_key_id": "key-uuid",
   "api_key_prefix": "ares_a1b2",
   "raw_api_key": "ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5",
   "agents_created": [
-    "kasino-classifier",
-    "kasino-risk",
-    "kasino-transaction",
-    "kasino-report"
+    "trade-classifier",
+    "trade-risk",
+    "trade-monitor",
+    "trade-reporter"
   ]
 }
 ```
 
-> **Important:** The `raw_api_key` is only returned once. Store it securely and deliver it to the client through a secure channel.
+> **Important:** The response contains `raw_api_key` only once. Store it securely. Deliver it to the client through a secure channel.
 
 **curl Example:**
 
@@ -166,7 +166,7 @@ curl -X POST http://localhost:3000/api/admin/provision-client \
   -d '{
     "name": "acme-corp",
     "tier": "pro",
-    "product_type": "kasino",
+    "product_type": "trading",
     "api_key_name": "production"
   }'
 ```
@@ -239,7 +239,7 @@ GET /api/admin/tenants/{id}/agents
   "agents": [
     {
       "id": "agent-uuid",
-      "name": "kasino-classifier",
+      "name": "trade-classifier",
       "agent_type": "classifier",
       "status": "active",
       "model": "llama-3.3-70b",
@@ -277,7 +277,7 @@ POST /api/admin/tenants/{id}/agents
 PUT /api/admin/tenants/{id}/agents/{name}
 ```
 
-**Request Body:** Same structure as create. Fields provided will be updated.
+**Request Body:** Same structure as create. ARES updates the fields that you provide.
 
 ### Delete tenant agent
 
@@ -285,7 +285,7 @@ PUT /api/admin/tenants/{id}/agents/{name}
 DELETE /api/admin/tenants/{id}/agents/{name}
 ```
 
-Returns `204 No Content` on success.
+The endpoint returns `204 No Content` on success.
 
 ---
 
@@ -294,10 +294,10 @@ Returns `204 No Content` on success.
 ### List agent templates
 
 ```
-GET /api/admin/agent-templates?product_type=kasino
+GET /api/admin/agent-templates?product_type=trading
 ```
 
-Returns the pre-configured agent templates available for a given product type. These are cloned during provisioning.
+The response lists the pre-configured agent templates for a product type. Provisioning clones these templates.
 
 **Response:**
 
@@ -305,9 +305,9 @@ Returns the pre-configured agent templates available for a given product type. T
 {
   "templates": [
     {
-      "name": "kasino-classifier",
+      "name": "trade-classifier",
       "agent_type": "classifier",
-      "product_type": "kasino",
+      "product_type": "trading",
       "config": {
         "model": "llama-3.3-70b",
         "system_prompt": "You are a transaction classifier...",
@@ -324,7 +324,7 @@ Returns the pre-configured agent templates available for a given product type. T
 GET /api/admin/models
 ```
 
-Returns all models configured across all providers.
+The response lists all models that are configured across all providers.
 
 **Response:**
 
@@ -428,7 +428,7 @@ GET /api/admin/tenants/{id}/agents/{name}/stats
 
 ```json
 {
-  "agent_name": "kasino-classifier",
+  "agent_name": "trade-classifier",
   "total_runs": 2841,
   "successful_runs": 2815,
   "failed_runs": 26,
@@ -445,7 +445,7 @@ GET /api/admin/tenants/{id}/agents/{name}/stats
 GET /api/admin/agents
 ```
 
-Returns agents across all tenants. Useful for platform-wide visibility.
+The response lists agents across all tenants. This view helps with platform-wide visibility.
 
 ### Platform stats
 
@@ -506,7 +506,7 @@ GET /api/admin/alerts?severity=critical&resolved=false&limit=100
 POST /api/admin/alerts/{id}/resolve
 ```
 
-Returns `200 OK` with the updated alert object.
+The endpoint returns `200 OK` with the updated alert object.
 
 ### Audit log
 

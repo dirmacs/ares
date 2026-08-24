@@ -644,3 +644,29 @@ The production `config/cordis-entries.toml` now exercises the round-6 compose pi
 - **order_confluence_of_registrations** (Cor 21 / Thm 73): consumer-first vs providers-first converge to identical epochs and projections. HELD.
 - **dependent_never_active_without_provider** (§spatial reactive invariant): HELD with two documented deltas — (1) `declare_inject` may land on an Active fiber outside the state machine until refresh; (2) factories whose `apply()` errors become Failed *without* ReflectService wiring, where the paper expects permanently-Inactive dependents. Both are future-round deliverables.
 - **lifo_dispose_restores_store** (Thm 16): exact LIFO undo order, disposables fire exactly once, store restored.
+
+---
+
+## 19. Round 9 (0.9.x): eager reconciliation, failed-factory wiring, peer versioning
+
+### Metatheory deltas resolved (round-8 follow-ups)
+
+Both documented deltas are now resolved behavior:
+
+1. **Eager declaration**: `declare_inject` on a fiber resting Active reconciles immediately — inertia try-lock fast path updates epoch+state in place (satisfied) or drives the refresh transition to Inactive{missing-dependency} (unsatisfied). A `pending_declare` flag folded into refresh's recompute loop makes declare-vs-refresh races lossless.
+2. **Failed-factory wiring**: both `RegistryService::register` failure paths wire the fiber into ReflectService (`register_fiber` + notify on the type key), so dependents observe provider-loss and rest Inactive at quiescence. `Failed{error}` remains the terminal visible state (deliberate divergence from the paper's permanently-Inactive expectation — operationally more useful); the provided slot stays vacant and re-registration supersedes with a fresh fiber id.
+
+Bonus fix: a latent deadlock in `register` itself — an if-let scrutinee held the provided-map read guard across stale-slot cleanup that took the write lock. Exposed by metatheory leg F; fixed by deciding staleness under the read guard before any write.
+
+### Peer-dependency versioning
+
+Addresses the paper's open problem (§discussion):
+
+- **Provide side**: `Context::provide_versioned<T>(value, version)`; legacy `provide()` = version 0. Versions live in a parallel map with LIFO-undo restore (disposal restores the prior version exactly).
+- **Inject side**: `Fiber::declare_inject_versioned<T>(min_compatible: Option<u64>)`. Satisfaction rule: provider exists AND major(provider) == major(requirement) AND provider >= requirement, where major(v) = v / 100_000. Mismatch ⇒ dependent stays Inactive — never binds incompatible versions.
+- **Reactivity**: constrained epoch fragments fold in "v<major>@<floor>:<version>", so same-major upgrades flip the epoch and reactively reactivate dependents (test: v200_001 → Inactive → compatible v100_005 re-provide → Active with new projection). Unconstrained fragments byte-identical to the prior scheme.
+- **Deliberate open point kept**: structural interface compatibility (paper's full problem) is NOT attempted — majors-only buckets with explicit floors cover the practical case; deeper structural checks remain future work.
+
+### Status vs paper guarantees
+
+Quiescence (Thm 66): held. Order confluence (Cor 21/Thm 73): held. LIFO disposal (Thm 16): held. Reactive invariant (§spatial): now fully held — eager declarations close the last observable gap. Terminal-state divergence (Failed vs Inactive) is documented and deliberate.

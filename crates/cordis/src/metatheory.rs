@@ -1025,3 +1025,129 @@ mod tests {
             .expect("Thm 16 LIFO disposal property");
     }
 }
+
+#[cfg(test)]
+mod version_conformance {
+    use super::*;
+
+    /// Versioned provider service for the version-conformance checks.
+    #[derive(Debug)]
+    struct VcPeer(pub u64);
+    impl Service for VcPeer {}
+
+    /// Dependent service built from a versioned peer; `check()` reports whether
+    /// the observed peer value carries the expected major.
+    #[derive(Debug)]
+    struct VcDependent {
+        peer: Option<u64>,
+    }
+    impl Service for VcDependent {
+        fn check(&self) -> bool {
+            self.peer.is_some()
+        }
+    }
+
+    /// Consumer plugin that reads the peer through the context at apply time.
+    struct VcConsumerPlugin;
+    impl Plugin for VcConsumerPlugin {
+        type Config = ();
+        type Provides = VcDependent;
+        fn apply(&self, ctx: &Arc<Context>, _config: ()) -> Result<Arc<VcDependent>, CordisError> {
+            Ok(Arc::new(VcDependent {
+                peer: ctx.get::<VcPeer>().map(|p| p.0),
+            }))
+        }
+    }
+
+    /// Requirement encoding helper mirroring the documented scheme:
+    /// `major * VERSION_MAJOR_SCALE + floor`.
+    fn requirement(major: u64, floor: u64) -> u64 {
+        major * crate::Context::VERSION_MAJOR_SCALE + floor
+    }
+
+    /// A versioned provide satisfies an inject whose constraint shares the
+    /// provider's major and sits at or below the provider version; the
+    /// dependent activates and its projection observes the provider value.
+    #[tokio::test]
+    async fn versioned_provide_satisfies_compatible_constraint() {
+        let (ctx, reg, _reflect) = base_root();
+        ctx.provide_versioned(VcPeer(100_001), 100_001);
+
+        let fid = reg
+            .register(&ctx, VcConsumerPlugin, ())
+            .expect("consumer registration");
+        let fiber = reg.get_fiber(fid).expect("tracked consumer");
+        fiber.declare_inject_versioned::<VcPeer>(Some(requirement(1, 1)));
+        fiber.refresh(&ctx).await;
+
+        match fiber.state() {
+            FiberState::Active { .. } => {}
+            other => panic!("compatible provider must activate the consumer, got {other:?}"),
+        }
+        let dep = ctx.get::<VcDependent>().expect("projection provided");
+        assert_eq!(dep.peer, Some(100_001));
+    }
+
+    /// A cross-major or below-floor provider keeps the dependent Inactive,
+    /// never silently binding; re-registering a compatible same-major
+    /// provider reactively flips it Active through the notify-driven refresh
+    /// path.
+    #[tokio::test]
+    async fn version_mismatch_keeps_dependent_inactive_until_compatible_upgrade() {
+        let (ctx, reg, reflect) = base_root();
+        ctx.provide_versioned(VcPeer(200_001), 200_001);
+
+        let fid = reg
+            .register(&ctx, VcConsumerPlugin, ())
+            .expect("consumer registration");
+        let fiber = reg.get_fiber(fid).expect("tracked consumer");
+        fiber.declare_inject_versioned::<VcPeer>(Some(requirement(1, 1)));
+        fiber.refresh(&ctx).await;
+        assert!(matches!(fiber.state(), FiberState::Inactive { .. }));
+        assert!(ctx.get::<VcDependent>().is_none());
+
+        // Reactive upgrade path: replacing the provider with a compatible
+        // same-major version notifies dependents and flips them Active.
+        let old = ctx
+            .remove::<VcPeer>()
+            .expect("withdrawal allowed while consumer is Inactive")
+            .expect("provider present");
+        assert_eq!(old.0, 200_001);
+        ctx.provide_versioned(VcPeer(100_005), 100_005);
+        reflect.notify_with_ctx(TypeId::of::<VcPeer>(), &ctx).await;
+        drain_spawned().await;
+
+        match fiber.state() {
+            FiberState::Active { .. } => {}
+            other => panic!("compatible upgrade must reactivate the consumer, got {other:?}"),
+        }
+        let dep = ctx.get::<VcDependent>().expect("projection re-provided");
+        assert_eq!(dep.peer, Some(100_005));
+    }
+
+    /// Legacy unversioned provides carry semantic version 0: they satisfy
+    /// unconstrained injects exactly as before but are rejected by any
+    /// positive-major requirement — the documented migration story.
+    #[tokio::test]
+    async fn legacy_provide_defaults_zero_and_satisfies_unconstrained_only() {
+        let (ctx, reg, _reflect) = base_root();
+        ctx.provide(VcPeer(42));
+
+        let fid = reg
+            .register(&ctx, VcConsumerPlugin, ())
+            .expect("consumer registration");
+        let fiber = reg.get_fiber(fid).expect("tracked consumer");
+        fiber.declare_inject_versioned::<VcPeer>(None);
+        fiber.refresh(&ctx).await;
+        assert!(matches!(fiber.state(), FiberState::Active { .. }));
+        assert_eq!(ctx.get::<VcDependent>().unwrap().peer, Some(42));
+
+        // Same legacy provider fails a major-1 requirement.
+        fiber.declare_inject_versioned::<VcPeer>(Some(requirement(1, 0)));
+        fiber.refresh(&ctx).await;
+        assert!(matches!(fiber.state(), FiberState::Inactive { .. }));
+
+        // And the semantic version really is 0 on the unversioned path.
+        assert_eq!(ctx.provider_version(TypeId::of::<VcPeer>()), 0);
+    }
+}

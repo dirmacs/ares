@@ -38,6 +38,11 @@ pub struct Fiber {
     injects: RwLock<HashMap<TypeId, String>>, // TypeId -> type_name
     reload_runner: Mutex<Option<ReloadRunner>>,
     reload_ctx: Mutex<Option<std::sync::Weak<Context>>>,
+    /// Peer-dependency version requirements per declared inject (`TypeId` ->
+    /// `Option<u64>` encoded as `u64`; a missing key means unconstrained).
+    /// Evaluated by [`Fiber::is_satisfied`] against
+    /// [`crate::Context::provider_version`].
+    inject_constraints: RwLock<HashMap<TypeId, u64>>,
     // Set when a late declare_inject raced an in-flight refresh (the inertia
     // guard was held), so the refresh loop folds the declaration in instead
     // of losing it between passes.
@@ -56,6 +61,7 @@ impl Fiber {
             injects: RwLock::new(HashMap::new()),
             reload_runner: Mutex::new(None),
             reload_ctx: Mutex::new(None),
+            inject_constraints: RwLock::new(HashMap::new()),
             pending_declare: AtomicBool::new(false),
             id: Mutex::new(None),
             disposed: AtomicBool::new(false),
@@ -127,6 +133,41 @@ impl Fiber {
         );
     }
 
+    /// Declare an inject on `T` with an optional peer-dependency version
+    /// requirement. `None` is the historical, unconstrained behavior
+    /// ([`Self::declare_inject`]); `Some(requirement)` additionally demands a
+    /// same-major provider at or above the floor — see the scheme documented
+    /// on [`crate::Context::VERSION_MAJOR_SCALE`].
+    ///
+    /// Lock discipline mirrors [`Self::declare_inject`]: short-lived lock
+    /// acquisitions only, no guard held across reconciliation.
+    pub fn declare_inject_versioned<T: Service>(&self, min_compatible: Option<u64>) {
+        self.declare_inject::<T>();
+        let tid = TypeId::of::<T>();
+        match min_compatible {
+            Some(requirement) => {
+                self.inject_constraints.write().insert(tid, requirement);
+            }
+            None => {
+                self.inject_constraints.write().remove(&tid);
+            }
+        }
+        // The constraint may change satisfaction without changing the epoch;
+        // re-enter the state machine exactly as the eager reconciliation for
+        // structural declarations does. The reload_ctx guard must be released
+        // before reconciling: `reconcile_after_declare` re-locks the same
+        // non-reentrant mutex.
+        let weak_ctx = self.reload_ctx.lock().clone();
+        if let Some(ctx) = weak_ctx.and_then(|weak| weak.upgrade()) {
+            self.reconcile_after_declare(&ctx);
+        }
+    }
+
+    /// The recorded peer-version requirement for `tid`, if any.
+    pub(crate) fn inject_constraint(&self, tid: TypeId) -> Option<u64> {
+        self.inject_constraints.read().get(&tid).copied()
+    }
+
     pub fn state(&self) -> FiberState {
         self.state.read().clone()
     }
@@ -177,7 +218,11 @@ impl Fiber {
         self.injects.read().keys().copied().collect()
     }
 
-    /// Compute epoch as ":type_name:version:..." sorted (monoid over concatenation)
+    /// Compute epoch as ":type_name:version:..." sorted (monoid over
+    /// concatenation). Injects carrying a peer-version requirement extend
+    /// their fragment to "type_name:v<major>@<floor>:<structural>" so provider
+    /// upgrades within the same major flip the epoch; unconstrained injects
+    /// keep the historical fragment shape.
     pub fn compute_epoch(&self, ctx: &Arc<Context>) -> String {
         let injects = self.injects.read();
         if injects.is_empty() {
@@ -186,7 +231,23 @@ impl Fiber {
         let mut frags: Vec<String> = Vec::new();
         for (tid, type_name) in injects.iter() {
             let version = ctx.get_version(*tid);
-            frags.push(format!("{}:{}", type_name, version));
+            match self.inject_constraint(*tid) {
+                None => frags.push(format!("{}:{}", type_name, version)),
+                // Constrained injects fold the semantic peer version in so a
+                // same-major provider swap still flips the reactive epoch;
+                // unconstrained fragments stay byte-identical to the
+                // historical scheme.
+                Some(requirement) => {
+                    let p = ctx.provider_version(*tid);
+                    frags.push(format!(
+                        "{}:v{}@{}:{}",
+                        type_name,
+                        p / crate::Context::VERSION_MAJOR_SCALE,
+                        requirement % crate::Context::VERSION_MAJOR_SCALE,
+                        version
+                    ));
+                }
+            }
         }
         frags.sort();
         format!(":{}", frags.join(":"))
@@ -265,8 +326,28 @@ impl Fiber {
         }
     }
 
+    /// A declared inject is satisfied iff its provider is available and — for
+    /// injects declared via [`Self::declare_inject_versioned`] with a
+    /// requirement — the provider's semantic peer version matches it:
+    /// same major bucket (`p / 100_000 == r / 100_000`) and at least the
+    /// requested floor (`p >= r`). Mismatch keeps the dependent `Inactive`;
+    /// it never silently binds an incompatible provider. Legacy providers
+    /// (version 0) satisfy only unconstrained injects.
     fn is_satisfied(&self, ctx: &Arc<Context>) -> bool {
-        self.injects.read().keys().all(|tid| ctx.is_available(*tid))
+        self.injects.read().keys().all(|tid| {
+            if !ctx.is_available(*tid) {
+                return false;
+            }
+            match self.inject_constraint(*tid) {
+                None => true,
+                Some(requirement) => {
+                    let p = ctx.provider_version(*tid);
+                    p / crate::Context::VERSION_MAJOR_SCALE
+                        == requirement / crate::Context::VERSION_MAJOR_SCALE
+                        && p >= requirement
+                }
+            }
+        })
     }
 
     fn undo_effects(&self) {

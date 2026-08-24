@@ -1,6 +1,6 @@
 use crate::PostgresClient;
-use ares_types::{ApiKey, Tenant, TenantContext, TenantTier};
 use ares_types::types::{AppError, Result};
+use ares_types::{ApiKey, Tenant, TenantContext, TenantTier};
 use chrono::{Datelike, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -475,9 +475,7 @@ impl TenantDb {
                 .bind(tenant_id)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| {
-                    AppError::Database(format!("Failed to delete tenant rows: {}", e))
-                })?;
+                .map_err(|e| AppError::Database(format!("Failed to delete tenant rows: {}", e)))?;
         }
 
         tx.commit()
@@ -492,11 +490,15 @@ impl TenantDb {
 }
 
 impl cordis::Service for TenantDb {
-    fn name(&self) -> &'static str { "tenant_db" }
+    fn name(&self) -> &'static str {
+        "tenant_db"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 fn generate_api_key() -> String {
@@ -530,7 +532,7 @@ pub struct UsageSummary {
 mod tests {
     use super::*;
     use ares_types::TenantQuota;
-    use chrono::{Timelike, TimeZone};
+    use chrono::{TimeZone, Timelike};
 
     // ── generate_api_key ──────────────────────────────────────────────
 
@@ -885,10 +887,7 @@ mod tests {
     #[tokio::test]
     async fn test_record_usage_event_without_db_returns_database_error() {
         let db = test_tenant_db();
-        let err = db
-            .record_usage_event("tenant-1", 3, 120)
-            .await
-            .unwrap_err();
+        let err = db.record_usage_event("tenant-1", 3, 120).await.unwrap_err();
         assert!(matches!(err, AppError::Database(_)));
     }
 
@@ -902,10 +901,7 @@ mod tests {
     #[tokio::test]
     async fn test_revoke_api_key_without_db_returns_database_error() {
         let db = test_tenant_db();
-        let err = db
-            .revoke_api_key("tenant-1", "key-1")
-            .await
-            .unwrap_err();
+        let err = db.revoke_api_key("tenant-1", "key-1").await.unwrap_err();
         assert!(matches!(err, AppError::Database(_)));
     }
 
@@ -982,8 +978,8 @@ mod tests {
     #[test]
     fn test_tenant_tier_serde_roundtrip() {
         let original = TenantTier::Pro;
-        let restored: TenantTier = serde_json::from_str(&serde_json::to_string(&original).unwrap())
-            .unwrap();
+        let restored: TenantTier =
+            serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
         assert_eq!(restored, original);
     }
 
@@ -1008,7 +1004,8 @@ mod tests {
             created_at: 1_700_000_000,
             updated_at: 1_700_000_100,
         };
-        let restored: Tenant = serde_json::from_str(&serde_json::to_string(&tenant).unwrap()).unwrap();
+        let restored: Tenant =
+            serde_json::from_str(&serde_json::to_string(&tenant).unwrap()).unwrap();
         assert_eq!(restored.id, tenant.id);
         assert_eq!(restored.name, tenant.name);
         assert_eq!(restored.tier, tenant.tier);
@@ -1093,7 +1090,10 @@ mod tests {
     fn test_tenant_quota_default_and_from_tier() {
         let default_quota = TenantQuota::default();
         assert_eq!(default_quota.tier, TenantTier::Free);
-        assert_eq!(TenantQuota::from_tier(&TenantTier::Pro).max_agents, u32::MAX);
+        assert_eq!(
+            TenantQuota::from_tier(&TenantTier::Pro).max_agents,
+            u32::MAX
+        );
         assert_eq!(
             TenantQuota::from_tier(&TenantTier::Enterprise).requests_per_month,
             u64::MAX
@@ -1127,5 +1127,4 @@ mod tests {
         assert_eq!(restored.monthly_tokens, 0);
         assert_eq!(restored.daily_requests, 0);
     }
-
 }

@@ -753,8 +753,7 @@ mod tests {
         );
         assert!(InMemoryVectorStore::cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]).abs() < 0.001);
         assert!(
-            (InMemoryVectorStore::cosine_similarity(&[1.0, 0.0], &[-1.0, 0.0]) + 1.0).abs()
-                < 0.001
+            (InMemoryVectorStore::cosine_similarity(&[1.0, 0.0], &[-1.0, 0.0]) + 1.0).abs() < 0.001
         );
     }
 
@@ -916,7 +915,10 @@ mod tests {
         let doc = create_test_document("d1", "x", vec![1.0, 0.0, 0.0]);
         store.upsert("test", &[doc]).await.unwrap();
 
-        let plain = store.search("test", &[1.0, 0.0, 0.0], 5, 0.0).await.unwrap();
+        let plain = store
+            .search("test", &[1.0, 0.0, 0.0], 5, 0.0)
+            .await
+            .unwrap();
         let filtered = store
             .search_with_filters(
                 "test",
@@ -942,8 +944,12 @@ mod tests {
         let restored: VectorStoreProvider = serde_json::from_str(&json).unwrap();
         match (provider, restored) {
             (
-                VectorStoreProvider::PgVector { connection_string: a },
-                VectorStoreProvider::PgVector { connection_string: b },
+                VectorStoreProvider::PgVector {
+                    connection_string: a,
+                },
+                VectorStoreProvider::PgVector {
+                    connection_string: b,
+                },
             ) => assert_eq!(a, b),
             _ => panic!("pgvector roundtrip mismatch"),
         }
@@ -977,8 +983,14 @@ mod tests {
         let restored: VectorStoreProvider = serde_json::from_str(&json).unwrap();
         match (provider, restored) {
             (
-                VectorStoreProvider::Qdrant { url: a, api_key: ka },
-                VectorStoreProvider::Qdrant { url: b, api_key: kb },
+                VectorStoreProvider::Qdrant {
+                    url: a,
+                    api_key: ka,
+                },
+                VectorStoreProvider::Qdrant {
+                    url: b,
+                    api_key: kb,
+                },
             ) => {
                 assert_eq!(a, b);
                 assert_eq!(ka, kb);
@@ -1169,10 +1181,7 @@ mod tests {
             .collect();
         store.upsert("test", &docs).await.unwrap();
 
-        let results = store
-            .search("test", &[1.0, 0.0], 3, 0.0)
-            .await
-            .unwrap();
+        let results = store.search("test", &[1.0, 0.0], 3, 0.0).await.unwrap();
         assert_eq!(results.len(), 3);
     }
 
@@ -1402,10 +1411,7 @@ mod tests {
         let ok_doc = create_test_document("ok", "good", vec![1.0, 0.0]);
         store.upsert("test", &[nan_doc, ok_doc]).await.unwrap();
 
-        let results = store
-            .search("test", &[1.0, 0.0], 10, 0.0)
-            .await
-            .unwrap();
+        let results = store.search("test", &[1.0, 0.0], 10, 0.0).await.unwrap();
         assert!(!results.is_empty());
     }
 }

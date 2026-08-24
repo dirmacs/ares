@@ -463,7 +463,7 @@ pub async fn quiescence_after_every_op() -> Result<(), String> {
             },
             _ => {
                 if let Some(idx) = newest.take() {
-                    fibers[idx].1.dispose().await;
+                    let _ = fibers[idx].1.dispose().await;
                 }
             }
         }
@@ -743,7 +743,7 @@ pub async fn dependent_never_active_without_provider() -> Result<(), String> {
     }
 
     // Disposal of the consumer lifts the guard and removes the projection.
-    dep.dispose().await;
+    let _ = dep.dispose().await;
     if ctx.get::<MtDerived>().is_some() {
         return Err("disposal must retract the dependent's projection".to_string());
     }
@@ -959,7 +959,7 @@ pub async fn lifo_dispose_restores_store() -> Result<(), String> {
         ));
     }
 
-    ctx.fiber().dispose().await;
+    let _ = ctx.fiber().dispose().await;
 
     if count.load(Ordering::SeqCst) != 2 {
         return Err(format!(

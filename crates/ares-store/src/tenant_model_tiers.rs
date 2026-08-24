@@ -77,10 +77,14 @@ impl<'a> TenantModelTierStore<'a> {
             return Err(AppError::InvalidInput("tier_name must not be empty".into()));
         }
         if req.provider_name.is_empty() {
-            return Err(AppError::InvalidInput("provider_name must not be empty".into()));
+            return Err(AppError::InvalidInput(
+                "provider_name must not be empty".into(),
+            ));
         }
         if req.model_name.is_empty() {
-            return Err(AppError::InvalidInput("model_name must not be empty".into()));
+            return Err(AppError::InvalidInput(
+                "model_name must not be empty".into(),
+            ));
         }
 
         let now_secs = std::time::SystemTime::now()
@@ -113,14 +117,13 @@ impl<'a> TenantModelTierStore<'a> {
     }
 
     pub async fn delete(&self, tenant_id: &str, tier_name: &str) -> Result<u64> {
-        let result = sqlx::query(
-            "DELETE FROM tenant_model_tiers WHERE tenant_id = $1 AND tier_name = $2",
-        )
-        .bind(tenant_id)
-        .bind(tier_name)
-        .execute(self.pool)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        let result =
+            sqlx::query("DELETE FROM tenant_model_tiers WHERE tenant_id = $1 AND tier_name = $2")
+                .bind(tenant_id)
+                .bind(tier_name)
+                .execute(self.pool)
+                .await
+                .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(result.rows_affected())
     }

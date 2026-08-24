@@ -46,12 +46,12 @@ pub async fn record_agent_versions(
         let sql = agent_version_upsert_sql(change_source);
 
         match sqlx::query(sql)
-        .bind(&agent.name)
-        .bind(&agent.version)
-        .bind(&config_json)
-        .bind(change_source)
-        .execute(pool)
-        .await
+            .bind(&agent.name)
+            .bind(&agent.version)
+            .bind(&config_json)
+            .bind(change_source)
+            .execute(pool)
+            .await
         {
             Ok(r) if r.rows_affected() > 0 => {
                 recorded += 1;
@@ -91,10 +91,10 @@ pub async fn get_agent_version_history(
     // usage.rs: library crates shipped via crates.io cannot assume a
     // DATABASE_URL env var or `.sqlx` cache at downstream compile time.
     let rows = sqlx::query_as::<_, AgentVersionRecord>(AGENT_VERSION_HISTORY_SQL)
-    .bind(agent_id)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+        .bind(agent_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
 
     Ok(rows)
 }
@@ -111,10 +111,11 @@ pub struct AgentVersionRecord {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-
 #[cfg(test)]
 mod version_tests {
-    use super::{get_agent_version_history, record_agent_versions, AgentVersionInput, AgentVersionRecord};
+    use super::{
+        get_agent_version_history, record_agent_versions, AgentVersionInput, AgentVersionRecord,
+    };
 
     use sqlx::postgres::PgPoolOptions;
     use sqlx::PgPool;
@@ -253,44 +254,32 @@ mod version_tests {
 
     #[test]
     fn serialize_boolean_is_active_true() {
-        let record = make_record(
-            "a",
-            "1.0.0",
-            serde_json::json!({}),
-            true,
-            "startup",
-        );
+        let record = make_record("a", "1.0.0", serde_json::json!({}), true, "startup");
         let json = serde_json::to_value(&record).unwrap();
         assert_eq!(json["is_active"], true);
     }
 
     #[test]
     fn serialize_boolean_is_active_false() {
-        let record = make_record(
-            "a",
-            "1.0.0",
-            serde_json::json!({}),
-            false,
-            "rollback",
-        );
+        let record = make_record("a", "1.0.0", serde_json::json!({}), false, "rollback");
         let json = serde_json::to_value(&record).unwrap();
         assert_eq!(json["is_active"], false);
     }
 
     #[test]
     fn serialize_created_at_is_rfc3339() {
-        let record = make_record(
-            "a",
-            "1.0.0",
-            serde_json::json!({}),
-            true,
-            "startup",
-        );
+        let record = make_record("a", "1.0.0", serde_json::json!({}), true, "startup");
         let json = serde_json::to_value(&record).unwrap();
         let ts = json["created_at"].as_str().unwrap();
         // chrono serializes to RFC 3339 / ISO 8601
-        assert!(ts.contains("2025-01-15"), "expected date in timestamp, got: {ts}");
-        assert!(ts.contains("T"), "expected T separator in timestamp, got: {ts}");
+        assert!(
+            ts.contains("2025-01-15"),
+            "expected date in timestamp, got: {ts}"
+        );
+        assert!(
+            ts.contains("T"),
+            "expected T separator in timestamp, got: {ts}"
+        );
     }
 
     // ── config_json shapes ─────────────────────────────────────────
@@ -465,8 +454,20 @@ mod version_tests {
 
     #[test]
     fn multiple_records_serialize_independently() {
-        let r1 = make_record("agent-1", "1.0.0", serde_json::json!({"a": 1}), true, "startup");
-        let r2 = make_record("agent-2", "2.0.0", serde_json::json!({"b": 2}), false, "rollback");
+        let r1 = make_record(
+            "agent-1",
+            "1.0.0",
+            serde_json::json!({"a": 1}),
+            true,
+            "startup",
+        );
+        let r2 = make_record(
+            "agent-2",
+            "2.0.0",
+            serde_json::json!({"b": 2}),
+            false,
+            "rollback",
+        );
 
         let j1 = serde_json::to_value(&r1).unwrap();
         let j2 = serde_json::to_value(&r2).unwrap();
@@ -490,13 +491,17 @@ mod version_tests {
         assert_eq!(map.len(), 7, "AgentVersionRecord should have 7 fields");
 
         let expected_keys: std::collections::HashSet<&str> = [
-            "id", "agent_id", "version", "config_json",
-            "is_active", "change_source", "created_at",
+            "id",
+            "agent_id",
+            "version",
+            "config_json",
+            "is_active",
+            "change_source",
+            "created_at",
         ]
         .into_iter()
         .collect();
-        let actual_keys: std::collections::HashSet<&str> =
-            map.keys().map(|k| k.as_str()).collect();
+        let actual_keys: std::collections::HashSet<&str> = map.keys().map(|k| k.as_str()).collect();
         assert_eq!(actual_keys, expected_keys);
     }
 

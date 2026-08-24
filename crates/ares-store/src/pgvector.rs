@@ -166,7 +166,10 @@ pub fn distance_ops_class(distance: PgVectorDistance) -> &'static str {
 
 /// Formats HNSW index `WITH` clause parameters for PostgreSQL.
 pub fn hnsw_param_string(params: HnswIndexParams) -> String {
-    format!("m = {}, ef_construction = {}", params.m, params.ef_construction)
+    format!(
+        "m = {}, ef_construction = {}",
+        params.m, params.ef_construction
+    )
 }
 
 /// Builds [`HnswIndexParams`] from store configuration.
@@ -239,13 +242,18 @@ pub fn validate_collection_name(name: &str) -> std::result::Result<(), String> {
         return Err("collection name must start with a letter or underscore".to_string());
     }
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err("collection name may only contain ASCII letters, digits, and underscores".to_string());
+        return Err(
+            "collection name may only contain ASCII letters, digits, and underscores".to_string(),
+        );
     }
     Ok(())
 }
 
 /// Builds a fully qualified table name for a collection.
-pub fn collection_table_name(prefix: &str, collection: &str) -> std::result::Result<String, String> {
+pub fn collection_table_name(
+    prefix: &str,
+    collection: &str,
+) -> std::result::Result<String, String> {
     validate_collection_name(collection)?;
     let prefix = prefix.trim();
     if prefix.is_empty() {
@@ -256,7 +264,10 @@ pub fn collection_table_name(prefix: &str, collection: &str) -> std::result::Res
 }
 
 /// SQL to create a collection table with a `vector` column and JSONB metadata.
-pub fn build_create_collection_sql(table: &str, dimensions: usize) -> std::result::Result<String, String> {
+pub fn build_create_collection_sql(
+    table: &str,
+    dimensions: usize,
+) -> std::result::Result<String, String> {
     validate_collection_name(table)?;
     if dimensions == 0 {
         return Err("dimensions must be greater than zero".to_string());
@@ -365,7 +376,11 @@ pub fn build_search_query(
 }
 
 /// Similarity search ordered by cosine distance (lower distance is more similar).
-pub fn build_search_sql(table: &str, limit: usize, threshold: f32) -> std::result::Result<String, String> {
+pub fn build_search_sql(
+    table: &str,
+    limit: usize,
+    threshold: f32,
+) -> std::result::Result<String, String> {
     build_search_query(table, limit, threshold, PgVectorDistance::Cosine)
 }
 
@@ -410,9 +425,8 @@ fn validate_connection_string(connection_string: &str) -> Result<()> {
             "empty pgvector connection url".to_string(),
         ));
     }
-    parse_pgvector_url(trimmed).map_err(|e| {
-        AppError::Configuration(format!("invalid pgvector connection url: {e}"))
-    })?;
+    parse_pgvector_url(trimmed)
+        .map_err(|e| AppError::Configuration(format!("invalid pgvector connection url: {e}")))?;
     Ok(())
 }
 
@@ -555,9 +569,11 @@ mod tests {
         assert!(ivf.contains("USING ivfflat"));
         assert!(ivf.contains("lists = 100"));
 
-        assert!(build_create_index_sql("ares_vec_docs", PgVectorIndexType::None)
-            .expect("none")
-            .is_empty());
+        assert!(
+            build_create_index_sql("ares_vec_docs", PgVectorIndexType::None)
+                .expect("none")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -634,13 +650,18 @@ mod tests {
 
     // ── Error handling: PgVectorStore::new ─────────────────────────────────
 
-
     // ── Pure helpers: distance / HNSW / index config ─────────────────────
 
     #[test]
     fn distance_expression_cosine_l2_and_inner_product() {
-        assert_eq!(distance_expression(PgVectorDistance::Cosine), "embedding <=> $1::vector");
-        assert_eq!(distance_expression(PgVectorDistance::L2), "embedding <-> $1::vector");
+        assert_eq!(
+            distance_expression(PgVectorDistance::Cosine),
+            "embedding <=> $1::vector"
+        );
+        assert_eq!(
+            distance_expression(PgVectorDistance::L2),
+            "embedding <-> $1::vector"
+        );
         assert_eq!(
             distance_expression(PgVectorDistance::InnerProduct),
             "embedding <#> $1::vector"
@@ -649,14 +670,23 @@ mod tests {
 
     #[test]
     fn distance_ops_class_matches_metric() {
-        assert_eq!(distance_ops_class(PgVectorDistance::Cosine), "vector_cosine_ops");
+        assert_eq!(
+            distance_ops_class(PgVectorDistance::Cosine),
+            "vector_cosine_ops"
+        );
         assert_eq!(distance_ops_class(PgVectorDistance::L2), "vector_l2_ops");
-        assert_eq!(distance_ops_class(PgVectorDistance::InnerProduct), "vector_ip_ops");
+        assert_eq!(
+            distance_ops_class(PgVectorDistance::InnerProduct),
+            "vector_ip_ops"
+        );
     }
 
     #[test]
     fn hnsw_param_string_formats_m_and_ef_construction() {
-        let s = hnsw_param_string(HnswIndexParams { m: 24, ef_construction: 200 });
+        let s = hnsw_param_string(HnswIndexParams {
+            m: 24,
+            ef_construction: 200,
+        });
         assert_eq!(s, "m = 24, ef_construction = 200");
     }
 
@@ -742,7 +772,8 @@ mod tests {
     #[test]
     fn build_search_query_cosine_matches_legacy_search_sql() {
         let legacy = build_search_sql("ares_vec_docs", 5, 0.5).expect("legacy");
-        let query = build_search_query("ares_vec_docs", 5, 0.5, PgVectorDistance::Cosine).expect("query");
+        let query =
+            build_search_query("ares_vec_docs", 5, 0.5, PgVectorDistance::Cosine).expect("query");
         assert_eq!(legacy, query);
     }
 
@@ -757,8 +788,8 @@ mod tests {
 
     #[test]
     fn build_search_query_inner_product_uses_ip_operator() {
-        let sql =
-            build_search_query("ares_vec_docs", 3, 0.25, PgVectorDistance::InnerProduct).expect("ip");
+        let sql = build_search_query("ares_vec_docs", 3, 0.25, PgVectorDistance::InnerProduct)
+            .expect("ip");
         assert!(sql.contains("embedding <#> $1::vector"));
         assert!(sql.contains("LIMIT 3"));
     }
@@ -774,7 +805,10 @@ mod tests {
             "ares_vec_docs",
             PgVectorIndexType::Hnsw,
             PgVectorDistance::L2,
-            Some(HnswIndexParams { m: 8, ef_construction: 40 }),
+            Some(HnswIndexParams {
+                m: 8,
+                ef_construction: 40,
+            }),
         )
         .expect("sql");
         assert!(sql.contains("vector_l2_ops"));
@@ -831,7 +865,8 @@ mod tests {
 
     #[test]
     fn pgvector_config_deserializes_partial_json_with_distance_default() {
-        let json = r#"{"connection_string":"postgres://custom/vectors","distance":"inner_product"}"#;
+        let json =
+            r#"{"connection_string":"postgres://custom/vectors","distance":"inner_product"}"#;
         let config: PgVectorConfig = serde_json::from_str(json).expect("deserialize");
         assert_eq!(config.distance, PgVectorDistance::InnerProduct);
         assert_eq!(config.dimensions, DEFAULT_VECTOR_DIMENSIONS);
@@ -867,9 +902,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_returns_configuration_error_when_not_implemented() {
-        let err = PgVectorStore::new(DEFAULT_PGVECTOR_URL)
-            .await
-            .unwrap_err();
+        let err = PgVectorStore::new(DEFAULT_PGVECTOR_URL).await.unwrap_err();
         matches::assert_matches!(err, AppError::Configuration(msg) if {
             msg.contains("not yet implemented") && msg.contains("ares-vector")
         });
@@ -899,9 +932,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_error_mentions_alternatives() {
-        let err = PgVectorStore::new(DEFAULT_PGVECTOR_URL)
-            .await
-            .unwrap_err();
+        let err = PgVectorStore::new(DEFAULT_PGVECTOR_URL).await.unwrap_err();
         let msg = match err {
             AppError::Configuration(m) => m,
             other => panic!("expected Configuration, got {other:?}"),

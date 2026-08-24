@@ -458,6 +458,17 @@ impl Context {
         self.parent.as_ref().and_then(|parent| parent.get::<T>())
     }
 
+    /// The single-source-discipline refusal for a TypeId that is already
+    /// provided in the same isolate realm. Uses the structured
+    /// [`CordisError::DuplicateProvider`] variant; its Display keeps the
+    /// `duplicate provider` phrase that tests and docs assert on.
+    fn duplicate_provider_error(tid: TypeId) -> CordisError {
+        CordisError::DuplicateProvider {
+            name: format!("{tid:?}"),
+            owner: "context".to_string(),
+        }
+    }
+
     pub fn get_version(&self, tid: TypeId) -> u64 {
         if let Some(v) = self.versions.read().get(&tid) {
             return *v;
@@ -618,10 +629,7 @@ impl Context {
     pub async fn plugin<S: Service>(self: &Arc<Self>, svc: S) -> Result<FiberId, CordisError> {
         let tid = TypeId::of::<S>();
         if self.store.read().contains_key(&tid) {
-            return Err(CordisError::Configuration(format!(
-                "duplicate provider for {:?}",
-                tid
-            )));
+            return Err(Self::duplicate_provider_error(tid));
         }
         let fiber = self.fiber.clone();
         fiber.set_state(FiberState::Loading);
@@ -669,10 +677,7 @@ impl Context {
         }
         let tid = TypeId::of::<P::Provides>();
         if self.store.read().contains_key(&tid) {
-            return Err(CordisError::Configuration(format!(
-                "duplicate provider for {:?}",
-                tid
-            )));
+            return Err(Self::duplicate_provider_error(tid));
         }
         self.fiber.set_state(FiberState::Loading);
         let provides = match plugin.apply(self, config) {

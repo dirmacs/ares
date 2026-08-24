@@ -1,4 +1,5 @@
-//! Cordis service-lifecycle domain — runtime retire / re-provide of services.
+//! Cordis service-lifecycle domain — runtime retire / re-provide / hot
+//! provider replacement of services.
 //!
 //! Complements the reactive-fiber demo wired in `run_server`: retiring
 //! `EventsService` flips dependent fibers (demo fid 990001) to `Inactive`;
@@ -174,6 +175,85 @@ pub async fn provide_cordis_service(
     }
 }
 
+/// POST /admin/cordis/services/:name/replace — rolling drain-and-shift
+/// replacement of a journaled provider's configuration (zero absence window).
+///
+/// Body must be `{"config": <value>}` carrying the NEW configuration for the
+/// plugin's registered factory; anything else answers 400 naming that
+/// requirement. Execution goes through
+/// [`cordis::loader::Loader::replace_provider`] with the shared
+/// `LoaderJournal`: the candidate is built on a scratch child context and
+/// verified before bridge → dispose-old → promote swaps it in, so consumers
+/// observe no resolution gap. A refusal (unknown plugin label, untracked /
+/// isolated provider, failing trial) leaves the old provider serving
+/// untouched BY DESIGN and answers `409 {"replaced": false, "reason": msg}`;
+/// success answers `200 {"replaced": true, "plugin", "fiber_id"}` with the
+/// fresh registration fiber id. 503 mirrors the sibling endpoints when the
+/// loader state (journal) is absent on this context.
+pub async fn replace_cordis_service(
+    State(ctx): State<Arc<Context>>,
+    Path(name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
+    use cordis::loader::Loader;
+
+    let Some(config) = body.get("config") else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "replaced": false,
+                "error": format!(
+                    "body must be {{\"config\": <value>}} carrying the new \
+                     provider configuration; got {body}"
+                ),
+            })),
+        ));
+    };
+    let Some(journal) = ctx.get::<cordis::LoaderJournal>() else {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "replaced": false,
+                "error": "LoaderJournal is not provided on this context",
+            })),
+        ));
+    };
+
+    let loader = Loader;
+    match loader
+        .replace_provider(&ctx, &name, config.clone(), &journal)
+        .await
+    {
+        Ok(fiber_id) => {
+            tracing::info!(
+                service = %name,
+                fiber_id,
+                "cordis provider replaced via admin API"
+            );
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "replaced": true,
+                    "plugin": name,
+                    "fiber_id": fiber_id,
+                })),
+            ))
+        }
+        // Refusal is BY DESIGN: nothing mutated, old provider still serving.
+        Err(::cordis::CordisError::Configuration(reason)) => Ok((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "replaced": false,
+                "service": name,
+                "reason": reason,
+            })),
+        )),
+        Err(err) => Err(HttpError::from(ares_types::types::AppError::Internal(
+            format!("provider replacement failed for {name}: {err}"),
+        ))),
+    }
+}
+
 pub fn routes() -> axum::Router<Arc<Context>> {
     use axum::routing::post;
     axum::Router::new()
@@ -184,6 +264,10 @@ pub fn routes() -> axum::Router<Arc<Context>> {
         .route(
             "/cordis/services/{name}/provide",
             post(provide_cordis_service),
+        )
+        .route(
+            "/cordis/services/{name}/replace",
+            post(replace_cordis_service),
         )
 }
 
@@ -631,6 +715,7 @@ pub async fn cordis_event_metrics(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::AtomicU64;
 
     #[tokio::test]
     async fn retire_removes_events_service_by_type_id_and_provide_restores_it() {
@@ -878,9 +963,11 @@ mod tests {
 
     // --- entries management (list / put / delete / toggle) ---
 
-    /// Minimal plugin factory shared by the entries fixtures.
+    /// Minimal plugin factory shared by the entries fixtures. The instance
+    /// value is an atomic so replace tests can observe WHICH configuration
+    /// is serving (old vs new) through the same handle.
     #[derive(Debug)]
-    struct Probe(u64);
+    struct Probe(std::sync::atomic::AtomicU64);
     impl Service for Probe {}
 
     fn probe_entry(id: &str, disabled: bool) -> cordis::loader::Entry {
@@ -913,8 +1000,11 @@ mod tests {
 
         registry.register(
             "CalculatorService",
-            Arc::new(|ctx, _cfg| {
-                let fut = ctx.plugin(Probe(0));
+            Arc::new(|ctx, cfg| {
+                // Config-driven instance value so replace tests can prove the
+                // new configuration took effect on the swapped provider.
+                let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(1);
+                let fut = ctx.plugin(Probe(AtomicU64::new(v)));
                 tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
             }),
         );
@@ -1090,6 +1180,171 @@ mod tests {
         assert!(ctx.get::<Probe>().is_some());
 
         std::fs::remove_dir_all(_dir).ok();
+    }
+
+    /// The swap keeps the SAME factory label (`CalculatorService`); the new
+    /// config only changes the instance value the factory reads, so a 200
+    /// proves the config took effect. Continuity is asserted via
+    /// `ctx.get::<Probe>()` before AND after: the bridge/promote swap never
+    /// lets the key become unprovided.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replace_endpoint_replaces_known_plugin() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        // Empty CURRENT tree: boot-apply must diff to a Begin that
+        // instantiates the provider and journals its live fiber.
+        let (ctx, dir) = build_entries_fixture("replace-ok", CALC_TOML_BLOCK, vec![]);
+
+        {
+            let current = ctx.get::<cordis::CurrentEntries>().unwrap();
+            let mut tree = current.tree.lock().expect("entries lock").clone();
+            assert!(
+                tree.0.is_empty(),
+                "fixture must start unapplied for the Begin diff"
+            );
+            cordis::loader::Loader::apply(
+                &ctx,
+                &mut tree,
+                &cordis::loader::EntryTree(vec![probe_entry("calc", false)]),
+                &ctx.get::<cordis::LoaderJournal>().unwrap(),
+            )
+            .await;
+            *current.tree.lock().expect("entries lock") = tree;
+        }
+        let old_fid = ctx
+            .get::<cordis::LoaderJournal>()
+            .unwrap()
+            .get("calc")
+            .expect("journaled")
+            .fiber_id
+            .expect("tracked");
+        assert_eq!(ctx.get::<Probe>().unwrap().0.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            ctx.get::<cordis::RegistryService>()
+                .unwrap()
+                .get_fiber(old_fid)
+                .unwrap()
+                .state(),
+            ::cordis::FiberState::Active { .. }
+        ));
+
+        // Replace with a new config for the same plugin label.
+        let (status, Json(body)) = replace_cordis_service(
+            State(ctx.clone()),
+            Path("CalculatorService".into()),
+            Json(json!({"config": {"v": 9}})),
+        )
+        .await
+        .expect("resp");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["replaced"], json!(true));
+        assert_eq!(body["plugin"], "CalculatorService");
+        let new_fid = body["fiber_id"].as_u64().expect("new fiber id");
+
+        // New instance live with the NEW config; continuity held throughout.
+        assert!(ctx.get::<Probe>().is_some(), "service still resolves");
+        assert_eq!(
+            ctx.get::<Probe>().unwrap().0.load(Ordering::SeqCst),
+            9,
+            "instance reflects the new configuration"
+        );
+        assert_ne!(new_fid, old_fid, "fresh registration fiber");
+        assert!(matches!(
+            ctx.get::<cordis::RegistryService>()
+                .unwrap()
+                .get_fiber(new_fid)
+                .unwrap()
+                .state(),
+            ::cordis::FiberState::Active { .. }
+        ));
+        let rec = ctx
+            .get::<cordis::LoaderJournal>()
+            .unwrap()
+            .get("calc")
+            .unwrap();
+        assert_eq!(rec.fiber_id, Some(new_fid), "journal advanced to new fiber");
+        assert_eq!(rec.config, json!({"v": 9}));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Unknown plugin label → 409 refusal; nothing was replaced.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replace_endpoint_unknown_plugin_409() {
+        let (ctx, dir) = build_entries_fixture("replace-unknown", "", vec![]);
+
+        let (status, Json(body)) = replace_cordis_service(
+            State(ctx.clone()),
+            Path("NoSuchFactory".into()),
+            Json(json!({"config": {}})),
+        )
+        .await
+        .expect("resp");
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["replaced"], json!(false));
+        let reason = body["reason"].as_str().expect("reason string");
+        assert!(
+            reason.contains("no journaled entry"),
+            "refusal names the unknown label, got {reason}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Missing / malformed body → 400 naming the explicit `{"config": …}`
+    /// requirement. Bare config objects at top level are deliberately NOT
+    /// accepted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replace_endpoint_missing_config_400() {
+        let (ctx, dir) = build_entries_fixture("replace-missing", "", vec![]);
+
+        for bad in [json!({}), json!("nope"), json!([1, 2])] {
+            let (status, Json(body)) = replace_cordis_service(
+                State(ctx.clone()),
+                Path("CalculatorService".into()),
+                Json(bad),
+            )
+            .await
+            .expect("handler");
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(body["replaced"], json!(false));
+            body["error"]
+                .as_str()
+                .expect("error names the config requirement");
+        }
+        let (status, Json(body)) = replace_cordis_service(
+            State(ctx.clone()),
+            Path("CalculatorService".into()),
+            Json(json!({"config": {"v": 3}})),
+        )
+        .await
+        .expect("well-formed body passes the guard");
+        // No journaled provider in this bare fixture → 409 refusal, but that
+        // proves the 400 guard sits in front of execution.
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["replaced"], false);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Absent loader state → 503 mirroring the sibling endpoints' shape.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replace_endpoint_missing_journal_503() {
+        let ctx = Context::new_root();
+
+        let (status, Json(body)) = replace_cordis_service(
+            State(ctx),
+            Path("CalculatorService".into()),
+            Json(json!({"config": {}})),
+        )
+        .await
+        .expect("handler");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["replaced"], json!(false));
+        assert_eq!(
+            body["error"],
+            json!("LoaderJournal is not provided on this context")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

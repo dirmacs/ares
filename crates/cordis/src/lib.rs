@@ -122,13 +122,25 @@ pub use loader::{
     Loader,
 };
 
+pub mod cycles;
+pub use cycles::{find_dependency_cycle, DependencyGraph};
+
 pub mod hmr;
 pub mod registry;
 pub mod watcher;
 pub use registry::{Plugin, RegistryService};
 
+pub mod compose;
 #[cfg(feature = "rhai")]
 pub mod rhai_service;
+
+#[cfg(feature = "rhai")]
+pub use compose::{
+    compose_all, compose_entries, interpolate_config, resolve_includes, GROUP_PLUGIN,
+    INCLUDE_PLUGIN,
+};
+#[cfg(not(feature = "rhai"))]
+pub use compose::{compose_all, resolve_includes, GROUP_PLUGIN, INCLUDE_PLUGIN};
 #[cfg(feature = "rhai")]
 pub use rhai_service::{RhaiListenerConfig, RhaiPlugin, RhaiService, RhaiServiceConfig};
 

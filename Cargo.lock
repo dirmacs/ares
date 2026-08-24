@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "ares"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ares-agent",
  "ares-cordis",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "ares-agent"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ares-cordis",
  "ares-llm",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "ares-cordis"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "inventory",
  "libloading",
@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "ares-http"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -335,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "ares-llm"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "arc-swap",
  "ares-cordis",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "ares-mcp"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ares-cordis",
  "ares-store",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "ares-rag"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ares-cordis",
  "ares-types",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "ares-server"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "ares-store"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "ares-tools"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "arc-swap",
  "ares-cordis",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "ares-types"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ares-cordis",
  "chrono",

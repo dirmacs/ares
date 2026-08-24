@@ -1,14 +1,16 @@
-//! ARES agent library.
+//! ARES agent library facade.
 //!
 //! Downstream crates inject [`Execute`], [`Tools`], and [`Llm`] on a Cordis
 //! [`Context`] and run an agent with no HTTP stack on the graph.
 //!
 //! ```rust
-//! use ares::{Context, Execute, Tools, Llm};
+//! use ares_server::{Context, Execute, Tools, Llm};
 //! ```
 //!
-//! Enable `http` to pull the optional Axum adapter. Default features are empty:
-//! no `axum`, no postgres, no engines.
+//! The `ares-server` binary (same package) binds the Axum router when the
+//! `http` feature is enabled. Default features are the server defaults:
+//! postgres, openai, ares-vector, mcp, inventory, rhai-policy. For an
+//! embed-only build use `--no-default-features`.
 //!
 //! Public surface: [`Context`], [`Execute`], [`Tools`], [`Llm`], [`Store`]
 //! (postgres), [`Plugin`], [`Loader`], [`Dispatch`], [`register_plugins`].
@@ -22,7 +24,8 @@ pub use ares_types::types::ToolDefinition;
 pub use ares_types::{AppError, TenantContext, TenantTier};
 pub use cordis::{Context, Dispatch, Loader, Plugin, PluginRegistry, Service};
 
-/// Tenant database. Gated so default features do not enable postgres.
+/// Tenant database. Gated so `--no-default-features` builds do not enable
+/// postgres.
 #[cfg(feature = "postgres")]
 pub use ares_store::Store;
 

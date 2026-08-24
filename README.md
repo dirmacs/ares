@@ -4,8 +4,7 @@
 
 <p align="center">
 Agentic Runtime Extensible Server. Rust. A composable AI agent runtime built on the Cordis framework.<br>
-Multi-provider LLM. Tool calling. RAG. MCP.
-Extensible via ContextProvider trait. Run standalone or embed as a library.
+Multi-provider LLM. Tool calling. RAG. MCP. Run standalone or embed the library.
 </p>
 
 <p align="center">
@@ -532,7 +531,7 @@ let ctx: Arc<Context> = /* your configured context with Http provided */;
 
 ### Custom context provider
 
-The trait now lives in ares-agent (`ares_agent::context_provider::ContextProvider`). It injects external context into agent calls before LLM invocation:
+The trait now lives in ares-agent (`ares_agent::context_provider::ContextProvider`). It injects external context into agent calls before LLM invocation. This is one focused hook, not the general extension mechanism; for broader extension, write a plugin or a loader entry (see ARCHITECTURE.md).
 
 ```rust
 use ares::agents::context_provider::ContextProvider;

@@ -130,6 +130,32 @@ Each row expands below with the claim, the rationale, and the evidence.
 - Tests: `serial_stops_at_first_non_null_result`
 - Tests: `waterfall_around_short_circuit_skips_core`
 
+### 8. Worker supervision uses reserved exit codes plus stdin EOF
+
+- Upstream expectation: the paper defines no process supervision model.
+- Claim: supervised workers terminate through a fixed exit-code protocol.
+- Detail: `EXIT_RESTART` (51) asks the daemon for a fresh worker.
+- Detail: `EXIT_QUIT` (52) stops without a restart.
+- Detail: `EXIT_BOOT` (53) surfaces boot failure non-zero to the manager.
+- Detail: codes sit in the 51-53 band, clear of shell (1-2) and panic (101) codes.
+- Detail: workers set `CORDIS_SUPERVISED` watch stdin; EOF means the daemon died.
+- Rationale: pipe EOF is the only loss-free signal that survives daemon SIGKILL.
+- Source: `crates/cordis/src/worker.rs`, `src/supervisor.rs`
+- Tests: `exit_codes_are_distinct`
+- Tests: `child_exit_codes_drive_loop`
+
+### 9. Log routing fans out through one exporter router
+
+- Upstream expectation: the paper defines no observability surface.
+- Claim: one router fans call records out to every registered exporter.
+- Detail: per-exporter level gates filter records before delivery.
+- Detail: exporter failures stay contained; inference never fails on them.
+- Detail: registration validates once; duplicate registrations are skipped.
+- Rationale: a single fan-out point replaces ad hoc sink plumbing per consumer.
+- Source: `ExporterRouter` in `crates/ares-llm/src/exporter.rs`
+- Tests: `router_fans_out_to_all_exporters`
+- Tests: `accepts_gate_filters_records`
+
 ## Properties we prove beyond the paper
 
 `crates/cordis/src/metatheory.rs` proves five properties as executable checks.

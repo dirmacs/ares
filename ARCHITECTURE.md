@@ -10,7 +10,7 @@ ARES is a multi-tenant AI agent runtime. It uses a service-based architecture wh
 | Service | Any `Send + Sync + 'static` type registered in the context. Implements `name()`, `init()`, and `check()`. |
 | Fiber | Lifecycle state machine for a service instance. Tracks whether a service is active, reloading, or inactive. Epoch-based change detection triggers refresh when dependencies change. |
 | Plugin | Registers a service into the context. Returns a disposable that undoes registration on drop. |
-| Loader | Reads `config/entries.json` and reconciles desired state with current state (rebuild, update, retire, or begin). |
+| Loader | Reads the composed `config/cordis-entries.toml` program (TOML; supports `@include` splice, `@group` flatten, `${rhai: …}` config interpolation) and reconciles desired state with current state (rebuild, update, retire, or begin), journaling every action. |
 
 ## Request flow
 
@@ -85,7 +85,7 @@ No polling loops. No 60-second stale windows.
 
 ## Dispatcher parity
 
-The events dispatcher (`EventsService`) mirrors the Cordis five dispatch modes. `Emit` invokes every handler fire-and-forget on the runtime and broadcasts the event and payload on the bus, returning immediately. `Parallel` fans handlers out across a `JoinSet` and propagates the first error it observes. `Serial` threads the payload through each handler in order and aborts on the first error. `Bail` stops at the first handler that returns a non-null result, without running later handlers. `Waterfall` is a serial transform chain: each handler passes its result to the next, and a handler short-circuits by returning an object whose `waterfall_stop` field is `true`. That sentinel is the Rust analogue of the TS `next()` closure, a documented static-dispatch deviation since Rust passes no `next` parameter to a handler.
+The events dispatcher (`EventsService`) mirrors the Cordis five dispatch modes. `Emit` invokes every handler fire-and-forget on the runtime and broadcasts the event and payload on the bus, returning immediately. `Parallel` fans handlers out across a `JoinSet` and propagates the first error it observes. `Serial` threads the payload through each handler in order and aborts on the first error. `Bail` stops at the first handler that returns a non-null result, without running later handlers. `Waterfall` is a serial around-middleware chain: each handler receives `(payload, next)`; calling `next` delegates downstream, returning without it short-circuits — the Rust analogue of the TS `next()` closure. All 22 catalog events are typed (`TypedEvent` payloads, consistency-test-enforced against the catalog), every dispatch is counted (`GET /admin/cordis/events`), and RhaiPolicy entries can attach sandboxed script listeners to any catalog event.
 
 ## Loader journal
 
@@ -93,7 +93,9 @@ The events dispatcher (`EventsService`) mirrors the Cordis five dispatch modes. 
 
 ## Fiber lifecycle
 
-A fiber transitions through lifecycle states as services are provided and reloaded. `Active` and `Inactive` reflect a service whose dependencies are satisfied or missing, while `Reloading` and `Unloading` cover in-flight change and teardown. `Loading` marks a fiber mid-instantiation and `Failed` records a terminal error from a plugin activation; a failed fiber stays observable so operator tooling (for example the admin Cordis endpoints and the loader journal) can report why a registration did not become `Active`.
+A fiber transitions through lifecycle states as services are provided and reloaded. `Active` and `Inactive` reflect a service whose dependencies are satisfied or missing, while `Reloading` and `Unloading` cover in-flight change and teardown. `Loading` marks a fiber mid-instantiation and `Failed{error}` records a terminal registration failure — failed fibers stay wired into `ReflectService` (dependents are notified) and remain inspectable via the admin Cordis endpoints and the loader journal; re-registering the same key supersedes with a fresh fiber id.
+
+Kernel guarantees, each backed by a property test in `cordis::metatheory`: guarded withdrawal (providers cannot be removed while active consumers exist), eager inject reconciliation (declarations on Active fibers take effect immediately, race-free), peer-dependency versioning (`provide_versioned`/`declare_inject_versioned` — incompatible versions leave dependents Inactive rather than silently binding), LIFO disposal, order-confluent registration, and quiescence after every operation.
 
 ## Adding a new tool
 

@@ -623,3 +623,24 @@ Both entry-load sites (boot_loader_program parse, watcher/poll reload via `reloa
 ### Drain-and-shift provider replacement
 
 `Loader::replace_provider(ctx, plugin_name, config, journal)`: trial new provider out-of-band → intercept bridge → dispose old → promote store-first → fresh Active fiber journaled. Zero absence window (concurrent-get probe test). Shared tail extracted into SwapPromotion used by both verified rebuild and replace; fixing it closed a latent double-swap bug (promoted values had no undo, blocking any second swap). replace_provider bypasses Context::remove's guard legitimately — the bridge guarantees continuous resolution, which is exactly what the guard protects; genuine retire keeps the guarded path. Root-realm only; no dispose-then-rebuild fallback.
+
+---
+
+## 18. Round 8 (0.9.x): composed program, operational replace, metatheory smoke
+
+### Entries program split (composition load-bearing)
+
+The production `config/cordis-entries.toml` now exercises the round-6 compose pipeline for real: events/overlay/store inline at the head, tools..probe spliced verbatim from `config/cordis-entries-shared.toml` via `@include`, http inline. Parity-proven: simulated composition of the new layout deep-equals the old flat 15-entry program, boot order unchanged. A second ACTIVE policy joined the program: `policy-emergency-gate` (isolate `policy-emergency`) denies any scheduled agent named `EMERGENCY-HALT` with `on_error="deny"` — a fail-closed kill-switch; `policy-admission-audit` remains last.
+
+### Operational provider replacement
+
+`POST /admin/cordis/services/{name}/replace` (body `{"config": <Value>}`) exposes round-7's `Loader::replace_provider`: trial out-of-band → bridge → dispose old → promote → fresh fiber journaled. 200 `{replaced:true, plugin, fiber_id}` on success; 409 `{replaced:false, reason}` when replacement is refused (unknown label, untracked/isolated/failing trial — old provider untouched by design); 400 malformed body; 503 without journal. Providers can now be swapped under live traffic from outside the process.
+
+### Metatheory property smoke tests
+
+`cordis::metatheory` encodes paper guarantees as executable checks over the public API:
+
+- **quiescence_after_every_op** (Thm 66 progress): 24-op deterministic schedule; no fiber rests in transitional states; Active fibers always have injects available. HELD — inertia keeps transitions unobservable at rest.
+- **order_confluence_of_registrations** (Cor 21 / Thm 73): consumer-first vs providers-first converge to identical epochs and projections. HELD.
+- **dependent_never_active_without_provider** (§spatial reactive invariant): HELD with two documented deltas — (1) `declare_inject` may land on an Active fiber outside the state machine until refresh; (2) factories whose `apply()` errors become Failed *without* ReflectService wiring, where the paper expects permanently-Inactive dependents. Both are future-round deliverables.
+- **lifo_dispose_restores_store** (Thm 16): exact LIFO undo order, disposables fire exactly once, store restored.

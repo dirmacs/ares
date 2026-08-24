@@ -132,3 +132,25 @@ fn_name = "audit"
 # fn_name = "gate"
 # # Fail closed when the script raises: deny instead of pass through.
 # on_error = "deny"
+
+# ---------------------------------------------------------------------------
+# Entry composition (round 6): @include splice + @group flatten + ${rhai:}
+# interpolation. Sentinels are reserved plugin names handled BEFORE loader
+# instantiation; never register factories named "@include" or "@group".
+#
+# @include — splice entries from another TOML file at this position.
+# Relative paths resolve against the directory of the top-level entries file.
+# Missing files and include cycles are composition errors (startup aborts).
+# [[entry]]
+# id = "pull-shared-store"
+# plugin = "@include"
+# [entry.config]
+# path = "cordis-entries-shared.toml"
+#
+# @group — flatten inline child entries in place. Child ids must be unique
+# within the group; children may nest more @group entries or @include slots.
+# [[entry]]
+# id = "chat-stack"
+# plugin = "@group"
+# [entry.config.entries]
+# ...

@@ -122,7 +122,7 @@ pub struct RhaiService {
 
 /// Convert a serialized event payload into a Rhai `Dynamic` (object map for
 /// JSON objects, so scripts use plain property access like `p.tenant_id`).
-fn json_to_dynamic(v: &serde_json::Value) -> Dynamic {
+pub(crate) fn json_to_dynamic(v: &serde_json::Value) -> Dynamic {
     match v {
         serde_json::Value::Null => Dynamic::UNIT,
         serde_json::Value::Bool(b) => (*b).into(),
@@ -156,7 +156,7 @@ fn json_to_dynamic(v: &serde_json::Value) -> Dynamic {
 /// Convert a script return value back to JSON. `()`/unit yields `None`, which
 /// callers interpret as "pass through / delegate"; any other value maps to a
 /// JSON value (unrepresentable dynamics degrade to their display string).
-fn dynamic_to_json(d: &Dynamic) -> Option<serde_json::Value> {
+pub(crate) fn dynamic_to_json(d: &Dynamic) -> Option<serde_json::Value> {
     if d.is_unit() {
         return None;
     }

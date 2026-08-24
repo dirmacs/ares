@@ -232,7 +232,7 @@ The response shows the runtime status of all managed services.
 |---|---|
 | `running` | Service is up and healthy |
 | `stopped` | Service is not running |
-| `degraded` | Service is running but unhealthy |
+| `degraded` | The service runs but reports unhealthy checks |
 
 **curl Example:**
 

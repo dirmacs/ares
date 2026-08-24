@@ -1,5 +1,9 @@
 # Cordis redesign, YAGNI ladder (Phase -1, step 3)
 
+> **STATUS (2026-08-24):** Historical planning document from the pre-round-4 Cordis migration.
+> Rounds 4–9 have since shipped everything relevant; the branch references below are deleted or merged.
+> Current state of record: `docs/cordis-mapping.md` (§10–§19) and `ARCHITECTURE.md`.
+
 **Date:** 2026-08-20
 **Commit:** `e4f3bcc` (11 workspace crates + `ares-server` root)
 **Rule:** `rust-safe-large` YAGNI ladder, walk each crate before writing any new crate. No code change in this step.
@@ -30,7 +34,7 @@ Total workspace Rust ≈ 88k lines (excluding `src/` root ~190KB admin.rs etc. +
 
 - **overlay**, KEEP but split internally. 6,135 lines, cross-cutting, but `toml_config.rs` alone is 110 KB per plan (currently split across `toml_config.rs`/`toon_config.rs`/`nvidia_catalog.rs`/`fleet_secrets.rs`). YAGNI: keep as one crate (config is a coherent domain), but Phase 5 must split by domain (`server`, `auth`, `providers`, `tools`, `agents`, `workflows`, `rag`, `billing`) behind `Service` traits, not as separate crates, as modules. Do not create 8 config crates.
 
-- **ares-store**, KEEP but modularize internally. 23k lines is the workspace's largest crate, but it is the DB boundary (traits + implementations for postgres/turso/vectors). Splitting into `ares-store-postgres`/`ares-vector-stores` would be premature, the 6 backends share `traits.rs` and transaction logic. Instead, enforce feature-gated modules (`postgres`, `turso`, `qdrant`, etc.) and plan Phase 3 to replace polling reload with `Fiber::refresh`. Do not merge into `ares-server`, DB belongs at leaf.
+- **ares-store**, KEEP but modularize internally. 23k lines is the workspace's largest crate, but it is the DB boundary (traits + implementations for postgres/turso/vectors). A split into `ares-store-postgres`/`ares-vector-stores` is premature: the 6 backends share `traits.rs` and transaction logic. Instead, enforce feature-gated modules (`postgres`, `turso`, `qdrant`, and the other backends), and plan Phase 3 to replace polling reload with `Fiber::refresh`. Do not merge into `ares-server`, DB belongs at leaf.
 
 - **ares-llm**, KEEP. 13.5k lines, provider-agnostic LLM abstraction, client pool, observability. Touches every agent execution path. Needs its own crate to isolate `async-openai`/`ollama-rs` deps behind features and to own `ProviderRegistry` → `LlmService` migration. Keep `openai`, `ollama` features.
 
@@ -48,7 +52,7 @@ Total workspace Rust ≈ 88k lines (excluding `src/` root ~190KB admin.rs etc. +
 
 ### Borderline, keep with conditions
 
-- **ares-agent** (9,460 lines), KEEP as standalone, but do not let it absorb memory. It already has `ares-memory` as dep (circular pressure). After merging `ares-memory`, `ares-agent` becomes the orchestration crate. Consider whether `research/`, `orchestrator`, `loop_detector` belong in `ares-runtime`. YAGNI: keep `ares-agent` (orchestration is distinct from tool/provider execution), but the new `AgentExecutionService` (Phase 4) should live in `ares-agent`, not `ares-context`, to keep business logic out of the generic context primitive.
+- **ares-agent** (9,460 lines), KEEP as standalone, but do not let it absorb memory. It already has `ares-memory` as dep (circular pressure). After merging `ares-memory`, `ares-agent` becomes the orchestration crate. Consider whether `research/`, `orchestrator`, `loop_detector` belong in `ares-runtime`. YAGNI: keep `ares-agent` (orchestration is distinct from tool/provider execution), the new `AgentExecutionService` (Phase 4) lives in `ares-agent`, not `ares-context`, to keep business logic out of the generic context primitive.
 
 - **ares-mcp** (6,772 lines), KEEP with deprecation path to merge into `ares-tools`. The plan flags `ToolRegistry`/`RuntimeToolRegistry`/`McpRegistry` fragmentation (P4). `ares-mcp` duplicates tool abstractions (`McpRegistry`, `McpTool`). Ideal: `ares-mcp` becomes a feature of `ares-tools` (`mcp` feature already exists in `ares-tools/Cargo.toml` → `dep:ares-mcp`). Ladder says keep as crate for now (MCP uses `rmcp` 0.12.0 with distinct transport), but Phase 5 must unify behind `ToolService` so `ares-tools` owns the trait and `ares-mcp` is just a bridge implementation. Do not create a new crate; do not merge yet, prove the `ToolService` composition first, then evaluate post-spike whether `ares-mcp` stays or collapses into `ares-tools/src/mcp_bridge.rs`.
 

@@ -1,6 +1,6 @@
 # Multi-Tenant Architecture
 
-ARES is a multi-tenant platform. Each enterprise client operates within an isolated tenant, with their own agents, API keys, usage quotas, and data boundaries. This page explains the tenancy model and how to provision new clients.
+ARES is a multi-tenant platform. Each enterprise client operates within an isolated tenant with its own agents, API keys, usage quotas, and data boundaries. This page explains the tenancy model and how to provision new clients.
 
 ---
 
@@ -11,16 +11,16 @@ ARES is a multi-tenant platform. Each enterprise client operates within an isola
 A tenant is an isolated namespace on the ARES platform. Each tenant has:
 
 - A unique name and ID
-- A tier that determines rate limits and quotas
-- Its own set of agents (cloned from templates or created manually)
+- A tier that sets its rate limits and quotas
+- Its own set of agents, cloned from templates or created manually
 - One or more API keys for authentication
 - Independent usage tracking and billing data
 
-Tenants cannot see or interact with each other's resources. A request authenticated with Tenant A's API key will never return Tenant B's agents, runs, or usage data.
+Tenants cannot see each other's resources. A request with Tenant A's API key never returns the agents, runs, or usage data of Tenant B.
 
 ### Tiers
 
-Every tenant is assigned a tier that governs their resource limits:
+Every tenant gets a tier that governs its resource limits:
 
 | Tier | Monthly Requests | Monthly Tokens | Daily Rate Limit | Use Case |
 |---|---|---|---|---|
@@ -29,47 +29,47 @@ Every tenant is assigned a tier that governs their resource limits:
 | **Pro** | 100,000 | 10,000,000 | 10,000/day | Production workloads |
 | **Enterprise** | Unlimited | Unlimited | Unlimited | High-volume clients |
 
-Tiers can be changed at any time via the Admin API without disrupting the tenant's service.
+You can change a tier at any time through the Admin API without disruption to the service of the tenant.
 
 ### Agent templates
 
-When a tenant is provisioned, ARES clones a set of pre-configured agent templates based on the specified `product_type`. Templates provide a working starting point that can be customized after creation.
+When you provision a tenant, ARES clones a set of pre-configured agent templates based on the specified `product_type`. Templates give a working starting point. You customize the agents after creation.
 
 Available product types:
 
 | Product Type | Templates Included | Description |
 |---|---|---|
 | `generic` | General-purpose agents | Default chat and analysis agents |
-| `kasino` | `kasino-classifier`, `kasino-risk`, `kasino-transaction`, `kasino-report` | Transaction analysis and reporting |
-| `ehb` | Health-oriented agents | eHealthBuddy clinical agents |
+| `trading` | `trade-classifier`, `trade-risk`, `trade-monitor`, `trade-reporter` | Transaction analysis and reporting |
+| `health` | Health-oriented agents | Clinical support agents (site-provided) |
 
-Each template defines the agent's model, system prompt, tool access, and default configuration. After provisioning, agents can be freely modified or new ones added.
+Each template defines the model, system prompt, tool access, and default configuration of an agent. After provisioning, you can modify the agents freely or add new ones.
 
 ### API key scoping
 
-Every API key is bound to exactly one tenant. When a request arrives with an API key:
+The system binds every API key to exactly one tenant. When a request arrives with an API key:
 
 1. ARES looks up the key and identifies the associated tenant
-2. All operations execute within that tenant's scope
-3. Usage is tracked against that tenant's quotas
-4. The response only includes that tenant's data
+2. ARES executes all operations within the scope of that tenant
+3. Usage tracking counts against the quotas of that tenant
+4. The response includes only data from that tenant
 
-A tenant can have multiple API keys (e.g., separate keys for production, staging, and mobile). Each key's usage is tracked individually but counts toward the shared tenant quota.
+A tenant can have multiple API keys, for example separate keys for production, staging, and mobile. The platform tracks each key separately. Each key counts toward the shared quota of the tenant.
 
 ### Data isolation
 
-Tenant isolation is enforced at the database query level. Every data-accessing query includes the tenant ID as a filter condition. This means:
+The database query level enforces tenant isolation. Every query for data includes the tenant ID as a filter condition:
 
-- Agent listings only return the requesting tenant's agents
-- Run history only shows runs from the requesting tenant
-- Usage data only reflects the requesting tenant's consumption
-- There is no API surface to query across tenant boundaries (except via the Admin API)
+- Agent listings return only agents of the requesting tenant
+- Run history shows only runs from the requesting tenant
+- Usage data reflects only consumption by the requesting tenant
+- No API surface queries across tenant boundaries, except through the Admin API
 
 ---
 
 ## Provisioning flow
 
-The recommended way to onboard a new client is the atomic provisioning endpoint. It creates all required resources in a single database transaction.
+The atomic provisioning endpoint is the recommended way to onboard a new client. It creates all required resources in a single database transaction.
 
 ### Step 1: provision the client
 
@@ -80,7 +80,7 @@ curl -X POST http://localhost:3000/api/admin/provision-client \
   -d '{
     "name": "acme-corp",
     "tier": "pro",
-    "product_type": "kasino",
+    "product_type": "trading",
     "api_key_name": "production"
   }'
 ```
@@ -92,15 +92,15 @@ curl -X POST http://localhost:3000/api/admin/provision-client \
   "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
   "tenant_name": "acme-corp",
   "tier": "pro",
-  "product_type": "kasino",
+  "product_type": "trading",
   "api_key_id": "key-uuid",
   "api_key_prefix": "ares_a1b2",
   "raw_api_key": "ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5",
   "agents_created": [
-    "kasino-classifier",
-    "kasino-risk",
-    "kasino-transaction",
-    "kasino-report"
+    "trade-classifier",
+    "trade-risk",
+    "trade-monitor",
+    "trade-reporter"
   ]
 }
 ```
@@ -113,27 +113,27 @@ This single call:
 4. Generates an API key bound to the new tenant
 5. Returns the raw API key (shown only once)
 
-If any step fails, the entire operation is rolled back. You will never end up with a half-provisioned tenant.
+If one step fails, ARES rolls back the whole call. You never end up with a half-provisioned tenant.
 
 ### Step 2: deliver the API key
 
-Securely deliver the `raw_api_key` to your client. This is the only time the full key is visible, ARES stores only a hashed version internally.
+Securely deliver the `raw_api_key` to your client. The full key is visible only this one time. ARES stores only a hashed version internally.
 
 ### Step 3: verify the setup
 
-Confirm the tenant's agents are accessible using their new API key:
+Make sure that the agents of the tenant are accessible with the new API key:
 
 ```bash
 curl http://localhost:3000/v1/agents \
   -H "Authorization: Bearer ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5"
 ```
 
-The client should see their four provisioned agents.
+The client will see their four provisioned agents.
 
 ### Step 4: test an agent run
 
 ```bash
-curl -X POST http://localhost:3000/v1/agents/kasino-classifier/run \
+curl -X POST http://localhost:3000/v1/agents/trade-classifier/run \
   -H "Authorization: Bearer ares_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5" \
   -H "Content-Type: application/json" \
   -d '{
@@ -200,6 +200,6 @@ curl "http://localhost:3000/api/admin/tenants/{tenant_id}/usage/daily?days=30" \
 ## Architecture notes
 
 - **Shared infrastructure:** All tenants run on the same ARES instance and database. Isolation is logical, not physical. This keeps operational costs low for the MVP phase.
-- **Atomic provisioning:** The provisioning endpoint uses a database transaction. If agent template cloning fails halfway through, the tenant and any partially created resources are rolled back.
-- **Key hashing:** API keys are hashed before storage. The raw key is returned exactly once during creation. Lost keys must be revoked and replaced.
-- **Auto-migration:** ARES runs database migrations on startup (`sqlx::migrate!()`). New tenant-related schema changes are applied automatically when the server restarts.
+- **Atomic provisioning:** The provisioning endpoint uses a database transaction. If template cloning fails halfway, ARES rolls back the tenant and all partially created resources.
+- **Key hashing:** ARES hashes API keys before storage. The raw key is returned exactly once during creation. You must revoke and replace lost keys.
+- **Auto-migration:** ARES runs database migrations on startup (`sqlx::migrate!()`). The server applies new schema changes for tenants automatically at each restart.

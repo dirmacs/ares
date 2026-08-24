@@ -1,17 +1,17 @@
 # Skills
 
-ARES supports SKILL.md file discovery and loading via the `skills` feature flag, powered by [thulp-skill-files](https://crates.io/crates/thulp-skill-files).
+ARES discovers and loads SKILL.md files through the `skills` feature. This feature uses [thulp-skill-files](https://crates.io/crates/thulp-skill-files).
 
 ## Feature flag
 
 ```toml
 [dependencies]
-ares-server = { version = "0.7", features = ["skills"] }
+ares-server = { version = "0.9", features = ["skills"] }
 ```
 
 ## Configuration
 
-Configure skill directories in your `ares.toml`:
+You configure the skill directories in `ares-server`:
 
 ```toml
 [skills]
@@ -28,7 +28,7 @@ plugin_dirs = ["./plugins/my-plugin/skills"]
 GET /api/skills
 ```
 
-Returns all discovered skills with scope-based priority (project > personal > enterprise > plugin).
+This endpoint returns all discovered skills with scope-based priority: project > personal > enterprise > plugin.
 
 ### Get skill
 
@@ -36,14 +36,14 @@ Returns all discovered skills with scope-based priority (project > personal > en
 GET /api/skills/{name}
 ```
 
-Returns a single skill by qualified name, including full body content.
+This endpoint returns one skill by qualified name, with its full body content.
 
 ## Library usage
 
-Skills are also available as a library API for direct Rust usage:
+Skills also have a library API for direct Rust usage:
 
 ```rust
-use ares::skills::{SkillsConfig, load_skills, list_skills, get_skill};
+use ares_agent::skills::{SkillsConfig, get_skill, list_skills, load_skills};
 
 let config = SkillsConfig {
     project_dir: Some("./.claude/skills/".into()),
@@ -63,7 +63,7 @@ let skill = get_skill(&config, "my-skill");
 
 ## Skill file format
 
-Skills are SKILL.md files with YAML frontmatter:
+A skill is a SKILL.md file with YAML frontmatter:
 
 ```markdown
 ---
@@ -78,7 +78,7 @@ Instructions for the AI agent...
 
 ## Scope priority
 
-When multiple skills share the same name, scope priority determines which wins:
+When multiple skills share a name, scope priority selects the winner:
 
 1. **Project**, `./.claude/skills/` (highest priority)
 2. **Personal**, `~/.claude/skills/`

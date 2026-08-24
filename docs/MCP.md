@@ -1,55 +1,49 @@
-# MCP (model Context protocol) server
+# MCP (Model Context Protocol) server
 
-A.R.E.S includes a full MCP server implementation that exposes tools via the Model Context Protocol, enabling integration with AI assistants like Claude Desktop, Zed, and other MCP-compatible clients.
+A.R.E.S includes an MCP server that exposes tools over the Model Context Protocol. AI assistants can connect to it, for example Claude Desktop and Zed.
 
 ## Features
 
-- Calculator Tool: Perform basic arithmetic operations (add, subtract, multiply, divide)
-- Web Search Tool: Search the web using DuckDuckGo via [daedra](https://github.com/dirmacs/daedra) (no API key required)
-- Server Stats Tool: Get server statistics and operation counts
-- Echo Tool: Simple echo for testing connectivity
+The built-in tools are `ares_list_agents`, `ares_run_agent`, `ares_get_status`, `ares_deploy_agent`, and `ares_get_usage`. They list agents, run agents with a message, check run status, deploy `.toon` configurations, and show usage data.
 
 ## Enabling MCP
 
-MCP support is feature-gated. Enable it during compilation:
+MCP support is feature-gated. Enable the feature at compile time:
 
 ```bash
 cargo build --features mcp
 ```
 
-Or with other features:
+Combine it with other features as needed:
 
 ```bash
-cargo build --features "mcp,ollama"
+cargo build --features "mcp,openai"
 ```
 
 ## Starting the MCP server
 
-The MCP server runs over stdio (standard input/output) as per the MCP specification:
+The MCP server communicates over stdio, as the MCP specification requires. The binary starts it in MCP mode:
 
-```rust
-use ares::mcp::McpServer;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    McpServer::start().await?;
-    Ok(())
-}
+```bash
+cargo build --features "mcp,postgres"
+ARES_API_KEY=<your-key> ares-server --mcp
 ```
 
-## Configuring with claude desktop
+The server mode requires the `postgres` feature together with `mcp`.
 
-Add the following to your Claude Desktop configuration file:
+## Configuring with Claude Desktop
 
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json` 
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+Add this entry to your Claude Desktop configuration file:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "ares": {
-      "command": "/path/to/ares-mcp-server",
-      "args": []
+      "command": "/path/to/ares-server",
+      "args": ["--mcp"]
     }
   }
 }
@@ -59,12 +53,7 @@ Add the following to your Claude Desktop configuration file:
 
 ### Calculator
 
-Perform basic arithmetic operations.
-
-**Parameters:**
-- `operation` (string, required): One of "add", "subtract", "multiply", "divide"
-- `a` (number, required): First operand
-- `b` (number, required): Second operand
+This section describes the legacy tool set from earlier releases. The current server ships the five ARES tools above.
 
 **Example:**
 ```json
@@ -87,7 +76,7 @@ Perform basic arithmetic operations.
 
 ### Web_search
 
-Search the web for information using DuckDuckGo.
+This section describes the legacy tool set from earlier releases.
 
 **Parameters:**
 - `query` (string, required): The search query
@@ -118,9 +107,7 @@ Search the web for information using DuckDuckGo.
 
 ### Server_stats
 
-Get statistics about the MCP server.
-
-**Parameters:** None
+This section describes the legacy tool set from earlier releases.
 
 **Response:**
 ```json
@@ -134,7 +121,7 @@ Get statistics about the MCP server.
 
 ### Echo
 
-Echo back a message (useful for testing).
+This section describes the legacy tool set from earlier releases.
 
 **Parameters:**
 - `message` (string, required): The message to echo back
@@ -153,60 +140,49 @@ Hello, MCP!
 
 ## Programmatic usage
 
-You can also use the MCP server programmatically:
+You can also start the MCP server from Rust through the public function in the `ares-mcp` crate:
 
 ```rust
-use ares::mcp::McpServer;
-
-// Create server instance
-let server = McpServer::new();
-
-// Execute tools directly
-let result = server.execute_tool("calculator", Some(args)).await;
+use ares_mcp::start_mcp_server;
 ```
+
+`start_mcp_server(tenant_db, pool, ares_api_url, runner)` needs a tenant database, a PostgreSQL pool, the API base URL, and an optional runner.
 
 ## Testing
 
-Run MCP-specific tests:
+Run the MCP tests with this command:
 
 ```bash
 cargo test --features mcp
 ```
 
-This runs 14 additional MCP-related tests covering:
+The suite covers these areas:
 - Tool argument parsing
-- Calculator operations (add, subtract, multiply, divide)
-- Division by zero handling
+- Authentication before tool calls
 - Unknown operation handling
-- Echo functionality
-- Server statistics
-- Operation count tracking
-- Tool execution via name lookup
+- The five agent operations: listing, running, status, deployment, and usage
+- Extension dispatch
+- Tool execution by name lookup
 
 ## Implementation details
 
-The MCP server is implemented in `src/mcp/server.rs` using the `rmcp` crate (Rust MCP SDK). Key components:
-
-- McpServer: Main server struct implementing `ServerHandler`
-- Tool definitions: JSON Schema-based tool definitions
-- execute_tool: Unified tool execution by name
-- Operation tracking: Mutex-protected operation counter
+The MCP server lives in `crates/ares-mcp/src/server.rs` and uses the `rmcp` crate (Rust MCP SDK). Key components:
+- `AresMcpServer`: main struct that implements `ServerHandler`
+- `builtin_ares_tools`: JSON Schema-based definitions for the five ARES tools
+- `execute_tool`: unified tool dispatch by name
+- `McpRegistry`: extension registry for external MCP tool servers
+- usage recording per operation
 
 ## Protocol version
 
-The server uses MCP protocol version `2024-11-05` (latest as of implementation).
+The server speaks MCP protocol version `2024-11-05`.
 
 ## Error handling
 
-Tool execution errors are returned as `CallToolResult::error` with descriptive messages:
-
-- Invalid arguments: "Invalid calculator arguments: ..."
-- Division by zero: "Error: Division by zero"
-- Unknown operation: "Error: Unknown operation '...'"
-- Unknown tool: "Unknown tool: ..."
+Tool failures return `CallToolResult` errors with descriptive messages. Examples include invalid arguments and unknown tool names.
 
 ## See also
 
-- [Model Context Protocol Specification](https://modelcontextprotocol.io/)
+- [Model Context Protocol specification](https://modelcontextprotocol.io/)
 - [rmcp Rust SDK](https://github.com/modelcontextprotocol/rust-sdk)
-- [PROJECT_STATUS.md](./PROJECT_STATUS.md) - Overall project status
+- [PROJECT_STATUS.md](./PROJECT_STATUS.md) — overall project status

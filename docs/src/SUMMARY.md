@@ -48,7 +48,7 @@
 # Extending ARES
 
 - [ContextProvider Trait](./extending/context-provider.md)
-- [Building on base_router()](./extending/base-router.md)
+- [Building on the ARES router](./extending/base-router.md)
 
 # Guides
 

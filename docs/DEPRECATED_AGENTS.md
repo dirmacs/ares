@@ -10,10 +10,10 @@ Updated: 2024-12-19 (TOON format support)
 
 ## Overview
 
-In v0.2.0, the legacy hardcoded agents have been removed and replaced with `ConfigurableAgent`, which is dynamically created from configuration. This provides:
+In v0.2.0, the project removed the legacy hardcoded agents and replaced them with `ConfigurableAgent`, which is dynamically created from configuration. This provides:
 
 - No code changes needed to modify agent behavior
-- Hot-reloading of agent configurations
+- Hot reload of agent configurations
 - Per-agent model selection
 - Per-agent tool filtering
 - Custom system prompts via config
@@ -33,7 +33,7 @@ TOON (Token Oriented Object Notation) is optimized for LLM consumption with 30-6
 
 ## What was removed
 
-The following agent files were removed in v0.2.0:
+The project removed these agent files in v0.2.0:
 
 | File | Agent | Replacement |
 |------|-------|-------------|
@@ -142,7 +142,7 @@ let response = agent.execute(query, &context).await?;
 
 ### Step 4: use the chat endpoint
 
-The recommended approach is to use the HTTP API, which handles agent creation automatically:
+The recommended approach is the HTTP API, which handles agent creation automatically:
 
 ```bash
 curl -X POST http://localhost:3000/api/chat \
@@ -262,11 +262,11 @@ ares/
 
 1. **No Recompilation**: Change agent behavior by editing `.toon` files
 2. **Hot Reloading**: Changes apply without restart
-3. **Token Efficient**: TOON format uses 30-60% fewer tokens than JSON/TOML
+3. **Token Efficient**: The TOON format uses 30-60% fewer tokens than JSON/TOML
 4. **Modular**: One file per agent for easy management
 5. **Tool Filtering**: Restrict which tools each agent can access
 6. **Model Selection**: Each agent can use a different model
-7. **Workflow Integration**: Agents work seamlessly with workflow engine
+7. **Workflow Integration**: Agents work smoothly with the workflow engine
 
 ---
 
@@ -276,24 +276,24 @@ ares/
 
 If you get "Agent 'xxx' not found" errors:
 
-1. Ensure `config/agents/xxx.toon` exists
-2. Check the `name:` field matches the expected agent name
-3. Verify the model referenced by the agent exists in `config/models/`
+1. Make sure that `config/agents/xxx.toon` exists
+2. Check that the `name:` field matches the expected agent name
+3. Make sure that the model referenced by the agent exists in `config/models/`
 
 ### Missing model
 
 If you get "Model 'xxx' not found" errors:
 
-1. Ensure `config/models/xxx.toon` exists
-2. Check the `provider:` field references a valid provider in `ares.toml`
-3. Verify provider configuration is correct
+1. Make sure that `config/models/xxx.toon` exists
+2. Check that the `provider:` field references a valid provider in `ares.toml`
+3. Verify the provider configuration is correct — [INFERENCE] stale path note below.
 
 ### Tools not working
 
-If agent tools aren't being used:
+If agent tools do not run:
 
-1. Ensure tools are listed in the agent's `tools[n]:` field
-2. Check tools are defined in `config/tools/`
+1. Make sure that the agent's `tools[n]:` field lists the tools
+2. Check that `config/tools/` defines the tools
 3. Verify the model supports tool calling
 
 ### TOON parse errors
@@ -311,5 +311,4 @@ If you see "Multiple values at root level" errors:
 - See `ares.example.toml` for infrastructure configuration
 - See `config/` directory for TOON examples
 - Check `docs/PROJECT_STATUS.md` for implementation details
-- Check `docs/DIR-12-research.md` for TOON format details
 - Open an issue on GitHub for bugs or feature requests

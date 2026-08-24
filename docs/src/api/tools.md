@@ -1,6 +1,6 @@
 # Tools
 
-ARES provides a type-safe tool calling framework with automatic schema generation.
+ARES provides a type-safe tool framework with automatic schema generation.
 
 ## Built-in tools
 
@@ -12,10 +12,10 @@ ARES provides a type-safe tool calling framework with automatic schema generatio
 
 ## Tool trait
 
-Implement `Tool` to create custom tools:
+Implement the `Tool` trait to create a custom tool:
 
 ```rust
-use ares::tools::registry::Tool;
+use ares_tools::Tool;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -36,7 +36,7 @@ impl Tool for MyTool {
         })
     }
 
-    async fn execute(&self, args: Value) -> ares::Result<Value> {
+    async fn execute(&self, args: Value) -> ares_types::Result<Value> {
         let input = args["input"].as_str().unwrap_or("");
         Ok(serde_json::json!({ "result": format!("Processed: {}", input) }))
     }
@@ -46,56 +46,48 @@ impl Tool for MyTool {
 ## Tool registry
 
 ```rust
-use ares::tools::ToolRegistry;
+use ares_tools::tool_service::Tools;
 use std::sync::Arc;
 
-// Create empty registry
-let mut registry = ToolRegistry::new();
-
-// Or create from config (auto-registers configured tools)
-let mut registry = ToolRegistry::with_config(&config);
-
-// Register a custom tool
-registry.register(Arc::new(MyTool));
+// Build the Tools service from an explicit tool set
+let registry = Tools::from_static([
+    Arc::new(Calculator) as Arc<dyn Tool>,
+]);
 
 // Get tool definitions for LLM function calling
-let definitions = registry.get_tool_definitions();
+let ctx = cordis::Context::new_root();
+let definitions = registry.list(&ctx);
 
-// Get definitions for specific tools only
-let subset = registry.get_tool_definitions_for(&["calculator", "my_tool"]);
+// Resolve one tool by name
+let tool = registry.resolve(&ctx, "calculator");
 
-// Execute a tool by name
-let result = registry.execute("my_tool", serde_json::json!({"input": "hello"})).await?;
-
-// Check tool availability
-assert!(registry.has_tool("calculator"));
+// Execute a tool by name through the Cordis context
+let result = registry.execute(&ctx, "calculator", serde_json::json!({"input": "1 + 1"})).await?;
 ```
 
 ## Tool configuration
 
-Tools support per-tool configuration (enabled/disabled, timeouts):
+Tools read per-tool configuration (enablement and timeouts) from the `ToolConfig` entries in the server configuration:
 
-```rust
-// Check if a tool is enabled
-registry.is_enabled("web_search");
-
-// Get tool timeout
-let timeout_secs = registry.get_timeout("web_search");
+```toml
+[tools.calculator]
+timeout_secs = 30
 ```
 
 ## ToolCoordinator
 
-The `ToolCoordinator` (in `ares::llm`) handles multi-turn tool calling conversations with any LLM provider:
+The `ToolCoordinator` in `ares_llm` manages multi-turn conversations with tool calls on any LLM provider:
 
 ```rust
-use ares::llm::{ToolCoordinator, ToolCallingConfig};
+use ares_llm::{ToolCoordinator, ToolCallingConfig};
 
 let coordinator = ToolCoordinator::new(client, registry, ToolCallingConfig::default());
 
 // Execute a conversation with automatic tool calling
 let result = coordinator.execute(
     Some("You are a helpful assistant."),
-    "What is 25 * 4 + 100?"
+    "What is 25 * 4 + 100?",
+    &ctx,
 ).await?;
 
 println!("Response: {}", result.content);
@@ -104,7 +96,7 @@ println!("Tool calls: {}", result.tool_calls.len());
 
 ## Per-Agent tool filtering
 
-Agents can be restricted to specific tools via TOON configuration:
+You restrict agents to specific tools in the TOON configuration of the agent:
 
 ```toon
 [agent.math-helper]
@@ -114,4 +106,4 @@ tools = ["calculator"]
 
 ## MCP Bridge
 
-MCP servers are bridged into the tool ecosystem. See [MCP Integration](./mcp.md).
+ARES bridges MCP servers into the tool ecosystem. See [MCP Integration](./mcp.md).

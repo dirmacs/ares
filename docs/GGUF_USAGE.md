@@ -1,18 +1,18 @@
 # GGUF model usage guide
 
-This guide covers how to use GGUF models directly with A.R.E.S via the LlamaCpp integration for completely local, offline LLM inference.
+This guide describes how to run GGUF models locally and offline with A.R.E.S through the LlamaCpp integration.
 
 ## What is GGUF?
 
-GGUF (GPT-Generated Unified Format) is a file format for storing models for inference with llama.cpp. It's designed to be:
-- Fast: Optimized for CPU inference
-- Flexible: Supports quantization (4-bit, 5-bit, 8-bit)
-- Portable: Single-file format, easy to distribute
-- Efficient: Lower memory usage than full-precision models
+GGUF (GPT-Generated Unified Format) is a file format that stores models for inference with llama.cpp. Its design goals:
+- Fast: optimized for CPU inference
+- Flexible: supports 4-bit, 5-bit, and 8-bit quantization
+- Portable: single-file format, easy to distribute
+- Efficient: lower memory use than full-precision models
 
 ## Quick start
 
-### 1. Enable LlamaCpp feature
+### 1. Enable the LlamaCpp feature
 
 Build A.R.E.S with LlamaCpp support:
 
@@ -32,9 +32,9 @@ cargo build --features "llamacpp-vulkan"
 
 ### 2. Download a GGUF model
 
-Choose a model from Hugging Face. Here are some recommended options:
+Choose a model from Hugging Face. Recommended options:
 
-#### Small models (good for testing, < 4GB RAM)
+#### Small models (good for testing, under 4 GB RAM)
 
 ```bash
 # Llama 3.2 1B (Fastest, minimal resources)
@@ -47,7 +47,7 @@ wget https://huggingface.co/bartowski/Phi-3-mini-4k-instruct-GGUF/resolve/main/P
 wget https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
 ```
 
-#### Medium models (8-16GB RAM)
+#### Medium models (8-16 GB RAM)
 
 ```bash
 # Llama 3.2 3B (Great balance)
@@ -60,7 +60,7 @@ wget https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/
 wget https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
 ```
 
-#### Large models (32GB+ RAM or GPU)
+#### Large models (32 GB+ RAM or GPU)
 
 ```bash
 # Llama 3.1 70B (Highest quality)
@@ -94,11 +94,11 @@ LLAMACPP_MAX_TOKENS=1024
 cargo run --features "llamacpp"
 ```
 
-The server will automatically use the LlamaCpp provider when `LLAMACPP_MODEL_PATH` is set.
+The server selects the LlamaCpp provider automatically when `LLAMACPP_MODEL_PATH` is set.
 
 ## Quantization formats
 
-GGUF models come in different quantization levels. Here's what they mean:
+GGUF models come in different quantization levels. The levels mean:
 
 | Format | Size | Quality | Speed | Use Case |
 |--------|------|---------|-------|----------|
@@ -111,7 +111,7 @@ GGUF models come in different quantization levels. Here's what they mean:
 | Q8_0 | Very Large | Excellent+ | Slow | Maximum quality |
 | F16 | Huge | Perfect | Slowest | Original quality |
 
-**Recommendation**: Start with `Q4_K_M` - it offers the best balance of quality, speed, and size.
+Start with `Q4_K_M`. It offers the best balance of quality, speed, and size.
 
 ## Hardware requirements
 
@@ -127,7 +127,7 @@ GGUF models come in different quantization levels. Here's what they mean:
 
 ### GPU acceleration
 
-GPU acceleration dramatically improves performance:
+GPU acceleration greatly improves performance:
 
 ```bash
 # CUDA (NVIDIA)
@@ -140,17 +140,17 @@ cargo build --features "llamacpp-metal"
 cargo build --features "llamacpp-vulkan"
 ```
 
-**Performance Gains**:
-- 7B model: 50-100 tokens/sec on modern GPU
+Typical gains on modern GPUs:
+- 7B model: 50-100 tokens/sec
 - 13B model: 30-60 tokens/sec
-- 70B model: 10-20 tokens/sec (requires 48GB+ VRAM)
+- 70B model: 10-20 tokens/sec (needs 48 GB+ VRAM)
 
 ## Programmatic usage
 
 ### Basic generation
 
 ```rust
-use ares::llm::{LLMClient, Provider};
+use ares_llm::{LLMClient, Provider};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -158,10 +158,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = Provider::LlamaCpp {
         model_path: "/path/to/model.gguf".to_string(),
     };
-    
+
     // Create client
     let client = provider.create_client().await?;
-    
+
     // Generate response
     let response = client.generate("What is Rust?").await?;
     println!("Response: {}", response);
@@ -173,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Streaming generation
 
 ```rust
-use ares::llm::{LLMClient, Provider};
+use ares_llm::{LLMClient, Provider};
 use futures::StreamExt;
 
 #[tokio::main]
@@ -224,28 +224,30 @@ let response = client.generate_with_history(&history).await?;
 ### Custom parameters
 
 ```rust
-use ares::llm::llamacpp::LlamaCppClient;
+use ares_llm::LlamaCppClient;
 
 // Create client with custom parameters
-let client = LlamaCppClient::with_params(
+let client = LlamaCppClient::with_config_params(
     "/path/to/model.gguf".to_string(),
     8192,  // context size
     8,     // threads
     1024,  // max tokens
+    0.7,   // temperature
+    0.9,   // top_p
 )?;
 ```
 
 ## Tool calling with GGUF models
 
-**Note**: Tool calling requires models specifically trained for function calling (e.g., Llama 3.1+, Mistral Tool models).
+Tool calling requires models trained for function calling (for example Llama 3.1+ or Mistral tool models).
 
-Currently, the LlamaCpp client has basic tool calling support. For production tool calling, we recommend using Ollama which has more mature tool calling implementations.
+The LlamaCpp client has basic tool calling support today. Ollama has more mature tool calling. Prefer it for production workloads.
 
 ### Basic tool support
 
 ```rust
-use ares::llm::{LLMClient, Provider};
-use ares::types::ToolDefinition;
+use ares_llm::{LLMClient, Provider};
+use ares_types::types::ToolDefinition;
 use serde_json::json;
 
 let provider = Provider::LlamaCpp {
@@ -284,7 +286,7 @@ if !response.tool_calls.is_empty() {
 
 ### 1. Adjust Context size
 
-Larger context = more memory, slower inference:
+A larger context needs more memory and runs slower:
 
 ```bash
 # Reduce for faster inference
@@ -296,7 +298,7 @@ LLAMACPP_N_CTX=8192
 
 ### 2. Thread count
 
-Match your CPU core count:
+Match the thread count to your CPU cores:
 
 ```bash
 # Check cores
@@ -308,30 +310,32 @@ LLAMACPP_N_THREADS=6
 
 ### 3. Batch size
 
-For production, adjust batch processing in code:
+Adjust batch processing in code for production workloads:
 
 ```rust
 // Larger batches = faster throughput, more memory
-let mut client = LlamaCppClient::with_params(
+let mut client = LlamaCppClient::with_config_params(
     model_path,
     4096,  // ctx
     8,     // threads
     512,   // max_tokens
+    0.7,   // temperature
+    0.9,   // top_p
 )?;
 ```
 
 ### 4. Model selection
 
-Choose the right quantization:
-- Development: Q4_K_M
-- Production (quality): Q5_K_M or Q6_K
-- Production (speed): Q4_0 or Q3_K_M
+Choose the quantization level:
+- Development: `Q4_K_M`
+- Production with quality focus: `Q5_K_M` or `Q6_K`
+- Production with speed focus: `Q4_0` or `Q3_K_M`
 
 ## Troubleshooting
 
 ### Error: "failed to load model"
 
-**Solution**: Check the file path and ensure the GGUF file is valid:
+Check the file path and make sure that the GGUF file is valid:
 
 ```bash
 file /path/to/model.gguf
@@ -340,52 +344,52 @@ file /path/to/model.gguf
 
 ### Error: "out of memory"
 
-**Solutions**:
-1. Use a smaller model (e.g., 1B or 3B)
-2. Use a more aggressive quantization (Q3_K or Q4_0)
+Fixes:
+1. Use a smaller model (1B or 3B)
+2. Choose stronger quantization (`Q3_K` or `Q4_0`)
 3. Reduce context size: `LLAMACPP_N_CTX=2048`
 4. Close other applications
 
 ### Slow inference
 
-**Solutions**:
+Fixes:
 1. Increase threads: `LLAMACPP_N_THREADS=8`
-2. Use GPU acceleration (CUDA/Metal/Vulkan)
+2. Enable GPU acceleration (CUDA, Metal, or Vulkan)
 3. Use a smaller model
-4. Use more aggressive quantization
+4. Choose stronger quantization
 5. Reduce max tokens: `LLAMACPP_MAX_TOKENS=256`
 
-### Model doesn't follow instructions well
+### Model ignores instructions
 
-**Solutions**:
-1. Use instruction-tuned models (e.g., `-Instruct` variants)
-2. Use higher quality quantization (Q5_K_M or Q6_K)
-3. Adjust your system prompt
+The model output drifts from the request. Fixes:
+1. Use instruction-tuned models (the `-Instruct` variants)
+2. Choose higher-quality quantization (`Q5_K_M` or `Q6_K`)
+3. Adjust the system prompt
 4. Try a different model architecture
 
 ## Best practices
 
 ### 1. Model selection
-- For chat: Use `-Instruct` or `-Chat` models
-- For code: Use CodeLlama or Qwen-Coder models
-- For speed: Use 1B-3B models
-- For quality: Use 7B-13B models
+- Chat: `-Instruct` or `-Chat` models
+- Code: CodeLlama or Qwen-Coder models
+- Speed: 1B-3B models
+- Quality: 7B-13B models
 
 ### 2. Memory management
-- Load the model once, reuse the client
-- Monitor RAM usage with `htop` or Task Manager
-- Don't load multiple large models simultaneously
+- Load the model once and reuse the client
+- Track RAM use with `htop` or Task Manager
+- Avoid loading multiple large models at the same time
 
 ### 3. Context window
-- Don't waste context on repetitive content
-- Summarize long conversations periodically
-- Use appropriate context size for your use case
+- Do not spend context on repetitive content
+- Summarize long conversations at intervals
+- Select a context size that fits the workload
 
 ### 4. Production deployment
-- Pre-download models during container build
-- Use Q4_K_M or Q5_K_M for balance
-- Enable GPU acceleration when available
-- Set reasonable token limits to prevent abuse
+- Pre-download models during the container build
+- Balance quality and size with `Q4_K_M` or `Q5_K_M`
+- Enable GPU acceleration where available
+- Set token limits to prevent abuse
 
 ## Recommended models by use case
 
@@ -422,7 +426,7 @@ file /path/to/model.gguf
 
 ## Example: complete setup
 
-Here's a complete example to get started with a 3B model:
+This complete example starts you with a 3B model:
 
 ```bash
 # 1. Download model
@@ -442,4 +446,4 @@ cargo build --release --features "llamacpp"
 cargo run --release --features "llamacpp"
 ```
 
-Now your A.R.E.S server is running with fully local, offline LLM inference!
+The A.R.E.S server now runs fully local, offline LLM inference.

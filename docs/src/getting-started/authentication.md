@@ -1,6 +1,6 @@
 # Authentication
 
-ARES supports three authentication methods, each designed for a different use case.
+ARES supports three authentication methods. Each method fits a different use case.
 
 | Method | Header | Routes | Use case |
 |---|---|---|---|
@@ -12,11 +12,11 @@ ARES supports three authentication methods, each designed for a different use ca
 
 ## API Key authentication
 
-API keys are the simplest way to authenticate with ARES. Each key is scoped to a single tenant and carries that tenant's permissions and rate limits.
+An API key is the simplest way to authenticate with ARES. Each key is scoped to one tenant and carries the permissions and rate limits of that tenant.
 
 **Format:** `ares_` followed by a random string (e.g., `ares_k7Gx9mPqR2vLwN4s`).
 
-**How to get one:** API keys are generated during tenant provisioning via the [Dirmacs Admin](http://localhost:3000) dashboard, or through the admin API.
+**How to get one:** The admin API or the [Dirmacs Admin](http://localhost:3000) dashboard generates API keys during tenant provisioning.
 
 ### Usage
 
@@ -61,10 +61,10 @@ const response = await fetch("http://localhost:3000/v1/chat", {
 
 ## JWT authentication
 
-JWT authentication is designed for end-user sessions. Users register and log in to receive short-lived access tokens and long-lived refresh tokens.
+JWT authentication serves end-user sessions. Users register and log in to receive short-lived access tokens and long-lived refresh tokens.
 
 - **Access tokens** expire after 15 minutes.
-- **Refresh tokens** are used to obtain new access tokens without re-entering credentials.
+- **Refresh tokens** obtain new access tokens without a new login.
 
 ### Register a new user
 
@@ -251,7 +251,7 @@ class AresClient {
 
 ## Admin secret authentication
 
-The admin secret provides full access to ARES administration endpoints. It is intended for internal tools and the Dirmacs Admin dashboard only.
+The admin secret grants full access to ARES administration endpoints. Use it only for internal tools and the Dirmacs Admin dashboard.
 
 Pass the secret in the `X-Admin-Secret` header:
 
@@ -260,7 +260,7 @@ curl http://localhost:3000/api/admin/tenants \
   -H "X-Admin-Secret: your-admin-secret"
 ```
 
-> **Warning:** The admin secret grants unrestricted access to all tenants, agents, and configuration. Never expose it outside your infrastructure. It should only be used in server-to-server calls from trusted internal services.
+> **Warning:** The admin secret grants unrestricted access to all tenants, agents, and configuration. Never expose it outside your infrastructure. Use it only in server-to-server calls from trusted internal services.
 
 ---
 
@@ -271,7 +271,7 @@ Authentication failures return standard HTTP status codes:
 | Status | Meaning |
 |---|---|
 | `401 Unauthorized` | Missing or invalid credentials |
-| `403 Forbidden` | Valid credentials but insufficient permissions |
+| `403 Forbidden` | Valid credentials with insufficient permissions |
 | `429 Too Many Requests` | Rate limit exceeded for this API key or tenant |
 
 Example error response:

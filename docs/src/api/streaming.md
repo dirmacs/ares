@@ -1,6 +1,6 @@
 # Streaming
 
-ARES supports real-time streaming responses via Server-Sent Events (SSE). Instead of waiting for the full response to be generated, you receive text chunks as they are produced. This enables responsive UIs that display text as it appears.
+ARES streams responses in real time with Server-Sent Events (SSE). You do not wait for the full response. You receive text chunks while the system produces them. This lets user interfaces display text while the system generates it.
 
 ---
 
@@ -10,21 +10,21 @@ ARES supports real-time streaming responses via Server-Sent Events (SSE). Instea
 POST /api/chat/stream
 ```
 
-JWT authentication: `Authorization: Bearer <jwt_access_token>`
+This endpoint requires JWT authentication with this header: `Authorization: Bearer <jwt_access_token>`.
 
 ```
 POST /v1/chat/stream
 ```
 
-API key authentication: `Authorization: Bearer ares_xxx`
+This endpoint requires API key authentication with this header: `Authorization: Bearer ares_xxx`.
 
-Both endpoints accept the same request body as [`POST /api/chat`](./chat.md) and return the same SSE format.
+Both endpoints accept the request body of [`POST /api/chat`](./chat.md) and return the same SSE format.
 
 ---
 
 ## SSE format
 
-The response uses `Content-Type: text/event-stream`. Each event contains a `data:` field with a text chunk:
+The response uses the `Content-Type: text/event-stream` content type. Each event contains a `data:` field with one text chunk:
 
 ```
 data: The
@@ -34,7 +34,7 @@ data:  question is
 data:  as follows...
 ```
 
-Each `data:` line represents one chunk of the response. Concatenate all chunks to reconstruct the complete response. The server closes the connection when generation is complete.
+Each `data:` line is one chunk of the response. Concatenate all chunks to get the complete response. The server closes the connection when it finishes generation.
 
 ---
 
@@ -42,7 +42,7 @@ Each `data:` line represents one chunk of the response. Concatenate all chunks t
 
 ### curl
 
-The `-N` flag disables output buffering so chunks appear immediately:
+The `-N` flag disables output buffering, so chunks appear immediately:
 
 ```bash
 curl -N -X POST http://localhost:3000/api/chat/stream \
@@ -57,7 +57,7 @@ curl -N -X POST http://localhost:3000/api/chat/stream \
 
 ### Python
 
-Using the `requests` library with `stream=True`:
+This example uses the `requests` library with `stream=True`:
 
 ```python
 import requests
@@ -89,7 +89,7 @@ for line in response.iter_lines():
 complete_text = "".join(full_response)
 ```
 
-For production use, consider using `httpx` with async streaming:
+For production use, use `httpx` with async streaming:
 
 ```python
 import httpx
@@ -122,7 +122,7 @@ result = asyncio.run(stream_chat("Explain how neural networks learn", "eyJhbGciO
 
 ### JavaScript (Browser)
 
-Using the Fetch API with `ReadableStream`:
+This example uses the Fetch API with `ReadableStream`:
 
 ```javascript
 async function streamChat(message, token) {
@@ -264,7 +264,7 @@ func main() {
 
 ## Error handling
 
-If the request is invalid or authentication fails, the server returns a standard HTTP error response (not SSE). Always check the response status before attempting to read the stream:
+If the request is invalid or authentication fails, the server returns a standard HTTP error response and not an SSE stream. Check the response status before you read the stream:
 
 ```python
 response = requests.post(url, headers=headers, json=body, stream=True)
@@ -290,8 +290,8 @@ if (!response.ok) {
 
 ## Best practices
 
-- **Always set `Accept: text/event-stream`** to signal that you expect a streaming response.
-- **Disable client-side buffering** where possible (e.g., `-N` in curl, `stream=True` in Python requests).
-- **Handle connection drops gracefully.** The stream may close unexpectedly due to network issues. Implement retry logic for production applications.
-- **Set reasonable timeouts.** Long research queries may stream for 30+ seconds. Configure your HTTP client timeout accordingly.
-- **Concatenate chunks for the final result.** Individual chunks may split mid-word. Only process the complete response for downstream use.
+- **Set `Accept: text/event-stream`** in each request. This header signals that you expect a streaming response.
+- **Disable client-side buffering** where possible (for example, `-N` in curl, `stream=True` in Python requests).
+- **Handle connection drops.** The stream can close unexpectedly because of network problems. Implement retry logic in production applications.
+- **Set reasonable timeouts.** A long research query can stream for more than 30 seconds. Configure the timeout of your HTTP client accordingly.
+- **Concatenate chunks before use.** One chunk can split a word in half. Process only the complete response downstream.

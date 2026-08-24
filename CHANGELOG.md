@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed — library facade
 
-- **The `ares` facade crate is folded into the `ares-server` package as a `[lib]` target**; `crates/ares` is deleted. The crates.io name `ares` is occupied by an unrelated 2015 package and could never be published, so the published entry point for embedding ARES as a library is now `ares-server = "0.9.1"`: `use ares_server::{Context, Execute, Tools, Llm, Plugin, Loader, Dispatch, register_plugins};`. `Store` re-export remains behind the `postgres` feature. The inventory-parity guarantee moved to a root-package test (`tests/inventory_parity.rs`) with force-linking of every capability crate including `ares-http`.
+- **The `ares` facade crate is folded into the `ares-server` package as a `[lib]` target**; `crates/ares` is deleted. The crates.io name `ares` is occupied by an unrelated 2015 package. The name can never publish, so the published entry point for embedding ARES as a library is now `ares-server = "0.9.1"`: `use ares_server::{Context, Execute, Tools, Llm, Plugin, Loader, Dispatch, register_plugins};`. `Store` re-export remains behind the `postgres` feature. The inventory-parity guarantee moved to a root-package test (`tests/inventory_parity.rs`) with force-linking of every capability crate including `ares-http`.
 
 ### Added — Cordis rounds 4–9
 
@@ -30,7 +30,7 @@ Nine hardening/feature rounds on the Cordis kernel and its use across the server
 ### Fixed
 
 - Latent deadlock in `RegistryService::register` (read guard held across stale-slot write cleanup), exposed by metatheory leg F.
-- Latent double-swap bug in verified rebuilds (promoted values lacked undo; second swap would have wedged re-provide).
+- Latent double-swap bug in verified rebuilds (promoted values lacked undo; a second swap wedges re-provide).
 
 ## [0.7.5] - 2026-04-11
 
@@ -309,7 +309,7 @@ If you were using any of the removed APIs:
 
 - ort-sys Windows MSVC Linker Error: Added compile-time error for `local-embeddings` feature on Windows MSVC targets
  - Prevents cryptic linker errors by failing fast with a helpful message
- - Users on Windows should use WSL, remote embedding APIs, or Linux/macOS
+ - Users on Windows must use WSL, remote embedding APIs, or Linux/macOS
  - Location: `src/rag/embeddings.rs`
 
 - lru security advisory: Updated `lru` to 0.16.3 to fix RUSTSEC-2026-0002 (stacked borrows unsound in IterMut)
@@ -439,7 +439,7 @@ If you were using any of the removed APIs:
 ### Fixed
 
 - Vector Persistence (CRITICAL): Fixed bug where vectors were not saved to disk
- - Root cause: HNSW index didn't support iteration, so `save_collection()` saved empty files
+ - Root cause: the HNSW index did not support iteration, so `save_collection()` saved empty files
  - Added `export_all()` method to `HnswIndex` in `crates/ares-vector/src/index.rs`
  - Added `export_all()` method to `Collection` in `crates/ares-vector/src/collection.rs`
  - Updated `save_collection()` in `crates/ares-vector/src/persistence.rs` to actually save vectors
@@ -517,7 +517,7 @@ If you were using any of the removed APIs:
 
 - Improved docs.rs compatibility: Documentation builds now work on docs.rs
  - Removed problematic dependencies from docs.rs builds (`llamacpp`, `qdrant`, `swagger-ui`)
- - These features require native compilation or network access which docs.rs doesn't support
+ - These features require native compilation or network access docs.rs doesn't support
 
 ### Fixed
 

@@ -1,6 +1,6 @@
 # Quickstart
 
-Get from zero to your first ARES API call in under 5 minutes.
+Make your first ARES API call in under 5 minutes.
 
 ## Prerequisites
 
@@ -8,7 +8,7 @@ Get from zero to your first ARES API call in under 5 minutes.
 
 ## 1. Make your first chat request
 
-Send a message to an ARES agent using the chat endpoint.
+Send a message to an ARES agent through the chat endpoint.
 
 ### curl
 
@@ -72,11 +72,11 @@ console.log(data.response);
 }
 ```
 
-The `context_id` is returned with every response. Pass it back in subsequent requests to maintain conversation context.
+Every response carries a `context_id`. Pass the `context_id` in later requests to maintain conversation context.
 
 ## 2. Try streaming
 
-For real-time, token-by-token output, use the streaming endpoint. ARES streams responses using Server-Sent Events (SSE).
+Use the streaming endpoint for real-time token-by-token output. ARES streams responses over Server-Sent Events (SSE).
 
 ### curl
 
@@ -90,7 +90,7 @@ curl -N -X POST http://localhost:3000/v1/chat/stream \
   }'
 ```
 
-The `-N` flag disables output buffering so you see tokens as they arrive.
+The `-N` flag disables output buffering, so you see tokens as they arrive.
 
 ### Python
 
@@ -167,5 +167,5 @@ curl -X POST http://localhost:3000/v1/chat \
 
 ## Next steps
 
-- **[Authentication](authentication.md)**, learn about API keys, JWT tokens, and admin authentication.
-- **[Models & Providers](models.md)**, understand which models are available and how to choose the right one.
+- **[Authentication](authentication.md)**: learn about API keys, JWT tokens, and admin authentication.
+- **[Models & Providers](models.md)**: see which models are available and how to choose one.

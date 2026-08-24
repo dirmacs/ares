@@ -1,12 +1,12 @@
-# Cordis redesign, yagni ladder (phase -1, step 3)
+# Cordis redesign, YAGNI ladder (Phase -1, step 3)
 
 > **STATUS (2026-08-24):** Historical planning document from the pre-round-4 Cordis migration.
 > Rounds 4–9 have since shipped everything relevant; the branch references below are deleted or merged.
 > Current state of record: `docs/cordis-mapping.md` (§10–§19) and `ARCHITECTURE.md`.
 
-Date: 2026-08-20
-Commit: `e4f3bcc` (11 workspace crates + `ares-server` root)
-Rule: `rust-safe-large` YAGNI ladder, walk each crate before writing any new crate. No code change in this step.
+**Date:** 2026-08-20
+**Commit:** `e4f3bcc` (11 workspace crates + `ares-server` root)
+**Rule:** `rust-safe-large` YAGNI ladder, walk each crate before writing any new crate. No code change in this step.
 
 ## Workspace at e4f3bcc
 
@@ -30,39 +30,39 @@ Total workspace Rust ≈ 88k lines (excluding `src/` root ~190KB admin.rs etc. +
 
 ### Keep as standalone crate (justified)
 
-- ares-types, KEEP. Cross-cutting types used by all crates (`TenantTier`, API DTOs). 1,980 lines is above noise threshold, and it has axum/utoipa dependencies that leaf crates need without pulling the whole server. Workspace `version.workspace` ensures single version.
+- **ares-types**, KEEP. Cross-cutting types used by all crates (`TenantTier`, API DTOs). 1,980 lines is above noise threshold, and it has axum/utoipa dependencies that leaf crates need without pulling the whole server. Workspace `version.workspace` ensures single version.
 
-- overlay, KEEP but split internally. 6,135 lines, cross-cutting, but `toml_config.rs` alone is 110 KB per plan (currently split across `toml_config.rs`/`toon_config.rs`/`nvidia_catalog.rs`/`fleet_secrets.rs`). YAGNI: keep as one crate (config is a coherent domain), but Phase 5 must split by domain (`server`, `auth`, `providers`, `tools`, `agents`, `workflows`, `rag`, `billing`) behind `Service` traits, not as separate crates, as modules. Do not create 8 config crates.
+- **overlay**, KEEP but split internally. 6,135 lines, cross-cutting, but `toml_config.rs` alone is 110 KB per plan (currently split across `toml_config.rs`/`toon_config.rs`/`nvidia_catalog.rs`/`fleet_secrets.rs`). YAGNI: keep as one crate (config is a coherent domain), but Phase 5 must split by domain (`server`, `auth`, `providers`, `tools`, `agents`, `workflows`, `rag`, `billing`) behind `Service` traits, not as separate crates, as modules. Do not create 8 config crates.
 
-- ares-store, KEEP but modularize internally. 23k lines is the workspace's largest crate, but it is the DB boundary (traits + implementations for postgres/turso/vectors). Splitting into `ares-store-postgres`/`ares-vector-stores` would be premature, the 6 backends share `traits.rs` and transaction logic. Instead, enforce feature-gated modules (`postgres`, `turso`, `qdrant`, etc.) and plan Phase 3 to replace polling reload with `Fiber::refresh`. Do not merge into `ares-server`, DB belongs at leaf.
+- **ares-store**, KEEP but modularize internally. 23k lines is the workspace's largest crate, but it is the DB boundary (traits + implementations for postgres/turso/vectors). A split into `ares-store-postgres`/`ares-vector-stores` is premature: the 6 backends share `traits.rs` and transaction logic. Instead, enforce feature-gated modules (`postgres`, `turso`, `qdrant`, and the other backends), and plan Phase 3 to replace polling reload with `Fiber::refresh`. Do not merge into `ares-server`, DB belongs at leaf.
 
-- ares-llm, KEEP. 13.5k lines, provider-agnostic LLM abstraction, client pool, observability. Touches every agent execution path. Needs its own crate to isolate `async-openai`/`ollama-rs` deps behind features and to own `ProviderRegistry` → `LlmService` migration. Keep `openai`, `ollama` features.
+- **ares-llm**, KEEP. 13.5k lines, provider-agnostic LLM abstraction, client pool, observability. Touches every agent execution path. Needs its own crate to isolate `async-openai`/`ollama-rs` deps behind features and to own `ProviderRegistry` → `LlmService` migration. Keep `openai`, `ollama` features.
 
-- ares-tools, KEEP. 7.8k lines, tool registry + runtime registry + connectors. Distinct from agents/llm, owns execution semantics (`Tool` trait, `Arc<Tool>`). Will become `ToolService` in Phase 5 that composes static + runtime + MCP.
+- **ares-tools**, KEEP. 7.8k lines, tool registry + runtime registry + connectors. Distinct from agents/llm, owns execution semantics (`Tool` trait, `Arc<Tool>`). Will become `ToolService` in Phase 5 that composes static + runtime + MCP.
 
-- ares-rag, KEEP. 8.6k lines, RAG pipeline (chunker, embeddings, reranker, cache, search). Distinct vector dependency path (`lancor`, `text-splitter`, `fastembed`). Keep alongside `ares-vector`.
+- **ares-rag**, KEEP. 8.6k lines, RAG pipeline (chunker, embeddings, reranker, cache, search). Distinct vector dependency path (`lancor`, `text-splitter`, `fastembed`). Keep alongside `ares-vector`.
 
-- ares-vector, KEEP. 4.4k lines, published crate `ares-vector 0.1.2` with its own README/license, uses `hnsw_rs`/`anndists`/`scc`. Already versioned independently and excluded from the build gate (`default` but not in `cargo check --no-default-features --features openai,postgres,mcp`). Must remain leaf crate, do not merge.
+- **ares-vector**, KEEP. 4.4k lines, published crate `ares-vector 0.1.2` with its own README/license, uses `hnsw_rs`/`anndists`/`scc`. Already versioned independently and excluded from the build gate (`default` but not in `cargo check --no-default-features --features openai,postgres,mcp`). Must remain leaf crate, do not merge.
 
-### Merge (below yagni threshold)
+### Merge (below YAGNI threshold)
 
-- ares-auth (902 lines, 2 files), MERGE into new `ares-core` or keep as leaf but question justification. Currently JWT + argon2 only, no DB, no config. Ladder: a standalone crate needs ≥2 consumers with distinct feature sets or a publishable boundary. `ares-auth` is consumed only by `ares-server` (middleware) and `ares-types` (claims). YAGNI says merge into `ares-runtime`/`ares-core` (proposed `crates/ares-context` or `crates/ares-core`). Decision: Merge into `ares-core` (new leaf crate `cordis`/`ares-context` will absorb auth traits) or into `ares-server` root if no core crate is created. For the redesign, auth becomes a `Service` (`JwtService`) provided via `Context`, not a crate boundary. Path: re-export `jsonwebtoken`/`argon2` behind `JwtService` in `ares-core`, deprecate `ares-auth` with `pub use ares_core::auth::*` for one release if needed, then remove. No client-specific logic, confirm generic.
+- **ares-auth** (902 lines, 2 files), MERGE into new `ares-core` or keep as leaf but question justification. Currently JWT + argon2 only, no DB, no config. Ladder: a standalone crate needs ≥2 consumers with distinct feature sets or a publishable boundary. `ares-auth` is consumed only by `ares-server` (middleware) and `ares-types` (claims). YAGNI says merge into `ares-runtime`/`ares-core` (proposed `crates/ares-context` or `crates/ares-core`). Decision: **Merge into `ares-core` (new leaf crate `cordis`/`ares-context` will absorb auth traits) or into `ares-server` root if no core crate is created**. For the redesign, auth becomes a `Service` (`JwtService`) provided via `Context`, not a crate boundary. Path: re-export `jsonwebtoken`/`argon2` behind `JwtService` in `ares-core`, deprecate `ares-auth` with `pub use ares_core::auth::*` for one release if needed, then remove. No client-specific logic, confirm generic.
 
-- ares-memory (1,291 lines, 1 file), MERGE into `ares-agent` or `ares-core`. Currently a single `lib.rs` LRU session store (`ConversationMemory`, `MemoryStore`). No independent versioning, no external deps beyond `chrono`/`serde`. YAGNI says a 1-file crate is ceremony. Decision: Merge into `ares-agent` (where it is already consumed via `ares-agent/src/memory/*` and `context_provider.rs`) or into `ares-core` as `MemoryService`. The `lru = "0.16.3"` dep moves with it. Delete crate boundary; keep module `ares_agent::memory` (already exists) and promote `SessionMemoryService` as a `Service`.
+- **ares-memory** (1,291 lines, 1 file), MERGE into `ares-agent` or `ares-core`. Currently a single `lib.rs` LRU session store (`ConversationMemory`, `MemoryStore`). No independent versioning, no external deps beyond `chrono`/`serde`. YAGNI says a 1-file crate is ceremony. Decision: **Merge into `ares-agent`** (where it is already consumed via `ares-agent/src/memory/*` and `context_provider.rs`) or into `ares-core` as `MemoryService`. The `lru = "0.16.3"` dep moves with it. Delete crate boundary; keep module `ares_agent::memory` (already exists) and promote `SessionMemoryService` as a `Service`.
 
 ### Borderline, keep with conditions
 
-- ares-agent (9,460 lines), KEEP as standalone, but do not let it absorb memory. It already has `ares-memory` as dep (circular pressure). After merging `ares-memory`, `ares-agent` becomes the orchestration crate. Consider whether `research/`, `orchestrator`, `loop_detector` belong in `ares-runtime`. YAGNI: keep `ares-agent` (orchestration is distinct from tool/provider execution), but the new `AgentExecutionService` (Phase 4) should live in `ares-agent`, not `ares-context`, to keep business logic out of the generic context primitive.
+- **ares-agent** (9,460 lines), KEEP as standalone, but do not let it absorb memory. It already has `ares-memory` as dep (circular pressure). After merging `ares-memory`, `ares-agent` becomes the orchestration crate. Consider whether `research/`, `orchestrator`, `loop_detector` belong in `ares-runtime`. YAGNI: keep `ares-agent` (orchestration is distinct from tool/provider execution), the new `AgentExecutionService` (Phase 4) lives in `ares-agent`, not `ares-context`, to keep business logic out of the generic context primitive.
 
-- ares-mcp (6,772 lines), KEEP with deprecation path to merge into `ares-tools`. The plan flags `ToolRegistry`/`RuntimeToolRegistry`/`McpRegistry` fragmentation (P4). `ares-mcp` duplicates tool abstractions (`McpRegistry`, `McpTool`). Ideal: `ares-mcp` becomes a feature of `ares-tools` (`mcp` feature already exists in `ares-tools/Cargo.toml` → `dep:ares-mcp`). Ladder says keep as crate for now (MCP uses `rmcp` 0.12.0 with distinct transport), but Phase 5 must unify behind `ToolService` so `ares-tools` owns the trait and `ares-mcp` is just a bridge implementation. Do not create a new crate; do not merge yet, prove the `ToolService` composition first, then evaluate post-spike whether `ares-mcp` stays or collapses into `ares-tools/src/mcp_bridge.rs`.
+- **ares-mcp** (6,772 lines), KEEP with deprecation path to merge into `ares-tools`. The plan flags `ToolRegistry`/`RuntimeToolRegistry`/`McpRegistry` fragmentation (P4). `ares-mcp` duplicates tool abstractions (`McpRegistry`, `McpTool`). Ideal: `ares-mcp` becomes a feature of `ares-tools` (`mcp` feature already exists in `ares-tools/Cargo.toml` → `dep:ares-mcp`). Ladder says keep as crate for now (MCP uses `rmcp` 0.12.0 with distinct transport), but Phase 5 must unify behind `ToolService` so `ares-tools` owns the trait and `ares-mcp` is just a bridge implementation. Do not create a new crate; do not merge yet, prove the `ToolService` composition first, then evaluate post-spike whether `ares-mcp` stays or collapses into `ares-tools/src/mcp_bridge.rs`.
 
 ## New crates (per plan)
 
-- cordis / ares-context (spike), CREATE as leaf crate per Phase 1, Step 8. Zero internal ARES deps, only `tokio`, `thiserror`, `tracing`, `anymap`/`hashbrown`, `arc-swap`. This is the Cordis primitive crate (`Context`, `Fiber`, `Effect`, `Disposable`, `EventsService`, `RegistryService`, `Loader`). It is not a merger target, it is the new foundation. YAGNI: start as `crates/cordis` (or `crates/ares-context`) with ~1, 2k lines, no `libloading` HMR, no WASM. Stub file-watch → `Fiber::reload()`.
+- **cordis / ares-context** (spike), CREATE as leaf crate per Phase 1, Step 8. Zero internal ARES deps, only `tokio`, `thiserror`, `tracing`, `anymap`/`hashbrown`, `arc-swap`. This is the Cordis primitive crate (`Context`, `Fiber`, `Effect`, `Disposable`, `EventsService`, `RegistryService`, `Loader`). It is **not** a merger target, it is the new foundation. YAGNI: start as `crates/cordis` (or `crates/ares-context`) with ~1,2k lines, no `libloading` HMR, no WASM. Stub file-watch → `Fiber::reload()`.
 
-- ares-runtime / ares-core (potential), DEFER. Only create if `ares-auth` + `ares-memory` merged need a home that is not `ares-server` and not `cordis`. The plan mentions `ares-runtime`/`ares-core` as optional absorbers for small crates. YAGNI says do not pre-create, first prove the spike (Phase 1) and the `AppState` → `Context` migration (Phase 2 step 12) can absorb `ares-auth`/`ares-memory` without a new crate. If AppState decomposition reveals a shared service layer, then introduce `ares-runtime` in Phase 2 as needed.
+- **ares-runtime / ares-core (potential)**, DEFER. Only create if `ares-auth` + `ares-memory` merged need a home that is not `ares-server` and not `cordis`. The plan mentions `ares-runtime`/`ares-core` as optional absorbers for small crates. YAGNI says do not pre-create, first prove the spike (Phase 1) and the `AppState` → `Context` migration (Phase 2 step 12) can absorb `ares-auth`/`ares-memory` without a new crate. If AppState decomposition reveals a shared service layer, then introduce `ares-runtime` in Phase 2 as needed.
 
-## Anti-decisions (explicitly not doing)
+## Anti-Decisions (explicitly not doing)
 
 - Do not create `eight domain crates` (8 crates for server/auth/providers/tools/agents/workflows/rag/billing), that is Phase 5 module split, not crate split.
 - Do not create `ares-store-postgres`/`ares-store-vectors` splits, feature flags suffice.
@@ -71,7 +71,7 @@ Total workspace Rust ≈ 88k lines (excluding `src/` root ~190KB admin.rs etc. +
 
 ## Ordering
 
-Phase -1 decision is log only. Implementation order for Phase 1, 2:
+Phase -1 decision is log only. Implementation order for Phase 1,2:
 
 1. Create `crates/cordis` (leaf, no ARES deps), proves Context/Fiber theorem.
 2. Merge `ares-memory` into `ares-agent` (or `ares-core`) after spike, one `State<AppState>` shim commit, then delete crate.

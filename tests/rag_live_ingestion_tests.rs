@@ -1,26 +1,26 @@
-//! EHB Document Ingestion Pipeline Tests
+//! Live Document Ingestion Pipeline Tests
 //!
-//! These tests verify the complete RAG pipeline with real eHB knowledge base documents.
+//! These tests verify the complete RAG pipeline with real local documents from a configured directory.
 //! They test:
-//! - Batch document ingestion from the /opt/ehb directory
+//! - Batch document ingestion from the the configured documents directory
 //! - Semantic search over ingested documents
 //! - Context injection for LLM responses
 //!
 //! # Running the tests
 //!
 //! ```bash
-//! # Run all EHB ingestion tests
-//! EHB_INGESTION_TESTS=1 cargo test --features "ares-vector,local-embeddings" --test rag_ehb_ingestion_tests -- --ignored
+//! # Run all live ingestion tests
+//! LIVE_INGESTION_TESTS=1 cargo test --test rag_live_ingestion_tests -- --ignored
 //!
 //! # Run with verbose output
-//! EHB_INGESTION_TESTS=1 RUST_LOG=info cargo test --features "ares-vector,local-embeddings" --test rag_ehb_ingestion_tests -- --ignored --nocapture
+//! LIVE_INGESTION_TESTS=1 RUST_LOG=info cargo test --test rag_live_ingestion_tests -- --ignored --nocapture
 //! ```
 //!
 //! # Environment Variables
 //!
-//! - `EHB_INGESTION_TESTS=1` - Enable EHB ingestion tests (required)
-//! - `EHB_DOCS_PATH` - Path to eHB documentation directory (default: /opt/ehb)
-//! - `EHB_VECTOR_PATH` - Path for vector store persistence (default: temp dir)
+//! - `LIVE_INGESTION_TESTS=1` - Enable live ingestion tests (required)
+//! - `LIVE_DOCS_PATH` - Path to the documents directory (default: /opt/ares-docs)
+//! - `LIVE_VECTOR_PATH` - Path for vector store persistence (default: temp dir)
 
 #![cfg(all(feature = "ares-vector", feature = "local-embeddings"))]
 
@@ -43,24 +43,24 @@ use std::{fs, path::Path};
 // ============================================================================
 
 fn should_run_tests() -> bool {
-    std::env::var("EHB_INGESTION_TESTS").is_ok()
+    std::env::var("LIVE_INGESTION_TESTS").is_ok()
 }
 
-fn get_ehb_docs_path() -> PathBuf {
-    std::env::var("EHB_DOCS_PATH")
-        .unwrap_or_else(|_| "/opt/ehb".to_string())
+fn get_docs_path() -> PathBuf {
+    std::env::var("LIVE_DOCS_PATH")
+        .unwrap_or_else(|_| "/opt/ares-docs".to_string())
         .into()
 }
 
 fn get_vector_path() -> Option<String> {
-    std::env::var("EHB_VECTOR_PATH").ok()
+    std::env::var("LIVE_VECTOR_PATH").ok()
 }
 
 macro_rules! skip_if_not_enabled {
     () => {
         if !should_run_tests() {
             eprintln!(
-                "Skipping EHB ingestion test. Set EHB_INGESTION_TESTS=1 to run with real documents."
+                "Skipping the live ingestion test. Set LIVE_INGESTION_TESTS=1 to run with real documents."
             );
             return;
         }
@@ -141,7 +141,7 @@ async fn process_document(
                 title: title.to_string(),
                 source: source.to_string(),
                 created_at: Utc::now(),
-                tags: vec!["ehb".to_string(), "knowledge-base".to_string()],
+                tags: vec!["live-docs".to_string(), "knowledge-base".to_string()],
             },
             embedding: Some(embedding),
         })
@@ -154,10 +154,10 @@ async fn process_document(
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
-async fn test_ehb_document_discovery() {
+async fn test_live_document_discovery() {
     skip_if_not_enabled!();
 
-    let docs_path = get_ehb_docs_path();
+    let docs_path = get_docs_path();
     println!("Scanning for documents in: {:?}", docs_path);
 
     let markdown_files = find_markdown_files(&docs_path);
@@ -187,12 +187,12 @@ async fn test_ehb_document_discovery() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
-async fn test_ehb_batch_ingestion() {
+async fn test_live_batch_ingestion() {
     skip_if_not_enabled!();
 
-    println!("=== EHB Batch Ingestion Test ===\n");
+    println!("=== Live Batch Ingestion Test ===\n");
 
-    let docs_path = get_ehb_docs_path();
+    let docs_path = get_docs_path();
     let vector_path = get_vector_path();
 
     // Initialize services
@@ -204,7 +204,7 @@ async fn test_ehb_batch_ingestion() {
         .await
         .expect("Failed to create vector store");
 
-    let collection = "ehb_knowledge_base";
+    let collection = "live_knowledge_base";
 
     // Create collection
     if !store.collection_exists(collection).await.unwrap() {
@@ -282,22 +282,22 @@ async fn test_ehb_batch_ingestion() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
-async fn test_ehb_semantic_search() {
+async fn test_live_semantic_search() {
     skip_if_not_enabled!();
 
-    println!("=== EHB Semantic Search Test ===\n");
+    println!("=== Live Semantic Search Test ===\n");
 
     let vector_path = get_vector_path();
     let store = AresVectorStore::new(vector_path)
         .await
         .expect("Failed to create vector store");
 
-    let collection = "ehb_knowledge_base";
+    let collection = "live_knowledge_base";
 
     // Verify collection exists
     assert!(
         store.collection_exists(collection).await.unwrap(),
-        "Collection '{}' does not exist. Run test_ehb_batch_ingestion first.",
+        "Collection '{}' does not exist. Run test_live_batch_ingestion first.",
         collection
     );
 
@@ -305,7 +305,7 @@ async fn test_ehb_semantic_search() {
         EmbeddingService::with_model(EmbeddingModelType::BgeSmallEnV15)
             .expect("Failed to create embedding service");
 
-    // Test queries relevant to eHB
+    // Test queries relevant to local docs
     let test_queries = vec![
         "mental health assessment",
         "AI diagnosis guidelines",
@@ -356,17 +356,17 @@ async fn test_ehb_semantic_search() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
-async fn test_ehb_context_injection() {
+async fn test_live_context_injection() {
     skip_if_not_enabled!();
 
-    println!("=== EHB Context Injection Test ===\n");
+    println!("=== Live Context Injection Test ===\n");
 
     let vector_path = get_vector_path();
     let store = AresVectorStore::new(vector_path)
         .await
         .expect("Failed to create vector store");
 
-    let collection = "ehb_knowledge_base";
+    let collection = "live_knowledge_base";
 
     assert!(
         store.collection_exists(collection).await.unwrap(),
@@ -442,17 +442,17 @@ async fn test_ehb_context_injection() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
-async fn test_ehb_collection_stats() {
+async fn test_live_collection_stats() {
     skip_if_not_enabled!();
 
-    println!("=== EHB Collection Stats Test ===\n");
+    println!("=== Live Collection Stats Test ===\n");
 
     let vector_path = get_vector_path();
     let store = AresVectorStore::new(vector_path)
         .await
         .expect("Failed to create vector store");
 
-    let collection = "ehb_knowledge_base";
+    let collection = "live_knowledge_base";
 
     if !store.collection_exists(collection).await.unwrap() {
         println!(
@@ -485,17 +485,17 @@ async fn test_ehb_collection_stats() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
-async fn test_ehb_search_accuracy() {
+async fn test_live_search_accuracy() {
     skip_if_not_enabled!();
 
-    println!("=== EHB Search Accuracy Test ===\n");
+    println!("=== Live Search Accuracy Test ===\n");
 
     let vector_path = get_vector_path();
     let store = AresVectorStore::new(vector_path)
         .await
         .expect("Failed to create vector store");
 
-    let collection = "ehb_knowledge_base";
+    let collection = "live_knowledge_base";
 
     assert!(
         store.collection_exists(collection).await.unwrap(),

@@ -1,5 +1,5 @@
 -- Migration 010: Tenant Users (Population 2)
--- End-users OF client products (eHB patients, Kasino gamblers, Lumivid devs).
+-- End-users of client products (per-client user populations).
 -- These are NOT DIRMACS users — they cannot access Eruka/admin/portal.
 -- Managed by dirmacs-core on behalf of clients.
 

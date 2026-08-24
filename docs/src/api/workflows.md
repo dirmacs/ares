@@ -1,14 +1,14 @@
 # Workflows
 
-Workflows are multi-agent orchestration pipelines. A workflow defines an entry point agent (typically a router) that analyzes the incoming query and delegates to specialist agents in sequence. The result is a coordinated, multi-step response that uses the strengths of different agents.
+Workflows are multi-agent orchestration pipelines. A workflow defines an entry agent (usually a router). The entry agent analyzes the query and delegates to specialist agents in sequence. The result is a coordinated multi-step response that uses the strengths of different agents.
 
 **How workflows operate:**
 
 1. The query enters through an **entry agent** (usually a router).
-2. The router analyzes intent and selects the most appropriate specialist agent.
-3. The specialist processes the query, optionally delegating further.
-4. Each step is recorded in the **reasoning path**, providing full transparency into the decision chain.
-5. The final response is returned along with metadata about the execution.
+2. The router analyzes the intent and selects a specialist agent.
+3. The specialist processes the query and can delegate further steps to other agents.
+4. The system records each step in the **reasoning path**. The reasoning path shows the full decision chain.
+5. The system returns the final response with metadata about the execution.
 
 ---
 
@@ -18,7 +18,7 @@ Workflows are multi-agent orchestration pipelines. A workflow defines an entry p
 GET /api/workflows
 ```
 
-Returns the names of all available workflows.
+This endpoint returns the names of all available workflows.
 
 ### Authentication
 
@@ -45,7 +45,7 @@ curl http://localhost:3000/api/workflows \
 POST /api/workflows/{workflow_name}
 ```
 
-Execute a named workflow. The query is routed through the workflow's agent chain, and the final synthesized response is returned along with execution metadata.
+This endpoint runs a named workflow. ARES routes the query through the agent chain of the workflow and returns the final response with execution metadata.
 
 ### Authentication
 
@@ -55,7 +55,7 @@ Requires a JWT access token: `Authorization: Bearer <jwt_access_token>`
 
 | Parameter | Type | Description |
 |----------------|--------|---------------------------------|
-| `workflow_name` | string | Name of the workflow to execute |
+| `workflow_name` | string | Name of the workflow to run |
 
 ### Request body
 
@@ -174,8 +174,8 @@ result.reasoning_path.forEach(step => {
 
 ## Workflow behavior
 
-**Agent selection.** The entry agent examines the query and routes to the specialist best suited to handle it. If a specialist determines it needs input from another agent, it can delegate further, creating a multi-hop chain.
+**Agent selection.** The entry agent examines the query and routes it to a specialist that can handle it. When a specialist needs input from another agent, the specialist delegates to that agent. This delegation creates a multi-hop chain.
 
-**Context propagation.** The optional `context` object is available to every agent in the chain. Use it to pass structured information (user tier, session metadata, domain-specific parameters) that agents can reference during processing.
+**Context propagation.** Every agent in the chain can read the optional `context` object. Use this object to pass structured information: user tier, session metadata, and domain parameters. Agents reference this information during processing.
 
-**Determinism.** Workflow routing is driven by the entry agent's LLM reasoning, so the same query may route differently depending on phrasing. The `reasoning_path` in the response provides full visibility into routing decisions.
+**Determinism.** Routing depends on the LLM reasoning of the entry agent. The same query can route differently with different phrasing. The `reasoning_path` in the response shows all routing decisions.

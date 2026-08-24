@@ -15,7 +15,7 @@ Extensible via ContextProvider trait. Run standalone or embed as a library.
 
 ---
 
-**A.R.E.S** is a production-grade agentic AI server built in Rust. Multi-provider LLM routing, structured tool calling, RAG, MCP integration, multi-tenant auth, and workflow orchestration. Embed the default `ares` facade (`Context`, `Execute`, `Tools`, `Llm`) with no axum on the graph, or enable the `http` feature for the Axum adapter.
+**ARES** is a production-grade agentic AI server built in Rust. Features include multi-provider LLM routing, structured tool calling, RAG, MCP integration, multi-tenant auth, and workflow orchestration. You embed the library facade of the `ares-server` package (`Context`, `Execute`, `Tools`, `Llm`). The `ares-server` binary serves the Axum HTTP layer.
 
 Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.github.io/ares)**
 
@@ -23,11 +23,11 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 
 - Multi-provider LLM: Ollama, OpenAI, Anthropic Claude, LlamaCpp (direct GGUF loading)
 - TOML configuration: declarative, hot-reloading
-- Configurable agents: define via [TOON](https://toonformat.dev) with custom models, tools, and prompts
+- Configurable agents: defined via [TOON](https://toonformat.dev) with custom models, tools, and prompts
 - Workflow engine: declarative execution with agent routing
 - Tool calling: type-safe function calling with automatic schema generation
 - ToolCoordinator: provider-agnostic multi-turn tool calling for all LLM clients
-- Per-agent tool filtering: restrict which tools each agent can access
+- Per-agent tool filtering: each agent sees only its allowed tools
 - Streaming: real-time responses from all providers
 - Auth: JWT with Argon2 password hashing
 - Database: PostgreSQL with multi-tenant isolation, optional vector stores (ares-vector, Qdrant, LanceDB)
@@ -38,37 +38,37 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 - Deep research: multi-step research with parallel subagents
 - Web search: built-in via [daedra](https://github.com/dirmacs/daedra)
 - OpenAPI: automatic documentation generation
-- Config validation: circular reference detection and unused config warnings
+- Configuration validation: circular reference detection and warnings for unused items
 - Loop detection: 3-tier escalation (warn, force alternative, halt) for repetitive outputs
 - Crash recovery: checkpoint serialization, save agent state at each step, restore on restart
-- Service-based architecture (0.9.x): dependency injection via typed `Context`, services register with `ctx.plugin()` or `ctx.provide()`, handlers pull deps with `ctx.get::<T>()`. `Fiber::refresh` recomputes the dependency epoch and reruns plugin `apply`.
+- Service-based architecture (0.9.x): services register with `ctx.plugin()` or `ctx.provide()`. Handlers pull dependencies with `ctx.get::<T>()` on a typed `Context`. `Fiber::refresh` recomputes the dependency epoch and reruns plugin `apply`.
 - Unified execution: single `Execute` handles resolve, create, and execute for chat, v1 API, JWT chat, MCP, scheduler, pipeline, and trigger. Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`.
-- Event-first skills (0.9.x): `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`), falling back to a 5ms poll only when the notifier is unavailable. Skills carry the request `Context`, isolate tools with `ctx.isolate::<Tools>(tenant_id)`, and call `Tools::execute` on that tenant isolate. Skill `LlmCall` steps strictly use `Llm::complete` through `llm.complete`, with no direct provider `generate_with_history` fallback. `Tools`, `Llm`, `Execute`, and skills stay event-first on `EventsService` waterfalls.
+- Event-first skills (0.9.x): `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`). A 5ms poll runs only when the notifier is unavailable. Skills carry the request `Context`, isolate tools with `ctx.isolate::<Tools>(tenant_id)`, and call `Tools::execute` on that tenant isolate. Skill `LlmCall` steps strictly use `Llm::complete` through `llm.complete`, with no direct provider `generate_with_history` fallback. `Tools`, `Llm`, `Execute`, and skills stay event-first on `EventsService` waterfalls.
 - Quota: `agent.admit` (`Dispatch::Bail`) is the shared gate for `Execute`, JWT chat, API-key middleware, and MCP.
-- Store / Overlay / realms: Store factory runs migrations and seeds templates. Overlay fills empty loader configs from `ares.toml`. TOON changes notify `Tools` and `Execute`. `TenantRealms` open-then-intercept on request paths and dispose on tenant delete.
-- Hot-reload: file-watch triggers automatic service refresh without restart. `Fiber::refresh` reruns plugin apply when the epoch changes.
+- Store / Overlay / realms: Store factory runs migrations and seeds templates. Overlay fills empty loader configurations from `ares.toml`. TOON changes notify `Tools` and `Execute`. `TenantRealms` open-then-intercept on request paths and dispose on tenant delete.
+- Hot-reload: a file watch triggers automatic service refresh without restart. When the epoch changes, `Fiber::refresh` reruns plugin `apply`.
 - Circuit breaker: LLM provider health tracked per-endpoint with automatic failover
 
 ## Installation
 
-A.R.E.S can be used as a **standalone server** or as a **library** in your Rust project.
+You can run ARES as a **standalone server**. You can also use it as a **library** in your Rust project.
 
 ### As a library
 
-Add to your project (0.9.1):
+Add this dependency to your project (version 0.9.1):
 
 ```toml
 [dependencies]
-ares = "0.9"
+ares-server = "0.9"
 ```
 
-Basic usage (default features: no axum, no postgres, no engines):
+Basic usage:
 
 ```rust
 use ares_server::{Context, Execute, Tools, Llm};
 ```
 
-`ares` with default features does not depend on axum. Enable `http` to pull `ares-http`. `ProviderRegistry` remains on the constructor path for `AgentRegistry` / `Llm` until those take `Llm` only.
+The default features of `ares-server` are postgres, openai, ares-vector, mcp, inventory, and rhai-policy. Embed-only builds pass `--no-default-features --features openai,postgres,mcp` to Cargo. `ProviderRegistry` remains on the constructor path for `AgentRegistry` / `Llm` until those take `Llm` only.
 
 ### As a binary
 
@@ -88,7 +88,7 @@ ares-server
 
 ## CLI commands
 
-A.R.E.S provides a full-featured CLI with colored output:
+The CLI gives full-featured commands with colored output:
 
 ```bash
 # Initialize a new project with all configuration files
@@ -140,9 +140,9 @@ ares-server --no-color init
 
 ### Prerequisites
 
-- Rust 1.98+: Install via [rustup](https://rustup.rs/)
-- **Ollama** (recommended): For local LLM inference - [Install Ollama](https://ollama.ai)
-- **just** (recommended): Command runner - [Install just](https://just.systems)
+- Rust 1.98 or later. Install via [rustup](https://rustup.rs/)
+- **Ollama** for local LLM inference (recommended). See [Install Ollama](https://ollama.ai)
+- **just** as the command runner (recommended). See [Install just](https://just.systems)
 
 ### 1. Clone and setup
 
@@ -178,11 +178,11 @@ cargo run
 # Or: just run
 ```
 
-Server runs on `http://localhost:3000`
+The server runs on `http://localhost:3000`
 
 ## Feature flags
 
-A.R.E.S uses Cargo features for conditional compilation:
+ARES uses Cargo features for conditional compilation:
 
 ### LLM providers
 
@@ -215,7 +215,7 @@ A.R.E.S uses Cargo features for conditional compilation:
 | `ui` | Embedded Leptos web UI served from backend | No |
 | `swagger-ui` | Interactive API documentation at `/swagger-ui/` | No |
 
-> **Note:** `swagger-ui` was made optional in v0.2.5 to reduce binary size and build time. The feature requires network access during build to download Swagger UI assets.
+> **Note:** v0.2.5 made `swagger-ui` optional. This change reduces the binary size and the build time. The feature needs network access during the build to download the Swagger UI assets.
 
 ### Embeddings
 
@@ -223,7 +223,7 @@ A.R.E.S uses Cargo features for conditional compilation:
 |---------|-------------|---------|
 | `local-embeddings` | Local ONNX embedding models via fastembed | No |
 
-> **Warning:** The `local-embeddings` feature does **NOT** work on Windows MSVC due to `ort-sys` linker errors. Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs instead.
+> **Warning:** The `local-embeddings` feature does not work on Windows MSVC. Cause: `ort-sys` linker errors. Use WSL, Linux, macOS, or remote embedding APIs instead.
 
 ### Feature bundles
 
@@ -237,7 +237,7 @@ A.R.E.S uses Cargo features for conditional compilation:
 | `full-ui-local-embeddings` | Full + UI + local-embeddings (Linux/macOS only) |
 | `minimal` | No optional features |
 
-> **Note:** `local-embeddings` is excluded from `full` and `full-ui` bundles due to Windows MSVC compatibility issues. Use `full-local-embeddings` or `full-ui-local-embeddings` on Linux/macOS.
+> **Note:** The `full` and `full-ui` bundles exclude `local-embeddings` because of Windows MSVC compatibility issues. On Linux and macOS use `full-local-embeddings` or `full-ui-local-embeddings`.
 
 ### Building with features
 
@@ -276,7 +276,7 @@ cargo build --release
 
 ## Configuration
 
-A.R.E.S uses a **TOML configuration file** (`ares.toml`) for declarative configuration of all components. The server **requires** this file to start.
+ARES reads a **TOML configuration file** (`ares.toml`) with declarative configuration for all components. The server requires this file at startup.
 
 ### Quick start
 
@@ -392,21 +392,21 @@ If `tools` is empty or omitted, the agent has no tool access.
 
 ### Configuration validation
 
-The configuration is validated on load with:
+The server validates the configuration on load:
 
-- Reference checking: Models must reference valid providers, agents must reference valid models
+- Reference checks: Models must reference valid providers, and agents must reference valid models
 - Circular reference detection: Workflows cannot have circular agent references
-- Environment variables: All referenced env vars must be set
+- Environment variables: All referenced environment variables must be set
 
-For warnings about unused configuration items (providers, models, tools not referenced by anything), the `validate_with_warnings()` method is available.
+The `validate_with_warnings()` method reports unused configuration items (providers, models, and tools with no references).
 
 ### Hot reloading
 
-Configuration changes are **automatically detected** and applied without restarting the server. Edit `ares.toml` and the changes will be picked up within 500ms.
+The server detects configuration changes automatically and applies them without restart. Edit `ares.toml`. The loader picks up the changes within 500ms.
 
 ### Environment variables
 
-The following environment variables **must** be set (referenced by `ares.toml`):
+These environment variables must be set because `ares.toml` references them:
 
 ```bash
 # Required
@@ -421,13 +421,13 @@ OPENAI_API_KEY=sk-...
 
 When multiple providers are configured, they are selected in this order:
 
-1. **LlamaCpp** - If `LLAMACPP_MODEL_PATH` is set
-2. **OpenAI** - If `OPENAI_API_KEY` is set
-3. **Ollama** - Default fallback (no API key required)
+1. **LlamaCpp** when `LLAMACPP_MODEL_PATH` is set
+2. **OpenAI** when `OPENAI_API_KEY` is set
+3. **Ollama** as the default fallback (no API key required)
 
 ### Dynamic configuration (TOON)
 
-In addition to `ares.toml`, A.R.E.S supports **TOON (Token Oriented Object Notation)** files for behavioral configuration with hot-reloading:
+ARES also supports **TOON (Token Oriented Object Notation)** files for behavioral configuration with hot-reload support. These files complement `ares.toml`.
 
 ```
 config/
@@ -458,7 +458,7 @@ system_prompt: |
   You are a router agent that directs requests to specialized agents.
 ```
 
-**Enable TOON configs** in `ares.toml`:
+**Enable TOON configuration** in `ares.toml`:
 
 ```toml
 [config]
@@ -470,11 +470,11 @@ mcps_dir = "config/mcps"
 hot_reload = true
 ```
 
-TOON files are automatically hot-reloaded when changed. See [docs/DIR-12-research.md](docs/DIR-12-research.md) for details.
+The server hot-reloads TOON files automatically after a change.
 
 ### User-created agents API
 
-Users can create custom agents stored in the database with TOON import/export:
+Users can create custom agents in the database. Import and export use the TOON format:
 
 ```bash
 # Create a custom agent
@@ -504,7 +504,7 @@ system_prompt: |
 
 ## Extending ARES
 
-ARES is designed as a library. The default `ares` facade injects `Execute`, `Tools`, and `Llm` on a Cordis `Context` and runs an agent with no HTTP stack. HTTP routes live behind the optional `http` feature (`ares-http`).
+ARES works as a library. The `ares_server` lib injects `Execute`, `Tools`, and `Llm` on a Cordis `Context`. An agent runs with no HTTP service on the graph. The Axum routes live in the `ares-http` package.
 
 ### Library (no axum)
 
@@ -531,7 +531,7 @@ let ctx: Arc<Context> = /* your configured context with Http provided */;
 
 ### Custom context provider
 
-Inject external context into agent calls before LLM invocation:
+The trait now lives in ares-agent (`ares_agent::context_provider::ContextProvider`). It injects external context into agent calls before LLM invocation:
 
 ```rust
 use ares::agents::context_provider::ContextProvider;
@@ -547,11 +547,11 @@ impl ContextProvider for MyContextProvider {
 }
 ```
 
-By default, ARES uses `NoOpContextProvider` (returns `None`).
+By default ARES uses `NoOpContextProvider`, which returns `None`.
 
 ## Architecture
 
-0.9.x composition is Cordis `Context` plus loader entries. Components register into a typed `Context`. Handlers and engines pull `Execute`, `Tools`, `Llm`, and `Store` at call time. The default `ares` facade has no axum. The kernel is hardened per the [Cordis model](https://github.com/cordiverse/paper): guarded withdrawal (providers can't be removed under active consumers), verified hot-swap and drain-and-shift provider replacement (zero-downtime rebuilds, `POST /admin/cordis/services/{name}/replace`), peer-dependency versioning (`provide_versioned`/`declare_inject_versioned` — incompatible versions leave dependents Inactive instead of silently binding), eager inject reconciliation, dependency-cycle detection at load (`GET /admin/cordis/entries` reports rings), and a metatheory property suite proving quiescence/confluence/LIFO/reactive invariants. RhaiPolicy scripting ships default-on: TOML entries attach sandboxed script gates to capability events with fail-closed semantics. See `docs/cordis-mapping.md` for the full Cordis surface (§10–§19).
+Version 0.9.x composition is a Cordis `Context` plus loader entries. Components register into a typed `Context`. Handlers and engines pull `Execute`, `Tools`, `Llm`, and `Store` at call time. The `ares_server` lib has no axum on its graph. The kernel follows the hardening rules of the [Cordis model](https://github.com/cordiverse/paper). Guarded withdrawal protects providers against removal under active consumers. Verified hot-swap and drain-and-shift replacement give zero-downtime rebuilds through `POST /admin/cordis/services/{name}/replace`. Peer-dependency versioning uses `provide_versioned`/`declare_inject_versioned`. Incompatible versions leave dependents Inactive instead of a silent bind. Inject reconciliation runs eagerly. Cycle detection at load reports rings through `GET /admin/cordis/entries`. A metatheory property suite proves quiescence, confluence, LIFO, and reactive invariants. RhaiPolicy scripting ships default-on. TOML entries attach sandboxed script gates to capability events with fail-closed semantics. `docs/cordis-mapping.md` documents the full Cordis surface (§10–§19).
 
 ```
 request / job
@@ -564,9 +564,9 @@ request / job
 
 ### Fiber, events, and capabilities
 
-`Fiber::refresh` recomputes the dependency epoch and reruns plugin `apply` when the epoch changed or the fiber is not already Active with dependencies satisfied. Dispose still LIFO-undoes effects.
+`Fiber::refresh` recomputes the dependency epoch. It reruns plugin `apply` when the epoch changed or when the fiber is not already Active with satisfied dependencies. Dispose still undoes effects in LIFO order.
 
-`EventsService` dispatch: `Emit` returns JSON null. `Parallel` joins every handler and returns JSON null on success (handler values are discarded; the first join/handler error is propagated). `Serial` (same path as `Bail`) stops at the first non-null handler result. `Waterfall` is around-middleware with `next`.
+`EventsService` dispatch modes: `Emit` returns JSON null. `Parallel` joins every handler and returns JSON null on success. Handler values are discarded, and the first join or handler error propagates. `Serial` (same path as `Bail`) stops at the first non-null handler result. `Waterfall` is around-middleware with `next`.
 
 `Tools`, `Llm`, `Execute`, and skills remain event-first. Public methods run through `waterfall_around` when `EventsService` is on ctx.
 
@@ -578,20 +578,20 @@ The Store loader factory connects, runs SQL migrations, and seeds default agent 
 
 `TenantRealms` open-then-intercept on request paths. Background jobs open/isolate only. Admin tenant delete calls `dispose` then SQL delete.
 
-`run_server` composes the entries program at boot (`@include` splice, `@group` flatten, `${rhai: …}` config interpolation — fail-open) and re-composes on every watched reload, then applies the diff via the loader journal: verified hot-swap for same-provider rebuilds, guarded withdrawal for retire. Inventory-collected factories are the primary registration path (manual chains are the no-default-features fallback). Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`, emitting boundary events on the typed catalog.
+`run_server` composes the entries program at boot (`@include` splice, `@group` flatten, `${rhai: …}` configuration interpolation — fail-open). It re-composes on every watched reload and applies the diff through the loader journal. Verified hot-swap handles same-provider rebuilds, and guarded withdrawal handles retire. Inventory-collected factories are the primary registration path (manual chains are the no-default-features fallback). Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`. They emit boundary events on the typed catalog.
 
 ### Key services
 
 | Service | What it does |
 |---------|-------------|
-| `Execute` | Single entry point for running agents. Chat, v1, JWT, MCP, scheduler, pipeline, and trigger delegate here after `agent.admit`. |
-| `Resolver` | Crate-private 3-tier agent resolution: tenant DB, community, system config. |
-| `Llm` | Provider clients with circuit breaker. `ProviderRegistry` remains a constructor input. |
-| `Tools` | Merges static, runtime DB, and MCP tools. Tenant isolation via `isolate::<Tools>`. |
-| `Store` | Postgres client, migrations, template seed, tenant DB. |
-| `EventsService` | Typed bus. Product paths stay event-first. |
-| `Overlay` | `ares.toml` overlay; fills empty loader configs; TOON notifies Tools/Execute. |
-| `TenantRealms` | Per-tenant child contexts. Open-then-intercept on request; dispose on tenant delete. |
+| `Execute` | Single entry point for agent runs. Chat, v1, JWT, MCP, scheduler, pipeline, and trigger delegate here after `agent.admit`. |
+| `Resolver` | Crate-private three-tier agent resolution: tenant DB, community, system configuration. |
+| `Llm` | Provider clients with a circuit breaker. `ProviderRegistry` remains a constructor input. |
+| `Tools` | Merges static tools, runtime DB tools, and MCP tools. Tenant isolation via `isolate::<Tools>`. |
+| `Store` | Postgres client with migrations, template seed, and tenant DB. |
+| `EventsService` | Typed event bus. Product paths stay event-first. |
+| `Overlay` | `ares.toml` overlay. Fills empty loader configurations. TOON notifies Tools/Execute. |
+| `TenantRealms` | Per-tenant child contexts. Open-then-intercept on request paths. Dispose runs on tenant delete. |
 | `ReflectService` | Hot-reload coordination. File changes propagate without restart. |
 
 ### Adding a service
@@ -615,9 +615,9 @@ See `ARCHITECTURE.md` for full details.
 
 ## API documentation
 
-Interactive Swagger UI available at: `http://localhost:3000/swagger-ui/`
+The interactive Swagger UI is available at `http://localhost:3000/swagger-ui/`
 
-> **Note:** Swagger UI requires the `swagger-ui` feature to be enabled at build time:
+> **Note:** The build must enable the `swagger-ui` feature:
 > ```bash
 > cargo build --features "swagger-ui"
 > # Or use the full bundle:
@@ -683,7 +683,7 @@ curl -X POST http://localhost:3000/api/research \
 
 ### Workflows
 
-Workflows enable multi-agent orchestration. Define workflows in `ares.toml`:
+Workflows give multi-agent orchestration. Define workflows in `ares.toml`:
 
 ```toml
 [workflows.default]
@@ -819,7 +819,7 @@ curl http://localhost:3000/api/admin/services/ares/logs \
 
 ### RAG (retrieval augmented generation)
 
-A.R.E.S includes a complete RAG system with a pure-Rust vector store. Requires the `ares-vector` feature. For local files, use the generic Rust CLI and pass every deployment-specific path or collection explicitly:
+ARES includes a complete RAG system with a pure-Rust vector store. It requires the `ares-vector` feature. For local files use the generic Rust CLI, and pass every deployment-specific path or collection explicitly:
 
 ```bash
 ares-server rag ingest-dir \
@@ -870,7 +870,7 @@ curl -X POST http://localhost:3000/api/rag/search \
   }'
 ```
 
-**Search Strategies**:
+**Search strategies**:
 - `semantic`: Vector similarity search
 - `bm25`: Traditional keyword matching
 - `fuzzy`: Typo-tolerant search
@@ -885,7 +885,7 @@ curl http://localhost:3000/api/rag/collections \
 
 ## Tool calling
 
-A.R.E.S supports tool calling with all LLM providers that support function calling (OpenAI, Anthropic, Ollama with ministral-3:3b+, etc.):
+ARES supports tool calling with all LLM providers that support function calling (OpenAI, Anthropic, and Ollama with ministral-3:3b or later):
 
 ### Built-in tools
 
@@ -894,7 +894,7 @@ A.R.E.S supports tool calling with all LLM providers that support function calli
 
 ### Unified ToolCoordinator
 
-The `ToolCoordinator` provides a provider-agnostic way to handle multi-turn tool calling with any `LLMClient`:
+The `ToolCoordinator` handles multi-turn tool calling with any `LLMClient` in a provider-agnostic way:
 
 ```rust
 use ares::llm::{Provider, ToolCoordinator, ToolCallingConfig};
@@ -936,14 +936,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Option | Default | Description |
 |--------|---------|-------------|
 | `max_iterations` | 10 | Maximum LLM round-trips before stopping |
-| `parallel_execution` | true | Execute multiple tool calls in parallel |
+| `parallel_execution` | true | Runs multiple tool calls in parallel |
 | `tool_timeout` | 30s | Timeout for individual tool execution |
 | `include_tool_results` | true | Include tool results in final context |
 | `stop_on_error` | false | Stop on first tool error vs continue |
 
 ## Testing
 
-A.R.E.S has complete test coverage with both mocked and live tests.
+ARES has complete test coverage with mocked tests and live tests.
 
 ### Unit & integration tests (mocked)
 
@@ -959,11 +959,11 @@ cargo test -- --nocapture
 
 ### Live Ollama tests
 
-Tests that connect to a **real Ollama instance** are available but **ignored by default**.
+Tests that connect to a **real Ollama instance** exist, and the default run ignores them.
 
 #### Prerequisites
-- Running Ollama server at `http://localhost:11434`
-- A model installed (e.g., `ollama pull ministral-3:3b`)
+- An Ollama server runs at `http://localhost:11434`
+- A model is installed. Example: `ollama pull ministral-3:3b`
 
 #### Running live tests
 
@@ -983,11 +983,11 @@ OLLAMA_URL=http://192.168.1.100:11434 OLLAMA_MODEL=mistral OLLAMA_LIVE_TESTS=1 \
   cargo test --test ollama_live_tests -- --ignored
 ```
 
-Or add `OLLAMA_LIVE_TESTS=1` to your `.env` file.
+Alternatively, add `OLLAMA_LIVE_TESTS=1` to your `.env` file.
 
 ### API tests (hurl)
 
-End-to-end API tests using [Hurl](https://hurl.dev):
+End-to-end API tests use [Hurl](https://hurl.dev):
 
 ```bash
 # Install Hurl
@@ -1005,11 +1005,11 @@ just hurl-auth
 just hurl-chat
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for more testing details.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for more details on testing.
 
 ## Common commands (just)
 
-A.R.E.S uses [just](https://just.systems) as a command runner. Run `just --list` to see all available commands:
+ARES uses [just](https://just.systems) as the command runner. Run `just --list` to see all available commands:
 
 ```bash
 # Show all commands
@@ -1142,26 +1142,26 @@ cargo install trunk --locked
 
 - Rust: 1.98 or later
 - Operating System: Linux, macOS, or Windows
-- Memory: 2GB RAM (4GB+ recommended for larger models)
+- Memory: 2GB RAM (4GB or more for larger models)
 
 ### Optional requirements
 
-- Ollama: For local LLM inference (recommended)
+- Ollama: for local LLM inference (recommended)
 - Node.js runtime: Bun, npm, or Deno (required for UI development)
 - Docker: For containerized deployment
 - GPU: NVIDIA (CUDA) or Apple Silicon (Metal) for accelerated inference
 
 ## Security considerations
 
-- JWT_SECRET: Must be at least 32 characters. Generate with: `openssl rand -base64 32`
-- API_KEY: Should be unique per deployment
-- Environment Variables: Never commit `.env` files to version control
-- HTTPS: Use HTTPS in production (configure via reverse proxy)
-- Rate Limiting: Consider adding rate limiting for production deployments
+- JWT_SECRET: must have at least 32 characters. Generate it with `openssl rand -base64 32`
+- API_KEY: unique per deployment
+- Environment variables: never commit `.env` files to version control
+- HTTPS: use HTTPS in production (configure through a reverse proxy)
+- Rate limiting: production deployments need rate limiting at the proxy layer
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for the guidelines.
 
 ### Quick contribution guide
 
@@ -1198,10 +1198,6 @@ just pre-commit
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for a list of changes in each version.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 

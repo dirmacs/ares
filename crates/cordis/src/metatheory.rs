@@ -27,29 +27,43 @@
 //!   invariant: a dependent fiber is never `Active` while its provider is
 //!   absent, activates reactively when the provider appears, tracks provider
 //!   swaps through its epoch, and the guarded-withdrawal rule protects live
-//!   consumers.
+//!   consumers. Legs D–H cover the two former deltas: failed factories stay
+//!   inspectable (`Failed` terminal-rest) with notified dependents and fresh-id
+//!   re-registration supersession, and late inject declarations on Active
+//!   fibers reconcile immediately.
 //! * [`lifo_dispose_restores_store`] — Thm 16: disposal unwinds registration
 //!   effects in strict LIFO order and restores the store to its pre-
 //!   registration contents.
 //!
-//! # Known deltas between paper and implementation (deliberate, verified)
+//! # Former deltas between paper and implementation (resolved)
 //!
-//! 1. `Fiber::declare_inject` mutates the inject set *outside* the fiber
-//!    state machine. Between a declaration and the next refresh, an `Active`
-//!    fiber can carry a freshly declared (unsatisfied) inject. The progress
-//!    invariant therefore only holds if callers reconcile eagerly after each
-//!    declaration — which every reactive driver (watcher, loader) does. These
-//!    tests refresh synchronously right after declaring and document the
-//!    discipline rather than weakening the check.
-//! 2. A registration whose factory **errors** surfaces `Failed` *and* skips
-//!    the reflective wiring (`RegistryService::register` returns `Err` before
-//!    `provided.insert` and before `ReflectService::register_fiber`), so the
-//!    fiber is not driven by later notifications and cannot be recovered
-//!    through the public API (the id is never returned). The paper expects a
-//!    permanently `Inactive` dependent instead. These tests use total
-//!    factories gated by `Service::check`, which yields the paper-conform
-//!    `Inactive` state; the fallible-factory behavior is reported as a delta,
-//!    not silently weakened away.
+//! 1. `Fiber::declare_inject` used to mutate the inject set *outside* the
+//!    fiber state machine, letting an `Active` fiber carry a freshly
+//!    declared (unsatisfied) inject until an external driver refreshed it.
+//!    Resolved: a declaration landing on a fiber resting `Active` now
+//!    reconciles immediately (`Fiber::reconcile_after_declare`) with the
+//!    same transition shape `refresh` uses — satisfied declarations update
+//!    the epoch in place, unsatisfied ones undo effects and rest `Inactive`
+//!    with the missing-dependency note. A declaration racing an in-flight
+//!    refresh is folded into that refresh's recompute loop via a pending
+//!    flag instead of being lost between passes. Declarations on
+//!    `Inactive`/`Failed` fibers keep their historical behavior: they are
+//!    evaluated at the fiber's next transition.
+//! 2. A registration whose factory **errors** used to surface `Failed` and
+//!    skip all reflective wiring — the fiber was unreachable, undriven by
+//!    notifications, and its provider key stayed invisible to dependents.
+//!    Resolved: `RegistryService::register` still returns `Err`, but the
+//!    Failed fiber now enters the bookkeeping graph
+//!    (`RegistryService::wire_failed_registration`): it stays inspectable
+//!    via `get_fiber` under its fresh id, is registered with
+//!    `ReflectService` against the attempted key, and a notify fans out so
+//!    dependents observe the provider loss reactively. The failed fiber
+//!    rests in terminal `Failed{error}` at quiescence (a rest state), while
+//!    its *dependents* rest `Inactive` — the paper-conform outcome. A later
+//!    successful registration of the same key allocates a fresh fiber id
+//!    (the failed one never occupied the provided slot) and reactivates the
+//!    dependents against the new instance. See
+//!    [`dependent_never_active_without_provider`] legs D/E/F/G/H.
 //! 3. Transitional states are observable *mid-await* (see the `Reloading`
 //!    poller test in `fiber.rs`), but never at rest: the fiber inertia mutex
 //!    serializes transitions, so quiescence sampled between operations is
@@ -66,7 +80,7 @@ use crate::effect::Disposable;
 use crate::fiber::{Fiber, FiberState};
 use crate::registry::{Plugin, RegistryService};
 use crate::service::{CordisError, Service, ServiceInitFuture};
-use crate::ReflectService;
+use crate::{FiberId, ReflectService};
 
 // ---------------------------------------------------------------------------
 // Shared fixtures — plain services/plugins with disjoint TypeIds per scenario
@@ -217,6 +231,33 @@ impl Plugin for MtDependentPlugin {
     }
 }
 
+/// Factory whose `apply` always errors (scenario 3, failed-registration leg).
+struct MtFailPlugin;
+impl Plugin for MtFailPlugin {
+    type Config = ();
+    type Provides = MtProv;
+    fn apply(&self, _ctx: &Arc<Context>, _config: ()) -> Result<Arc<MtProv>, CordisError> {
+        Err(CordisError::Configuration("factory exploded".into()))
+    }
+}
+
+/// Successful replacement factory for the key `MtFailPlugin` failed on
+/// (scenario 3, re-registration supersession leg).
+struct MtRevivePlugin;
+impl Plugin for MtRevivePlugin {
+    type Config = ();
+    type Provides = MtProv;
+    fn apply(&self, _ctx: &Arc<Context>, _config: ()) -> Result<Arc<MtProv>, CordisError> {
+        Ok(Arc::new(MtProv(9)))
+    }
+}
+
+/// Service type never provided anywhere (scenario 3, unsatisfied-declaration
+/// leg of the eager-reconcile check).
+#[derive(Debug)]
+struct MissingProbe;
+impl Service for MissingProbe {}
+
 /// Directly provided marker whose removal must be undone on disposal.
 #[derive(Debug)]
 struct MtMark1(pub u64);
@@ -287,7 +328,9 @@ async fn drain_spawned() {
 /// `Unloading` between operations, and every `Active` fiber must have all
 /// declared injects available. Availability is probed with the crate-internal
 /// `Context::is_available`, the exact predicate `Context::get` applies before
-/// handing out a value.
+/// handing out a value. `Failed{error}` is a terminal *rest* state (former
+/// delta #2, resolved): failed fibers are tracked bookkeeping, so they are
+/// allowed at rest.
 fn assert_quiescent(fibers: &[(String, Arc<Fiber>)], ctx: &Arc<Context>) -> Result<(), String> {
     for (name, fiber) in fibers {
         match fiber.state() {
@@ -297,6 +340,8 @@ fn assert_quiescent(fibers: &[(String, Arc<Fiber>)], ctx: &Arc<Context>) -> Resu
                     fiber.state()
                 ));
             }
+            // Failed is terminal-rest; see the module docs.
+            FiberState::Failed { .. } | FiberState::Inactive { .. } => {}
             FiberState::Active { .. } => {
                 for tid in fiber.injected_type_ids() {
                     if !ctx.is_available(tid) {
@@ -306,7 +351,6 @@ fn assert_quiescent(fibers: &[(String, Arc<Fiber>)], ctx: &Arc<Context>) -> Resu
                     }
                 }
             }
-            FiberState::Inactive { .. } | FiberState::Failed { .. } => {}
         }
     }
     Ok(())
@@ -396,8 +440,9 @@ pub async fn quiescence_after_every_op() -> Result<(), String> {
                     let fiber = reg.get_fiber(fid).expect("registered fiber tracked");
                     fiber.declare_inject::<MtI1>();
                     fiber.declare_inject::<MtU1>();
-                    // Delta #1: declarations land outside the state machine,
-                    // so reconcile immediately to preserve the invariant.
+                    // Declarations on this freshly registered (Inactive)
+                    // fiber evaluate at its next transition; the explicit
+                    // refresh here reconciles immediately.
                     fiber.refresh(&ctx).await;
                     fibers.push((format!("consumer-{fid}"), fiber));
                     newest = Some(fibers.len() - 1);
@@ -591,11 +636,17 @@ pub async fn order_confluence_of_registrations() -> Result<(), String> {
 /// raw-fiber path (kernel primitive):
 ///   Inactive{error:None} --refresh--> Inactive{"missing or inactive dependency"}
 ///      --provide+refresh--> Active --provider removal+refresh--> Inactive
+/// failed-registration path (former delta #2, resolved):
+///   failing factory --> register Err + fiber Failed{error}, inspectable,
+///      dependents notified; dependent rests Inactive at quiescence
+///   successful re-register of same key --> fresh fiber id, dependents Active
+/// late-declaration path (former delta #1, resolved):
+///   Active --declare_inject(satisfied)--> Active (epoch folds the inject)
+///   Active --declare_inject(unsatisfied)--> Reloading -> Inactive{missing dep}
 /// ```
 ///
-/// Delta #2: a registration whose factory *errors* (rather than returning a
-/// `check()==false` value) surfaces `Failed` and skips reflective wiring —
-/// see the module docs. These checks use the paper-conform gated factory.
+/// The failed-registration and late-declaration legs cover the two former
+/// documented deltas; see the module docs.
 pub async fn dependent_never_active_without_provider() -> Result<(), String> {
     let (ctx, reg, reflect) = base_root();
 
@@ -713,7 +764,161 @@ pub async fn dependent_never_active_without_provider() -> Result<(), String> {
             ))
         }
     }
+
+    // --- Leg D (former delta #2): failing factory is inspectable as Failed
+    // and its provider key loss is observed by dependents.
+    let fail_err = reg
+        .register(&ctx, MtFailPlugin, ())
+        .expect_err("failing factory must be refused");
+    if !fail_err.to_string().contains("factory exploded") {
+        return Err(format!("unexpected failure reason: {fail_err}"));
+    }
+    let fail_fid = next_fid_after(&reg, fid)?;
+    let failed = reg
+        .get_fiber(fail_fid)
+        .ok_or("failed fiber must stay inspectable via get_fiber")?;
+    match failed.state() {
+        FiberState::Failed { error } => {
+            if !error.as_deref().unwrap_or("").contains("factory exploded") {
+                return Err("Failed state must carry the factory error".to_string());
+            }
+        }
+        other => return Err(format!("expected Failed{{error}}, got {other:?}")),
+    }
+    // No phantom instance materialized for the failed key.
+    if ctx.get::<MtProv>().is_some() {
+        return Err("failed factory must not provide an instance".to_string());
+    }
+    // Dependent was notified through the same path successful registrations
+    // use: it re-evaluated against a still-missing key and stays Inactive.
+    match dep.state() {
+        FiberState::Inactive { .. } => {}
+        other => {
+            return Err(format!(
+                "dependent must rest Inactive while its key has no live provider: {other:?}"
+            ))
+        }
+    }
+
+    // --- Leg E: the provided slot stayed vacant — a duplicate registration
+    // of the SAME key is not refused.
+    let revive_fid = reg
+        .register(&ctx, MtRevivePlugin, ())
+        .map_err(|e| format!("re-register after failure must succeed: {e}"))?;
+    if revive_fid == fail_fid {
+        return Err("re-registration must allocate a fresh fiber id".to_string());
+    }
+    let revived = reg
+        .get_fiber(revive_fid)
+        .ok_or("revived fiber must be tracked")?;
+    match revived.state() {
+        FiberState::Active { .. } => {}
+        other => return Err(format!("revived registration should be Active: {other:?}")),
+    }
+    // The failed fiber keeps its terminal Failed state (fresh-name rule).
+    if !matches!(
+        reg.get_fiber(fail_fid)
+            .ok_or("failed fiber vanished")?
+            .state(),
+        FiberState::Failed { .. }
+    ) {
+        return Err("failed fiber must remain terminal Failed".to_string());
+    }
+
+    // --- Leg F: the revived provider feeds a fresh dependent through the
+    // normal reactive path, and former delta #1 shows up twice: the healthy
+    // gated factory is Active the moment it registers, and the subsequent
+    // inject declaration reconciles EAGERLY, folding the provider into the
+    // epoch without any external refresh.
+    let late_fid = reg
+        .register(&ctx, MtDependentPlugin, ())
+        .map_err(|e| format!("dependent registration on revived key failed: {e}"))?;
+    let late = reg
+        .get_fiber(late_fid)
+        .ok_or("late dependent fiber not tracked")?;
+    match late.state() {
+        FiberState::Active { .. } if late.epoch() == ":" => {}
+        other => {
+            return Err(format!(
+                "healthy dependent over a present provider must register Active \
+                 with an inject-less epoch: {other:?}"
+            ))
+        }
+    }
+    late.declare_inject::<MtProv>();
+    match late.state() {
+        FiberState::Active { .. } => {}
+        other => {
+            return Err(format!(
+                "satisfied declaration must keep the fiber Active eagerly: {other:?}"
+            ))
+        }
+    }
+    if !late.epoch().contains("MtProv") {
+        return Err(format!(
+            "declaration must fold the provider into the epoch eagerly: {}",
+            late.epoch()
+        ));
+    }
+    let d3 = ctx
+        .get::<MtDerived>()
+        .ok_or("derived value missing after revival")?;
+    if d3.src != 9 {
+        return Err(format!(
+            "projection should observe revived v9, got {}",
+            d3.src
+        ));
+    }
+
+    // --- Leg G (former delta #1): a satisfied declaration landing on this
+    // resting-Active fiber reconciles immediately — epoch folds the inject,
+    // no external refresh needed.
+    let before = revived.epoch();
+    revived.declare_inject::<MtProv>();
+    let after = revived.epoch();
+    if !matches!(revived.state(), FiberState::Active { .. }) {
+        return Err(format!(
+            "satisfied declaration must keep the fiber Active: {:?}",
+            revived.state()
+        ));
+    }
+    if after == before {
+        return Err("satisfied declaration must fold into the epoch immediately".to_string());
+    }
+
+    // --- Leg H (former delta #1): an unsatisfied declaration on the same
+    // Active fiber drives it Inactive right away, with effects undone.
+    revived.declare_inject::<MissingProbe>();
+    match revived.state() {
+        FiberState::Inactive { error: Some(note) } => {
+            if !note.contains("missing or inactive dependency") {
+                return Err(format!("unexpected deactivation note: {note}"));
+            }
+        }
+        other => {
+            return Err(format!(
+                "unsatisfied declaration must deactivate the fiber eagerly: {other:?}"
+            ))
+        }
+    }
+    // The provider withdrawal succeeded because the consumer had already
+    // left the Active set — the store really lost the projection.
+    if ctx.get::<MtProv>().is_some() {
+        return Err("deactivated fiber's projection must be withdrawn".to_string());
+    }
     Ok(())
+}
+
+/// The registry's `next_id` counter is private; derive the fresh id of the
+/// most recent registration from the tracked population instead.
+fn next_fid_after(reg: &RegistryService, prev_max: FiberId) -> Result<FiberId, String> {
+    // Walk upward from prev_max: ids are dense and monotonic per registry.
+    for fid in (prev_max + 1)..=(prev_max + 64) {
+        if reg.get_fiber(fid).is_some() {
+            return Ok(fid);
+        }
+    }
+    Err("no tracked fiber found above the previous max id".to_string())
 }
 
 // ---------------------------------------------------------------------------

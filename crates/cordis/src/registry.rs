@@ -123,8 +123,11 @@ impl RegistryService {
         let tid = TypeId::of::<P::Provides>();
         let isolate = ctx.isolate_label(tid);
         let key = (tid, isolate);
-        if let Some(existing) = self.provided.read().get(&key).copied() {
-            let active = self
+        // Decide staleness under the read guard only — the guard is a
+        // scrutinee temporary that would otherwise outlive the if-let body,
+        // deadlocking the `provided.write()` below against its own reader.
+        let active_conflict = match self.provided.read().get(&key).copied() {
+            Some(existing) => self
                 .fibers
                 .read()
                 .get(&existing)
@@ -136,15 +139,18 @@ impl RegistryService {
                             | crate::FiberState::Reloading
                     )
                 })
-                .unwrap_or(false);
-            if active {
-                return Err(CordisError::Configuration(format!(
-                    "duplicate provider for {:?}",
-                    tid
-                )));
-            }
-            self.provided.write().remove(&key);
+                .unwrap_or(false),
+            None => false,
+        };
+        if active_conflict {
+            return Err(CordisError::Configuration(format!(
+                "duplicate provider for {:?}",
+                tid
+            )));
         }
+        // A non-conflicting entry is stale (retired/disposed/failed provider)
+        // and must not block the fresh registration.
+        self.provided.write().remove(&key);
 
         let fid = self.next_fiber_id();
         let fiber = Arc::new(Fiber::new());
@@ -159,6 +165,7 @@ impl RegistryService {
             fiber.set_state(crate::FiberState::Failed {
                 error: Some(message.clone()),
             });
+            self.wire_failed_registration(ctx, fid, &fiber, tid);
             CordisError::Configuration(message)
         })?;
         let plugin = Arc::new(plugin);
@@ -183,6 +190,12 @@ impl RegistryService {
                 fiber.set_state(crate::FiberState::Failed {
                     error: Some(error.to_string()),
                 });
+                // Metatheory delta #2 (resolved): a failed factory still
+                // enters the bookkeeping graph. Dependents of the attempted
+                // key observe the provider loss through the same notify path
+                // successful registrations use, and the Failed fiber stays
+                // inspectable via get_fiber.
+                self.wire_failed_registration(ctx, fid, &fiber, tid);
                 return Err(error);
             }
         };
@@ -203,6 +216,32 @@ impl RegistryService {
             reflect.register_fiber(fid, fiber.clone(), tid);
         }
         Ok(fid)
+    }
+
+    /// Bookkeeping for a registration that ended in `Failed`.
+    ///
+    /// The fiber keeps its terminal visible state but must not vanish from
+    /// the graph: it stays tracked under its id, is registered with
+    /// [`crate::ReflectService`] against the attempted provider key, and a
+    /// notify on that key fans out so dependents observe the provider loss
+    /// reactively. The `provided` slot stays vacant — a later successful
+    /// registration of the same key therefore allocates a fresh fiber id
+    /// instead of being refused as a duplicate.
+    fn wire_failed_registration(
+        &self,
+        ctx: &Arc<Context>,
+        fid: FiberId,
+        fiber: &Arc<Fiber>,
+        tid: TypeId,
+    ) {
+        if let Some(reflect) = ctx.get::<crate::ReflectService>() {
+            for dependency in fiber.injected_type_ids() {
+                reflect.register_dependent(dependency, fid);
+            }
+            let _ = reflect.ensure_notifier(tid);
+            reflect.register_fiber(fid, fiber.clone(), tid);
+            reflect.notify(tid);
+        }
     }
 
     /// Alias for register that matches the historical name used in the

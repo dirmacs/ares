@@ -51,18 +51,26 @@ pub fn list_alerts_select_sql(
     resolved_filter: Option<bool>,
 ) -> &'static str {
     match (severity_filter, resolved_filter) {
-        (Some(_), Some(_)) => "\
+        (Some(_), Some(_)) => {
+            "\
 SELECT id, severity, source, title, message, resolved, created_at, resolved_at, resolved_by \
-FROM alerts WHERE severity = $1 AND resolved = $2 ORDER BY created_at DESC LIMIT $3",
-        (Some(_), None) => "\
+FROM alerts WHERE severity = $1 AND resolved = $2 ORDER BY created_at DESC LIMIT $3"
+        }
+        (Some(_), None) => {
+            "\
 SELECT id, severity, source, title, message, resolved, created_at, resolved_at, resolved_by \
-FROM alerts WHERE severity = $1 ORDER BY created_at DESC LIMIT $2",
-        (None, Some(_)) => "\
+FROM alerts WHERE severity = $1 ORDER BY created_at DESC LIMIT $2"
+        }
+        (None, Some(_)) => {
+            "\
 SELECT id, severity, source, title, message, resolved, created_at, resolved_at, resolved_by \
-FROM alerts WHERE resolved = $1 ORDER BY created_at DESC LIMIT $2",
-        (None, None) => "\
+FROM alerts WHERE resolved = $1 ORDER BY created_at DESC LIMIT $2"
+        }
+        (None, None) => {
+            "\
 SELECT id, severity, source, title, message, resolved, created_at, resolved_at, resolved_by \
-FROM alerts ORDER BY created_at DESC LIMIT $1",
+FROM alerts ORDER BY created_at DESC LIMIT $1"
+        }
     }
 }
 
@@ -167,7 +175,10 @@ mod tests {
 
     #[test]
     fn count_bind_placeholders_skips_non_numeric_dollar_signs() {
-        assert_eq!(count_bind_placeholders("SELECT $x FROM alerts WHERE id = $1"), 1);
+        assert_eq!(
+            count_bind_placeholders("SELECT $x FROM alerts WHERE id = $1"),
+            1
+        );
         assert_eq!(count_bind_placeholders("no $ placeholders here"), 0);
     }
 
@@ -291,7 +302,10 @@ mod tests {
         assert!(VALIDATE_SESSION_SQL.contains("expires_at > $2"));
         assert_eq!(count_bind_placeholders(VALIDATE_SESSION_SQL), 2);
 
-        assert_eq!(DELETE_SESSION_BY_ID_SQL, "DELETE FROM sessions WHERE id = $1");
+        assert_eq!(
+            DELETE_SESSION_BY_ID_SQL,
+            "DELETE FROM sessions WHERE id = $1"
+        );
         assert_eq!(
             DELETE_SESSION_BY_TOKEN_SQL,
             "DELETE FROM sessions WHERE token_hash = $1"

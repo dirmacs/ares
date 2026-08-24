@@ -161,15 +161,12 @@ impl PoolConfig {
     }
 }
 
-
 impl std::fmt::Display for PoolConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "PoolConfig(max={}, min_idle={}, health_check={})",
-            self.max_connections_per_provider,
-            self.min_idle_connections,
-            self.enable_health_check
+            self.max_connections_per_provider, self.min_idle_connections, self.enable_health_check
         )
     }
 }
@@ -209,7 +206,6 @@ impl PooledClientMeta {
         idle_duration > config.idle_timeout || lifetime > config.max_lifetime
     }
 }
-
 
 #[derive(Debug)]
 enum BorrowFromIdle {
@@ -338,7 +334,9 @@ impl ProviderPool {
     }
 
     /// Get an available client from the pool, or create a new one
-    async fn acquire(&self) -> std::result::Result<(Box<dyn LLMClient>, OwnedSemaphorePermit), PoolError> {
+    async fn acquire(
+        &self,
+    ) -> std::result::Result<(Box<dyn LLMClient>, OwnedSemaphorePermit), PoolError> {
         let permit = match tokio::time::timeout(
             self.config.acquire_timeout,
             self.semaphore.clone().acquire_owned(),
@@ -394,7 +392,9 @@ impl ProviderPool {
         Ok((client, permit))
     }
 
-    async fn try_acquire(&self) -> std::result::Result<(Box<dyn LLMClient>, OwnedSemaphorePermit), PoolError> {
+    async fn try_acquire(
+        &self,
+    ) -> std::result::Result<(Box<dyn LLMClient>, OwnedSemaphorePermit), PoolError> {
         let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| {
             self.error_count.fetch_add(1, Ordering::Relaxed);
             PoolError::PoolExhausted {
@@ -577,7 +577,6 @@ impl std::ops::Deref for PooledClientGuard {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LLMPoolSnapshot {
     pub config: PoolConfig,
@@ -654,9 +653,12 @@ impl ClientPool {
 
         let pool = {
             let providers = self.providers.read();
-            providers.get(provider_name).cloned().ok_or_else(|| PoolError::InvalidClient {
-                reason: format!("provider '{provider_name}' not registered in pool"),
-            })?
+            providers
+                .get(provider_name)
+                .cloned()
+                .ok_or_else(|| PoolError::InvalidClient {
+                    reason: format!("provider '{provider_name}' not registered in pool"),
+                })?
         };
 
         let (client, permit) = pool.acquire().await?;
@@ -680,9 +682,12 @@ impl ClientPool {
 
         let pool = {
             let providers = self.providers.read();
-            providers.get(provider_name).cloned().ok_or_else(|| PoolError::InvalidClient {
-                reason: format!("provider '{provider_name}' not registered in pool"),
-            })?
+            providers
+                .get(provider_name)
+                .cloned()
+                .ok_or_else(|| PoolError::InvalidClient {
+                    reason: format!("provider '{provider_name}' not registered in pool"),
+                })?
         };
 
         let (client, permit) = pool.try_acquire().await?;
@@ -778,7 +783,6 @@ impl ClientPool {
         }
     }
 }
-
 
 impl std::fmt::Display for ClientPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -996,10 +1000,7 @@ mod tests {
     #[test]
     fn test_pool_stats_clone_and_debug() {
         let mut providers = HashMap::new();
-        providers.insert(
-            "p1".to_string(),
-            pool_stats(1, 0, 1, 3, 0, 0),
-        );
+        providers.insert("p1".to_string(), pool_stats(1, 0, 1, 3, 0, 0));
         let stats = PoolStats {
             providers,
             total_available: 1,
@@ -1120,7 +1121,10 @@ mod tests {
         let pool = ClientPool::new(config.clone());
         register_seeded_pool(&pool, "mock", config, vec![mock_client("seeded")]);
 
-        let guard = pool.get("mock").await.expect("seeded client should be available");
+        let guard = pool
+            .get("mock")
+            .await
+            .expect("seeded client should be available");
         assert_eq!(guard.client().model_name(), "seeded");
         assert_eq!(pool.stats().providers["mock"].total_created, 0);
     }
@@ -1282,7 +1286,6 @@ mod tests {
         assert_eq!(pool.stats().total_available, 0);
     }
 
-
     #[tokio::test]
     async fn test_acquire_creates_client_when_pool_empty() {
         let config = PoolConfig::default()
@@ -1389,11 +1392,9 @@ mod tests {
         assert!(PoolError::Timeout { timeout_ms: 10 }
             .to_string()
             .contains("timeout"));
-        assert!(PoolError::InvalidClient {
-            reason: "x".into()
-        }
-        .to_string()
-        .contains("invalid"));
+        assert!(PoolError::InvalidClient { reason: "x".into() }
+            .to_string()
+            .contains("invalid"));
     }
 
     #[test]
@@ -1455,14 +1456,16 @@ mod tests {
 
     #[test]
     fn test_borrow_client_purges_stale_entries() {
-        let config = PoolConfig::default()
-            .with_idle_timeout(Duration::from_millis(1));
+        let config = PoolConfig::default().with_idle_timeout(Duration::from_millis(1));
         let mut idle = vec![PooledClient {
             client: mock_client("stale"),
             meta: PooledClientMeta::new(),
         }];
         std::thread::sleep(Duration::from_millis(3));
-        assert!(matches!(borrow_client(&mut idle, &config), BorrowFromIdle::Exhausted));
+        assert!(matches!(
+            borrow_client(&mut idle, &config),
+            BorrowFromIdle::Exhausted
+        ));
         assert!(idle.is_empty());
     }
 
@@ -1573,7 +1576,12 @@ mod tests {
             .with_max_connections(2)
             .without_health_check();
         let pool = Arc::new(ClientPool::new(config.clone()));
-        register_seeded_pool(&pool, "mock", config, vec![mock_client("c1"), mock_client("c2")]);
+        register_seeded_pool(
+            &pool,
+            "mock",
+            config,
+            vec![mock_client("c1"), mock_client("c2")],
+        );
 
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         let pool_bg = Arc::clone(&pool);
@@ -1592,7 +1600,10 @@ mod tests {
         );
         drop(g1);
         drop(g2);
-        let third_result = rx.await.expect("channel").expect("third completes after release");
+        let third_result = rx
+            .await
+            .expect("channel")
+            .expect("third completes after release");
         drop(third_result);
     }
 
@@ -1639,8 +1650,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_acquire_removes_stale_before_creating_client() {
-        let config = PoolConfig::default()
-            .with_idle_timeout(Duration::from_millis(5));
+        let config = PoolConfig::default().with_idle_timeout(Duration::from_millis(5));
         let sub = provider_pool(config);
         {
             let mut guard = sub.clients.lock();
@@ -1672,7 +1682,10 @@ mod tests {
             pool2.get("mock").await
         });
         drop(g1);
-        let g2 = j.await.expect("join").expect("second acquire after release");
+        let g2 = j
+            .await
+            .expect("join")
+            .expect("second acquire after release");
         assert_eq!(g2.model_name(), "race");
     }
 
@@ -1712,9 +1725,6 @@ mod tests {
         assert_eq!(stats.in_use, 0);
         assert_eq!(stats.total, 1);
     }
-
-
-
 
     #[test]
     fn test_pool_stats_default_aggregate_fields() {
@@ -1795,4 +1805,3 @@ mod tests {
         assert!(matches!(result.unwrap_err(), AppError::LLM(_)));
     }
 }
-

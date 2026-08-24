@@ -7,7 +7,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check for proprietary leaks
         run: |
-          if grep -rn "kasino\|ehb\|ehealth\|dinkedin\|dsprint\|dirmacs-service-key\|bom@dirmacs\|eruka-context\.toml" src/ migrations/ 2>/dev/null; then
+          if grep -rn "kasino\|ehb\|ehealth\|dinkedin\|dsprint\|dirmacs-service-key\|bom@dirmacs\|eruka-context\.toml" src/ crates/ares-store/migrations/ 2>/dev/null; then
             echo "::error::Proprietary content detected in open-source repo"
             exit 1
           fi

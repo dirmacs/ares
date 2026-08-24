@@ -9,7 +9,6 @@ ARG EXTRA_CARGO_ARGS="--no-default-features"
 
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY crates/ ./crates/
-COPY migrations/ ./migrations/
 COPY src/ ./src/
 COPY vendor/ ./vendor/
 COPY ares.example.toml ./ares.example.toml

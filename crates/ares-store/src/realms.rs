@@ -50,7 +50,9 @@ impl TenantRealms {
     pub async fn dispose(&self, tenant_id: &str) {
         let child = self.realms.write().remove(tenant_id);
         if let Some(child) = child {
-            child.fiber().dispose().await;
+            if let Err(error) = child.fiber().dispose().await {
+                tracing::error!(tenant_id, %error, "TenantRealms: fiber stuck in transition during dispose");
+            }
         }
     }
 }

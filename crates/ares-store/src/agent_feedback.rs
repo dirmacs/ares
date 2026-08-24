@@ -348,7 +348,10 @@ mod tests {
             "created_at": 1_700_000_200
         });
         let feedback: AgentRunFeedback = serde_json::from_value(json).unwrap();
-        assert!(feedback.flags.is_empty(), "missing flags should default to empty vec");
+        assert!(
+            feedback.flags.is_empty(),
+            "missing flags should default to empty vec"
+        );
     }
 
     #[test]
@@ -613,7 +616,8 @@ mod tests {
 
     #[test]
     fn summary_query_counts_feedback_types_and_average_score() {
-        const SUMMARY_SQL: &str = "COUNT(*) FILTER (WHERE feedback_type = 'positive')::BIGINT AS positive_count,
+        const SUMMARY_SQL: &str =
+            "COUNT(*) FILTER (WHERE feedback_type = 'positive')::BIGINT AS positive_count,
             COUNT(*) FILTER (WHERE feedback_type = 'negative')::BIGINT AS negative_count,
             AVG(score)::DOUBLE PRECISION AS average_score";
         assert!(SUMMARY_SQL.contains("feedback_type = 'positive'"));

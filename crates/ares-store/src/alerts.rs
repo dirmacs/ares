@@ -1,6 +1,6 @@
 use crate::query_builders::{
-    build_list_alerts_sql, list_alerts_select_sql, ACTIVE_ALERT_COUNT_SQL,
-    CREATE_ALERT_SQL, RESOLVE_ALERT_SQL,
+    build_list_alerts_sql, list_alerts_select_sql, ACTIVE_ALERT_COUNT_SQL, CREATE_ALERT_SQL,
+    RESOLVE_ALERT_SQL,
 };
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
@@ -38,15 +38,15 @@ pub async fn create_alert(
     let now = now_ts();
 
     sqlx::query(CREATE_ALERT_SQL)
-    .bind(&id)
-    .bind(severity)
-    .bind(source)
-    .bind(title)
-    .bind(message)
-    .bind(now)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+        .bind(&id)
+        .bind(severity)
+        .bind(source)
+        .bind(title)
+        .bind(message)
+        .bind(now)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(Alert {
         id,
@@ -72,31 +72,31 @@ pub async fn list_alerts(
     let rows = match (severity_filter, resolved_filter) {
         (Some(sev), Some(res)) => {
             sqlx::query(list_alerts_select_sql(Some(sev), Some(res)))
-            .bind(sev)
-            .bind(res)
-            .bind(limit)
-            .fetch_all(pool)
-            .await
+                .bind(sev)
+                .bind(res)
+                .bind(limit)
+                .fetch_all(pool)
+                .await
         }
         (Some(sev), None) => {
             sqlx::query(list_alerts_select_sql(Some(sev), None))
-            .bind(sev)
-            .bind(limit)
-            .fetch_all(pool)
-            .await
+                .bind(sev)
+                .bind(limit)
+                .fetch_all(pool)
+                .await
         }
         (None, Some(res)) => {
             sqlx::query(list_alerts_select_sql(None, Some(res)))
-            .bind(res)
-            .bind(limit)
-            .fetch_all(pool)
-            .await
+                .bind(res)
+                .bind(limit)
+                .fetch_all(pool)
+                .await
         }
         (None, None) => {
             sqlx::query(list_alerts_select_sql(None, None))
-            .bind(limit)
-            .fetch_all(pool)
-            .await
+                .bind(limit)
+                .fetch_all(pool)
+                .await
         }
     }
     .map_err(|e| AppError::Database(e.to_string()))?;
@@ -122,12 +122,12 @@ pub async fn resolve_alert(pool: &PgPool, alert_id: &str, resolved_by: Option<&s
     let now = now_ts();
 
     let result = sqlx::query(RESOLVE_ALERT_SQL)
-    .bind(now)
-    .bind(resolved_by)
-    .bind(alert_id)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+        .bind(now)
+        .bind(resolved_by)
+        .bind(alert_id)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound(
@@ -147,12 +147,10 @@ pub async fn get_active_alert_count(pool: &PgPool) -> Result<i64> {
     Ok(row.get("cnt"))
 }
 
-
 #[cfg(test)]
 mod alert_tests {
     use super::*;
     use crate::query_builders::{build_list_alerts_sql, list_alerts_select_sql};
-
 
     use sqlx::postgres::PgPoolOptions;
     use sqlx::PgPool;
@@ -197,9 +195,7 @@ mod alert_tests {
     #[tokio::test]
     async fn create_alert_maps_execute_error_to_database() {
         let pool = unreachable_postgres_pool();
-        assert_database_error(
-            create_alert(&pool, "critical", "health", "disk", "full").await,
-        );
+        assert_database_error(create_alert(&pool, "critical", "health", "disk", "full").await);
     }
 
     #[tokio::test]
@@ -275,7 +271,10 @@ mod alert_tests {
         let ts = now_ts();
         // Must be after 2020-01-01 (1_577_836_800) and not wildly in the future.
         assert!(ts > 1_577_836_800, "timestamp {ts} predates 2020");
-        assert!(ts < 4_000_000_000, "timestamp {ts} is unreasonably far in future");
+        assert!(
+            ts < 4_000_000_000,
+            "timestamp {ts} is unreasonably far in future"
+        );
     }
 
     // ---- Alert serde: roundtrip -----------------------------------------
@@ -311,8 +310,17 @@ mod alert_tests {
         let alert = resolved_alert();
         let json = serde_json::to_value(&alert).unwrap();
         // Every struct field must appear as a JSON key.
-        for key in &["id", "severity", "source", "title", "message",
-                      "resolved", "created_at", "resolved_at", "resolved_by"] {
+        for key in &[
+            "id",
+            "severity",
+            "source",
+            "title",
+            "message",
+            "resolved",
+            "created_at",
+            "resolved_at",
+            "resolved_by",
+        ] {
             assert!(json.get(key).is_some(), "missing key: {key}");
         }
     }
@@ -400,8 +408,17 @@ mod alert_tests {
     #[test]
     fn build_sql_selects_all_alert_columns() {
         let sql = build_list_alerts_sql(None, None, 1);
-        for col in &["id", "severity", "source", "title", "message",
-                      "resolved", "created_at", "resolved_at", "resolved_by"] {
+        for col in &[
+            "id",
+            "severity",
+            "source",
+            "title",
+            "message",
+            "resolved",
+            "created_at",
+            "resolved_at",
+            "resolved_by",
+        ] {
             assert!(sql.contains(col), "missing column: {col}");
         }
     }
@@ -442,8 +459,12 @@ mod alert_tests {
 
     #[test]
     fn select_sql_always_starts_with_select() {
-        for (sev, res) in [(Some("x"), Some(true)), (Some("x"), None),
-                           (None, Some(true)), (None, None)] {
+        for (sev, res) in [
+            (Some("x"), Some(true)),
+            (Some("x"), None),
+            (None, Some(true)),
+            (None, None),
+        ] {
             let sql = list_alerts_select_sql(sev, res);
             assert!(sql.starts_with("SELECT"), "should start with SELECT: {sql}");
         }
@@ -451,10 +472,17 @@ mod alert_tests {
 
     #[test]
     fn select_sql_always_orders_by_created_at_desc() {
-        for (sev, res) in [(Some("x"), Some(true)), (Some("x"), None),
-                           (None, Some(true)), (None, None)] {
+        for (sev, res) in [
+            (Some("x"), Some(true)),
+            (Some("x"), None),
+            (None, Some(true)),
+            (None, None),
+        ] {
             let sql = list_alerts_select_sql(sev, res);
-            assert!(sql.contains("ORDER BY created_at DESC"), "missing ORDER BY: {sql}");
+            assert!(
+                sql.contains("ORDER BY created_at DESC"),
+                "missing ORDER BY: {sql}"
+            );
         }
     }
 }

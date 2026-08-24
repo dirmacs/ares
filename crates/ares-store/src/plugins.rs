@@ -64,7 +64,7 @@ fn factory_store(
     let pg = ctx
         .get::<crate::TenantDb>()
         .ok_or_else(|| CordisError::Configuration("TenantDb missing after Store factory".into()))?;
-    block_on_async(sqlx::migrate!("../../migrations").run(pg.pool())).map_err(|e| {
+    block_on_async(crate::MIGRATOR.run(pg.pool())).map_err(|e| {
         CordisError::Configuration(format!("Failed to run database migrations: {e}"))
     })?;
     tracing::info!("Database migrations applied");

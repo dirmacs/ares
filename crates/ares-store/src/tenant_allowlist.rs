@@ -342,10 +342,7 @@ mod tests {
         let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
             .await
             .ok()?;
-        sqlx::migrate!("../../migrations")
-            .run(&db.pool)
-            .await
-            .ok()?;
+        crate::MIGRATOR.run(&db.pool).await.ok()?;
         Some(db.pool)
     }
 

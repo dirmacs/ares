@@ -1,7 +1,6 @@
 use crate::query_builders::{
     message_role_from_db, message_role_to_db, DELETE_SESSION_BY_ID_SQL,
-    DELETE_SESSION_BY_TOKEN_SQL, INSERT_MESSAGE_SQL, SELECT_MESSAGES_SQL,
-    VALIDATE_SESSION_SQL,
+    DELETE_SESSION_BY_TOKEN_SQL, INSERT_MESSAGE_SQL, SELECT_MESSAGES_SQL, VALIDATE_SESSION_SQL,
 };
 use ares_types::types::{AppError, MemoryFact, Message, MessageRole, Preference, Result};
 use chrono::{DateTime, Utc};
@@ -84,9 +83,7 @@ pub fn parse_postgres_url(url: &str) -> std::result::Result<PostgresUrlParts, St
 
     let (host, port) = match host_port.rsplit_once(':') {
         Some((h, p)) if !h.is_empty() && !h.contains('/') => {
-            let port = p
-                .parse::<u16>()
-                .map_err(|_| format!("invalid port: {p}"))?;
+            let port = p.parse::<u16>().map_err(|_| format!("invalid port: {p}"))?;
             (h.to_string(), Some(port))
         }
         _ => (host_port.to_string(), None),
@@ -249,11 +246,11 @@ impl PostgresClient {
     pub async fn validate_session(&self, token_hash: &str) -> Result<Option<String>> {
         let now = Utc::now().timestamp();
         let row: Option<(String,)> = sqlx::query_as(VALIDATE_SESSION_SQL)
-        .bind(token_hash)
-        .bind(now)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| AppError::Database(format!("Failed to validate session: {}", e)))?;
+            .bind(token_hash)
+            .bind(now)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to validate session: {}", e)))?;
         Ok(row.map(|(id,)| id))
     }
 
@@ -319,7 +316,13 @@ impl PostgresClient {
         let now = Utc::now().timestamp();
         let role_str = message_role_to_db(&role);
         sqlx::query(INSERT_MESSAGE_SQL)
-            .bind(id).bind(conversation_id).bind(role_str).bind(content).bind(now).execute(&self.pool).await
+            .bind(id)
+            .bind(conversation_id)
+            .bind(role_str)
+            .bind(content)
+            .bind(now)
+            .execute(&self.pool)
+            .await
             .map_err(|e| AppError::Database(format!("Failed to add message: {}", e)))?;
         Ok(())
     }
@@ -332,7 +335,10 @@ impl PostgresClient {
             timestamp: i64,
         }
         let rows = sqlx::query_as::<_, MessageRow>(SELECT_MESSAGES_SQL)
-            .bind(conversation_id).fetch_all(&self.pool).await.map_err(|e| AppError::Database(e.to_string()))?;
+            .bind(conversation_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(rows
             .into_iter()
             .map(|row| Message {
@@ -432,11 +438,15 @@ impl PostgresClient {
 }
 
 impl cordis::Service for PostgresClient {
-    fn name(&self) -> &'static str { "postgres_client" }
+    fn name(&self) -> &'static str {
+        "postgres_client"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -576,8 +586,7 @@ mod tests {
 
     #[test]
     fn parse_postgres_url_strips_query_params() {
-        let parts =
-            parse_postgres_url("postgres://localhost/ares?sslmode=require").expect("parse");
+        let parts = parse_postgres_url("postgres://localhost/ares?sslmode=require").expect("parse");
         assert_eq!(parts.database, "ares");
     }
 
@@ -690,10 +699,7 @@ mod tests {
 
     #[test]
     fn message_role_from_db_defaults_unknown_to_user() {
-        assert!(matches!(
-            message_role_from_db("human"),
-            MessageRole::User
-        ));
+        assert!(matches!(message_role_from_db("human"), MessageRole::User));
     }
 
     // ── Serde: PostgresConfig ──────────────────────────────────────────
@@ -750,12 +756,7 @@ mod tests {
 
     #[test]
     fn user_agent_extra_config_round_trip_on_agent() {
-        let mut agent = UserAgent::new(
-            "id".into(),
-            "uid".into(),
-            "bot".into(),
-            "gpt".into(),
-        );
+        let mut agent = UserAgent::new("id".into(), "uid".into(), "bot".into(), "gpt".into());
         let config = UserAgentExtraConfig {
             parallel_tools: true,
             max_tool_iterations: 7,
@@ -771,24 +772,14 @@ mod tests {
 
     #[test]
     fn user_agent_tools_round_trip() {
-        let mut agent = UserAgent::new(
-            "id".into(),
-            "uid".into(),
-            "bot".into(),
-            "gpt".into(),
-        );
+        let mut agent = UserAgent::new("id".into(), "uid".into(), "bot".into(), "gpt".into());
         agent.set_tools(vec!["search".into(), "calc".into()]);
         assert_eq!(agent.tools_vec(), vec!["search", "calc"]);
     }
 
     #[test]
     fn user_agent_average_rating_computed() {
-        let mut agent = UserAgent::new(
-            "id".into(),
-            "uid".into(),
-            "bot".into(),
-            "gpt".into(),
-        );
+        let mut agent = UserAgent::new("id".into(), "uid".into(), "bot".into(), "gpt".into());
         assert_eq!(agent.average_rating(), None);
         agent.rating_sum = 9;
         agent.rating_count = 2;
@@ -942,8 +933,10 @@ mod tests {
         }
 
         async fn try_test_pool() -> Option<PgPool> {
-            let client = PostgresClient::new_remote(test_db_url(), String::new()).await.ok()?;
-            sqlx::migrate!("../../migrations").run(&client.pool).await.ok()?;
+            let client = PostgresClient::new_remote(test_db_url(), String::new())
+                .await
+                .ok()?;
+            crate::MIGRATOR.run(&client.pool).await.ok()?;
             Some(client.pool)
         }
 
@@ -953,7 +946,10 @@ mod tests {
 
         #[tokio::test]
         async fn integration_new_remote_connects_with_valid_url() {
-            let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+            let Some(pool) = try_test_pool().await else {
+                eprintln!("SKIP: no postgres");
+                return;
+            };
             let row: (i32,) = sqlx::query_as("SELECT 1")
                 .fetch_one(&pool)
                 .await
@@ -1001,79 +997,151 @@ mod tests {
 
         #[tokio::test]
         async fn integration_user_crud() {
-            let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+            let Some(pool) = try_test_pool().await else {
+                eprintln!("SKIP: no postgres");
+                return;
+            };
             let client = PostgresClient { pool };
             let id = unique("user");
             let email = format!("{}@test.com", unique("email"));
 
-            client.create_user(&id, &email, "hash", "Test User").await.expect("create user");
+            client
+                .create_user(&id, &email, "hash", "Test User")
+                .await
+                .expect("create user");
 
-            let by_email = client.get_user_by_email(&email).await.expect("get by email").expect("user");
+            let by_email = client
+                .get_user_by_email(&email)
+                .await
+                .expect("get by email")
+                .expect("user");
             assert_eq!(by_email.id, id);
             assert_eq!(by_email.email, email);
             assert_eq!(by_email.name, "Test User");
 
-            let by_id = client.get_user_by_id(&id).await.expect("get by id").expect("user");
+            let by_id = client
+                .get_user_by_id(&id)
+                .await
+                .expect("get by id")
+                .expect("user");
             assert_eq!(by_id.email, email);
 
-            assert!(client.get_user_by_email("nonexistent@test.com").await.expect("query").is_none());
-            assert!(client.get_user_by_id("nonexistent-id").await.expect("query").is_none());
+            assert!(client
+                .get_user_by_email("nonexistent@test.com")
+                .await
+                .expect("query")
+                .is_none());
+            assert!(client
+                .get_user_by_id("nonexistent-id")
+                .await
+                .expect("query")
+                .is_none());
         }
 
         #[tokio::test]
         async fn integration_session_lifecycle() {
-            let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+            let Some(pool) = try_test_pool().await else {
+                eprintln!("SKIP: no postgres");
+                return;
+            };
             let client = PostgresClient { pool };
             let user_id = unique("session-user");
             let email = format!("{}@test.com", unique("session-email"));
-            client.create_user(&user_id, &email, "hash", "Session User").await.expect("create user");
+            client
+                .create_user(&user_id, &email, "hash", "Session User")
+                .await
+                .expect("create user");
 
             let session_id = unique("session");
             let token_hash = unique("token");
             let expires = Utc::now().timestamp() + 3600;
 
-            client.create_session(&session_id, &user_id, &token_hash, expires).await.expect("create session");
-            let validated = client.validate_session(&token_hash).await.expect("validate");
+            client
+                .create_session(&session_id, &user_id, &token_hash, expires)
+                .await
+                .expect("create session");
+            let validated = client
+                .validate_session(&token_hash)
+                .await
+                .expect("validate");
             assert_eq!(validated, Some(user_id.clone()));
 
-            client.delete_session(&session_id).await.expect("delete session");
-            assert!(client.validate_session(&token_hash).await.expect("validate after delete").is_none());
+            client
+                .delete_session(&session_id)
+                .await
+                .expect("delete session");
+            assert!(client
+                .validate_session(&token_hash)
+                .await
+                .expect("validate after delete")
+                .is_none());
 
             // Delete by token hash
             let session_id2 = unique("session2");
             let token_hash2 = unique("token2");
-            client.create_session(&session_id2, &user_id, &token_hash2, expires).await.expect("create session 2");
-            assert_eq!(client.validate_session(&token_hash2).await.expect("validate 2"), Some(user_id));
+            client
+                .create_session(&session_id2, &user_id, &token_hash2, expires)
+                .await
+                .expect("create session 2");
+            assert_eq!(
+                client
+                    .validate_session(&token_hash2)
+                    .await
+                    .expect("validate 2"),
+                Some(user_id)
+            );
 
-            client.delete_session_by_token_hash(&token_hash2).await.expect("delete by token");
-            assert!(client.validate_session(&token_hash2).await.expect("validate after token delete").is_none());
+            client
+                .delete_session_by_token_hash(&token_hash2)
+                .await
+                .expect("delete by token");
+            assert!(client
+                .validate_session(&token_hash2)
+                .await
+                .expect("validate after token delete")
+                .is_none());
         }
 
         #[tokio::test]
         async fn integration_conversation_and_messages() {
-            let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+            let Some(pool) = try_test_pool().await else {
+                eprintln!("SKIP: no postgres");
+                return;
+            };
             let client = PostgresClient { pool };
             let user_id = unique("conv-user");
             let email = format!("{}@test.com", unique("conv-email"));
-            client.create_user(&user_id, &email, "hash", "Conv User").await.expect("create user");
+            client
+                .create_user(&user_id, &email, "hash", "Conv User")
+                .await
+                .expect("create user");
 
             let conv_id = unique("conv");
-            client.create_conversation(&conv_id, &user_id, Some("My Chat"))
+            client
+                .create_conversation(&conv_id, &user_id, Some("My Chat"))
                 .await
                 .expect("create conversation");
             assert!(client.conversation_exists(&conv_id).await.expect("exists"));
-            assert!(!client.conversation_exists(&unique("no-such")).await.expect("not exists"));
+            assert!(!client
+                .conversation_exists(&unique("no-such"))
+                .await
+                .expect("not exists"));
 
             let msg_id1 = unique("msg");
             let msg_id2 = unique("msg");
-            client.add_message(&msg_id1, &conv_id, MessageRole::User, "Hello")
+            client
+                .add_message(&msg_id1, &conv_id, MessageRole::User, "Hello")
                 .await
                 .expect("add msg1");
-            client.add_message(&msg_id2, &conv_id, MessageRole::Assistant, "Hi there")
+            client
+                .add_message(&msg_id2, &conv_id, MessageRole::Assistant, "Hi there")
                 .await
                 .expect("add msg2");
 
-            let history = client.get_conversation_history(&conv_id).await.expect("history");
+            let history = client
+                .get_conversation_history(&conv_id)
+                .await
+                .expect("history");
             assert_eq!(history.len(), 2);
             assert!(matches!(history[0].role, MessageRole::User));
             assert_eq!(history[0].content, "Hello");
@@ -1083,7 +1151,10 @@ mod tests {
 
         #[tokio::test]
         async fn integration_memory_facts_roundtrip() {
-            let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+            let Some(pool) = try_test_pool().await else {
+                eprintln!("SKIP: no postgres");
+                return;
+            };
             let client = PostgresClient { pool };
             let fact = MemoryFact {
                 id: unique("fact"),
@@ -1096,7 +1167,10 @@ mod tests {
                 updated_at: Utc::now(),
             };
             client.store_memory_fact(&fact).await.expect("store fact");
-            let facts = client.get_user_memory(&fact.user_id).await.expect("get memory");
+            let facts = client
+                .get_user_memory(&fact.user_id)
+                .await
+                .expect("get memory");
             assert_eq!(facts.len(), 1);
             assert_eq!(facts[0].id, fact.id);
             assert_eq!(facts[0].fact_value, "Rust");
@@ -1104,7 +1178,10 @@ mod tests {
 
         #[tokio::test]
         async fn integration_preferences_roundtrip() {
-            let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+            let Some(pool) = try_test_pool().await else {
+                eprintln!("SKIP: no postgres");
+                return;
+            };
             let client = PostgresClient { pool };
             let user_id = unique("pref-user");
             let pref = Preference {
@@ -1113,8 +1190,14 @@ mod tests {
                 value: "dark".into(),
                 confidence: 1.0,
             };
-            client.store_preference(&user_id, &pref).await.expect("store pref");
-            let prefs = client.get_user_preferences(&user_id).await.expect("get prefs");
+            client
+                .store_preference(&user_id, &pref)
+                .await
+                .expect("store pref");
+            let prefs = client
+                .get_user_preferences(&user_id)
+                .await
+                .expect("get prefs");
             assert_eq!(prefs.len(), 1);
             assert_eq!(prefs[0].category, "ui");
             assert_eq!(prefs[0].value, "dark");
@@ -1122,7 +1205,10 @@ mod tests {
 
         #[tokio::test]
         async fn integration_transaction_rollback() {
-            let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+            let Some(pool) = try_test_pool().await else {
+                eprintln!("SKIP: no postgres");
+                return;
+            };
             let mut tx = pool.begin().await.expect("begin transaction");
             let id = unique("tx-user");
             sqlx::query("INSERT INTO users (id, email, password_hash, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)")
@@ -1146,7 +1232,10 @@ mod tests {
 
         #[tokio::test]
         async fn integration_transaction_commit() {
-            let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+            let Some(pool) = try_test_pool().await else {
+                eprintln!("SKIP: no postgres");
+                return;
+            };
             let mut tx = pool.begin().await.expect("begin transaction");
             let id = unique("tx-user");
             sqlx::query("INSERT INTO users (id, email, password_hash, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)")

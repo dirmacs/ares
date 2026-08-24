@@ -83,9 +83,12 @@ pub fn validate_qdrant_url(url: &str) -> Result<()> {
     Ok(())
 }
 
-
 /// Builds a Qdrant connection URL from scheme, host, and port.
-pub fn build_qdrant_url(scheme: &str, host: &str, port: u16) -> std::result::Result<String, String> {
+pub fn build_qdrant_url(
+    scheme: &str,
+    host: &str,
+    port: u16,
+) -> std::result::Result<String, String> {
     let scheme = scheme.trim().to_ascii_lowercase();
     if scheme != "http" && scheme != "https" {
         return Err(format!(
@@ -126,7 +129,9 @@ pub fn validate_collection_name(name: &str) -> std::result::Result<(), String> {
         return Err("collection name must start with a letter or underscore".to_string());
     }
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err("collection name may only contain ASCII letters, digits, and underscores".to_string());
+        return Err(
+            "collection name may only contain ASCII letters, digits, and underscores".to_string(),
+        );
     }
     Ok(())
 }
@@ -205,6 +210,8 @@ pub fn describe_search_request(
 }
 
 #[cfg(feature = "qdrant")]
+use super::vectorstore::{CollectionInfo, CollectionStats, VectorStore};
+#[cfg(feature = "qdrant")]
 use ares_types::types::SearchResult;
 #[cfg(feature = "qdrant")]
 use async_trait::async_trait;
@@ -217,8 +224,6 @@ use qdrant_client::{
     },
     Qdrant,
 };
-#[cfg(feature = "qdrant")]
-use super::vectorstore::{CollectionInfo, CollectionStats, VectorStore};
 
 /// Qdrant vector store implementation.
 ///
@@ -703,9 +708,9 @@ impl VectorStore for QdrantVectorStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_types::types::DocumentMetadata;
     #[cfg(feature = "qdrant")]
     use ares_types::types::AppError;
+    use ares_types::types::DocumentMetadata;
     use chrono::Utc;
 
     fn sample_document(id: &str) -> Document {
@@ -724,7 +729,6 @@ mod tests {
 
     // ── Connection logic ─────────────────────────────────────────────────
 
-
     #[test]
     fn build_qdrant_url_localhost_http_default_port() {
         let url = build_qdrant_localhost_url(6334).expect("url");
@@ -742,8 +746,8 @@ mod tests {
 
     #[test]
     fn build_qdrant_url_cloud_https_with_custom_port() {
-        let url = build_qdrant_cloud_url("abc123.us-east-1.aws.cloud.qdrant.io", 6334)
-            .expect("url");
+        let url =
+            build_qdrant_cloud_url("abc123.us-east-1.aws.cloud.qdrant.io", 6334).expect("url");
         assert_eq!(url, "https://abc123.us-east-1.aws.cloud.qdrant.io:6334");
         assert!(validate_qdrant_url(&url).is_ok());
     }
@@ -865,9 +869,21 @@ mod tests {
     fn build_document_payload_fields_includes_metadata() {
         let doc = sample_document("doc1");
         let payload = build_document_payload_fields(&doc);
-        assert_eq!(payload.get("content").and_then(|v| v.as_str()), Some("content for doc1"));
-        assert_eq!(payload.get("title").and_then(|v| v.as_str()), Some("Title doc1"));
-        assert_eq!(payload.get("tags").and_then(|v| v.as_array()).map(|a| a.len()), Some(2));
+        assert_eq!(
+            payload.get("content").and_then(|v| v.as_str()),
+            Some("content for doc1")
+        );
+        assert_eq!(
+            payload.get("title").and_then(|v| v.as_str()),
+            Some("Title doc1")
+        );
+        assert_eq!(
+            payload
+                .get("tags")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(2)
+        );
     }
 
     #[test]

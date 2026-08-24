@@ -85,7 +85,10 @@ pub fn validate_index_name(name: &str) -> std::result::Result<(), String> {
     {
         return Err("index name must start with a letter or underscore".to_string());
     }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(
             "index name may only contain ASCII letters, digits, underscores, and hyphens"
                 .to_string(),
@@ -95,13 +98,18 @@ pub fn validate_index_name(name: &str) -> std::result::Result<(), String> {
 }
 
 /// Builds a Pinecone index host URL from environment and index name.
-pub fn build_index_host(environment: &str, index_name: &str) -> std::result::Result<String, String> {
+pub fn build_index_host(
+    environment: &str,
+    index_name: &str,
+) -> std::result::Result<String, String> {
     validate_index_name(index_name)?;
     let environment = environment.trim();
     if environment.is_empty() {
         return Err("pinecone environment must not be empty".to_string());
     }
-    Ok(format!("https://{index_name}-{environment}.svc.pinecone.io"))
+    Ok(format!(
+        "https://{index_name}-{environment}.svc.pinecone.io"
+    ))
 }
 
 /// Validates Pinecone connection settings before client construction.
@@ -206,10 +214,7 @@ mod tests {
     #[test]
     fn build_index_host_formats_expected_url() {
         let host = build_index_host("us-east-1-aws", "documents").expect("host");
-        assert_eq!(
-            host,
-            "https://documents-us-east-1-aws.svc.pinecone.io"
-        );
+        assert_eq!(host, "https://documents-us-east-1-aws.svc.pinecone.io");
     }
 
     #[test]
@@ -255,8 +260,7 @@ mod tests {
 
     #[test]
     fn build_index_host_trims_environment() {
-        let host = build_index_host("  us-east-1-aws  ", "test")
-            .expect("host");
+        let host = build_index_host("  us-east-1-aws  ", "test").expect("host");
         assert_eq!(host, "https://test-us-east-1-aws.svc.pinecone.io");
     }
 

@@ -1,6 +1,6 @@
-use ares_types::types::{AppError, MemoryFact, Message, MessageRole, Preference, Result};
 use super::postgres::{Conversation, User, UserAgent};
 use super::traits::{ConversationSummary, DatabaseClient};
+use ares_types::types::{AppError, MemoryFact, Message, MessageRole, Preference, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use libsql::{params, Builder, Connection, Database};
@@ -1161,7 +1161,11 @@ impl TursoClient {
             .await
             .map_err(|e| AppError::Database(format!("Failed to query user: {}", e)))?;
 
-        if let Some(row) = rows.next().await.map_err(|e| AppError::Database(e.to_string()))? {
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             Ok(Some(User {
                 id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
                 email: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
@@ -1186,7 +1190,11 @@ impl TursoClient {
             .await
             .map_err(|e| AppError::Database(format!("Failed to validate session: {}", e)))?;
 
-        if let Some(row) = rows.next().await.map_err(|e| AppError::Database(e.to_string()))? {
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             let user_id: String = row.get(0).map_err(|e| AppError::Database(e.to_string()))?;
             Ok(Some(user_id))
         } else {
@@ -1226,7 +1234,9 @@ impl TursoClient {
         key: &str,
     ) -> Result<Option<Preference>> {
         let prefs = self.get_user_preferences(user_id).await?;
-        Ok(prefs.into_iter().find(|p| p.category == category && p.key == key))
+        Ok(prefs
+            .into_iter()
+            .find(|p| p.category == category && p.key == key))
     }
 }
 
@@ -1234,7 +1244,13 @@ impl TursoClient {
 
 #[async_trait]
 impl DatabaseClient for TursoClient {
-    async fn create_user(&self, id: &str, email: &str, password_hash: &str, name: &str) -> Result<()> {
+    async fn create_user(
+        &self,
+        id: &str,
+        email: &str,
+        password_hash: &str,
+        name: &str,
+    ) -> Result<()> {
         TursoClient::create_user(self, id, email, password_hash, name).await
     }
     async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
@@ -1243,7 +1259,13 @@ impl DatabaseClient for TursoClient {
     async fn get_user_by_id(&self, id: &str) -> Result<Option<User>> {
         TursoClient::get_user_by_id(self, id).await
     }
-    async fn create_session(&self, id: &str, user_id: &str, token_hash: &str, expires_at: i64) -> Result<()> {
+    async fn create_session(
+        &self,
+        id: &str,
+        user_id: &str,
+        token_hash: &str,
+        expires_at: i64,
+    ) -> Result<()> {
         TursoClient::create_session(self, id, user_id, token_hash, expires_at).await
     }
     async fn validate_session(&self, token_hash: &str) -> Result<Option<String>> {
@@ -1255,7 +1277,12 @@ impl DatabaseClient for TursoClient {
     async fn delete_session_by_token_hash(&self, token_hash: &str) -> Result<()> {
         TursoClient::delete_session_by_token_hash(self, token_hash).await
     }
-    async fn create_conversation(&self, id: &str, user_id: &str, title: Option<&str>) -> Result<()> {
+    async fn create_conversation(
+        &self,
+        id: &str,
+        user_id: &str,
+        title: Option<&str>,
+    ) -> Result<()> {
         TursoClient::create_conversation(self, id, user_id, title).await
     }
     async fn conversation_exists(&self, conversation_id: &str) -> Result<bool> {
@@ -1263,13 +1290,16 @@ impl DatabaseClient for TursoClient {
     }
     async fn get_user_conversations(&self, user_id: &str) -> Result<Vec<ConversationSummary>> {
         let convos = TursoClient::get_user_conversations(self, user_id).await?;
-        Ok(convos.into_iter().map(|c| ConversationSummary {
-            id: c.id,
-            title: c.title.unwrap_or_default(),
-            created_at: c.created_at,
-            updated_at: c.updated_at,
-            message_count: c.message_count,
-        }).collect())
+        Ok(convos
+            .into_iter()
+            .map(|c| ConversationSummary {
+                id: c.id,
+                title: c.title.unwrap_or_default(),
+                created_at: c.created_at,
+                updated_at: c.updated_at,
+                message_count: c.message_count,
+            })
+            .collect())
     }
     async fn get_conversation(&self, conversation_id: &str) -> Result<Conversation> {
         TursoClient::get_conversation(self, conversation_id).await
@@ -1277,10 +1307,20 @@ impl DatabaseClient for TursoClient {
     async fn delete_conversation(&self, conversation_id: &str) -> Result<()> {
         TursoClient::delete_conversation(self, conversation_id).await
     }
-    async fn update_conversation_title(&self, conversation_id: &str, title: Option<&str>) -> Result<()> {
+    async fn update_conversation_title(
+        &self,
+        conversation_id: &str,
+        title: Option<&str>,
+    ) -> Result<()> {
         TursoClient::update_conversation_title(self, conversation_id, title).await
     }
-    async fn add_message(&self, id: &str, conversation_id: &str, role: MessageRole, content: &str) -> Result<()> {
+    async fn add_message(
+        &self,
+        id: &str,
+        conversation_id: &str,
+        role: MessageRole,
+        content: &str,
+    ) -> Result<()> {
         TursoClient::add_message(self, id, conversation_id, role, content).await
     }
     async fn get_conversation_history(&self, conversation_id: &str) -> Result<Vec<Message>> {
@@ -1292,7 +1332,11 @@ impl DatabaseClient for TursoClient {
     async fn get_user_memory(&self, user_id: &str) -> Result<Vec<MemoryFact>> {
         TursoClient::get_user_memory(self, user_id).await
     }
-    async fn get_memory_by_category(&self, user_id: &str, category: &str) -> Result<Vec<MemoryFact>> {
+    async fn get_memory_by_category(
+        &self,
+        user_id: &str,
+        category: &str,
+    ) -> Result<Vec<MemoryFact>> {
         TursoClient::get_memory_by_category(self, user_id, category).await
     }
     async fn store_preference(&self, user_id: &str, preference: &Preference) -> Result<()> {
@@ -1301,7 +1345,12 @@ impl DatabaseClient for TursoClient {
     async fn get_user_preferences(&self, user_id: &str) -> Result<Vec<Preference>> {
         TursoClient::get_user_preferences(self, user_id).await
     }
-    async fn get_preference(&self, user_id: &str, category: &str, key: &str) -> Result<Option<Preference>> {
+    async fn get_preference(
+        &self,
+        user_id: &str,
+        category: &str,
+        key: &str,
+    ) -> Result<Option<Preference>> {
         TursoClient::get_preference(self, user_id, category, key).await
     }
     async fn get_user_agent_by_name(&self, user_id: &str, name: &str) -> Result<Option<UserAgent>> {
@@ -1406,14 +1455,23 @@ mod tests {
         let client = TursoClient::new_memory().await.expect("in-memory client");
         let conn = client.operation_conn().await.expect("operation conn");
         let mut rows = conn
-            .query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name", ())
+            .query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+                (),
+            )
             .await
             .expect("list tables");
         let mut tables = Vec::new();
         while let Some(row) = rows.next().await.expect("row") {
             tables.push(row.get::<String>(0).expect("name"));
         }
-        for expected in ["users", "sessions", "conversations", "messages", "user_agents"] {
+        for expected in [
+            "users",
+            "sessions",
+            "conversations",
+            "messages",
+            "user_agents",
+        ] {
             assert!(
                 tables.iter().any(|t| t == expected),
                 "missing table {expected}: {tables:?}"
@@ -1442,7 +1500,8 @@ mod tests {
 
     #[tokio::test]
     async fn connection_returns_usable_handle_for_file_db() {
-        let path = std::env::temp_dir().join(format!("ares-turso-conn-{}.db", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("ares-turso-conn-{}.db", uuid::Uuid::new_v4()));
         let client = TursoClient::new_local(path.to_str().unwrap())
             .await
             .expect("local client");
@@ -1570,8 +1629,8 @@ mod tests {
 
     #[test]
     fn agent_execution_error_sets_message_and_status() {
-        let exec = AgentExecution::new("agent".into(), "user".into(), "in".into())
-            .error("boom".into());
+        let exec =
+            AgentExecution::new("agent".into(), "user".into(), "in".into()).error("boom".into());
         assert_eq!(exec.status, "error");
         assert_eq!(exec.error_message.as_deref(), Some("boom"));
     }
@@ -1599,4 +1658,3 @@ mod tests {
         matches::assert_matches!(err, AppError::Database(msg) if msg.contains("UNIQUE"));
     }
 }
-

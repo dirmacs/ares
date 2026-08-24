@@ -6,7 +6,7 @@
 //! The store handles encryption/decryption internally; callers work with
 //! plaintext strings in requests and `EncryptedPayload` structs in responses.
 
-use crate::fleet_secrets::{EncryptedPayload, MasterKey, encrypt_api_key};
+use crate::fleet_secrets::{encrypt_api_key, EncryptedPayload, MasterKey};
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};

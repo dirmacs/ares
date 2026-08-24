@@ -38,7 +38,7 @@ Before you touch gated code, make sure that the relevant Cargo features are enab
 ### Working with the database
 
 - All queries in `crates/ares-store/src/` use raw SQL through `sqlx::query().bind()`. The queries use no ORM and no query macros.
-- New tables need a migration file in `migrations/`. Number the migration files sequentially.
+- New tables need a migration file in `crates/ares-store/migrations/`. Number the migration files sequentially.
 - Aggregate functions such as `SUM()` must cast results to explicit types (`::BIGINT`, `::TEXT`, and more).
 
 ## Key decisions

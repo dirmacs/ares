@@ -238,10 +238,30 @@ impl LogExporter for TracingExporter {
         let model = record.model.as_str();
         let provider = record.provider.as_str();
         let status = record.status.as_str();
+        // Optional fields: `Option<T>` implements `tracing::Value` and emits
+        // nothing when `None`, so absent usage data stays invisible.
+        let cached_tokens = record.cached_tokens;
+        let total_time_ms = record.total_time_ms;
         if status == "success" {
-            tracing::info!(latency_ms, model, provider, status, "LLM call completed");
+            tracing::info!(
+                latency_ms,
+                model,
+                provider,
+                status,
+                cached_tokens,
+                total_time_ms,
+                "LLM call completed"
+            );
         } else {
-            tracing::warn!(latency_ms, model, provider, status, "LLM call failed");
+            tracing::warn!(
+                latency_ms,
+                model,
+                provider,
+                status,
+                cached_tokens,
+                total_time_ms,
+                "LLM call failed"
+            );
         }
     }
 
@@ -251,7 +271,13 @@ impl LogExporter for TracingExporter {
         let tool_name = record.tool_name.as_str();
         let tool_type = record.tool_type.as_str();
         if status == "success" {
-            tracing::info!(latency_ms, status, tool_name, tool_type, "Tool call completed");
+            tracing::info!(
+                latency_ms,
+                status,
+                tool_name,
+                tool_type,
+                "Tool call completed"
+            );
         } else {
             tracing::warn!(latency_ms, status, tool_name, tool_type, "Tool call failed");
         }
@@ -348,7 +374,16 @@ mod tests {
             completion_tokens: 5,
             latency_ms: 42,
             status: String::from("success"),
+            cached_tokens: Some(7),
+            total_time_ms: Some(42),
         }
+    }
+
+    #[test]
+    fn sample_record_carries_optional_usage_fields() {
+        let record = sample_llm();
+        assert_eq!(record.cached_tokens, Some(7));
+        assert_eq!(record.total_time_ms, Some(42));
     }
 
     fn sample_tool() -> ToolCallRecord {
@@ -442,16 +477,10 @@ mod tests {
         let mut router = ExporterRouter::new();
         let shared: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         router
-            .register(Arc::new(MockExporter::ordered(
-                "a",
-                shared.clone(),
-            )))
+            .register(Arc::new(MockExporter::ordered("a", shared.clone())))
             .unwrap();
         router
-            .register(Arc::new(MockExporter::ordered(
-                "b",
-                shared.clone(),
-            )))
+            .register(Arc::new(MockExporter::ordered("b", shared.clone())))
             .unwrap();
 
         router.log_llm(RecordLevel::Info, &sample_llm()).await;

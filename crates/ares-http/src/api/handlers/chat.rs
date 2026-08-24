@@ -1,28 +1,31 @@
-use ares_store::postgres::UserAgent;
-use crate::Result;
 use crate::HttpError;
+use crate::Result;
 use crate::{
     agents::{registry::AgentRegistry, router::RouterAgent},
     auth::middleware::AuthUser,
     db::agent_runs,
     memory::estimate_tokens,
-    types::{AgentContext, AgentType, AppError, ChatRequest, ChatResponse, Claims, MessageRole, UserMemory},
+    types::{
+        AgentContext, AgentType, AppError, ChatRequest, ChatResponse, Claims, MessageRole,
+        UserMemory,
+    },
     utils::toml_config::AgentConfig,
 };
+use ares_store::postgres::UserAgent;
 use axum::{
     extract::{Query, State},
     response::Response,
     Extension, Json,
 };
-use std::sync::Arc;
 use cordis::Context;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Validates chat request payload before routing.
 fn validate_chat_request(payload: &ChatRequest) -> Result<()> {
     if payload.message.trim().is_empty() {
         return Err(HttpError::from(AppError::InvalidInput(
-            "message must not be empty".to_string()
+            "message must not be empty".to_string(),
         )));
     }
     Ok(())
@@ -39,7 +42,7 @@ fn resolve_context_id(context_id: Option<&String>) -> String {
 fn ensure_not_direct_router(agent_type: &AgentType) -> Result<()> {
     if *agent_type == AgentType::Router {
         return Err(HttpError::from(AppError::InvalidInput(
-            "Router agent cannot be called directly".to_string()
+            "Router agent cannot be called directly".to_string(),
         )));
     }
     Ok(())
@@ -64,7 +67,9 @@ pub(crate) fn emergency_stop_message() -> &'static str {
 
 fn ensure_emergency_stop_inactive(stop: &ares_agent::EmergencyStop) -> Result<()> {
     if stop.is_active() {
-        return Err(HttpError::from(AppError::Unavailable(emergency_stop_message().to_string().into())));
+        return Err(HttpError::from(AppError::Unavailable(
+            emergency_stop_message().to_string().into(),
+        )));
     }
     Ok(())
 }
@@ -226,24 +231,45 @@ pub async fn chat(
     };
     ares_agent::admit(&ctx).await?;
     validate_chat_request(&payload)?;
-    ensure_emergency_stop_inactive(&ctx.get::<ares_agent::EmergencyStop>().expect("not provided"))?;
+    ensure_emergency_stop_inactive(
+        &ctx.get::<ares_agent::EmergencyStop>()
+            .expect("not provided"),
+    )?;
 
     // Get or create conversation
     let context_id = resolve_context_id(payload.context_id.as_ref());
 
     // Check if conversation exists, create if not
-    if !ctx.get::<ares_store::PostgresClient>().expect("not provided").conversation_exists(&context_id).await? {
-        ctx.get::<ares_store::PostgresClient>().expect("not provided")
+    if !ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .conversation_exists(&context_id)
+        .await?
+    {
+        ctx.get::<ares_store::PostgresClient>()
+            .expect("not provided")
             .create_conversation(&context_id, &claims.sub, None)
             .await?;
     }
-    let history = ctx.get::<ares_store::PostgresClient>().expect("not provided").get_conversation_history(&context_id).await?;
+    let history = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_conversation_history(&context_id)
+        .await?;
     // Compute history token estimate in the same pass (before clone into AgentContext)
     let history_input_tokens: usize = history.iter().map(|m| estimate_tokens(&m.content)).sum();
 
     // Load user memory
-    let memory_facts = ctx.get::<ares_store::PostgresClient>().expect("not provided").get_user_memory(&claims.sub).await?;
-    let preferences = ctx.get::<ares_store::PostgresClient>().expect("not provided").get_user_preferences(&claims.sub).await?;
+    let memory_facts = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_user_memory(&claims.sub)
+        .await?;
+    let preferences = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_user_preferences(&claims.sub)
+        .await?;
     let user_memory = build_user_memory_if_present(&claims.sub, memory_facts, preferences);
 
     // Build agent context
@@ -259,7 +285,10 @@ pub async fn chat(
         at
     } else {
         // Select the configured router model through the request-scoped Llm service.
-        let config = ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
+        let config = ctx
+            .get::<crate::overlay::AresConfigManager>()
+            .expect("not provided")
+            .config();
         let router_model = config
             .get_agent("router")
             .map(|a| a.model.as_str())
@@ -289,12 +318,14 @@ pub async fn chat(
 
     // Store messages in conversation
     let msg_id = Uuid::new_v4().to_string();
-    ctx.get::<ares_store::PostgresClient>().expect("not provided")
+    ctx.get::<ares_store::PostgresClient>()
+        .expect("not provided")
         .add_message(&msg_id, &context_id, MessageRole::User, &payload.message)
         .await?;
 
     let resp_id = Uuid::new_v4().to_string();
-    ctx.get::<ares_store::PostgresClient>().expect("not provided")
+    ctx.get::<ares_store::PostgresClient>()
+        .expect("not provided")
         .add_message(
             &resp_id,
             &context_id,
@@ -313,7 +344,11 @@ pub async fn chat(
 
     // Record agent run (fire-and-forget)
     {
-        let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+        let pool = ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone();
         let agent_name = agent_name_for_run;
         let user_id = claims.sub.clone();
         let tenant_id_for_run = ctx
@@ -379,7 +414,7 @@ async fn execute_agent(
 
     let Some(exec_svc) = ctx.get::<ares_agent::execution::Execute>() else {
         return Err(HttpError::from(AppError::Unavailable(
-            "Execute is not provided on the request context".into()
+            "Execute is not provided on the request context".into(),
         )));
     };
     let req = ares_agent::execution::AgentRequest {
@@ -395,12 +430,21 @@ async fn execute_agent(
     };
     let exec_result = exec_svc.run(&req, &exec_ctx).await?;
     Ok((
-        chat_response_from_agent_output(agent_type, exec_result.source.as_str(), &context.session_id, exec_result.response.content),
-        exec_result.response.usage.map(|u| ares_llm::client::TokenUsage {
-            prompt_tokens: u.prompt_tokens,
-            completion_tokens: u.completion_tokens,
-            total_tokens: u.total_tokens,
-        }),
+        chat_response_from_agent_output(
+            agent_type,
+            exec_result.source.as_str(),
+            &context.session_id,
+            exec_result.response.content,
+        ),
+        exec_result
+            .response
+            .usage
+            .map(|u| ares_llm::client::TokenUsage {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+                cached_tokens: u.cached_tokens,
+            }),
     ))
 }
 
@@ -409,8 +453,16 @@ pub async fn get_user_memory(
     State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<UserMemory>> {
-    let facts = ctx.get::<ares_store::PostgresClient>().expect("not provided").get_user_memory(&claims.sub).await?;
-    let preferences = ctx.get::<ares_store::PostgresClient>().expect("not provided").get_user_preferences(&claims.sub).await?;
+    let facts = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_user_memory(&claims.sub)
+        .await?;
+    let preferences = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_user_preferences(&claims.sub)
+        .await?;
 
     Ok(Json(UserMemory {
         user_id: claims.sub,
@@ -502,7 +554,12 @@ fn chat_stream_response(
     use axum::response::sse::{Event, Sse};
 
     let validation_error = validate_chat_request(&payload)
-        .and_then(|_| ensure_emergency_stop_inactive(&ctx.get::<ares_agent::EmergencyStop>().expect("not provided")))
+        .and_then(|_| {
+            ensure_emergency_stop_inactive(
+                &ctx.get::<ares_agent::EmergencyStop>()
+                    .expect("not provided"),
+            )
+        })
         .err();
 
     // Get or create conversation
@@ -515,7 +572,10 @@ fn chat_stream_response(
     let agent_type_req = payload.agent_type;
     let runtime_workspace_id = payload.workspace_id.clone();
     let context_id_clone = context_id.clone();
-    let active_runs = Arc::clone(&ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided"));
+    let active_runs = Arc::clone(
+        &ctx.get::<crate::active_runs::ActiveRuns>()
+            .expect("not provided"),
+    );
 
     let stream = async_stream::stream! {
         let mut state_clone = state_clone;
@@ -1297,8 +1357,7 @@ mod tests {
             jti: String::new(),
             tenant_id: Some("acme".into()),
         };
-        let scoped =
-            intercept_jwt_tenant(ctx.clone(), &claims, Some(Extension(tc))).await;
+        let scoped = intercept_jwt_tenant(ctx.clone(), &claims, Some(Extension(tc))).await;
         assert_eq!(
             scoped
                 .get::<ares_types::models::TenantContext>()

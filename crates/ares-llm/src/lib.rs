@@ -75,49 +75,54 @@
 pub mod capabilities;
 /// Core LLM client trait and streaming response types.
 pub mod client;
+/// History compaction service: score, audit, critical facts, memory.
+pub mod compact;
 /// Generic tool coordinator for multi-turn tool calling.
 pub mod coordinator;
 /// Exporter-style log routing for LLM and tool call records.
 pub mod exporter;
+/// Unified LLM capability (Cordis Phase 3).
+pub mod llm_service;
 /// Small-call orchestration primitive over a single client.
 pub mod micro;
 /// Observability callbacks for LLM and tool call logging.
 pub mod observability;
+/// Declarative Cordis loader factories for this crate.
+pub mod plugins;
 /// Connection pooling for LLM clients (DIR-44).
 pub mod pool;
 /// Registry for managing multiple LLM provider instances.
 pub mod provider_registry;
-/// Unified LLM capability (Cordis Phase 3).
-pub mod llm_service;
-/// Declarative Cordis loader factories for this crate.
-pub mod plugins;
 
-#[cfg(feature = "openai")]
-pub mod openai;
+#[cfg(feature = "anthropic")]
+pub mod anthropic;
 #[cfg(feature = "azure")]
 pub mod azure;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
 #[cfg(feature = "ollama")]
 pub mod ollama;
-#[cfg(feature = "anthropic")]
-pub mod anthropic;
+#[cfg(feature = "openai")]
+pub mod openai;
 
 pub use capabilities::{
     CapabilityRequirements, CapabilityRequirementsBuilder, ModelCapabilities, ModelWithCapabilities,
 };
-pub use client::{LLMClient, LLMClientFactory, LLMResponse, Provider};
+pub use client::{GenerationHints, LLMClient, LLMClientFactory, LLMResponse, Provider};
+pub use compact::{
+    CompactConfig, CompactEvent, CompactionSnapshot, CompactionState, Compactor, TurnEntry,
+};
 pub use coordinator::{
     ConversationMessage, CoordinatorResult, FinishReason, MessageRole, ToolCallRecord,
     ToolCallingConfig, ToolCoordinator,
 };
 pub use exporter::{ExporterRouter, LogExporter, RecordLevel, TracingExporter};
+pub use llm_service::{Breaker, Llm, ModelOverride, TenantModelPolicy};
+pub use micro::{MicroEngine, MicroOutcome, MicroTask};
 pub use observability::{LlmCallRecord, ObservabilitySink};
+pub use plugins::register_plugins;
 pub use pool::{ClientPool, ClientPoolBuilder, PoolConfig, PoolStats, PooledClientGuard};
 pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
-pub use llm_service::{Breaker, Llm, ModelOverride, TenantModelPolicy};
-pub use plugins::register_plugins;
-pub use micro::{MicroEngine, MicroOutcome, MicroTask};
 
 pub mod config;
 pub mod nvidia_catalog;

@@ -1,6 +1,44 @@
-use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
 use crate::config::{ModelConfig, ProviderConfig};
+use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_trait::async_trait;
+
+/// Optional generation hints set on a client between calls.
+///
+/// Hints are OPT-IN: [`LLMClient::supports_hints`] defaults to `false` and
+/// [`LLMClient::set_hints`] defaults to a no-op, so every existing provider
+/// implementation keeps compiling and behaving exactly as before. A provider
+/// adopts hints by overriding both methods (and honoring the stored hints in
+/// its request building).
+///
+/// # Set-on-client semantics
+///
+/// `generate_with_system`'s signature is fixed and widely called, so hints
+/// ride ON THE CLIENT instead of through per-call parameters: they apply to
+/// all SUBSEQUENT generate calls until replaced by another `set_hints`
+/// (clear with `GenerationHints::default()`).
+///
+/// # Thread safety
+///
+/// Implementations that adopt hints MUST use interior mutability (for
+/// example `std::sync::RwLock<GenerationHints>`) because the trait methods
+/// take `&self`. Readers snapshot the hints at the start of each call.
+///
+/// # Provider mapping guidance
+///
+/// OpenAI-compatible implementations SHOULD map:
+/// - `json_mode` → `response_format: { "type": "json_object" }`
+/// - `suppress_reasoning` → `chat_template_kwargs: { "enable_thinking": false }`
+///   (reasoning-capable OpenAI-compatible servers; ignore where unsupported)
+/// - `max_tokens` → the request's max-output-tokens field
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GenerationHints {
+    /// Ask the provider for a JSON object response.
+    pub json_mode: bool,
+    /// Ask a reasoning-capable model to skip visible reasoning output.
+    pub suppress_reasoning: bool,
+    /// Advisory maximum number of output tokens (`None` = provider default).
+    pub max_tokens: Option<u32>,
+}
 
 /// Generic LLM client trait for provider abstraction
 #[async_trait]
@@ -65,6 +103,20 @@ pub trait LLMClient: Send + Sync {
 
     /// Get the model name/identifier
     fn model_name(&self) -> &str;
+
+    /// Whether this client honors [`GenerationHints`] set via
+    /// [`LLMClient::set_hints`]. Defaults to `false`; hint-aware providers
+    /// override this together with `set_hints`.
+    fn supports_hints(&self) -> bool {
+        false
+    }
+
+    /// Store generation hints applying to SUBSEQUENT generate calls, until
+    /// replaced (clear with `GenerationHints::default()`). Default impl is a
+    /// no-op so unmodified providers keep compiling unchanged. Implementers
+    /// MUST use interior mutability; see [`GenerationHints`] for thread-safety
+    /// expectations and provider mapping guidance.
+    fn set_hints(&self, _hints: GenerationHints) {}
 }
 
 /// Token usage statistics from an LLM generation call
@@ -76,6 +128,11 @@ pub struct TokenUsage {
     pub completion_tokens: u32,
     /// Total tokens used (prompt + completion)
     pub total_tokens: u32,
+    /// Tokens served from the provider-side prompt cache, when the provider
+    /// reports cache hits (`None` when unknown or not reported). Always `0`
+    /// or more; cache hits are a subset of `prompt_tokens`.
+    #[serde(default)]
+    pub cached_tokens: Option<i64>,
 }
 
 impl TokenUsage {
@@ -85,6 +142,7 @@ impl TokenUsage {
             prompt_tokens,
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
+            cached_tokens: None,
         }
     }
 }
@@ -251,13 +309,15 @@ impl Provider {
                 api_base,
                 model,
                 params,
-            } => Ok(Box::new(super::openai::OpenAIClient::with_params_and_headers(
-                api_key.clone(),
-                super::azure::normalize_base_url(api_base),
-                super::azure::strip_model_prefix(model).to_string(),
-                params.clone(),
-                super::azure::foundry_headers(api_key),
-            ))),
+            } => Ok(Box::new(
+                super::openai::OpenAIClient::with_params_and_headers(
+                    api_key.clone(),
+                    super::azure::normalize_base_url(api_base),
+                    super::azure::strip_model_prefix(model).to_string(),
+                    params.clone(),
+                    super::azure::foundry_headers(api_key),
+                ),
+            )),
 
             #[cfg(feature = "openai")]
             Provider::RuntimeOpenAI {
@@ -266,13 +326,15 @@ impl Provider {
                 model,
                 params,
                 headers,
-            } => Ok(Box::new(super::openai::OpenAIClient::with_params_and_headers(
-                api_key.clone(),
-                api_base.clone(),
-                model.clone(),
-                params.clone(),
-                headers.clone(),
-            ))),
+            } => Ok(Box::new(
+                super::openai::OpenAIClient::with_params_and_headers(
+                    api_key.clone(),
+                    api_base.clone(),
+                    model.clone(),
+                    params.clone(),
+                    headers.clone(),
+                ),
+            )),
 
             #[cfg(feature = "anthropic")]
             Provider::Anthropic {
@@ -404,15 +466,14 @@ impl Provider {
         {
             if let Ok(api_key) = std::env::var(super::azure::DEFAULT_API_KEY_ENV) {
                 if !api_key.is_empty() {
-                    let api_base = std::env::var(super::azure::DEFAULT_BASE_URL_ENV).map_err(
-                        |_| {
+                    let api_base =
+                        std::env::var(super::azure::DEFAULT_BASE_URL_ENV).map_err(|_| {
                             AppError::Configuration(format!(
                                 "{} must be set when {} is configured",
                                 super::azure::DEFAULT_BASE_URL_ENV,
                                 super::azure::DEFAULT_API_KEY_ENV
                             ))
-                        },
-                    )?;
+                        })?;
                     let model = std::env::var(super::azure::DEFAULT_MODEL_ENV)
                         .unwrap_or_else(|_| super::azure::DEFAULT_MODEL.to_string());
                     return Ok(Provider::Azure {
@@ -435,9 +496,8 @@ impl Provider {
                                 .into(),
                         )
                     })?;
-                    let model = std::env::var("BEDROCK_MODEL").unwrap_or_else(|_| {
-                        "us.anthropic.claude-haiku-4-5-20251001-v1:0".into()
-                    });
+                    let model = std::env::var("BEDROCK_MODEL")
+                        .unwrap_or_else(|_| "us.anthropic.claude-haiku-4-5-20251001-v1:0".into());
                     return Ok(Provider::Bedrock {
                         api_key,
                         region,
@@ -818,7 +878,6 @@ impl LLMClientFactoryTrait for LLMClientFactory {
     }
 }
 
-
 /// Test doubles shared across crate unit tests.
 #[cfg(test)]
 pub(crate) mod test_support {
@@ -999,7 +1058,6 @@ mod tests {
         }
     }
 
-
     #[cfg(feature = "openai")]
     #[test]
     fn test_openai_provider_properties() {
@@ -1027,7 +1085,6 @@ mod tests {
 
         assert!(provider.is_local());
     }
-
 
     // ===== TokenUsage tests =====
 
@@ -1412,6 +1469,127 @@ mod tests {
             ] {
                 assert!(matches!(result, Err(AppError::Internal(_))));
             }
+        }
+
+        #[test]
+        fn default_supports_hints_is_false() {
+            let client = MockLLMClient::new("hints");
+            assert!(!client.supports_hints());
+            // Default set_hints is a no-op: calling it compiles and does
+            // nothing observable.
+            client.set_hints(GenerationHints {
+                json_mode: true,
+                ..Default::default()
+            });
+        }
+
+        #[test]
+        fn hint_recording_mock_records_set_hints_calls() {
+            use parking_lot::Mutex;
+            use std::sync::Arc;
+
+            /// Mock recording every `set_hints` payload; the last one wins.
+            #[derive(Default)]
+            struct HintRecordingClient {
+                hints: Mutex<Vec<GenerationHints>>,
+            }
+
+            #[async_trait]
+            impl LLMClient for HintRecordingClient {
+                async fn generate(&self, _prompt: &str) -> Result<String> {
+                    Err(AppError::Internal("unused".into()))
+                }
+
+                async fn generate_with_system(
+                    &self,
+                    _system: &str,
+                    _prompt: &str,
+                ) -> Result<String> {
+                    Err(AppError::Internal("unused".into()))
+                }
+
+                async fn generate_with_history(
+                    &self,
+                    _messages: &[(String, String)],
+                ) -> Result<LLMResponse> {
+                    Err(AppError::Internal("unused".into()))
+                }
+
+                async fn generate_with_tools(
+                    &self,
+                    _prompt: &str,
+                    _tools: &[ToolDefinition],
+                ) -> Result<LLMResponse> {
+                    Err(AppError::Internal("unused".into()))
+                }
+
+                async fn generate_with_tools_and_history(
+                    &self,
+                    _messages: &[crate::coordinator::ConversationMessage],
+                    _tools: &[ToolDefinition],
+                ) -> Result<LLMResponse> {
+                    Err(AppError::Internal("unused".into()))
+                }
+
+                async fn stream(
+                    &self,
+                    _prompt: &str,
+                ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+                {
+                    Err(AppError::Internal("unused".into()))
+                }
+
+                async fn stream_with_system(
+                    &self,
+                    _system: &str,
+                    _prompt: &str,
+                ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+                {
+                    Err(AppError::Internal("unused".into()))
+                }
+
+                async fn stream_with_history(
+                    &self,
+                    _messages: &[(String, String)],
+                ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+                {
+                    Err(AppError::Internal("unused".into()))
+                }
+
+                fn model_name(&self) -> &str {
+                    "hint-recording-mock"
+                }
+
+                fn supports_hints(&self) -> bool {
+                    true
+                }
+
+                fn set_hints(&self, hints: GenerationHints) {
+                    self.hints.lock().push(hints);
+                }
+            }
+
+            let client = Arc::new(HintRecordingClient::default());
+            assert!(client.supports_hints());
+            client.set_hints(GenerationHints {
+                json_mode: true,
+                suppress_reasoning: false,
+                max_tokens: Some(256),
+            });
+            client.set_hints(GenerationHints::default());
+
+            let recorded = client.hints.lock();
+            assert_eq!(
+                recorded.len(),
+                2,
+                "every set_hints call is recorded in order"
+            );
+            assert!(recorded[0].json_mode && recorded[0].max_tokens == Some(256));
+            assert_eq!(
+                recorded[1],
+                GenerationHints::default(),
+                "clearing via Default::default() reaches the impl"
+            );
         }
     }
 }

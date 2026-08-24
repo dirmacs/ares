@@ -34,11 +34,11 @@
 
 use crate::capabilities::{CapabilityRequirements, ModelCapabilities};
 use crate::client::{LLMClient, TokenUsage};
-use ares_tools::Tools;
 #[cfg(test)]
 use ares_tools::Tool;
-use cordis::Context;
+use ares_tools::Tools;
 use ares_types::types::{Result, ToolCall};
+use cordis::Context;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -129,7 +129,11 @@ impl std::error::Error for CoordinatorDispatchError {}
 
 impl fmt::Display for RouteDecision {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "route {} ({}) — {}", self.provider_id, self.model, self.reason)
+        write!(
+            f,
+            "route {} ({}) — {}",
+            self.provider_id, self.model, self.reason
+        )
     }
 }
 
@@ -137,7 +141,11 @@ impl fmt::Display for DispatchPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "dispatch primary={}", self.primary)?;
         if !self.fallbacks.is_empty() {
-            let ids: Vec<_> = self.fallbacks.iter().map(|r| r.provider_id.as_str()).collect();
+            let ids: Vec<_> = self
+                .fallbacks
+                .iter()
+                .map(|r| r.provider_id.as_str())
+                .collect();
             write!(f, ", fallbacks=[{}]", ids.join(", "))?;
         }
         Ok(())
@@ -312,18 +320,15 @@ pub fn select_fallback(
     if attempt_errors.is_empty() {
         Ok(None)
     } else {
-        Err(CoordinatorDispatchError::AllFailed(
-            attempt_errors.to_vec(),
-        ))
+        Err(CoordinatorDispatchError::AllFailed(attempt_errors.to_vec()))
     }
 }
 
 pub fn parse_coordinator_response(
     payload: &str,
 ) -> std::result::Result<DispatchPlan, CoordinatorDispatchError> {
-    let value: Value = serde_json::from_str(payload).map_err(|e| {
-        CoordinatorDispatchError::InvalidConfig(format!("invalid JSON: {e}"))
-    })?;
+    let value: Value = serde_json::from_str(payload)
+        .map_err(|e| CoordinatorDispatchError::InvalidConfig(format!("invalid JSON: {e}")))?;
     let primary_value = value.get("primary").ok_or_else(|| {
         CoordinatorDispatchError::InvalidConfig("missing 'primary' field".to_string())
     })?;
@@ -384,7 +389,6 @@ pub fn build_dispatch_plan(
     }
     Ok(DispatchPlan { primary, fallbacks })
 }
-
 
 /// Configuration for tool calling coordination behavior.
 ///
@@ -605,11 +609,7 @@ pub struct ToolCoordinator {
 
 impl ToolCoordinator {
     /// Create a new ToolCoordinator with the given client, tools, and config.
-    pub fn new(
-        client: Box<dyn LLMClient>,
-        tools: Arc<Tools>,
-        config: ToolCallingConfig,
-    ) -> Self {
+    pub fn new(client: Box<dyn LLMClient>, tools: Arc<Tools>, config: ToolCallingConfig) -> Self {
         Self {
             client,
             fallback_chain: Vec::new(),
@@ -715,6 +715,8 @@ impl ToolCoordinator {
                     completion_tokens: completion_tok,
                     latency_ms: llm_latency,
                     status: "success".to_string(),
+                    cached_tokens: response.usage.as_ref().and_then(|u| u.cached_tokens),
+                    total_time_ms: Some(llm_latency),
                 };
                 let _ = obs.log_llm_call(record).await;
             }
@@ -886,8 +888,7 @@ impl ToolCoordinator {
 
         let result = timeout(
             self.config.tool_timeout,
-            self.tools
-                .execute(ctx, &call.name, call.arguments.clone()),
+            self.tools.execute(ctx, &call.name, call.arguments.clone()),
         )
         .await;
 
@@ -943,8 +944,8 @@ impl ToolCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::{LLMClient, LLMResponse, TokenUsage};
     use crate::capabilities::ModelCapabilities;
+    use crate::client::{LLMClient, LLMResponse, TokenUsage};
     use ares_types::types::{Result, ToolCall, ToolDefinition};
 
     fn serde_roundtrip<T>(value: &T) -> T
@@ -1066,7 +1067,10 @@ mod tests {
         assert_eq!(decoded.finish_reason, result.finish_reason);
         assert_eq!(decoded.total_usage, result.total_usage);
         assert_eq!(decoded.message_history.len(), result.message_history.len());
-        assert_eq!(decoded.message_history[0].role, result.message_history[0].role);
+        assert_eq!(
+            decoded.message_history[0].role,
+            result.message_history[0].role
+        );
     }
 
     #[test]
@@ -1213,9 +1217,7 @@ mod tests {
             _messages: &[ConversationMessage],
             _tools: &[ToolDefinition],
         ) -> Result<LLMResponse> {
-            let n = self
-                .calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if n == 0 {
                 Ok(LLMResponse {
                     content: "Let me calculate".to_string(),
@@ -1269,9 +1271,7 @@ mod tests {
         use ares_tools::calculator::Calculator;
         use std::sync::Arc;
 
-        let tools = Arc::new(Tools::from_static([
-            Arc::new(Calculator) as Arc<dyn Tool>,
-        ]));
+        let tools = Arc::new(Tools::from_static([Arc::new(Calculator) as Arc<dyn Tool>]));
         let ctx = Context::new_root();
 
         let coordinator = ToolCoordinator::new(
@@ -1347,20 +1347,23 @@ mod tests {
             async fn stream(
                 &self,
                 _prompt: &str,
-            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+            {
                 Err(ares_types::types::AppError::Internal("n/a".into()))
             }
             async fn stream_with_system(
                 &self,
                 _system: &str,
                 _prompt: &str,
-            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+            {
                 Err(ares_types::types::AppError::Internal("n/a".into()))
             }
             async fn stream_with_history(
                 &self,
                 _messages: &[(String, String)],
-            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>>
+            {
                 Err(ares_types::types::AppError::Internal("n/a".into()))
             }
             fn model_name(&self) -> &str {
@@ -1401,9 +1404,11 @@ mod tests {
 
     #[test]
     fn dispatch_coordinator_config_serde_roundtrip() {
-        let config = dispatch_test_config(vec![
-            dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::for_model("gpt-4o")),
-        ]);
+        let config = dispatch_test_config(vec![dispatch_endpoint(
+            "openai",
+            "gpt-4o",
+            ModelCapabilities::for_model("gpt-4o"),
+        )]);
         let json = serde_json::to_string(&config).unwrap();
         let decoded: CoordinatorConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.providers.len(), config.providers.len());
@@ -1601,7 +1606,9 @@ mod tests {
             },
             fallbacks: vec![],
         };
-        let next = select_fallback(&config, &plan, "openai", &[]).unwrap().unwrap();
+        let next = select_fallback(&config, &plan, "openai", &[])
+            .unwrap()
+            .unwrap();
         assert_eq!(next.provider_id, "ollama");
     }
 
@@ -1623,7 +1630,9 @@ mod tests {
                 reason: "first fallback".into(),
             }],
         };
-        assert!(select_fallback(&config, &plan, "ollama", &[]).unwrap().is_none());
+        assert!(select_fallback(&config, &plan, "ollama", &[])
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1715,7 +1724,11 @@ mod tests {
     #[test]
     fn dispatch_validate_config_unknown_fallback() {
         let config = CoordinatorConfig {
-            providers: vec![dispatch_endpoint("openai", "gpt-4o", ModelCapabilities::default())],
+            providers: vec![dispatch_endpoint(
+                "openai",
+                "gpt-4o",
+                ModelCapabilities::default(),
+            )],
             fallback_chain: vec!["missing".into()],
             load_balance: LoadBalanceStrategy::RoundRobin,
             requirements: CapabilityRequirements::default(),
@@ -1906,7 +1919,9 @@ mod tests {
             },
             fallbacks: vec![],
         };
-        assert!(select_fallback(&config, &plan, "openai", &[]).unwrap().is_none());
+        assert!(select_fallback(&config, &plan, "openai", &[])
+            .unwrap()
+            .is_none());
     }
     #[test]
     fn test_message_to_role_content() {

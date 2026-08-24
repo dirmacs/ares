@@ -33,6 +33,7 @@
 - [Architecture (Cordis)](./platform/architecture.md)
 - [Rate Limits & Quotas](./platform/rate-limits.md)
 - [Loop Detection & Safety](./platform/safety.md)
+- [Tenant FS Permission Fence](./platform/tenant-fs-fence.md)
 - [Error Handling](./platform/errors.md)
 - [Self-Hosting](./platform/self-hosting.md)
 
@@ -44,6 +45,7 @@
 - [Baseline, Gates](./cordis/cordis-baseline.md)
 - [YAGNI Ladder](./cordis/cordis-yagni.md)
 - [Handoff, Architecture](./cordis/cordis-redesign.md)
+- [Upstream Parity Ledger](./upstream-parity.md)
 
 # Extending ARES
 

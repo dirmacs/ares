@@ -101,7 +101,8 @@ impl Tool for WebScrape {
 
         // Remove script and style elements, collect text from body
         let body_selector = scraper::Selector::parse("body").unwrap();
-        let script_selector = scraper::Selector::parse("script, style, nav, header, footer").unwrap();
+        let script_selector =
+            scraper::Selector::parse("script, style, nav, header, footer").unwrap();
 
         let mut text = String::new();
         if let Some(body) = document.select(&body_selector).next() {
@@ -118,7 +119,10 @@ impl Tool for WebScrape {
                     }
                     // Add newlines for block elements
                     let tag = el.name();
-                    if matches!(tag, "p" | "div" | "br" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "tr") {
+                    if matches!(
+                        tag,
+                        "p" | "div" | "br" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "tr"
+                    ) {
                         if !text.ends_with('\n') {
                             text.push('\n');
                         }
@@ -178,7 +182,10 @@ mod tests {
         let schema = tool.parameters_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["url"].is_object());
-        assert!(schema["required"].as_array().unwrap().contains(&json!("url")));
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("url")));
     }
 
     #[test]
@@ -224,7 +231,9 @@ mod tests {
     #[tokio::test]
     async fn test_nonexistent_host() {
         let tool = WebScrape::new();
-        let result = tool.execute(json!({"url": "http://this-host-definitely-does-not-exist-xyz123.com"})).await;
+        let result = tool
+            .execute(json!({"url": "http://this-host-definitely-does-not-exist-xyz123.com"}))
+            .await;
         assert!(result.is_err());
     }
 

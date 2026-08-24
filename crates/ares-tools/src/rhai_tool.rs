@@ -7,7 +7,7 @@
 use crate::registry::Tool;
 use ares_types::types::{AppError, Result};
 use async_trait::async_trait;
-use rhai::{AST, Dynamic, Engine, Scope};
+use rhai::{Dynamic, Engine, Scope, AST};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -80,8 +80,7 @@ impl RhaiToolConfig {
     }
     /// Effective max call levels.
     pub fn effective_max_call_levels(&self) -> usize {
-        self.max_call_levels
-            .unwrap_or_else(default_max_call_levels)
+        self.max_call_levels.unwrap_or_else(default_max_call_levels)
     }
 }
 
@@ -255,7 +254,8 @@ fn is_arity_error(msg: &str) -> bool {
 }
 
 fn build_scope(args: &Value) -> std::result::Result<(Dynamic, Scope<'static>), String> {
-    let dynamic = rhai::serde::to_dynamic(args).map_err(|e| format!("args conversion failed: {e}"))?;
+    let dynamic =
+        rhai::serde::to_dynamic(args).map_err(|e| format!("args conversion failed: {e}"))?;
     let mut scope = Scope::new();
     scope.push_dynamic("args", dynamic.clone());
     if let Some(map) = dynamic.clone().try_cast::<rhai::Map>() {
@@ -358,7 +358,8 @@ impl Tool for RhaiTool {
         let ast = self.ast.clone();
         let entry = self.entry.clone();
         let timeout_dur = self.timeout;
-        let blocking = tokio::task::spawn_blocking(move || execute_blocking(&engine, &ast, &entry, args));
+        let blocking =
+            tokio::task::spawn_blocking(move || execute_blocking(&engine, &ast, &entry, args));
         let timed = tokio::time::timeout(timeout_dur, blocking).await;
         match timed {
             Ok(join_res) => match join_res {
@@ -382,7 +383,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn mk_tool(script: &str, entry: Option<&str>, max_ops: Option<u64>, timeout_ms: Option<u64>) -> RhaiTool {
+    fn mk_tool(
+        script: &str,
+        entry: Option<&str>,
+        max_ops: Option<u64>,
+        timeout_ms: Option<u64>,
+    ) -> RhaiTool {
         let cfg = RhaiToolConfig {
             script: script.to_string(),
             entry: entry.map(|s| s.to_string()),
@@ -400,7 +406,10 @@ mod tests {
     /// rust-doctor. Plain prose: create tool, execute, compare.
     async fn assert_execute_success(script: &str, input: Value, expected: Value) {
         let tool = mk_tool(script, None, None, None);
-        let out = tool.execute(input.clone()).await.expect("execute should succeed");
+        let out = tool
+            .execute(input.clone())
+            .await
+            .expect("execute should succeed");
         assert_eq!(out, expected, "script `{script}` input `{input:?}`");
     }
 
@@ -416,7 +425,10 @@ mod tests {
     ) {
         let tool = mk_tool(script, None, max_ops, timeout_ms);
         let res = tool.execute(json!({})).await;
-        assert!(res.is_err(), "expected error for script `{script}`, got {res:?}");
+        assert!(
+            res.is_err(),
+            "expected error for script `{script}`, got {res:?}"
+        );
         let msg = res.unwrap_err().to_string().to_lowercase();
         assert!(
             needles.iter().any(|n| msg.contains(&n.to_lowercase())),
@@ -467,7 +479,10 @@ mod tests {
         let res = RhaiTool::validate(&cfg);
         assert!(res.is_err(), "expected syntax error");
         let err = res.unwrap_err();
-        assert!(err.to_string().contains("Invalid Rhai script") || err.to_string().contains("Configuration"));
+        assert!(
+            err.to_string().contains("Invalid Rhai script")
+                || err.to_string().contains("Configuration")
+        );
 
         // also via ::new
         let new_res = RhaiTool::new("t", "d", json!({}), cfg);

@@ -120,9 +120,7 @@ impl Tool for ScriptTool {
         let script = substitute_script_params(&self.config.script, args_map);
 
         match self.config.language.to_ascii_lowercase().as_str() {
-            "javascript" | "js" => {
-                execute_javascript(&script, args, self.timeout()).await
-            }
+            "javascript" | "js" => execute_javascript(&script, args, self.timeout()).await,
             "python" | "py" => {
                 execute_python(&script, args, self.timeout(), self.memory_limit_mb()).await
             }
@@ -138,11 +136,7 @@ impl Tool for ScriptTool {
 // =============================================================================
 
 /// Execute JavaScript in a sandboxed `boa_engine` context.
-async fn execute_javascript(
-    script: &str,
-    args: Value,
-    ttl: Duration,
-) -> Result<Value> {
+async fn execute_javascript(script: &str, args: Value, ttl: Duration) -> Result<Value> {
     let script = script.to_string();
 
     let handle = tokio::task::spawn_blocking(move || {
@@ -150,26 +144,23 @@ async fn execute_javascript(
 
         // Defensive resource limit: cap loop iterations so infinite loops
         // terminate quickly instead of consuming a blocking thread forever.
-        context.runtime_limits_mut().set_loop_iteration_limit(10_000_000);
+        context
+            .runtime_limits_mut()
+            .set_loop_iteration_limit(10_000_000);
 
         // Inject `args` as a global JavaScript variable.
-        let args_json =
-            serde_json::to_string(&args).map_err(|e| {
-                ares_types::AppError::Internal(format!("JSON serialization error: {e}"))
-            })?;
+        let args_json = serde_json::to_string(&args).map_err(|e| {
+            ares_types::AppError::Internal(format!("JSON serialization error: {e}"))
+        })?;
         let init = format!("let args = {args_json};");
         context
             .eval(boa_engine::Source::from_bytes(init.as_bytes()))
-            .map_err(|e| {
-                ares_types::AppError::External(format!("JS init error: {e}"))
-            })?;
+            .map_err(|e| ares_types::AppError::External(format!("JS init error: {e}")))?;
 
         // Run the user script.
         let result = context
             .eval(boa_engine::Source::from_bytes(script.as_bytes()))
-            .map_err(|e| {
-                ares_types::AppError::External(format!("JS execution error: {e}"))
-            })?;
+            .map_err(|e| ares_types::AppError::External(format!("JS execution error: {e}")))?;
 
         // boa_engine 0.20 panics on undefined → JSON; handle it explicitly.
         if result.is_undefined() {
@@ -177,13 +168,9 @@ async fn execute_javascript(
         }
 
         // Convert back to serde_json::Value.
-        let json_value = result
-            .to_json(&mut context)
-            .map_err(|e| {
-                ares_types::AppError::External(format!(
-                    "JS result conversion error: {e}"
-                ))
-            })?;
+        let json_value = result.to_json(&mut context).map_err(|e| {
+            ares_types::AppError::External(format!("JS result conversion error: {e}"))
+        })?;
 
         Ok(json_value)
     });
@@ -210,9 +197,8 @@ async fn execute_python(
     ttl: Duration,
     _memory_limit_mb: u64,
 ) -> Result<Value> {
-    let args_json = serde_json::to_string(&args).map_err(|e| {
-        ares_types::AppError::Internal(format!("JSON serialization error: {e}"))
-    })?;
+    let args_json = serde_json::to_string(&args)
+        .map_err(|e| ares_types::AppError::Internal(format!("JSON serialization error: {e}")))?;
 
     // Spawn Python with the wrapper script.
     let mut cmd = Command::new("python3");
@@ -224,9 +210,9 @@ async fn execute_python(
         .env("SCRIPT_TOOL_ARGS_JSON", args_json)
         .env("SCRIPT_TOOL_USER_CODE", script);
 
-    let mut child = cmd.spawn().map_err(|e| {
-        ares_types::AppError::External(format!("Failed to spawn python3: {e}"))
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| ares_types::AppError::External(format!("Failed to spawn python3: {e}")))?;
 
     // Close stdin immediately — all data is passed via env vars.
     drop(child.stdin.take());
@@ -337,13 +323,10 @@ print(json.dumps({"result": _result, "stdout": _stdout_text}))
 // =============================================================================
 
 /// Replace `{{key}}` placeholders in `script` with JSON-encoded values from `args`.
-fn substitute_script_params(
-    script: &str,
-    args: &serde_json::Map<String, Value>,
-) -> String {
+fn substitute_script_params(script: &str, args: &serde_json::Map<String, Value>) -> String {
     let mut result = script.to_string();
     for (key, value) in args {
-        let placeholder = format!("{{{{{}}}}}" , key);
+        let placeholder = format!("{{{{{}}}}}", key);
         let replacement = serde_json::to_string(value).unwrap_or_default();
         result = result.replace(&placeholder, &replacement);
     }
@@ -424,10 +407,7 @@ mod tests {
 
         let script = r#"let greeting = "Hello, {{name}}"; let n = {{count}};"#;
         let out = substitute_script_params(script, &map);
-        assert_eq!(
-            out,
-            r#"let greeting = "Hello, "Alice""; let n = 42;"#
-        );
+        assert_eq!(out, r#"let greeting = "Hello, "Alice""; let n = 42;"#);
     }
 
     #[test]
@@ -437,10 +417,7 @@ mod tests {
 
         let script = r#"let x = {{unsafe}};"#;
         let out = substitute_script_params(script, &map);
-        assert_eq!(
-            out,
-            "let x = \"\\\"; DROP TABLE users; --\";"
-        );
+        assert_eq!(out, "let x = \"\\\"; DROP TABLE users; --\";");
     }
 
     #[test]

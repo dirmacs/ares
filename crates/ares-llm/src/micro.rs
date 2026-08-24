@@ -111,7 +111,7 @@ impl MicroEngine {
             {
                 Ok(content) => {
                     let text = strip_code_fences(&content);
-                    let json = serde_json::from_str::<Value>(text).ok();
+                    let json = salvage_json(text);
                     return Ok(MicroOutcome {
                         task: task.name.to_string(),
                         json,
@@ -169,6 +169,39 @@ fn strip_code_fences(raw: &str) -> &str {
         Some(unwrapped) => unwrapped.trim_end(),
         None => body,
     }
+}
+
+/// Three-stage JSON extraction from model output.
+///
+/// Models wrap or decorate JSON in prose more often than not, so parsing is
+/// deliberately tolerant, tried in order of increasing intrusiveness:
+///
+/// 1. **Plain parse** — the text as-is.
+/// 2. **Fence-strip parse** — after removing an optional Markdown code fence.
+/// 3. **Substring salvage** — the span from the first `{` to the last `}`
+///    (objects tried first), falling back to first `[` through last `]`
+///    (arrays). The span is re-parsed, not assumed valid.
+///
+/// Returns `None` when no stage yields valid JSON; garbage never becomes an
+/// error here — callers decide what a missing value means.
+pub(crate) fn salvage_json(text: &str) -> Option<Value> {
+    if let Ok(value) = serde_json::from_str::<Value>(text) {
+        return Some(value);
+    }
+    let stripped = strip_code_fences(text);
+    if let Ok(value) = serde_json::from_str::<Value>(stripped) {
+        return Some(value);
+    }
+    for (open, close) in [('{', '}'), ('[', ']')] {
+        if let (Some(start), Some(end)) = (stripped.find(open), stripped.rfind(close)) {
+            if start < end {
+                if let Ok(value) = serde_json::from_str::<Value>(&stripped[start..=end]) {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -362,5 +395,57 @@ mod tests {
             });
             assert_eq!(outcome.task, names[index]);
         }
+    }
+
+    #[test]
+    fn salvage_parses_fenced_json() {
+        let value = salvage_json("```json\n{\"a\": 1}\n```").expect("fenced json salvages");
+        assert_eq!(value, serde_json::json!({ "a": 1 }));
+    }
+
+    #[test]
+    fn salvage_extracts_json_from_prose() {
+        let value =
+            salvage_json("Here you go: {\"a\":1} hope that helps").expect("embedded json salvages");
+        assert_eq!(value, serde_json::json!({ "a": 1 }));
+    }
+
+    #[test]
+    fn salvage_prefers_object_over_array_delimiters() {
+        let text = "[note] {\"kept\": true} [/note]";
+        let value = salvage_json(text).expect("object wins over array");
+        assert_eq!(
+            value,
+            serde_json::json!({ "kept": true }),
+            "first {{ to last }} span is tried before bracket spans"
+        );
+    }
+
+    #[test]
+    fn salvage_parses_embedded_array() {
+        let value = salvage_json("results: [1, 2, 3] done").expect("array salvages");
+        assert_eq!(value, serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn salvage_returns_none_for_garbage() {
+        assert_eq!(salvage_json("no json here at all"), None);
+        assert_eq!(salvage_json("{not valid}"), None);
+        assert_eq!(salvage_json(""), None);
+    }
+
+    #[tokio::test]
+    async fn run_salvages_json_from_prose_answers() {
+        let client = Arc::new(BehaviorClient::new(|_| {
+            Ok("Sure! {\"score\": 4} — hope that helps.".to_string())
+        }));
+        let engine = MicroEngine::with_client(client);
+
+        let outcome = engine
+            .run(&task("salvage", "payload"))
+            .await
+            .expect("run ok");
+
+        assert_eq!(outcome.json, Some(serde_json::json!({ "score": 4 })));
     }
 }

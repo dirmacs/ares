@@ -6,8 +6,26 @@
 //! Rebuilds hot-swap because each load reads a process-unique copy of the
 //! library (glibc caches dlopen handles by path).
 //!
-//! **ABI contract:** the `.so` must be built with the same Rust toolchain as
-//! the server. The entry point is `extern "C"` and must not store the `ctx`
+//! **ABI contract (strict fingerprint handshake):** before any value crosses
+//! the FFI boundary, `load_plugin_so` requires the `.so` to export
+//! `cordis_plugin_fingerprint` — an `extern "C"` fn returning a
+//! NUL-terminated UTF-8 string that must EXACTLY equal this side's
+//! [`fingerprint`]. A missing symbol refuses the load; a mismatched string
+//! refuses it naming both fingerprints. The fingerprint bakes the Cordis ABI
+//! version, crate version, rustc release + commit hash, target triple, and
+//! panic strategy at BUILD TIME of each side, so plugins rebuilt against a
+//! matching cordis build are required; stale dylibs fail fast instead of
+//! corrupting the process. Plugin side, re-export the host's answer:
+//!
+//! ```rust,ignore
+//! // In the .so crate (cdylib):
+//! #[unsafe(no_mangle)]
+//! pub extern "C" fn cordis_plugin_fingerprint() -> *const std::os::raw::c_char {
+//!     cordis::hmr::plugin_fingerprint_cstr()
+//! }
+//! ```
+//!
+//! The entry point is `extern "C"` and must not store the `ctx`
 //! pointer after it returns. The loaded `Library` is retained in
 //! [`HmrRegistry`] until drop (`dlclose` via RAII, no leak).
 
@@ -29,6 +47,51 @@ pub type HmrEntryFn = unsafe extern "C" fn(*const std::ffi::c_void) -> i32;
 
 /// Default exported symbol, NUL-terminated for `libloading::Library::get`.
 pub const DEFAULT_ENTRY_SYMBOL: &[u8] = b"cordis_plugin_apply\0";
+
+/// Symbol every loadable plugin must export: `extern "C" fn() ->
+/// *const c_char` returning this side's fingerprint string.
+#[cfg(feature = "hmr")]
+pub const FINGERPRINT_SYMBOL: &[u8] = b"cordis_plugin_fingerprint\0";
+
+#[cfg(feature = "hmr")]
+static FINGERPRINT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "cordis-hmr/{} cordis/{} rustc/{}-{} target/{} panic/{}",
+        env!("CORDIS_ABI_VERSION"),
+        env!("CORDIS_CRATE_VERSION"),
+        env!("CORDIS_RUSTC_RELEASE"),
+        env!("CORDIS_RUSTC_COMMIT_HASH"),
+        env!("CORDIS_BUILD_TARGET"),
+        env!("CORDIS_BUILD_PANIC"),
+    )
+});
+
+/// Build-time ABI fingerprint of the loading side, computed once.
+///
+/// Format: `cordis-hmr/{ABI} cordis/{version} rustc/{release}-{commit}
+/// target/{target} panic/{panic}` — all ingredients baked by
+/// `crates/cordis/build.rs` into env vars at compile time.
+#[cfg(feature = "hmr")]
+pub fn fingerprint() -> &'static str {
+    &FINGERPRINT
+}
+
+/// The fingerprint as a NUL-terminated C string pointer, for plugins to
+/// return from their own `#[unsafe(no_mangle)] pub extern "C" fn
+/// cordis_plugin_fingerprint` (see the module docs example). The backing
+/// buffer lives for `'static`.
+#[cfg(feature = "hmr")]
+pub fn plugin_fingerprint_cstr() -> *const std::os::raw::c_char {
+    use std::ffi::CString;
+    use std::sync::LazyLock;
+
+    static CSTR: LazyLock<CString> = LazyLock::new(|| {
+        // SAFETY: fingerprint() contains no interior NUL bytes (format is
+        // printable ASCII), so CString::new cannot fail.
+        CString::new(fingerprint()).expect("fingerprint has no NUL bytes")
+    });
+    CSTR.as_ptr()
+}
 
 fn is_dynamic_library(path: &Path) -> bool {
     matches!(
@@ -97,6 +160,40 @@ pub fn load_plugin_so(
             return Err(e);
         }
     };
+
+    // Strict ABI handshake BEFORE any value crosses the FFI boundary: the
+    // plugin must export `cordis_plugin_fingerprint` returning this side's
+    // exact fingerprint string.
+    let expected = fingerprint();
+    let reported: Option<String> = unsafe {
+        lib.get::<Symbol<unsafe extern "C" fn() -> *const std::os::raw::c_char>>(FINGERPRINT_SYMBOL)
+            .ok()
+            .map(|fp| {
+                let raw = fp();
+                if raw.is_null() {
+                    None
+                } else {
+                    std::ffi::CStr::from_ptr(raw)
+                        .to_str()
+                        .ok()
+                        .map(String::from)
+                }
+            })
+            .unwrap_or_default()
+    };
+    let Some(reported) = reported else {
+        return Err(CordisError::Configuration(format!(
+            "fingerprint symbol missing: {} does not export a valid `{}` returning a NUL-terminated UTF-8 string (expected `{expected}`)",
+            path.display(),
+            String::from_utf8_lossy(&FINGERPRINT_SYMBOL[..FINGERPRINT_SYMBOL.len() - 1]),
+        )));
+    };
+    if reported != expected {
+        return Err(CordisError::Configuration(format!(
+            "fingerprint mismatch: plugin `{reported}` != host `{expected}` ({})",
+            path.display()
+        )));
+    }
 
     let rc = unsafe {
         let func: Symbol<HmrEntryFn> = lib.get(entry_symbol).map_err(|e| {
@@ -272,11 +369,41 @@ mod tests {
     #[cfg(feature = "hmr")]
     #[test]
     fn load_plugin_so_applies_test_cdylib_and_retains_library() {
-        let so = compile_test_plugin();
+        let so = compile_test_plugin(Some(fingerprint()));
         let ctx = Context::new_root();
         apply_plugin_so(&ctx, &so, DEFAULT_ENTRY_SYMBOL).expect("test plugin should apply");
         let registry = ctx.get::<HmrRegistry>().expect("HmrRegistry after apply");
         assert_eq!(registry.len(), 1);
+    }
+
+    #[cfg(feature = "hmr")]
+    #[test]
+    fn load_plugin_so_rejects_missing_fingerprint() {
+        let so = compile_test_plugin(None);
+        let ctx = Context::new_root();
+        let err = load_plugin_so(&so, &ctx, DEFAULT_ENTRY_SYMBOL).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("fingerprint symbol missing"),
+            "expected missing-symbol refusal, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "hmr")]
+    #[test]
+    fn load_plugin_so_rejects_mismatched_fingerprint() {
+        let so = compile_test_plugin(Some("deliberately-wrong-fingerprint-string"));
+        let ctx = Context::new_root();
+        let err = load_plugin_so(&so, &ctx, DEFAULT_ENTRY_SYMBOL).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("fingerprint mismatch"),
+            "expected mismatch refusal, got: {msg}"
+        );
+        assert!(
+            msg.contains("deliberately-wrong-fingerprint-string") && msg.contains(fingerprint()),
+            "mismatch error must name both fingerprints, got: {msg}"
+        );
     }
 
     // Simulates a rebuild over the SAME path: each apply must load a fresh
@@ -286,7 +413,7 @@ mod tests {
     #[cfg(feature = "hmr")]
     #[test]
     fn rebuild_same_path_loads_twice_via_unique_copy() {
-        let so = compile_test_plugin();
+        let so = compile_test_plugin(Some(fingerprint()));
         let dir = so.parent().expect("so parent").to_path_buf();
         let fixed = dir.join(lib_name("watched_plugin"));
         std::fs::copy(&so, &fixed).expect("stage watched plugin");
@@ -318,20 +445,36 @@ mod tests {
         );
     }
 
+    /// `expected_fp`: `Some(fingerprint)` additionally exports the
+    /// `cordis_plugin_fingerprint` handshake symbol returning that string;
+    /// `None` omits it entirely (missing-symbol refusal case).
     #[cfg(feature = "hmr")]
-    fn compile_test_plugin() -> std::path::PathBuf {
+    fn compile_test_plugin(expected_fp: Option<&str>) -> std::path::PathBuf {
         let dir = tempfile::tempdir().expect("tempdir");
-        let src = dir.path().join("plugin.rs");
-        std::fs::write(
-            &src,
+        let fp_block = match expected_fp {
+            Some(fp) => format!(
+                r#"
+                #[unsafe(no_mangle)]
+                pub static CORDIS_FP: &[u8] = b"{fp}\0";
+                #[unsafe(no_mangle)]
+                pub extern "C" fn cordis_plugin_fingerprint() -> *const std::os::raw::c_char {{
+                    CORDIS_FP.as_ptr() as *const _
+                }}
+                "#
+            ),
+            None => String::new(),
+        };
+        let src_text = format!(
             r#"
             #[unsafe(no_mangle)]
-            pub extern "C" fn cordis_plugin_apply(_ctx: *const std::ffi::c_void) -> i32 {
+            pub extern "C" fn cordis_plugin_apply(_ctx: *const std::ffi::c_void) -> i32 {{
                 0
-            }
-            "#,
-        )
-        .expect("write plugin source");
+            }}
+            {fp_block}
+            "#
+        );
+        let src = dir.path().join("plugin.rs");
+        std::fs::write(&src, src_text).expect("write plugin source");
         let so = dir.path().join(lib_name("cordis_test_plugin"));
         let status = std::process::Command::new("rustc")
             .args(["--edition", "2024", "--crate-type", "cdylib", "-o"])

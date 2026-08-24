@@ -388,7 +388,9 @@ mod tests {
         assert_eq!(ledger.len(), 2);
         assert_eq!(ledger.entry_id_of(11).as_deref(), Some("svc:a"));
         assert_eq!(ledger.entry_id_of(999), None);
-        assert_eq!(ledger.provider_fibers(), vec![11, 12]);
+        // provider_fibers unions provider-map ids (12, 13) with the entry
+        // registry keys (11) — 11 is only an entry owner here, not a provider.
+        assert_eq!(ledger.provider_fibers(), vec![11, 12, 13]);
     }
 
     #[test]

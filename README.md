@@ -8,6 +8,10 @@ Multi-provider LLM. Tool calling. RAG. MCP. Run standalone or embed the library.
 </p>
 
 <p align="center">
+ <a href="docs/assets/cli-demo.cast"><img src="docs/assets/cli-demo.svg" width="820" alt="ARES CLI demo: scaffold a project, validate the configuration, and inspect the agent fleet"></a>
+</p>
+
+<p align="center">
  <a href="https://github.com/dirmacs/ares"><img src="https://img.shields.io/github/stars/dirmacs/ares?style=flat" alt="GitHub"></a>
  <a href="https://dirmacs.github.io/ares"><img src="https://img.shields.io/badge/docs-mdbook-blue" alt="docs"></a>
  <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="MIT">

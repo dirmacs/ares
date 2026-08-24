@@ -2,6 +2,8 @@
 
 ARES (Agentic Runtime Extensible Server) is a composable AI agent runtime in Rust. The Cordis kernel underlies it: components register as services on a typed Context, and you compose them through loader entries or the library facade. ARES exposes one API that routes requests to Groq, Anthropic, NVIDIA DeepSeek, and Ollama. It handles tool calling, retrieval-augmented generation (RAG), multi-step workflows, streaming, usage metering, and multi-tenant isolation. You build your application; ARES wires the provider SDKs together.
 
+![ARES CLI in action — scaffold, validate, inspect your agent fleet](../assets/cli-demo.svg)
+
 ARES runs on a service-based architecture with dependency injection. Components register into a typed `Context`, and handlers pull dependencies with `ctx.get::<T>()`. The unified `Execute` service handles every execution path through event-first around-middleware (`EventsService::waterfall_around` on `tools.*`, `llm.*`, and `agent.run`). Skills keep the request `Context`, isolate tools per tenant with `ctx.isolate::<Tools>(tenant_id)`, and run tool steps through `Tools::execute`. Skill `LlmCall` steps use the strict evented `Llm::complete` (`llm.complete`) path with no direct provider `generate_with_history` fallback. Hot-reload runs over file-watch. A circuit breaker protects LLM providers.
 
 ## Key capabilities

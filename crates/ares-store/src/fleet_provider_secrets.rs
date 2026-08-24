@@ -125,19 +125,22 @@ impl<'a> FleetProviderSecretsStore<'a> {
             ));
         }
         // Validate: at least one field must be set.
-        if api_key.is_none() && api_base.is_none() && default_model.is_none() && fallback_providers.is_none() {
+        if api_key.is_none()
+            && api_base.is_none()
+            && default_model.is_none()
+            && fallback_providers.is_none()
+        {
             return Err(AppError::InvalidInput(
                 "At least one of api_key, api_base, default_model, fallback_providers must be provided".into(),
             ));
         }
         let (ciphertext, nonce, has_api_key) = match api_key {
             Some(plain) => {
-                let master = master
-                    .as_ref()
-                    .ok_or(AppError::Configuration(FleetSecretsError::MasterKeyUnset.to_string()))?;
-                let payload = encrypt_api_key(plain, master).map_err(|e| {
-                    AppError::Configuration(format!("encrypt_api_key failed: {e}"))
-                })?;
+                let master = master.as_ref().ok_or(AppError::Configuration(
+                    FleetSecretsError::MasterKeyUnset.to_string(),
+                ))?;
+                let payload = encrypt_api_key(plain, master)
+                    .map_err(|e| AppError::Configuration(format!("encrypt_api_key failed: {e}")))?;
                 (Some(payload.ciphertext), Some(payload.nonce), true)
             }
             None => (None, None, false),
@@ -241,7 +244,17 @@ impl<'a> FleetProviderSecretsStore<'a> {
     /// set" badge per provider.
     pub async fn list_metadata(
         &self,
-    ) -> Result<Vec<(String, bool, Option<String>, Option<String>, Vec<String>, i64, String)>> {
+    ) -> Result<
+        Vec<(
+            String,
+            bool,
+            Option<String>,
+            Option<String>,
+            Vec<String>,
+            i64,
+            String,
+        )>,
+    > {
         let rows = sqlx::query(
             "SELECT provider_name, has_api_key, api_base, default_model, fallback_providers, updated_at, updated_by \
              FROM fleet_provider_secrets ORDER BY provider_name",
@@ -255,7 +268,8 @@ impl<'a> FleetProviderSecretsStore<'a> {
             let has: bool = row.try_get("has_api_key").map_err(sqlx_err)?;
             let api_base: Option<String> = row.try_get("api_base").map_err(sqlx_err)?;
             let default_model: Option<String> = row.try_get("default_model").map_err(sqlx_err)?;
-            let fallback_json: Option<serde_json::Value> = row.try_get("fallback_providers").map_err(sqlx_err)?;
+            let fallback_json: Option<serde_json::Value> =
+                row.try_get("fallback_providers").map_err(sqlx_err)?;
             let fallback_providers: Vec<String> = fallback_json
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default();
@@ -282,7 +296,8 @@ fn row_to_stored(row: &sqlx::postgres::PgRow) -> Result<StoredProviderOverride> 
     let nonce: Option<Vec<u8>> = row.try_get("nonce").map_err(sqlx_err)?;
     let api_base: Option<String> = row.try_get("api_base").map_err(sqlx_err)?;
     let default_model: Option<String> = row.try_get("default_model").map_err(sqlx_err)?;
-    let fallback_json: Option<serde_json::Value> = row.try_get("fallback_providers").map_err(sqlx_err)?;
+    let fallback_json: Option<serde_json::Value> =
+        row.try_get("fallback_providers").map_err(sqlx_err)?;
     let fallback_providers: Vec<String> = fallback_json
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();

@@ -196,7 +196,6 @@ impl OllamaClient {
     }
 }
 
-
 /// Capabilities inferred from an Ollama `/api/show` response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OllamaModelCapabilities {
@@ -239,12 +238,17 @@ pub(crate) fn parse_retry_after(header: &str) -> Option<u64> {
 pub(crate) fn parse_model_capabilities_from_show(
     info: &serde_json::Value,
 ) -> OllamaModelCapabilities {
-    let parameters = info.get("parameters").and_then(|v| v.as_str()).unwrap_or("");
+    let parameters = info
+        .get("parameters")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let modelfile = info.get("modelfile").and_then(|v| v.as_str()).unwrap_or("");
     let template = info.get("template").and_then(|v| v.as_str()).unwrap_or("");
-    let combined = format!("{parameters}
+    let combined = format!(
+        "{parameters}
 {modelfile}
-{template}");
+{template}"
+    );
     let lower = combined.to_ascii_lowercase();
 
     let supports_embeddings = lower.contains("embedding")
@@ -339,9 +343,7 @@ pub(crate) fn classify_stream_sse_failure(kind: &str) -> AppError {
         || lower.contains("broken pipe")
     {
         AppError::LLM("Ollama stream disconnected".to_string())
-    } else if lower.contains("json")
-        || lower.contains("deserialize")
-        || lower.contains("malformed")
+    } else if lower.contains("json") || lower.contains("deserialize") || lower.contains("malformed")
     {
         AppError::LLM("Ollama stream malformed JSON".to_string())
     } else {
@@ -351,9 +353,7 @@ pub(crate) fn classify_stream_sse_failure(kind: &str) -> AppError {
 
 fn map_ollama_error_message(msg: &str) -> AppError {
     let lower = msg.to_ascii_lowercase();
-    if lower.contains("rate limit")
-        || lower.contains("too many requests")
-        || lower.contains("429")
+    if lower.contains("rate limit") || lower.contains("too many requests") || lower.contains("429")
     {
         return AppError::RateLimited(msg.to_string());
     }
@@ -378,7 +378,6 @@ fn map_ollama_error_message(msg: &str) -> AppError {
     }
     AppError::LLM(format!("Ollama error: {msg}"))
 }
-
 
 #[async_trait]
 impl LLMClient for OllamaClient {
@@ -726,4 +725,3 @@ impl OllamaClient {
         }))
     }
 }
-

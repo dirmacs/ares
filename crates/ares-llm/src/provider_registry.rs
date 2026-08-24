@@ -22,9 +22,9 @@
 
 use crate::capabilities::{CapabilityRequirements, ModelCapabilities, ModelWithCapabilities};
 use crate::client::{LLMClient, ModelParams, Provider};
-use arc_swap::ArcSwap;
-use crate::nvidia_catalog::{NvidiaCatalogCache, NvidiaConfig};
 use crate::config::{ModelConfig, ProviderConfig};
+use crate::nvidia_catalog::{NvidiaCatalogCache, NvidiaConfig};
+use arc_swap::ArcSwap;
 use ares_types::types::{AppError, Result};
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -1922,7 +1922,8 @@ mod tests {
 
     #[test]
     fn test_config_factory_from_config_no_models() {
-        let factory = ConfigBasedLLMFactory::from_config(HashMap::new(), HashMap::new(), None).unwrap();
+        let factory =
+            ConfigBasedLLMFactory::from_config(HashMap::new(), HashMap::new(), None).unwrap();
         assert_eq!(factory.default_model(), "nvidia/nemotron-3-ultra-550b-a55b");
     }
 
@@ -2021,14 +2022,16 @@ mod tests {
         // Untagged context -> no isolate label -> falls back to the fleet-wide
         // provider (the shared "shared-runtime" entry's tenant is None).
         let fleet = registry.get_provider_for_ctx(&ctx, "shared-runtime");
-        assert!(fleet.is_some(), "untagged ctx should resolve the fleet provider");
+        assert!(
+            fleet.is_some(),
+            "untagged ctx should resolve the fleet provider"
+        );
 
         // A tenant-isolated context must drive resolution: the isolate label
         // 'tenant:tenant-a' derives tenant 'tenant-a', so the tenant-scoped
         // provider wins.
         let tenant_ctx = ctx.isolate::<crate::Llm>("tenant:tenant-a");
-        let tenant_provider =
-            registry.get_provider_for_ctx(&tenant_ctx, "shared-runtime");
+        let tenant_provider = registry.get_provider_for_ctx(&tenant_ctx, "shared-runtime");
         assert!(
             tenant_provider.is_some(),
             "tenant:tenant-a isolated ctx should resolve a provider"
@@ -2097,10 +2100,7 @@ mod tests {
             ares_types::models::TenantTier::Pro,
         ));
         let isolated = intercepted.isolate::<crate::Llm>("tenant:from-isolate");
-        assert_eq!(
-            tenant_from_ctx(&isolated),
-            Some("from-isolate".to_string())
-        );
+        assert_eq!(tenant_from_ctx(&isolated), Some("from-isolate".to_string()));
     }
 }
 
@@ -2129,18 +2129,26 @@ pub(crate) fn tenant_from_ctx(ctx: &std::sync::Arc<cordis::Context>) -> Option<S
 // Cordis Service impl — allows ctx.get::<ProviderRegistry>() for crate wiring.
 // Per-tenant provider-secret isolate labels key on TypeId::of::<Llm>(), not this type.
 impl cordis::Service for ProviderRegistry {
-    fn name(&self) -> &'static str { "provider_registry" }
+    fn name(&self) -> &'static str {
+        "provider_registry"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 // Cordis Service impl — allows direct ctx.get::<ConfigBasedLLMFactory>() without wrapper
 impl cordis::Service for ConfigBasedLLMFactory {
-    fn name(&self) -> &'static str { "llm_factory" }
+    fn name(&self) -> &'static str {
+        "llm_factory"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }

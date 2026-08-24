@@ -254,8 +254,38 @@ pub async fn replace_cordis_service(
     }
 }
 
+/// GET /admin/cordis/undo — disposal-tree introspection (honest minimal
+/// scope): per tracked fiber id, the labeled undo closures still pending on
+/// its accumulator. Our undos are anonymous `Box<dyn FnOnce>` values; only
+/// their [`cordis::UndoMeta`] labels + registration timestamps are
+/// introspectable. 503 when no [`RegistryService`] is provided.
+pub async fn list_cordis_undo_labels(
+    State(ctx): State<Arc<Context>>,
+) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
+    let Some(registry) = ctx.get::<RegistryService>() else {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "RegistryService is not provided on this context"
+            })),
+        ));
+    };
+    let mut fibers = Vec::new();
+    for fid in registry.tracked_ids() {
+        let Some(fiber) = registry.get_fiber(fid) else {
+            continue;
+        };
+        fibers.push(serde_json::json!({
+            "fiber_id": fid,
+            "disposed": fiber.is_disposed(),
+            "pending_undo_labels": fiber.pending_undo_labels(),
+        }));
+    }
+    Ok((StatusCode::OK, Json(serde_json::json!({ "fibers": fibers }))))
+}
+
 pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::post;
+    use axum::routing::{get, post};
     axum::Router::new()
         .route(
             "/cordis/services/{name}/retire",
@@ -269,6 +299,7 @@ pub fn routes() -> axum::Router<Arc<Context>> {
             "/cordis/services/{name}/replace",
             post(replace_cordis_service),
         )
+        .route("/cordis/undo", get(list_cordis_undo_labels))
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
@@ -828,7 +859,7 @@ mod tests {
         );
 
         // Drop the consumer: its effects unwind and reliance drops to zero.
-        registry.get_fiber(dep_fid).unwrap().dispose().await;
+        let _ = registry.get_fiber(dep_fid).unwrap().dispose().await;
         assert!(ctx.get::<BarService>().is_none());
 
         // Retire now succeeds.
@@ -1414,5 +1445,71 @@ mod event_metrics_tests {
             resp.1 .0["error"],
             json!("EventsService is not provided on this context")
         );
+    }
+
+    /// Undo-label introspection: labeled undos surface with their labels in
+    /// registration order; the missing-registry path answers 503.
+    #[tokio::test]
+    async fn cordis_undo_labels_lists_pending_and_flags_disposed() {
+        #[derive(Debug)]
+        struct UndoProbe(u64);
+        impl ::cordis::Service for UndoProbe {}
+        struct UndoProbePlugin;
+        impl ::cordis::Plugin for UndoProbePlugin {
+            type Config = ();
+            type Provides = UndoProbe;
+            fn apply(
+                &self,
+                _ctx: &Arc<Context>,
+                _cfg: Self::Config,
+            ) -> Result<Arc<UndoProbe>, ::cordis::CordisError> {
+                Ok(Arc::new(UndoProbe(1)))
+            }
+        }
+
+        let ctx = Context::new_root();
+        let registry = ctx.provide(RegistryService::new());
+        let fid = registry
+            .register(&ctx, UndoProbePlugin, ())
+            .expect("registration");
+        let fiber = registry.get_fiber(fid).unwrap();
+        fiber.push_undo_labeled(
+            cordis::UndoMeta::new("provide:probe"),
+            Box::new(|| {}),
+        );
+
+        let resp = list_cordis_undo_labels(State(ctx.clone()))
+            .await
+            .expect("handler");
+        assert_eq!(resp.0, StatusCode::OK);
+        let fibers = resp.1 .0["fibers"].as_array().unwrap();
+        let entry = fibers
+            .iter()
+            .find(|f| f["fiber_id"] == json!(fid))
+            .expect("registered fiber listed");
+        // The registration's own provide undo carries the default "unnamed"
+        // label; our explicit labeled push lands after it.
+        let labels = entry["pending_undo_labels"].as_array().unwrap();
+        assert_eq!(labels.last().unwrap(), &json!("provide:probe"));
+        assert_eq!(labels[0], json!("unnamed"));
+        assert_eq!(entry["disposed"], json!(false));
+
+        // After dispose the label list drains; the (now pruned) fiber no
+        // longer appears.
+        let _ = fiber.dispose().await;
+        let _ = registry.prune_disposed();
+        let resp = list_cordis_undo_labels(State(ctx.clone()))
+            .await
+            .expect("handler");
+        let fibers = resp.1 .0["fibers"].as_array().unwrap();
+        assert!(
+            !fibers.iter().any(|f| f["fiber_id"] == json!(fid)),
+            "disposed+pruned fiber must vanish from introspection"
+        );
+
+        // 503 when no RegistryService is on the context.
+        let bare = Context::new_root();
+        let resp = list_cordis_undo_labels(State(bare)).await.expect("h");
+        assert_eq!(resp.0, StatusCode::SERVICE_UNAVAILABLE);
     }
 }

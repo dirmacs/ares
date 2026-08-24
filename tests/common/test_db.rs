@@ -65,7 +65,9 @@ pub async fn create_test_db() -> PostgresClient {
     // One-time init: truncate stale data from prior runs, then ensure schema
     if INIT_SCHEMA.set(()).is_ok() {
         cleanup_tables(&db).await;
-        ensure_schema(&db).await.expect("Failed to run migrations on ares_test");
+        ensure_schema(&db)
+            .await
+            .expect("Failed to run migrations on ares_test");
     }
 
     db
@@ -93,7 +95,7 @@ async fn cleanup_tables(db: &PostgresClient) {
 
 /// Run schema migrations against the test database pool.
 pub async fn ensure_schema(db: &PostgresClient) -> Result<()> {
-    sqlx::migrate!("./migrations")
+    ares_store::MIGRATOR
         .run(&db.pool)
         .await
         .map_err(|e| ares_types::types::AppError::Database(format!("Migration failed: {}", e)))?;

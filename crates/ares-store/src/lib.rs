@@ -51,11 +51,18 @@
 #![allow(clippy::map_flatten)]
 #![allow(clippy::for_kv_map)]
 
-pub mod config;
+/// Canonical embedded migrator shared by every crate that needs the schema.
+///
+/// Built once from the crate-local `./migrations` directory, which ships in
+/// the published `ares-store` package so `cargo install` works from anywhere.
+#[cfg(feature = "postgres")]
+pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
 pub mod billing_config;
+pub mod config;
 pub mod fleet_secrets;
-pub use config::{DatabaseConfig, QdrantConfig, default_qdrant_url};
 pub use billing_config::{BillingConfig, ModelPricingConfig};
+pub use config::{default_qdrant_url, DatabaseConfig, QdrantConfig};
 pub use fleet_secrets::{
     decrypt_api_key, encrypt_api_key, last_n_visible, EncryptedPayload, FleetSecrets,
     FleetSecretsError, MasterKey, ProviderOverride,
@@ -80,11 +87,11 @@ pub mod qdrant;
 
 // Relational database (requires postgres feature for sqlx)
 #[cfg(feature = "postgres")]
-/// Agent run tracking (execution history).
-pub mod agent_runs;
-#[cfg(feature = "postgres")]
 /// Reviewer and quality feedback attached to agent runs.
 pub mod agent_feedback;
+#[cfg(feature = "postgres")]
+/// Agent run tracking (execution history).
+pub mod agent_runs;
 #[cfg(feature = "postgres")]
 /// Platform alerts (health, quota, errors).
 pub mod alerts;
@@ -95,16 +102,19 @@ pub mod audit_log;
 /// PostgreSQL database client implementation.
 pub mod postgres;
 #[cfg(feature = "postgres")]
+/// Per-tenant Cordis child contexts (temporal tenancy).
+pub mod realms;
+#[cfg(feature = "postgres")]
 /// Per-tenant agent instance management.
 pub mod tenant_agents;
 #[cfg(feature = "postgres")]
 /// Multi-tenant tenant management.
 pub mod tenants;
 #[cfg(feature = "postgres")]
-/// Per-tenant Cordis child contexts (temporal tenancy).
-pub mod realms;
-#[cfg(feature = "postgres")]
 pub use realms::TenantRealms;
+#[cfg(feature = "postgres")]
+/// Agent config version history (Sprint 11).
+pub mod agent_versions;
 /// Database traits and common types shared across providers.
 #[cfg(feature = "postgres")]
 pub mod traits;
@@ -112,43 +122,40 @@ pub mod traits;
 #[cfg(feature = "turso")]
 pub mod turso;
 #[cfg(feature = "postgres")]
-/// Agent config version history (Sprint 11).
-pub mod agent_versions;
-#[cfg(feature = "postgres")]
 pub use agent_versions::AgentVersionInput;
 #[cfg(feature = "postgres")]
 /// Fleet-wide, tenant-agnostic provider API key & config storage.
 pub mod fleet_provider_secrets;
-#[cfg(feature = "postgres")]
-/// Runtime-defined LLM provider configurations.
-pub mod runtime_providers;
-#[cfg(feature = "postgres")]
-/// Per-tenant model tier mapping (abstract tier -> concrete provider/model).
-pub mod tenant_model_tiers;
-#[cfg(feature = "postgres")]
-/// Per-tenant allowlist for tools, models, and RAG sources.
-pub mod tenant_allowlist;
-#[cfg(feature = "postgres")]
-/// Per-tenant LLM token budget tracking.
-pub mod token_budgets;
-#[cfg(feature = "postgres")]
-/// Runtime-defined tools (HTTP, MCP, Script, SQL).
-pub mod runtime_tools;
-#[cfg(feature = "postgres")]
-/// Detailed run history: LLM calls, tool calls, costs, budgets, health metrics.
-pub mod run_history;
-#[cfg(feature = "postgres")]
-/// Custom skills and connector configurations.
-pub mod skills;
-#[cfg(feature = "postgres")]
-/// Agent schedules, event triggers, and pipeline links.
-pub mod schedules;
 #[cfg(feature = "postgres")]
 /// OAuth credential storage for third-party connectors.
 pub mod oauth_credentials;
 #[cfg(feature = "postgres")]
 /// Pure SQL builders and row conversions (testable without a live DB).
 pub mod query_builders;
+#[cfg(feature = "postgres")]
+/// Detailed run history: LLM calls, tool calls, costs, budgets, health metrics.
+pub mod run_history;
+#[cfg(feature = "postgres")]
+/// Runtime-defined LLM provider configurations.
+pub mod runtime_providers;
+#[cfg(feature = "postgres")]
+/// Runtime-defined tools (HTTP, MCP, Script, SQL).
+pub mod runtime_tools;
+#[cfg(feature = "postgres")]
+/// Agent schedules, event triggers, and pipeline links.
+pub mod schedules;
+#[cfg(feature = "postgres")]
+/// Custom skills and connector configurations.
+pub mod skills;
+#[cfg(feature = "postgres")]
+/// Per-tenant allowlist for tools, models, and RAG sources.
+pub mod tenant_allowlist;
+#[cfg(feature = "postgres")]
+/// Per-tenant model tier mapping (abstract tier -> concrete provider/model).
+pub mod tenant_model_tiers;
+#[cfg(feature = "postgres")]
+/// Per-tenant LLM token budget tracking.
+pub mod token_budgets;
 
 // Re-exports
 pub use vectorstore::{CollectionInfo, CollectionStats, VectorStore, VectorStoreProvider};
@@ -159,12 +166,12 @@ pub use ares_vector::AresVectorStore;
 pub use lancedb::LanceDBStore;
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresClient;
-#[cfg(feature = "turso")]
-pub use turso::TursoClient;
 #[cfg(feature = "qdrant")]
 pub use qdrant::QdrantVectorStore;
 #[cfg(feature = "postgres")]
 pub use tenants::{TenantDb, UsageSummary};
+#[cfg(feature = "turso")]
+pub use turso::TursoClient;
 
 #[cfg(feature = "postgres")]
 pub type Store = TenantDb;
@@ -188,9 +195,9 @@ impl cordis::Service for PostgresService {
 
 #[cfg(test)]
 mod tests {
-    use super::{CollectionInfo, CollectionStats};
     #[cfg(feature = "ares-vector")]
     use super::VectorStoreProvider;
+    use super::{CollectionInfo, CollectionStats};
     #[cfg(feature = "ares-vector")]
     use serde_json::json;
 

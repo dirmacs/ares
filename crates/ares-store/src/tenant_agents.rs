@@ -329,7 +329,10 @@ pub fn merge_tenant_agent_update(
             .display_name
             .clone()
             .unwrap_or_else(|| current.display_name.clone()),
-        description: req.description.clone().or_else(|| current.description.clone()),
+        description: req
+            .description
+            .clone()
+            .or_else(|| current.description.clone()),
         config: req.config.clone().unwrap_or_else(|| current.config.clone()),
         enabled: req.enabled.unwrap_or(current.enabled),
         updated_at: now,
@@ -364,7 +367,6 @@ pub(crate) fn agent_from_row(row: &sqlx::postgres::PgRow) -> TenantAgent {
         updated_at: row.get("updated_at"),
     })
 }
-
 
 pub fn tenant_agent_version_key(tenant_id: &str, agent_name: &str) -> String {
     format!("tenant:{}:{}", tenant_id, agent_name)
@@ -634,16 +636,16 @@ pub async fn create_tenant_agent(
     let now = now_ts();
 
     sqlx::query(INSERT_TENANT_AGENT_SQL)
-    .bind(&id)
-    .bind(tenant_id)
-    .bind(&req.agent_name)
-    .bind(&req.display_name)
-    .bind(&req.description)
-    .bind(&req.config)
-    .bind(now)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+        .bind(&id)
+        .bind(tenant_id)
+        .bind(&req.agent_name)
+        .bind(&req.display_name)
+        .bind(&req.description)
+        .bind(&req.config)
+        .bind(now)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     let agent = get_tenant_agent(pool, tenant_id, &req.agent_name).await?;
     record_tenant_agent_version(pool, &agent, "admin_create").await?;
@@ -786,18 +788,12 @@ mod tests {
 
     #[test]
     fn tenant_agent_version_key_empty_tenant() {
-        assert_eq!(
-            tenant_agent_version_key("", "agent"),
-            "tenant::agent"
-        );
+        assert_eq!(tenant_agent_version_key("", "agent"), "tenant::agent");
     }
 
     #[test]
     fn tenant_agent_version_key_empty_agent() {
-        assert_eq!(
-            tenant_agent_version_key("tenant", ""),
-            "tenant:tenant:"
-        );
+        assert_eq!(tenant_agent_version_key("tenant", ""), "tenant:tenant:");
     }
 
     #[test]
@@ -821,30 +817,21 @@ mod tests {
     #[test]
     fn active_runtime_config_version_without_version() {
         let agent = sample_agent();
-        assert_eq!(
-            active_runtime_config_version(&agent),
-            "tenant-db:20"
-        );
+        assert_eq!(active_runtime_config_version(&agent), "tenant-db:20");
     }
 
     #[test]
     fn active_runtime_config_version_empty_string_falls_back() {
         let mut agent = sample_agent();
         agent.config = serde_json::json!({ "version": "" });
-        assert_eq!(
-            active_runtime_config_version(&agent),
-            "tenant-db:20"
-        );
+        assert_eq!(active_runtime_config_version(&agent), "tenant-db:20");
     }
 
     #[test]
     fn active_runtime_config_version_whitespace_only_falls_back() {
         let mut agent = sample_agent();
         agent.config = serde_json::json!({ "version": "   " });
-        assert_eq!(
-            active_runtime_config_version(&agent),
-            "tenant-db:20"
-        );
+        assert_eq!(active_runtime_config_version(&agent), "tenant-db:20");
     }
 
     // =====================================================================
@@ -862,7 +849,12 @@ mod tests {
         );
         let suffix = ver.strip_prefix("tenant-db:20:").unwrap();
         // UUID v4 has format 8-4-4-4-12 hex chars
-        assert_eq!(suffix.len(), 36, "UUID should be 36 chars, got '{}'", suffix);
+        assert_eq!(
+            suffix.len(),
+            36,
+            "UUID should be 36 chars, got '{}'",
+            suffix
+        );
         assert_eq!(
             suffix.chars().filter(|c| *c == '-').count(),
             4,
@@ -878,7 +870,12 @@ mod tests {
     fn tenant_agent_from_snapshot_with_nested_key() {
         let agent = sample_agent();
         let snapshot = tenant_agent_snapshot(&agent);
-        assert_eq!(snapshot.get("tenant_agent").and_then(|v| v.get("agent_name")), Some(&serde_json::json!("listener")));
+        assert_eq!(
+            snapshot
+                .get("tenant_agent")
+                .and_then(|v| v.get("agent_name")),
+            Some(&serde_json::json!("listener"))
+        );
 
         let restored = tenant_agent_from_snapshot(snapshot).expect("should deserialize nested");
         assert_eq!(restored.agent_name, "listener");
@@ -888,8 +885,7 @@ mod tests {
     fn tenant_agent_from_snapshot_without_nested_key() {
         let agent = sample_agent();
         let raw = serde_json::to_value(&agent).unwrap();
-        let restored =
-            tenant_agent_from_snapshot(raw).expect("should deserialize flat agent");
+        let restored = tenant_agent_from_snapshot(raw).expect("should deserialize flat agent");
         assert_eq!(restored.agent_name, "listener");
         assert_eq!(restored.tenant_id, "tenant-1");
     }
@@ -911,10 +907,7 @@ mod tests {
         let snap = tenant_agent_snapshot(&agent);
 
         assert_eq!(snap["snapshot_type"].as_str(), Some("tenant_agent"));
-        assert_eq!(
-            snap["runtime_config_version"].as_str(),
-            Some("v2.1.0")
-        );
+        assert_eq!(snap["runtime_config_version"].as_str(), Some("v2.1.0"));
         // Nested agent has the same fields
         assert_eq!(snap["tenant_agent"]["agent_name"].as_str(), Some("writer"));
         assert_eq!(snap["tenant_agent"]["tenant_id"].as_str(), Some("tenant-1"));
@@ -1063,8 +1056,16 @@ mod tests {
         })
     }
 
-    fn row_snapshot(enabled: bool, config: serde_json::Value, updated_at: i64) -> TenantAgentRowSnapshot {
-        TenantAgentRowSnapshot { enabled, config, updated_at }
+    fn row_snapshot(
+        enabled: bool,
+        config: serde_json::Value,
+        updated_at: i64,
+    ) -> TenantAgentRowSnapshot {
+        TenantAgentRowSnapshot {
+            enabled,
+            config,
+            updated_at,
+        }
     }
 
     #[test]
@@ -1105,39 +1106,55 @@ mod tests {
 
     #[test]
     fn validate_tenant_config_rejects_non_array_tools() {
-        assert!(validate_tenant_config(&serde_json::json!({"model": "m", "tools": "search"})).is_err());
+        assert!(
+            validate_tenant_config(&serde_json::json!({"model": "m", "tools": "search"})).is_err()
+        );
     }
 
     #[test]
     fn validate_tenant_config_rejects_negative_max_tool_iterations() {
-        assert!(validate_tenant_config(&serde_json::json!({"model": "m", "max_tool_iterations": -1})).is_err());
+        assert!(validate_tenant_config(
+            &serde_json::json!({"model": "m", "max_tool_iterations": -1})
+        )
+        .is_err());
     }
 
     #[test]
     fn validate_tenant_config_rejects_non_boolean_parallel_tools() {
-        assert!(validate_tenant_config(&serde_json::json!({"model": "m", "parallel_tools": "yes"})).is_err());
+        assert!(validate_tenant_config(
+            &serde_json::json!({"model": "m", "parallel_tools": "yes"})
+        )
+        .is_err());
     }
 
     #[test]
     fn validate_tenant_config_accepts_null_system_prompt() {
-        let cfg = validate_tenant_config(&serde_json::json!({"model": "m", "system_prompt": null})).expect("valid");
+        let cfg = validate_tenant_config(&serde_json::json!({"model": "m", "system_prompt": null}))
+            .expect("valid");
         assert!(cfg.system_prompt.is_none());
     }
 
     #[test]
     fn validate_tenant_config_strips_empty_version() {
-        let cfg = validate_tenant_config(&serde_json::json!({"model": "m", "version": "  "})).expect("valid");
+        let cfg = validate_tenant_config(&serde_json::json!({"model": "m", "version": "  "}))
+            .expect("valid");
         assert!(cfg.version.is_none());
     }
 
     #[test]
     fn tenant_config_version_prefers_config_version_field() {
-        assert_eq!(tenant_config_version(&serde_json::json!({"version": "v9"}), 42), "v9");
+        assert_eq!(
+            tenant_config_version(&serde_json::json!({"version": "v9"}), 42),
+            "v9"
+        );
     }
 
     #[test]
     fn tenant_config_version_falls_back_to_updated_at() {
-        assert_eq!(tenant_config_version(&serde_json::json!({"model": "m"}), 99), "tenant-db:99");
+        assert_eq!(
+            tenant_config_version(&serde_json::json!({"model": "m"}), 99),
+            "tenant-db:99"
+        );
     }
 
     #[test]
@@ -1148,9 +1165,17 @@ mod tests {
 
     #[test]
     fn resolve_agent_config_returns_tenant_db_when_enabled() {
-        let outcome = resolve_agent_config("listener", "tenant-1", Some(row_snapshot(true, valid_config_json(), 55))).expect("ok");
+        let outcome = resolve_agent_config(
+            "listener",
+            "tenant-1",
+            Some(row_snapshot(true, valid_config_json(), 55)),
+        )
+        .expect("ok");
         match outcome {
-            TenantAgentResolveOutcome::UseTenantDb { config: parsed, config_version } => {
+            TenantAgentResolveOutcome::UseTenantDb {
+                config: parsed,
+                config_version,
+            } => {
                 assert_eq!(parsed.tools, vec!["search".to_string(), "read".to_string()]);
                 assert_eq!(config_version, "v1");
             }
@@ -1160,25 +1185,46 @@ mod tests {
 
     #[test]
     fn resolve_agent_config_errors_when_disabled() {
-        let err = resolve_agent_config("listener", "tenant-1", Some(row_snapshot(false, valid_config_json(), 1))).unwrap_err();
+        let err = resolve_agent_config(
+            "listener",
+            "tenant-1",
+            Some(row_snapshot(false, valid_config_json(), 1)),
+        )
+        .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
     }
 
     #[test]
     fn resolve_agent_config_errors_on_invalid_config() {
-        let err = resolve_agent_config("listener", "tenant-1", Some(row_snapshot(true, serde_json::json!({"tools": []}), 1))).unwrap_err();
+        let err = resolve_agent_config(
+            "listener",
+            "tenant-1",
+            Some(row_snapshot(true, serde_json::json!({"tools": []}), 1)),
+        )
+        .unwrap_err();
         assert!(matches!(err, AppError::InvalidInput(_)));
     }
 
     #[test]
     fn resolve_required_agent_config_errors_when_row_missing() {
-        assert!(matches!(resolve_required_agent_config("a", "t", None).unwrap_err(), AppError::NotFound(_)));
+        assert!(matches!(
+            resolve_required_agent_config("a", "t", None).unwrap_err(),
+            AppError::NotFound(_)
+        ));
     }
 
     #[test]
     fn resolve_required_agent_config_succeeds_when_present() {
-        let outcome = resolve_required_agent_config("a", "t", Some(row_snapshot(true, serde_json::json!({"model": "m"}), 3))).expect("ok");
-        assert!(matches!(outcome, TenantAgentResolveOutcome::UseTenantDb { .. }));
+        let outcome = resolve_required_agent_config(
+            "a",
+            "t",
+            Some(row_snapshot(true, serde_json::json!({"model": "m"}), 3)),
+        )
+        .expect("ok");
+        assert!(matches!(
+            outcome,
+            TenantAgentResolveOutcome::UseTenantDb { .. }
+        ));
     }
 
     #[test]
@@ -1215,7 +1261,10 @@ mod tests {
             description: None,
             config: valid_config_json(),
         };
-        assert_eq!(prepare_create_tenant_agent(&req).expect("tools"), vec!["search".to_string(), "read".to_string()]);
+        assert_eq!(
+            prepare_create_tenant_agent(&req).expect("tools"),
+            vec!["search".to_string(), "read".to_string()]
+        );
     }
 
     #[test]
@@ -1232,7 +1281,12 @@ mod tests {
     #[test]
     fn merge_tenant_agent_update_preserves_unset_fields() {
         let current = sample_agent();
-        let req = UpdateTenantAgentRequest { display_name: Some("New".into()), description: None, config: None, enabled: None };
+        let req = UpdateTenantAgentRequest {
+            display_name: Some("New".into()),
+            description: None,
+            config: None,
+            enabled: None,
+        };
         let merged = merge_tenant_agent_update(&current, &req, 999);
         assert_eq!(merged.display_name, "New");
         assert_eq!(merged.description, current.description);
@@ -1255,9 +1309,15 @@ mod tests {
     #[test]
     fn agent_from_row_data_maps_all_columns() {
         let data = TenantAgentRowData {
-            id: "id".into(), tenant_id: "tenant".into(), agent_name: "agent".into(),
-            display_name: "Display".into(), description: None,
-            config: serde_json::json!({"model": "m"}), enabled: false, created_at: 1, updated_at: 2,
+            id: "id".into(),
+            tenant_id: "tenant".into(),
+            agent_name: "agent".into(),
+            display_name: "Display".into(),
+            description: None,
+            config: serde_json::json!({"model": "m"}),
+            enabled: false,
+            created_at: 1,
+            updated_at: 2,
         };
         let agent = agent_from_row_data(data.clone());
         assert_eq!(agent.id, data.id);
@@ -1267,8 +1327,15 @@ mod tests {
     #[test]
     fn agent_from_row_data_preserves_optional_description() {
         let agent = agent_from_row_data(TenantAgentRowData {
-            id: "id".into(), tenant_id: "t".into(), agent_name: "a".into(), display_name: "d".into(),
-            description: Some("desc".into()), config: serde_json::json!({}), enabled: true, created_at: 0, updated_at: 0,
+            id: "id".into(),
+            tenant_id: "t".into(),
+            agent_name: "a".into(),
+            display_name: "d".into(),
+            description: Some("desc".into()),
+            config: serde_json::json!({}),
+            enabled: true,
+            created_at: 0,
+            updated_at: 0,
         });
         assert_eq!(agent.description.as_deref(), Some("desc"));
     }
@@ -1310,10 +1377,21 @@ mod tests {
 
     #[test]
     fn resolve_agent_config_tool_selection_exposed_in_outcome() {
-        let outcome = resolve_agent_config("x", "t", Some(row_snapshot(true, serde_json::json!({"model": "m", "tools": ["a", "b", "c"]}), 1))).expect("ok");
+        let outcome = resolve_agent_config(
+            "x",
+            "t",
+            Some(row_snapshot(
+                true,
+                serde_json::json!({"model": "m", "tools": ["a", "b", "c"]}),
+                1,
+            )),
+        )
+        .expect("ok");
         if let TenantAgentResolveOutcome::UseTenantDb { config, .. } = outcome {
             assert_eq!(config.tools.len(), 3);
-        } else { panic!("expected tenant db"); }
+        } else {
+            panic!("expected tenant db");
+        }
     }
 
     #[cfg(feature = "postgres")]
@@ -1323,68 +1401,120 @@ mod tests {
         use sqlx::PgPool;
 
         fn test_db_url() -> String {
-            if let Ok(url) = std::env::var("TEST_DATABASE_URL") { return url; }
+            if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
+                return url;
+            }
             if let Ok(url) = std::env::var("DATABASE_URL") {
-                if url.contains("/ares") && !url.contains("ares_test") { return url.replace("/ares", "/ares_test"); }
+                if url.contains("/ares") && !url.contains("ares_test") {
+                    return url.replace("/ares", "/ares_test");
+                }
                 return url;
             }
             "postgres://dirmacs@localhost:5432/ares_test".to_string()
         }
 
         async fn try_test_pool() -> Option<PgPool> {
-            let db = PostgresClient::new_remote(test_db_url(), String::new()).await.ok()?;
-            sqlx::migrate!("../../migrations").run(&db.pool).await.ok()?;
+            let db = PostgresClient::new_remote(test_db_url(), String::new())
+                .await
+                .ok()?;
+            crate::MIGRATOR.run(&db.pool).await.ok()?;
             Some(db.pool)
         }
 
-        fn unique_tenant() -> String { format!("tenant-test-{}", uuid::Uuid::new_v4()) }
+        fn unique_tenant() -> String {
+            format!("tenant-test-{}", uuid::Uuid::new_v4())
+        }
 
         #[tokio::test]
         async fn integration_create_get_delete_tenant_agent() {
-            let Some(pool) = try_test_pool().await else { eprintln!("SKIP: no postgres"); return; };
+            let Some(pool) = try_test_pool().await else {
+                eprintln!("SKIP: no postgres");
+                return;
+            };
             let tenant_id = unique_tenant();
             sqlx::query("INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $2, 'free', 1, 1) ON CONFLICT (id) DO NOTHING")
                 .bind(&tenant_id).bind("Test Tenant").execute(&pool).await.expect("tenant");
-            let created = create_tenant_agent(&pool, &tenant_id, CreateTenantAgentRequest {
-                agent_name: "product".into(), display_name: "Product".into(), description: Some("i".into()),
-                config: serde_json::json!({"model": "fast", "tools": ["search"]}),
-            }).await.expect("create");
+            let created = create_tenant_agent(
+                &pool,
+                &tenant_id,
+                CreateTenantAgentRequest {
+                    agent_name: "product".into(),
+                    display_name: "Product".into(),
+                    description: Some("i".into()),
+                    config: serde_json::json!({"model": "fast", "tools": ["search"]}),
+                },
+            )
+            .await
+            .expect("create");
             assert_eq!(created.agent_name, "product");
-            let fetched = get_tenant_agent(&pool, &tenant_id, "product").await.expect("get");
+            let fetched = get_tenant_agent(&pool, &tenant_id, "product")
+                .await
+                .expect("get");
             assert_eq!(fetched.id, created.id);
-            delete_tenant_agent(&pool, &tenant_id, "product").await.expect("delete");
-            assert!(get_tenant_agent(&pool, &tenant_id, "product").await.is_err());
+            delete_tenant_agent(&pool, &tenant_id, "product")
+                .await
+                .expect("delete");
+            assert!(get_tenant_agent(&pool, &tenant_id, "product")
+                .await
+                .is_err());
         }
 
         #[tokio::test]
         async fn integration_create_rejects_invalid_config() {
-            let Some(pool) = try_test_pool().await else { return; };
-            let err = create_tenant_agent(&pool, &unique_tenant(), CreateTenantAgentRequest {
-                agent_name: "broken".into(), display_name: "Broken".into(), description: None,
-                config: serde_json::json!({"tools": []}),
-            }).await.unwrap_err();
+            let Some(pool) = try_test_pool().await else {
+                return;
+            };
+            let err = create_tenant_agent(
+                &pool,
+                &unique_tenant(),
+                CreateTenantAgentRequest {
+                    agent_name: "broken".into(),
+                    display_name: "Broken".into(),
+                    description: None,
+                    config: serde_json::json!({"tools": []}),
+                },
+            )
+            .await
+            .unwrap_err();
             assert!(matches!(err, AppError::InvalidInput(_)));
         }
 
         #[tokio::test]
         async fn integration_list_tenant_agents_orders_by_name() {
-            let Some(pool) = try_test_pool().await else { return; };
+            let Some(pool) = try_test_pool().await else {
+                return;
+            };
             let tenant_id = unique_tenant();
             sqlx::query("INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $2, 'free', 1, 1) ON CONFLICT (id) DO NOTHING")
                 .bind(&tenant_id).bind("List Tenant").execute(&pool).await.expect("tenant");
             for name in ["zebra", "alpha"] {
-                create_tenant_agent(&pool, &tenant_id, CreateTenantAgentRequest {
-                    agent_name: name.into(), display_name: name.into(), description: None,
-                    config: serde_json::json!({"model": "fast"}),
-                }).await.expect("create");
+                create_tenant_agent(
+                    &pool,
+                    &tenant_id,
+                    CreateTenantAgentRequest {
+                        agent_name: name.into(),
+                        display_name: name.into(),
+                        description: None,
+                        config: serde_json::json!({"model": "fast"}),
+                    },
+                )
+                .await
+                .expect("create");
             }
-            let names: Vec<_> = list_tenant_agents(&pool, &tenant_id).await.expect("list").into_iter().map(|a| a.agent_name).collect();
+            let names: Vec<_> = list_tenant_agents(&pool, &tenant_id)
+                .await
+                .expect("list")
+                .into_iter()
+                .map(|a| a.agent_name)
+                .collect();
             assert_eq!(names, vec!["alpha".to_string(), "zebra".to_string()]);
         }
     }
     #[test]
     fn validate_tenant_config_accepts_parallel_tools_true() {
-        let cfg = validate_tenant_config(&serde_json::json!({"model": "m", "parallel_tools": true})).unwrap();
+        let cfg =
+            validate_tenant_config(&serde_json::json!({"model": "m", "parallel_tools": true}))
+                .unwrap();
         assert!(cfg.parallel_tools);
     }
 
@@ -1419,8 +1549,6 @@ mod tests {
             panic!("expected tenant db");
         }
     }
-
-
 }
 
 // =============================================================================
@@ -1443,7 +1571,7 @@ impl AgentTemplateStore {
     pub async fn get_template(&self, id: &str) -> Result<Option<AgentTemplate>> {
         let row = sqlx::query(
             "SELECT id, product_type, agent_name, display_name, description, config, created_at
-             FROM agent_templates WHERE id = $1"
+             FROM agent_templates WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)

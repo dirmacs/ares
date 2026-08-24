@@ -1,6 +1,5 @@
-use ares_store::tenants::TenantDb;
 use ares_agent::admit::{admit_with_details, quota_exceeded, AdmissionError, UsagePeriod};
-use cordis::{Context, EventsService};
+use ares_store::tenants::TenantDb;
 use ares_types::models::{QuotaExceeded, TenantContext};
 use axum::{
     extract::Request,
@@ -9,6 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use cordis::{Context, EventsService};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -85,9 +85,10 @@ fn auth_error_response(err: ApiKeyAuthError) -> Response {
 
 fn quota_exceeded_response(exceeded: QuotaExceeded) -> Response {
     match exceeded {
-        QuotaExceeded::Monthly => {
-            error_response(StatusCode::TOO_MANY_REQUESTS, "Monthly request quota exceeded")
-        }
+        QuotaExceeded::Monthly => error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Monthly request quota exceeded",
+        ),
         QuotaExceeded::Daily => {
             error_response(StatusCode::TOO_MANY_REQUESTS, "Daily rate limit exceeded")
         }
@@ -146,20 +147,23 @@ pub async fn api_key_auth_middleware(req: Request, next: Next) -> Response {
     if let Err(error) = admit_with_details(&admission_ctx).await {
         match error {
             AdmissionError::Quota(exceeded) => return quota_exceeded_response(exceeded),
-            AdmissionError::Usage { period: UsagePeriod::Monthly, .. } => {
+            AdmissionError::Usage {
+                period: UsagePeriod::Monthly,
+                ..
+            } => {
                 return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to check usage");
             }
-            AdmissionError::Usage { period: UsagePeriod::Daily, .. } => {
+            AdmissionError::Usage {
+                period: UsagePeriod::Daily,
+                ..
+            } => {
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Failed to check rate limit",
                 );
             }
             AdmissionError::Event(_) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to check usage",
-                );
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to check usage");
             }
         }
     }
@@ -245,9 +249,7 @@ mod tests {
     fn build_app(tenant_db: Arc<TenantDb>) -> Router {
         Router::new()
             .route("/protected", get(protected_handler))
-            .layer(axum::middleware::from_fn(
-                api_key_auth_middleware,
-            ))
+            .layer(axum::middleware::from_fn(api_key_auth_middleware))
             .layer(axum::middleware::from_fn(
                 move |mut req: Request<Body>, next: Next| {
                     let db = tenant_db.clone();
@@ -263,15 +265,17 @@ mod tests {
         Router::new()
             .route("/protected", get(protected_handler))
             .layer(axum::middleware::from_fn(api_key_auth_middleware))
-            .layer(axum::middleware::from_fn(move |mut req: Request<Body>, next: Next| {
-                let db = tenant_db.clone();
-                let ctx = ctx.clone();
-                async move {
-                    req.extensions_mut().insert(db);
-                    req.extensions_mut().insert(ctx);
-                    next.run(req).await
-                }
-            }))
+            .layer(axum::middleware::from_fn(
+                move |mut req: Request<Body>, next: Next| {
+                    let db = tenant_db.clone();
+                    let ctx = ctx.clone();
+                    async move {
+                        req.extensions_mut().insert(db);
+                        req.extensions_mut().insert(ctx);
+                        next.run(req).await
+                    }
+                },
+            ))
     }
 
     async fn ensure_test_schema(db: &PostgresClient) {
@@ -290,7 +294,7 @@ mod tests {
                 .execute(&db.pool)
                 .await
                 .ok();
-            sqlx::migrate!("../../migrations")
+            ares_store::MIGRATOR
                 .run(&db.pool)
                 .await
                 .expect("rebuild schema");
@@ -298,7 +302,7 @@ mod tests {
     }
 
     async fn restore_test_schema(db: &PostgresClient) {
-        sqlx::migrate!("../../migrations")
+        ares_store::MIGRATOR
             .run(&db.pool)
             .await
             .expect("restore schema after destructive test");
@@ -355,10 +359,7 @@ mod tests {
 
     #[test]
     fn test_extract_api_key_strips_bearer_prefix() {
-        assert_eq!(
-            extract_api_key("Bearer ares_abc123"),
-            Ok("ares_abc123")
-        );
+        assert_eq!(extract_api_key("Bearer ares_abc123"), Ok("ares_abc123"));
     }
 
     #[test]
@@ -518,10 +519,7 @@ mod tests {
     #[test]
     fn test_check_quota_monthly_takes_precedence() {
         let ctx = TenantContext::new("t1".into(), TenantTier::Free);
-        assert_eq!(
-            check_quota(&ctx, 1_000, 50),
-            Some(QuotaExceeded::Monthly)
-        );
+        assert_eq!(check_quota(&ctx, 1_000, 50), Some(QuotaExceeded::Monthly));
     }
 
     #[test]
@@ -940,12 +938,10 @@ mod tests {
         let tenant_db = Arc::new(TenantDb::new(db.clone()));
         let (_tenant_id, api_key) = provision_tenant(&tenant_db, "auth-db-monthly").await;
 
-        sqlx::query(
-            "ALTER TABLE monthly_usage_cache RENAME TO monthly_usage_cache_hidden",
-        )
-        .execute(&db.pool)
-        .await
-        .expect("hide monthly_usage_cache");
+        sqlx::query("ALTER TABLE monthly_usage_cache RENAME TO monthly_usage_cache_hidden")
+            .execute(&db.pool)
+            .await
+            .expect("hide monthly_usage_cache");
 
         let app = build_app(tenant_db);
         let response = app
@@ -964,12 +960,10 @@ mod tests {
             response_error_message(response).await,
             "Failed to check usage"
         );
-        sqlx::query(
-            "ALTER TABLE monthly_usage_cache_hidden RENAME TO monthly_usage_cache",
-        )
-        .execute(&db.pool)
-        .await
-        .expect("restore monthly_usage_cache");
+        sqlx::query("ALTER TABLE monthly_usage_cache_hidden RENAME TO monthly_usage_cache")
+            .execute(&db.pool)
+            .await
+            .expect("restore monthly_usage_cache");
     }
     #[tokio::test]
     async fn test_middleware_daily_usage_db_error() {

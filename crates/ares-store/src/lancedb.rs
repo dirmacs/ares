@@ -57,9 +57,7 @@ impl Default for LanceDBConfig {
 /// Validates a LanceDB storage path.
 pub fn validate_lancedb_path(path: &str) -> Result<()> {
     if path.trim().is_empty() {
-        return Err(AppError::Configuration(
-            "empty lancedb path".to_string(),
-        ));
+        return Err(AppError::Configuration("empty lancedb path".to_string()));
     }
     Ok(())
 }
@@ -78,7 +76,9 @@ pub fn validate_collection_name(name: &str) -> std::result::Result<(), String> {
         return Err("collection name must start with a letter or underscore".to_string());
     }
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err("collection name may only contain ASCII letters, digits, and underscores".to_string());
+        return Err(
+            "collection name may only contain ASCII letters, digits, and underscores".to_string(),
+        );
     }
     Ok(())
 }
@@ -113,7 +113,10 @@ pub fn cosine_distance_to_score(distance: f32) -> f32 {
 }
 
 /// Builds a SQL-like IN predicate for deleting documents by ID.
-pub fn build_delete_predicate(id_field: &str, ids: &[String]) -> std::result::Result<String, String> {
+pub fn build_delete_predicate(
+    id_field: &str,
+    ids: &[String],
+) -> std::result::Result<String, String> {
     if ids.is_empty() {
         return Err("ids must not be empty".to_string());
     }
@@ -212,7 +215,6 @@ impl LanceDBStore {
             dimensions_cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
-
 
     /// Create from a [`LanceDBConfig`].
     pub async fn from_config(config: &LanceDBConfig) -> Result<Self> {
@@ -444,7 +446,8 @@ impl VectorStore for LanceDBStore {
         // Create builders for empty table
         let mut id_builder = StringBuilder::new();
         let mut content_builder = StringBuilder::new();
-        let mut vector_builder = FixedSizeListBuilder::new(Float32Builder::new(), dimensions as i32);
+        let mut vector_builder =
+            FixedSizeListBuilder::new(Float32Builder::new(), dimensions as i32);
         let mut title_builder = StringBuilder::new();
         let mut source_builder = StringBuilder::new();
         let mut created_at_builder = StringBuilder::new();
@@ -896,7 +899,6 @@ impl VectorStore for LanceDBStore {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -916,10 +918,7 @@ mod tests {
     #[test]
     fn resolve_lancedb_path_prefers_explicit_override() {
         std::env::remove_var("LANCEDB_PATH");
-        assert_eq!(
-            resolve_lancedb_path(Some("/tmp/lancedb")),
-            "/tmp/lancedb"
-        );
+        assert_eq!(resolve_lancedb_path(Some("/tmp/lancedb")), "/tmp/lancedb");
     }
 
     #[test]
@@ -953,15 +952,14 @@ mod tests {
 
     #[test]
     fn build_delete_predicate_formats_in_clause() {
-        let predicate = build_delete_predicate(schema::ID, &["doc1".into(), "doc2".into()])
-            .expect("predicate");
+        let predicate =
+            build_delete_predicate(schema::ID, &["doc1".into(), "doc2".into()]).expect("predicate");
         assert_eq!(predicate, "id IN ('doc1', 'doc2')");
     }
 
     #[test]
     fn build_delete_predicate_escapes_single_quotes() {
-        let predicate = build_delete_predicate(schema::ID, &["it's".into()])
-            .expect("predicate");
+        let predicate = build_delete_predicate(schema::ID, &["it's".into()]).expect("predicate");
         assert!(predicate.contains("it''s"));
     }
 

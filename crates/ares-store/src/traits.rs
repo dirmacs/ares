@@ -37,7 +37,8 @@ impl DatabaseProvider {
             }
             #[cfg(feature = "turso")]
             DatabaseProvider::Turso { url, auth_token } => {
-                let client = super::turso::TursoClient::new(url.clone(), auth_token.clone()).await?;
+                let client =
+                    super::turso::TursoClient::new(url.clone(), auth_token.clone()).await?;
                 Ok(Box::new(client))
             }
         }
@@ -584,11 +585,7 @@ mod tests {
     #[tokio::test]
     async fn database_client_create_user_maps_connection_error() {
         let client = unreachable_client();
-        assert_database_error(
-            client
-                .create_user("u1", "a@b.com", "hash", "Alice")
-                .await,
-        );
+        assert_database_error(client.create_user("u1", "a@b.com", "hash", "Alice").await);
     }
 
     #[tokio::test]
@@ -619,20 +616,12 @@ mod tests {
     #[tokio::test]
     async fn database_client_conversation_methods_map_connection_error() {
         let client = unreachable_client();
-        assert_database_error(
-            client
-                .create_conversation("c1", "u1", Some("title"))
-                .await,
-        );
+        assert_database_error(client.create_conversation("c1", "u1", Some("title")).await);
         assert_database_error(client.conversation_exists("c1").await);
         assert_database_error(client.get_user_conversations("u1").await);
         assert_database_error(client.get_conversation("c1").await);
         assert_database_error(client.delete_conversation("c1").await);
-        assert_database_error(
-            client
-                .update_conversation_title("c1", Some("new"))
-                .await,
-        );
+        assert_database_error(client.update_conversation_title("c1", Some("new")).await);
     }
 
     #[tokio::test]
@@ -685,5 +674,4 @@ mod tests {
         assert_database_error(client.get_user_agent_by_name("u1", "coder").await);
         assert_database_error(client.get_public_agent_by_name("coder").await);
     }
-
 }

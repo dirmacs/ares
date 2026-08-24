@@ -132,10 +132,7 @@ impl cordis::Service for FleetSecrets {
     fn name(&self) -> &'static str {
         "fleet_secrets"
     }
-    fn init(
-        &self,
-        _ctx: &std::sync::Arc<cordis::Context>,
-    ) -> cordis::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool {
@@ -196,7 +193,10 @@ impl MasterKey {
 }
 
 /// Encrypt a UTF-8 plaintext API key. Returns the ciphertext + nonce.
-pub fn encrypt_api_key(plaintext: &str, master: &MasterKey) -> Result<EncryptedPayload, FleetSecretsError> {
+pub fn encrypt_api_key(
+    plaintext: &str,
+    master: &MasterKey,
+) -> Result<EncryptedPayload, FleetSecretsError> {
     let cipher = Aes256Gcm::new_from_slice(master.as_bytes())
         .map_err(|e| FleetSecretsError::Encrypt(e.to_string()))?;
 
@@ -261,11 +261,7 @@ pub fn last_n_visible(key: &str, n: usize) -> Option<String> {
     if len <= n {
         return Some(key.to_string());
     }
-    let start_byte = key
-        .char_indices()
-        .nth(len - n)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
+    let start_byte = key.char_indices().nth(len - n).map(|(i, _)| i).unwrap_or(0);
     Some(format!("…{}", &key[start_byte..]))
 }
 
@@ -343,11 +339,20 @@ mod tests {
     #[test]
     fn last_n_visible_truncates() {
         // "nvapi-abc12345XYZ" has 18 chars; last 4 = "5XYZ"
-        assert_eq!(last_n_visible("nvapi-abc12345XYZ", 4), Some("…5XYZ".to_string()));
+        assert_eq!(
+            last_n_visible("nvapi-abc12345XYZ", 4),
+            Some("…5XYZ".to_string())
+        );
         // 9 chars, n=8: 9>8, return "…" + last 8 = "…vapi-abc"
-        assert_eq!(last_n_visible("nvapi-abc", 8), Some("…vapi-abc".to_string()));
+        assert_eq!(
+            last_n_visible("nvapi-abc", 8),
+            Some("…vapi-abc".to_string())
+        );
         // 9 chars, n=10: 9<=10, return full
-        assert_eq!(last_n_visible("nvapi-abc", 10), Some("nvapi-abc".to_string()));
+        assert_eq!(
+            last_n_visible("nvapi-abc", 10),
+            Some("nvapi-abc".to_string())
+        );
         // Empty: None.
         assert_eq!(last_n_visible("", 4), None);
     }

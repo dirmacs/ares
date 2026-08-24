@@ -761,7 +761,7 @@ mod tests {
                 .expect("connect to ares_test");
 
             if INIT_SCHEMA.set(()).is_ok() {
-                sqlx::migrate!("../../migrations")
+                ares_store::MIGRATOR
                     .run(&db.pool)
                     .await
                     .expect("run migrations on ares_test");

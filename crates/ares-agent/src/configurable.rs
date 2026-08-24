@@ -1077,6 +1077,8 @@ When referencing facts above, cite [E1], [E2] etc.",
                     completion_tokens: completion_tok,
                     latency_ms: llm_latency,
                     status: "success".to_string(),
+                    cached_tokens: response.usage.as_ref().and_then(|u| u.cached_tokens),
+                    total_time_ms: Some(llm_latency),
                 };
                 let _ = obs.log_llm_call(record).await;
             }
@@ -1225,6 +1227,12 @@ When referencing facts above, cite [E1], [E2] etc.",
                 prompt_tokens: prompt_tok,
                 completion_tokens: completion_tok,
                 latency_ms: synth_latency,
+                cached_tokens: final_response
+                    .as_ref()
+                    .ok()
+                    .and_then(|attempt| attempt.response.usage.as_ref())
+                    .and_then(|u| u.cached_tokens),
+                total_time_ms: Some(synth_latency),
                 status,
             };
             let _ = obs.log_llm_call(record).await;
@@ -1357,6 +1365,8 @@ impl Agent for ConfigurableAgent {
                 completion_tokens: completion_tok,
                 latency_ms: llm_latency,
                 status: "success".to_string(),
+                cached_tokens: llm_response.usage.as_ref().and_then(|u| u.cached_tokens),
+                total_time_ms: Some(llm_latency),
             };
             let _ = obs.log_llm_call(record).await;
         }

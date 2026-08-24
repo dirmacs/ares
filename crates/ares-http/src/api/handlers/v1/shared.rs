@@ -1,11 +1,11 @@
+use crate::HttpError;
+use crate::Result;
+pub use ares_agent::memory::estimate_tokens;
+pub use ares_agent::Agent;
 pub use ares_store::agent_runs;
 pub use ares_store::tenant_agents::TenantAgent;
-pub use ares_agent::memory::estimate_tokens;
 pub use ares_types::models::{TenantContext, TenantTier};
-pub use ares_types::types::{AppError};
-use crate::Result;
-use crate::HttpError;
-pub use ares_agent::Agent;
+pub use ares_types::types::AppError;
 pub use axum::{
     extract::Extension,
     http::{HeaderName, HeaderValue},
@@ -15,7 +15,10 @@ pub use axum::{
 pub use chrono::{DateTime, Datelike, TimeZone, Utc};
 pub use serde::{Deserialize, Serialize};
 
-use super::{CreateApiKeyRequest, CreateApiKeyResponse, DailyUsage, Paginated, PaginationQuery, V1Agent, V1AgentLog, V1AgentRun, V1AgentStatus, V1ApiKey, V1Usage};
+use super::{
+    CreateApiKeyRequest, CreateApiKeyResponse, DailyUsage, Paginated, PaginationQuery, V1Agent,
+    V1AgentLog, V1AgentRun, V1AgentStatus, V1ApiKey, V1Usage,
+};
 
 // =============================================================================
 // Helpers
@@ -90,7 +93,8 @@ pub fn check_tenant_request_quota(
     monthly_requests: u64,
     daily_requests: u64,
 ) -> Result<()> {
-    tc.admit(monthly_requests, daily_requests).map_err(|e| HttpError::from(AppError::from(e)))
+    tc.admit(monthly_requests, daily_requests)
+        .map_err(|e| HttpError::from(AppError::from(e)))
 }
 
 pub fn research_depth_and_iterations(
@@ -589,7 +593,8 @@ mod tests {
     #[test]
     fn check_tenant_request_quota_allows_enterprise() {
         let tc = TenantContext::new("ent".into(), TenantTier::Enterprise);
-        check_tenant_request_quota(&tc, 1_000_000, 1_000_000).expect("enterprise quotas do not trip");
+        check_tenant_request_quota(&tc, 1_000_000, 1_000_000)
+            .expect("enterprise quotas do not trip");
     }
 
     #[test]
@@ -723,6 +728,7 @@ mod tests {
             prompt_tokens: 11,
             completion_tokens: 22,
             total_tokens: 33,
+            cached_tokens: None,
         };
         let (input, output) = llm_token_counts_u64(Some(&usage), "ignored", "ignored");
         assert_eq!((input, output), (11, 22));

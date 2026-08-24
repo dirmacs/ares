@@ -30,6 +30,13 @@ pub struct LlmCallRecord {
     pub latency_ms: i64,
     /// Status: "success", "error", etc.
     pub status: String,
+    /// Tokens served from the provider-side prompt cache, when the provider
+    /// reports cache hits (`None` when unknown or not reported).
+    pub cached_tokens: Option<i64>,
+    /// End-to-end wall-clock time for the whole call in milliseconds,
+    /// including retries and queueing (`None` when not measured separately;
+    /// callers commonly mirror `latency_ms` here).
+    pub total_time_ms: Option<i64>,
 }
 
 /// Record of a single tool call within an agent run.

@@ -1,5 +1,9 @@
 # Cordis redesign, baseline gates (phase -1, steps 1, 2)
 
+> **STATUS (2026-08-24):** Historical planning document from the pre-round-4 Cordis migration.
+> Rounds 4–9 have since shipped everything relevant; the branch references below are deleted or merged.
+> Current state of record: `docs/cordis-mapping.md` (§10–§19) and `ARCHITECTURE.md`.
+
 Branch: `cordis-redesign` forked from `main` at `e4f3bcca2397f25b237246faef0d10bbceb234de`
 Date: 2026-08-20
 Toolchain: rustc 1.95.0, cargo 1.95.0, clippy 0.1.95

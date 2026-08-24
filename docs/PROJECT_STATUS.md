@@ -3,6 +3,11 @@
 Date: 2024-12-15 
 Updated: 2026-02-03 
 Status: All Core Features Implemented and Tested 
+
+> **STATUS (2026-08-24):** This snapshot predates the 0.9.x Cordis kernel hardening (rounds 4–9:
+> RhaiPolicy scripting, guarded withdrawal, verified hot-swap, drain-and-shift replacement,
+> peer-dependency versioning, composition, cycle detection, metatheory suite). Current version: **0.9.1**.
+> See `CHANGELOG.md` [0.9.1] and `docs/cordis-mapping.md` §10–§19 for the state of record.
 Version: 0.6.0
 
 ---

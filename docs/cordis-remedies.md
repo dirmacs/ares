@@ -1,5 +1,9 @@
 # Pain points → cordis remedies (phase 0, step 6)
 
+> **STATUS (2026-08-24):** Historical planning document from the pre-round-4 Cordis migration.
+> Rounds 4–9 have since shipped everything relevant; the branch references below are deleted or merged.
+> Current state of record: `docs/cordis-mapping.md` (§10–§19) and `ARCHITECTURE.md`.
+
 Source: Audit P0, P10 (AppState god-struct through header usage tracking) + `docs/cordis-mapping.md` primitives.
 Rule: One-line remedy per pain point, the Cordis primitive that eliminates it.
 

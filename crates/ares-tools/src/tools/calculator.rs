@@ -1,7 +1,7 @@
 use crate::registry::Tool;
-use cordis::Service;
 use ares_types::Result;
 use async_trait::async_trait;
+use cordis::Service;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -87,10 +87,7 @@ impl Service for CalculatorService {
         "calculator"
     }
 
-    fn init(
-        &self,
-        _ctx: &std::sync::Arc<cordis::Context>,
-    ) -> cordis::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async move { Ok(None) })
     }
 }
@@ -263,7 +260,10 @@ mod tests {
 
         let isolated = ctx.isolate::<Tools>("tenant:acme");
         assert!(resolved.resolve(&isolated, "calculator").is_some());
-        assert!(resolved.list(&isolated).iter().any(|d| d.name == "calculator"));
+        assert!(resolved
+            .list(&isolated)
+            .iter()
+            .any(|d| d.name == "calculator"));
     }
 
     #[test]

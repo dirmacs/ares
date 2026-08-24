@@ -579,7 +579,7 @@ async fn run_server(
     dotenvy::dotenv().ok();
     let log_filter = if verbose { "debug,ares=trace" } else { "info" };
     init_tracing(log_filter);
-    tracing::info!("Starting A.R.E.S - Agentic Retrieval Enhanced Server");
+    tracing::info!("Starting A.R.E.S - Agentic Runtime Extensible Server");
 
     // 2. Context::new_root + ReflectService (needed before watchers)
     let root_ctx = cordis::Context::new_root();
@@ -843,7 +843,7 @@ async fn run_server(
             (name = "rag", description = "RAG (Retrieval Augmented Generation) endpoints"),
         ),
         info(
-            title = "A.R.E.S - Agentic Retrieval Enhanced Server API",
+            title = "A.R.E.S - Agentic Runtime Extensible Server API",
             version = "0.3.0",
             description = "Production-grade agentic chatbot server with multi-provider LLM support"
         )
@@ -900,7 +900,7 @@ async fn run_server(
             (name = "conversations", description = "Conversation management endpoints"),
         ),
         info(
-            title = "A.R.E.S - Agentic Retrieval Enhanced Server API",
+            title = "A.R.E.S - Agentic Runtime Extensible Server API",
             version = "0.3.0",
             description = "Production-grade agentic chatbot server with multi-provider LLM support"
         )

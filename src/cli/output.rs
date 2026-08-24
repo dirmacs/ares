@@ -47,7 +47,7 @@ impl Output {
             );
             println!(
                 "   {} {}\n",
-                "Agentic Retrieval Enhanced Server".bright_white().bold(),
+                "Agentic Runtime Extensible Server".bright_white().bold(),
                 format!("v{}", env!("CARGO_PKG_VERSION")).dimmed()
             );
         } else {
@@ -59,7 +59,7 @@ impl Output {
  / ___ \|  _ <| |___ ___) |
 /_/   \_\_| \_\_____|____/
 
-   Agentic Retrieval Enhanced Server v{}
+   Agentic Runtime Extensible Server v{}
 "#,
                 env!("CARGO_PKG_VERSION")
             );

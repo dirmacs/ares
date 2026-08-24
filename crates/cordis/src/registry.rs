@@ -114,6 +114,13 @@ impl RegistryService {
     /// it calls the plugin to build the service, inserts the service into the
     /// context, creates a fiber to represent the registration, and records the
     /// mapping.
+    ///
+    /// Availability predicates: the plugin factory's product is consulted via
+    /// [`Service::check`] before it is provided. A not-ready instance rests
+    /// the fiber as inspectable `Failed { error: "availability predicate
+    /// rejected service" }` instead of `Active`; registration itself stays
+    /// non-throwing because register-before-ready is a supported transient
+    /// that later refreshes converge (see the metatheory confluence legs).
     pub fn register<P: Plugin>(
         &self,
         ctx: &Arc<Context>,
@@ -143,10 +150,10 @@ impl RegistryService {
             None => false,
         };
         if active_conflict {
-            return Err(CordisError::Configuration(format!(
-                "duplicate provider for {:?}",
-                tid
-            )));
+            return Err(CordisError::DuplicateProvider {
+                name: format!("{tid:?}"),
+                owner: format!("isolate realm {:?}", ctx.isolate_label(tid)),
+            });
         }
         // A non-conflicting entry is stale (retired/disposed/failed provider)
         // and must not block the fresh registration.
@@ -199,12 +206,21 @@ impl RegistryService {
                 return Err(error);
             }
         };
+        // Availability predicate: the reload runner already consulted
+        // `provides.check()` BEFORE the value was provided, so an unready
+        // instance was never visible to consumers. Registration stays
+        // non-throwing (register-before-ready is a supported transient that
+        // later refreshes converge); the fiber rests as an inspectable
+        // `Failed` naming the rejection instead of a bare `Inactive`, so
+        // operators see WHY it is down.
         let epoch = fiber.compute_epoch(ctx);
         fiber.set_epoch(epoch.clone());
         fiber.set_state(if healthy {
             crate::FiberState::Active { epoch }
         } else {
-            crate::FiberState::Inactive { error: None }
+            crate::FiberState::Failed {
+                error: Some("availability predicate rejected service".into()),
+            }
         });
         self.provided.write().insert(key, fid);
 
@@ -267,7 +283,36 @@ impl RegistryService {
         fid
     }
 
+    /// Drop tracking entries for fibers whose disposal already ran.
+    ///
+    /// A fiber is prunable only when [`Fiber::is_disposed`] is true (the
+    /// `disposed` flag `Fiber::dispose` sets). Every other state is kept:
+    /// `Failed{error}` is inspectable by design (ledger row #1), and
+    /// `Inactive`/`Active`/transitional fibers are live bookkeeping. The
+    /// matching `provided` slot and realm record are cleared alongside, so a
+    /// fresh registration of the same key never sees a stale conflict.
+    pub fn prune_disposed(&self) -> usize {
+        let disposed: Vec<FiberId> = self
+            .fibers
+            .read()
+            .iter()
+            .filter(|(_, fiber)| fiber.is_disposed())
+            .map(|(fid, _)| *fid)
+            .collect();
+        let mut removed = 0;
+        for fid in disposed {
+            if self.remove(fid).is_some() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     pub fn get_fiber(&self, id: FiberId) -> Option<Arc<Fiber>> {
+        // Inspectable-by-design read: no implicit pruning. Disposed fibers
+        // stay resolvable here until an explicit/opportunistic
+        // `prune_disposed()` runs, so post-dispose assertions and refreshes
+        // keep working.
         self.fibers.read().get(&id).cloned()
     }
 
@@ -287,7 +332,15 @@ impl RegistryService {
         self.realms.write().insert(fid, Arc::downgrade(ctx));
     }
 
+    /// Snapshot of every currently tracked fiber id (introspection surface).
+    pub fn tracked_ids(&self) -> Vec<FiberId> {
+        self.fibers.read().keys().copied().collect()
+    }
+
     pub fn len(&self) -> usize {
+        // Opportunistic dead-fiber sweep: every cheap size probe also drops
+        // entries whose disposal already ran.
+        self.prune_disposed();
         self.fibers.read().len()
     }
 
@@ -317,7 +370,7 @@ pub static REGISTRY_PLUGINS: [fn(&Arc<Context>) -> Result<FiberId, CordisError>]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, FiberState, Service};
+    use crate::{Context, FiberState, ReflectService, Service};
 
     #[derive(Debug)]
     struct FooService(pub i32);
@@ -536,7 +589,7 @@ mod tests {
             .expect("bar registration");
         assert!(ctx.get::<FooService>().is_some());
         assert!(ctx.get::<BarService>().is_some());
-        registry.get_fiber(foo).unwrap().dispose().await;
+        let _ = registry.get_fiber(foo).unwrap().dispose().await;
         assert!(ctx.get::<FooService>().is_none());
         assert_eq!(ctx.get::<BarService>().unwrap().0, 99);
         assert!(matches!(
@@ -692,7 +745,7 @@ mod tests {
 
         // Dispose the consumer: its effects are undone and it is no longer
         // Active, so reliance drops to zero and removal succeeds.
-        registry.get_fiber(consumer_fid).unwrap().dispose().await;
+        let _ = registry.get_fiber(consumer_fid).unwrap().dispose().await;
         let key = (TypeId::of::<FooService>(), None);
         assert_eq!(registry.reliance_count(&key), 0);
 
@@ -749,5 +802,215 @@ mod tests {
         // Extra distinct check: FooService isolate should not have created BarService.
         assert!(ctx.get::<BarService>().is_none());
         assert_eq!(registry.len(), 1);
+    }
+
+    /// Dead-fiber pruning: a disposed fiber is dropped by `prune_disposed`
+    /// (and by opportunistic sweeps on `len`), while a Failed fiber survives
+    /// — inspectable by design.
+    #[tokio::test]
+    async fn prune_disposed_drops_disposed_but_keeps_failed() {
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+
+        let failed_fid = registry
+            .register(&ctx, FailingPlugin, ())
+            .expect_err("failing registration is rejected but tracked");
+        let failed_fid = match failed_fid {
+            CordisError::Configuration(_) => 1, // first allocation on a fresh registry
+            other => panic!("unexpected error shape: {other:?}"),
+        };
+        let live_fid = registry
+            .register(&ctx, FooPlugin, ())
+            .expect("live registration");
+        assert!(matches!(
+            registry.get_fiber(failed_fid).unwrap().state(),
+            FiberState::Failed { .. }
+        ));
+
+        // Force dispose the live fiber: its undos retract the service and the
+        // `disposed` flag flips on.
+        let _ = registry.get_fiber(live_fid).unwrap().dispose().await;
+        assert!(registry.get_fiber(live_fid).unwrap().is_disposed());
+
+        let pruned = registry.prune_disposed();
+        assert_eq!(pruned, 1, "exactly the disposed fiber is pruned");
+        assert!(
+            registry.get_fiber(live_fid).is_none(),
+            "disposed fiber must be gone after prune"
+        );
+        // Failed fiber SURVIVES the prune — inspectable-by-design.
+        assert!(matches!(
+            registry.get_fiber(failed_fid).unwrap().state(),
+            FiberState::Failed { .. }
+        ));
+        // The live Active fiber is untouched bookkeeping too.
+        let bar_fid = registry
+            .register(&ctx, BarPlugin, ())
+            .expect("bar registration");
+        assert!(registry.get_fiber(bar_fid).is_some());
+
+        // len() opportunistically re-prunes: dispose bar and a plain size
+        // probe must clear it without an explicit prune call.
+        let _ = registry.get_fiber(bar_fid).unwrap().dispose().await;
+        assert_eq!(registry.len(), 1, "only the Failed fiber remains");
+        assert!(registry.get_fiber(bar_fid).is_none());
+    }
+
+    /// Pruning a disposed provider clears its `provided` slot so the same key
+    /// can register again without a stale duplicate-provider conflict.
+    #[tokio::test]
+    async fn prune_clears_provided_slot_for_fresh_registration() {
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+        let fid = registry
+            .register(&ctx, FooPlugin, ())
+            .expect("first registration");
+        let _ = registry.get_fiber(fid).unwrap().dispose().await;
+
+        // Without pruning, the stale entry does not block (the conflict check
+        // already ignores non-active providers)...
+        let fid2 = registry
+            .register(&ctx, FooPlugin2, ())
+            .expect("re-registration works even pre-prune");
+        // ...but prune still removes both dead fibers from tracking: dispose
+        // the stale original again (idempotent) and the fresh one too.
+        let _ = registry.get_fiber(fid).unwrap().dispose().await;
+        let _ = registry.get_fiber(fid2).unwrap().dispose().await;
+        assert_eq!(registry.prune_disposed(), 2);
+        assert!(registry.get_fiber(fid).is_none());
+        assert!(registry.get_fiber(fid2).is_none());
+        assert_eq!(registry.len(), 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Availability predicates (Service::check) at registration time
+    // ------------------------------------------------------------------
+
+    #[derive(Debug)]
+    struct GatedService(bool);
+    impl Service for GatedService {
+        fn check(&self) -> bool {
+            self.0
+        }
+    }
+
+    struct GatedPlugin {
+        ready: bool,
+    }
+
+    impl Plugin for GatedPlugin {
+        type Config = ();
+        type Provides = GatedService;
+
+        fn apply(
+            &self,
+            _ctx: &Arc<Context>,
+            _config: Self::Config,
+        ) -> Result<Arc<Self::Provides>, CordisError> {
+            Ok(Arc::new(GatedService(self.ready)))
+        }
+    }
+
+    /// A plugin-produced service whose `Service::check` verdict is `false`
+    /// rests its registration fiber as an inspectable `Failed` naming the
+    /// rejection — never silently `Active`, never missing from tracking.
+    /// Registration stays non-throwing (register-before-ready is a supported
+    /// transient): a later ready provider of the same key converges the
+    /// fiber back to Active on refresh.
+    #[tokio::test]
+    async fn availability_predicate_rejection_registers_failed() {
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        if let Some(reflect) = ctx.get::<crate::ReflectService>() {
+            reflect.set_context(&ctx);
+        }
+        let registry = RegistryService::new();
+
+        let fid = registry
+            .register(&ctx, GatedPlugin { ready: false }, ())
+            .expect("predicate rejection must NOT fail registration");
+        let fiber = registry.get_fiber(fid).expect("tracked");
+        match fiber.state() {
+            crate::FiberState::Failed { error } => {
+                assert!(error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("availability predicate rejected service"));
+            }
+            other => panic!("expected Failed state, got {other:?}"),
+        }
+        // The unready value was never exposed to consumers.
+        assert!(ctx.get::<GatedService>().is_none());
+        // Convergence after a ready re-provision is covered by
+        // predicate_passing_reregistration_activates_dependents below.
+    }
+
+    /// The reactive leg: after a rejected registration, registering a passing
+    /// implementation of the same key activates dependents — mirroring the
+    /// version_conformance shapes.
+    #[tokio::test]
+    async fn predicate_passing_reregistration_activates_dependents() {
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        if let Some(reflect) = ctx.get::<crate::ReflectService>() {
+            reflect.set_context(&ctx);
+        }
+        let registry = RegistryService::new();
+
+        // Rejected first: registers fine but rests Failed with the key
+        // unserved.
+        let bad_fid = registry
+            .register(&ctx, GatedPlugin { ready: false }, ())
+            .expect("rejection is non-throwing");
+        assert!(matches!(
+            registry.get_fiber(bad_fid).unwrap().state(),
+            crate::FiberState::Failed { .. }
+        ));
+
+        // Dependent declared against the gated TypeId while it is absent.
+        struct GatedConsumer;
+        impl Plugin for GatedConsumer {
+            type Config = ();
+            type Provides = DerivedProbe;
+
+            fn apply(
+                &self,
+                _ctx: &Arc<Context>,
+                _config: Self::Config,
+            ) -> Result<Arc<Self::Provides>, CordisError> {
+                Ok(Arc::new(DerivedProbe))
+            }
+        }
+
+        #[derive(Debug)]
+        struct DerivedProbe;
+        impl Service for DerivedProbe {}
+
+        let dep_fid = registry
+            .register(&ctx, GatedConsumer, ())
+            .expect("consumer registers even without its dependency");
+        let dependent = registry.get_fiber(dep_fid).unwrap();
+        dependent.declare_inject::<GatedService>();
+        dependent.refresh(&ctx).await;
+        assert!(
+            matches!(dependent.state(), crate::FiberState::Inactive { .. }),
+            "dependent must stay Inactive while the provider is rejected, got {:?}",
+            dependent.state()
+        );
+
+        // A passing implementation of the same key now activates the
+        // dependent through the reactive notify path.
+        registry
+            .register(&ctx, GatedPlugin { ready: true }, ())
+            .expect("passing provider must register");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        dependent.refresh(&ctx).await;
+        match dependent.state() {
+            crate::FiberState::Active { .. } => {}
+            other => {
+                panic!("dependent should activate after a passing re-registration, got {other:?}")
+            }
+        }
+        assert!(ctx.get::<GatedService>().is_some());
     }
 }

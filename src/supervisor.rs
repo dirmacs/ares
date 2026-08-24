@@ -22,7 +22,7 @@
 
 use std::future::Future;
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Environment variable that marks a supervised child process.
 ///
@@ -44,6 +44,28 @@ const RAPID_RESTART_WINDOW: Duration = Duration::from_secs(30);
 
 /// Number of restarts inside [`RAPID_RESTART_WINDOW`] that stops the loop.
 const RAPID_RESTART_LIMIT: usize = 5;
+
+/// A child run that outlived this duration before exiting counts as a
+/// healthy cadence: the restart ladder resets so the next crash sequence
+/// starts from zero instead of inheriting stale strikes.
+const HEALTHY_RUN_DURATION: Duration = Duration::from_secs(10 * 60);
+
+/// Wall-clock milliseconds since the Unix epoch; the loop's single time
+/// source. Tests override it via [`NOW_OVERRIDE`] to simulate long-lived
+/// children without sleeping.
+fn now() -> u64 {
+    #[cfg(test)]
+    if let Some(ms) = NOW_OVERRIDE.lock().clone() {
+        return ms;
+    }
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+static NOW_OVERRIDE: parking_lot::Mutex<Option<u64>> = parking_lot::Mutex::new(None);
 
 /// A running child together with the write end of its standard input.
 ///
@@ -90,6 +112,9 @@ pub fn is_supervised() -> bool {
 /// - [`RAPID_RESTART_LIMIT`] restarts packed inside
 ///   [`RAPID_RESTART_WINDOW`] (a plugin that crashes at boot, for example)
 ///   stop the loop with an error instead of spinning.
+/// - A child that ran for at least [`HEALTHY_RUN_DURATION`] before exiting
+///   clears the accumulated restart ladder first: a long-lived run proves a
+///   healthy cadence, so old strikes never doom the fresh process.
 pub async fn supervise<F, Fut>(run_child: F) -> Result<(), io::Error>
 where
     F: Fn() -> Fut,
@@ -99,10 +124,17 @@ where
         return Ok(());
     }
 
-    let mut restarts: Vec<Instant> = Vec::new();
+    // Restart ladder: wall-clock milliseconds (via [`now`]) of the last
+    // respawns. Milliseconds keep the arithmetic testable through the clock
+    // seam without `Instant` subtraction.
+    let mut restarts: Vec<u64> = Vec::new();
+    // When the current child run started; compared against [`now`] at exit
+    // to detect a healthy long-lived run.
+    let mut spawned_at = now();
 
     loop {
         let code = run_child().await;
+        let ran_for = now().saturating_sub(spawned_at);
 
         match code {
             Some(EXIT_RESTART) => {}
@@ -112,15 +144,27 @@ where
             _ => return Ok(()),
         }
 
-        let now = Instant::now();
-        restarts.retain(|at| now.duration_since(*at) < RAPID_RESTART_WINDOW);
-        restarts.push(now);
+        // A run that outlived [`HEALTHY_RUN_DURATION`] proves the cadence is
+        // healthy: stale strikes say nothing about the fresh process, so the
+        // ladder starts over.
+        if ran_for >= HEALTHY_RUN_DURATION.as_millis() as u64 {
+            restarts.clear();
+            tracing::info!(
+                ran_for_ms = ran_for,
+                "supervisor: long-lived worker exited cleanly; restart backoff reset"
+            );
+        }
+
+        let stamp = now();
+        restarts.retain(|at| stamp.saturating_sub(*at) < RAPID_RESTART_WINDOW.as_millis() as u64);
+        restarts.push(stamp);
         if restarts.len() >= RAPID_RESTART_LIMIT {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "rapid restart loop detected",
             ));
         }
+        spawned_at = now();
     }
 }
 
@@ -223,6 +267,98 @@ mod tests {
 
         let script = Script::new(vec![Some(EXIT_RESTART); RAPID_RESTART_LIMIT]);
         let result = supervise(|| script.clone().step()).await;
+
+        let err = result.expect_err("five rapid restarts must stop the loop");
+        assert!(err.to_string().contains("rapid restart loop"));
+        assert_eq!(script.calls(), RAPID_RESTART_LIMIT);
+    }
+
+    /// Scripted statuses plus scripted exit timestamps, driving the [`now`]
+    /// clock seam so child-run durations are simulated without sleeping.
+    #[derive(Clone)]
+    struct ClockScript {
+        statuses: Arc<Vec<Option<i32>>>,
+        /// Fake wall-clock milliseconds at which each run exits.
+        exits: Arc<Vec<u64>>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ClockScript {
+        fn new(statuses: Vec<Option<i32>>, exits: Vec<u64>) -> Self {
+            Self {
+                statuses: Arc::new(statuses),
+                exits: Arc::new(exits),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+
+        async fn step(self) -> Option<i32> {
+            let nth = self.calls.fetch_add(1, Ordering::SeqCst);
+            // This run "finishes" at its scripted exit time.
+            if let Some(at) = self.exits.get(nth) {
+                *NOW_OVERRIDE.lock() = Some(*at);
+            }
+            match self.statuses.get(nth) {
+                Some(code) => *code,
+                None => Some(0),
+            }
+        }
+    }
+
+    /// Three sub-second crash loops, then a worker that outlived
+    /// [`HEALTHY_RUN_DURATION`]: the accumulated ladder clears, so two more
+    /// rapid crashes stay under the cap instead of tripping it.
+    #[tokio::test]
+    async fn long_lived_run_resets_rapid_restart_ladder() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::remove_var(CHILD_ENV_MARKER);
+
+        const HEALTHY_MS: u64 = HEALTHY_RUN_DURATION.as_millis() as u64;
+        const BASE: u64 = 1_000_000_000;
+
+        // Exits: three 1ms-apart crashes, one healthy-length run, then two
+        // more rapid crashes. The exhausted script then reports a clean exit,
+        // ending the loop.
+        let exits = vec![
+            BASE + 1,
+            BASE + 2,
+            BASE + 3,
+            BASE + 3 + HEALTHY_MS,
+            BASE + 3 + HEALTHY_MS + 4,
+        ];
+        let script = ClockScript::new(vec![Some(EXIT_RESTART); 5], exits);
+
+        *NOW_OVERRIDE.lock() = Some(BASE);
+        let result = supervise(|| script.clone().step()).await;
+        *NOW_OVERRIDE.lock() = None;
+
+        assert!(
+            result.is_ok(),
+            "two post-reset crashes must stay under the cap: {result:?}"
+        );
+        // Five queued runs plus the final exhausted-script probe.
+        assert_eq!(script.calls(), 6);
+    }
+
+    /// Counterfactual: the same crash cadence WITHOUT the long-lived run
+    /// still trips the cap — the reset, not the clock seam, changed the
+    /// outcome.
+    #[tokio::test]
+    async fn all_rapid_runs_without_reset_still_trip_cap() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::remove_var(CHILD_ENV_MARKER);
+
+        const BASE: u64 = 2_000_000_000;
+        let exits: Vec<u64> = (1..=5).map(|i| BASE + i).collect();
+        let script = ClockScript::new(vec![Some(EXIT_RESTART); 5], exits);
+
+        *NOW_OVERRIDE.lock() = Some(BASE);
+        let result = supervise(|| script.clone().step()).await;
+        *NOW_OVERRIDE.lock() = None;
 
         let err = result.expect_err("five rapid restarts must stop the loop");
         assert!(err.to_string().contains("rapid restart loop"));

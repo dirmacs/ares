@@ -19,6 +19,15 @@
 //! Callers should not call [`watch_supervisor`] unsupervised: without the
 //! marker the thread would read the terminal's (or test harness's) real
 //! stdin and block or consume it.
+//!
+//! The plugin-dir half of hot reload also lives here:
+//! [`watch_plugin_dirs`] watches library directories and fires one callback
+//! after a 250 ms quiet window, so the daemon can respawn workers with fresh
+//! plugin libraries (in-process unload is not possible for dlopen handles).
+
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// Exit code asking the parent process for a hot restart.
 pub const EXIT_RESTART: i32 = 51;
@@ -74,9 +83,114 @@ pub fn exit(code: i32) -> ! {
     std::process::exit(code)
 }
 
+/// Whether `path` names a loadable plugin library (`.so` / `.dylib` /
+/// `.dll`, case-insensitive).
+///
+/// Extension matching deliberately absorbs macOS realpath noise: dlopen of
+/// `/proc`-style canonicalized paths and symlinked framework dirs surface
+/// events whose full path differs but whose extension is still a library's.
+fn is_plugin_library(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "so" | "dylib" | "dll"))
+}
+
+const PLUGIN_QUIET_WINDOW: Duration = Duration::from_millis(250);
+
+/// Watch plugin directories for library changes; fire once after a quiet
+/// window.
+///
+/// One **non-recursive** watcher per directory. Events are collected into a
+/// channel; a deadline loop arms a quiet window on the first library-touching
+/// event and pushes it forward on every later one, so a burst of writes from
+/// a build (linker emitting `.so`, then touching it again) collapses into a
+/// single callback instead of firing mid-write. The callback cannot fire
+/// before any counted event arrived.
+///
+/// Only files passing [`is_plugin_library`] arm or reset the timer; READMEs,
+/// editor swap files, and partial artifacts with other extensions never
+/// trigger a reload, and the callback cannot fire before any library change
+/// happened at all.
+///
+/// When `on_quiet` runs the process must NOT try to unload old libraries:
+/// libloading handles cannot be safely unloaded in-process while borrowed
+/// services still point into them. The caller's contract is to persist state
+/// if needed and call [`exit(EXIT_RESTART)`] so the supervising daemon
+/// respawns the worker with fresh libraries loaded from disk.
+pub fn watch_plugin_dirs(
+    dirs: &[PathBuf],
+    on_quiet: impl FnOnce() + Send + 'static,
+) -> Result<(), String> {
+    /// Whether a channel item counts toward the reload timer. A counted
+    /// item touches a plugin library, carries no paths at all (cannot be
+    /// proven harmless), or is a watcher-side error — all err toward
+    /// reloading rather than silently swallowing a possible library change.
+    fn counted(item: &Result<notify::Event, notify::Error>) -> bool {
+        match item {
+            Ok(event) => event.paths.is_empty() || event.paths.iter().any(|p| is_plugin_library(p)),
+            Err(_) => true,
+        }
+    }
+
+    let (tx, rx) = mpsc::channel();
+    use notify::Watcher;
+    let mut watcher = notify::RecommendedWatcher::new(tx, notify::Config::default())
+        .map_err(|e| e.to_string())?;
+    for dir in dirs {
+        watcher
+            .watch(dir, notify::RecursiveMode::NonRecursive)
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::thread::Builder::new()
+        .name("cordis-plugin-dir-watch".to_string())
+        .spawn(move || {
+            // `watcher` (and its watches) live until this thread ends.
+            let _watcher = watcher;
+            // The quiet window is armed by the first counted event and
+            // pushed forward by every later one; unrelated writes never
+            // move it.
+            let mut quiet_at: Option<std::time::Instant> = None;
+            loop {
+                match quiet_at {
+                    None => match rx.recv() {
+                        Ok(item) => {
+                            if counted(&item) {
+                                quiet_at = Some(std::time::Instant::now() + PLUGIN_QUIET_WINDOW);
+                            }
+                        }
+                        Err(_) => break, // channel closed, nothing more to watch
+                    },
+                    Some(deadline) => {
+                        let Some(remaining) =
+                            deadline.checked_duration_since(std::time::Instant::now())
+                        else {
+                            break; // window already elapsed
+                        };
+                        match rx.recv_timeout(remaining) {
+                            Ok(item) => {
+                                if counted(&item) {
+                                    quiet_at =
+                                        Some(std::time::Instant::now() + PLUGIN_QUIET_WINDOW);
+                                }
+                            }
+                            Err(mpsc::RecvTimeoutError::Timeout) => break,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
+                    }
+                }
+            }
+            on_quiet();
+        })
+        // Detached watcher thread: its JoinHandle is intentionally dropped.
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn exit_codes_are_distinct() {
@@ -107,5 +221,67 @@ mod tests {
         // The thread stays blocked on stdin in tests; park the main test
         // thread briefly so the spawned thread is observed started.
         std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    #[test]
+    fn plugin_library_extension_matches_case_insensitively() {
+        for name in [
+            "libdemo.so",
+            "PLUGIN.DYLIB",
+            "thing.Dll",
+            "/plugins/libdemo.SO",
+        ] {
+            assert!(is_plugin_library(Path::new(name)), "{name} must match");
+        }
+        for name in [
+            "no-extension",
+            "notes.md",
+            "README.md",
+            "lib.so.bak",
+            ".hidden.so.cfg",
+        ] {
+            assert!(!is_plugin_library(Path::new(name)), "{name} must not match");
+        }
+    }
+
+    #[test]
+    fn watch_plugin_dirs_fires_on_quiet_after_library_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = fired.clone();
+        watch_plugin_dirs(&[dir.path().to_path_buf()], move || {
+            flag.store(true, Ordering::SeqCst)
+        })
+        .expect("watcher starts");
+        // Give inotify a beat to arm, then drop a fake library in.
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(dir.path().join("fake_test.so"), b"pretend elf").unwrap();
+        // 250 ms quiet window + scheduling slack, comfortably under 2 s.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !fired.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "library write must fire on_quiet"
+        );
+    }
+
+    #[test]
+    fn watch_plugin_dirs_ignores_non_library_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = fired.clone();
+        watch_plugin_dirs(&[dir.path().to_path_buf()], move || {
+            flag.store(true, Ordering::SeqCst)
+        })
+        .expect("watcher starts");
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(dir.path().join("README.md"), b"docs").unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !fired.load(Ordering::SeqCst),
+            "non-library writes must not reset or fire the quiet timer"
+        );
     }
 }

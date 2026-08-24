@@ -4,6 +4,7 @@ pub mod config;
 pub use config::ToolConfig;
 
 pub mod calculator;
+pub mod fence;
 pub mod http_tool;
 pub mod plugins;
 pub(crate) mod registry;

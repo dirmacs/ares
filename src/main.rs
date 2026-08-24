@@ -369,8 +369,11 @@ fn boot_loader_program(
     if ctx.get::<cordis::RegistryService>().is_none() {
         ctx.provide(cordis::RegistryService::new());
     }
-    let mut desired = Loader::load_from_file(entries_path)
-        .map_err(|e| format!("failed to load {}: {e}", entries_path.display()))?;
+    let mut desired = compose_entries_tree(
+        Loader::load_from_file(entries_path)
+            .map_err(|e| format!("failed to load {}: {e}", entries_path.display()))?,
+        entries_path,
+    );
 
     // Legacy --config injection: empty Overlay config + non-default path.
     if config_path != "ares.toml" {
@@ -472,12 +475,21 @@ fn reload_cordis_entries(ctx: &Arc<Context>, path: &std::path::Path) -> bool {
         tracing::warn!("Cordis hot-reload: CurrentEntries missing; skipping");
         return false;
     };
+    // Compose the freshly re-read tree BEFORE diffing so `@include` splices,
+    // `@group` flattening, and `${rhai: …}` interpolation match boot state
+    // (fail-open: on composition error we proceed with the raw entries).
+    let Ok(composed_tree) = Loader::load_from_file(path).map(|t| compose_entries_tree(t, path))
+    else {
+        tracing::warn!(path = %path.display(), "Cordis hot-reload: reparse failed after change");
+        return false;
+    };
     let mut current = current_entries.tree.lock().expect("entries lock").clone();
     let actions = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(Loader::reload_current(
             ctx,
             path,
             &mut current,
+            &composed_tree,
             &journal,
         ))
     });
@@ -508,6 +520,30 @@ fn reload_cordis_entries(ctx: &Arc<Context>, path: &std::path::Path) -> bool {
         );
     }
     ran
+}
+
+/// Compose freshly parsed entries in place: resolve `@include` splices,
+/// flatten `@group` children, then interpolate `${rhai: …}` config
+/// placeholders.
+///
+/// Composition is best-effort (fail-open): on error the RAW entries are kept
+/// and boot/reload proceeds — a bad include must not brick the server — but
+/// the reason is logged loudly at `error` level.
+#[cfg(feature = "postgres")]
+fn compose_entries_tree(
+    mut tree: cordis::loader::EntryTree,
+    path: &std::path::Path,
+) -> cordis::loader::EntryTree {
+    let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
+    if let Err(e) = cordis::compose_all(&mut tree.0, base_dir) {
+        tracing::error!(
+            path = %path.display(),
+            error = %e,
+            "Cordis compose: entry composition failed; \
+             proceeding with raw (uncomposed) entries"
+        );
+    }
+    tree
 }
 
 /// Forward cordis-entries.toml onto `watch_many_with` so HMR dylib apply

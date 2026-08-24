@@ -38,6 +38,10 @@ pub struct Fiber {
     injects: RwLock<HashMap<TypeId, String>>, // TypeId -> type_name
     reload_runner: Mutex<Option<ReloadRunner>>,
     reload_ctx: Mutex<Option<std::sync::Weak<Context>>>,
+    // Set when a late declare_inject raced an in-flight refresh (the inertia
+    // guard was held), so the refresh loop folds the declaration in instead
+    // of losing it between passes.
+    pending_declare: AtomicBool,
     id: Mutex<Option<crate::FiberId>>,
     disposed: AtomicBool,
 }
@@ -52,6 +56,7 @@ impl Fiber {
             injects: RwLock::new(HashMap::new()),
             reload_runner: Mutex::new(None),
             reload_ctx: Mutex::new(None),
+            pending_declare: AtomicBool::new(false),
             id: Mutex::new(None),
             disposed: AtomicBool::new(false),
         }
@@ -61,18 +66,65 @@ impl Fiber {
         let tid = TypeId::of::<T>();
         let name = std::any::type_name::<T>().to_string();
         self.injects.write().insert(tid, name);
-        if let (Some(ctx), Some(fid)) = (
-            self.reload_ctx
-                .lock()
-                .as_ref()
-                .and_then(std::sync::Weak::upgrade),
-            *self.id.lock(),
-        ) {
+        // Capture the registration context up front: the parking_lot mutex
+        // below is not reentrant, so no guard may be held across
+        // `reconcile_after_declare`, which re-locks the same mutex.
+        let weak_ctx = self.reload_ctx.lock().clone();
+        let fid = *self.id.lock();
+        if let (Some(ctx), Some(fid)) = (weak_ctx.and_then(|w| w.upgrade()), fid) {
             if let Some(reflect) = ctx.get::<crate::ReflectService>() {
                 reflect.register_dependent(tid, fid);
                 let _ = reflect.ensure_notifier(tid);
             }
+            // Metatheory delta #1 (resolved): a declaration landing on a
+            // fiber that rests Active reconciles immediately instead of
+            // waiting for the next external refresh.
+            self.reconcile_after_declare(&ctx);
         }
+    }
+
+    /// Eagerly reconcile a freshly declared inject with the state machine.
+    ///
+    /// A declaration on a fiber resting `Active` must re-enter the machine
+    /// right away: a satisfied declaration updates the epoch in place, an
+    /// unsatisfied one drives the same transition shape [`Self::refresh`]
+    /// uses (brief `Reloading`, effects undone, rest with the
+    /// missing-dependency note). Declarations on `Inactive`/`Failed` fibers
+    /// keep their historical behavior — they are evaluated at the fiber's
+    /// next transition.
+    fn reconcile_after_declare(&self, ctx: &Arc<Context>) {
+        if !matches!(self.state(), FiberState::Active { .. }) {
+            return;
+        }
+        let Ok(_guard) = self.inertia.try_lock() else {
+            // An async refresh holds the inertia guard right now; it observes
+            // this declaration through `pending_declare` and folds it into
+            // its recompute loop.
+            self.pending_declare.store(true, Ordering::Release);
+            return;
+        };
+        let weak_ctx = self.reload_ctx.lock().clone();
+        let reload_ctx = weak_ctx
+            .and_then(|weak| weak.upgrade())
+            .unwrap_or_else(|| ctx.clone());
+        if self.is_satisfied(&reload_ctx) {
+            let epoch = self.compute_epoch(&reload_ctx);
+            self.set_epoch(epoch.clone());
+            self.set_state(FiberState::Active { epoch });
+            return;
+        }
+        self.set_state(FiberState::Reloading);
+        let has_runner = self.reload_runner.lock().is_some();
+        if has_runner {
+            self.undo_effects();
+        }
+        self.set_state(FiberState::Inactive {
+            error: Some("missing or inactive dependency".into()),
+        });
+        tracing::debug!(
+            state = ?self.state(),
+            "Cordis fiber deactivated by unsatisfied late inject declaration"
+        );
     }
 
     pub fn state(&self) -> FiberState {
@@ -141,58 +193,75 @@ impl Fiber {
     }
 
     /// Refresh recomputes dependency epoch and reruns registered plugins.
+    ///
+    /// Declarations that raced an in-flight refresh are folded in through the
+    /// `pending_declare` flag: the loop re-runs until a pass observes no
+    /// pending declaration, so a late `declare_inject` can never be lost
+    /// between two refreshes.
     pub async fn refresh(&self, ctx: &Arc<Context>) {
         if self.disposed.load(Ordering::Acquire) {
             return;
         }
-        let _guard = self.inertia.lock().await;
-        if self.disposed.load(Ordering::Acquire) {
-            return;
-        }
-        let reload_ctx = self
-            .reload_ctx
-            .lock()
-            .as_ref()
-            .and_then(std::sync::Weak::upgrade)
-            .unwrap_or_else(|| ctx.clone());
-        let new_epoch = self.compute_epoch(&reload_ctx);
-        let old_epoch = self.epoch.read().clone();
-        let previous = self.state();
-        let satisfied = self.is_satisfied(&reload_ctx);
-        if new_epoch == old_epoch && satisfied && matches!(previous, FiberState::Active { .. }) {
-            return;
-        }
-
-        self.set_state(FiberState::Reloading);
-        tokio::task::yield_now().await;
-        let has_runner = self.reload_runner.lock().is_some();
-        if has_runner {
-            self.undo_effects();
-        }
-        if !satisfied {
-            self.set_state(FiberState::Inactive {
-                error: Some("missing or inactive dependency".into()),
-            });
-            return;
-        }
-
-        let result = self.run_runner(&reload_ctx);
-        match result {
-            Ok(true) => {
-                self.set_epoch(new_epoch.clone());
-                self.set_state(FiberState::Active { epoch: new_epoch });
+        loop {
+            let _guard = self.inertia.lock().await;
+            if self.disposed.load(Ordering::Acquire) {
+                return;
             }
-            Ok(false) => {
-                self.set_state(FiberState::Inactive { error: None });
+            let reload_ctx = self
+                .reload_ctx
+                .lock()
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .unwrap_or_else(|| ctx.clone());
+            let new_epoch = self.compute_epoch(&reload_ctx);
+            let old_epoch = self.epoch.read().clone();
+            let previous = self.state();
+            let satisfied = self.is_satisfied(&reload_ctx);
+            if new_epoch == old_epoch
+                && satisfied
+                && matches!(previous, FiberState::Active { .. })
+                && !self.pending_declare.swap(false, Ordering::AcqRel)
+            {
+                return;
             }
-            Err(error) => {
-                self.set_state(FiberState::Failed {
-                    error: Some(error.to_string()),
+
+            self.set_state(FiberState::Reloading);
+            tokio::task::yield_now().await;
+            let has_runner = self.reload_runner.lock().is_some();
+            if has_runner {
+                self.undo_effects();
+            }
+            if !satisfied {
+                self.set_state(FiberState::Inactive {
+                    error: Some("missing or inactive dependency".into()),
                 });
+                if self.pending_declare.swap(false, Ordering::AcqRel) {
+                    continue;
+                }
+                return;
             }
-        }
-        if previous != self.state() {
-            tracing::debug!(from=?previous, to=?self.state(), "Cordis fiber transition");
+
+            let result = self.run_runner(&reload_ctx);
+            match result {
+                Ok(true) => {
+                    self.set_epoch(new_epoch.clone());
+                    self.set_state(FiberState::Active { epoch: new_epoch });
+                }
+                Ok(false) => {
+                    self.set_state(FiberState::Inactive { error: None });
+                }
+                Err(error) => {
+                    self.set_state(FiberState::Failed {
+                        error: Some(error.to_string()),
+                    });
+                }
+            }
+            if previous != self.state() {
+                tracing::debug!(from=?previous, to=?self.state(), "Cordis fiber transition");
+            }
+            if !self.pending_declare.swap(false, Ordering::AcqRel) {
+                return;
+            }
         }
     }
 
@@ -243,6 +312,59 @@ impl Default for Fiber {
 mod tests {
     use super::*;
     use parking_lot::Mutex as ParkingMutex;
+
+    #[derive(Debug)]
+    struct LateProbe(pub i32);
+    impl Service for LateProbe {}
+
+    /// Former delta #1, satisfied leg: a declaration landing on an
+    /// already-Active fiber folds into the epoch immediately.
+    #[tokio::test]
+    async fn late_satisfied_declaration_updates_active_fiber_without_refresh() {
+        let ctx = Context::new_root();
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(70_001);
+        fiber.set_state(FiberState::Active { epoch: ":".into() });
+        ctx.provide(LateProbe(3));
+        fiber.declare_inject::<LateProbe>();
+        assert!(
+            matches!(fiber.state(), FiberState::Active { .. }),
+            "satisfied declaration must keep the fiber Active: {:?}",
+            fiber.state()
+        );
+        assert!(
+            fiber.epoch().contains("LateProbe"),
+            "epoch must fold the declared inject: {}",
+            fiber.epoch()
+        );
+    }
+
+    /// Former delta #1, unsatisfied leg: a declaration of a missing
+    /// dependency drives the Active fiber to rest Inactive right away,
+    /// mirroring refresh's transition shape.
+    #[tokio::test]
+    async fn late_unsatisfied_declaration_deactivates_immediately() {
+        #[derive(Debug)]
+        struct NeverProvided;
+        impl Service for NeverProvided {}
+
+        let ctx = Context::new_root();
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(70_002);
+        fiber.set_state(FiberState::Active { epoch: ":".into() });
+        fiber.declare_inject::<NeverProvided>();
+        match fiber.state() {
+            FiberState::Inactive { error: Some(note) } => {
+                assert!(
+                    note.contains("missing or inactive dependency"),
+                    "unexpected note: {note}"
+                );
+            }
+            other => panic!("expected eager deactivation, got {other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn fiber_refresh_passes_through_reloading() {

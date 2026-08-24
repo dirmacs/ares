@@ -389,9 +389,81 @@ impl Loader {
         }
 
         if !any_failure {
+            // Post-apply detection pass (never fails the batch): a cycle keeps
+            // its member fibers permanently inactive, so name it at load time.
+            Self::report_cycles(ctx);
             *current = desired.clone();
         }
         results
+    }
+}
+
+impl Loader {
+    /// Run dependency-cycle detection over every entry this loader has
+    /// instantiated.
+    ///
+    /// The post-apply inject graph is reconstructed by
+    /// [`crate::cycles::build_dependency_graph`] from the lazily-provided
+    /// [`crate::cycles::CycleLedger`] plus registry lookups; returns one path
+    /// per detected cycle (closed, canonical rotation) and an empty vec for a
+    /// healthy graph or library deployments without ledger/registry state.
+    pub fn detect_cycles(ctx: &Arc<crate::Context>) -> Vec<Vec<crate::FiberId>> {
+        match crate::cycles::build_dependency_graph(ctx) {
+            Some(graph) => crate::cycles::find_dependency_cycles(&graph),
+            None => Vec::new(),
+        }
+    }
+
+    /// [`Self::detect_cycles`] with every fiber id resolved to its owning
+    /// entry id via the [`LoaderJournal`] (untracked fibers fall back to
+    /// their stringified id) — the shape admin surfaces report.
+    pub fn detect_cycle_entry_ids(ctx: &Arc<crate::Context>) -> Vec<Vec<String>> {
+        let cycles = Self::detect_cycles(ctx);
+        let journal = ctx.get::<crate::LoaderJournal>();
+        Self::cycle_entry_ids(journal.as_deref(), &cycles)
+    }
+
+    /// Map fiber ids onto their owning entry ids via the [`LoaderJournal`]
+    /// (untracked fibers fall back to their stringified id).
+    fn cycle_entry_ids(
+        journal: Option<&crate::LoaderJournal>,
+        cycles: &[Vec<crate::FiberId>],
+    ) -> Vec<Vec<String>> {
+        cycles
+            .iter()
+            .map(|cycle| {
+                cycle
+                    .iter()
+                    .map(|fid| {
+                        journal
+                            .and_then(|j| {
+                                j.records.read().iter().find_map(|(id, rec)| {
+                                    (rec.fiber_id == Some(*fid)).then(|| id.clone())
+                                })
+                            })
+                            .unwrap_or_else(|| fid.to_string())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Post-apply detection pass: report any inject-dependency cycle without
+    /// failing the batch. A cycle keeps its members permanently inactive (each
+    /// waits on the other's provider), which is fully predictable from the
+    /// declarations and therefore worth naming at load time.
+    fn report_cycles(ctx: &Arc<crate::Context>) {
+        let journal = ctx.get::<crate::LoaderJournal>();
+        let cycles = Self::detect_cycles(ctx);
+        if cycles.is_empty() {
+            return;
+        }
+        let entry_ids = Self::cycle_entry_ids(journal.as_deref(), &cycles);
+        tracing::warn!(
+            entry_ids = ?entry_ids,
+            fibers = ?cycles,
+            "dependency cycle detected among loaded entries; affected fibers will remain inactive until the cycle is broken"
+        );
     }
 }
 
@@ -633,25 +705,28 @@ impl Loader {
         }
     }
 
-    /// Load `path`, fill via optional Overlay-independent hook is caller-side;
-    /// diff against `CurrentEntries`-style current tree and apply for real.
+    /// Diff the caller-supplied composed `desired_composed` tree (includes
+    /// resolved, groups flattened, configs interpolated — see `compose_all`)
+    /// against the `CurrentEntries`-style current tree and apply for real.
     ///
     /// This is the runtime hot-reload primitive shared by the file watcher and
-    /// the admin reload endpoint. Returns `None` when the file cannot be read
-    /// or parsed; otherwise per-action outcomes (possibly empty).
+    /// the admin reload endpoint. Callers own parsing + composition; returns
+    /// per-action outcomes for the diff that was applied.
     pub async fn reload_current(
         ctx: &Arc<crate::Context>,
         path: &std::path::Path,
         current: &mut EntryTree,
+        desired_composed: &EntryTree,
         journal: &crate::LoaderJournal,
     ) -> Option<Vec<AppliedAction>> {
-        let mut desired = match Self::load_from_file(path) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::warn!(error = %e, "Cordis hot-reload: parse failed");
-                return None;
-            }
-        };
+        // `desired_composed` is the caller-composed tree (includes resolved,
+        // groups flattened, configs interpolated); `path` is kept for logs.
+        tracing::debug!(
+            path = %path.display(),
+            entries = desired_composed.0.len(),
+            "Cordis hot-reload: applying composed desired state"
+        );
+        let mut desired = desired_composed.clone();
         if let Some(handle) = ctx.get::<crate::loader::EntryConfigFillerHandle>() {
             handle.0.fill_empty_entry_configs(&mut desired);
         }
@@ -907,6 +982,22 @@ impl Loader {
                 return Err(e);
             }
         };
+        // Lazy ledger provision: every provide the factory performed is
+        // recorded as `(type, realm) -> fid` so post-apply cycle detection can
+        // reconstruct the inject graph. Library deployments that never touch
+        // this path simply never see a ledger.
+        if ctx.get::<crate::cycles::CycleLedger>().is_none() {
+            ctx.provide(crate::cycles::CycleLedger::new());
+        }
+        let ledger = ctx
+            .get::<crate::cycles::CycleLedger>()
+            .expect("ledger just provided");
+        for tid in ctx.provided_type_ids() {
+            if !before.contains(&tid) {
+                ledger.record_provider(tid, ctx.isolate_label(tid).as_deref(), fid);
+            }
+        }
+        ledger.note_entry(fid, &entry.id);
         if let Some(label) = entry.isolate.as_deref() {
             for tid in ctx.provided_type_ids() {
                 if !before.contains(&tid) {
@@ -1831,5 +1922,185 @@ plugin = "Bar"
         let loaded = Loader::load_from_file(&path).unwrap();
         assert_eq!(loaded.len(), 0);
         assert!(loaded.is_empty());
+    }
+
+    // --- dependency-cycle detection (round-7 wiring of cycles.rs) ---
+
+    /// Mutual-inject pair: A declares an inject on B's provided type and vice
+    /// versa, mirroring the declare_inject pattern from
+    /// `crates/ares-agent/src/plugins.rs`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cycle_detection_finds_mutual_declared_injects() {
+        use crate::cycles::CycleLedger;
+        use crate::{Plugin, RegistryService};
+
+        #[derive(Debug)]
+        struct SvcA(u32);
+        impl Service for SvcA {}
+        #[derive(Debug)]
+        struct SvcB(u32);
+        impl Service for SvcB {}
+
+        struct PluginA;
+        impl Plugin for PluginA {
+            type Config = ();
+            type Provides = SvcA;
+            fn apply(&self, ctx: &Arc<Context>, _cfg: ()) -> Result<Arc<SvcA>, crate::CordisError> {
+                Ok(ctx.provide(SvcA(1)))
+            }
+        }
+
+        struct PluginB;
+        impl Plugin for PluginB {
+            type Config = ();
+            type Provides = SvcB;
+            fn apply(&self, ctx: &Arc<Context>, _cfg: ()) -> Result<Arc<SvcB>, crate::CordisError> {
+                Ok(ctx.provide(SvcB(2)))
+            }
+        }
+
+        let ctx = Context::new_root();
+        ctx.provide(crate::LoaderJournal::new());
+        ctx.provide(RegistryService::new());
+        ctx.provide(CycleLedger::new());
+        let registry = ctx.get::<RegistryService>().unwrap();
+
+        let fid_a = registry.plugin(&ctx, PluginA, ()).expect("register A");
+        let fid_b = registry.plugin(&ctx, PluginB, ()).expect("register B");
+        // Off the loader path the ledger must be fed explicitly — this mirrors
+        // exactly what instantiate_entry records per fresh provide.
+        let ledger = ctx.get::<CycleLedger>().unwrap();
+        ledger.record_provider(std::any::TypeId::of::<SvcA>(), None, fid_a);
+        ledger.record_provider(std::any::TypeId::of::<SvcB>(), None, fid_b);
+        // The mutual inject declarations that make A and B permanently wait on
+        // each other.
+        registry.get_fiber(fid_a).unwrap().declare_inject::<SvcB>();
+        registry.get_fiber(fid_b).unwrap().declare_inject::<SvcA>();
+
+        let cycles = Loader::detect_cycles(&ctx);
+        assert_eq!(cycles.len(), 1, "exactly one 2-cycle expected");
+        let cycle = &cycles[0];
+        assert_eq!(cycle.len(), 3, "closed ring: [x, y, x]");
+        assert_eq!(cycle[0], cycle[2], "ring closes on itself");
+
+        // Entry ids resolve through the journal; the closed ring repeats its
+        // head so the id path repeats too.
+        let journal = ctx.get::<crate::LoaderJournal>().unwrap();
+        journal.upsert("a", "PluginA", json!({}), Some(fid_a));
+        journal.upsert("b", "PluginB", json!({}), Some(fid_b));
+        let ids = Loader::cycle_entry_ids(Some(journal.as_ref()), &cycles);
+        assert_eq!(
+            ids,
+            vec![vec!["a".to_string(), "b".to_string(), "a".to_string()]]
+        );
+    }
+
+    /// Full-apply integration: two mutually injecting entries applied through
+    /// `Loader::apply` produce the warning pass without failing the batch, and
+    /// `detect_cycles` reports the ring afterwards.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_reports_cycle_without_failing_batch() {
+        use crate::cycles::CycleLedger;
+        use crate::{Plugin, RegistryService};
+
+        #[derive(Debug)]
+        struct SvcA(u32);
+        impl Service for SvcA {}
+        #[derive(Debug)]
+        struct SvcB(u32);
+        impl Service for SvcB {}
+
+        struct PluginA;
+        impl Plugin for PluginA {
+            type Config = serde_json::Value;
+            type Provides = SvcA;
+            fn apply(
+                &self,
+                ctx: &Arc<Context>,
+                _cfg: serde_json::Value,
+            ) -> Result<Arc<SvcA>, crate::CordisError> {
+                Ok(ctx.provide(SvcA(1)))
+            }
+        }
+
+        struct PluginB;
+        impl Plugin for PluginB {
+            type Config = serde_json::Value;
+            type Provides = SvcB;
+            fn apply(
+                &self,
+                ctx: &Arc<Context>,
+                _cfg: serde_json::Value,
+            ) -> Result<Arc<SvcB>, crate::CordisError> {
+                Ok(ctx.provide(SvcB(2)))
+            }
+        }
+
+        let ctx = Context::new_root();
+        let journal = ctx.provide(crate::LoaderJournal::new());
+        ctx.provide(RegistryService::new());
+        ctx.provide(CycleLedger::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        plugin_registry.register(
+            "CycleA",
+            Arc::new(|ctx, _config| {
+                let future = ctx.plugin(SvcA(1));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+            }),
+        );
+        plugin_registry.register(
+            "CycleB",
+            Arc::new(|ctx, _config| {
+                let future = ctx.plugin(SvcB(2));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+            }),
+        );
+
+        let entry_a = Entry {
+            id: "cyc:a".into(),
+            plugin: "CycleA".into(),
+            config: json!({}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        };
+        let mut entry_b = entry_a.clone();
+        entry_b.id = "cyc:b".into();
+        entry_b.plugin = "CycleB".into();
+
+        let desired = EntryTree(vec![entry_a.clone(), entry_b.clone()]);
+        let mut current = EntryTree::default();
+        let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
+        assert!(
+            actions.iter().all(|a| a.status.is_ok()),
+            "apply must not fail because of the cycle: {actions:?}"
+        );
+        assert_eq!(current.0.len(), 2, "tree advanced despite the cycle");
+
+        // instantiate_entry recorded both providers in the ledger; now declare
+        // the mutual injects (as the production plugins would) and confirm
+        // detection names exactly this ring.
+        let fid_a = journal.get("cyc:a").unwrap().fiber_id.unwrap();
+        let fid_b = journal.get("cyc:b").unwrap().fiber_id.unwrap();
+        ctx.get::<RegistryService>()
+            .unwrap()
+            .get_fiber(fid_a)
+            .unwrap()
+            .declare_inject::<SvcB>();
+        ctx.get::<RegistryService>()
+            .unwrap()
+            .get_fiber(fid_b)
+            .unwrap()
+            .declare_inject::<SvcA>();
+
+        let cycles = Loader::detect_cycles(&ctx);
+        assert_eq!(cycles.len(), 1);
+        // reconcile emits Begin actions in nondeterministic order (HashMap
+        // iteration), so either fiber may register first; the ring is the
+        // same cycle either way. Assert membership + closure, not rotation.
+        let ring: std::collections::HashSet<u64> = cycles[0].iter().copied().collect();
+        let expected: std::collections::HashSet<u64> = [fid_a, fid_b].into_iter().collect();
+        assert_eq!(ring, expected, "closed 2-ring over both fibers");
     }
 }

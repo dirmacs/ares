@@ -154,3 +154,43 @@ fn_name = "audit"
 # plugin = "@group"
 # [entry.config.entries]
 # ...
+
+# Round 7 composition examples (inactive)
+#
+# @include usage — splice a sibling file's entries at this position (relative
+# paths resolve against the directory of THIS top-level entries file):
+# [[entry]]
+# id = "pull-shared-skills"
+# plugin = "@include"
+# [entry.config]
+# path = "cordis-entries-shared.toml"
+#
+# @group usage — flatten inline children in place. The RhaiPolicy child below
+# uses ${rhai: entry.id} interpolation INSIDE its script string (the scope
+# variable is `entry`, not `$entry`: rhai reserves `$` in its parser) and
+# fails closed via on_error = "deny":
+# [[entry]]
+# id = "chat-policy-stack"
+# plugin = "@group"
+#
+# [entry.config]
+# label = "${rhai: entry.id}"
+#
+# [[entry.config.entries]]
+# id = "chat-policy-gate"
+# plugin = "RhaiPolicy"
+# isolate = "chat-policy"
+#
+# [entry.config.entries.config]
+# script = """
+# fn gate(p) { log(`gate ${entry.id}`); if p.tenant_id == "banned-tenant" { #{deny: "banned"} } else { () } }
+# """
+# on_error = "deny"
+#
+# [[entry.config.entries.config.listen]]
+# event = "scheduler.admit"
+# fn_name = "gate"
+#
+# [[entry.config.entries]]
+# id = "chat-calculator"
+# plugin = "CalculatorService"

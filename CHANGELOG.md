@@ -5,6 +5,29 @@ All notable changes to A.R.E.S will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-08-24
+
+### Added — Cordis rounds 4–9
+
+Nine hardening/feature rounds on the Cordis kernel and its use across the server (full narrative in `docs/cordis-mapping.md` §10–§19):
+
+- **RhaiPolicy scripting** (default-on): declarative TOML entries attach sandboxed Rhai functions to catalog events; `on_error = "deny"` fail-closed gates; isolate-realm multi-instance coexistence; two active policies ship in `config/cordis-entries.toml` (admission audit, emergency-halt).
+- **Guarded withdrawal** (paper §4.3.1): derived realm-aware consumer counting; `Context::remove<T>` refuses while active consumers exist (`remove_forced` for internal rollback); admin retire maps refusal to 409.
+- **Verified hot-swap + drain-and-shift**: entry rebuilds trial out-of-band before committing (zero absence window, concurrent-get proven); `Loader::replace_provider` plus `POST /admin/cordis/services/{name}/replace` swap providers under live traffic.
+- **Static registration**: inventory-collected `CordisPluginFactory` submissions are the primary boot path; manual chains remain as fallback; parity tests pin the factory set.
+- **Composition**: `@include` splice, `@group` flatten, `${rhai: …}` config interpolation run at boot and reload (fail-open); production entries program split across files with parity proof.
+- **Dependency-cycle detection**: post-apply graph walk warns on rings; surfaced via `Loader::detect_cycle_entry_ids` and `GET /admin/cordis/entries`.
+- **Peer-dependency versioning**: `provide_versioned` / `declare_inject_versioned`; major-bucket satisfaction rule; mismatch keeps dependents Inactive reactively.
+- **Eager inject reconciliation**: declarations on Active fibers take effect immediately; declare/refresh races lossless.
+- **Failed-factory wiring**: failed registrations notify dependents and stay inspectable (`Failed{error}` terminal); fresh-id supersession on re-register.
+- **Typed listeners adopted** in scheduler prod paths; **per-event dispatch metrics** at `GET /admin/cordis/events`; **atomic temp+rename** entries persistence; **metatheory property suite** (`cordis::metatheory`) proving quiescence, order confluence, LIFO disposal, reactive invariant.
+- **HMR dylib hot-swap** finished: unique-copy dlopen so rebuilt `.so` files actually swap; strictly opt-in behind `--features hmr`.
+
+### Fixed
+
+- Latent deadlock in `RegistryService::register` (read guard held across stale-slot write cleanup), exposed by metatheory leg F.
+- Latent double-swap bug in verified rebuilds (promoted values lacked undo; second swap would have wedged re-provide).
+
 ## [0.7.5] - 2026-04-11
 
 ### Changed

@@ -38,7 +38,6 @@ ares-store = { version = "0.9.0", path = "crates/ares-store" }
 ares-mcp = { version = "0.9.0", path = "crates/ares-mcp" }
 ares-agent = { version = "0.9.0", path = "crates/ares-agent" }
 ares-http = { version = "0.9.0", path = "crates/ares-http" }
-ares = { version = "0.9.0", path = "crates/ares" }
 cordis = { version = "0.9.0", path = "crates/cordis", package = "ares-cordis" }
 anyhow = "1.0.100"
 hex = "0.4"
@@ -96,6 +95,11 @@ exclude = [
 ]
 
 
+# Library facade — the published entry point for embedding ARES
+[lib]
+name = "ares_server"
+path = "src/lib.rs"
+
 # Binary configuration - allows running as standalone server
 [[bin]]
 name = "ares-server"
@@ -109,7 +113,6 @@ inventory = [
     "dep:inventory",
     "cordis/inventory",
     "ares-http/inventory",
-    "ares/inventory",
     "ares-store/inventory",
     "ares-tools/inventory",
     "ares-llm/inventory",
@@ -235,7 +238,6 @@ ares-store = { workspace = true }
 ares-mcp = { workspace = true }
 ares-agent = { workspace = true }
 ares-http = { workspace = true }
-ares = { workspace = true }
 cordis = { workspace = true }
 inventory = { workspace = true, optional = true }
 

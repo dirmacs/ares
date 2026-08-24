@@ -13,7 +13,7 @@ fn server_libraries_collect_full_factory_set() {
     // inventory-off fallback path. Inventory nodes are dropped by the linker
     // when no code from a crate is retained.
     let force = cordis::PluginRegistry::new();
-    ares::register_plugins(&force);
+    ares_server::register_plugins(&force);
     ares_http::register_plugins(&force);
     drop(force);
 

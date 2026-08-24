@@ -20,7 +20,47 @@
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+/// Process-global monotonic nonce for save temp-file names: two concurrent
+/// saves in one process never collide on the same sibling temp (a bare pid
+/// suffix made two racing saves unlink each other's temp mid-flight).
+static SAVE_TMP_NONCE: AtomicU64 = AtomicU64::new(0);
+
+fn next_save_nonce() -> u64 {
+    SAVE_TMP_NONCE.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Atomic single-file persistence for loader configs.
+///
+/// Creates the parent directory when missing, writes `bytes` to a sibling
+/// temp named `{file}.tmp-{pid}-{nonce}`, then renames it over `path`. A
+/// crash mid-write leaves the previous file intact; the temp is removed on
+/// failure so no `.tmp-*` residue accumulates. The pid+nonce suffix keeps
+/// concurrent saves (threads, double-dispatch) from sharing one temp name.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CordisError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CordisError::Configuration(e.to_string()))?;
+        }
+    }
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("entries");
+    let tmp = path.with_file_name(format!(
+        "{name}.tmp-{}-{}",
+        std::process::id(),
+        next_save_nonce()
+    ));
+    if let Err(e) = std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(CordisError::Configuration(e.to_string()));
+    }
+    Ok(())
+}
 
 use serde::{Deserialize, Serialize};
 
@@ -116,13 +156,17 @@ impl EntryTree {
     }
 
     /// Persist to `path` (defaults to [`ENTRIES_PATH`]) as JSON.
+    ///
+    /// Atomic: the bytes land via a sibling temp file + rename
+    /// ([`write_atomic`]), so a crash mid-write leaves the previous config
+    /// intact and no `.tmp-*` residue survives either outcome. The parent
+    /// directory is created when missing.
     /// When the `toon` feature is enabled callers may use [`CORDIS_ENTRIES_TOON_PATH`]
     /// with `toon-format` encoding (see comment in `save_toon`).
     pub fn save_to_file(&self, path: &str) -> Result<(), CordisError> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| CordisError::Configuration(e.to_string()))?;
-        std::fs::write(path, json).map_err(|e| CordisError::Configuration(e.to_string()))?;
-        Ok(())
+        write_atomic(Path::new(path), json.as_bytes())
     }
 
     pub fn load_from_file(path: &str) -> Result<Self, CordisError> {
@@ -152,29 +196,9 @@ impl EntryTree {
             entry: self.0.clone(),
         })
         .map_err(|e| CordisError::Configuration(e.to_string()))?;
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| CordisError::Configuration(e.to_string()))?;
-            }
-        }
-        // Atomic persistence: write a sibling temp file, then rename over the
-        // target. A crash mid-write leaves the previous file intact; the temp
-        // is removed on failure so no `.tmp-*` residue accumulates.
-        let tmp = path.with_file_name(format!(
-            "{}.tmp-{}",
-            path.file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("entries"),
-            std::process::id()
-        ));
-        if let Err(e) = std::fs::write(&tmp, format!("{header}{body}"))
-            .and_then(|_| std::fs::rename(&tmp, path))
-        {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(CordisError::Configuration(e.to_string()));
-        }
-        Ok(())
+        // Same atomic temp+rename persistence as the JSON path, sharing the
+        // pid+nonce temp naming so concurrent saves never collide.
+        write_atomic(path, format!("{header}{body}").as_bytes())
     }
 }
 
@@ -289,7 +313,9 @@ impl Loader {
                                 .get::<crate::RegistryService>()
                                 .and_then(|rs| rs.get_fiber(fid))
                             {
-                                fiber.dispose().await;
+                                if let Err(error) = fiber.dispose().await {
+                                    tracing::error!(id = %id, %error, "Loader: fiber stuck in transition during retire");
+                                }
                             }
                         }
                     }
@@ -1180,7 +1206,11 @@ impl SwapPromotion<'_> {
         // deliberate guarded-withdrawal bypass documented on both callers:
         // consumers never lose resolution, which is exactly the condition the
         // guard exists to protect.
-        self.old_fiber.dispose().await;
+        // A bounded-transition failure here means a hung plugin apply kept
+        // the old fiber's inertia guard; the swap continues regardless — the
+        // bridge already serves the new values, so surfacing the error would
+        // only roll back a cutover that is already live.
+        let _ = self.old_fiber.dispose().await;
         self.registry.remove(self.old_fid);
 
         // Promote bridge values into the store. Peek-before-remove keeps every
@@ -2129,6 +2159,67 @@ plugin = "Bar"
         let loaded = Loader::load_from_file(&path).unwrap();
         assert_eq!(loaded.len(), 0);
         assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn save_to_file_is_atomic_no_temp_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("entries.json");
+        let tree = EntryTree(vec![Entry {
+            id: "tool:calc".into(),
+            plugin: "CalculatorService".into(),
+            config: json!({"precision": 2}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }]);
+        // Parent directory does not exist yet — the save must create it.
+        tree.save_to_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            EntryTree::load_from_file(path.to_str().unwrap()).unwrap(),
+            tree,
+            "content survives the temp+rename round-trip"
+        );
+        // Two consecutive saves exercise create + rename-over; neither may
+        // leave `.tmp-*` siblings behind (rename consumed each temp).
+        tree.save_to_file(path.to_str().unwrap()).unwrap();
+        let mut leftovers: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        leftovers.sort();
+        assert_eq!(
+            leftovers,
+            vec!["nested".to_string()],
+            "no *.tmp-* siblings may remain after a successful save"
+        );
+        let inner: Vec<String> = std::fs::read_dir(dir.path().join("nested"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(inner, vec!["entries.json".to_string()]);
+    }
+
+    #[test]
+    fn save_to_file_consecutive_saves_succeed_with_distinct_temps() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entries.json");
+        let tree = EntryTree::default();
+        // Each save consumes a fresh pid+nonce temp name; both must succeed
+        // (a colliding name would make the second rename target already
+        // gone / interleaved with the first).
+        tree.save_to_file(path.to_str().unwrap()).unwrap();
+        tree.save_to_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            EntryTree::load_from_file(path.to_str().unwrap()).unwrap(),
+            EntryTree::default()
+        );
+        // Nonce monotonicity: distinct increments, never reused.
+        let a = next_save_nonce();
+        let b = next_save_nonce();
+        assert_ne!(a, b, "nonce must be monotonic across calls");
     }
 
     // --- dependency-cycle detection (round-7 wiring of cycles.rs) ---

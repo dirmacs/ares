@@ -77,6 +77,8 @@ pub mod capabilities;
 pub mod client;
 /// Generic tool coordinator for multi-turn tool calling.
 pub mod coordinator;
+/// Exporter-style log routing for LLM and tool call records.
+pub mod exporter;
 /// Small-call orchestration primitive over a single client.
 pub mod micro;
 /// Observability callbacks for LLM and tool call logging.
@@ -109,6 +111,7 @@ pub use coordinator::{
     ConversationMessage, CoordinatorResult, FinishReason, MessageRole, ToolCallRecord,
     ToolCallingConfig, ToolCoordinator,
 };
+pub use exporter::{ExporterRouter, LogExporter, RecordLevel, TracingExporter};
 pub use observability::{LlmCallRecord, ObservabilitySink};
 pub use pool::{ClientPool, ClientPoolBuilder, PoolConfig, PoolStats, PooledClientGuard};
 pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};

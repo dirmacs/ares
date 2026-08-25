@@ -1630,9 +1630,11 @@ mod tests {
                 reason: "first fallback".into(),
             }],
         };
-        assert!(select_fallback(&config, &plan, "ollama", &[])
-            .unwrap()
-            .is_none());
+        assert!(
+            select_fallback(&config, &plan, "ollama", &[])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1919,9 +1921,11 @@ mod tests {
             },
             fallbacks: vec![],
         };
-        assert!(select_fallback(&config, &plan, "openai", &[])
-            .unwrap()
-            .is_none());
+        assert!(
+            select_fallback(&config, &plan, "openai", &[])
+                .unwrap()
+                .is_none()
+        );
     }
     #[test]
     fn test_message_to_role_content() {

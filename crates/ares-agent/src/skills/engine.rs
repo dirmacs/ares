@@ -3,7 +3,10 @@
 use ares_store::run_history::{LogLlmCallRequest, LogToolCallRequest, RunHistoryStore};
 use ares_store::skills::SkillStore;
 use ares_store::tenant_allowlist::TenantAllowlistStore;
-use ares_llm::{Llm, LLMResponse, TenantModelPolicy};
+use ares_llm::{
+    CapabilityRequirements, Llm, LLMResponse, MicroEngine, MicroOutcome, MicroTask,
+    TenantModelPolicy,
+};
 use ares_tools::Tools;
 use ares_types::AppError;
 use sqlx::PgPool;
@@ -29,6 +32,84 @@ fn estimated_cost_usd(prompt_tokens: i64, completion_tokens: i64) -> rust_decima
 
 const MAX_SKILL_CALL_DEPTH: usize = 8;
 const RUN_HISTORY_STATUS_SUCCESS: &str = "success";
+
+/// Opt-in ambient enrichment for assistant completions.
+///
+/// When enabled, every LLM step completion fires two parallel micro calls
+/// (intent classification + keyword tags) over the micro-engine, and the
+/// outcomes are attached as session metadata on the existing skill-step
+/// record path (`run_llm_calls.response_payload["ambient_enrichment"]`).
+/// Enrichment never delays or fails the completion itself: failures are
+/// logged and silently skipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
+pub struct AmbientEnrichmentConfig {
+    /// Master switch. `false` (the default) issues no enrichment calls.
+    pub enabled: bool,
+}
+
+/// Fixed system prompt for the intent-classification micro call.
+const AMBIENT_INTENT_SYSTEM: &str = "You classify the user intent of an assistant answer. \
+Reply with ONLY a JSON object of the form \
+{\"intent\": \"question|command|summary|analysis|other\", \"confidence\": <number 0-1>}.";
+
+/// Fixed system prompt for the keyword-tagging micro call.
+const AMBIENT_TAGS_SYSTEM: &str = "You extract keyword tags from an assistant answer. \
+Reply with ONLY a JSON object of the form {\"tags\": [\"tag\", ...]} with at most 5 tags.";
+
+/// Run one ambient micro call. A transport failure after all retries yields
+/// `None` — ambient enrichment is best-effort by contract.
+async fn run_ambient_micro_call(
+    engine: &MicroEngine,
+    system: &str,
+    input: String,
+) -> Option<MicroOutcome> {
+    let task = MicroTask {
+        name: "ambient",
+        system: system.to_string(),
+        input,
+        max_tokens: 128,
+    };
+    match engine.run(&task).await {
+        Ok(outcome) => Some(outcome),
+        Err(err) => {
+            tracing::debug!(error = %err, "ambient enrichment call failed; skipping");
+            None
+        }
+    }
+}
+
+/// Fold one micro outcome's parsed JSON fields into `target`.
+fn merge_micro_outcome(outcome: &Option<MicroOutcome>, target: &mut serde_json::Value) {
+    let Some(outcome) = outcome else { return };
+    let Some(json) = &outcome.json else { return };
+    let Some(object) = json.as_object() else { return };
+    let Some(target_object) = target.as_object_mut() else { return };
+    for (key, value) in object {
+        target_object.insert(key.clone(), value.clone());
+    }
+}
+
+/// Cap the completion text fed to the ambient micro calls.
+fn truncate_ambient_input(text: &str) -> String {
+    const AMBIENT_INPUT_MAX_CHARS: usize = 4_000;
+    text.chars().take(AMBIENT_INPUT_MAX_CHARS).collect()
+}
+
+/// Fold ambient session metadata into a skill-step record's response
+/// payload. Null metadata (disabled or fully failed enrichment) adds no key,
+/// so the record stays byte-compatible with the pre-enrichment shape.
+fn fold_ambient_into_response_payload(
+    mut payload: serde_json::Value,
+    ambient_metadata: serde_json::Value,
+) -> serde_json::Value {
+    if !ambient_metadata.is_null() {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("ambient_enrichment".to_string(), ambient_metadata);
+        }
+    }
+    payload
+}
 
 fn default_step_input() -> serde_json::Value {
     serde_json::Value::Null
@@ -115,10 +196,14 @@ pub struct SkillEngine {
     pool: PgPool,
     tools: Arc<Tools>,
     llm: Arc<Llm>,
+    ambient: AmbientEnrichmentConfig,
 }
 
 impl SkillEngine {
     /// Create a new engine with Tools and Llm (no Overlay).
+    ///
+    /// Ambient enrichment defaults to off; enable it with
+    /// [`SkillEngine::with_ambient_enrichment`].
     pub fn new(
         pool: PgPool,
         tools: Arc<Tools>,
@@ -128,7 +213,18 @@ impl SkillEngine {
             pool,
             tools,
             llm,
+            ambient: AmbientEnrichmentConfig::default(),
         }
+    }
+
+    /// Opt in to ambient enrichment of assistant completions (default off).
+    ///
+    /// When enabled, each LLM step fires parallel intent-classify and
+    /// keyword-tag micro calls after the completion and attaches the parsed
+    /// outcomes as session metadata on the existing skill-step record.
+    pub fn with_ambient_enrichment(mut self, config: AmbientEnrichmentConfig) -> Self {
+        self.ambient = config;
+        self
     }
 
     fn scoped_tool_context(
@@ -168,12 +264,23 @@ impl SkillEngine {
             })
     }
 
-    async fn complete_llm_step(
+    /// Run the completion and, when ambient enrichment is enabled, fire the
+    /// intent/tag micro calls in parallel afterwards.
+    ///
+    /// Returns the completion plus its session metadata (`Null` when
+    /// disabled). Enrichment failures are logged and skipped — they never
+    /// delay or fail the completion result.
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_llm_step_with_metadata(
         &self,
         ctx: &Arc<cordis::Context>,
         messages: &[(String, String)],
         model_name: &str,
-    ) -> Result<LLMResponse, String> {
+        run_id: Option<&str>,
+        tenant_id: Option<&str>,
+        step_index: Option<i32>,
+        provider_name: Option<&str>,
+    ) -> (Result<LLMResponse, String>, serde_json::Value) {
         // Preserve the existing skill behavior: concatenate message contents in order.
         let prompt = messages
             .iter()
@@ -190,14 +297,87 @@ impl SkillEngine {
         let content = self
             .llm
             .complete(&request_ctx, &prompt)
-            .await
-            .map_err(|e| format!("LLM generation failed: {e}"))?;
-        Ok(LLMResponse {
-            content,
-            tool_calls: Vec::new(),
-            finish_reason: "stop".to_string(),
-            usage: None,
-        })
+            .await;
+        let response = content.map_err(|e| format!("LLM generation failed: {e}")).map(
+            |content| LLMResponse {
+                content,
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                usage: None,
+            },
+        );
+        let metadata = match (&self.ambient, &response) {
+            (AmbientEnrichmentConfig { enabled: true }, Ok(response)) => {
+                self.run_ambient_enrichment(
+                    ctx,
+                    &response.content,
+                    run_id,
+                    tenant_id,
+                    step_index,
+                    provider_name.unwrap_or("default"),
+                    model_name,
+                )
+                .await
+            }
+            _ => serde_json::Value::Null,
+        };
+        (response, metadata)
+    }
+
+    /// Fire the intent-classify and keyword-tag micro calls in parallel over
+    /// the completion text and fold their parsed JSON into one session
+    /// metadata object on the existing record path.
+    ///
+    /// Best-effort by contract: any micro-call failure is logged and that
+    /// section is silently omitted.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_ambient_enrichment(
+        &self,
+        ctx: &Arc<cordis::Context>,
+        completion_text: &str,
+        run_id: Option<&str>,
+        tenant_id: Option<&str>,
+        step_index: Option<i32>,
+        provider_name: &str,
+        model_name: &str,
+    ) -> serde_json::Value {
+        let client = match self.llm.get_client(ctx, CapabilityRequirements::default()).await {
+            Ok(client) => client,
+            Err(err) => {
+                tracing::debug!(error = %err, "ambient enrichment client unavailable; skipping");
+                return serde_json::Value::Null;
+            }
+        };
+        let engine = MicroEngine::with_client(client);
+        let input = truncate_ambient_input(completion_text);
+
+        let intent = run_ambient_micro_call(&engine, AMBIENT_INTENT_SYSTEM, input.clone());
+        let tags = run_ambient_micro_call(&engine, AMBIENT_TAGS_SYSTEM, input);
+        let (intent, tags) = tokio::join!(intent, tags);
+
+        let mut meta = serde_json::json!({
+            "intent": {},
+            "tags": {},
+        });
+        merge_micro_outcome(&intent, &mut meta["intent"]);
+        merge_micro_outcome(&tags, &mut meta["tags"]);
+        if let Some(run_id) = run_id {
+            meta["run_id"] = serde_json::Value::String(run_id.to_string());
+        }
+        if let Some(tenant_id) = tenant_id {
+            meta["tenant_id"] = serde_json::Value::String(tenant_id.to_string());
+        }
+        if let Some(step_index) = step_index {
+            meta["step_index"] = serde_json::json!(step_index);
+        }
+        if !meta["intent"].as_object().is_some_and(|o| !o.is_empty())
+            && !meta["tags"].as_object().is_some_and(|o| !o.is_empty())
+        {
+            return serde_json::Value::Null;
+        }
+        meta["provider"] = serde_json::Value::String(provider_name.to_string());
+        meta["model"] = serde_json::Value::String(model_name.to_string());
+        meta
     }
 
     /// Execute a skill by id for a tenant.
@@ -287,9 +467,18 @@ impl SkillEngine {
                     // Build messages and call Llm through the request context.
                     let messages = vec![("user".to_string(), prompt.clone())];
                     self.enforce_token_budget_before_llm_call(tenant_id).await?;
-                    let response = self
-                        .complete_llm_step(ctx, &messages, &model_name)
-                        .await?;
+                    let (response, ambient_metadata) = self
+                        .complete_llm_step_with_metadata(
+                            ctx,
+                            &messages,
+                            &model_name,
+                            Some(run_id),
+                            Some(tenant_id),
+                            Some(step_index),
+                            Some(provider_name.as_str()),
+                        )
+                        .await;
+                    let response = response?;
                     self.record_llm_token_budget_usage(tenant_id, run_id, &model_name, &response)
                         .await?;
 
@@ -304,7 +493,7 @@ impl SkillEngine {
                         successful_step_context(result.clone());
 
                     // Log
-                    self.log_llm_call_result(
+                    self.log_llm_call_with_metadata(
                         run_id,
                         tenant_id,
                         step_index,
@@ -312,6 +501,7 @@ impl SkillEngine {
                         &model_name,
                         response,
                         latency_ms,
+                        ambient_metadata,
                     )
                     .await?;
                 }
@@ -405,9 +595,18 @@ impl SkillEngine {
 
                 let messages = vec![("user".to_string(), prompt.clone())];
                 self.enforce_token_budget_before_llm_call(tenant_id).await?;
-                let response = self
-                    .complete_llm_step(ctx, &messages, &model_name)
-                    .await?;
+                let (response, ambient_metadata) = self
+                    .complete_llm_step_with_metadata(
+                        ctx,
+                        &messages,
+                        &model_name,
+                        Some(run_id),
+                        Some(tenant_id),
+                        Some(step_index),
+                        Some(provider_name.as_str()),
+                    )
+                    .await;
+                let response = response?;
                 self.record_llm_token_budget_usage(tenant_id, run_id, &model_name, &response)
                     .await?;
 
@@ -418,7 +617,7 @@ impl SkillEngine {
                 });
                 context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
 
-                self.log_llm_call_result(
+                self.log_llm_call_with_metadata(
                     run_id,
                     tenant_id,
                     step_index,
@@ -426,6 +625,7 @@ impl SkillEngine {
                     &model_name,
                     response,
                     latency_ms,
+                    ambient_metadata,
                 )
                 .await?;
             }
@@ -539,7 +739,11 @@ impl SkillEngine {
         Ok(())
     }
 
-    async fn log_llm_call_result(
+    /// Log one LLM step on the existing `run_llm_calls` record path, with
+    /// ambient-enrichment session metadata folded into `response_payload`
+    /// when present.
+    #[allow(clippy::too_many_arguments)]
+    async fn log_llm_call_with_metadata(
         &self,
         run_id: &str,
         tenant_id: &str,
@@ -548,6 +752,7 @@ impl SkillEngine {
         model: &str,
         response: LLMResponse,
         latency_ms: i64,
+        ambient_metadata: serde_json::Value,
     ) -> Result<(), String> {
         let store = RunHistoryStore::new(&self.pool);
         let usage = response.usage.unwrap_or_default();
@@ -573,10 +778,13 @@ impl SkillEngine {
             status: RUN_HISTORY_STATUS_SUCCESS.to_string(),
             error_message: None,
             request_payload: None,
-            response_payload: Some(serde_json::json!({
-                "content": response.content,
-                "finish_reason": response.finish_reason,
-            })),
+            response_payload: Some(fold_ambient_into_response_payload(
+                serde_json::json!({
+                    "content": response.content,
+                    "finish_reason": response.finish_reason,
+                }),
+                ambient_metadata,
+            )),
             created_at: chrono::Utc::now().timestamp(),
         };
         store
@@ -722,11 +930,12 @@ impl cordis::Service for SkillEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_llm::{ClientPool, ProviderRegistry};
+    use ares_llm::{ClientPool, LLMClient, ProviderRegistry};
     use ares_tools::Tool;
     use cordis::{Context, EventsService};
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     struct EventProbeTool(Arc<AtomicBool>);
 
@@ -786,14 +995,19 @@ mod tests {
             llm,
         );
 
-        let response = engine
-            .complete_llm_step(
+        let (response, ambient) = engine
+            .complete_llm_step_with_metadata(
                 &ctx,
                 &[("user".to_string(), "ignored if provider is reached".to_string())],
                 "test-model",
+                None,
+                None,
+                None,
+                None,
             )
-            .await
-            .expect("llm.complete waterfall");
+            .await;
+        let response = response.expect("llm.complete waterfall");
+        assert!(ambient.is_null());
         assert_eq!(response.content, "cached");
         assert!(response.tool_calls.is_empty());
         assert_eq!(response.finish_reason, "stop");
@@ -1123,5 +1337,310 @@ mod tests {
         let err = validate_skill_call_depth(MAX_SKILL_CALL_DEPTH + 1)
             .expect_err("depth above the maximum should be rejected");
         assert!(err.contains("Skill call depth exceeded maximum"));
+    }
+
+    /// Mock micro client: counts every `generate_with_system` call, answers
+    /// with a scripted result (or error), and records the prompts it saw.
+    struct AmbientMockClient {
+        behavior: Mutex<AmbientBehavior>,
+        calls: AtomicUsize,
+    }
+
+    enum AmbientBehavior {
+        Respond(Box<dyn Fn(&str) -> String + Send + Sync>),
+        Fail(String),
+    }
+
+    impl AmbientMockClient {
+        fn respond<F>(make_answer: F) -> Self
+        where
+            F: Fn(&str) -> String + Send + Sync + 'static,
+        {
+            Self {
+                behavior: Mutex::new(AmbientBehavior::Respond(Box::new(make_answer))),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn failing(message: &str) -> Self {
+            Self {
+                behavior: Mutex::new(AmbientBehavior::Fail(message.to_string())),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMClient for AmbientMockClient {
+        async fn generate(&self, prompt: &str) -> ares_types::Result<String> {
+            // The completion waterfall calls this; answer with a
+            // deterministic echo so tests never touch a real provider.
+            Ok(format!("classification-of-{}", prompt))
+        }
+
+        async fn generate_with_system(
+            &self,
+            system: &str,
+            prompt: &str,
+        ) -> ares_types::Result<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let Ok(guard) = self.behavior.lock() else {
+                return Err(AppError::Internal("ambient mock poisoned".into()));
+            };
+            match &*guard {
+                AmbientBehavior::Respond(make_answer) => {
+                    // Echo the distinguishing prefix of the system prompt so
+                    // tests can tell which micro task answered.
+                    let which = if system.contains("classify") {
+                        "intent"
+                    } else {
+                        "tags"
+                    };
+                    Ok(make_answer(which))
+                }
+                AmbientBehavior::Fail(message) => {
+                    Err(AppError::Internal(message.clone()))
+                }
+            }
+        }
+
+        async fn generate_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> ares_types::Result<LLMResponse> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn generate_with_tools(
+            &self,
+            _prompt: &str,
+            _tools: &[ares_types::types::ToolDefinition],
+        ) -> ares_types::Result<LLMResponse> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn generate_with_tools_and_history(
+            &self,
+            _messages: &[ares_llm::ConversationMessage],
+            _tools: &[ares_types::types::ToolDefinition],
+        ) -> ares_types::Result<LLMResponse> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn stream(
+            &self,
+            _prompt: &str,
+        ) -> ares_types::Result<Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>>
+        {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn stream_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> ares_types::Result<Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>>
+        {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn stream_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> ares_types::Result<Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>>
+        {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        fn model_name(&self) -> &str {
+            "ambient-mock"
+        }
+    }
+
+    /// Ambient mock pinned as the Llm test client — the SAME mock serves the
+    /// completion (`generate` echoes the prompt) and the enrichment micro
+    /// calls (`generate_with_system` answers per system-prompt kind).
+    fn ambient_engine(
+        mock: Arc<AmbientMockClient>,
+        ambient: AmbientEnrichmentConfig,
+    ) -> SkillEngine {
+        SkillEngine::new(
+            PgPool::connect_lazy("postgres://localhost/ares_test").expect("lazy pool"),
+            Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())),
+            // Pin the completion AND enrichment paths to the same mock so no
+            // real provider is ever reached.
+            Arc::new(Llm::from_client(mock as Arc<dyn LLMClient>)),
+        )
+        .with_ambient_enrichment(ambient)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn enrichment_off_no_calls() {
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall("llm.complete".into(), |payload, next| async move {
+            next(payload).await
+        });
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&calls);
+        let mock = Arc::new(AmbientMockClient::respond(move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            "{}".to_string()
+        }));
+        let engine = ambient_engine(mock, AmbientEnrichmentConfig { enabled: false });
+
+        let (response, metadata) = engine
+            .complete_llm_step_with_metadata(
+                &ctx,
+                &[("user".to_string(), "hello there".to_string())],
+                "",
+                Some("run-1"),
+                Some("acme"),
+                Some(3),
+                Some("local"),
+            )
+            .await;
+
+        assert_eq!(
+            response.expect("completion ok").content,
+            "classification-of-hello there"
+        );
+        assert!(
+            metadata.is_null(),
+            "no session metadata should be attached when disabled"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "ambient micro client must not be called when disabled"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn enrichment_on_attaches_metadata() {
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall("llm.complete".into(), |payload, next| async move {
+            next(payload).await
+        });
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&calls);
+        let mock = Arc::new(AmbientMockClient::respond(move |which| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            if which == "intent" {
+                r#"{"intent": "summary", "confidence": 0.87}"#.to_string()
+            } else {
+                r#"{"tags": ["alpha", "beta"]}"#.to_string()
+            }
+        }));
+        let engine = ambient_engine(mock, AmbientEnrichmentConfig { enabled: true });
+
+        let (response, metadata) = engine
+            .complete_llm_step_with_metadata(
+                &ctx,
+                &[("user".to_string(), "hello there".to_string())],
+                "",
+                Some("run-1"),
+                Some("acme"),
+                Some(3),
+                Some("local"),
+            )
+            .await;
+
+        assert_eq!(
+            response.expect("completion ok").content,
+            "classification-of-hello there"
+        );
+        assert!(!metadata.is_null(), "session metadata should be attached");
+        assert_eq!(metadata["intent"]["intent"], json!("summary"));
+        assert_eq!(metadata["intent"]["confidence"], json!(0.87));
+        assert_eq!(metadata["tags"]["tags"], json!(["alpha", "beta"]));
+        assert_eq!(metadata["run_id"], json!("run-1"));
+        assert_eq!(metadata["tenant_id"], json!("acme"));
+        assert_eq!(metadata["step_index"], json!(3));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "both intent and tag micro calls must fire exactly once"
+        );
+
+        // The record path folds non-null session metadata under the
+        // `response_payload` key "ambient_enrichment"; null stays absent.
+        let folded = fold_ambient_into_response_payload(
+            serde_json::json!({
+                "content": "answer",
+                "finish_reason": "stop",
+            }),
+            metadata.clone(),
+        );
+        let ambient = folded
+            .get("ambient_enrichment")
+            .expect("metadata folded into response_payload");
+        assert_eq!(ambient["intent"]["intent"], json!("summary"));
+        assert_eq!(ambient["tags"]["tags"], json!(["alpha", "beta"]));
+        assert_eq!(folded["content"], json!("answer"));
+
+        let unfolded = fold_ambient_into_response_payload(
+            serde_json::json!({"content": "answer"}),
+            serde_json::Value::Null,
+        );
+        assert!(
+            unfolded.get("ambient_enrichment").is_none(),
+            "null metadata must not add an ambient key"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn enrichment_failure_silent() {
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall("llm.complete".into(), |payload, next| async move {
+            next(payload).await
+        });
+
+        let mock = Arc::new(AmbientMockClient::failing("provider down"));
+        let engine = ambient_engine(mock, AmbientEnrichmentConfig { enabled: true });
+
+        let (response, metadata) = engine
+            .complete_llm_step_with_metadata(
+                &ctx,
+                &[("user".to_string(), "hello there".to_string())],
+                "",
+                Some("run-2"),
+                Some("acme"),
+                Some(1),
+                Some("local"),
+            )
+            .await;
+
+        assert_eq!(
+            response.expect("completion must succeed despite enrichment failure").content,
+            "classification-of-hello there"
+        );
+        assert!(
+            metadata.is_null(),
+            "failed enrichment is silently skipped, not surfaced"
+        );
+
+        // The record still lands on the existing path; folding the null
+        // metadata leaves no ambient_enrichment key behind.
+        let folded = fold_ambient_into_response_payload(
+            serde_json::json!({
+                "content": "classification-of-hello there",
+                "finish_reason": "stop",
+            }),
+            metadata,
+        );
+        assert!(
+            folded.get("ambient_enrichment").is_none(),
+            "no ambient key when enrichment failed"
+        );
+        assert_eq!(folded["content"], json!("classification-of-hello there"));
     }
 }

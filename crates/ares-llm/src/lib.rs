@@ -100,6 +100,8 @@ pub mod anthropic;
 pub mod azure;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
+#[cfg(feature = "llamacpp")]
+pub mod llamacpp;
 #[cfg(feature = "ollama")]
 pub mod ollama;
 #[cfg(feature = "openai")]

@@ -20,9 +20,10 @@
 //! let response = client.generate("Hello!").await?;
 //! ```
 
-use crate::client::{LLMClient, LLMResponse, ModelParams, TokenUsage};
+use crate::client::{GenerationHints, LLMClient, LLMResponse, ModelParams, TokenUsage};
 use crate::coordinator::{ConversationMessage, MessageRole};
 use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
+use async_openai::types::chat::ResponseFormat;
 use async_openai::{
     config::OpenAIConfig,
     types::chat::{
@@ -36,6 +37,7 @@ use async_openai::{
 };
 use async_trait::async_trait;
 use futures::StreamExt;
+use std::sync::RwLock;
 use std::time::Duration;
 
 /// OpenAI client for API-based inference
@@ -43,6 +45,10 @@ pub struct OpenAIClient {
     client: Client<OpenAIConfig>,
     model: String,
     params: ModelParams,
+    /// Generation hints applying to SUBSEQUENT calls (see [`GenerationHints`]
+    /// for the set-on-client contract). Snapshotted inside the single
+    /// request-argument funnel.
+    hints: RwLock<GenerationHints>,
 }
 
 impl OpenAIClient {
@@ -121,6 +127,7 @@ impl OpenAIClient {
             client: Client::with_config(config).with_http_client(http_client),
             model,
             params,
+            hints: RwLock::new(GenerationHints::default()),
         }
     }
 
@@ -220,6 +227,12 @@ impl OpenAIClient {
         }
     }
 
+    /// Single funnel every chat-completion request passes through: static
+    /// model params first, then generation hints. Hint mapping:
+    /// - `json_mode` → `response_format` `json_object`
+    /// - `max_tokens` → `max_completion_tokens` (only when params did not
+    ///   already set one, so an explicit config budget wins)
+    /// - `suppress_reasoning` → `reasoning_effort: minimal`
     fn apply_model_params(&self, builder: &mut CreateChatCompletionRequestArgs) {
         // GPT-5 chat-completions works reliably here when we explicitly cap reasoning effort.
         if self.model.starts_with("gpt-5") {
@@ -240,6 +253,19 @@ impl OpenAIClient {
         }
         if let Some(pres_penalty) = self.params.presence_penalty {
             builder.presence_penalty(pres_penalty);
+        }
+
+        let hints = self.hints.read().map(|h| h.clone()).unwrap_or_default();
+        if hints.json_mode {
+            builder.response_format(ResponseFormat::JsonObject);
+        }
+        if self.params.max_tokens.is_none() {
+            if let Some(budget) = hints.max_tokens {
+                builder.max_completion_tokens(budget);
+            }
+        }
+        if hints.suppress_reasoning {
+            builder.reasoning_effort(ReasoningEffort::Minimal);
         }
     }
 }
@@ -699,6 +725,16 @@ impl LLMClient for OpenAIClient {
 
     fn model_name(&self) -> &str {
         &self.model
+    }
+
+    fn supports_hints(&self) -> bool {
+        true
+    }
+
+    fn set_hints(&self, hints: GenerationHints) {
+        if let Ok(mut slot) = self.hints.write() {
+            *slot = hints;
+        }
     }
 }
 
@@ -1257,6 +1293,74 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(body["reasoning_effort"], "low");
+    }
+
+    /// Generation hints ride the single arg funnel onto the wire:
+    /// json_mode → response_format, max_tokens → max_completion_tokens,
+    /// suppress_reasoning → reasoning_effort minimal.
+    #[tokio::test]
+    async fn test_generation_hints_map_onto_request_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        assert!(client.supports_hints());
+        client.set_hints(GenerationHints {
+            json_mode: true,
+            suppress_reasoning: true,
+            max_tokens: Some(77),
+        });
+
+        let _ = client.generate("hi").await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(
+            body["response_format"]["type"],
+            serde_json::json!("json_object"),
+            "json_mode hint maps to response_format json_object"
+        );
+        assert_eq!(
+            body["max_completion_tokens"], 77,
+            "hint budget maps to max_completion_tokens when params.max_tokens is None"
+        );
+        assert_eq!(
+            body["reasoning_effort"], "minimal",
+            "suppress_reasoning maps to reasoning_effort minimal"
+        );
+    }
+
+    /// Params-configured max_tokens wins over the hint budget (explicit
+    /// config beats advisory hints); a non-suppressed request keeps the
+    /// model-default reasoning effort.
+    #[tokio::test]
+    async fn test_params_max_tokens_beats_hint_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")))
+            .mount(&server)
+            .await;
+
+        let params = ModelParams {
+            max_tokens: Some(512),
+            ..ModelParams::default()
+        };
+        let client = openai_client_with_params(&server, "gpt-4", params);
+        client.set_hints(GenerationHints {
+            json_mode: false,
+            suppress_reasoning: false,
+            max_tokens: Some(64),
+        });
+        let _ = client.generate("hi").await.unwrap();
+        let body = first_request_json(&server).await;
+        assert_eq!(body["max_completion_tokens"], 512);
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]

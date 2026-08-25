@@ -1200,10 +1200,12 @@ mod tests {
 
     #[test]
     fn boxed_arc_client_forwards_hints_to_inner_client() {
-        let inner = Arc::new(HintRecordingClient {
+        let concrete = Arc::new(HintRecordingClient {
             supports: true,
-            ..Default::default()
+            hints: parking_lot::Mutex::new(Vec::new()),
         });
+        let recorder_handle = Arc::clone(&concrete);
+        let inner: Arc<dyn LLMClient> = concrete;
         let boxed = BoxedArcClient(Arc::clone(&inner));
 
         assert!(boxed.supports_hints());
@@ -1215,8 +1217,9 @@ mod tests {
         boxed.set_hints(GenerationHints::default());
 
         // The adapter must reach the INNER client instead of stopping at the
-        // trait's no-op defaults on the box itself.
-        let recorded = inner.hints.lock();
+        // trait's no-op defaults on the box itself. `concrete` and `inner`
+        // share one allocation, so writes via the box are visible here.
+        let recorded = recorder_handle.hints.lock();
         assert_eq!(
             recorded.len(),
             2,

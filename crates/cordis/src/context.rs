@@ -207,6 +207,21 @@ impl Context {
         semantic_version: Option<u64>,
     ) -> Arc<T> {
         let tid = TypeId::of::<T>();
+        // C1 `internal/set` write veto: a failing chain refuses THIS write
+        // by returning the PREVIOUS value for `tid` (the old binding stays
+        // fully intact — no store/owners/version mutation happens). With no
+        // listener registered the consult is two map reads.
+        if let Some(events) = self.get_unintercepted::<crate::EventsService>() {
+            if crate::events::blocking_intercept_set(&events, std::any::type_name::<T>()).is_err()
+            {
+                tracing::info!(
+                    service = std::any::type_name::<T>(),
+                    "internal/set vetoed provider write; previous value stays"
+                );
+                let prev_any = self.store.read().get(&tid).cloned();
+                return prev_any.and_then(|any| any.downcast::<T>().ok()).unwrap_or(svc);
+            }
+        }
         let any: Arc<dyn Any + Send + Sync> = svc.clone();
         let prev = self.store.write().insert(tid, any.clone());
         if tid == TypeId::of::<ReflectService>() {
@@ -478,6 +493,47 @@ impl Context {
     }
 
     pub fn get<T: Service>(&self) -> Option<Arc<T>> {
+        // C1 `internal/get` strict-read interception: consult the veto chain
+        // ONCE per top-level read. Redirect skips this frame's bindings so a
+        // parent binding serves the read; Refuse fails the lookup outright.
+        if let Some(events) = self.get_unintercepted::<crate::EventsService>() {
+            match crate::events::blocking_intercept_get(&events, std::any::type_name::<T>()) {
+                crate::events::ReadVerdict::Pass => {}
+                crate::events::ReadVerdict::RedirectFrame => {
+                    return self.get_from_parent_frame::<T>();
+                }
+                crate::events::ReadVerdict::Refuse => return None,
+            }
+        }
+        self.get_impl::<T>()
+    }
+
+    /// Internal read used by the interception bridges themselves: resolves a
+    /// service WITHOUT re-consulting `internal/get` (the thread-local fence
+    /// already guarantees no recursion; this path additionally avoids the
+    /// bridge call for kernel-internal lookups).
+    fn get_unintercepted<T: Service>(&self) -> Option<Arc<T>> {
+        self.get_impl::<T>()
+    }
+
+    /// Continue a redirected strict read at the PARENT frame, skipping this
+    /// context's store + intercept bindings entirely. The root frame answers
+    /// `None` — there is nothing above to serve from.
+    fn get_from_parent_frame<T: Service>(&self) -> Option<Arc<T>> {
+        let Some(parent) = &self.parent else {
+            return None;
+        };
+        if parent.isolate_label(TypeId::of::<T>()) != self.isolate_label(TypeId::of::<T>()) {
+            return None;
+        }
+        // The parent lookup runs under the same fence as the original read,
+        // so it will not re-consult the veto chain.
+        parent.get_impl::<T>()
+    }
+
+    /// The historical strict-read body shared by [`Self::get`] and the two
+    /// helpers above.
+    fn get_impl<T: Service>(&self) -> Option<Arc<T>> {
         let tid = TypeId::of::<T>();
         // Isolate-labeled TypeIds resolve from store / isolate parent walk.
         // Unlabeled TypeIds still let intercept win (request-scoped override).
@@ -515,13 +571,13 @@ impl Context {
         if self.isolate.read().contains_key(&tid) {
             return self.parent.as_ref().and_then(|parent| {
                 if parent.isolate_label(tid) == self.isolate_label(tid) {
-                    parent.get::<T>()
+                    parent.get_impl::<T>()
                 } else {
                     None
                 }
             });
         }
-        self.parent.as_ref().and_then(|parent| parent.get::<T>())
+        self.parent.as_ref().and_then(|parent| parent.get_impl::<T>())
     }
 
     /// The single-source-discipline refusal for a TypeId that is already

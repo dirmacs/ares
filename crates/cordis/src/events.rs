@@ -86,6 +86,40 @@ pub struct EventOptions {
 /// listeners bypass the filter entirely and never invoke it.
 pub type ListenerFilter = Box<dyn Fn(&EventOptions) -> bool + Send + Sync>;
 
+/// Kernel intercept meta-events (C1): five veto points plus the internal
+/// dispatch observer. These are kernel-internal contracts — they do not
+/// join the product event catalog, so catalog validation bypasses them
+/// exactly like the mechanics test events below.
+pub const INTERNAL_GET_EVENT: &str = "internal/get";
+pub const INTERNAL_SET_EVENT: &str = "internal/set";
+pub const INTERNAL_CONFIG_EVENT: &str = "internal/config";
+pub const INTERNAL_UPDATE_EVENT: &str = "internal/update";
+pub const INTERNAL_LISTENER_EVENT: &str = "internal/listener";
+pub const INTERNAL_DISPATCH_EVENT: &str = "internal/dispatch";
+
+/// True when `event` names one of the kernel intercept meta-events.
+pub fn is_internal_meta_event(event: &str) -> bool {
+    matches!(
+        event,
+        INTERNAL_GET_EVENT
+            | INTERNAL_SET_EVENT
+            | INTERNAL_CONFIG_EVENT
+            | INTERNAL_UPDATE_EVENT
+            | INTERNAL_LISTENER_EVENT
+            | INTERNAL_DISPATCH_EVENT
+    )
+}
+
+/// Payload carried by the `internal/dispatch` observer: fires pre-dispatch
+/// on every NON-internal dispatch with the observed mode, name, and args.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct InternalDispatchPayload {
+    /// Rendering of [`Dispatch`] (`"emit"`, `"bail"`, `"waterfall"`, …).
+    pub mode: String,
+    pub name: String,
+    pub args: serde_json::Value,
+}
+
 /// Synthetic event names used by this crate's own unit tests to exercise
 /// dispatch mechanics (ordering, bail, disposal). They are not product
 /// contracts and bypass catalog validation when built for tests.
@@ -117,10 +151,18 @@ const MECHANICS_TEST_EVENTS: &[&str] = &[
     "prepend.test",
     "filtered.test",
     "global.test",
+    // C1 intercept meta-event tests (synthetic target events).
+    "blocked.event",
+    "allowed.event",
+    "another.event",
+    "observed.a",
+    "observed.b",
+    "observed.c",
+    "wf.filtered",
 ];
 
 fn bypasses_catalog(event: &str) -> bool {
-    cfg!(test) && MECHANICS_TEST_EVENTS.contains(&event)
+    (cfg!(test) && MECHANICS_TEST_EVENTS.contains(&event)) || is_internal_meta_event(event)
 }
 
 /// Debug-only contract enforcement. Compiles out in release builds.
@@ -140,6 +182,19 @@ fn debug_enforce_listener(event: &EventId, waterfall_registration: bool) {
     }
     if let Err(msg) = crate::events_catalog::validate_listener(event, waterfall_registration) {
         debug_assert!(false, "{msg}");
+    }
+}
+
+impl std::fmt::Display for Dispatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Dispatch::Emit => "emit",
+            Dispatch::Parallel => "parallel",
+            Dispatch::Serial => "serial",
+            Dispatch::Bail => "bail",
+            Dispatch::Waterfall => "waterfall",
+        };
+        f.write_str(name)
     }
 }
 
@@ -189,6 +244,10 @@ struct HandlerSlot {
 #[derive(Clone)]
 struct WaterfallSlot {
     cancelled: Arc<AtomicBool>,
+    /// Full registration [`EventOptions`] so per-dispatch filters can decide
+    /// participation exactly like the flat registry. Historical
+    /// registrations default to both flags off.
+    options: EventOptions,
     handler: WaterfallHandler,
 }
 
@@ -225,6 +284,36 @@ impl EventsService {
             .entry("agent.admit".into())
             .or_default()
             .push(slot);
+    }
+
+    /// Count of non-cancelled listeners registered on `event`, across BOTH
+    /// registries (flat + waterfall). Read-only — no pruning writes — so the
+    /// zero-cost gate for every interception point is one pair of map
+    /// lookups.
+    pub fn listener_count(&self, event: &str) -> usize {
+        let flat = self
+            .handlers
+            .read()
+            .get(event)
+            .map(|slots| {
+                slots
+                    .iter()
+                    .filter(|slot| !slot.cancelled.load(Ordering::SeqCst))
+                    .count()
+            })
+            .unwrap_or(0);
+        let waterfall = self
+            .waterfall_handlers
+            .read()
+            .get(event)
+            .map(|slots| {
+                slots
+                    .iter()
+                    .filter(|slot| !slot.cancelled.load(Ordering::SeqCst))
+                    .count()
+            })
+            .unwrap_or(0);
+        flat + waterfall
     }
 
     /// Subscribe to the fire-and-forget emit broadcast bus.
@@ -276,6 +365,12 @@ impl EventsService {
         Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
     {
         debug_enforce_listener(&event, false);
+        // Registration veto point (C1): a bail/error on `internal/listener`
+        // cancels this registration; the returned handle is inert BY DESIGN
+        // (disposing it flips nothing).
+        if !blocking_listener_veto(self, &event) {
+            return Box::new(|| {});
+        }
         // One atomic flag does double duty: swapping it `true` AT INVOCATION
         // claims the single run among concurrent dispatches, and because it
         // IS the slot's cancellation flag, the spent slot is dropped by the
@@ -338,6 +433,11 @@ impl EventsService {
         Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
     {
         debug_enforce_listener(&event, false);
+        // Same registration veto point as `once_with`; a cancelled
+        // registration hands back a handle that flips nothing.
+        if !blocking_listener_veto(self, &event) {
+            return Box::new(|| {});
+        }
         let cancelled = Arc::new(AtomicBool::new(false));
         let slot = HandlerSlot {
             cancelled: cancelled.clone(),
@@ -376,9 +476,13 @@ impl EventsService {
         Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
     {
         debug_enforce_listener(&event, true);
+        if !blocking_listener_veto(self, &event) {
+            return Box::new(|| {});
+        }
         let cancelled = Arc::new(AtomicBool::new(false));
         let slot = WaterfallSlot {
             cancelled: cancelled.clone(),
+            options: EventOptions::default(),
             handler: Arc::new(move |v, next| Box::pin(handler(v, next))),
         };
         let mut handlers = self.waterfall_handlers.write();
@@ -441,6 +545,17 @@ impl EventsService {
     }
 
     fn active_waterfall(&self, event: &EventId) -> Vec<WaterfallHandler> {
+        self.active_waterfall_filtered(event, None)
+    }
+
+    /// Waterfall counterpart of [`Self::active_handlers_filtered`]: retains
+    /// cancelled slots, keeps global listeners unconditionally, offers every
+    /// other slot's [`EventOptions`] to `filter`.
+    fn active_waterfall_filtered(
+        &self,
+        event: &EventId,
+        filter: Option<&ListenerFilter>,
+    ) -> Vec<WaterfallHandler> {
         let mut handlers = self.waterfall_handlers.write();
         let active = {
             let Some(slots) = handlers.get_mut(event) else {
@@ -449,13 +564,44 @@ impl EventsService {
             slots.retain(|slot| !slot.cancelled.load(Ordering::SeqCst));
             slots
                 .iter()
+                .filter(|slot| match filter {
+                    None => true,
+                    Some(filter) => slot.options.global || filter(&slot.options),
+                })
                 .map(|slot| slot.handler.clone())
                 .collect::<Vec<_>>()
         };
-        if active.is_empty() {
+        // Prune ONLY when every slot was cancelled: a filter-empty snapshot
+        // still leaves LIVE (excluded-for-this-dispatch) registrations intact,
+        // mirroring [`Self::active_handlers_filtered`].
+        if active.is_empty() && handlers.get(event).is_some_and(Vec::is_empty) {
             handlers.remove(event);
         }
         active
+    }
+
+    /// Fire-and-forget observation on `internal/dispatch`: carries
+    /// `(mode, name, args)` for every NON-internal dispatch, emitted
+    /// pre-dispatch. Handler results and errors are dropped by design — an
+    /// observability listener must never break or delay the observed
+    /// operation. `internal/*` events are exempt from recursion.
+    fn observe_dispatch(&self, mode: Dispatch, name: &EventId, args: &serde_json::Value) {
+        if is_internal_meta_event(name) || self.listener_count(INTERNAL_DISPATCH_EVENT) == 0 {
+            return;
+        }
+        let Ok(payload) = serde_json::to_value(InternalDispatchPayload {
+            mode: mode.to_string(),
+            name: name.clone(),
+            args: args.clone(),
+        }) else {
+            return;
+        };
+        for handler in self.active_handlers(&INTERNAL_DISPATCH_EVENT.to_string()) {
+            let p = payload.clone();
+            tokio::spawn(async move {
+                let _ = handler(p).await;
+            });
+        }
     }
 
     /// Filtered fire-and-forget emit: like [`Dispatch::Emit`] via
@@ -478,6 +624,7 @@ impl EventsService {
             .lock()
             .entry(event.to_string())
             .or_insert(0) += 1;
+        self.observe_dispatch(Dispatch::Emit, &event, &args);
         let _ = self.bus.send((event.clone(), args.clone()));
         for h in self.active_handlers_filtered(&event, Some(&filter)) {
             let p = args.clone();
@@ -486,6 +633,53 @@ impl EventsService {
             });
         }
         Ok(serde_json::Value::Null)
+    }
+
+    /// Target-carrying Bail dispatch: like [`Dispatch::Bail`] through
+    /// [`Self::dispatch`], but non-global flat listeners whose registration
+    /// options fail `filter` do not participate in THIS dispatch (they stay
+    /// registered). The filter closure captures the operating context at
+    /// the call site, so per-dispatch decisions evaluate against it. Kernel
+    /// meta-events ride here for their veto chains.
+    pub async fn bail_from(
+        &self,
+        event: EventId,
+        payload: serde_json::Value,
+        filter: Option<ListenerFilter>,
+    ) -> Result<serde_json::Value, CordisError> {
+        debug_enforce_dispatch(&event, Dispatch::Bail);
+        *self
+            .dispatch_counts
+            .lock()
+            .entry(event.to_string())
+            .or_insert(0) += 1;
+        let handlers = match filter {
+            Some(filter) => self.active_handlers_filtered(&event, Some(&filter)),
+            None => self.active_handlers(&event),
+        };
+        run_bail_handlers(handlers, payload).await
+    }
+
+    /// Target-carrying Waterfall dispatch with identity terminal: the same
+    /// chain as [`Dispatch::Waterfall`] through [`Self::dispatch`], plus
+    /// per-dispatch filtering of the waterfall registry.
+    pub async fn waterfall_from(
+        &self,
+        event: EventId,
+        payload: serde_json::Value,
+        filter: Option<ListenerFilter>,
+    ) -> Result<serde_json::Value, CordisError> {
+        debug_enforce_dispatch(&event, Dispatch::Waterfall);
+        *self
+            .dispatch_counts
+            .lock()
+            .entry(event.to_string())
+            .or_insert(0) += 1;
+        let handlers = self.active_waterfall_filtered(&event, filter.as_ref());
+        if handlers.is_empty() {
+            return Ok(payload);
+        }
+        run_waterfall_chain(handlers, 0, payload, None).await
     }
 
     pub async fn dispatch(
@@ -500,6 +694,7 @@ impl EventsService {
             .lock()
             .entry(event.to_string())
             .or_insert(0) += 1;
+        self.observe_dispatch(mode, &event, &payload);
         let handlers = self.active_handlers(&event);
         match mode {
             // Waterfall uses its own around-middleware registry. With no active
@@ -587,6 +782,7 @@ impl EventsService {
         Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
     {
         debug_enforce_dispatch(&event, Dispatch::Waterfall);
+        self.observe_dispatch(Dispatch::Waterfall, &event, &payload);
         let handlers = self.active_waterfall(&event);
         if handlers.is_empty() {
             return core(payload).await;
@@ -596,6 +792,119 @@ impl EventsService {
                 as Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
         });
         run_waterfall_chain(handlers, 0, payload, Some(core)).await
+    }
+
+    /// Target-carrying around-middleware waterfall whose terminal `next` is
+    /// `core`: [`Self::waterfall_around`] plus per-dispatch listener
+    /// filtering. The operating context rides along through whatever the
+    /// caller closes over in `filter`.
+    pub async fn waterfall_async_from<F, Fut>(
+        &self,
+        event: EventId,
+        payload: serde_json::Value,
+        filter: Option<ListenerFilter>,
+        core: F,
+    ) -> Result<serde_json::Value, CordisError>
+    where
+        F: FnOnce(serde_json::Value) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
+    {
+        debug_enforce_dispatch(&event, Dispatch::Waterfall);
+        *self
+            .dispatch_counts
+            .lock()
+            .entry(event.to_string())
+            .or_insert(0) += 1;
+        let handlers = self.active_waterfall_filtered(&event, filter.as_ref());
+        if handlers.is_empty() {
+            return core(payload).await;
+        }
+        let core: WaterfallCore = Box::new(move |p| {
+            Box::pin(core(p))
+                as Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>>
+        });
+        run_waterfall_chain(handlers, 0, payload, Some(core)).await
+    }
+
+    /// Strict service read interception at the `internal/get` veto point.
+    ///
+    /// No listeners ⇒ `Ok(None)` at map-lookup cost (zero-cost gate). A Bail
+    /// chain yielding null passes the read through untouched; a non-null
+    /// result REPLACES what the consumer sees; a chain error vetoes the read.
+    pub async fn intercept_get(
+        &self,
+        service: &str,
+        ctx_hint: Option<String>,
+    ) -> Result<Option<serde_json::Value>, CordisError> {
+        if self.listener_count(INTERNAL_GET_EVENT) == 0 {
+            return Ok(None);
+        }
+        let payload = serde_json::json!({ "service": service, "ctx": ctx_hint });
+        let out = self
+            .bail_from(INTERNAL_GET_EVENT.into(), payload, None)
+            .await?;
+        Ok((!out.is_null()).then_some(out))
+    }
+
+    /// Service-write interception at the `internal/set` veto point. A chain
+    /// error vetoes the write (the previous value stays); null / pass-through
+    /// allows the write unchanged.
+    pub async fn intercept_set(
+        &self,
+        service: &str,
+        ctx_hint: Option<String>,
+    ) -> Result<(), CordisError> {
+        if self.listener_count(INTERNAL_SET_EVENT) == 0 {
+            return Ok(());
+        }
+        let payload = serde_json::json!({ "service": service, "ctx": ctx_hint });
+        self.bail_from(INTERNAL_SET_EVENT.into(), payload, None)
+            .await?;
+        Ok(())
+    }
+
+    /// Config-resolution interception at the `internal/config` veto point.
+    /// The chain's non-null terminal IS the effective configuration; null
+    /// passes `raw` through untouched; a chain error fails the activation /
+    /// update that was resolving config.
+    pub async fn intercept_config(
+        &self,
+        raw: serde_json::Value,
+    ) -> Result<serde_json::Value, CordisError> {
+        if self.listener_count(INTERNAL_CONFIG_EVENT) == 0 {
+            return Ok(raw);
+        }
+        self.bail_from(INTERNAL_CONFIG_EVENT.into(), raw, None).await
+    }
+
+    /// Restart-schedule interception at the `internal/update` veto point.
+    /// `Ok(true)` proceeds with the restart; `Ok(false)` (a bail or an
+    /// explicit JSON false) vetoes — the caller stores its pending config
+    /// and skips the restart. A chain error propagates to the caller.
+    pub async fn intercept_update(&self, service: &str) -> Result<bool, CordisError> {
+        if self.listener_count(INTERNAL_UPDATE_EVENT) == 0 {
+            return Ok(true);
+        }
+        let payload = serde_json::json!({ "service": service });
+        let out = self
+            .bail_from(INTERNAL_UPDATE_EVENT.into(), payload, None)
+            .await?;
+        Ok(!(out.is_null() || out.as_bool() == Some(false)))
+    }
+
+    /// Listener-registration interception at the `internal/listener` veto
+    /// point. `Ok(true)` lets the registration proceed; a bail (non-null
+    /// non-true result) or a chain error cancels it — the caller returns an
+    /// inert handle without touching either registry.
+    pub async fn intercept_listener(&self, event: &str) -> Result<bool, CordisError> {
+        if self.listener_count(INTERNAL_LISTENER_EVENT) == 0 {
+            return Ok(true);
+        }
+        let payload = serde_json::json!({ "event": event });
+        let out = self
+            .bail_from(INTERNAL_LISTENER_EVENT.into(), payload, None)
+            .await?;
+        Ok(out.is_null() || out.as_bool() == Some(true))
     }
 
     /// Typed dispatch: serialize the payload struct for `E`'s event and
@@ -680,6 +989,185 @@ impl Default for EventsService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Re-entrancy fence for the synchronous interception bridges: while a
+/// bridge drives its meta-event chain, nested operations on THIS thread pass
+/// through unintercepted (an `internal/get` listener reading services must
+/// not recurse into its own veto).
+struct InterceptFence;
+
+impl InterceptFence {
+    fn enter() -> Option<Self> {
+        INTERCEPT_FENCE.with(|fence| {
+            if fence.get() {
+                None
+            } else {
+                fence.set(true);
+                Some(Self)
+            }
+        })
+    }
+}
+
+impl Drop for InterceptFence {
+    fn drop(&mut self) {
+        INTERCEPT_FENCE.with(|fence| fence.set(false));
+    }
+}
+
+thread_local! {
+    static INTERCEPT_FENCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Resolve the runtime handle for a synchronous bridge, requiring a
+/// MULTI-thread runtime (`block_in_place` panics on current-thread flavors).
+/// `None` means "cannot bridge right now" — callers fall back to allowing
+/// the operation, matching the historical no-listener behavior.
+fn bridge_handle() -> Option<tokio::runtime::Handle> {
+    let handle = tokio::runtime::Handle::try_current().ok()?;
+    if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+        Some(handle)
+    } else {
+        None
+    }
+}
+
+/// Synchronous bridge for the `internal/listener` registration veto.
+///
+/// Registrations are sync APIs, so the async veto chain runs to completion
+/// on the current thread via `block_in_place`. With NO `internal/listener`
+/// listener registered the check short-circuits BEFORE any blocking — the
+/// historical zero-cost path every existing caller takes. On runtimes that
+/// cannot park the worker (single-thread flavors) the registration is
+/// allowed and a warning records the skipped veto.
+fn blocking_listener_veto(svc: &EventsService, event: &str) -> bool {
+    if svc.listener_count(INTERNAL_LISTENER_EVENT) == 0 {
+        return true;
+    }
+    let Some(_fence) = InterceptFence::enter() else {
+        return true;
+    };
+    let Some(handle) = bridge_handle() else {
+        tracing::warn!(
+            event = %event,
+            "internal/listener veto listener present but runtime cannot block in place; allowing registration"
+        );
+        return true;
+    };
+    // SAFETY: `block_in_place` requires 'static, but the service outlives the
+    // whole synchronous call and the future completes inside it before the
+    // borrow ends; the pointer is never null and never aliased mutably.
+    let svc: &'static EventsService = unsafe { &*(svc as *const EventsService) };
+    tokio::task::block_in_place(|| {
+        handle.block_on(async move {
+            // A failing veto chain cancels the registration (fail-closed).
+            svc.intercept_listener(event).await.unwrap_or(false)
+        })
+    })
+}
+
+/// Verdict of a bridged `internal/get` consultation on a strict service read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadVerdict {
+    /// No interception: resolve the read normally.
+    Pass,
+    /// The interceptor rewrote the read outcome: skip THIS context frame's
+    /// bindings (store + intercept) and continue the prototype walk upward,
+    /// so a parent binding serves the read instead.
+    RedirectFrame,
+    /// The interceptor refused the read outright.
+    Refuse,
+}
+
+/// Synchronous bridge for the `internal/get` strict-read veto. Runs the
+/// Bail chain to completion on the current thread via `block_in_place`;
+/// without a runtime (pure-sync caller) the read passes untouched.
+pub(crate) fn blocking_intercept_get(events: &EventsService, service: &str) -> ReadVerdict {
+    if events.listener_count(INTERNAL_GET_EVENT) == 0 {
+        return ReadVerdict::Pass;
+    }
+    let Some(_fence) = InterceptFence::enter() else {
+        // Re-entrant read from inside an interception chain: pass through.
+        return ReadVerdict::Pass;
+    };
+    let Some(handle) = bridge_handle() else {
+        tracing::warn!(
+            service,
+            "internal/get listener present but runtime cannot block in place; passing read through"
+        );
+        return ReadVerdict::Pass;
+    };
+    // SAFETY: the service outlives the synchronous bridge call; the future
+    // completes inside `block_in_place`, before the borrow ends.
+    let events: &'static EventsService = unsafe { &*(events as *const EventsService) };
+    let service = service.to_string();
+    tokio::task::block_in_place(|| {
+        handle.block_on(async move {
+            match events.intercept_get(&service, None).await {
+                Err(_) => ReadVerdict::Refuse,
+                Ok(None) => ReadVerdict::Pass,
+                Ok(Some(out)) => {
+                    if out.is_null() {
+                        ReadVerdict::Pass
+                    } else if out.get("refuse").and_then(|v| v.as_bool()) == Some(true) {
+                        ReadVerdict::Refuse
+                    } else {
+                        ReadVerdict::RedirectFrame
+                    }
+                }
+            }
+        })
+    })
+}
+
+/// Synchronous bridge for the `internal/set` write veto. `Err` vetoes the
+/// write; without a runtime the write passes untouched.
+pub(crate) fn blocking_intercept_set(events: &EventsService, service: &str) -> Result<(), CordisError> {
+    if events.listener_count(INTERNAL_SET_EVENT) == 0 {
+        return Ok(());
+    }
+    let Some(_fence) = InterceptFence::enter() else {
+        return Ok(());
+    };
+    let Some(handle) = bridge_handle() else {
+        tracing::warn!(
+            service,
+            "internal/set listener present but runtime cannot block in place; allowing write"
+        );
+        return Ok(());
+    };
+    // SAFETY: same lifetime argument as `blocking_intercept_get`.
+    let events: &'static EventsService = unsafe { &*(events as *const EventsService) };
+    let service = service.to_string();
+    tokio::task::block_in_place(|| {
+        handle.block_on(async move { events.intercept_set(&service, None).await })
+    })
+}
+
+/// Synchronous bridge for `internal/config` resolution ahead of one apply
+/// pass. Returns the effective config: `raw` unchanged at zero added cost
+/// when no listener is registered (or no runtime exists), otherwise the
+/// chain terminal (null ⇒ raw passes through).
+pub(crate) fn blocking_intercept_config(
+    events: &EventsService,
+    raw: serde_json::Value,
+) -> Result<serde_json::Value, CordisError> {
+    if events.listener_count(INTERNAL_CONFIG_EVENT) == 0 {
+        return Ok(raw);
+    }
+    let Some(_fence) = InterceptFence::enter() else {
+        return Ok(raw);
+    };
+    let Some(handle) = bridge_handle() else {
+        tracing::warn!(
+            "internal/config listener present but runtime cannot block in place; using raw config"
+        );
+        return Ok(raw);
+    };
+    // SAFETY: same lifetime argument as `blocking_intercept_get`.
+    let events: &'static EventsService = unsafe { &*(events as *const EventsService) };
+    tokio::task::block_in_place(|| handle.block_on(events.intercept_config(raw)))
 }
 
 /// Best-effort message extraction from a panicked listener's panic payload,
@@ -1589,5 +2077,398 @@ mod tests {
             10,
             "global listener runs despite a rejecting filter; non-global does not"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // C1 kernel intercept meta-events
+    // ------------------------------------------------------------------
+
+    /// `internal/get` rewrites a strict read: the interceptor's non-null
+    /// terminal replaces the resolved value; with the listener disposed the
+    /// same consultation passes through (`None` = no interception).
+    #[tokio::test]
+    async fn get_interceptor_rewrites_read() {
+        let svc = EventsService::new();
+        // No listeners: zero-cost pass-through.
+        assert_eq!(svc.intercept_get("Svc", None).await.unwrap(), None);
+
+        let d = svc.on(INTERNAL_GET_EVENT.into(), |_payload| async move {
+            Ok(serde_json::json!({ "service": "Svc", "rewritten": true }))
+        });
+        let out = svc.intercept_get("Svc", Some("tenant-a".into())).await;
+        match out {
+            Ok(Some(value)) => {
+                assert_eq!(value["rewritten"], serde_json::json!(true));
+                assert_eq!(value["service"], "Svc");
+            }
+            other => panic!("expected rewritten read, got {other:?}"),
+        }
+        // Disposing the interceptor restores the pass-through.
+        d.dispose();
+        assert_eq!(svc.intercept_get("Svc", None).await.unwrap(), None);
+    }
+
+    /// `internal/set` vetoes a write when its chain errors; without the
+    /// veto (or after disposal) the write proceeds.
+    #[tokio::test]
+    async fn set_interceptor_vetoes_write_leaves_old_value() {
+        let svc = EventsService::new();
+        assert!(svc.intercept_set("Svc", None).await.is_ok());
+
+        let d = svc.on(INTERNAL_SET_EVENT.into(), |_payload| async move {
+            Err::<serde_json::Value, CordisError>(CordisError::Configuration(
+                "writes are frozen".into(),
+            ))
+        });
+        let err = svc.intercept_set("Svc", None).await.unwrap_err();
+        assert!(
+            err.to_string().contains("frozen"),
+            "veto error must surface, got {err}"
+        );
+        d.dispose();
+        assert!(svc.intercept_set("Svc", None).await.is_ok());
+    }
+
+    /// `internal/config`'s non-null terminal IS the effective config.
+    #[tokio::test]
+    async fn config_interceptor_rewrites_effective_config() {
+        let svc = EventsService::new();
+        let raw = serde_json::json!({ "model": "base" });
+        // Pass-through with no listener.
+        assert_eq!(svc.intercept_config(raw.clone()).await.unwrap(), raw);
+
+        let d = svc.on(INTERNAL_CONFIG_EVENT.into(), |raw| async move {
+            let mut effective = raw;
+            if let Some(obj) = effective.as_object_mut() {
+                obj.insert("model".into(), serde_json::json!("rewritten"));
+                obj.insert("seen_by_interceptor".into(), serde_json::json!(true));
+            }
+            Ok(effective)
+        });
+        let effective = svc.intercept_config(raw).await.unwrap();
+        assert_eq!(effective["model"], "rewritten");
+        assert_eq!(effective["seen_by_interceptor"], true);
+        d.dispose();
+
+        // A null terminal passes the raw config through unchanged.
+        svc.on(INTERNAL_CONFIG_EVENT.into(), |_raw| async move {
+            Ok(serde_json::Value::Null)
+        });
+        let raw2 = serde_json::json!({ "keep": 1 });
+        assert_eq!(svc.intercept_config(raw2.clone()).await.unwrap(), raw2);
+    }
+
+    /// `internal/update` bail vetoes the restart: the fiber keeps serving,
+    /// the proposed change lands in `vetoed_config`, and no runner runs.
+    #[tokio::test]
+    async fn update_interceptor_veto_skips_restart_keeps_config() {
+        use crate::{Context, Fiber};
+        let ctx = Context::new_root();
+        let events = Arc::new(EventsService::new());
+        ctx.provide_arc(events.clone());
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(70_100);
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = calls.clone();
+        fiber.set_reload_runner(Box::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        }));
+        fiber.declare_inject::<crate::ReflectService>();
+        let _prov = ctx.provide(crate::ReflectService::new());
+        fiber.refresh(&ctx).await;
+        assert!(matches!(fiber.state(), crate::FiberState::Active { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "initial apply ran");
+
+        // Vetoing interceptor: any update is refused from now on.
+        let d = events.on(INTERNAL_UPDATE_EVENT.into(), |_payload| async move {
+            Ok(serde_json::json!({ "veto": "maintenance window" }))
+        });
+        fiber.update(&ctx).await;
+        assert!(
+            matches!(fiber.state(), crate::FiberState::Active { .. }),
+            "vetoed update must keep the fiber Active, got {:?}",
+            fiber.state()
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "runner must not run again under veto"
+        );
+        d.dispose();
+
+        // After disposal updates flow again: refresh re-applies (epoch
+        // unchanged + satisfied ⇒ early return, but no veto either way).
+        fiber.update(&ctx).await;
+        assert!(matches!(fiber.state(), crate::FiberState::Active { .. }));
+    }
+
+    /// `internal/listener` bail cancels a registration: the returned handle
+    /// is inert and NEITHER registry ever sees the listener. An ERRORING
+    /// veto chain cancels too (fail-closed).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn listener_interceptor_bail_cancels_registration_inert_handle() {
+        let svc = EventsService::new();
+        // NOTE: this service is reused later in the test; every gate installed
+        // here is disposed before the sections that must register normally.
+        let allow_gate = svc.on(INTERNAL_LISTENER_EVENT.into(), |payload| async move {
+            if payload["event"] == "blocked.event" {
+                Ok(serde_json::json!("denied"))
+            } else {
+                Ok(serde_json::Value::Null)
+            }
+        });
+
+        // Flat registration on the blocked event: inert handle.
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = ran.clone();
+        let handle = svc.on("blocked.event".into(), move |_p| {
+            let flag = flag.clone();
+            async move {
+                flag.store(true, Ordering::SeqCst);
+                Ok(serde_json::Value::Null)
+            }
+        });
+        handle.dispose(); // must flip nothing
+        svc.dispatch("blocked.event".into(), serde_json::json!({}), Dispatch::Bail)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "cancelled registration must never run"
+        );
+
+        // Waterfall registration on the blocked event: also cancelled.
+        let wf_handle = svc.on_waterfall(
+            "blocked.event".into(),
+            |_p: serde_json::Value, next| async move { next(_p).await },
+        );
+        wf_handle.dispose();
+        assert_eq!(
+            svc.listener_count("blocked.event"),
+            0,
+            "neither registry may hold a cancelled registration"
+        );
+
+        // Unrelated event names still register normally through the same
+        // veto chain (null verdict = allow).
+        let allowed = svc.on("allowed.event".into(), |_p| async move {
+            Ok(serde_json::Value::Null)
+        });
+        allowed.dispose();
+        assert_eq!(svc.listener_count("allowed.event"), 0, "dispose works");
+
+        // Fail-closed: an erroring veto chain cancels too.
+        let fail_gate = svc.on(INTERNAL_LISTENER_EVENT.into(), |_payload| async move {
+            Err::<serde_json::Value, CordisError>(CordisError::Configuration("gate down".into()))
+        });
+        let second = svc.on("another.event".into(), |_p| async move {
+            Ok(serde_json::Value::Null)
+        });
+        second.dispose();
+        assert_eq!(
+            svc.listener_count("another.event"),
+            0,
+            "erroring veto chain must fail closed"
+        );
+        // Drop the erroring gate and the allowing gate so this service's own
+        // later sections register normally again.
+        fail_gate.dispose();
+        allow_gate.dispose();
+    }
+
+    fn p_owned(p: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>> {
+        Box::pin(async move { Ok(p) })
+    }
+
+    /// `internal/dispatch` observes every NON-internal dispatch with
+    /// (mode, name, args); meta-event dispatches themselves are exempt
+    /// from recursion.
+    #[tokio::test]
+    async fn internal_dispatch_observes_non_internal_only() {
+        let svc = EventsService::new();
+        let seen = Arc::new(Mutex::new(Vec::<InternalDispatchPayload>::new()));
+        let s = seen.clone();
+        svc.on(INTERNAL_DISPATCH_EVENT.into(), move |payload| {
+            let s = s.clone();
+            async move {
+                if let Ok(parsed) =
+                    serde_json::from_value::<InternalDispatchPayload>(payload)
+                {
+                    s.lock().push(parsed);
+                }
+                Ok(serde_json::Value::Null)
+            }
+        });
+
+        // Three product-mode dispatches + one meta dispatch.
+        svc.dispatch("observed.a".into(), serde_json::json!({ "n": 1 }), Dispatch::Emit)
+            .await
+            .unwrap();
+        svc.dispatch(
+            "observed.b".into(),
+            serde_json::json!({ "n": 2 }),
+            Dispatch::Waterfall,
+        )
+        .await
+        .unwrap();
+        svc.dispatch("observed.c".into(), serde_json::json!({}), Dispatch::Bail)
+            .await
+            .unwrap();
+        // Meta-events are exempt: intercept_get consults internal/get only.
+        svc.on(INTERNAL_GET_EVENT.into(), |_p| async move {
+            Ok(serde_json::json!({ "x": true }))
+        });
+        svc.intercept_get("SomeSvc", None).await.unwrap();
+        // The observer itself fires via spawn; poll briefly for delivery.
+        for _ in 0..100 {
+            if seen.lock().len() >= 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let observed = seen.lock().clone();
+        assert_eq!(
+            observed.len(),
+            3,
+            "meta dispatch must NOT be observed; got {observed:?}"
+        );
+        assert_eq!(observed[0].mode, "emit");
+        assert_eq!(observed[0].name, "observed.a");
+        assert_eq!(observed[1].mode, "waterfall");
+        assert_eq!(observed[1].name, "observed.b");
+        assert_eq!(observed[2].mode, "bail");
+        assert_eq!(observed[0].args["n"], 1);
+    }
+
+    /// A failing `internal/config` chain fails the activation: the fiber
+    /// rests inspectable `Failed` carrying the interception error instead of
+    /// activating with an unvalidated config.
+    #[tokio::test]
+    async fn interceptor_error_fails_fiber_activation() {
+        use crate::{Context, Fiber};
+        let ctx = Context::new_root();
+        let events = Arc::new(EventsService::new());
+        ctx.provide_arc(events.clone());
+        events.on(INTERNAL_CONFIG_EVENT.into(), |_raw| async move {
+            Err::<serde_json::Value, CordisError>(CordisError::Configuration(
+                "config rejected by policy".into(),
+            ))
+        });
+
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(70_101);
+        fiber.set_raw_config(serde_json::json!({ "model": "base" }));
+        fiber.set_reload_runner(Box::new(|_| {
+            panic!("runner must never run when config interception refuses");
+        }));
+        fiber.declare_inject::<crate::ReflectService>();
+        let _prov = ctx.provide(crate::ReflectService::new());
+
+        fiber.refresh(&ctx).await;
+        match fiber.state() {
+            crate::FiberState::Failed { error } => {
+                let msg = error.unwrap_or_default();
+                assert!(
+                    msg.contains("config rejected by policy"),
+                    "failure must carry the interception error, got: {msg}"
+                );
+            }
+            other => panic!("expected Failed activation, got {other:?}"),
+        }
+    }
+
+    /// Target-carrying dispatch helpers honor per-dispatch filters while
+    /// leaving registrations intact: `bail_from` filters the flat registry,
+    /// `waterfall_from` / `waterfall_async_from` filter the waterfall one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn target_carrying_dispatches_filter_per_dispatch() {
+        let svc = EventsService::new();
+        let flat_ran = Arc::new(AtomicUsize::new(0));
+        let f = flat_ran.clone();
+        svc.on_with(
+            "wf.filtered".into(),
+            EventOptions::default(),
+            move |_p| {
+                let f = f.clone();
+                async move {
+                    f.fetch_add(1, Ordering::SeqCst);
+                    Ok(serde_json::Value::Null)
+                }
+            },
+        );
+        let wf_ran = Arc::new(AtomicUsize::new(0));
+        let w = wf_ran.clone();
+        svc.on_waterfall("wf.filtered".into(), move |_p, next| {
+            let w = w.clone();
+            async move {
+                w.fetch_add(1, Ordering::SeqCst);
+                next(_p).await
+            }
+        });
+
+        // bail_from with a rejecting filter: the flat listener never runs.
+        let out = svc
+            .bail_from(
+                "wf.filtered".into(),
+                serde_json::json!({"n": 1}),
+                Some(Box::new(|_opts| false)),
+            )
+            .await
+            .unwrap();
+        // An all-excluded chain is empty: the payload passes through.
+        assert_eq!(out, serde_json::json!({"n": 1}));
+        assert_eq!(
+            flat_ran.load(Ordering::SeqCst),
+            0,
+            "rejecting filter must exclude the flat listener"
+        );
+
+        // waterfall_from with a rejecting filter: identity result.
+        let out = svc
+            .waterfall_from(
+                "wf.filtered".into(),
+                serde_json::json!({"n": 1}),
+                Some(Box::new(|_opts| false)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::json!({"n": 1}));
+        assert_eq!(
+            wf_ran.load(Ordering::SeqCst),
+            0,
+            "rejecting filter must exclude the waterfall listener"
+        );
+
+        // Admitting filters: each registry runs exactly once per dispatch.
+        svc.bail_from(
+            "wf.filtered".into(),
+            serde_json::json!({"n": 2}),
+            Some(Box::new(|_opts| true)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(flat_ran.load(Ordering::SeqCst), 1);
+        svc.waterfall_async_from(
+            "wf.filtered".into(),
+            serde_json::json!({"n": 2}),
+            Some(Box::new(|_opts| true)),
+            |mut p| async move {
+                if let Some(obj) = p.as_object_mut() {
+                    obj.insert("core".into(), serde_json::json!(true));
+                }
+                Ok(p)
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(wf_ran.load(Ordering::SeqCst), 1);
+
+        // Registrations survived every filtered dispatch.
+        assert_eq!(svc.listener_count("wf.filtered"), 2);
     }
 }

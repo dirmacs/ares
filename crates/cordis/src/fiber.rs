@@ -177,6 +177,24 @@ pub struct Fiber {
     /// rejections (`Failed` with the runner having succeeded) are exempt —
     /// later refreshes converge those.
     apply_failed: AtomicBool,
+    // --- C1 intercept meta-events: config staging -------------------------
+    /// Raw (un-intercepted) config captured at registration time so every
+    /// refresh pass can re-resolve the EFFECTIVE config from a single source.
+    raw_config: RwLock<Option<serde_json::Value>>,
+    /// Effective config staged by an interception point for the NEXT runner
+    /// pass (`internal/config` terminal). Consumed exactly once by the
+    /// registry's runner closure via [`Self::effective_config_override`].
+    staged_config: Mutex<Option<serde_json::Value>>,
+    /// Set when [`Self::update`] was vetoed by `internal/update`: the new
+    /// config is stored here instead of being applied, and no restart runs.
+    vetoed_config: RwLock<Option<serde_json::Value>>,
+    /// C2 readiness gate ([`crate::registry::ReadinessBarrier`]): a
+    /// composable `ready_when` predicate consulted by the lifecycle before
+    /// any activation pass. Distinct from availability predicates
+    /// ([`Service::check`], which fail LOUDLY to `Failed`) — a closed gate
+    /// is quiet waiting: the fiber rests inspectable `Pending` and
+    /// re-evaluates on every settlement re-kick.
+    readiness: RwLock<Option<crate::registry::ReadinessBarrier>>,
     id: Mutex<Option<crate::FiberId>>,
     disposed: AtomicBool,
     /// Lifecycle observers registered via [`Fiber::subscribe_state`]. Called
@@ -209,6 +227,10 @@ impl Fiber {
             pending_declare: AtomicBool::new(false),
             ever_activated: AtomicBool::new(false),
             apply_failed: AtomicBool::new(false),
+            raw_config: RwLock::new(None),
+            staged_config: Mutex::new(None),
+            vetoed_config: RwLock::new(None),
+            readiness: RwLock::new(None),
             id: Mutex::new(None),
             disposed: AtomicBool::new(false),
             observers: Mutex::new(Vec::new()),
@@ -398,7 +420,55 @@ impl Fiber {
         *self.epoch.write() = epoch;
     }
 
-    pub(crate) fn set_reload_runner(&self, runner: ReloadRunner) {
+    // --- C1 intercept meta-events: config staging -------------------------
+
+    /// Record the raw (pre-interception) config for this fiber. Called by the
+    /// registry at registration time; every refresh pass re-resolves the
+    /// effective config from this single source.
+    pub(crate) fn set_raw_config(&self, raw: serde_json::Value) {
+        *self.raw_config.write() = Some(raw);
+    }
+
+    /// Snapshot of the raw config, if one was recorded.
+    pub(crate) fn raw_config(&self) -> Option<serde_json::Value> {
+        self.raw_config.read().clone()
+    }
+
+    /// Take-and-clear the effective config staged by the last interception
+    /// point. The registry's runner closure consults this right before
+    /// deserializing `P::Config`; `None` means "no interception happened —
+    /// use the captured raw config" (the byte-identical legacy path).
+    pub(crate) fn effective_config_override(&self) -> Option<serde_json::Value> {
+        self.staged_config.lock().take()
+    }
+
+    /// The config stored by a vetoed update (`internal/update` bail), if any.
+    /// Loader-side callers read this to keep the deferred configuration
+    /// visible without having applied it.
+    pub fn vetoed_config(&self) -> Option<serde_json::Value> {
+        self.vetoed_config.read().clone()
+    }
+
+    /// Install the plugin's reload runner. Takes `&Arc<Self>` so the runner
+    /// can stage an effective-config override onto this same fiber from
+    /// inside the closure (see [`Self::effective_config_override`]).
+    /// The fiber's registration id, when one has been assigned.
+    pub fn fiber_id(&self) -> Option<crate::FiberId> {
+        *self.id.lock()
+    }
+
+    /// Install the C2 readiness gate (`ready_when`). Replaces any previous
+    /// gate; the next lifecycle transition re-evaluates from scratch.
+    pub(crate) fn set_readiness_gate(&self, gate: crate::registry::ReadinessBarrier) {
+        *self.readiness.write() = Some(gate);
+    }
+
+    /// Snapshot of the installed readiness gate, if any.
+    pub(crate) fn readiness_gate(&self) -> Option<crate::registry::ReadinessBarrier> {
+        self.readiness.read().clone()
+    }
+
+    pub(crate) fn set_reload_runner(self: &Arc<Self>, runner: ReloadRunner) {
         *self.reload_runner.lock() = Some(runner);
     }
 
@@ -504,15 +574,92 @@ impl Fiber {
                 .as_ref()
                 .and_then(std::sync::Weak::upgrade)
                 .unwrap_or_else(|| ctx.clone());
+
+            // C1 `internal/config` veto point: resolve the EFFECTIVE config
+            // for this pass exactly once. The chain terminal IS the effective
+            // config; a chain error fails the activation (rest `Failed`).
+            if let Some(events) = reload_ctx.get::<crate::EventsService>() {
+                match self.resolve_effective_config(&events).await {
+                    Ok(()) => {}
+                    Err(error) => {
+                        self.apply_failed.store(true, Ordering::Release);
+                        self.set_state(FiberState::Failed {
+                            error: Some(error.to_string()),
+                        });
+                        return;
+                    }
+                }
+            }
+
             let new_epoch = self.compute_epoch(&reload_ctx);
             let old_epoch = self.epoch.read().clone();
             let previous = self.state();
             let satisfied = self.is_satisfied(&reload_ctx);
+            // C2 Pending fast-path: a re-kick on a gated fiber already
+            // resting `Pending` with a STILL-closed gate is a no-op — the
+            // epoch cannot have moved while unserved, so skip without
+            // rewriting state. An OPEN gate falls through to one full pass
+            // (… → Loading → Active).
+            if matches!(previous, FiberState::Pending)
+                && !self.readiness_open(&reload_ctx)
+            {
+                return;
+            }
+            // The epoch fast-path must also confirm the C2 readiness gate:
+            // register_with_readiness installs its gate AFTER registration
+            // already rested the fiber `Active`, so the re-entry pass would
+            // otherwise return here without ever consulting a closed gate.
             if new_epoch == old_epoch
                 && satisfied
                 && matches!(previous, FiberState::Active { .. })
+                && self.readiness_open(&reload_ctx)
                 && !self.pending_declare.swap(false, Ordering::AcqRel)
             {
+                return;
+            }
+
+            // C2 cascade batching: when a declared dependency's provider
+            // fiber is mid-config-update (loader in-flight ledger), DEFER —
+            // rest Pending quietly and let the loader's single post-settle
+            // re-kick converge every deferred dependent at once, instead of
+            // running one full cascade wave per concurrent patch. Absent a
+            // RegistryService (library deployments) this probe is always
+            // false and the legacy behavior is preserved byte-for-byte.
+            let inject_tids: Vec<TypeId> =
+                self.injects.read().keys().copied().collect();
+            if self.ever_activated.load(Ordering::Acquire)
+                && !inject_tids.is_empty()
+                && crate::loader::Loader::cascade_defer_needed(&inject_tids, &reload_ctx)
+            {
+                if !matches!(previous, FiberState::Pending) {
+                    self.set_state(FiberState::Unloading { error: None });
+                    self.undo_effects();
+                    self.set_state(FiberState::Pending);
+                }
+                return;
+            }
+
+            // C2 readiness gate: a closed `ready_when` predicate is quiet
+            // waiting, NOT a failure. A never-activated gated fiber rests
+            // inspectable `Pending` without running its factory; a
+            // previously-activated one first disposes its effects (same
+            // LIFO shape as reactive dependency loss) so a half-ready
+            // configuration never keeps serving. Either way the pass ends
+            // here — availability predicates (`Service::check`) remain the
+            // LOUD complement that rests `Failed{error}`.
+            if !self.readiness_open(&reload_ctx) {
+                let was_serving =
+                    matches!(previous, FiberState::Active { .. })
+                        && self.ever_activated.load(Ordering::Acquire);
+                if was_serving {
+                    self.set_state(FiberState::Unloading { error: None });
+                    self.undo_effects();
+                }
+                self.set_state(FiberState::Pending);
+                tracing::debug!(
+                    state = ?self.state(),
+                    "Cordis fiber resting Pending behind closed readiness gate"
+                );
                 return;
             }
 
@@ -592,6 +739,18 @@ impl Fiber {
             if !self.pending_declare.swap(false, Ordering::AcqRel) {
                 return;
             }
+        }
+    }
+
+    /// C2 readiness verdict for one lifecycle pass: `true` when no gate is
+    /// installed or every composed predicate reports ready. A closed gate is
+    /// quiet waiting (rest `Pending`), never a failure — availability
+    /// predicates ([`Service::check`]) are the loud complement that rests
+    /// `Failed{error}`.
+    fn readiness_open(&self, ctx: &Arc<Context>) -> bool {
+        match self.readiness_gate() {
+            None => true,
+            Some(gate) => gate.is_ready(ctx),
         }
     }
 
@@ -746,8 +905,65 @@ impl Fiber {
     /// Apply a config change through the same dependency reload runner used by
     /// reactive refresh. Existing registration effects are undone before the
     /// plugin is applied again.
+    ///
+    /// C1 `internal/update` veto point: when a listener bails (or the chain
+    /// refuses), NO restart is scheduled — the fiber keeps serving its current
+    /// application and the proposed change is stored as [`Self::vetoed_config`]
+    /// so operators can inspect what was deferred. A pass-through proceeds
+    /// exactly like before.
     pub async fn update(&self, ctx: &Arc<Context>) {
+        if let Some(events) = ctx.get::<crate::EventsService>() {
+            match events.intercept_update(&self.service_label()).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::info!(
+                        fiber = self.service_label().as_str(),
+                        "internal/update vetoed restart; storing config without applying"
+                    );
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "internal/update chain errored; storing config without applying"
+                    );
+                    return;
+                }
+            }
+        }
         self.refresh(ctx).await;
+    }
+
+    /// Best-effort human label for interception payloads: the single declared
+    /// inject's type name, else the fiber id, else "unregistered".
+    fn service_label(&self) -> String {
+        let injects = self.injects.read();
+        if let Some(name) = injects.values().next() {
+            return name.clone();
+        }
+        if let Some(fid) = *self.id.lock() {
+            return format!("fiber-{fid}");
+        }
+        "unregistered".to_string()
+    }
+
+    /// Resolve and stage the effective config for one runner pass through the
+    /// `internal/config` meta-event. With no listener registered this is a
+    /// no-op (the runner falls back to the captured raw config). A chain
+    /// terminal of null passes `raw` through; any other non-null value is
+    /// staged for the runner to deserialize as `P::Config`.
+    async fn resolve_effective_config(
+        &self,
+        events: &crate::EventsService,
+    ) -> Result<(), CordisError> {
+        let Some(raw) = self.raw_config.read().clone() else {
+            return Ok(());
+        };
+        let effective = events.intercept_config(raw).await?;
+        if !effective.is_null() {
+            *self.staged_config.lock() = Some(effective);
+        }
+        Ok(())
     }
 
     // Called by Context::provide to push undo onto this fiber's acc under a

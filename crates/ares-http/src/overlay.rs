@@ -25,12 +25,12 @@ use crate::config::{AuthConfig, ServerConfig};
 pub use ares_agent::{AgentConfig, SkillsTomlConfig, WorkflowConfig};
 pub use ares_llm::{ModelConfig, NvidiaConfig, ProviderConfig};
 pub use ares_rag::{
-    HybridWeightsConfig, RagChunkingConfig, RagConfig, RagRerankingConfig, RagSearchConfig,
-    RAGVectorConfig,
+    HybridWeightsConfig, RAGVectorConfig, RagChunkingConfig, RagConfig, RagRerankingConfig,
+    RagSearchConfig,
 };
+use ares_store::default_qdrant_url;
 pub use ares_store::{BillingConfig, DatabaseConfig, ModelPricingConfig, QdrantConfig};
 pub use ares_tools::ToolConfig;
-use ares_store::default_qdrant_url;
 
 /// Root configuration structure loaded from ares.toml
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -801,11 +801,15 @@ impl AresConfigManager {
 }
 
 impl cordis::Service for AresConfigManager {
-    fn name(&self) -> &'static str { "ares_config_manager" }
+    fn name(&self) -> &'static str {
+        "ares_config_manager"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 /// HTTP-adjacent config overlay (same type as [`AresConfigManager`]).
@@ -818,7 +822,6 @@ pub struct OverlayConfig {
     #[serde(default = "default_overlay_toml_path", alias = "toml_path")]
     pub toml_path: PathBuf,
 }
-
 
 fn default_overlay_toml_path() -> PathBuf {
     PathBuf::from("ares.toml")
@@ -900,32 +903,31 @@ impl Overlay {
             snapshot.config.mcps_dir.clone(),
         ];
 
-        let on_change: cordis::watcher::WatchOnChange =
-            Arc::new(move |c, paths: &[std::path::PathBuf], _outcome| {
+        let on_change: cordis::watcher::WatchOnChange = Arc::new(move |c, paths, _outcome| {
             for path in paths {
-            if path_is_toml(path, &overlay_path) {
-                match AresConfig::load(&overlay_path) {
-                    Ok(new_config) => {
-                        config_store.store(Arc::new(new_config));
-                        info!("Configuration hot-reloaded successfully");
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to hot-reload config: {}. Keeping previous config.",
-                            e
-                        );
-                    }
-                }
-            }
-            if path_is_toon(path) {
-                if let Some(dynamic) = c.get::<crate::toon_config::DynamicConfigManager>() {
-                    match dynamic.reload() {
-                        Ok(_) => info!("TOON configuration reloaded"),
-                        Err(e) => warn!("Failed to reload TOON config: {e}"),
+                if path_is_toml(path, &overlay_path) {
+                    match AresConfig::load(&overlay_path) {
+                        Ok(new_config) => {
+                            config_store.store(Arc::new(new_config));
+                            info!("Configuration hot-reloaded successfully");
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to hot-reload config: {}. Keeping previous config.",
+                                e
+                            );
+                        }
                     }
                 }
-                crate::toon_config::notify_tools_and_execute(c);
-            }
+                if path_is_toon(path) {
+                    if let Some(dynamic) = c.get::<crate::toon_config::DynamicConfigManager>() {
+                        match dynamic.reload() {
+                            Ok(_) => info!("TOON configuration reloaded"),
+                            Err(e) => warn!("Failed to reload TOON config: {e}"),
+                        }
+                    }
+                    crate::toon_config::notify_tools_and_execute(c);
+                }
             }
         });
 
@@ -954,12 +956,10 @@ impl Overlay {
             }
         }
     }
-
 }
 
 /// Typed installer for [`Overlay`].
 pub struct OverlayPlugin;
-
 
 impl cordis::Plugin for OverlayPlugin {
     type Config = OverlayConfig;
@@ -1115,7 +1115,11 @@ model = "nonexistent"
         // warning during validation, not a hard error — so the server
         // stays up even when the live catalog rotates a model out.
         let result = config.validate();
-        assert!(result.is_ok(), "missing-model should warn, not fail: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "missing-model should warn, not fail: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1336,7 +1340,11 @@ api_key_env = "TEST_API_KEY"
             "empty Tools config should receive ares.toml tools map"
         );
         assert_eq!(tree.0[4].config["calculator"]["enabled"], false);
-        assert!(tree.0[5].config.get("providers").and_then(|v| v.get("ollama-local")).is_some());
+        assert!(tree.0[5]
+            .config
+            .get("providers")
+            .and_then(|v| v.get("ollama-local"))
+            .is_some());
         assert!(tree.0[6].config.get("router").is_some());
         assert_eq!(tree.0[7].config["jwt_secret_env"], "TEST_JWT_SECRET");
     }
@@ -1599,14 +1607,11 @@ entry_agent = "router"
 
     // ---- ProviderConfig::from_str ----
 
-
     #[test]
     fn test_provider_config_from_str_openai() {
         let p: ProviderConfig = "openai".parse().unwrap();
         assert_eq!(p.type_name(), "openai");
     }
-
-
 
     #[test]
     fn test_provider_config_from_str_case_insensitive() {
@@ -1620,7 +1625,6 @@ entry_agent = "router"
         assert!(err.contains("Unknown provider type"));
     }
 
-
     #[test]
     fn test_provider_config_serde_roundtrip_openai() {
         let original = ProviderConfig::OpenAI {
@@ -1632,8 +1636,6 @@ entry_agent = "router"
         let decoded: ProviderConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(decoded.type_name(), "openai");
     }
-
-
 
     // ---- ServerConfig defaults ----
 
@@ -1846,7 +1848,9 @@ watch_interval_ms = 5000
                 currency: "USD".to_string(),
             },
         );
-        let pricing = billing.pricing_for("ollama-local", "ministral-3:3b").unwrap();
+        let pricing = billing
+            .pricing_for("ollama-local", "ministral-3:3b")
+            .unwrap();
         assert_eq!(pricing.currency, "USD");
     }
 
@@ -1902,7 +1906,6 @@ default_model = "gpt-4o"
         let err = config.validate().unwrap_err();
         assert!(matches!(err, ConfigError::MissingEnvVar(_)));
     }
-
 
     #[test]
     fn test_validation_qdrant_api_key_env() {
@@ -2087,7 +2090,6 @@ api_key_env = "TEST_API_KEY"
         assert!((r.rerank_weight - 0.6).abs() < f32::EPSILON);
     }
 
-
     #[test]
     fn test_mcp_tool_prefix_allowed_in_validation() {
         set_test_env();
@@ -2118,8 +2120,14 @@ tools = ["eruka_search"]
 
     #[test]
     fn test_config_warning_kind_equality() {
-        assert_eq!(ConfigWarningKind::UnusedModel, ConfigWarningKind::UnusedModel);
-        assert_ne!(ConfigWarningKind::UnusedModel, ConfigWarningKind::UnusedTool);
+        assert_eq!(
+            ConfigWarningKind::UnusedModel,
+            ConfigWarningKind::UnusedModel
+        );
+        assert_ne!(
+            ConfigWarningKind::UnusedModel,
+            ConfigWarningKind::UnusedTool
+        );
     }
 
     #[test]
@@ -2284,9 +2292,12 @@ jwt_secret_env = "SHORT_KEY"
 api_key_env = "API_KEY"
 [database]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
-        unsafe { std::env::set_var("SHORT_KEY", "short"); }
+        unsafe {
+            std::env::set_var("SHORT_KEY", "short");
+        }
         let result = config.jwt_secret();
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -2303,9 +2314,12 @@ jwt_secret_env = "NONEXISTENT_JWT_99999"
 api_key_env = "API_KEY"
 [database]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
-        unsafe { std::env::remove_var("NONEXISTENT_JWT_99999"); }
+        unsafe {
+            std::env::remove_var("NONEXISTENT_JWT_99999");
+        }
         let result = config.jwt_secret();
         assert!(matches!(result, Err(ConfigError::MissingEnvVar(_))));
     }
@@ -2320,12 +2334,21 @@ jwt_secret_env = "VALID_JWT_SECRET"
 api_key_env = "API_KEY"
 [database]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
-        unsafe { std::env::set_var("VALID_JWT_SECRET", "a-very-long-secret-that-is-definitely-32-chars"); }
+        unsafe {
+            std::env::set_var(
+                "VALID_JWT_SECRET",
+                "a-very-long-secret-that-is-definitely-32-chars",
+            );
+        }
         let result = config.jwt_secret();
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "a-very-long-secret-that-is-definitely-32-chars");
+        assert_eq!(
+            result.unwrap(),
+            "a-very-long-secret-that-is-definitely-32-chars"
+        );
     }
 
     // ---- api_key ----
@@ -2340,9 +2363,12 @@ jwt_secret_env = "JWT"
 api_key_env = "MY_API_KEY"
 [database]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
-        unsafe { std::env::set_var("MY_API_KEY", "sk-test-12345"); }
+        unsafe {
+            std::env::set_var("MY_API_KEY", "sk-test-12345");
+        }
         assert_eq!(config.api_key().unwrap(), "sk-test-12345");
     }
 
@@ -2356,10 +2382,16 @@ jwt_secret_env = "JWT"
 api_key_env = "MISSING_API_77777"
 [database]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
-        unsafe { std::env::remove_var("MISSING_API_77777"); }
-        assert!(matches!(config.api_key(), Err(ConfigError::MissingEnvVar(_))));
+        unsafe {
+            std::env::remove_var("MISSING_API_77777");
+        }
+        assert!(matches!(
+            config.api_key(),
+            Err(ConfigError::MissingEnvVar(_))
+        ));
     }
 
     // ---- resolve_env ----
@@ -2374,10 +2406,16 @@ jwt_secret_env = "JWT"
 api_key_env = "API"
 [database]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
-        unsafe { std::env::set_var("MY_RESOLVE_VAR", "resolved_value"); }
-        assert_eq!(config.resolve_env("MY_RESOLVE_VAR"), Some("resolved_value".into()));
+        unsafe {
+            std::env::set_var("MY_RESOLVE_VAR", "resolved_value");
+        }
+        assert_eq!(
+            config.resolve_env("MY_RESOLVE_VAR"),
+            Some("resolved_value".into())
+        );
     }
 
     #[test]
@@ -2390,9 +2428,12 @@ jwt_secret_env = "JWT"
 api_key_env = "API"
 [database]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
-        unsafe { std::env::remove_var("MY_MISSING_RESOLVE_VAR"); }
+        unsafe {
+            std::env::remove_var("MY_MISSING_RESOLVE_VAR");
+        }
         assert_eq!(config.resolve_env("MY_MISSING_RESOLVE_VAR"), None);
     }
 
@@ -2449,7 +2490,8 @@ jwt_secret_env = "JWT"
 api_key_env = "API"
 [database]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(config.agent_tools("ghost").is_empty());
     }
 
@@ -2584,8 +2626,7 @@ api_key_env = "API"
             bm25: 0.25,
             fuzzy: 0.15,
         };
-        let decoded: HybridWeightsConfig =
-            toml::from_str(&toml::to_string(&hw).unwrap()).unwrap();
+        let decoded: HybridWeightsConfig = toml::from_str(&toml::to_string(&hw).unwrap()).unwrap();
         assert!((decoded.semantic - 0.6).abs() < f32::EPSILON);
         assert!((decoded.bm25 - 0.25).abs() < f32::EPSILON);
         assert!((decoded.fuzzy - 0.15).abs() < f32::EPSILON);
@@ -2644,8 +2685,7 @@ api_key_env = "API"
             reranker_model: "jina-v2".into(),
             rerank_weight: 0.8,
         };
-        let decoded: RagRerankingConfig =
-            toml::from_str(&toml::to_string(&r).unwrap()).unwrap();
+        let decoded: RagRerankingConfig = toml::from_str(&toml::to_string(&r).unwrap()).unwrap();
         assert!(decoded.rerank_enabled);
         assert_eq!(decoded.reranker_model, "jina-v2");
         assert!((decoded.rerank_weight - 0.8).abs() < f32::EPSILON);
@@ -2767,8 +2807,7 @@ output_usd_per_million_tokens = 0.0
             output_usd_per_million_tokens: Some(10.0),
             currency: "EUR".into(),
         };
-        let decoded: ModelPricingConfig =
-            toml::from_str(&toml::to_string(&mp).unwrap()).unwrap();
+        let decoded: ModelPricingConfig = toml::from_str(&toml::to_string(&mp).unwrap()).unwrap();
         assert_eq!(decoded.provider, "openai");
         assert_eq!(decoded.model, "gpt-4o");
         assert_eq!(decoded.currency, "EUR");
@@ -2798,8 +2837,6 @@ output_usd_per_million_tokens = 0.0
     }
 
     // ---- ProviderConfig type_name completeness ----
-
-
 
     // ---- FromStr edge cases ----
 
@@ -2865,7 +2902,9 @@ entry_agent = "a1"
         assert!(config.validate().is_ok());
         // m2 model is unused (only a1 referenced in workflow), should warn
         let warnings = config.validate_with_warnings().unwrap();
-        assert!(warnings.iter().any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("m2")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("m2")));
     }
 
     // ---- ToolConfig with extra (flatten) fields from TOML ----
@@ -2978,7 +3017,10 @@ api_key_env = "Q_KEY"
             kind: ConfigWarningKind::UnusedTool,
             message: "Tool 'xyz' is defined but not referenced by any agent".into(),
         };
-        assert_eq!(w.to_string(), "Tool 'xyz' is defined but not referenced by any agent");
+        assert_eq!(
+            w.to_string(),
+            "Tool 'xyz' is defined but not referenced by any agent"
+        );
     }
 
     // ---- DynamicConfigPaths parsed from TOML sub-table ----
@@ -3060,7 +3102,8 @@ jwt_secret_env = "JWT"
 api_key_env = "API"
 [database]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         let manager = AresConfigManager::from_config(config);
         let cloned = manager.clone();
         assert_eq!(manager.config().server.port, cloned.config().server.port);
@@ -3076,7 +3119,6 @@ api_key_env = "API"
 
     // ---- LlamaCpp defaults from FromStr ----
 
-
     #[test]
     fn test_provider_config_from_str_openai_defaults() {
         // After the NVIDIA-only refactor, the `openai` and `nvidia`
@@ -3085,7 +3127,12 @@ api_key_env = "API"
         // these from the TOML is still possible via the [nvidia] section
         // and per-agent model fields.
         let p: ProviderConfig = "openai".parse().unwrap();
-        if let ProviderConfig::OpenAI { api_key_env, api_base, default_model } = p {
+        if let ProviderConfig::OpenAI {
+            api_key_env,
+            api_base,
+            default_model,
+        } = p
+        {
             assert_eq!(api_key_env, "NVIDIA_API_KEY");
             assert_eq!(api_base, "https://integrate.api.nvidia.com/v1");
             assert_eq!(default_model, "nvidia/nemotron-3-ultra-550b-a55b");
@@ -3093,8 +3140,6 @@ api_key_env = "API"
             panic!("expected openai variant");
         }
     }
-
-
 
     #[test]
     fn test_tool_config_default_struct() {
@@ -3139,5 +3184,4 @@ api_key_env = "API"
 
         std::fs::remove_dir_all(&dir).ok();
     }
-
 }

@@ -124,6 +124,45 @@ impl Default for Entry {
     }
 }
 
+/// Partial update for one [`Entry`] — the request body of
+/// `PATCH /admin/cordis/entries/{id}`.
+///
+/// Every field is optional: only the fields present in the request are
+/// copied onto the target entry by [`EntryUpdate::apply_to`]; omitted
+/// fields are left untouched, so `{}` is a validated no-op. An explicit
+/// `null` `config` clears back to the default (the admin layer normalizes
+/// `Null` configs to `{}` before persistence, matching PUT behavior).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct EntryUpdate {
+    pub config: Option<serde_json::Value>,
+    pub disabled: Option<bool>,
+    pub isolate: Option<String>,
+    pub intercept: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+}
+
+impl EntryUpdate {
+    /// Apply only the provided fields onto `entry`; every other field keeps
+    /// its current value. `id` / `plugin` are deliberately not patchable —
+    /// changing them is a rebuild, expressed by DELETE + PUT.
+    pub fn apply_to(&self, entry: &mut Entry) {
+        if let Some(config) = &self.config {
+            entry.config = config.clone();
+        }
+        if let Some(disabled) = self.disabled {
+            entry.disabled = disabled;
+        }
+        if let Some(isolate) = &self.isolate {
+            entry.isolate = Some(isolate.clone());
+        }
+        if let Some(intercept) = &self.intercept {
+            entry.intercept = intercept
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+        }
+    }
+}
+
 /// Ordered set of [`Entry`]s — the declarative desired state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryTree(pub Vec<Entry>);

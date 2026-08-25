@@ -1,25 +1,305 @@
 //! Policy core of the tenant filesystem permission fence.
 //!
-//! This module holds ONLY the decision types and the L0/L1/L2 path checks.
-//! No file-manipulation tool calls into it yet. Tool wiring arrives in a later
-//! change. The full design lives in `docs/src/platform/tenant-fs-fence.md`.
+//! This module holds the decision types, the L0/L1/L2 path checks, and the L3
+//! write guards behind [`Fence`]. The full design lives in
+//! `docs/src/platform/tenant-fs-fence.md`.
 //!
 //! Layers, checked in order. A path passes only when every active layer passes:
 //! - L0 mode: `ReadOnly` denies every write.
 //! - L1 boundary: the resolved path stays inside `workspace_root`. `Full`
 //!   mode waives this layer.
 //! - L2 blocklist: a blocked name denies reads and writes in every mode.
-//! - L3 write guards: not implemented here. They need the read-hash ledger of
-//!   the future file tools, so they join at wiring time.
+//! - L3 write guards: [`Fence`] records which paths a session observed
+//!   through [`Fence::fence_read`] and gates [`Fence::fence_write`] on that
+//!   record, unless the mode allows blind writes. Writes land through a
+//!   temporary file and an atomic rename.
+//!
+//! `check_path`, `check_read`, and `check_write` stay pure path checks
+//! (L0-L2). Only the [`Fence`] methods touch file contents.
 
 use std::borrow::Cow;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Sandbox mode for one session. Sessions switch modes at runtime.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum FenceMode {
+/// Stable `FS_*` code for a filesystem error. Callers match on the code, so
+/// agent-facing messages stay machine-readable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FsError {
+    /// One of the `FS_*` constants on this module's types.
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl FsError {
+    /// The path was never observed through [`Fence::fence_read`], so the
+    /// session cannot prove it edits what it saw.
+    pub const FS_NOT_OBSERVED: &'static str = "FS_NOT_OBSERVED";
+    /// The file changed between the recorded observation and the write.
+    pub const FS_VERSION_CONFLICT: &'static str = "FS_VERSION_CONFLICT";
+    /// A guard demanded absence and the path already exists.
+    pub const FS_EXISTS: &'static str = "FS_EXISTS";
+    /// The fence layers refused the operation.
+    pub const FS_FENCE_DENIED: &'static str = "FS_FENCE_DENIED";
+    /// The underlying filesystem call failed.
+    pub const FS_IO: &'static str = "FS_IO";
+
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for FsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for FsError {}
+
+/// Optimistic-concurrency contract for one write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteGuard {
+    /// Skip read-before-edit. Only modes that allow blind writes accept it.
+    Unconditional,
+    /// Create the path; refuse when it already exists.
+    CreateIfAbsent,
+    /// Overwrite only when the file still matches the version captured at
+    /// observation time.
+    ReplaceIfVersion { version: u64 },
+}
+
+/// Cheap change fingerprint: `mtime_nanos ^ size`, saturating on clock
+/// values outside the u64 range. Two writes that both move `mtime` and
+/// `size` collide only in the same way a hash would; the guard treats any
+/// difference as a concurrent modification.
+fn version_fingerprint(metadata: &std::fs::Metadata) -> u64 {
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    let size = metadata.len();
+    mtime.saturating_xor(size)
+}
+
+fn now_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// One audit record from [`Fence::audit_log`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditEntry {
+    pub ts_millis: u64,
+    /// Canonical path the operation targeted.
+    pub path: PathBuf,
+    /// Guard contract requested for the write (`None` for reads).
+    pub guard_kind: Option<WriteGuard>,
+    /// Stable `FS_*` code: `FS_OK` on success.
+    pub outcome: &'static str,
+}
+
+/// Outcome code for successful fence operations in the audit ring.
+pub const FS_OK: &str = "FS_OK";
+
+/// Capacity of the bounded audit ring. Older entries drop first.
+pub const AUDIT_CAPACITY: usize = 200;
+
+const BLIND_WRITE_MODES: &[FenceMode] = &[FenceMode::Full];
+
+#[derive(Default)]
+struct FenceState {
+    /// Canonical paths observed through `fence_read`, with their versions.
+    observed: HashMap<PathBuf, u64>,
+    /// Bounded audit ring; oldest entries leave first.
+    audit: VecDeque<AuditEntry>,
+}
+
+impl FenceState {
+    fn push_audit(&mut self, entry: AuditEntry) {
+        if self.audit.len() >= AUDIT_CAPACITY {
+            self.audit.pop_front();
+        }
+        self.audit.push_back(entry);
+    }
+}
+
+/// Session-level L3 enforcement over a [`FencePolicy`].
+///
+/// The policy value stays shareable and pure; one `Fence` per session owns
+/// the mutable observed-set and the audit ring behind a mutex.
+#[derive(Debug)]
+pub struct Fence {
+    policy: FencePolicy,
+    state: Mutex<FenceState>,
+}
+
+impl Fence {
+    pub fn new(policy: FencePolicy) -> Self {
+        Self {
+            policy,
+            state: Mutex::new(FenceState::default()),
+        }
+    }
+
+    /// The immutable layer policy this fence enforces.
+    pub fn policy(&self) -> &FencePolicy {
+        &self.policy
+    }
+
+    /// Observe a path for a future guarded write. Runs L0-L2 first; a
+    /// denied observation never enters the observed-set. Existing files
+    /// record their version fingerprint; missing paths record version `0`.
+    ///
+    /// Returns `(metadata, version)`; metadata is `None` for missing paths.
+    pub fn fence_read(&self, raw: &Path) -> Result<(Option<std::fs::Metadata>, u64), FsError> {
+        let decision = check_path(&self.policy, raw, false);
+        let Some(resolved) = resolve_allowed(&self.policy, raw, &decision)? else {
+            return Err(FsError::new(
+                FsError::FS_FENCE_DENIED,
+                decision.expect_denied_reason_pub(),
+            ));
+        };
+
+        let (metadata, version) = match std::fs::metadata(&resolved) {
+            Ok(metadata) => {
+                let version = version_fingerprint(&metadata);
+                (Some(metadata), version)
+            }
+            // Reads of not-yet-existing paths are legal observations: they
+            // register intent so CreateIfAbsent can later prove absence.
+            Err(error) if error.kind() == ErrorKind::NotFound => (None, 0),
+            Err(error) => return Err(FsError::new(FsError::FS_IO, error.to_string())),
+        };
+
+        let mut state = self.lock_state();
+        state.observed.insert(resolved.clone(), version);
+        state.push_audit(AuditEntry {
+            ts_millis: now_unix_millis(),
+            path: resolved,
+            guard_kind: None,
+            outcome: FS_OK,
+        });
+        Ok((metadata, version))
+    }
+
+    /// Write file contents under the L0-L2 layers plus the L3 guards.
+    ///
+    /// - Every write names a guard contract ([`WriteGuard`]).
+    /// - In modes without blind-write allowance (`ReadOnly`,
+    ///   `WorkspaceWrite`) the canonical path must have been observed
+    ///   through [`Fence::fence_read`] first, or the write fails with
+    ///   `FS_NOT_OBSERVED`. This includes [`WriteGuard::Unconditional`]:
+    ///   only a mode that allows blind writes accepts it there.
+    /// - [`WriteGuard::CreateIfAbsent`] fails with `FS_EXISTS` when the
+    ///   canonical path already exists.
+    /// - [`WriteGuard::ReplaceIfVersion`] fails with `FS_VERSION_CONFLICT`
+    ///   when the file is gone or its fingerprint differs from the version
+    ///   captured at observation time.
+    /// - Bytes land in a sibling temporary file renamed into place, so an
+    ///   interrupted write leaves no torn file behind.
+    pub fn fence_write(
+        &self,
+        raw: &Path,
+        guard: WriteGuard,
+        contents: &[u8],
+    ) -> Result<(), FsError> {
+        let blind_ok = BLIND_WRITE_MODES.contains(&self.policy.mode);
+
+        // L0-L2 first, unchanged semantics.
+        let decision = check_path(&self.policy, raw, true);
+        let Some(resolved) = resolve_allowed(&self.policy, raw, &decision)? else {
+            let reason = decision.expect_denied_reason_pub();
+            self.record(raw, Some(guard), FsError::FS_FENCE_DENIED);
+            return Err(FsError::new(FsError::FS_FENCE_DENIED, reason));
+        };
+
+        let current = match std::fs::metadata(&resolved) {
+            Ok(metadata) => Some(version_fingerprint(&metadata)),
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(error) => {
+                self.record(&resolved, Some(guard), FsError::FS_IO);
+                return Err(FsError::new(FsError::FS_IO, error.to_string()));
+            }
+        };
+        let exists = current.is_some();
+
+        // Guard contract checks against the live filesystem view.
+        match guard {
+            WriteGuard::CreateIfAbsent if exists => {
+                self.record(&resolved, Some(guard), FsError::FS_EXISTS);
+                return Err(FsError::new(
+                    FsError::FS_EXISTS,
+                    format!("create refused, path already exists: {}", resolved.display()),
+                ));
+            }
+            WriteGuard::ReplaceIfVersion { version }
+                if !exists || current != Some(version) =>
+            {
+                self.record(&resolved, Some(guard), FsError::FS_VERSION_CONFLICT);
+                return Err(FsError::new(
+                    FsError::FS_VERSION_CONFLICT,
+                    if exists {
+                        format!(
+                            "file changed since it was read (expected {version}, found {})",
+                            current.unwrap_or_default()
+                        )
+                    } else {
+                        "file disappeared since it was read".to_string()
+                    },
+                ));
+            }
+            _ => {}
+        }
+
+        // L3 read-before-edit: the session must hold an observation of this
+        // exact canonical path unless the mode allows blind writes or the
+        // contract creates a brand-new file.
+        let fresh_create = guard == WriteGuard::CreateIfAbsent && !exists;
+        let holds_observation = self.lock_state().observed.contains_key(&resolved);
+        if !fresh_create && !holds_observation && !blind_ok {
+            self.record(&resolved, Some(guard), FsError::FS_NOT_OBSERVED);
+            return Err(FsError::new(
+                FsError::FS_NOT_OBSERVED,
+                format!(
+                    "no recorded read for {}; call fence_read first",
+                    resolved.display()
+                ),
+            ));
+        }
+
+        atomic_write(&resolved, contents).map_err(|error| {
+            self.record(&resolved, Some(guard), FsError::FS_IO);
+            FsError::new(FsError::FS_IO, error.to_string())
+        })?;
+
+        // A successful write becomes the new observed version, so a follow-up
+        // ReplaceIfVersion write chains off our own output instead of
+        // conflicting with it.
+        if let Some(current) = std::fs::metadata(&resolved).ok() {
+            let version = version_fingerprint(&current);
+            let mut state = self.lock_state();
+            state.observed.insert(resolved.clone(), version);
+        }
+
+        self.record(&resolved, Some(guard), FS_OK);
+        Ok(())
+    }
+
+    /// Snapshot of the bounded audit ring, oldest first.
+    pub fn audit_log(&self) -> Vec<AuditEntry> {
+        self.lock_state().audit.iter().cloned().collect()
+    }
     /// Deny every write. Reads still pass L1 and L2.
     ReadOnly,
     /// Default mode. Writes stay below the workspace root.
@@ -127,6 +407,76 @@ pub fn check_path(policy: &FencePolicy, raw: &Path, write: bool) -> FenceDecisio
 
     FenceDecision::Allowed
 }
+
+impl Fence {
+    fn record(&self, path: &Path, guard_kind: Option<WriteGuard>, outcome: &'static str) {
+        let mut state = self.lock_state();
+        state.push_audit(AuditEntry {
+            ts_millis: now_unix_millis(),
+            path: path.to_path_buf(),
+            guard_kind,
+            outcome,
+        });
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, FenceState> {
+        // A panic while holding the fence mutex poisons it; recover to keep
+        // the audit ring and observed-set usable for later calls.
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Write `contents` through a unique temporary file next to `target`, then
+/// rename over it. Best-effort `0600` on unix keeps tenant files private
+/// even when the process umask is permissive.
+fn atomic_write(target: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let dir = target.parent().unwrap_or_else(|| Path::new("."));
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let tmp = dir.join(format!(".ares-fence-tmp-{}-{nanos}", std::process::id()));
+    let cleanup = |tmp: &Path| {
+        let _ = std::fs::remove_file(tmp);
+    };
+
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let file = std::fs::File::create(&tmp)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        let mut writer = std::io::BufWriter::new(file);
+        writer.write_all(contents)?;
+        writer.flush()?;
+        sync_parent_best_effort(dir);
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&tmp, contents)?;
+    }
+
+    match std::fs::rename(&tmp, target) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            cleanup(&tmp);
+            Err(error)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn sync_parent_best_effort(dir: &Path) {
+    if let Ok(handle) = std::fs::File::open(dir) {
+        let _ = handle.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_parent_best_effort(_dir: &Path) {}
 
 /// Anchor `raw` to the workspace root when relative, collapse `.` and `..`
 /// lexically, then canonicalize the deepest existing ancestor and rejoin the

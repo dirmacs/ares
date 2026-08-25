@@ -83,6 +83,8 @@ pub mod coordinator;
 pub mod exporter;
 /// Unified LLM capability (Cordis Phase 3).
 pub mod llm_service;
+/// Provider-neutral model profile catalog with lean hints and routing.
+pub mod model_catalog;
 /// Small-call orchestration primitive over a single client.
 pub mod micro;
 /// Observability callbacks for LLM and tool call logging.
@@ -129,6 +131,9 @@ pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
 pub mod config;
 pub mod nvidia_catalog;
 pub use config::{ModelConfig, ProviderConfig};
+pub use model_catalog::{
+    Capability, ModelCatalog, ModelProfile, RouteConstraints, SpeedTier, TaskModality,
+};
 pub use nvidia_catalog::{CatalogEntry, NvidiaCatalogCache, NvidiaConfig};
 
 #[cfg(test)]

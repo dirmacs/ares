@@ -27,9 +27,14 @@ This file is the audit ledger for those decisions.
 | 10 | Dependency withdrawal | Genuine loss rests working fibers `Pending` (reversible); apply errors stay terminal `Failed` |
 | 11 | Dispatch participation knobs | `EventOptions{prepend,global}` + `emit_filtered`; filters never exclude global listeners |
 | 12 | Reads during transitions | Strict `get` refuses transitioning owners; `get_relaxed` is the explicit opt-in |
-| 13 | State observers | Synchronous, panic-contained lifecycle fan-out the paper leaves unspecified |
 
-Each row expands below with the claim, the rationale, and the evidence.
+| 14 | Kernel operations are interceptable | Five meta-events veto or rewrite kernel ops; unregistered path stays zero-cost; sync bridges fall open |
+| 15 | Readiness gates wait quietly | Closed `ready_when` barriers rest fibers `Pending` (never `Failed`); availability predicates remain the loud path |
+| 16 | Config cascades batch | Concurrent provider updates collapse to one dependent convergence wave |
+| 17 | Validation errors carry paths | Pre-flight failures surface `message` + `path` issues beside the legacy string |
+| 18 | Logger adopted natively | Ring buffer, effect-owned exporters, per-name routing live in the kernel crate |
+| 19 | Timers adopted natively | Six fiber-scoped primitives share one std-only wheel thread |
+
 
 Each row expands below with the claim, the rationale, and the evidence.
 
@@ -202,8 +207,78 @@ Each row expands below with the claim, the rationale, and the evidence.
 - Detail: observers run inline under the short state-lock critical section and MUST NOT call back into the fiber.
 - Detail: observer panics are caught, so one broken observer cannot corrupt a transition; cancelled subscriptions are pruned on the next event.
 - Rationale: tooling (admin surfaces, tests, supervision) needs transitions as they happen, not just polling after quiescence.
-- Source: `Fiber::subscribe_state` and `notify_observers` in `crates/cordis/src/fiber.rs`
-- Test: `observer_sees_unloading_pending_active_sequence`
+
+### 14. Kernel operations are interceptable through meta-events
+
+- Upstream expectation: reads, writes, config resolution, restart schedules, and listener registration are fixed kernel behavior with no override points.
+- Claim: five veto meta-events (`internal/get`, `internal/set`, `internal/config`, `internal/update`, `internal/listener`) wrap those operations and an `internal/dispatch` observer reports every non-internal dispatch with `(mode, name, args)`; the un-intercepted path is a zero-cost gate, and synchronous bridges FALL OPEN on runtimes that cannot park the worker.
+- Detail: `internal/get` — a non-null terminal replaces the value a strict read returns, `{"refuse": true}` fails the lookup outright, null passes, a chain error refuses the read; a redirect verdict continues the lookup at the parent frame.
+- Detail: `internal/set` — a chain error vetoes THIS write; the previous binding stays fully intact (no store/owners/version mutation).
+- Detail: `internal/config` — the chain's non-null terminal IS the effective config staged for that apply pass; a chain error rests the fiber terminal `Failed{error}` (row 1 semantics unchanged).
+- Detail: `internal/update` — a bail or explicit JSON false skips the restart; the fiber keeps serving its current application and the deferred config stays visible via `vetoed_config`.
+- Detail: `internal/listener` — a bail or chain error cancels the registration and the caller receives an INERT handle; neither registry ever sees the listener (fail-closed).
+- Detail: every consult checks `listener_count == 0` first (map-lookup cost); a thread-local fence keeps operations made inside a chain un-intercepted; single-thread tokio flavors log a warning and fall open, matching historical behavior.
+- Detail: `bail_from` / `waterfall_from` / `waterfall_async_from` carry the operating context through an optional per-dispatch `ListenerFilter`; exclusions skip one dispatch without unregistering.
+- Rationale: policy layers need to observe and veto kernel operations without duplicating them; the zero-cost gate keeps the default path byte-identical for every existing caller.
+- Source: `INTERNAL_*_EVENT` constants, `intercept_get/set/config/update/listener`, `bail_from` / `waterfall_from` / `waterfall_async_from`, and the synchronous bridges in `crates/cordis/src/events.rs`
+- Source: consult points in `Context::get` / the provider-write path (`crates/cordis/src/context.rs`); config staging and the update veto in `crates/cordis/src/fiber.rs`
+- Tests: `get_interceptor_rewrites_read`, `set_interceptor_vetoes_write_leaves_old_value`, `config_interceptor_rewrites_effective_config`, `update_interceptor_veto_skips_restart_keeps_config`, `listener_interceptor_bail_cancels_registration_inert_handle`, `internal_dispatch_observes_non_internal_only`, `interceptor_error_fails_fiber_activation`, `target_carrying_dispatches_filter_per_dispatch`
+
+### 15. Readiness gates wait quietly; availability predicates fail loudly
+
+- Upstream expectation: the model defines no way to hold a produced service out of rotation while its environment warms up (and nothing distinguishes that from failure).
+- Claim: `register_with_readiness` installs a composable `ReadinessBarrier` consulted before every activation pass; while it reports not-ready the fiber rests inspectable `Pending` — quiet waiting that NEVER becomes `Failed` — while availability predicates (`Service::check`) remain the loud complement resting `Failed{error: "availability predicate rejected service"}`.
+- Detail: `ReadinessBarrier::new(pred)` wraps one `Fn(&Arc<Context>) -> bool`; `.and(other)` AND-composes; `with_readiness([a, b, c])` folds any number of barriers (an empty list is vacuously ready).
+- Detail: `.watching([TypeId])` unions the provider keys whose settlements re-kick the gated fiber through the `ReflectService` fan-out — an external provide or withdrawal re-evaluates the gate without touching the fiber.
+- Detail: the factory runs once at registration (config errors still surface immediately); a closed gate only keeps the produced service OUT of consumer reach because strict `get` refuses non-`Active` owners; opening the gate activates without re-running the factory.
+- Rationale: not-ready-yet (warming caches, absent external system) differs fundamentally from broken; conflating them buries healthy waiting fibers under failure noise, and separating them lets operators read intent from state alone.
+- Source: `ReadinessBarrier`, `with_readiness`, `register_with_readiness`, and the re-kick wiring in `crates/cordis/src/registry.rs`
+- Source: the readiness consult in `Fiber::refresh` (`crates/cordis/src/fiber.rs`)
+- Tests: `ready_when_holds_pending_until_true_then_activates`, `readiness_composes_and_semantics`, `external_rekick_reactivates_waiting_fiber`
+
+### 16. Concurrent config updates collapse to one cascade wave
+
+- Upstream expectation: every provider settle triggers its own full dependent refresh wave.
+- Claim: an in-flight ledger marks providers mid-reapply; dependents defer during the window and converge EXACTLY ONCE per settled batch.
+- Detail: `CASCADE_INFLIGHT` maps fiber id to open-window count (reentrant-safe); `Loader::drive_fiber_update` opens and closes windows around one live re-apply.
+- Detail: the kernel refresh path consults `cascade_any_inflight`, so a storm of racing patches costs one dependent apply pass and ends Active with the final config.
+- Rationale: N concurrent patches against one provider must not cost N dependent convergence waves.
+- Source: `CASCADE_INFLIGHT`, `cascade_begin` / `cascade_end` / `cascade_any_inflight` in `crates/cordis/src/loader.rs`
+- Test: `concurrent_config_updates_collapse_to_single_cascade`
+
+### 17. Config pre-flight failures carry structured issues
+
+- Upstream expectation: configuration errors are lossy prose strings.
+- Claim: plugins reject configs with `ValidationIssue { message, path }` items aggregated in a `ValidationError`; `CordisError::validation` lifts the aggregate into the existing `invalid config:` class, and the loader trial stashes per-entry failures so the admin PATCH answers 4xx with a machine-readable `issues` array beside the legacy `error` string.
+- Detail: stash slots mirror the LATEST trial outcome; recording a non-validation error clears the entry and consumption removes it, so a later successful patch carries no `issues`.
+- Rationale: API consumers need to render field-level feedback, not parse sentences.
+- Source: `ValidationIssue` / `ValidationError` / trial stash in `crates/cordis/src/error.rs`; `CordisError::validation` in `crates/cordis/src/service.rs`; issue attachment in `crates/ares-http/src/api/handlers/admin/cordis.rs`
+- Test: `patch_endpoint_returns_structured_issues_on_bad_config`
+
+### 18. The logger lives in the kernel crate
+
+- Upstream expectation: logging ships as a satellite console package beside the kernel.
+- Claim: the logger is adopted NATIVELY (`cordis::logger`) with upstream-style semantics: bounded ring, effect-owned exporter sinks, per-name level routing, printf rendering.
+- Detail: `LoggerService` keeps the last 1000 `Message`s (monotonic sequence, timestamp, name, kind, numeric level, args, fiber label) and snapshots without copying payloads.
+- Detail: exporters are effect-owned — `register` returns a `Disposable` whose disposal removes the sink; `ExporterConfig` gates per name and truncates rendered text (default cap 4096 chars, char-boundary safe).
+- Detail: thresholds resolve per-name pin, then the `LoggerIntercept` override (read through the relaxed channel, so per-fiber overrides apply on child contexts), then the default level (`Debug`); `enabled` bails BEFORE argument assembly.
+- Detail: rendering supports `%s %d %i %f %o %O %c %C %%`; unknown specifiers and exhausted arguments stay literal; `%c` picks a stable ANSI16 slot by FNV-1a hash of the logger name, `%C` adds bold; `hyphenate` / `derived_name` yield kebab-case logger names.
+- Detail: the `Context` facade (`ctx.log/info/warn/debug/error/log_with`) is a no-op when no logger is provided.
+- Rationale: observability belongs where fibers dispose, so sink lifetimes tie to effects instead of a satellite package boundary; the multi-package layering ceremony is deliberately not replicated.
+- Source: `LoggerService`, `Exporter`, `ExporterConfig`, `LoggerIntercept`, `Message::render`, `hyphenate` in `crates/cordis/src/logger.rs`
+- Tests: `buffer_bounded_at_capacity_snapshot_reads`, `level_routing_per_name_with_default_fallback`, `printf_placeholders_format_correctly`, `logger_intercept_overrides_level`, `hyphenate_and_derived_names`, `exporter_disposal_removes_sink`
+
+### 19. Timer primitives are fiber-scoped and std-only
+
+- Upstream expectation: timing ships as a dedicated satellite package with its own runtime assumptions.
+- Claim: six primitives (`timeout`, `sleep`, `interval`, `interval_stream`, `debounce`, `throttle`) live natively in `cordis::timer`, run on ONE shared wheel thread, and attach to the owning fiber through labeled undos.
+- Detail: the wheel is a min-heap on a dedicated `cordis-timer` thread; due entries drain under one short critical section and callbacks run outside the lock; panics are caught and the thread survives.
+- Detail: registrations made under `with_current_fiber` push `timer:`-labeled undos, so `Fiber::dispose` (or a reactive unload) cancels them; dropping a handle does NOT cancel; out-of-scope registrations degrade to warned orphan handles that stay explicitly disposable.
+- Detail: a disposed `Interval` stream yields exactly ONE final `Err(InactiveEffect)` then closes; queued live ticks are discarded so teardown is the final observation.
+- Detail: `debounce` collapses a burst into one trailing delivery after the last call; `throttle` delivers leading-edge plus optional trailing in a fixed window.
+- Rationale: timers must die with the fiber that owns them or they leak firings past teardown; a shared thread keeps thousands of registrations at one thread's cost with no async runtime dependency.
+- Source: `timeout` / `sleep` / `interval` / `interval_stream` / `debounce` / `throttle`, `with_current_fiber`, `Scheduled`, `Interval` in `crates/cordis/src/timer.rs`
+- Tests: `timeout_fires_once_and_disposes_with_fiber`, `timeout_dispose_before_deadline_prevents_fire`, `interval_ticks_repeatedly_and_stops_on_dispose`, `interval_stream_final_err_on_dispose`, `debounce_collapses_bursts`, `throttle_trailing_edge_respected`
 
 ## Properties we prove beyond the paper
 

@@ -206,7 +206,19 @@ let req_ctx = root_ctx.intercept(ModelOverride { model: "gpt-4o-mini".into() });
 let llm = req_ctx.get::<dyn LlmService>().unwrap(); // sees override via prototype walk
 ```
 
-Lookup order (must walk): `intercept → store → parent.intercept → parent.store → ... → root`.
+
+### Kernel intercept meta-events (beyond the prototype chain)
+
+Five kernel operations expose listener-driven veto points on reserved events (`internal/get`, `internal/set`, `internal/config`, `internal/update`, `internal/listener`), plus an `internal/dispatch` observer. These sit outside the product event catalog on purpose.
+
+- `EventsService::intercept_get/set/config/update/listener` implement the semantics; `internal/dispatch` reports every NON-internal dispatch as `(mode, name, args)` and exempts itself from observation.
+- `internal/get` consults a Bail chain on every strict `Context::get`: a non-null terminal replaces the returned value, `{"refuse": true}` fails the lookup, a redirect verdict continues at the parent frame, null passes through, and a chain error refuses the read.
+- `internal/set` errors veto the provider write; the previous binding stays fully intact.
+- `internal/config`'s non-null terminal IS the effective configuration for one apply pass (staged on the fiber and consumed by the registry runner); a chain error rests the fiber terminal `Failed`.
+- `internal/update` bails skip the scheduled restart entirely — the fiber keeps serving its current application and the deferred config stays readable via `Fiber::vetoed_config`.
+- `internal/listener` bails cancel the registration; the caller receives an inert handle and neither registry sees the listener.
+
+Zero-cost gating: every helper short-circuits on `listener_count == 0` before doing anything else, so the default path is two map lookups. Synchronous call sites bridge through `block_in_place` on multi-thread tokio runtimes; single-thread flavors fall OPEN (warning + allow), matching historical no-listener behavior. A thread-local re-entrancy fence keeps operations made inside a chain un-intercepted. The `*_from` dispatch family — `bail_from`, `waterfall_from`, `waterfall_async_from` — exposes the same chains for product code, adding an optional per-dispatch `ListenerFilter`; filtered listeners skip one dispatch and remain registered.
 
 ---
 
@@ -260,7 +272,15 @@ A fifth state completes the machine: an `Active` runner whose dependency is genu
 
 - `Pending` is reserved for reactive waiting only: apply errors still rest terminal `Failed{error}`, and a peer-version constraint refusal over a live provider rests `Inactive` (the provider is still available; the refusal is policy, not loss).
 - Eligibility needs one fully-satisfied refresh pass first — registration alone cannot mark a fiber eligible because its declares may still be unserved.
-- Lifecycle observers: `Fiber::subscribe_state(Box<dyn Fn(&FiberState) + Send + Sync>)` delivers every transition to synchronous observers under a panic-contained fan-out; the returned `Disposable` cancels the subscription. Observers must not call back into the fiber from inside a callback.
+
+### Readiness barriers vs availability predicates
+
+`RegistryService::register_with_readiness(ctx, plugin, config, ready_when)` installs a `ReadinessBarrier` consulted before every activation pass. While the gate reports not-ready the fiber rests inspectable `Pending` — quiet waiting that never becomes `Failed` — with the factory run once up front and strict `get` refusing the non-Active owner, so the service stays out of consumer reach until the observed environment turns ready.
+
+- `ReadinessBarrier::new(pred)` wraps one `Fn(&Arc<Context>) -> bool`; `.and(other)` AND-composes; `with_readiness([a, b, c])` folds any number of barriers (an empty list is vacuously ready).
+- `.watching([TypeId])` unions the provider keys whose settlements re-kick the gated fiber through the `ReflectService` fan-out: an external provide or withdrawal re-evaluates the gate without anyone touching the fiber.
+
+This complements rather than replaces availability predicates (`Service::check`): a rejected availability predicate rests `Failed{error: "availability predicate rejected service"}` — loud and terminal per the rules above — while a closed readiness gate is quiet, reversible waiting. Use the predicate when the factory cannot produce a valid service; use the barrier when production succeeds but serving should hold.
 
 ---
 
@@ -588,7 +608,8 @@ Semantics: the payload arrives as an object map (plain property access). Returni
 
 - `POST /admin/cordis/services/{name}/retire` / `provide` — runtime retire/re-provide.
 - `GET|PUT /admin/cordis/entries`, `DELETE /admin/cordis/entries/{id}`, `POST /admin/cordis/entries/{id}/toggle` — declarative entries management (Null configs normalize to `{}`), 503 when loader state is absent.
-- `PATCH /admin/cordis/entries/{id}` — typed partial update via `cordis::loader::EntryUpdate` (`config`, `disabled`, `isolate`, `intercept`; `id`/`plugin` deliberately not patchable). Only present fields change, `{}` is a validated no-op that still persists and re-applies; replies with the post-patch entry and per-action outcomes, 404 on unknown ids.
+
+- `PATCH /admin/cordis/entries/{id}` — typed partial update via `cordis::loader::EntryUpdate` (`config`, `disabled`, `isolate`, `intercept`; `id`/`plugin` deliberately not patchable). Only present fields change, `{}` is a validated no-op that still persists and re-applies; replies with the post-patch entry and per-action outcomes, 404 on unknown ids. A failed config pre-flight attaches a machine-readable `issues` array (`[{message, path}, …]`) beside the legacy `error` string.
 - `POST /admin/cordis/entries/reload` — reload from disk through the shared apply flow.
 - `GET /admin/cordis/events` — per-event dispatch counters `{total_dispatched, by_event}` from `EventsService::dispatch_snapshot()` (counts every mode via the single `dispatch` choke point).
 
@@ -624,9 +645,18 @@ Scheduler's three prod listeners (`agent.completed` observability, `agent.failed
 
 `cordis::cycles::{find_dependency_cycle, DependencyGraph}` — colored-DFS over the fiber inject graph with deterministic node ordering; `CycleLedger` maps (TypeId,label)→provider-fiber and entry-id↔fiber so loader-side callers can reconstruct edges without registry internals. Unit-tested for self-loops, 2/3-cycles, nested-behind-prefix, disconnected components, cross-edge false positives.
 
-### Round 6 — Entry composition (@include / @group / ${rhai:})
 
-`cordis::compose` (load-time, before the Loader sees entries): `resolve_includes` splices reserved-sentinel `@include` entries ({path}) recursively with canonical-path cycle guards; `@group` entries flatten nested children in place with id-dedupe checks; `interpolate_config` evaluates whole-value `${rhai: …}` markers against `$entry` metadata using the sandboxed engine and the JSON⇄Dynamic bridge (feature-gated; strings pass through when rhai off). `compose_all` chains include→group→interpolation. Wired examples live commented in `config/cordis-entries.toml`.
+### Round 6 — Intercept meta-events, readiness barriers, cascade batching, logger, timers
+
+**Intercept meta-events + `*_from` dispatch.** Five veto points (`internal/get`, `internal/set`, `internal/config`, `internal/update`, `internal/listener`) plus the `internal/dispatch` observer (see §4) ride `EventsService::bail_from`; product code gets the same chains through `bail_from` / `waterfall_from` / `waterfall_async_from` with an optional per-dispatch `ListenerFilter`. Veto semantics: a config-rewrite terminal becomes the effective config for that apply pass; an erroring config chain rests the fiber `Failed`; an update veto skips the restart and parks the deferred config in `Fiber::vetoed_config`; a listener bail cancels registration and returns an inert handle. Every gate is zero-cost when unregistered, and the synchronous bridges fall open on single-thread tokio flavors.
+
+**ReadinessBarrier.** `ReadinessBarrier::new(pred)` + `.and(..)` / `with_readiness([...])` + `.watching([TypeId])`, installed via `RegistryService::register_with_readiness` (see §5): closed gates hold fibers at inspectable `Pending` and re-kick through the ReflectService fan-out; availability predicates stay the loud `Failed` path.
+
+**Cascade batching.** An in-flight ledger around loader re-applies collapses concurrent provider config updates to ONE dependent convergence wave per settled batch (`CASCADE_INFLIGHT`, consulted from the kernel refresh path).
+
+**LoggerService (`cordis::logger`).** Bounded ring (default 1000) of `Message`s; effect-owned `Exporter` sinks (registration returns the removing `Disposable`) with per-sink `ExporterConfig` (per-name levels, `max_length` truncation); per-name thresholds via `set_level` with `set_default_level` fallback; zero-cost `enabled` gate before argument assembly; printf rendering `%s %d %i %f %o %O %c %C %%` with ANSI16 name-hashed colors (`%c`) and bold (`%C`); `hyphenate`/`derived_name` kebab-case logger names; `LoggerIntercept` per-fiber threshold overrides resolved through the relaxed read channel; `Context::log/info/warn/debug/error` facade no-ops when no logger is provided.
+
+**Timers (`cordis::timer`).** Six primitives — `timeout`, `sleep`, `interval`, `interval_stream`, `debounce`, `throttle` — std-only, fiber-scoped via `with_current_fiber` labeled undos, running on one shared wheel thread; dispose yields exactly one final `Err(InactiveEffect)` on streams then closes them; dropping handles never cancels.
 
 ---
 

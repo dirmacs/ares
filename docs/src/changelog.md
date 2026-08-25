@@ -6,7 +6,7 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ## Unreleased
 
-**Reactive fiber lifecycle, guarded file writes, and opt-in intelligence controls.**
+**Reactive fiber lifecycle, kernel interception points, guarded file writes, and opt-in intelligence controls.**
 
 ### Added
 
@@ -16,10 +16,22 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - `EventOptions { prepend, global }` on the new `on_with` / `once_with` listener registrations, plus `emit_filtered`: per-dispatch filtering where non-global listeners are offered to a filter predicate and `global` listeners always join. Existing `on` / `once` / `emit` signatures are unchanged
 - `Context::get_relaxed::<T>()`: like `get`, but serves a locally-owned value while its provider fiber transitions (`Active` / `Loading` / `Reloading` / `Unloading` / `Pending`); disposed and `Failed` owners stay refused
 - Fiber state observers: `Fiber::subscribe_state` delivers every lifecycle transition to synchronous observers with panic isolation; the returned handle cancels the subscription
+- Kernel intercept meta-events: listeners on `internal/get`, `internal/set`, `internal/config`, `internal/update`, and `internal/listener` veto or rewrite the matching kernel operation, and `internal/dispatch` observes every non-internal dispatch with its `(mode, name, args)`. `internal/get` can replace a strict read's value, refuse the lookup (`refuse: true`), or redirect it to the parent frame; an erroring chain refuses the read. `internal/set` errors veto the provider write with the previous binding left fully intact. `internal/config`'s non-null terminal IS the effective config for that apply pass; an erroring chain rests the fiber terminal `Failed` (unchanged semantics). An `internal/update` bail skips the restart and keeps the current application, with the deferred config visible as `vetoed_config`. An `internal/listener` bail (or chain error) cancels the registration and returns an inert handle. Every consult short-circuits at map-lookup cost when no listener is registered, a re-entrancy fence keeps reads inside a chain un-intercepted, and the synchronous bridges fall open (warn + allow) on tokio flavors that cannot `block_in_place`
+- Target-carrying dispatch family: `bail_from` / `waterfall_from` / `waterfall_async_from` run the Bail / Waterfall / around-waterfall chains with an optional per-dispatch `ListenerFilter`; a filtered-out listener skips that one dispatch and stays registered
+- Readiness barriers: `register_with_readiness` takes a composable `ReadinessBarrier` — `ReadinessBarrier::new(pred)`, `.and(..)` / `with_readiness([a, b])` AND-composition (empty is vacuously ready), `.watching([TypeId])` re-kicks the gated fiber when those providers settle through the `ReflectService` fan-out. While the gate is closed the fiber rests inspectable `Pending` — quiet waiting that never becomes `Failed` — with the factory run once up front and strict `get` keeping the service out of consumer reach. Complements (does not replace) availability predicates, which still fail loudly to `Failed`
+- Cascade batching: concurrent config updates against one provider collapse to a single dependent convergence wave. Providers mid-reapply are marked in an in-flight ledger; dependents defer during the window and converge once per settled batch instead of once per patch
+
+**Logger**
+
+- In-kernel `LoggerService`: bounded ring (default 1000 records) with monotonic sequences, fan-out to effect-owned `Exporter` sinks (registration returns a `Disposable` that removes the sink), and per-name level routing (`set_level`) with a service-wide fallback (`set_default_level`, default `Debug`). `enabled` gates writes before argument assembly. `Message::render` applies printf placeholders `%s %d %i %f %o %O %c %C %%` (`%o`/`%O` render compact/pretty JSON; unknown specifiers stay literal); `%c` colorizes over the ANSI16 palette by an FNV-1a hash of the logger name, `%C` adds bold. `hyphenate` / `derived_name` turn type names into `kebab-case` logger names (`HTTPServer` → `http-server`). `LoggerIntercept` overrides thresholds per fiber through `ctx.intercept` (resolved via the relaxed read); the `Context` facade (`ctx.info`, …) is a no-op when no logger is provided
+
+**Timers**
+
+- `cordis::timer`: six fiber-scoped primitives — `timeout`, `sleep`, `interval`, `interval_stream`, `debounce`, `throttle` — std-only on a shared wheel thread (min-heap deadlines drained under one short critical section, callbacks outside it, panics caught). Registrations under `with_current_fiber` push labeled undos onto the owning fiber, so dispose or a reactive unload cancels them; dropping a handle does NOT cancel. A disposed `Interval` stream yields exactly one final `Err(InactiveEffect)` and closes; `debounce` collapses bursts to one trailing delivery, `throttle`
 
 **Admin HTTP**
 
-- `PATCH /admin/cordis/entries/{id}`: typed partial update driven by `cordis::loader::EntryUpdate` (`config`, `disabled`, `isolate`, `intercept`). Only present fields change; `{}` is a validated no-op that still persists and re-applies; `id` / `plugin` are deliberately not patchable (identity changes are DELETE + PUT). Replies with the post-patch entry and per-action outcomes; unknown ids answer 404
+- Structured validation errors on the same PATCH endpoint: a config pre-flight can reject with `ValidationIssue { message, path }` items aggregated in a `ValidationError`; the 4xx body then carries a machine-readable `issues` array beside the legacy `error` string (success carries none, and a failed trial leaves no stale slot behind)
 
 **Tools fence**
 
@@ -34,7 +46,8 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 **Skills**
 
 - Delegated-result review gate (opt-in `review_delegated_results`): nested `SkillCall` results pass a fixed-template consistency and task-fit review before integration. A rejection replaces the result with a structured rejection that keeps the original for re-dispatch; a reviewer outage passes the result through unchanged. Off by default
-- Ambient enrichment (opt-in `AmbientEnrichmentConfig`): after assistant completions, two parallel micro calls classify intent and extract up to five keyword tags; the outcomes ride the existing skill-step record as `response_payload.ambient_enrichment` (no new storage). Enrichment never delays or fails the completion; failures are skipped silently. Off by default
+- Self-check critique rounds (opt-in `SkillEngine::with_self_check_rounds`): nested `SkillCall` results pass up to N LLM critique rounds over a cache-stable template before integration; a verbatim reply ends the loop, and an LLM failure keeps the last good answer silently. Off by default
+- Delegation hygiene: delegated sub-workflows accept only allowlisted step kinds (`delegated_step_not_allowed:`), nested tool rounds hard-cap at three (`tool_round_cap_exceeded:` aborts after exactly three rounds), and slash-command chatter lines are stripped from delegated result text before it enters the parent context
 
 ---
 

@@ -20,7 +20,7 @@
 //! let response = client.generate("Hello!").await?;
 //! ```
 
-use crate::client::{LLMClient, LLMResponse, ModelParams, TokenUsage};
+use crate::client::{GenerationHints, LLMClient, LLMResponse, ModelParams, TokenUsage};
 use crate::coordinator::{ConversationMessage, MessageRole};
 use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_stream::stream;
@@ -33,6 +33,7 @@ use ollama_rs::{
     Ollama,
 };
 use schemars::Schema;
+use std::sync::RwLock;
 
 /// Ollama LLM client implementation.
 ///
@@ -41,6 +42,9 @@ pub struct OllamaClient {
     client: Ollama,
     model: String,
     params: ModelParams,
+    /// Generation hints applying to SUBSEQUENT calls (see [`GenerationHints`]
+    /// for the set-on-client contract). Snapshotted at request build time.
+    hints: RwLock<GenerationHints>,
 }
 
 impl OllamaClient {
@@ -107,7 +111,50 @@ impl OllamaClient {
             client,
             model,
             params,
+            hints: RwLock::new(GenerationHints::default()),
         })
+    }
+
+    /// Snapshot the current generation hints.
+    fn hint_snapshot(&self) -> GenerationHints {
+        self.hints.read().map(|h| h.clone()).unwrap_or_default()
+    }
+
+    /// Build a chat request with model options and (when the parsed model
+    /// metadata says JSON output is supported and the hint asks for it) a
+    /// JSON `format`. The four call sites share this so hint application is
+    /// single-sourced.
+    fn build_request(
+        &self,
+        messages: Vec<ChatMessage>,
+        caps: Option<&OllamaModelCapabilities>,
+    ) -> ChatMessageRequest {
+        let hints = self.hint_snapshot();
+        let mut request = ChatMessageRequest::new(self.model.clone(), messages)
+            .options(self.build_model_options());
+        if let Some(budget) = hints.max_tokens {
+            // Hint budget overrides the static params value for these calls:
+            // rebuild options with num_predict from the hint.
+            let mut options = ModelOptions::default();
+            if let Some(temp) = self.params.temperature {
+                options = options.temperature(temp);
+            }
+            options = options.num_predict(budget as i32);
+            if let Some(top_p) = self.params.top_p {
+                options = options.top_p(top_p);
+            }
+            if let Some(pres_penalty) = self.params.presence_penalty {
+                options = options.repeat_penalty(pres_penalty);
+            }
+            request.options = Some(options);
+        }
+        if hints.json_mode && caps.is_some_and(|c| c.supports_json_mode) {
+            request.format = Some(ollama_rs::generation::parameters::FormatType::Json);
+        }
+        // suppress_reasoning is deliberately NOT expressible on Ollama chat
+        // requests here: no reliable wire mapping exists across models, so
+        // the hint is ignored rather than guessed.
+        request
     }
 
     /// Build ModelOptions from the stored params
@@ -384,8 +431,7 @@ impl LLMClient for OllamaClient {
     async fn generate(&self, prompt: &str) -> Result<String> {
         let messages = vec![ChatMessage::user(prompt.to_string())];
 
-        let request = ChatMessageRequest::new(self.model.clone(), messages)
-            .options(self.build_model_options());
+        let request = self.build_request(messages, None);
 
         let response = self
             .client
@@ -403,8 +449,7 @@ impl LLMClient for OllamaClient {
             ChatMessage::user(prompt.to_string()),
         ];
 
-        let request = ChatMessageRequest::new(self.model.clone(), messages)
-            .options(self.build_model_options());
+        let request = self.build_request(messages, None);
 
         let response = self
             .client
@@ -426,8 +471,7 @@ impl LLMClient for OllamaClient {
             })
             .collect();
 
-        let request = ChatMessageRequest::new(self.model.clone(), chat_messages)
-            .options(self.build_model_options());
+        let request = self.build_request(chat_messages, None);
 
         let response = self
             .client
@@ -459,10 +503,8 @@ impl LLMClient for OllamaClient {
 
         let messages = vec![ChatMessage::user(prompt.to_string())];
 
-        // Create request with tools and model options
-        let request = ChatMessageRequest::new(self.model.clone(), messages)
-            .tools(ollama_tools)
-            .options(self.build_model_options());
+        // Create request with tools and model options (hint-aware).
+        let request = self.build_request(messages, None).tools(ollama_tools);
 
         let response = self
             .client
@@ -509,9 +551,8 @@ impl LLMClient for OllamaClient {
             .map(|msg| self.convert_conversation_message(msg))
             .collect();
 
-        // Create request with tools and model options
-        let mut request = ChatMessageRequest::new(self.model.clone(), chat_messages)
-            .options(self.build_model_options());
+        // Create request with tools and model options (hint-aware).
+        let mut request = self.build_request(chat_messages, None);
 
         if !ollama_tools.is_empty() {
             request = request.tools(ollama_tools);
@@ -553,8 +594,7 @@ impl LLMClient for OllamaClient {
         prompt: &str,
     ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
         let messages = vec![ChatMessage::user(prompt.to_string())];
-        let request = ChatMessageRequest::new(self.model.clone(), messages)
-            .options(self.build_model_options());
+        let request = self.build_request(messages, None);
 
         let mut stream_response = self
             .client
@@ -593,8 +633,7 @@ impl LLMClient for OllamaClient {
             ChatMessage::system(system.to_string()),
             ChatMessage::user(prompt.to_string()),
         ];
-        let request = ChatMessageRequest::new(self.model.clone(), messages)
-            .options(self.build_model_options());
+        let request = self.build_request(messages, None);
 
         let mut stream_response = self
             .client
@@ -636,8 +675,7 @@ impl LLMClient for OllamaClient {
             })
             .collect();
 
-        let request = ChatMessageRequest::new(self.model.clone(), chat_messages)
-            .options(self.build_model_options());
+        let request = self.build_request(chat_messages, None);
 
         let mut stream_response = self
             .client
@@ -667,6 +705,16 @@ impl LLMClient for OllamaClient {
 
     fn model_name(&self) -> &str {
         &self.model
+    }
+
+    fn supports_hints(&self) -> bool {
+        true
+    }
+
+    fn set_hints(&self, hints: GenerationHints) {
+        if let Ok(mut slot) = self.hints.write() {
+            *slot = hints;
+        }
     }
 }
 
@@ -723,5 +771,114 @@ impl OllamaClient {
             "template": info.template,
             "capabilities": info.capabilities,
         }))
+    }
+}
+
+#[cfg(all(test, feature = "ollama"))]
+mod hint_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn ollama_client(server: &MockServer) -> OllamaClient {
+        // Constructor normalizes any absolute URL; point it at the mock.
+        OllamaClient::with_params(
+            format!("http://127.0.0.1:{}", server.address().port()),
+            "test-model".to_string(),
+            ModelParams {
+                temperature: Some(0.4),
+                max_tokens: Some(64),
+                ..ModelParams::default()
+            },
+        )
+        .await
+        .expect("client")
+    }
+
+    fn chat_ok() -> String {
+        serde_json::json!({
+            "model": "test-model",
+            "created_at": "now",
+            "message": { "role": "assistant", "content": "ok" },
+            "done": true,
+            "prompt_eval_count": 3,
+            "eval_count": 2
+        })
+        .to_string()
+    }
+
+    /// Hint budget overrides num_predict; json_mode only applies when the
+    /// parsed capability says JSON output is supported.
+    #[tokio::test]
+    async fn hints_map_to_num_predict_and_json_format() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_ok()))
+            .mount(&server)
+            .await;
+
+        let client = ollama_client(&server).await;
+        assert!(client.supports_hints());
+        // Params default would send 64; the hint budget must win.
+        client.set_hints(GenerationHints {
+            json_mode: true,
+            suppress_reasoning: false,
+            max_tokens: Some(256),
+        });
+
+        let _ = client.generate("hi").await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let options = &body["options"];
+        assert_eq!(
+            options["num_predict"], 256,
+            "hint max_tokens maps to num_predict"
+        );
+        assert_eq!(
+            options["num_ctx"],
+            serde_json::Value::Null,
+            "sanity: untouched option keys stay absent"
+        );
+        // json_mode WITHOUT parsed capability evidence is NOT applied.
+        assert!(
+            body.get("format").is_none() || body["format"].is_null(),
+            "json_mode must be gated on supports_json_mode"
+        );
+    }
+
+    /// With capability evidence (supports_json_mode) the request carries
+    /// `"format": "json"`.
+    #[tokio::test]
+    async fn json_mode_applies_when_capability_supports_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_ok()))
+            .mount(&server)
+            .await;
+
+        let client = ollama_client(&server).await;
+        client.set_hints(GenerationHints {
+            json_mode: true,
+            suppress_reasoning: false,
+            max_tokens: None,
+        });
+        // Capability evidence as `/api/show` would report it.
+        let caps = parse_model_capabilities_from_show(&serde_json::json!({
+            "parameters": "num_ctx 2048",
+            "template": "",
+            "modelfile": "FROM x\nPARAMETER format json"
+        }));
+        assert!(
+            caps.supports_json_mode,
+            "fixture must parse as json-capable"
+        );
+
+        let messages = vec![ChatMessage::user("hi".into())];
+        let request = client.build_request(messages, Some(&caps));
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["format"], serde_json::json!("json"));
     }
 }

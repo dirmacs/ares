@@ -13,6 +13,9 @@ use crate::AgentConfig;
 use crate::{Agent, AgentResponse, ExecutionMetadata};
 use ares_llm::coordinator::ConversationMessage;
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
+#[cfg(feature = "postgres")]
+use ares_llm::compact::{CompactConfig, CompactionState, TurnEntry};
+use ares_llm::compact::Compactor;
 use ares_llm::{LLMClient, LLMResponse};
 use ares_tools::Tools;
 use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
@@ -51,6 +54,227 @@ struct LlmAttemptResponse {
     model_name: String,
 }
 
+/// Maximum tracked sessions before the whole map is cleared.
+///
+/// Eviction is deliberately CRUDE: when the 257th session arrives, every
+/// entry is dropped and compaction state rebuilds from scratch (fresh
+/// snapshot hydration on the next turn). Sessions are independent, so a
+/// bulk reset loses nothing but warm history.
+const SESSION_COMPACTOR_CAP: usize = 256;
+
+/// Process-wide per-session [`Compactor`] registry.
+///
+/// Keyed by `(tenant_id, session_id)` as available in `Agent::execute`
+/// (`context.user_id` / `context.session_id`). Agents are constructed
+/// per request, so the map must outlive any single agent instance; the
+/// `Arc` clone handed to `record_turn` tasks keeps entries alive while a
+/// spawned hook is still writing.
+#[derive(Default)]
+pub struct SessionCompactors {
+    inner: parking_lot::Mutex<std::collections::HashMap<(String, String), Arc<Compactor>>>,
+}
+
+/// Process-wide [`SessionCompactors`] singleton.
+///
+/// Agents are constructed per request, so the registry cannot live on an
+/// agent instance; a static keeps the map alive across requests without
+/// requiring boot-time provider wiring. Compaction stays OFF unless an
+/// agent's config sets `compaction_enabled`.
+fn global_session_compactors() -> &'static SessionCompactors {
+    static COMPACTORS: std::sync::LazyLock<SessionCompactors> =
+        std::sync::LazyLock::new(SessionCompactors::new);
+    &COMPACTORS
+}
+
+/// Debug-level outcome logging for fire-and-forget compaction work.
+fn log_compact_event(stage: &'static str, event: &ares_llm::compact::CompactEvent) {
+    use ares_llm::compact::CompactEvent;
+    match event {
+        CompactEvent::Scored { seq, score } => {
+            tracing::debug!(stage, seq, score, "compaction scored turn");
+        }
+        CompactEvent::Audited {
+            critical_kept,
+            memory_chars,
+            dropped_seqs,
+        } => {
+            tracing::debug!(
+                stage,
+                critical_kept,
+                memory_chars,
+                dropped = dropped_seqs.len(),
+                "compaction audit finished"
+            );
+        }
+        CompactEvent::Skipped { reason } => {
+            tracing::debug!(stage, reason, "compaction step skipped");
+        }
+    }
+}
+
+impl SessionCompactors {
+    /// Creates an empty registry (install once via `ctx.provide`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the compactor for `(tenant_id, session_id)`, creating one
+    /// seeded from the persisted DB snapshot when available. A missing
+    /// store or client yields no compactor — compaction silently stays off.
+    #[cfg(feature = "postgres")]
+    async fn get_or_create(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+        llm: &ares_llm::Llm,
+        ctx: &Arc<Context>,
+    ) -> Option<Arc<Compactor>> {
+        if let Some(existing) = self.lock().get(&(tenant_id.to_string(), session_id.to_string())) {
+            return Some(Arc::clone(existing));
+        }
+
+        let client = llm.get_client(ctx, ares_llm::CapabilityRequirements::default()).await.ok()?;
+        let mut state = CompactionState::default();
+        if let Some(db) = ctx.get::<ares_store::TenantDb>() {
+            let store = ares_store::postgres::PostgresClient {
+                pool: db.pool().clone(),
+            };
+            match store.get_conversation_snapshot(session_id).await {
+                Ok(Some(row)) => {
+                    let entries: Vec<TurnEntry> =
+                        serde_json::from_value(row.entries).unwrap_or_default();
+                    let critical: Vec<String> =
+                        serde_json::from_value(row.critical).unwrap_or_default();
+                    state = CompactionState::from_parts(
+                        entries,
+                        critical,
+                        row.memory,
+                        row.last_audit_seq.max(0) as u64,
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!(session_id, error = %e, "snapshot hydrate failed; starting cold");
+                }
+            }
+        }
+
+        let compactor = Arc::new(Compactor::hydrate(
+            CompactConfig::default(),
+            client,
+            state,
+        ));
+        let mut map = self.lock();
+        if map.len() >= SESSION_COMPACTOR_CAP {
+            // Crude eviction: drop everything (see SESSION_COMPACTOR_CAP).
+            map.clear();
+        }
+        map.insert(
+            (tenant_id.to_string(), session_id.to_string()),
+            Arc::clone(&compactor),
+        );
+        Some(compactor)
+    }
+
+    /// Non-postgres twin: never persists or hydrates.
+    #[cfg(not(feature = "postgres"))]
+    async fn get_or_create(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+        llm: &ares_llm::Llm,
+        ctx: &Arc<Context>,
+    ) -> Option<Arc<Compactor>> {
+        if let Some(existing) = self.lock().get(&(tenant_id.to_string(), session_id.to_string())) {
+            return Some(Arc::clone(existing));
+        }
+        let client = llm.get_client(ctx, ares_llm::CapabilityRequirements::default()).await.ok()?;
+        let compactor = Arc::new(Compactor::with_client(client));
+        let mut map = self.lock();
+        if map.len() >= SESSION_COMPACTOR_CAP {
+            map.clear();
+        }
+        map.insert(
+            (tenant_id.to_string(), session_id.to_string()),
+            Arc::clone(&compactor),
+        );
+        Some(compactor)
+    }
+
+    fn lock(
+        &self,
+    ) -> parking_lot::MutexGuard<
+        '_,
+        std::collections::HashMap<(String, String), Arc<Compactor>>,
+    > {
+        self.inner.lock()
+    }
+}
+
+/// Tenant component of the session-compactor key.
+///
+/// Mirrors the request-path resolution used elsewhere: Execute/Tools
+/// isolate labels (stripping the legacy `tenant:`/`user:` prefixes),
+/// then the `TenantContext` intercept, then the agent-context user id.
+fn tenant_key_for_compaction(ctx: &Context, fallback_user: &str) -> String {
+    for tid in [
+        std::any::TypeId::of::<crate::Execute>(),
+        std::any::TypeId::of::<ares_tools::Tools>(),
+    ] {
+        if let Some(label) = ctx.isolate_label(tid) {
+            let trimmed = label
+                .strip_prefix("tenant:")
+                .or_else(|| label.strip_prefix("user:"))
+                .unwrap_or(&label);
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    if let Some(tc) = ctx.get::<ares_types::models::TenantContext>() {
+        if !tc.tenant_id.is_empty() {
+            return tc.tenant_id.clone();
+        }
+    }
+    fallback_user.to_string()
+}
+
+/// Best-effort persistence of one compactor state to its DB snapshot row.
+///
+/// Silent degradation by contract: any error is logged at debug and
+/// swallowed — a failed snapshot write must never fail a chat turn.
+#[cfg(feature = "postgres")]
+async fn persist_session_snapshot(compactor: &Compactor, pool: sqlx::PgPool, session_key: &str) {
+    let state = compactor.export();
+    let entries = match serde_json::to_value(state.entries()) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!(session_key, error = %e, "snapshot entries serialize failed");
+            return;
+        }
+    };
+    let critical = match serde_json::to_value(state.critical()) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!(session_key, error = %e, "snapshot critical serialize failed");
+            return;
+        }
+    };
+    let store = ares_store::postgres::PostgresClient { pool };
+    if let Err(e) = store
+        .upsert_conversation_snapshot(
+            session_key,
+            entries,
+            critical,
+            state.memory(),
+            state.last_audit_seq() as i64,
+        )
+        .await
+    {
+        tracing::debug!(session_key, error = %e, "conversation snapshot persist failed");
+    }
+}
+
 /// A configurable agent that derives its behavior from TOML configuration
 pub struct ConfigurableAgent {
     /// The agent's name/type identifier
@@ -80,6 +304,8 @@ pub struct ConfigurableAgent {
     fallback_llms: Vec<ProviderLlm>,
     /// Optional run id to associate with token usage records.
     run_id: Option<String>,
+    /// Per-session history compaction (off unless `compaction_enabled`).
+    compaction: bool,
 }
 
 fn is_prebuilt_connector_tool(name: &str) -> bool {
@@ -279,6 +505,7 @@ impl ConfigurableAgent {
             observability: None,
             fallback_llms: Vec::new(),
             run_id: None,
+            compaction: config.compaction_enabled.unwrap_or(false),
         }
     }
 
@@ -311,6 +538,7 @@ impl ConfigurableAgent {
             observability: None,
             fallback_llms: Vec::new(),
             run_id: None,
+            compaction: false,
         }
     }
 
@@ -359,7 +587,13 @@ impl ConfigurableAgent {
             observability: None,
             fallback_llms: Vec::new(),
             run_id: None,
+            compaction: config.compaction_enabled.unwrap_or(false),
         }
+    }
+
+    /// Enable per-session history compaction for this agent.
+    pub fn set_compaction(&mut self, enabled: bool) {
+        self.compaction = enabled;
     }
 
     /// Create an agent with explicit parameters and a unified ToolService.
@@ -388,6 +622,7 @@ impl ConfigurableAgent {
             observability: None,
             fallback_llms: Vec::new(),
             run_id: None,
+            compaction: false,
         }
     }
 
@@ -547,6 +782,20 @@ Handle employee info, policies, and benefits."#
     /// Set the run id to associate with token usage records.
     pub fn set_run_id(&mut self, run_id: String) {
         self.run_id = Some(run_id);
+    }
+
+    /// Resolves the per-session compactor for this execution, or `None`
+    /// when compaction is off / no Llm service is available. Silent
+    /// degradation: every failure path just disables compaction for the
+    /// current turn.
+    async fn session_compactor(&self, context: &AgentContext) -> Option<Arc<Compactor>> {
+        let ctx = self.cordis_ctx.as_ref()?;
+        let llm = ctx.get::<ares_llm::Llm>()?;
+        let registry = global_session_compactors();
+        let tenant = tenant_key_for_compaction(ctx.as_ref(), &context.user_id);
+        registry
+            .get_or_create(&tenant, &context.session_id, llm.as_ref(), ctx)
+            .await
     }
 
     async fn preflight_budget_check(&self, tenant_id: &str) -> Result<()> {
@@ -1012,16 +1261,55 @@ When referencing facts above, cite [E1], [E2] etc.",
         let effective_prompt = self.effective_system_prompt();
         messages.push(ConversationMessage::system(&effective_prompt));
 
-        // Add recent conversation history (last 5 messages)
-        for msg in context.conversation_history.iter().rev().take(5).rev() {
-            let cm = match msg.role {
-                ares_types::types::MessageRole::User => ConversationMessage::user(&msg.content),
-                ares_types::types::MessageRole::Assistant => {
-                    ConversationMessage::assistant(&msg.content, vec![])
+        // History: compacted session context when enabled, else the naive
+        // last-5 slice. Compaction degrades silently — any failure keeps
+        // today's behavior.
+        let session_compactor = if self.compaction {
+            self.session_compactor(context).await
+        } else {
+            None
+        };
+        // Captured for the fire-and-forget persistence hook (postgres only).
+        #[cfg(feature = "postgres")]
+        let snapshot_pool: Option<sqlx::PgPool> = if session_compactor.is_some() {
+            self.cordis_ctx
+                .as_ref()
+                .and_then(|ctx| ctx.get::<ares_store::TenantDb>())
+                .map(|db| db.pool().clone())
+        } else {
+            None
+        };
+        #[cfg(feature = "postgres")]
+        let session_key = context.session_id.clone();
+        #[cfg(feature = "postgres")]
+        let tenant_key: Option<String> = self.cordis_ctx.as_ref().and_then(|ctx| {
+            let key = tenant_key_for_compaction(ctx, &context.user_id);
+            if key.is_empty() { None } else { Some(key) }
+        });
+        #[cfg(not(feature = "postgres"))]
+        let _ = &context;
+        if let Some(compactor) = &session_compactor {
+            for (role, content) in compactor.build_context("", 5).into_iter().skip(1) {
+                if role == "assistant" {
+                    messages.push(ConversationMessage::assistant(&content, vec![]));
+                } else if role == "user" {
+                    messages.push(ConversationMessage::user(&content));
+                } else {
+                    messages.push(ConversationMessage::system(&content));
                 }
-                _ => ConversationMessage::system(&msg.content),
-            };
-            messages.push(cm);
+            }
+        } else {
+            // Add recent conversation history (last 5 messages)
+            for msg in context.conversation_history.iter().rev().take(5).rev() {
+                let cm = match msg.role {
+                    ares_types::types::MessageRole::User => ConversationMessage::user(&msg.content),
+                    ares_types::types::MessageRole::Assistant => {
+                        ConversationMessage::assistant(&msg.content, vec![])
+                    }
+                    _ => ConversationMessage::system(&msg.content),
+                };
+                messages.push(cm);
+            }
         }
 
         messages.push(ConversationMessage::user(input));
@@ -1091,6 +1379,24 @@ When referencing facts above, cite [E1], [E2] etc.",
             }
 
             if response.tool_calls.is_empty() {
+                // Fire-and-forget compaction of the completed turn. Failures
+                // are logged at debug and never affect the response.
+                if let Some(compactor) = &session_compactor {
+                    let compactor = Arc::clone(compactor);
+                    let input = input.to_string();
+                    let content = response.content.clone();
+                    tokio::spawn(async move {
+                        let event = compactor.record_turn(input, content).await;
+                        log_compact_event("record_turn", &event);
+                        for event in compactor.audit_if_due().await {
+                            log_compact_event("audit", &event);
+                        }
+                        #[cfg(feature = "postgres")]
+                        if let Some(pool) = snapshot_pool.clone() {
+                            persist_session_snapshot(&compactor, pool, &session_key).await;
+                        }
+                    });
+                }
                 return Ok(AgentResponse {
                     content: response.content,
                     usage: Some(total_usage),
@@ -1238,6 +1544,27 @@ When referencing facts above, cite [E1], [E2] etc.",
             let _ = obs.log_llm_call(record).await;
         }
 
+        // Fire-and-forget compaction of the completed turn when the final
+        // synthesis succeeded. Failures are logged at debug only.
+        if let (Ok(attempt), Some(compactor)) = (&final_response, &session_compactor) {
+            if !attempt.response.content.is_empty() {
+                let compactor = Arc::clone(compactor);
+                let input = input.to_string();
+                let content = attempt.response.content.clone();
+                tokio::spawn(async move {
+                    let event = compactor.record_turn(input, content).await;
+                    log_compact_event("record_turn", &event);
+                    for event in compactor.audit_if_due().await {
+                        log_compact_event("audit", &event);
+                    }
+                    #[cfg(feature = "postgres")]
+                    if let Some(pool) = snapshot_pool.clone() {
+                        persist_session_snapshot(&compactor, pool, &session_key).await;
+                    }
+                });
+            }
+        }
+
         let content = match final_response {
             Ok(attempt) if !attempt.response.content.is_empty() => attempt.response.content,
             Ok(_) => {
@@ -1309,14 +1636,47 @@ impl Agent for ConfigurableAgent {
             messages.push(("system".to_string(), memory_context));
         }
 
-        // Add recent conversation history (last 5 messages)
-        for msg in context.conversation_history.iter().rev().take(5).rev() {
-            let role = match msg.role {
-                ares_types::types::MessageRole::User => "user",
-                ares_types::types::MessageRole::Assistant => "assistant",
-                _ => "system",
-            };
-            messages.push((role.to_string(), msg.content.clone()));
+        // History: compacted session context when enabled, else the naive
+        // last-5 slice. Compaction degrades silently — any failure keeps
+        // today's behavior.
+        let session_compactor = if self.compaction {
+            self.session_compactor(context).await
+        } else {
+            None
+        };
+        // Captured for the fire-and-forget persistence hook (postgres only).
+        #[cfg(feature = "postgres")]
+        let snapshot_pool: Option<sqlx::PgPool> = if session_compactor.is_some() {
+            self.cordis_ctx
+                .as_ref()
+                .and_then(|ctx| ctx.get::<ares_store::TenantDb>())
+                .map(|db| db.pool().clone())
+        } else {
+            None
+        };
+        #[cfg(feature = "postgres")]
+        let session_key = context.session_id.clone();
+        #[cfg(feature = "postgres")]
+        let tenant_key: Option<String> = self.cordis_ctx.as_ref().and_then(|ctx| {
+            let key = tenant_key_for_compaction(ctx, &context.user_id);
+            if key.is_empty() { None } else { Some(key) }
+        });
+        #[cfg(not(feature = "postgres"))]
+        let _ = &context;
+        if let Some(compactor) = &session_compactor {
+            for (role, content) in compactor.build_context("", 5).into_iter().skip(1) {
+                messages.push((role, content));
+            }
+        } else {
+            // Add recent conversation history (last 5 messages)
+            for msg in context.conversation_history.iter().rev().take(5).rev() {
+                let role = match msg.role {
+                    ares_types::types::MessageRole::User => "user",
+                    ares_types::types::MessageRole::Assistant => "assistant",
+                    _ => "system",
+                };
+                messages.push((role.to_string(), msg.content.clone()));
+            }
         }
 
         messages.push(("user".to_string(), input.to_string()));
@@ -1369,6 +1729,25 @@ impl Agent for ConfigurableAgent {
                 total_time_ms: Some(llm_latency),
             };
             let _ = obs.log_llm_call(record).await;
+        }
+
+        // Fire-and-forget compaction of the completed turn. Failures are
+        // logged at debug and never affect the response (silent degradation).
+        if let Some(compactor) = &session_compactor {
+            let compactor = Arc::clone(compactor);
+            let input = input.to_string();
+            let content = llm_response.content.clone();
+            tokio::spawn(async move {
+                let event = compactor.record_turn(input, content).await;
+                log_compact_event("record_turn", &event);
+                for event in compactor.audit_if_due().await {
+                    log_compact_event("audit", &event);
+                }
+                #[cfg(feature = "postgres")]
+                if let Some(pool) = snapshot_pool.clone() {
+                    persist_session_snapshot(&compactor, pool, &session_key).await;
+                }
+            });
         }
 
         Ok(AgentResponse {

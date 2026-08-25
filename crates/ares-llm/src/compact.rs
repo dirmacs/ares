@@ -104,7 +104,7 @@ impl Default for CompactConfig {
 use serde::{Deserialize, Serialize};
 
 /// One recorded conversation turn with its audited importance score.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnEntry {
     /// Monotonic sequence number, starting at 1.
     pub seq: u64,
@@ -126,6 +126,43 @@ pub struct CompactionState {
 }
 
 impl CompactionState {
+    /// Builds a state from previously [`Compactor::export`]ed or persisted
+    /// parts (e.g. a DB snapshot row). The fields stay private so callers
+    /// cannot construct inconsistent internal states by hand.
+    pub fn from_parts(
+        entries: Vec<TurnEntry>,
+        critical: Vec<String>,
+        memory: String,
+        last_audit_seq: u64,
+    ) -> Self {
+        Self {
+            entries,
+            critical,
+            memory,
+            last_audit_seq,
+        }
+    }
+
+    /// Recorded turns, oldest first (for persistence).
+    pub fn entries(&self) -> &[TurnEntry] {
+        &self.entries
+    }
+
+    /// Verbatim critical facts (for persistence).
+    pub fn critical(&self) -> &[String] {
+        &self.critical
+    }
+
+    /// Rolling memory text (for persistence).
+    pub fn memory(&self) -> &str {
+        &self.memory
+    }
+
+    /// Sequence number the last completed audit covered (for persistence).
+    pub fn last_audit_seq(&self) -> u64 {
+        self.last_audit_seq
+    }
+
     /// Next sequence number (last entry + 1, or 1 when empty).
     fn next_seq(&self) -> u64 {
         self.entries.last().map(|e| e.seq + 1).unwrap_or(1)
@@ -940,7 +977,9 @@ mod tests {
                 assistant: "rust".to_string(),
                 score: None,
             });
-            state.critical.push("user: theme?\nassistant: dark mode".to_string());
+            state
+                .critical
+                .push("user: theme?\nassistant: dark mode".to_string());
             state.memory = "User prefers dark mode.".to_string();
             state.last_audit_seq = 1;
         }
@@ -949,10 +988,13 @@ mod tests {
         let exported = compactor.export();
         let json = serde_json::to_string(&exported).expect("serialize");
         let restored: CompactionState = serde_json::from_str(&json).expect("deserialize");
-        let revived =
-            Compactor::hydrate(CompactConfig::default(), Arc::new(ScriptedClient::new(|_| {
+        let revived = Compactor::hydrate(
+            CompactConfig::default(),
+            Arc::new(ScriptedClient::new(|_| {
                 Err(AppError::Internal("unused".into()))
-            })), restored);
+            })),
+            restored,
+        );
 
         assert_eq!(revived.export().entries, exported.entries);
         assert_eq!(revived.export().critical, exported.critical);

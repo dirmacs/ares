@@ -1658,12 +1658,16 @@ mod tests {
         assert!(!registry.has_provider("tenant-runtime"));
         assert!(registry.has_provider_for_tenant("tenant-runtime", Some("tenant-a")));
         assert!(!registry.has_provider_for_tenant("tenant-runtime", Some("tenant-b")));
-        assert!(registry
-            .provider_for_tenant("tenant-runtime", Some("tenant-a"))
-            .is_some());
-        assert!(registry
-            .provider_for_tenant("tenant-runtime", Some("tenant-b"))
-            .is_none());
+        assert!(
+            registry
+                .provider_for_tenant("tenant-runtime", Some("tenant-a"))
+                .is_some()
+        );
+        assert!(
+            registry
+                .provider_for_tenant("tenant-runtime", Some("tenant-b"))
+                .is_none()
+        );
         assert_eq!(
             registry.provider_names(),
             vec!["global-runtime".to_string()]

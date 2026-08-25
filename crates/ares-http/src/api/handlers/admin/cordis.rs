@@ -1544,11 +1544,14 @@ mod tests {
     /// reports the config change.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn patch_config_only_updates_single_field() {
+        // Seed file AND current tree identically: the on-disk file is the
+        // source of truth during apply, so the isolate must live in the file
+        // to survive the post-patch re-apply.
+        let initial_toml = "[[entry]]\nid = \"calc\"\nplugin = \"CalculatorService\"\ndisabled = false\nisolate = \"tenant-a\"\n\n[entry.config]\nv = 1\n";
         let mut seeded = probe_entry("calc", false);
         seeded.config = serde_json::json!({"v": 1});
         seeded.isolate = Some("tenant-a".into());
-        let (ctx, dir) =
-            build_entries_fixture("patch-config", CALC_TOML_BLOCK, vec![seeded.clone()]);
+        let (ctx, dir) = build_entries_fixture("patch-config", initial_toml, vec![seeded]);
 
         let update = cordis::loader::EntryUpdate {
             config: Some(serde_json::json!({"v": 7})),
@@ -1592,7 +1595,6 @@ mod tests {
         let (ctx, dir) =
             build_entries_fixture("patch-empty", CALC_TOML_BLOCK, vec![probe_entry("calc", false)]);
 
-        let before = std::fs::read_to_string(dir.join("cordis-entries.toml")).expect("read");
         let (status, Json(body)) = patch_cordis_entry(
             State(ctx.clone()),
             Path("calc".into()),
@@ -1604,15 +1606,16 @@ mod tests {
         assert_eq!(body["patched"], json!(true));
         assert_eq!(body["entry"], serde_json::to_value(probe_entry("calc", false)).unwrap());
 
-        // File content is byte-identical modulo header handling: the same
-        // entries round-trip through save_to_toml_file.
+        // The same entry set round-trips: exactly one calc entry remains and
+        // no field was altered by the empty patch body.
         let after = std::fs::read_to_string(dir.join("cordis-entries.toml")).expect("read back");
-        assert_eq!(
-            after.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).count(),
-            before.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).count(),
-            "no-op patch keeps the entry set intact"
-        );
+        let ids: Vec<&str> = after
+            .lines()
+            .filter_map(|l| l.strip_prefix("id = "))
+            .collect();
+        assert_eq!(ids, vec!["\"calc\""], "no-op patch keeps the entry set intact");
         assert!(after.contains("id = \"calc\""));
+        assert!(!after.contains("v ="), "config untouched by empty body");
 
         std::fs::remove_dir_all(&dir).ok();
     }

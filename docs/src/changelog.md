@@ -4,6 +4,40 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## Unreleased
+
+**Reactive fiber lifecycle, guarded file writes, and opt-in intelligence controls.**
+
+### Added
+
+**Kernel (`ares-cordis`)**
+
+- Reactive `Pending` fiber state: an `Active` fiber whose dependency is genuinely withdrawn disposes its effects (LIFO) and rests `Pending`; it reactivates through `Loading` when the provider returns. Apply errors stay terminal `Failed`; peer-version refusals over a live provider still rest `Inactive`. `Pending` fibers reserve their registry key and survive `prune_disposed`
+- `EventOptions { prepend, global }` on the new `on_with` / `once_with` listener registrations, plus `emit_filtered`: per-dispatch filtering where non-global listeners are offered to a filter predicate and `global` listeners always join. Existing `on` / `once` / `emit` signatures are unchanged
+- `Context::get_relaxed::<T>()`: like `get`, but serves a locally-owned value while its provider fiber transitions (`Active` / `Loading` / `Reloading` / `Unloading` / `Pending`); disposed and `Failed` owners stay refused
+- Fiber state observers: `Fiber::subscribe_state` delivers every lifecycle transition to synchronous observers with panic isolation; the returned handle cancels the subscription
+
+**Admin HTTP**
+
+- `PATCH /admin/cordis/entries/{id}`: typed partial update driven by `cordis::loader::EntryUpdate` (`config`, `disabled`, `isolate`, `intercept`). Only present fields change; `{}` is a validated no-op that still persists and re-applies; `id` / `plugin` are deliberately not patchable (identity changes are DELETE + PUT). Replies with the post-patch entry and per-action outcomes; unknown ids answer 404
+
+**Tools fence**
+
+- Layer 3 write guards on `Fence`: writes require a prior `fence_read` observation unless the mode allows blind writes (`FS_NOT_OBSERVED`); `CreateIfAbsent` refuses existing paths (`FS_EXISTS`); `ReplaceIfVersion` compares the `mtime ^ size` fingerprint captured at read time (`FS_VERSION_CONFLICT`). Bytes land through a sibling temp file renamed into place, new files get `0600` on unix, errors carry structured `FS_*` codes, and a bounded 200-entry audit ring is readable through `audit_log`. Layers 0-2 behave exactly as before
+
+**LLM**
+
+- Retry-before-salvage JSON policy: the micro engine re-requests a malformed-JSON answer identically up to `json_retries` times (default 2) before the substring-salvage fallback runs
+- Per-provider concurrency governor: optional pool setting `max_in_flight` caps simultaneous dispatches per provider, with `governor_acquire_timeout` (default 30 s) bounding the wait. Permits release only at terminal stream items, and saturation fails closed. Without the setting, behavior is unchanged and no wrappers install
+- Model-profile catalog: one cross-provider `ModelProfile` table (capabilities, context window, speed tier, cost) merging the static tables with runtime catalog entries. `lean_hint` renders the whole catalog for prompt injection in well under 50 tokens, `describe_full` prints one record, and `route` picks the cheapest capable model for a modality. The catalog is opt-in; nothing wires it into default model selection
+
+**Skills**
+
+- Delegated-result review gate (opt-in `review_delegated_results`): nested `SkillCall` results pass a fixed-template consistency and task-fit review before integration. A rejection replaces the result with a structured rejection that keeps the original for re-dispatch; a reviewer outage passes the result through unchanged. Off by default
+- Ambient enrichment (opt-in `AmbientEnrichmentConfig`): after assistant completions, two parallel micro calls classify intent and extract up to five keyword tags; the outcomes ride the existing skill-step record as `response_payload.ambient_enrichment` (no new storage). Enrichment never delays or fails the completion; failures are skipped silently. Off by default
+
+---
+
 ## 0.9.0, 2026-08-22
 
 **Service architecture, unified execution, wrapper removal.**

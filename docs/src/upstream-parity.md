@@ -22,6 +22,14 @@ This file is the audit ledger for those decisions.
 | 5 | Dynamic library loading | Strictly opt-in behind `hmr`, exact fingerprint handshake |
 | 6 | Factory collection | Inventory primary, manual chains as fallback |
 | 7 | Serial dispatch | Direct alias of `Bail`, waterfall uses real `next` continuations |
+| 8 | Worker supervision | Reserved exit codes plus stdin-EOF death detection |
+| 9 | Log routing | One exporter router fans records to every gated sink |
+| 10 | Dependency withdrawal | Genuine loss rests working fibers `Pending` (reversible); apply errors stay terminal `Failed` |
+| 11 | Dispatch participation knobs | `EventOptions{prepend,global}` + `emit_filtered`; filters never exclude global listeners |
+| 12 | Reads during transitions | Strict `get` refuses transitioning owners; `get_relaxed` is the explicit opt-in |
+| 13 | State observers | Synchronous, panic-contained lifecycle fan-out the paper leaves unspecified |
+
+Each row expands below with the claim, the rationale, and the evidence.
 
 Each row expands below with the claim, the rationale, and the evidence.
 
@@ -156,12 +164,53 @@ Each row expands below with the claim, the rationale, and the evidence.
 - Tests: `router_fans_out_to_all_exporters`
 - Tests: `accepts_gate_filters_records`
 
+### 10. Dependency withdrawal is reversible for working fibers
+
+- Upstream expectation: a fiber whose provider disappears rests `Inactive` (or is disposed) and never comes back on its own.
+- Claim: a previously-working runner fiber whose dependency genuinely vanished disposes its effects LIFO under `Unloading` and rests a new `Pending` state; when the provider returns it reactivates through `Loading`.
+- Detail: `Pending` is reserved for reactive waiting only — an apply error still rests terminal `Failed{error}` (row 1), and a peer-version constraint refusal over an existing-but-incompatible provider still rests `Inactive` because the provider remains available.
+- Detail: eligibility requires one fully-satisfied refresh pass first; registration cannot mark a fiber eligible.
+- Detail: `Pending` fibers reserve their registry key and survive `prune_disposed`, so reactivation needs no re-registration.
+- Rationale: the paper's permanently-Inactive outcome discards a healthy instance that only waits for its dependency; keeping it reversible preserves work.
+- Source: `FiberState::Pending`, the reactive-loss branch of `Fiber::refresh` in `crates/cordis/src/fiber.rs`
+- Tests: `dependent_reactivates_when_provider_returns`, `failed_stays_failed_on_dep_return`, `pending_fiber_survives_prune_disposed`
+
+### 11. Dispatch participation knobs and filtered emits
+
+- Upstream expectation: listener registration has fixed semantics with no ordering or participation control.
+- Claim: flat listeners register through `on_with` / `once_with` with `EventOptions { prepend, global }`; `emit_filtered` runs a per-dispatch predicate over non-global listeners.
+- Detail: `prepend: true` inserts at the front of the dispatch-order list; `global: true` marks the listener realm-agnostic, and filters never exclude it.
+- Detail: a filter exclusion skips one dispatch without unregistering the listener.
+- Detail: the historical `on` / `once` / `emit` signatures delegate unchanged, and the broadcast bus fan-out is not filtered.
+- Rationale: per-realm policies need ordered, selectively-participating listeners without duplicating the bus.
+- Source: `EventOptions`, `EventsService::on_with` / `once_with` / `emit_filtered` in `crates/cordis/src/events.rs`
+- Tests: `prepend_ordering_observed`, `filter_excludes_nonmatching_contexts`, `global_bypasses_filter`
+
+### 12. Reads during transitions are explicit and relaxed
+
+- Upstream expectation: every read either resolves an Active value or fails; mid-transition values are unreachable by construction.
+- Claim: strict `Context::get` keeps refusing providers resting in transitional states; `Context::get_relaxed` serves locally-owned values while their owner sits in `Loading` / `Reloading` / `Unloading` / reactive `Pending`.
+- Detail: terminal rest states stay refused even relaxed — disposed owners (undos already ran) and `Failed{error}` owners return nothing.
+- Rationale: lifecycle and observer code must inspect the value that is about to serve or was just retracted; making that a distinct method keeps the default read conservative.
+- Source: `Context::get_relaxed` in `crates/cordis/src/context.rs`
+- Test: `relaxed_read_succeeds_while_provider_transitioning`
+
+### 13. Fiber state observers
+
+- Upstream expectation: the model defines no notification surface for individual fiber state changes.
+- Claim: `Fiber::subscribe_state` fans every lifecycle transition out to synchronous observers.
+- Detail: observers run inline under the short state-lock critical section and MUST NOT call back into the fiber.
+- Detail: observer panics are caught, so one broken observer cannot corrupt a transition; cancelled subscriptions are pruned on the next event.
+- Rationale: tooling (admin surfaces, tests, supervision) needs transitions as they happen, not just polling after quiescence.
+- Source: `Fiber::subscribe_state` and `notify_observers` in `crates/cordis/src/fiber.rs`
+- Test: `observer_sees_unloading_pending_active_sequence`
+
 ## Properties we prove beyond the paper
 
 `crates/cordis/src/metatheory.rs` proves five properties as executable checks.
 These hold regardless of the divergence choices above.
 
-1. **Quiescence after every operation** (`quiescence_after_every_op`). Every fiber rests in a well-defined state between operations. Transitional states appear only mid-await, never at rest.
+1. **Quiescence after every operation** (`quiescence_after_every_op`). Every fiber rests in a well-defined state between operations. Transitional states appear only mid-await, never at rest. Allowed rest states include the reversible `Pending` (row 10) and terminal `Failed{error}` (row 1); only `Active` fibers must hold all declared injects available.
 2. **Registration confluence** (`order_confluence_of_registrations`). Registration order does not change the final graph.
 3. **Reactive spatial invariant** (`dependent_never_active_without_provider`). A dependent never activates while its provider is absent. It activates reactively when the provider appears.
 4. **LIFO dispose restores the store** (`lifo_dispose_restores_store`). Disposal unwinds effects in strict LIFO order. The store returns to its pre-registration contents.

@@ -281,7 +281,102 @@ pub async fn list_cordis_undo_labels(
             "pending_undo_labels": fiber.pending_undo_labels(),
         }));
     }
-    Ok((StatusCode::OK, Json(serde_json::json!({ "fibers": fibers }))))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "fibers": fibers })),
+    ))
+}
+
+/// GET /admin/cordis/services — one summary row per tracked fiber:
+/// `{fiber_id, state, error, disposed, pending_undo_count}`. `state` is the
+/// debug form of the fiber's [`cordis::FiberState`] (Active, Inactive,
+/// Loading, Failed, Reloading, Unloading); `error` carries the resting
+/// terminal-state message when present. 503 mirrors [`list_cordis_undo_labels`]
+/// when no [`RegistryService`] is provided.
+pub async fn list_cordis_services(
+    State(ctx): State<Arc<Context>>,
+) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
+    let Some(registry) = ctx.get::<RegistryService>() else {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "RegistryService is not provided on this context"
+            })),
+        ));
+    };
+    let mut fibers = Vec::new();
+    for fid in registry.tracked_ids() {
+        let Some(fiber) = registry.get_fiber(fid) else {
+            continue;
+        };
+        fibers.push(serde_json::json!({
+            "fiber_id": fid,
+            "state": format!("{:?}", fiber.state()),
+            "error": fiber.error(),
+            "disposed": fiber.is_disposed(),
+            "pending_undo_count": fiber.pending_undo_labels().len(),
+        }));
+    }
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "fibers": fibers })),
+    ))
+}
+
+/// Process-global bounded ring for LLM call records, read by
+/// GET /admin/cordis/logs. Boot wiring (installing a shared ring as an
+/// exporter on the LLM layer's ExporterRouter) belongs to the telemetry
+/// installer; this seam only guarantees the endpoint answers — empty when no
+/// ring was installed at boot.
+static LOG_RING: LazyLock<RwLock<Option<Arc<ares_llm::exporter::LogRing>>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// Install the process-global [`LogRing`] (boot-time; idempotent). Returns
+/// the ring actually in effect — the previously-installed one when this call
+/// raced or followed an earlier install. Boot wiring (registering the ring
+/// as a [`ares_llm::exporter::LogExporter`] on the LLM layer's router)
+/// belongs to the telemetry installer; this seam only guarantees the logs
+/// endpoint has something to read.
+pub fn install_log_ring(
+    ring: Arc<ares_llm::exporter::LogRing>,
+) -> Arc<ares_llm::exporter::LogRing> {
+    let mut slot = LOG_RING.write().expect("log ring lock");
+    if let Some(existing) = slot.as_ref() {
+        return existing.clone();
+    }
+    *slot = Some(ring.clone());
+    ring
+}
+
+fn active_log_ring() -> Option<Arc<ares_llm::exporter::LogRing>> {
+    LOG_RING.read().expect("log ring lock").clone()
+}
+
+/// GET /admin/cordis/logs — last-N LLM call records from the process-global
+/// bounded [`LogRing`] (oldest first), serialized as JSON. Answers an empty
+/// list when no ring was installed at boot.
+pub async fn cordis_logs() -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
+    let records = match active_log_ring() {
+        Some(ring) => ring.snapshot(),
+        None => Vec::new(),
+    };
+    let logs: Vec<serde_json::Value> = records
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "step_index": r.step_index,
+                "provider": r.provider,
+                "model": r.model,
+                "prompt_tokens": r.prompt_tokens,
+                "completion_tokens": r.completion_tokens,
+                "latency_ms": r.latency_ms,
+                "status": r.status,
+                "cached_tokens": r.cached_tokens,
+                "total_time_ms": r.total_time_ms,
+            })
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(serde_json::json!({ "logs": logs }))))
 }
 
 pub fn routes() -> axum::Router<Arc<Context>> {
@@ -299,6 +394,8 @@ pub fn routes() -> axum::Router<Arc<Context>> {
             "/cordis/services/{name}/replace",
             post(replace_cordis_service),
         )
+        .route("/cordis/services", get(list_cordis_services))
+        .route("/cordis/logs", get(cordis_logs))
         .route("/cordis/undo", get(list_cordis_undo_labels))
 }
 
@@ -461,7 +558,7 @@ pub async fn list_cordis_entries(
     // `CurrentEntries`, so this GET reports applied state instead of racing
     // the batch. Quiet systems simply time out here and read immediately.
     if let Some(barrier) = ctx.get::<cordis::SettleBarrier>() {
-        let mut rx = (**barrier).clone();
+        let mut rx = (*barrier).clone();
         let _ = tokio::time::timeout(WATCH_DEBOUNCE + WATCH_DEBOUNCE, rx.changed()).await;
     }
 
@@ -1440,10 +1537,7 @@ mod event_metrics_tests {
             .register(&ctx, UndoProbePlugin, ())
             .expect("registration");
         let fiber = registry.get_fiber(fid).unwrap();
-        fiber.push_undo_labeled(
-            cordis::UndoMeta::new("provide:probe"),
-            Box::new(|| {}),
-        );
+        fiber.push_undo_labeled(cordis::UndoMeta::new("provide:probe"), Box::new(|| {}));
 
         let resp = list_cordis_undo_labels(State(ctx.clone()))
             .await
@@ -1478,5 +1572,162 @@ mod event_metrics_tests {
         let bare = Context::new_root();
         let resp = list_cordis_undo_labels(State(bare)).await.expect("h");
         assert_eq!(resp.0, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// Services snapshot mirrors the undo-labels shape: one row per tracked
+    /// fiber with state summary + disposed flag + pending undo count; the
+    /// missing-registry path answers 503. A not-ready service (availability
+    /// predicate `false`) rests its fiber as inspectable `Failed` and the
+    /// snapshot surfaces both the state and the error message.
+    #[tokio::test]
+    async fn cordis_services_lists_tracked_fibers_with_state() {
+        #[derive(Debug)]
+        struct NotReadyProbe(u64);
+        // Availability predicate `false` → registration rests Failed.
+        impl ::cordis::Service for NotReadyProbe {
+            fn check(&self) -> bool {
+                false
+            }
+        }
+        struct NotReadyPlugin;
+        impl ::cordis::Plugin for NotReadyPlugin {
+            type Config = ();
+            type Provides = NotReadyProbe;
+            fn apply(
+                &self,
+                _ctx: &Arc<Context>,
+                _cfg: Self::Config,
+            ) -> Result<Arc<NotReadyProbe>, ::cordis::CordisError> {
+                Ok(Arc::new(NotReadyProbe(1)))
+            }
+        }
+        #[derive(Debug)]
+        struct ReadyProbe(u64);
+        impl ::cordis::Service for ReadyProbe {}
+        struct ReadyPlugin;
+        impl ::cordis::Plugin for ReadyPlugin {
+            type Config = ();
+            type Provides = ReadyProbe;
+            fn apply(
+                &self,
+                _ctx: &Arc<Context>,
+                _cfg: Self::Config,
+            ) -> Result<Arc<ReadyProbe>, ::cordis::CordisError> {
+                Ok(Arc::new(ReadyProbe(2)))
+            }
+        }
+
+        let ctx = Context::new_root();
+        let registry = ctx.provide(RegistryService::new());
+        let failed_fid = registry
+            .register(&ctx, NotReadyPlugin, ())
+            .expect("not-ready registration rests Failed without throwing");
+        let fiber = registry.get_fiber(failed_fid).unwrap();
+
+        let ok_fid = registry
+            .register(&ctx, ReadyPlugin, ())
+            .expect("healthy registration");
+
+        let resp = list_cordis_services(State(ctx.clone()))
+            .await
+            .expect("handler");
+        assert_eq!(resp.0, StatusCode::OK);
+        let fibers = resp.1 .0["fibers"].as_array().unwrap();
+
+        // Healthy sibling: Active, not disposed, error absent.
+        let active = fibers
+            .iter()
+            .find(|f| f["fiber_id"] == json!(ok_fid))
+            .expect("healthy fiber listed");
+        assert!(
+            active["state"]
+                .as_str()
+                .expect("state string")
+                .starts_with("Active"),
+            "healthy fiber rests Active, got {:?}",
+            active["state"]
+        );
+        assert_eq!(active["disposed"], json!(false));
+        assert_eq!(active["pending_undo_count"], json!(1));
+        assert!(active["error"].is_null());
+
+        // Failed fiber: state names Failed, carries the rejection message,
+        // and counts the pending undos pushed onto it.
+        let failed = fibers
+            .iter()
+            .find(|f| f["fiber_id"] == json!(failed_fid))
+            .expect("failed fiber listed");
+        assert!(
+            failed["state"]
+                .as_str()
+                .expect("state string")
+                .starts_with("Failed"),
+            "state names Failed, got {:?}",
+            failed["state"]
+        );
+        assert_eq!(
+            failed["error"],
+            json!("availability predicate rejected service")
+        );
+        assert_eq!(
+            failed["pending_undo_count"],
+            json!(fiber.pending_undo_labels().len()),
+            "undo count mirrors the accumulator"
+        );
+        assert_eq!(failed["disposed"], json!(false));
+
+        // 503 when no RegistryService is on the context.
+        let bare = Context::new_root();
+        let resp = list_cordis_services(State(bare)).await.expect("h");
+        assert_eq!(resp.0, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// The logs endpoint reads the process-global ring: empty before any
+    /// install, and returning seeded records once a ring is installed.
+    /// (The ring's trim-at-capacity behavior is unit-tested in
+    /// `ares_llm::exporter`; this covers only the endpoint seam.)
+    #[tokio::test]
+    async fn cordis_logs_returns_records_once_seeded() {
+        use ares_llm::observability::LlmCallRecord;
+
+        // No ring installed yet → empty logs, still 200.
+        if active_log_ring().is_none() {
+            let resp = cordis_logs().await.expect("handler");
+            assert_eq!(resp.0, StatusCode::OK);
+            assert_eq!(
+                resp.1 .0["logs"].as_array().unwrap().len(),
+                0,
+                "no ring installed means an empty log list"
+            );
+        }
+
+        // Install a dedicated ring for this test; install_log_ring keeps the
+        // FIRST ring in a process, so on a re-run this may observe another
+        // test's ring — seed through whatever ring is in effect.
+        let first = install_log_ring(Arc::new(ares_llm::exporter::LogRing::new(8)));
+        first.push(LlmCallRecord {
+            step_index: 0,
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            latency_ms: 42,
+            status: "success".into(),
+            cached_tokens: None,
+            total_time_ms: Some(43),
+        });
+
+        let resp = cordis_logs().await.expect("handler");
+        assert_eq!(resp.0, StatusCode::OK);
+        let logs = resp.1 .0["logs"].as_array().unwrap();
+        assert!(!logs.is_empty(), "seeded ring must surface records");
+        let ours = logs
+            .iter()
+            .rev()
+            .find(|l| l["model"] == json!("gpt-4o") && l["provider"] == json!("openai"))
+            .expect("seeded record present");
+        assert_eq!(ours["prompt_tokens"], json!(10));
+        assert_eq!(ours["completion_tokens"], json!(5));
+        assert_eq!(ours["status"], json!("success"));
     }
 }

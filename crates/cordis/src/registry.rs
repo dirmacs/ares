@@ -185,7 +185,25 @@ impl RegistryService {
             let owner = weak_fiber
                 .upgrade()
                 .ok_or_else(|| CordisError::Fiber("registration fiber was dropped".into()))?;
-            let provides = ctx.with_provider_fiber(&owner, || plugin.apply(ctx, config))?;
+            // Panic containment: a panicking plugin factory must not tear the
+            // host down. `AssertUnwindSafe` is required — the closure borrows
+            // `plugin` and the deserialized `config` by reference, which the
+            // unwinding cannot leave observably broken here because every
+            // captured value is dropped on unwind and the fiber's state is
+            // set to `Failed` below (ledger row #1: inspectable terminal
+            // state).
+            let applied = crate::hmr::catch_plugin_panic(std::panic::AssertUnwindSafe(|| {
+                ctx.with_provider_fiber(&owner, || plugin.apply(ctx, config))
+            }));
+            let applied = match applied {
+                Ok(applied) => applied,
+                Err(payload) => {
+                    return Err(CordisError::Fiber(format!(
+                        "plugin factory panicked: {payload}"
+                    )))
+                }
+            };
+            let provides = applied?;
             let healthy = provides.check();
             ctx.provide_on_fiber(provides, &owner);
             Ok(healthy)
@@ -480,6 +498,77 @@ mod tests {
         }
         // No service was provided for the failing plugin.
         assert!(ctx.get::<FooService>().is_none());
+    }
+
+    struct PanickingPlugin;
+    impl Plugin for PanickingPlugin {
+        type Config = ();
+        type Provides = FooService;
+        fn apply(
+            &self,
+            _ctx: &Arc<Context>,
+            _cfg: Self::Config,
+        ) -> Result<Arc<Self::Provides>, CordisError> {
+            panic!("factory exploded");
+        }
+    }
+
+    /// A panicking factory must not abort the host: register converts the
+    /// unwind into an inspectable `Failed` fiber carrying "factory panicked",
+    /// keeps the provider key unserved, and notifies dependents through the
+    /// same path as any other failed registration.
+    #[tokio::test]
+    async fn panicking_factory_registers_failed_and_notifies_dependents() {
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        if let Some(reflect) = ctx.get::<ReflectService>() {
+            reflect.set_context(&ctx);
+        }
+        let registry = RegistryService::new();
+
+        let err = registry
+            .register(&ctx, PanickingPlugin, ())
+            .expect_err("panicking factory should be rejected");
+        match &err {
+            CordisError::Fiber(message) => {
+                assert!(
+                    message.contains("plugin factory panicked"),
+                    "unexpected error text: {message}"
+                );
+                assert!(message.contains("factory exploded"));
+            }
+            other => panic!("expected Fiber error, got {other:?}"),
+        }
+        // The fiber stays inspectable with the panic message (ledger row #1).
+        let fiber = registry.get_fiber(1).expect("failed fiber is tracked");
+        match fiber.state() {
+            FiberState::Failed { error } => {
+                let error = error.as_deref().unwrap_or("");
+                assert!(error.contains("factory panicked"), "got: {error}");
+                assert!(error.contains("factory exploded"));
+            }
+            other => panic!("expected Failed state, got {other:?}"),
+        }
+        // No service was provided; the key stays unserved for a fresh try.
+        assert!(ctx.get::<FooService>().is_none());
+        let fid_retry = registry
+            .register(&ctx, FooPlugin, ())
+            .expect("fresh registration of the same key after a panic");
+        assert!(matches!(
+            registry.get_fiber(fid_retry).unwrap().state(),
+            FiberState::Active { .. }
+        ));
+
+        // Dependents observe the loss through the reactive notify path:
+        // declare an inject against the attempted key after the failure and
+        // refresh — it resolves only once the passing registration lands.
+        let dep_fid = registry
+            .register(&ctx, BarPlugin, ())
+            .expect("dependent registers without its dependency");
+        let dependent = registry.get_fiber(dep_fid).unwrap();
+        dependent.declare_inject::<FooService>();
+        dependent.refresh(&ctx).await;
+        assert!(matches!(dependent.state(), FiberState::Active { .. }));
     }
 
     #[test]

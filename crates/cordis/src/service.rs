@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::context::Context;
 use crate::effect::Disposable;
+use crate::error::ValidationError;
 
 #[derive(Debug, Error)]
 pub enum CordisError {
@@ -19,6 +20,8 @@ pub enum CordisError {
     DuplicateProvider { name: String, owner: String },
     #[error("invalid config: {0}")]
     InvalidConfig(String),
+    #[error("invalid config: {0}")]
+    Validation(ValidationError),
     #[error("fiber {fiber} stuck in transition for {waited_ms} ms")]
     TransitionStuck { fiber: u64, waited_ms: u64 },
     #[error("internal kernel error: {0}")]
@@ -26,6 +29,29 @@ pub enum CordisError {
 }
 
 impl CordisError {
+    /// Lift structured [`ValidationError`] issues into the InvalidConfig
+    /// error class.
+    ///
+    /// Display keeps the established `"invalid config: …"` prefix; the
+    /// aggregate renders its issues joined by `"; "` (each issue as
+    /// `"- msg (at a.b.c)"`). Structure stays recoverable through
+    /// [`Self::validation_error`].
+    pub fn validation(issues: Vec<crate::error::ValidationIssue>) -> Self {
+        Self::Validation(ValidationError::new(issues))
+    }
+
+    /// The structured validation issues carried by this error, if any.
+    ///
+    /// Returns `Some` only for [`CordisError::Validation`]; every other
+    /// variant (including stringly [`CordisError::InvalidConfig`]) has no
+    /// machine-readable issue list.
+    pub fn validation_error(&self) -> Option<&ValidationError> {
+        match self {
+            Self::Validation(validation) => Some(validation),
+            _ => None,
+        }
+    }
+
     /// The Display text of this error as an owned `String`.
     ///
     /// Convenience for callers that only want the rendered message (log

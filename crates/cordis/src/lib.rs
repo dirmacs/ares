@@ -89,13 +89,17 @@ pub fn inventory_len() -> usize {
 
 pub mod context;
 pub mod effect;
+pub mod error;
 pub mod events;
 pub mod fiber;
+pub mod logger;
 pub mod service;
+pub mod timer;
 
 pub use context::Context;
 pub use effect::Disposable;
 pub use events::{summarize_listener_errors, AggregateError, Dispatch, EventsService};
+pub use error::{ValidationError, ValidationIssue};
 pub use fiber::{Fiber, FiberState, UndoMeta};
 pub use service::{CordisError, Service, ServiceInitFuture};
 
@@ -137,6 +141,11 @@ pub mod hmr;
 pub mod registry;
 pub mod watcher;
 pub use registry::{Plugin, RegistryService};
+
+pub use logger::{
+    derived_name, hyphenate, Exporter, ExporterConfig, LogArg, LogKind, LogLevel,
+    LoggerIntercept, LoggerService, Message,
+};
 
 pub mod compose;
 #[cfg(feature = "rhai")]

@@ -43,6 +43,7 @@ pub struct Context {
 - `Context::extend(&self) -> Arc<Context>` creates child with `parent = Some(self)` (lexical scope / request scope).
 - `Context::provide::<T: Service>(&self, svc: T)` inserts `TypeId::of::<T>() → Arc<T>` into `store`; witnessed by effect.
 - `Context::get::<T: Service>(&self) -> Option<Arc<T>>` walks `store` → `intercept` → `parent.store` (coeFFECT lookup).
+- `Context::get_relaxed::<T: Service>(&self) -> Option<Arc<T>>` — same walk, but a locally-owned provider whose owner fiber rests mid-transition (`Active`, `Loading`, `Reloading`, `Unloading`, reactive `Pending`) still resolves. Strict `get` refuses those so consumers never observe mid-transition values; disposed owners (undos already ran) and terminal `Failed{error}` owners stay refused even relaxed.
 - `Context::isolate::<T>(&self, label: &str) -> Arc<Context>` creates child whose `isolate[TypeId::of::<T>()] = Symbol(label)`.
 - `Context::intercept::<T>(&self, override: T) -> Arc<Context>` creates child whose `intercept[TypeId::of::<T>()] = override`.
 
@@ -253,6 +254,14 @@ File placement: `crates/cordis/src/fiber.rs` (spike) → later `crates/ares-cont
 
 The fiber lifecycle adds `Loading` and `Failed`: `Loading` marks a fiber mid-instantiation and `Failed` records a terminal error from a plugin activation. A failed fiber remains observable via the registry so a loader or admin tool can report why a registration did not become `Active`; a later successful re-registration starts a fresh fiber that reaches `Active`. In 0.9.0, `Fiber::refresh` still compares epochs, then undoes prior effects and reruns the registered plugin `apply` when a reload is required.
 
+### Pending rest state (reversible withdrawal)
+
+A fifth state completes the machine: an `Active` runner whose dependency is genuinely withdrawn disposes its effects LIFO under `Unloading`, then rests `Pending` instead of dying or going `Inactive`. While `Pending`, the fiber keeps its registry key (it survives `prune_disposed`) and reactivates through `Loading` when the provider returns.
+
+- `Pending` is reserved for reactive waiting only: apply errors still rest terminal `Failed{error}`, and a peer-version constraint refusal over a live provider rests `Inactive` (the provider is still available; the refusal is policy, not loss).
+- Eligibility needs one fully-satisfied refresh pass first — registration alone cannot mark a fiber eligible because its declares may still be unserved.
+- Lifecycle observers: `Fiber::subscribe_state(Box<dyn Fn(&FiberState) + Send + Sync>)` delivers every transition to synchronous observers under a panic-contained fan-out; the returned `Disposable` cancels the subscription. Observers must not call back into the fiber from inside a callback.
+
 ---
 
 ## 6. epoch, hash of dependency UIDs
@@ -367,6 +376,14 @@ The `dispatch` implementation follows the five modes exactly:
 - `Serial`: handlers run in registration order with the original payload; the first non-null result bails and is returned. An all-null chain returns the original payload. `Serial` and `Bail` share this path.
 - `Bail`: stops at the first handler that returns a non-null result and returns that value without running later handlers; a null result means not bailing and the chain continues with the original payload.
 - `Waterfall`: each handler transforms the payload and passes the result to the next; a handler short-circuits by returning an object whose `waterfall_stop` field is `true`. This is the Rust static-dispatch analogue of the TS `next()` closure: instead of passing a `next` function, a handler opts out by returning the sentinel.
+
+### Dispatch participation knobs (EventOptions / emit_filtered)
+
+Flat listeners can register through `on_with` / `once_with` with `EventOptions { prepend, global }`:
+
+- `prepend: true` inserts the listener at the FRONT of the dispatch-order list, so it runs before previously registered listeners of the same event.
+- `global: true` marks the listener realm-agnostic: `emit_filtered(event, args, filter)` offers every non-global listener to the filter predicate first and excludes it from that one dispatch on a `false` verdict — without unregistering it. Global listeners bypass the filter entirely.
+- The historical `on` / `once` / `emit` signatures delegate with default options (`false`/`false`), so existing registrations are byte-compatible. The broadcast bus fan-out is not filtered; only registered handlers participate.
 
 ### Event-first skill execution (0.9.0)
 
@@ -491,6 +508,8 @@ This section describes the shipped 0.9.0 runtime. Earlier sections remain the Ph
 
 `Fiber::refresh` recomputes the dependency epoch. When the epoch changes, or the fiber is not already Active with dependencies satisfied, it undoes prior effects and reruns the registered plugin `apply`. Dispose still LIFO-undoes and passes through Unloading.
 
+Wave-1 refinements: a working runner whose dependency genuinely vanishes rests reversible `Pending` (see §5) instead of dying, and reactivates when the provider returns; `Context::get_relaxed` lets lifecycle code read locally-owned values during those transitions while strict `get` stays conservative; `Fiber::subscribe_state` exposes every transition to panic-contained synchronous observers.
+
 ### EventsService dispatch
 
 Shipped behavior in `crates/cordis/src/events.rs`:
@@ -569,6 +588,7 @@ Semantics: the payload arrives as an object map (plain property access). Returni
 
 - `POST /admin/cordis/services/{name}/retire` / `provide` — runtime retire/re-provide.
 - `GET|PUT /admin/cordis/entries`, `DELETE /admin/cordis/entries/{id}`, `POST /admin/cordis/entries/{id}/toggle` — declarative entries management (Null configs normalize to `{}`), 503 when loader state is absent.
+- `PATCH /admin/cordis/entries/{id}` — typed partial update via `cordis::loader::EntryUpdate` (`config`, `disabled`, `isolate`, `intercept`; `id`/`plugin` deliberately not patchable). Only present fields change, `{}` is a validated no-op that still persists and re-applies; replies with the post-patch entry and per-action outcomes, 404 on unknown ids.
 - `POST /admin/cordis/entries/reload` — reload from disk through the shared apply flow.
 - `GET /admin/cordis/events` — per-event dispatch counters `{total_dispatched, by_event}` from `EventsService::dispatch_snapshot()` (counts every mode via the single `dispatch` choke point).
 

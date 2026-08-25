@@ -653,6 +653,7 @@ mod tests {
                 tools: vec![],
                 max_tool_iterations: 5,
                 parallel_tools: false,
+                compaction_enabled: None,
                 extra: std::collections::HashMap::new(),
                 allowed_tools: None,
             },

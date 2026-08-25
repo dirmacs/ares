@@ -95,7 +95,7 @@ pub mod service;
 
 pub use context::Context;
 pub use effect::Disposable;
-pub use events::{AggregateError, Dispatch, EventsService, summarize_listener_errors};
+pub use events::{summarize_listener_errors, AggregateError, Dispatch, EventsService};
 pub use fiber::{Fiber, FiberState, UndoMeta};
 pub use service::{CordisError, Service, ServiceInitFuture};
 
@@ -129,6 +129,7 @@ pub mod reload;
 pub mod stamp;
 pub use reload::reload_entries_from_disk;
 pub use stamp::{FileStamp, ReloadOutcome};
+pub use watcher::SettleBarrier;
 
 pub mod metatheory;
 
@@ -459,7 +460,9 @@ impl ReflectService {
                 }
             }
         }
-        self.fiber_provides.write().retain(|fid, _| !dead.contains(fid));
+        self.fiber_provides
+            .write()
+            .retain(|fid, _| !dead.contains(fid));
         removed
     }
 
@@ -1432,10 +1435,7 @@ mod tests {
         );
         // Live + Failed remain; the disposed one is gone.
         assert!(matches!(live.state(), crate::FiberState::Inactive { .. }));
-        assert!(matches!(
-            failed.state(),
-            crate::FiberState::Failed { .. }
-        ));
+        assert!(matches!(failed.state(), crate::FiberState::Failed { .. }));
 
         // The opportunistic path: notify() sweeps again before walking.
         reflect.notify(TypeId::of::<u64>());

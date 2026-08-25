@@ -322,12 +322,28 @@ fn parse_review_verdict(content: &str) -> Result<ReviewVerdict, String> {
     let first = lines
         .next()
         .ok_or_else(|| "empty reviewer response".to_string())?;
-    let word: String = first
-        .chars()
-        .skip_while(|c| !c.is_ascii_alphabetic())
-        .take_while(|c| c.is_ascii_alphabetic())
-        .collect();
-    let notes = lines.collect::<Vec<_>>().join(" ");
+    let start = first
+        .char_indices()
+        .find(|(_, c)| c.is_ascii_alphabetic())
+        .map(|(i, _)| i)
+        .ok_or_else(|| format!("unparsable reviewer verdict: {first}"))?;
+    let end = start
+        + first[start..]
+            .find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(first.len() - start);
+    let word = &first[start..end];
+    // Notes: whatever follows the verdict word on the same line, then any
+    // further lines.
+    let mut parts: Vec<&str> = Vec::new();
+    let rest_of_first = first[end..]
+        .trim()
+        .trim_start_matches([':', ';', '-', ','])
+        .trim();
+    if !rest_of_first.is_empty() {
+        parts.push(rest_of_first);
+    }
+    parts.extend(lines);
+    let notes = parts.join(" ");
     match word.to_ascii_uppercase().as_str() {
         "ACCEPT" => Ok(ReviewVerdict {
             accepted: true,
@@ -660,6 +676,10 @@ impl SkillsService {
                         input: inner_input,
                     } => {
                         tracing::info!("Step {}: skill_call {}", step_index, inner_id);
+                        // Snapshot the input for review BEFORE the consuming
+                        // sub-execution; no allocation while the gate is off.
+                        let review_input =
+                            self.review_delegated_results.then(|| inner_input.clone());
                         let result = Box::pin(self.execute_skill_at_depth(
                             &inner_id,
                             inner_input,
@@ -667,9 +687,18 @@ impl SkillsService {
                             depth + 1,
                         ))
                         .await?;
-                        let result = self
-                            .review_nested_result(&inner_id, &inner_input, result, ctx)
-                            .await?;
+                        let result = match review_input {
+                            Some(review_input) => {
+                                self.review_nested_result(
+                                    &inner_id,
+                                    &review_input,
+                                    result,
+                                    ctx,
+                                )
+                                .await?
+                            }
+                            None => result,
+                        };
                         context[&format!("step_{}", step_index)] = successful_step_context(result);
                     }
                     SkillStep::Condition {
@@ -814,24 +843,36 @@ impl SkillsService {
         result: serde_json::Value,
         ctx: &Arc<Context>,
     ) -> Result<serde_json::Value, String> {
-        if !self.review_delegated_results {
-            return Ok(result);
+        #[cfg(feature = "postgres")]
+        {
+            if !self.review_delegated_results {
+                return Ok(result);
+            }
+            match
+                review_delegated_result(ctx, delegated_skill_id, delegated_input, &result).await
+            {
+                Ok(v) if v.accepted => Ok(result),
+                Ok(v) => Ok(serde_json::json!({
+                    "status": "rejected",
+                    "review": {
+                        "accepted": false,
+                        "notes": v.notes,
+                    },
+                    "metadata": {
+                        "delegated_skill_id": delegated_skill_id,
+                        "original_result": result,
+                    },
+                })),
+                // Reviewer outage — degrade silently to pass-through.
+                Err(_) => Ok(result),
+            }
         }
-        match review_delegated_result(ctx, delegated_skill_id, delegated_input, &result).await {
-            Ok(v) if v.accepted => Ok(result),
-            Ok(v) => Ok(serde_json::json!({
-                "status": "rejected",
-                "review": {
-                    "accepted": false,
-                    "notes": v.notes,
-                },
-                "metadata": {
-                    "delegated_skill_id": delegated_skill_id,
-                    "original_result": result,
-                },
-            })),
-            // Reviewer outage — degrade silently to pass-through.
-            Err(_) => Ok(result),
+        #[cfg(not(feature = "postgres"))]
+        {
+            // Review plumbing rides the LLM service; without postgres there is
+            // no reviewer, so the gate is permanently off (pass-through).
+            let _ = (self, delegated_skill_id, delegated_input, ctx);
+            Ok(result)
         }
     }
 }
@@ -1286,5 +1327,149 @@ mod tool_call_tests {
             parent.get::<Tools>().is_some(),
             "parent Tools survives scope activity"
         );
+    }
+}
+
+#[cfg(test)]
+mod review_gate_tests {
+    use super::{Execute, MAX_SKILL_CALL_DEPTH, SkillsService};
+    use ares_llm::{ClientPool, Llm, ModelConfig, ProviderConfig, ProviderRegistry};
+    use cordis::{Context, EventsService};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    /// Registry with an unreachable provider; the `llm.complete` waterfall
+    /// handler short-circuits before any network call is attempted.
+    fn stub_llm() -> Arc<Llm> {
+        let providers: std::collections::HashMap<String, ProviderConfig> =
+            serde_json::from_value(serde_json::json!({
+                "ollama": {
+                    "type": "ollama",
+                    "api_key_env": "UNUSED",
+                    "base_url": "http://127.0.0.1:1",
+                    "default_model": "stub"
+                }
+            }))
+            .expect("ollama provider config");
+        let models: std::collections::HashMap<String, ModelConfig> =
+            serde_json::from_value(serde_json::json!({
+                "stub": {
+                    "provider": "ollama",
+                    "model": "stub",
+                    "temperature": 0.0,
+                    "max_tokens": 16
+                }
+            }))
+            .expect("stub model config");
+        let mut registry = ProviderRegistry::from_config(providers, models, None);
+        registry.set_default_model("stub");
+        Arc::new(Llm::new(
+            Arc::new(registry),
+            Arc::new(ClientPool::with_defaults()),
+            None,
+        ))
+    }
+
+    fn service(gate_on: bool) -> SkillsService {
+        SkillsService {
+            execution: Arc::new(Execute::new()),
+            max_depth: MAX_SKILL_CALL_DEPTH,
+            review_delegated_results: gate_on,
+        }
+    }
+
+    async fn ctx_with_reviewer(verdict_response: Option<&str>) -> Arc<Context> {
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        ctx.provide_arc(stub_llm());
+        if let Some(response) = verdict_response {
+            let body = response.to_string();
+            events.on_waterfall("llm.complete".into(), move |_payload, _next| {
+                let body = body.clone();
+                async move { Ok(json!({ "content": body })) }
+            });
+        }
+        ctx
+    }
+
+    #[tokio::test]
+    async fn gate_off_passthrough_identical() {
+        // Even a rejecting reviewer must not run while the gate is off.
+        let ctx = ctx_with_reviewer(Some("REJECT inconsistent with input\nbad fit"))
+            .await;
+        let svc = service(false);
+        let original = json!({"status":"success","answer":"42"});
+        let out = svc
+            .review_nested_result("child-skill", &json!({"q": "life"}), original.clone(), &ctx)
+            .await
+            .expect("pass-through");
+        assert_eq!(out, original, "gate off must return the result unchanged");
+    }
+
+    #[tokio::test]
+    async fn gate_on_accept_keeps_result() {
+        let ctx = ctx_with_reviewer(Some("ACCEPT consistent and fits the task")).await;
+        let svc = service(true);
+        let original = json!({"status":"success","answer":"42"});
+        let out = svc
+            .review_nested_result("child-skill", &json!({"q": "life"}), original.clone(), &ctx)
+            .await
+            .expect("accepted result");
+        assert_eq!(out, original, "accept keeps the original result verbatim");
+    }
+
+    #[tokio::test]
+    async fn gate_on_reject_structures_rejection_with_notes() {
+        let ctx = ctx_with_reviewer(Some(
+            "REJECT answer does not match the requested quantity\nalso weak task fit",
+        ))
+        .await;
+        let svc = service(true);
+        let original = json!({"status":"success","answer":"banana"});
+        let out = svc
+            .review_nested_result("child-skill", &json!({"q": "apples"}), original.clone(), &ctx)
+            .await
+            .expect("structured rejection");
+        assert_eq!(out.get("status"), Some(&json!("rejected")));
+        let notes = out
+            .pointer("/review/notes")
+            .and_then(|v| v.as_str())
+            .expect("review notes present");
+        assert!(
+            notes.contains("does not match") && notes.contains("task fit"),
+            "notes must carry reviewer text, got {notes:?}"
+        );
+        assert_eq!(
+            out.pointer("/metadata/delegated_skill_id"),
+            Some(&json!("child-skill"))
+        );
+        assert_eq!(
+            out.pointer("/metadata/original_result"),
+            Some(&original),
+            "original preserved for caller re-dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn reviewer_error_passes_through() {
+        // No Llm provided at all: reviewer outage degrades silently.
+        let ctx = Context::new_root();
+        let _events = ctx.provide(EventsService::new());
+        let svc = service(true);
+        let original = json!({"status":"success","answer":"42"});
+        let out = svc
+            .review_nested_result("child-skill", &json!({"q": "life"}), original.clone(), &ctx)
+            .await
+            .expect("outage pass-through");
+        assert_eq!(out, original, "outage must not alter the result");
+    }
+
+    #[test]
+    fn plugin_config_defaults_off_and_parses_toggle() {
+        let cfg = <super::SkillsPluginConfig as Default>::default();
+        assert_eq!(cfg.review_delegated_results, None);
+        let parsed: super::SkillsPluginConfig =
+            serde_json::from_str(r#"{"review_delegated_results": true}"#).unwrap();
+        assert_eq!(parsed.review_delegated_results, Some(true));
     }
 }

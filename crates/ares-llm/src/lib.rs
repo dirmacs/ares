@@ -81,12 +81,14 @@ pub mod compact;
 pub mod coordinator;
 /// Exporter-style log routing for LLM and tool call records.
 pub mod exporter;
+/// Per-provider in-flight admission control (`max_in_flight`).
+pub mod governor;
 /// Unified LLM capability (Cordis Phase 3).
 pub mod llm_service;
-/// Provider-neutral model profile catalog with lean hints and routing.
-pub mod model_catalog;
 /// Small-call orchestration primitive over a single client.
 pub mod micro;
+/// Provider-neutral model profile catalog with lean hints and routing.
+pub mod model_catalog;
 /// Observability callbacks for LLM and tool call logging.
 pub mod observability;
 /// Declarative Cordis loader factories for this crate.
@@ -121,6 +123,7 @@ pub use coordinator::{
     ToolCallingConfig, ToolCoordinator,
 };
 pub use exporter::{ExporterRouter, LogExporter, RecordLevel, TracingExporter};
+pub use governor::{GovernorConfig, ProviderGovernor};
 pub use llm_service::{Breaker, Llm, ModelOverride, TenantModelPolicy};
 pub use micro::{MicroEngine, MicroOutcome, MicroTask};
 pub use observability::{LlmCallRecord, ObservabilitySink};

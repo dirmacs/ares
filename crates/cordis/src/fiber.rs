@@ -452,6 +452,43 @@ impl Fiber {
         self.inertia.try_lock().is_ok()
     }
 
+    /// Bounded wait for the fiber to go idle: resolves `true` as soon as the
+    /// inertia guard can be acquired (and releases it immediately), or
+    /// `false` once [`transition_wait()`] elapses behind a holder — with a
+    /// warn log naming the fiber id, mirroring the stuck-transition report
+    /// of [`Self::acquire_transition`]. Unlike the lifecycle transitions this
+    /// is a pure OBSERVATION call: it never mutates state and never enters
+    /// the reentrancy ledger, so it is safe to call from inside a running
+    /// transition on this same fiber.
+    pub async fn wait_idle(&self) -> bool {
+        let fid = *self.id.lock().get_or_insert(0);
+        if self.inertia.try_lock().is_ok() {
+            return true;
+        }
+        match tokio::time::timeout(transition_wait(), Arc::clone(&self.inertia).lock_owned()).await
+        {
+            // Guard acquired then dropped immediately: idle confirmed.
+            Ok(_guard) => true,
+            Err(_elapsed) => {
+                let ms = transition_wait().as_millis();
+                tracing::warn!("fiber {fid} still busy in transition over {ms}ms");
+                false
+            }
+        }
+    }
+
+    /// Extract the human-readable error carried by a resting terminal state:
+    /// `Failed{error}`, `Inactive{error}`, or `Unloading{error}`. Active,
+    /// Loading, and Reloading fibers report `None`.
+    pub fn error(&self) -> Option<String> {
+        match &*self.state.read() {
+            FiberState::Failed { error }
+            | FiberState::Inactive { error }
+            | FiberState::Unloading { error } => error.clone(),
+            _ => None,
+        }
+    }
+
     /// Bounded acquisition of the inertia guard for one lifecycle transition:
     /// same-thread reentrancy on an already-held fiber errors immediately,
     /// otherwise the wait for a contending holder is capped at
@@ -855,5 +892,92 @@ mod tests {
         assert!(!fiber.is_idle(), "held guard must not report idle");
         drop(held);
         assert!(fiber.is_idle(), "released guard must report idle again");
+    }
+
+    /// [`Fiber::wait_idle`] resolves `true` on a free guard, waits out the
+    /// budget behind a holder and reports `false`, and flips back to `true`
+    /// once the holder releases before the budget expires.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_idle_reflects_lock_state_with_budget() {
+        set_test_transition_wait(Duration::from_millis(100));
+        let fiber = Arc::new(Fiber::new());
+
+        // Free guard: immediate true.
+        assert!(
+            fiber.wait_idle().await,
+            "free guard must resolve idle immediately"
+        );
+
+        // Held guard released BEFORE the budget: waiter observes the release
+        // and still answers true.
+        let held = Arc::clone(&fiber.inertia)
+            .try_lock_owned()
+            .expect("guard should be free");
+        let waiter = tokio::spawn({
+            let fiber = fiber.clone();
+            async move { fiber.wait_idle().await }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        drop(held);
+        assert!(
+            waiter.await.expect("waiter task"),
+            "release inside the budget must answer true"
+        );
+
+        // Held guard NEVER released: bounded false after the budget.
+        let stuck = Arc::clone(&fiber.inertia)
+            .try_lock_owned()
+            .expect("guard should be free again");
+        let start = std::time::Instant::now();
+        let busy = fiber.wait_idle().await;
+        let elapsed = start.elapsed();
+        drop(stuck);
+        assert!(!busy, "never-released guard must answer false");
+        assert!(
+            elapsed >= Duration::from_millis(90) && elapsed < Duration::from_secs(1),
+            "false must arrive only after the budget, took {elapsed:?}"
+        );
+    }
+
+    /// [`Fiber::error`] surfaces the message carried by resting terminal
+    /// states and stays `None` for healthy/in-flight states.
+    #[test]
+    fn error_accessor_reads_failed_state() {
+        let fiber = Fiber::new();
+        assert!(
+            fiber.error().is_none(),
+            "fresh Inactive with no error reports no error"
+        );
+
+        fiber.set_state(FiberState::Active { epoch: ":".into() });
+        assert_eq!(fiber.error(), None);
+
+        fiber.set_state(FiberState::Loading);
+        assert_eq!(fiber.error(), None);
+
+        fiber.set_state(FiberState::Reloading);
+        assert_eq!(fiber.error(), None);
+
+        fiber.set_state(FiberState::Failed {
+            error: Some("plugin apply blew up".into()),
+        });
+        assert_eq!(
+            fiber.error().as_deref(),
+            Some("plugin apply blew up"),
+            "Failed error message must surface"
+        );
+
+        fiber.set_state(FiberState::Inactive {
+            error: Some("missing or inactive dependency".into()),
+        });
+        assert_eq!(
+            fiber.error(),
+            Some("missing or inactive dependency".to_string())
+        );
+
+        fiber.set_state(FiberState::Unloading {
+            error: Some("dispose undo panicked".into()),
+        });
+        assert_eq!(fiber.error(), Some("dispose undo panicked".to_string()));
     }
 }

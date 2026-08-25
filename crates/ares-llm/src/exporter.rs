@@ -183,7 +183,7 @@ impl ExporterRouter {
     /// must never fail inference).
     pub fn log_llm_spawned(&self, level: RecordLevel, record: LlmCallRecord) {
         let router = self.clone();
-        let _ = tokio::spawn(async move { router.log_llm(level, &record).await });
+        tokio::spawn(async move { router.log_llm(level, &record).await });
     }
 }
 
@@ -234,6 +234,103 @@ where
     T: Fn(&ToolCallRecord) + Send + Sync + 'static,
 {
     Arc::new(ClosureExporter { fn_llm, fn_tool })
+}
+
+/// Bounded in-memory ring of LLM call records.
+///
+/// Keeps the last `cap` [`LlmCallRecord`]s (trim-on-push), snapshot-readable
+/// for admin surfaces such as `GET /admin/cordis/logs`. Implements
+/// [`LogExporter`] for LLM records only — tool records are accepted as
+/// no-ops by design (the ring exists for LLM traffic introspection; YAGNI on
+/// a second record stream until something reads it).
+///
+/// # Boot wiring seam
+///
+/// Installations register `LogRing::new_exporter()` on the process's
+/// [`ExporterRouter`]; the HTTP layer's `/admin/cordis/logs` endpoint reads
+/// whatever ring was installed there (empty when none was).
+pub struct LogRing {
+    inner: std::sync::Mutex<RingState>,
+}
+
+struct RingState {
+    records: std::collections::VecDeque<Arc<LlmCallRecord>>,
+    cap: usize,
+}
+
+impl LogRing {
+    /// Creates a ring holding at most `cap` records.
+    pub fn new(cap: usize) -> Self {
+        Self {
+            inner: std::sync::Mutex::new(RingState {
+                records: std::collections::VecDeque::new(),
+                cap: cap.max(1),
+            }),
+        }
+    }
+
+    /// Returns this ring as an [`Arc<dyn LogExporter>`] ready for
+    /// [`ExporterRouter::register`].
+    pub fn new_exporter(self: &Arc<Self>) -> Arc<dyn LogExporter> {
+        self.clone()
+    }
+
+    /// Push one LLM record; trims the oldest entry when over capacity.
+    pub fn push(&self, record: LlmCallRecord) {
+        let mut state = match self.inner.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.records.push_back(Arc::new(record));
+        while state.records.len() > state.cap {
+            state.records.pop_front();
+        }
+    }
+
+    /// Oldest-first snapshot of the retained records.
+    pub fn snapshot(&self) -> Vec<Arc<LlmCallRecord>> {
+        let state = match self.inner.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.records.iter().cloned().collect()
+    }
+
+    /// Currently retained record count.
+    pub fn len(&self) -> usize {
+        let state = match self.inner.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.records.len()
+    }
+
+    /// True when no record is retained.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Resize the ring; shrinking evicts oldest entries immediately.
+    pub fn set_cap(&self, cap: usize) {
+        let mut state = match self.inner.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.cap = cap.max(1);
+        while state.records.len() > state.cap {
+            state.records.pop_front();
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LogExporter for LogRing {
+    async fn export_llm(&self, record: &LlmCallRecord) {
+        self.push(record.clone());
+    }
+
+    // Deliberate no-op: the ring tracks LLM calls only (see type docs).
+    async fn export_tool(&self, _record: &ToolCallRecord) {}
 }
 
 /// Exporter that writes each record to the `tracing` subsystem.
@@ -407,6 +504,10 @@ mod tests {
         assert_eq!(record.total_time_ms, Some(42));
     }
 
+    async fn router_register_and_export(exporter: &Arc<dyn LogExporter>, record: &LlmCallRecord) {
+        exporter.export_llm(record).await;
+    }
+
     fn sample_tool() -> ToolCallRecord {
         ToolCallRecord {
             step_index: 0,
@@ -487,6 +588,44 @@ mod tests {
             .expect_err("validation failure must reject registration");
         assert_eq!(error, "broken exporter refuses validation");
         assert!(router.is_empty(), "rejected exporter is not stored");
+    }
+
+    /// Pushing past capacity trims the OLDEST entries; snapshot reads
+    /// oldest-first and set_cap shrinks immediately.
+    #[tokio::test]
+    async fn ring_trims_at_capacity() {
+        let ring = Arc::new(LogRing::new(3));
+        let exporter = ring.new_exporter();
+        for i in 0..5u32 {
+            let mut record = sample_llm();
+            record.prompt_tokens = i as i64;
+            router_register_and_export(&exporter, &record).await;
+        }
+
+        assert_eq!(ring.len(), 3, "capacity bounds the retained records");
+        let snap = ring.snapshot();
+        let prompts: Vec<i64> = snap.iter().map(|r| r.prompt_tokens).collect();
+        assert_eq!(prompts, vec![2, 3, 4], "oldest entries evicted first");
+
+        // Shrinking evicts down to the new cap immediately.
+        ring.set_cap(1);
+        let snap = ring.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].prompt_tokens, 4, "newest survivor retained");
+
+        // Growing again allows new pushes without further eviction.
+        ring.set_cap(4);
+        assert_eq!(ring.len(), 1);
+    }
+
+    /// Tool records are accepted as no-ops: routing one must neither grow
+    /// the ring nor fail.
+    #[tokio::test]
+    async fn ring_ignores_tool_records() {
+        let ring = Arc::new(LogRing::new(4));
+        let exporter = ring.new_exporter();
+        exporter.export_tool(&sample_tool()).await;
+        assert!(ring.is_empty(), "tool records are deliberately not stored");
     }
 
     /// Fan-out walks exporters in registration order, one after another.

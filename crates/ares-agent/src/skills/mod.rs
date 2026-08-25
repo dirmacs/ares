@@ -257,6 +257,91 @@ pub fn validate_skill_call_depth(depth: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// Step kinds allowed inside a delegated (nested) sub-workflow.
+///
+/// Delegation itself (`skill_call`) is deliberately excluded: a child skill
+/// runs model-driven steps only, so a looping or compromised child cannot
+/// re-enter delegation from within delegated execution.
+#[cfg(feature = "postgres")]
+pub const DELEGATED_SUB_TOOL_ALLOWLIST: [&str; 3] = ["tool_call", "llm_call", "condition"];
+
+/// Enforce the delegated sub-tool allowlist at `depth > 0`.
+///
+/// Top-level executions (`depth == 0`) delegate freely; deeper ones may only
+/// run allowlisted step shapes. Violations fail with the stable
+/// `delegated_step_not_allowed:` marker so callers can classify the refusal.
+#[cfg(feature = "postgres")]
+pub fn validate_delegated_step(kind: &str, depth: usize) -> Result<(), String> {
+    if depth == 0 || DELEGATED_SUB_TOOL_ALLOWLIST.contains(&kind) {
+        return Ok(());
+    }
+    Err(format!(
+        "delegated_step_not_allowed: {kind} may not run inside a delegated \
+         sub-workflow at depth {depth}; allowed kinds: {}",
+        DELEGATED_SUB_TOOL_ALLOWLIST.join(", ")
+    ))
+}
+
+/// Hard cap on tool rounds executed by ONE skill execution (main steps plus
+/// conditional branches). Consuming one more round than the cap aborts the
+/// execution instead of looping.
+#[cfg(feature = "postgres")]
+pub const MAX_NESTED_TOOL_ROUNDS: usize = 3;
+
+/// Refuse the round that would exceed [`MAX_NESTED_TOOL_ROUNDS`].
+///
+/// `rounds` counts tool rounds already consumed by this skill execution;
+/// exactly [`MAX_NESTED_TOOL_ROUNDS`] may run, the next attempt aborts with
+/// the stable `tool_round_cap_exceeded:` prefix so callers can classify it.
+#[cfg(feature = "postgres")]
+pub fn check_tool_round_cap(rounds: usize, scope: &str) -> Result<(), String> {
+    if rounds < MAX_NESTED_TOOL_ROUNDS {
+        return Ok(());
+    }
+    Err(format!(
+        "tool_round_cap_exceeded: {scope} exceeded the hard cap of \
+         {MAX_NESTED_TOOL_ROUNDS} nested tool rounds"
+    ))
+}
+
+/// Strip tool-chatter lines from delegated result text before it enters the
+/// parent context.
+///
+/// A chatter line is any line whose first non-whitespace character is `/`
+/// (slash-command style tool output). Slashes mid-line stay untouched; text
+/// without chatter is returned unchanged (no reallocation).
+#[cfg(feature = "postgres")]
+pub fn sanitize_result_text(text: &str) -> String {
+    let total = text.lines().count();
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('/'))
+        .collect();
+    if kept.len() == total {
+        return text.to_string();
+    }
+    kept.join("\n")
+}
+
+/// Sanitize every string leaf of a nested result value in place.
+#[cfg(feature = "postgres")]
+pub fn sanitize_result_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => *text = sanitize_result_text(text),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                sanitize_result_value(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for child in map.values_mut() {
+                sanitize_result_value(child);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Generate skill LLM text via `Llm::complete` (`llm.complete` waterfall).
 ///
 /// Missing `Llm` is an error. There is no factory `generate_with_history` path.
@@ -599,10 +684,16 @@ impl SkillsService {
 
             let mut context = serde_json::json!({"input": input});
             let mut step_index: i32 = 0;
+            // Per-execution tool-round ledger (main steps + conditional branches).
+            let mut tool_rounds: usize = 0;
 
             for step in steps {
                 match step {
                     SkillStep::ToolCall { tool_name, args } => {
+                        check_tool_round_cap(tool_rounds, &format!(
+                            "skill {skill_id} main step {step_index}"
+                        ))?;
+                        tool_rounds += 1;
                         tracing::info!("Step {}: tool_call {}", step_index, tool_name);
                         let start = std::time::Instant::now();
                         let result =
@@ -676,6 +767,9 @@ impl SkillsService {
                         input: inner_input,
                     } => {
                         tracing::info!("Step {}: skill_call {}", step_index, inner_id);
+                        // Anti-recursion: delegation may not nest inside a
+                        // delegated sub-workflow.
+                        validate_delegated_step("skill_call", depth)?;
                         // Snapshot the input for review BEFORE the consuming
                         // sub-execution; no allocation while the gate is off.
                         let review_input =
@@ -687,6 +781,10 @@ impl SkillsService {
                             depth + 1,
                         ))
                         .await?;
+                        // Tool hygiene: strip tool-chatter command lines from
+                        // delegated text before it enters the parent context.
+                        let mut result = result;
+                        sanitize_result_value(&mut result);
                         let result = match review_input {
                             Some(review_input) => {
                                 self.review_nested_result(
@@ -718,6 +816,7 @@ impl SkillsService {
                                     sub_index,
                                     &mut context,
                                     depth,
+                                    &mut tool_rounds,
                                 )
                                 .await?;
                             }
@@ -731,6 +830,7 @@ impl SkillsService {
     }
 
     #[cfg(feature = "postgres")]
+    #[allow(clippy::too_many_arguments)]
     async fn execute_sub_step(
         &self,
         step: &SkillStep,
@@ -741,9 +841,15 @@ impl SkillsService {
         step_index: i32,
         context: &mut serde_json::Value,
         depth: usize,
+        tool_rounds: &mut usize,
     ) -> Result<(), String> {
         match step {
             SkillStep::ToolCall { tool_name, args } => {
+                check_tool_round_cap(
+                    *tool_rounds,
+                    &format!("skill sub-step {step_index}"),
+                )?;
+                *tool_rounds += 1;
                 let start = std::time::Instant::now();
                 let result = execute_skill_tool(ctx, tenant_id, tool_name, args.clone()).await?;
                 let latency_ms = start.elapsed().as_millis() as i64;
@@ -805,9 +911,16 @@ impl SkillsService {
                 Ok(())
             }
             SkillStep::SkillCall { skill_id, input } => {
+                // Anti-recursion: delegation may not nest inside a delegated
+                // sub-workflow.
+                validate_delegated_step("skill_call", depth)?;
                 let result =
                     Box::pin(self.execute_skill_at_depth(skill_id, input.clone(), ctx, depth + 1))
                         .await?;
+                // Tool hygiene: strip tool-chatter command lines from
+                // delegated text before it enters the parent context.
+                let mut result = result;
+                sanitize_result_value(&mut result);
                 let result = self.review_nested_result(skill_id, input, result, ctx).await?;
                 context[&format!("step_{}", step_index)] = successful_step_context(result);
                 Ok(())
@@ -820,7 +933,15 @@ impl SkillsService {
                     for (sub_idx, sub_step) in ready.iter().enumerate() {
                         let sub_index = step_index + 1 + sub_idx as i32;
                         Box::pin(self.execute_sub_step(
-                            sub_step, ctx, pool, tenant_id, run_id, sub_index, context, depth,
+                            sub_step,
+                            ctx,
+                            pool,
+                            tenant_id,
+                            run_id,
+                            sub_index,
+                            context,
+                            depth,
+                            tool_rounds,
                         ))
                         .await?;
                     }
@@ -1472,4 +1593,277 @@ mod review_gate_tests {
             serde_json::from_str(r#"{"review_delegated_results": true}"#).unwrap();
         assert_eq!(parsed.review_delegated_results, Some(true));
     }
+}
+
+#[cfg(test)]
+mod tool_hygiene_tests {
+    use super::{
+        check_tool_round_cap, sanitize_result_text, sanitize_result_value, validate_delegated_step,
+        Execute, MAX_SKILL_CALL_DEPTH, SkillsService,
+    };
+    use ares_tools::{Tool, Tools};
+    use cordis::{Context, EventsService};
+    use serde_json::json;
+    use sqlx::PgPool;
+    use std::sync::Arc;
+
+    /// Real pool from `TEST_DATABASE_URL`; `None` skips DB-backed tests.
+    async fn try_test_pool() -> Option<PgPool> {
+        let url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://dirmacs@localhost/ares_test".to_string());
+        PgPool::connect(&url).await.ok()
+    }
+
+    /// Upsert one skill row with a fixed id (parent steps reference child ids).
+    async fn seed_skill(pool: &PgPool, id: &str, tenant_id: &str, steps: serde_json::Value) {
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query(
+            "INSERT INTO skills \
+                (id, tenant_id, name, display_name, description, skill_type, steps, \
+                 input_schema, output_schema, tools, is_public, created_by, created_at, updated_at) \
+             VALUES ($1, $2, $3, $3, NULL, 'workflow', $4, NULL, NULL, NULL, FALSE, NULL, $5, $5) \
+             ON CONFLICT (id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id, \
+                name = EXCLUDED.name, display_name = EXCLUDED.display_name, \
+                steps = EXCLUDED.steps, updated_at = EXCLUDED.updated_at",
+        )
+        .bind(id)
+        .bind(tenant_id)
+        .bind(format!("hygiene-{id}"))
+        .bind(steps)
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("seed skill row");
+    }
+
+    #[test]
+    fn recursive_delegation_blocked_by_allowlist() {
+        // The allowlist itself excludes delegation.
+        assert!(
+            !super::DELEGATED_SUB_TOOL_ALLOWLIST.contains(&"skill_call"),
+            "skill_call must not be on the delegated sub-tool allowlist"
+        );
+        // Top-level execution may delegate freely.
+        assert!(validate_delegated_step("skill_call", 0).is_ok());
+        // Deeper executions refuse delegation with a stable marker.
+        let err = validate_delegated_step("skill_call", 1).expect_err("delegation must be blocked");
+        assert!(
+            err.starts_with("delegated_step_not_allowed:"),
+            "stable refusal marker expected, got {err:?}"
+        );
+        assert!(err.contains("skill_call"));
+        // Allowlisted kinds still run at depth.
+        for kind in super::DELEGATED_SUB_TOOL_ALLOWLIST {
+            assert!(
+                validate_delegated_step(kind, 3).is_ok(),
+                "{kind} stays allowed at depth"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_round_cap_aborts_structured() {
+        // Under the cap: fine (rounds already consumed).
+        for rounds in 0..super::MAX_NESTED_TOOL_ROUNDS {
+            assert!(check_tool_round_cap(rounds, "scope").is_ok());
+        }
+        // The round that would exceed the cap aborts with a stable prefix.
+        let err = check_tool_round_cap(super::MAX_NESTED_TOOL_ROUNDS, "step 7")
+            .expect_err("cap must abort");
+        assert!(
+            err.starts_with("tool_round_cap_exceeded:"),
+            "structured abort marker expected, got {err:?}"
+        );
+        assert_eq!(super::MAX_NESTED_TOOL_ROUNDS, 3);
+        assert_eq!(MAX_SKILL_CALL_DEPTH, super::MAX_NESTED_TOOL_ROUNDS + 5);
+    }
+
+    #[test]
+    fn sanitize_strips_command_lines_from_result() {
+        let text = "first line\n/run /tmp/scratch\n  /indented chatter\nresult tail";
+        assert_eq!(
+            sanitize_result_text(text),
+            "first line\nresult tail",
+            "leading-slash lines (any indent) must be stripped"
+        );
+        // Mid-line slashes stay untouched.
+        assert_eq!(
+            sanitize_result_text("path is /usr/bin/env — keep"),
+            "path is /usr/bin/env — keep"
+        );
+        // Clean text returns unchanged (no allocation churn).
+        assert_eq!(sanitize_result_text("clean"), "clean");
+        // Nested string leaves are sanitized; other leaves survive verbatim.
+        let mut value = json!({
+            "status": "success",
+            "content": "/reload config\nanswer: 42",
+            "nested": {"deep": ["/ls -la", "kept", 7]},
+            "count": 3
+        });
+        sanitize_result_value(&mut value);
+        assert_eq!(value["content"], json!("answer: 42"));
+        assert_eq!(value["nested"]["deep"][0], json!(""));
+        assert_eq!(value["nested"]["deep"][1], json!("kept"));
+        assert_eq!(value["nested"]["deep"][2], json!(7));
+        assert_eq!(value["count"], json!(3));
+    }
+
+    /// Tool whose execution reports how many rounds ran this execution.
+    struct CountingTool {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for CountingTool {
+        fn name(&self) -> &str {
+            "count"
+        }
+        fn description(&self) -> &str {
+            "counts invocations"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+        async fn execute(&self, _args: serde_json::Value) -> ares_types::Result<serde_json::Value> {
+            Ok(json!({"n": self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst)}))
+        }
+    }
+
+    struct ChatterTool;
+
+    #[async_trait::async_trait]
+    impl Tool for ChatterTool {
+        fn name(&self) -> &str {
+            "chatter"
+        }
+        fn description(&self) -> &str {
+            "returns slash-command style chatter"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+        async fn execute(&self, _args: serde_json::Value) -> ares_types::Result<serde_json::Value> {
+            Ok(json!({"content": "/reload config\n/verbose on\nanswer: 42"}))
+        }
+    }
+
+    fn hygiene_service(review_gate: bool) -> SkillsService {
+        SkillsService {
+            execution: Arc::new(Execute::new()),
+            max_depth: MAX_SKILL_CALL_DEPTH,
+            review_delegated_results: review_gate,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_round_cap_aborts_execution_after_three_tool_steps() {
+        // block_in_place inside Tools::execute requires the multi-thread runtime.
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let root = Context::new_root();
+        root.provide(EventsService::new());
+        root.provide(ares_store::PostgresClient {
+            pool: pool.clone(),
+        });
+        // Skill steps resolve tools inside the tenant realm: provide into the
+        // labeled isolate and pass THAT context onward (existing tool_call_tests pattern).
+        let ctx = root.isolate::<Tools>("acme");
+        ctx.provide(Tools::from_static([
+            Arc::new(CountingTool {
+                calls: Arc::clone(&calls),
+            }) as Arc<dyn Tool>,
+        ]));
+        seed_skill(
+            &pool,
+            "hygiene-cap",
+            "acme",
+            json!([
+                {"type": "tool_call", "tool_name": "count"},
+                {"type": "tool_call", "tool_name": "count"},
+                {"type": "tool_call", "tool_name": "count"},
+                {"type": "tool_call", "tool_name": "count"}
+            ]),
+        )
+        .await;
+        let svc = hygiene_service(false);
+        let err = svc
+            .execute_skill(
+                "hygiene-cap",
+                json!({"tenant_id": "acme", "run_id": "cap-run"}),
+                &ctx,
+            )
+            .await
+            .expect_err("fourth tool round must abort");
+        assert!(
+            err.starts_with("tool_round_cap_exceeded:"),
+            "structured cap error expected, got {err:?}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "exactly three tool rounds run before the abort"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sanitize_strips_command_lines_from_delegated_skill_result() {
+        // block_in_place inside Tools::execute requires the multi-thread runtime.
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
+        let root = Context::new_root();
+        root.provide(EventsService::new());
+        root.provide(ares_store::PostgresClient {
+            pool: pool.clone(),
+        });
+        let ctx = root.isolate::<Tools>("acme");
+        ctx.provide(Tools::from_static([
+            Arc::new(ChatterTool) as Arc<dyn Tool>,
+        ]));
+        // Parent delegates once (allowed at depth 0); the child runs one
+        // chatty tool step. The delegated step's input carries the tenant so
+        // the child resolves its own skill row; the integrated parent
+        // context must carry clean text only.
+        seed_skill(
+            &pool,
+            "hygiene-parent",
+            "acme",
+            json!([{
+                "type": "skill_call",
+                "skill_id": "hygiene-child",
+                "input": {"tenant_id": "acme"}
+            }]),
+        )
+        .await;
+        seed_skill(
+            &pool,
+            "hygiene-child",
+            "acme",
+            json!([{"type": "tool_call", "tool_name": "chatter"}]),
+        )
+        .await;
+        let svc = hygiene_service(true);
+        let out = svc
+            .execute_skill(
+                "hygiene-parent",
+                json!({"tenant_id": "acme", "run_id": "sanitize-run"}),
+                &ctx,
+            )
+            .await
+            .expect("parent skill executes");
+        let content = out
+            .pointer("/step_0/result/step_0/result/content")
+            .and_then(|v| v.as_str())
+            .expect("delegated tool content integrated under step_0");
+        assert!(
+            !content.contains("/reload"),
+            "command chatter must not enter parent context, got {content:?}"
+        );
+        assert_eq!(content, "answer: 42");
+    }
+
 }

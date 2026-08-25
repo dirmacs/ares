@@ -442,7 +442,8 @@ pub fn create_router(
         )
         .route(
             "/admin/cordis/entries/{id}",
-            delete(crate::api::handlers::admin::delete_cordis_entry),
+            delete(crate::api::handlers::admin::delete_cordis_entry)
+                .patch(crate::api::handlers::admin::patch_cordis_entry),
         )
         .route(
             "/admin/cordis/entries/{id}/toggle",

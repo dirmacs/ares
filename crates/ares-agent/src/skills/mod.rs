@@ -293,7 +293,74 @@ async fn skill_llm_response(
     })
 }
 
-/// One step inside a skill workflow — mirrors `crate::skill_engine::SkillStep`
+/// Fixed cache-friendly preamble for the delegated-result reviewer prompt.
+///
+/// Kept byte-stable across calls so provider-side prompt caches hit on the
+/// template; only the per-call tail (skill id, input, result) varies.
+#[cfg(feature = "postgres")]
+const DELEGATED_REVIEW_TEMPLATE: &str = "You are reviewing the result of a delegated sub-workflow step.\n\
+                                         Judge the result for consistency with the requested input \
+                                         and overall task fit.\n\
+                                         Reply with ACCEPT or REJECT on the first line, then one \
+                                         short sentence of review notes.\n";
+
+/// Outcome of the delegated-result review micro-step.
+#[cfg(feature = "postgres")]
+struct ReviewVerdict {
+    accepted: bool,
+    notes: String,
+}
+
+/// Parse an ACCEPT/REJECT verdict plus trailing review notes from reviewer text.
+///
+/// The first line must carry an explicit `ACCEPT` or `REJECT` word; anything
+/// else is an error so callers degrade to pass-through exactly like a
+/// reviewer outage instead of guessing.
+#[cfg(feature = "postgres")]
+fn parse_review_verdict(content: &str) -> Result<ReviewVerdict, String> {
+    let mut lines = content.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines
+        .next()
+        .ok_or_else(|| "empty reviewer response".to_string())?;
+    let word: String = first
+        .chars()
+        .skip_while(|c| !c.is_ascii_alphabetic())
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    let notes = lines.collect::<Vec<_>>().join(" ");
+    match word.to_ascii_uppercase().as_str() {
+        "ACCEPT" => Ok(ReviewVerdict {
+            accepted: true,
+            notes,
+        }),
+        "REJECT" => Ok(ReviewVerdict {
+            accepted: false,
+            notes,
+        }),
+        _ => Err(format!("unparsable reviewer verdict: {first}")),
+    }
+}
+
+/// Run the review micro-step for a delegated sub-workflow result through
+/// `Llm::complete` (`llm.complete` waterfall). An error means the reviewer
+/// is unavailable — callers degrade silently to pass-through.
+#[cfg(feature = "postgres")]
+async fn review_delegated_result(
+    ctx: &Arc<Context>,
+    delegated_skill_id: &str,
+    delegated_input: &serde_json::Value,
+    result: &serde_json::Value,
+) -> Result<ReviewVerdict, String> {
+    let prompt = format!(
+        "{}Delegated sub-workflow: {delegated_skill_id}\nRequested input: \
+         {delegated_input}\nResult to review: {result}",
+        DELEGATED_REVIEW_TEMPLATE
+    );
+    let content = skill_llm_content(ctx, &prompt).await?;
+    parse_review_verdict(&content)
+}
+
+/// One step inside a skill workflow — mirrors `crate::skill_engine::SkillStep»
 /// but lives in the Cordis-owned SkillsService for provider-agnostic execution.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -402,22 +469,27 @@ fn ready_then_steps<'a>(
 pub struct SkillsService {
     pub execution: Arc<Execute>,
     pub max_depth: usize,
+    /// Opt-in delegated-result review gate (default off). When on, nested
+    /// `SkillCall` results pass a review micro-step before integration.
+    pub review_delegated_results: bool,
 }
 
 impl SkillsService {
-    /// Create with default depth 8.
+    /// Create with default depth 8 and the review gate off.
     pub fn new(execution: Arc<Execute>) -> Self {
         Self {
             execution,
             max_depth: MAX_SKILL_CALL_DEPTH,
+            review_delegated_results: false,
         }
     }
 
-    /// Create with explicit max depth.
+    /// Create with explicit max depth; the review gate stays off.
     pub fn with_max_depth(execution: Arc<Execute>, max_depth: usize) -> Self {
         Self {
             execution,
             max_depth,
+            review_delegated_results: false,
         }
     }
 
@@ -595,6 +667,9 @@ impl SkillsService {
                             depth + 1,
                         ))
                         .await?;
+                        let result = self
+                            .review_nested_result(&inner_id, &inner_input, result, ctx)
+                            .await?;
                         context[&format!("step_{}", step_index)] = successful_step_context(result);
                     }
                     SkillStep::Condition {
@@ -704,6 +779,7 @@ impl SkillsService {
                 let result =
                     Box::pin(self.execute_skill_at_depth(skill_id, input.clone(), ctx, depth + 1))
                         .await?;
+                let result = self.review_nested_result(skill_id, input, result, ctx).await?;
                 context[&format!("step_{}", step_index)] = successful_step_context(result);
                 Ok(())
             }
@@ -724,6 +800,40 @@ impl SkillsService {
             }
         }
     }
+
+    /// Opt-in review gate for delegated (nested `SkillCall`) results.
+    ///
+    /// Off (`review_delegated_results == false`) or reviewer unavailable ⇒
+    /// pass-through: the original result integrates unchanged. On rejection
+    /// the result is replaced by a structured rejection carrying the review
+    /// notes; the original stays intact under metadata for caller re-dispatch.
+    async fn review_nested_result(
+        &self,
+        delegated_skill_id: &str,
+        delegated_input: &serde_json::Value,
+        result: serde_json::Value,
+        ctx: &Arc<Context>,
+    ) -> Result<serde_json::Value, String> {
+        if !self.review_delegated_results {
+            return Ok(result);
+        }
+        match review_delegated_result(ctx, delegated_skill_id, delegated_input, &result).await {
+            Ok(v) if v.accepted => Ok(result),
+            Ok(v) => Ok(serde_json::json!({
+                "status": "rejected",
+                "review": {
+                    "accepted": false,
+                    "notes": v.notes,
+                },
+                "metadata": {
+                    "delegated_skill_id": delegated_skill_id,
+                    "original_result": result,
+                },
+            })),
+            // Reviewer outage — degrade silently to pass-through.
+            Err(_) => Ok(result),
+        }
+    }
 }
 
 impl Service for SkillsService {
@@ -736,8 +846,15 @@ impl Service for SkillsService {
 }
 
 /// Typed installer for [`SkillsService`]. No loader key (skills has none today).
+///
+/// `review_delegated_results` opts nested `SkillCall` results into a review
+/// micro-step before they are integrated into the parent skill context.
+/// Off by default; a missing or erroring reviewer degrades to pass-through.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct SkillsPluginConfig {}
+pub struct SkillsPluginConfig {
+    #[serde(default)]
+    pub review_delegated_results: Option<bool>,
+}
 
 pub struct SkillsPlugin;
 
@@ -748,7 +865,7 @@ impl cordis::Plugin for SkillsPlugin {
     fn apply(
         &self,
         ctx: &Arc<Context>,
-        _config: Self::Config,
+        config: Self::Config,
     ) -> Result<Arc<Self::Provides>, cordis::CordisError> {
         let execution = match ctx.get::<Execute>() {
             Some(e) => e,
@@ -756,7 +873,9 @@ impl cordis::Plugin for SkillsPlugin {
                 tokio::runtime::Handle::current().block_on(ctx.inject::<Execute>())
             }),
         };
-        Ok(Arc::new(SkillsService::new(execution)))
+        let mut service = SkillsService::new(execution);
+        service.review_delegated_results = config.review_delegated_results.unwrap_or(false);
+        Ok(Arc::new(service))
     }
 }
 

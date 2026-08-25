@@ -81,7 +81,7 @@ pub const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 ///
 /// Callers must already have released the child's stdin handle: the grace
 /// bounds the goodbye, not the working lifetime.
-async fn wait_with_grace(child: &mut tokio::process::Child) -> Option<i32> {
+pub async fn wait_with_grace(child: &mut tokio::process::Child) -> Option<i32> {
     match tokio::time::timeout(WORKER_SHUTDOWN_GRACE, child.wait()).await {
         Ok(Ok(status)) => status.code(),
         // Wait error (polling failure): nothing more to reap.
@@ -523,12 +523,7 @@ mod tests {
             (1, Duration::from_millis(200)),
             (2, Duration::from_millis(400)),
             (3, Duration::from_millis(800)),
-            (
-                4,
-                Duration::from_secs(2)
-                    .checked_add(Duration::from_millis(600))
-                    .unwrap(),
-            ),
+            (4, Duration::from_millis(1600)),
             (5, Duration::from_millis(3200)),
             (6, Duration::from_secs(5)),
             (7, Duration::from_secs(5)),
@@ -558,10 +553,24 @@ mod tests {
 
         BACKOFF_DELAYS.lock().clear();
         // Two rapid crashes (delays 100 ms, 200 ms), then a healthy-length
-        // run, then another rapid crash: delay must restart at 100 ms.
-        let exits = vec![BASE + 1, BASE + 2, BASE + 2 + HEALTHY_MS];
+        // run, then another rapid crash whose delay must restart at 100 ms.
+        // The exhausted script then reports a clean exit ending the loop.
+        const UNHEALTHY_MS: u64 = UNHEALTHY_RUN_DURATION.as_millis() as u64;
+        // Run 4 spawns when run 3 exits (clock = BASE+2+HEALTHY_MS) and must
+        // end one tick BEFORE UNHEALTHY_RUN_DURATION to count as unhealthy.
+        let exits = vec![
+            BASE + 1,
+            BASE + 2,
+            BASE + 2 + HEALTHY_MS,
+            BASE + 2 + HEALTHY_MS + UNHEALTHY_MS - 1,
+        ];
         let script = ClockScript::new(
-            vec![Some(EXIT_RESTART), Some(EXIT_RESTART), Some(EXIT_RESTART)],
+            vec![
+                Some(EXIT_RESTART),
+                Some(EXIT_RESTART),
+                Some(EXIT_RESTART),
+                Some(EXIT_RESTART),
+            ],
             exits,
         );
 
@@ -575,7 +584,8 @@ mod tests {
             vec![
                 Duration::from_millis(100),
                 Duration::from_millis(200),
-                // Post-healthy-run reset proves the counter cleared.
+                // Healthy-length run: no backoff recorded, counter cleared.
+                // Post-reset crash: first step again.
                 Duration::from_millis(100),
             ]
         );

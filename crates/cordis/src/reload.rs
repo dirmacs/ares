@@ -45,7 +45,10 @@ fn reload_lock() -> Arc<tokio::sync::Mutex<()>> {
 /// Missing loader state ([`crate::LoaderJournal`] /
 /// [`crate::loader::CurrentEntries`]) yields `Failed` — those deployments
 /// have no file program to reload.
-pub async fn reload_entries_from_disk(ctx: &Arc<crate::Context>, entries_path: &Path) -> ReloadOutcome {
+pub async fn reload_entries_from_disk(
+    ctx: &Arc<crate::Context>,
+    entries_path: &Path,
+) -> ReloadOutcome {
     use crate::{compose_all, Loader};
 
     let lock = reload_lock();
@@ -132,9 +135,7 @@ mod tests {
 
     /// Minimal factory providing one Probe service; instance value mirrors
     /// the entry config's `v` so tests observe which generation is live.
-    fn probe_registry(
-        registry: &crate::PluginRegistry,
-    ) -> Arc<AtomicU64> {
+    fn probe_registry(registry: &crate::PluginRegistry) -> Arc<AtomicU64> {
         let live = Arc::new(AtomicU64::new(0));
         let live_cb = live.clone();
         registry.register(
@@ -148,9 +149,7 @@ mod tests {
                     live_cb.store(v, Ordering::SeqCst);
                     Ok(0u64)
                 };
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(fut)
-                })
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
             }),
         );
         live
@@ -165,7 +164,11 @@ mod tests {
 
     /// Full fixture: loader context + temp TOML program seeded with
     /// `initial_toml`, `CurrentEntries` starting from `current`.
-    fn build_fixture(tag: &str, initial_toml: &str, current: EntryTree) -> (Arc<Context>, std::path::PathBuf) {
+    fn build_fixture(
+        tag: &str,
+        initial_toml: &str,
+        current: EntryTree,
+    ) -> (Arc<Context>, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("cordis-hmr-{}-{}", tag, std::process::id()));
         std::fs::create_dir_all(&dir).expect("tmpdir");
         let path = dir.join("cordis-entries.toml");

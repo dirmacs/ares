@@ -64,9 +64,7 @@ impl crate::Service for SettleBarrier {}
 impl SettleBarrier {
     /// Resolve when the watcher publishes another settled batch outcome.
     /// Errors only when the owning watcher was dropped.
-    pub async fn changed(
-        &mut self,
-    ) -> Result<(), tokio::sync::watch::error::RecvError> {
+    pub async fn changed(&mut self) -> Result<(), tokio::sync::watch::error::RecvError> {
         self.rx.changed().await
     }
 
@@ -206,8 +204,9 @@ pub fn watch_many_with(
         // Content stamps from the previous dispatch, seeded lazily per event
         // path: watched targets include directories (agents/*.toon), so any
         // pre-seeded snapshot would be wrong for files not yet on disk.
-        let stamps: parking_lot::Mutex<std::collections::HashMap<PathBuf, crate::stamp::FileStamp>> =
-            parking_lot::Mutex::new(std::collections::HashMap::new());
+        let stamps: parking_lot::Mutex<
+            std::collections::HashMap<PathBuf, crate::stamp::FileStamp>,
+        > = parking_lot::Mutex::new(std::collections::HashMap::new());
         while let Some(path) = rx.recv().await {
             // DEFER-NOT-DROP: every received path lands in `pending`; nothing
             // arriving inside the settle window is discarded. Sleep out the
@@ -521,7 +520,7 @@ mod tests {
         let count = Arc::new(AtomicUsize::new(0));
         let fired_cb = fired.clone();
         let count_cb = count.clone();
-        let on_change: WatchOnChange = Arc::new(move |_ctx, _path| {
+        let on_change: WatchOnChange = Arc::new(move |_ctx, _paths, _outcome| {
             fired_cb.store(true, Ordering::SeqCst);
             count_cb.fetch_add(1, Ordering::SeqCst);
         });
@@ -589,9 +588,9 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
         let calls_cb = calls.clone();
         let seen_cb = seen.clone();
-        let on_change: WatchOnChange = Arc::new(move |_ctx, path| {
+        let on_change: WatchOnChange = Arc::new(move |_ctx, paths, _outcome| {
             *calls_cb.lock() += 1;
-            seen_cb.lock().push(path.to_path_buf());
+            seen_cb.lock().extend(paths.iter().cloned());
         });
 
         let _handle = watch_many_with(
@@ -705,16 +704,27 @@ mod tests {
     fn compile_test_plugin() -> std::path::PathBuf {
         let dir = tempfile::tempdir().expect("tempdir");
         let src = dir.path().join("plugin.rs");
-        std::fs::write(
-            &src,
+        // The watcher pipeline loads through the full HMR path, whose
+        // fingerprint handshake refuses cdylibs without a matching
+        // `cordis_plugin_fingerprint`. Bake this side's live fingerprint
+        // into the generated source so the standalone rustc build passes.
+        let src_text = format!(
             r#"
             #[unsafe(no_mangle)]
-            pub extern "C" fn cordis_plugin_apply(_ctx: *const std::ffi::c_void) -> i32 {
+            pub static CORDIS_FP: &[u8] = b"{}\0";
+            #[unsafe(no_mangle)]
+            pub extern "C" fn cordis_plugin_fingerprint() -> *const std::os::raw::c_char {{
+                CORDIS_FP.as_ptr() as *const _
+            }}
+
+            #[unsafe(no_mangle)]
+            pub extern "C" fn cordis_plugin_apply(_ctx: *const std::ffi::c_void) -> i32 {{
                 0
-            }
+            }}
             "#,
-        )
-        .expect("write plugin source");
+            crate::hmr::fingerprint()
+        );
+        std::fs::write(&src, src_text).expect("write plugin source");
         let so = dir.path().join(lib_name("cordis_watch_plugin"));
         let status = std::process::Command::new("rustc")
             .args(["--edition", "2024", "--crate-type", "cdylib", "-o"])
@@ -769,11 +779,29 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        // Identical-byte rewrite: event fires but the stamp gate drops it.
+        // Phase 1 — real change: seeds the lazy stamp cache (the FIRST event
+        // of any path always passes the gate by design; directory targets
+        // make pre-seeding impossible).
+        std::fs::write(&file_path, "v1").unwrap();
+        let seeded = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if !seen.lock().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(seeded, "seeding change must reach the callback");
+        let count_after_seed = seen.lock().len();
+
+        // Phase 2 — identical-byte rewrite: event fires but the cached stamp
+        // matches, so the gate drops it and nothing reaches the callback.
         std::fs::write(&file_path, "v1").unwrap();
         let quiet = tokio::time::timeout(Duration::from_millis(1500), async {
             loop {
-                if !seen.lock().is_empty() {
+                if seen.lock().len() > count_after_seed {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -786,11 +814,11 @@ mod tests {
             "identical rewrite must short-circuit (callback fired for {seen:?})"
         );
 
-        // Real change: same length, different bytes — the gate must pass it.
+        // Phase 3 — real change: same length, different bytes must pass.
         std::fs::write(&file_path, "v2").unwrap();
         let fired = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                if !seen.lock().is_empty() {
+                if seen.lock().len() > count_after_seed {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -831,9 +859,7 @@ mod tests {
             "ProbeService",
             Arc::new(|ctx, _cfg| {
                 let fut = ctx.plugin(Probe(1));
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(fut)
-                })
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
             }),
         );
 
@@ -866,9 +892,9 @@ mod tests {
         .unwrap();
         let applied = tokio::time::timeout(Duration::from_secs(4), async {
             loop {
-                let got = outcomes.lock().iter().any(|o| {
-                    matches!(o, ReloadOutcome::Applied { actions } if !actions.is_empty())
-                });
+                let got = outcomes.lock().iter().any(
+                    |o| matches!(o, ReloadOutcome::Applied { actions } if !actions.is_empty()),
+                );
                 if got {
                     break;
                 }

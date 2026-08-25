@@ -35,12 +35,15 @@
 //! ```
 
 use crate::client::{LLMClient, Provider};
+use crate::governor::{GovernorConfig, ProviderGovernor};
 use ares_types::types::{AppError, Result};
+#[cfg(test)]
+use async_trait::async_trait;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -73,7 +76,7 @@ impl From<PoolError> for AppError {
     }
 }
 
-mod duration_secs {
+pub(crate) mod duration_secs {
     use serde::{Deserialize, Deserializer, Serializer};
     use std::time::Duration;
 
@@ -95,6 +98,20 @@ mod duration_secs {
 /// Configuration for the client pool
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PoolConfig {
+    /// Maximum number of in-flight dispatches admitted per provider.
+    ///
+    /// `None` (default) keeps admission unlimited — governed wrappers are
+    /// never installed and behavior is unchanged. See [`ProviderGovernor`]
+    /// for the WHO-vs-HOW-MUCH throttle split: this caps how much load one
+    /// backend absorbs; tenant-level quotas decide who may call at all.
+    #[serde(default)]
+    pub max_in_flight: Option<usize>,
+
+    /// Maximum time a dispatch waits for an in-flight slot before failing
+    /// closed (only relevant when `max_in_flight` is set).
+    #[serde(default = "default_acquire_timeout_secs", with = "duration_secs")]
+    pub governor_acquire_timeout: Duration,
+
     /// Maximum number of clients per provider (default: 10)
     pub max_connections_per_provider: usize,
 
@@ -121,9 +138,15 @@ pub struct PoolConfig {
     pub enable_health_check: bool,
 }
 
+fn default_acquire_timeout_secs() -> Duration {
+    Duration::from_secs(30)
+}
+
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
+            max_in_flight: None,
+            governor_acquire_timeout: default_acquire_timeout_secs(),
             max_connections_per_provider: 10,
             min_idle_connections: 2,
             idle_timeout: Duration::from_secs(300), // 5 minutes
@@ -140,6 +163,31 @@ impl PoolConfig {
     pub fn with_max_connections(mut self, max: usize) -> Self {
         self.max_connections_per_provider = max;
         self
+    }
+
+    /// Enable a per-provider in-flight cap of `max` concurrent dispatches.
+    ///
+    /// Admission happens at the wrap funnel ([`ProviderPool::acquire`] and
+    /// [`ProviderPool::try_acquire`]) so every checkout path — pooled or
+    /// freshly created clients alike — is governed identically. The permit
+    /// spans the whole call, streams included.
+    pub fn with_max_in_flight(mut self, max: usize) -> Self {
+        self.max_in_flight = Some(max);
+        self
+    }
+
+    /// Set the wait budget for acquiring an in-flight slot.
+    pub fn with_governor_acquire_timeout(mut self, timeout: Duration) -> Self {
+        self.governor_acquire_timeout = timeout;
+        self
+    }
+
+    /// Effective governor configuration for this pool.
+    pub fn governor_config(&self) -> GovernorConfig {
+        GovernorConfig {
+            max_in_flight: self.max_in_flight,
+            acquire_timeout: self.governor_acquire_timeout,
+        }
     }
 
     /// Create a new pool config with custom idle timeout
@@ -304,6 +352,8 @@ impl std::fmt::Debug for PooledClient {
 struct ProviderPool {
     /// The provider configuration for creating new clients
     provider: Provider,
+    /// Per-provider in-flight admission control (`max_in_flight`).
+    governor: Arc<ProviderGovernor>,
     /// Pool of available clients
     clients: Mutex<Vec<PooledClient>>,
     /// Semaphore to limit concurrent connections
@@ -323,6 +373,7 @@ impl ProviderPool {
         let semaphore = Arc::new(Semaphore::new(config.max_connections_per_provider));
         Self {
             provider,
+            governor: Arc::new(ProviderGovernor::new(config.governor_config())),
             clients: Mutex::new(Vec::with_capacity(config.max_connections_per_provider)),
             semaphore,
             in_use_count: AtomicUsize::new(0),
@@ -389,6 +440,11 @@ impl ProviderPool {
         };
 
         self.in_use_count.fetch_add(1, Ordering::Relaxed);
+        // Wrap AFTER checkout accounting but BEFORE handing the client out:
+        // every consumer of this pool now sees a governed client whose
+        // per-dispatch permits are enforced at call time. Unlimited pools
+        // get the original client back untouched.
+        let client = self.governor.wrap_if_limited(client);
         Ok((client, permit))
     }
 
@@ -433,6 +489,9 @@ impl ProviderPool {
         };
 
         self.in_use_count.fetch_add(1, Ordering::Relaxed);
+        // Same funnel guarantee as `acquire`: the handed-out client is
+        // governed whenever a cap is configured.
+        let client = self.governor.wrap_if_limited(client);
         Ok((client, permit))
     }
 
@@ -1386,15 +1445,21 @@ mod tests {
 
     #[test]
     fn test_pool_error_display_variants() {
-        assert!(PoolError::PoolExhausted { max: 2 }
-            .to_string()
-            .contains("pool exhausted"));
-        assert!(PoolError::Timeout { timeout_ms: 10 }
-            .to_string()
-            .contains("timeout"));
-        assert!(PoolError::InvalidClient { reason: "x".into() }
-            .to_string()
-            .contains("invalid"));
+        assert!(
+            PoolError::PoolExhausted { max: 2 }
+                .to_string()
+                .contains("pool exhausted")
+        );
+        assert!(
+            PoolError::Timeout { timeout_ms: 10 }
+                .to_string()
+                .contains("timeout")
+        );
+        assert!(
+            PoolError::InvalidClient { reason: "x".into() }
+                .to_string()
+                .contains("invalid")
+        );
     }
 
     #[test]
@@ -1803,5 +1868,292 @@ mod tests {
         let result = pool.get("anything").await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), AppError::LLM(_)));
+    }
+
+    // ===== Per-provider in-flight governor =====
+    use crate::client::LLMResponse;
+    use ares_types::types::ToolDefinition;
+    use futures::Stream;
+
+    /// Slow mock client: each `generate` sleeps then records the moment it
+    /// runs, so a test can observe true concurrency (overlapping dispatches).
+    struct SlowMockClient {
+        delay: Duration,
+        in_flight: Arc<AtomicUsize>,
+        max_observed: Arc<AtomicUsize>,
+    }
+
+    impl SlowMockClient {
+        fn new(
+            delay: Duration,
+            in_flight: Arc<AtomicUsize>,
+            max_observed: Arc<AtomicUsize>,
+        ) -> Self {
+            Self {
+                delay,
+                in_flight,
+                max_observed,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LLMClient for SlowMockClient {
+        async fn generate(&self, _prompt: &str) -> Result<String> {
+            let now = self.in_flight.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+            self.max_observed.fetch_max(now, AtomicOrdering::Relaxed);
+            tokio::time::sleep(self.delay).await;
+            self.in_flight.fetch_sub(1, AtomicOrdering::Relaxed);
+            Ok("slow".into())
+        }
+
+        async fn generate_with_system(&self, _system: &str, prompt: &str) -> Result<String> {
+            self.generate(prompt).await
+        }
+
+        async fn generate_with_history(
+            &self,
+            messages: &[(String, String)],
+        ) -> Result<LLMResponse> {
+            let content = self
+                .generate(messages.first().map(|(_, c)| c.as_str()).unwrap_or(""))
+                .await?;
+            Ok(LLMResponse {
+                content,
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+            })
+        }
+
+        async fn generate_with_tools(
+            &self,
+            prompt: &str,
+            _tools: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            let content = self.generate(prompt).await?;
+            Ok(LLMResponse {
+                content,
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+            })
+        }
+
+        async fn generate_with_tools_and_history(
+            &self,
+            messages: &[crate::coordinator::ConversationMessage],
+            _tools: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            let content = self
+                .generate(messages.first().map(|m| m.content.as_str()).unwrap_or(""))
+                .await?;
+            Ok(LLMResponse {
+                content,
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+            })
+        }
+
+        async fn stream(
+            &self,
+            _prompt: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(AppError::Internal("stream unused here".into()))
+        }
+
+        async fn stream_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(AppError::Internal("stream unused here".into()))
+        }
+
+        async fn stream_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(AppError::Internal("stream unused here".into()))
+        }
+
+        fn model_name(&self) -> &str {
+            "slow-mock"
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn governor_caps_concurrent_dispatch() {
+        const PERMITS: usize = 2;
+        const CALLS: usize = 8;
+
+        // Every task gets its own SLOW client (seeded, so no network-backed
+        // creation happens): without the governor all eight 30ms bodies would
+        // overlap and the high-water mark would hit 8.
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_observed = Arc::new(AtomicUsize::new(0));
+        let slow_clients: Vec<Box<dyn LLMClient>> = (0..CALLS)
+            .map(|_| {
+                Box::new(SlowMockClient::new(
+                    Duration::from_millis(30),
+                    Arc::clone(&in_flight),
+                    Arc::clone(&max_observed),
+                )) as Box<dyn LLMClient>
+            })
+            .collect();
+
+        let config = PoolConfig::default()
+            .with_max_in_flight(PERMITS)
+            .with_governor_acquire_timeout(Duration::from_secs(5))
+            .without_health_check();
+        let pool = Arc::new(ClientPool::new(config.clone()));
+        register_seeded_pool(&pool, "mock", config, slow_clients);
+
+        let mut handles = Vec::new();
+        for _ in 0..CALLS {
+            let pool = Arc::clone(&pool);
+            handles.push(tokio::spawn(async move {
+                let guard = pool.get("mock").await.expect("governed checkout");
+                let _ = guard.client().generate("hello").await;
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("task joins");
+        }
+
+        let observed = max_observed.load(AtomicOrdering::Relaxed);
+        assert_eq!(
+            in_flight.load(AtomicOrdering::Relaxed),
+            0,
+            "all dispatches finished"
+        );
+        assert!(
+            observed <= PERMITS,
+            "max observed in-flight ({observed}) exceeded permits ({PERMITS})"
+        );
+        assert_eq!(observed, PERMITS, "cap should be reached under load");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unlimited_default_preserves_behavior() {
+        // Default config: no cap configured. Many overlapping checkouts must
+        // all proceed without waiting on any governor slot.
+        let config = PoolConfig::default().without_health_check();
+        let pool = ClientPool::new(config.clone());
+        register_seeded_pool(&pool, "mock", config, vec![mock_client("free")]);
+
+        let guard = pool.get("mock").await.expect("checkout works");
+        assert_eq!(guard.client().model_name(), "free");
+        // The handed-out client is NOT a governor wrapper — no extra layer.
+        let taken: Box<dyn LLMClient> = guard.take();
+        assert_eq!(taken.model_name(), "free");
+        drop(taken);
+
+        // And the wrap funnel itself is a pass-through when unlimited.
+        let unlimited = ProviderGovernor::new(GovernorConfig::default());
+        let wrapped = unlimited.wrap_if_limited(mock_client("passthrough"));
+        assert_eq!(
+            wrapped.model_name(),
+            "passthrough",
+            "unlimited governors must not install wrappers"
+        );
+
+        let defaults = PoolConfig::default();
+        assert_eq!(defaults.max_in_flight, None);
+        assert_eq!(defaults.governor_config(), GovernorConfig::default());
+    }
+
+    #[tokio::test]
+    async fn permit_released_on_error_path() {
+        let config = PoolConfig::default()
+            .with_max_in_flight(1)
+            .with_governor_acquire_timeout(Duration::from_millis(100))
+            .without_health_check();
+        let sub = provider_pool(config.clone());
+
+        // Take the only slot with a failing call: generate errors after the
+        // admit. The permit must return even though the dispatch failed.
+        let failing = SlowMockFailing;
+        let guarded = sub.governor.wrap_if_limited(Box::new(failing));
+        let err = guarded.generate("boom").await.unwrap_err();
+        assert!(matches!(err, AppError::LLM(_)));
+
+        // The single slot is free again — an immediate second admission
+        // succeeds without hitting the 100ms timeout.
+        let ok_client = sub.governor.wrap_if_limited(Box::new(SlowMockClient::new(
+            Duration::from_millis(1),
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+        )));
+        let started = std::time::Instant::now();
+        ok_client.generate("fine").await.expect("slot was released");
+        assert!(
+            started.elapsed() < Duration::from_millis(90),
+            "second dispatch should not wait: slot was released by the error path"
+        );
+    }
+
+    /// Client that always fails AFTER being admitted.
+    struct SlowMockFailing;
+
+    #[async_trait]
+    impl LLMClient for SlowMockFailing {
+        async fn generate(&self, _prompt: &str) -> Result<String> {
+            Err(AppError::LLM("upstream rejected".into()))
+        }
+
+        async fn generate_with_system(&self, _system: &str, _prompt: &str) -> Result<String> {
+            Err(AppError::LLM("upstream rejected".into()))
+        }
+
+        async fn generate_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> Result<LLMResponse> {
+            Err(AppError::LLM("upstream rejected".into()))
+        }
+
+        async fn generate_with_tools(
+            &self,
+            _prompt: &str,
+            _tools: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            Err(AppError::LLM("upstream rejected".into()))
+        }
+
+        async fn generate_with_tools_and_history(
+            &self,
+            _messages: &[crate::coordinator::ConversationMessage],
+            _tools: &[ToolDefinition],
+        ) -> Result<LLMResponse> {
+            Err(AppError::LLM("upstream rejected".into()))
+        }
+
+        async fn stream(
+            &self,
+            _prompt: &str,
+        ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(AppError::Internal("stream failed at setup".into()))
+        }
+
+        async fn stream_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(AppError::Internal("stream failed at setup".into()))
+        }
+
+        async fn stream_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>> {
+            Err(AppError::Internal("stream failed at setup".into()))
+        }
+
+        fn model_name(&self) -> &str {
+            "failing-mock"
+        }
     }
 }

@@ -158,9 +158,9 @@ impl ModelCatalog {
     pub fn with_static_table(models: Vec<(String, String, ModelCapabilities)>) -> Self {
         let mut catalog = Self::new();
         for (model_id, provider, caps) in models {
-            catalog.static_profiles.push(profile_from_capabilities(
-                &model_id, &provider, &caps, None,
-            ));
+            catalog
+                .static_profiles
+                .push(profile_from_capabilities(&model_id, &provider, &caps, None));
         }
         catalog
     }
@@ -234,16 +234,16 @@ impl ModelCatalog {
 
     /// Route a task modality (plus constraints) to the cheapest capable
     /// model id. Ties break on speed (faster first), then id for stability.
-    pub fn route(
-        &self,
-        modality: TaskModality,
-        constraints: &RouteConstraints,
-    ) -> Option<String> {
+    pub fn route(&self, modality: TaskModality, constraints: &RouteConstraints) -> Option<String> {
         let required = required_capability(modality)?;
         self.profiles()
             .into_iter()
             .filter(|p| p.capabilities.contains(&required))
-            .filter(|p| constraints.min_context_window.is_none_or(|w| p.context_window >= w))
+            .filter(|p| {
+                constraints
+                    .min_context_window
+                    .is_none_or(|w| p.context_window >= w)
+            })
             .filter(|p| !constraints.require_tools || p.capabilities.contains(&Capability::Tools))
             .filter(|p| {
                 !constraints.require_json_mode || p.capabilities.contains(&Capability::JsonMode)
@@ -354,11 +354,7 @@ pub fn profile_for(model_id: &str, provider: &str, caps: &ModelCapabilities) -> 
 
 /// Comma-separated capability labels for a profile (lean rendering).
 fn capability_labels(p: &ModelProfile) -> String {
-    let mut labels: Vec<&str> = p
-        .capabilities
-        .iter()
-        .map(Capability::label)
-        .collect();
+    let mut labels: Vec<&str> = p.capabilities.iter().map(Capability::label).collect();
     labels.sort_unstable();
     labels.join(",")
 }
@@ -398,9 +394,7 @@ fn cost_rank_and_speed(p: &ModelProfile) -> (u8, u8) {
 /// Shared test fixtures.
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{
-        Capability, ModelProfile, ModelCatalog, SpeedTier,
-    };
+    use super::{Capability, ModelCatalog, ModelProfile, SpeedTier};
 
     pub(crate) fn profile(
         model_id: &str,
@@ -424,7 +418,13 @@ pub(crate) mod test_support {
     pub(crate) fn catalog() -> ModelCatalog {
         let mut c = ModelCatalog::new();
         c.extend_runtime([
-            profile("small-text", "static", &[Capability::Text], "free", SpeedTier::Fast),
+            profile(
+                "small-text",
+                "static",
+                &[Capability::Text],
+                "free",
+                SpeedTier::Fast,
+            ),
             profile(
                 "big-tools",
                 "static",
@@ -486,7 +486,9 @@ mod tests {
         let c = catalog();
 
         // Text routes to the free fast small model, not the expensive big one.
-        let picked = c.route(TaskModality::Text, &RouteConstraints::default()).unwrap();
+        let picked = c
+            .route(TaskModality::Text, &RouteConstraints::default())
+            .unwrap();
         assert_eq!(picked, "small-text");
 
         // Requiring tools eliminates the cheap model despite higher cost.
@@ -494,10 +496,7 @@ mod tests {
             require_tools: true,
             ..RouteConstraints::default()
         };
-        assert_eq!(
-            c.route(TaskModality::Text, &reqs).unwrap(),
-            "big-tools"
-        );
+        assert_eq!(c.route(TaskModality::Text, &reqs).unwrap(), "big-tools");
     }
 
     #[test]
@@ -559,7 +558,9 @@ mod tests {
 
         // And the merged view exposes the ingested entry.
         assert_eq!(
-            c.get("nvidia", "meta/llama-3.3-70b-instruct").unwrap().model_id,
+            c.get("nvidia", "meta/llama-3.3-70b-instruct")
+                .unwrap()
+                .model_id,
             "meta/llama-3.3-70b-instruct"
         );
     }
@@ -567,10 +568,26 @@ mod tests {
     #[test]
     fn runtime_shadows_static_per_key() {
         let mut c = catalog();
-        c.register_runtime(profile("small-text", "static", &[Capability::Text], "low", SpeedTier::Realtime));
+        c.register_runtime(profile(
+            "small-text",
+            "static",
+            &[Capability::Text],
+            "low",
+            SpeedTier::Realtime,
+        ));
         let merged = c.profiles();
-        assert_eq!(merged.iter().filter(|p| p.model_id == "small-text").count(), 1);
-        assert_eq!(merged.iter().find(|p| p.model_id == "small-text").unwrap().speed_tier, SpeedTier::Realtime);
+        assert_eq!(
+            merged.iter().filter(|p| p.model_id == "small-text").count(),
+            1
+        );
+        assert_eq!(
+            merged
+                .iter()
+                .find(|p| p.model_id == "small-text")
+                .unwrap()
+                .speed_tier,
+            SpeedTier::Realtime
+        );
     }
 
     #[test]

@@ -87,7 +87,7 @@ fn version_fingerprint(metadata: &std::fs::Metadata) -> u64 {
         .map(|duration| duration.as_nanos() as u64)
         .unwrap_or(0);
     let size = metadata.len();
-    mtime.saturating_xor(size)
+    mtime ^ size
 }
 
 fn now_unix_millis() -> u64 {
@@ -117,7 +117,7 @@ pub const AUDIT_CAPACITY: usize = 200;
 
 const BLIND_WRITE_MODES: &[FenceMode] = &[FenceMode::Full];
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct FenceState {
     /// Canonical paths observed through `fence_read`, with their versions.
     observed: HashMap<PathBuf, u64>,
@@ -165,9 +165,10 @@ impl Fence {
     pub fn fence_read(&self, raw: &Path) -> Result<(Option<std::fs::Metadata>, u64), FsError> {
         let decision = check_path(&self.policy, raw, false);
         let Some(resolved) = resolve_allowed(&self.policy, raw, &decision)? else {
+            self.record(raw, None, FsError::FS_FENCE_DENIED);
             return Err(FsError::new(
                 FsError::FS_FENCE_DENIED,
-                decision.expect_denied_reason_pub(),
+                decision.denied_reason().to_string(),
             ));
         };
 
@@ -199,8 +200,9 @@ impl Fence {
     /// - In modes without blind-write allowance (`ReadOnly`,
     ///   `WorkspaceWrite`) the canonical path must have been observed
     ///   through [`Fence::fence_read`] first, or the write fails with
-    ///   `FS_NOT_OBSERVED`. This includes [`WriteGuard::Unconditional`]:
-    ///   only a mode that allows blind writes accepts it there.
+    ///   `FS_NOT_OBSERVED`. This covers every contract, including
+    ///   [`WriteGuard::Unconditional`] and creating brand-new files:
+    ///   only a mode that allows blind writes skips the ledger.
     /// - [`WriteGuard::CreateIfAbsent`] fails with `FS_EXISTS` when the
     ///   canonical path already exists.
     /// - [`WriteGuard::ReplaceIfVersion`] fails with `FS_VERSION_CONFLICT`
@@ -219,7 +221,7 @@ impl Fence {
         // L0-L2 first, unchanged semantics.
         let decision = check_path(&self.policy, raw, true);
         let Some(resolved) = resolve_allowed(&self.policy, raw, &decision)? else {
-            let reason = decision.expect_denied_reason_pub();
+            let reason = decision.denied_reason().to_string();
             self.record(raw, Some(guard), FsError::FS_FENCE_DENIED);
             return Err(FsError::new(FsError::FS_FENCE_DENIED, reason));
         };
@@ -233,6 +235,22 @@ impl Fence {
             }
         };
         let exists = current.is_some();
+
+        // L3 guard #1, read-before-edit: the session must hold an
+        // observation of this exact canonical path unless the mode allows
+        // blind writes. It runs first, so a never-read path always reports
+        // FS_NOT_OBSERVED rather than a confusing contract mismatch.
+        let holds_observation = self.lock_state().observed.contains_key(&resolved);
+        if !holds_observation && !blind_ok {
+            self.record(&resolved, Some(guard), FsError::FS_NOT_OBSERVED);
+            return Err(FsError::new(
+                FsError::FS_NOT_OBSERVED,
+                format!(
+                    "no recorded read for {}; call fence_read first",
+                    resolved.display()
+                ),
+            ));
+        }
 
         // Guard contract checks against the live filesystem view.
         match guard {
@@ -262,22 +280,6 @@ impl Fence {
             _ => {}
         }
 
-        // L3 read-before-edit: the session must hold an observation of this
-        // exact canonical path unless the mode allows blind writes or the
-        // contract creates a brand-new file.
-        let fresh_create = guard == WriteGuard::CreateIfAbsent && !exists;
-        let holds_observation = self.lock_state().observed.contains_key(&resolved);
-        if !fresh_create && !holds_observation && !blind_ok {
-            self.record(&resolved, Some(guard), FsError::FS_NOT_OBSERVED);
-            return Err(FsError::new(
-                FsError::FS_NOT_OBSERVED,
-                format!(
-                    "no recorded read for {}; call fence_read first",
-                    resolved.display()
-                ),
-            ));
-        }
-
         atomic_write(&resolved, contents).map_err(|error| {
             self.record(&resolved, Some(guard), FsError::FS_IO);
             FsError::new(FsError::FS_IO, error.to_string())
@@ -286,7 +288,7 @@ impl Fence {
         // A successful write becomes the new observed version, so a follow-up
         // ReplaceIfVersion write chains off our own output instead of
         // conflicting with it.
-        if let Some(current) = std::fs::metadata(&resolved).ok() {
+        if let Ok(current) = std::fs::metadata(&resolved) {
             let version = version_fingerprint(&current);
             let mut state = self.lock_state();
             state.observed.insert(resolved.clone(), version);
@@ -300,6 +302,11 @@ impl Fence {
     pub fn audit_log(&self) -> Vec<AuditEntry> {
         self.lock_state().audit.iter().cloned().collect()
     }
+}
+
+/// Sandbox mode for one session. Sessions switch modes at runtime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FenceMode {
     /// Deny every write. Reads still pass L1 and L2.
     ReadOnly,
     /// Default mode. Writes stay below the workspace root.
@@ -332,6 +339,14 @@ pub enum FenceDecision {
 impl FenceDecision {
     pub fn is_allowed(&self) -> bool {
         matches!(self, FenceDecision::Allowed)
+    }
+
+    /// The human-readable cause behind a denial; empty for `Allowed`.
+    pub fn denied_reason(&self) -> &str {
+        match self {
+            FenceDecision::Allowed => "",
+            FenceDecision::Denied { reason, .. } => reason,
+        }
     }
 
     fn deny(layer: FenceLayer, reason: impl Into<String>) -> Self {
@@ -477,6 +492,29 @@ fn sync_parent_best_effort(dir: &Path) {
 
 #[cfg(not(unix))]
 fn sync_parent_best_effort(_dir: &Path) {}
+
+/// Canonical target path for an already-allowed decision. `None` means the
+/// decision was a denial; an `Err` is the L1 reason for a denial that only
+/// surfaces during resolution (workspace root unresolvable).
+fn resolve_allowed(
+    policy: &FencePolicy,
+    raw: &Path,
+    decision: &FenceDecision,
+) -> Result<Option<PathBuf>, FsError> {
+    if !decision.is_allowed() {
+        return Ok(None);
+    }
+    // Full mode waives L1, so the raw spelling is the write target. Every
+    // other mode resolves against the workspace root exactly like check_path
+    // did during judgment; that resolution cannot fail here without the
+    // decision having failed first.
+    if policy.mode == FenceMode::Full {
+        return Ok(Some(raw.to_path_buf()));
+    }
+    resolve_against_root(policy, raw)
+        .map(Some)
+        .map_err(|reason| FsError::new(FsError::FS_FENCE_DENIED, reason))
+}
 
 /// Anchor `raw` to the workspace root when relative, collapse `.` and `..`
 /// lexically, then canonicalize the deepest existing ancestor and rejoin the
@@ -748,6 +786,286 @@ mod tests {
             fence.check_read(&ws.path().join(".env")).layer(),
             Some(FenceLayer::L2Blocklist)
         );
+    }
+
+    fn fence(mode: FenceMode, root: &Path) -> Fence {
+        Fence::new(policy(mode, root))
+    }
+
+    /// Seed `contents` at `path` and record an observation through the fence,
+    /// returning the version fingerprint for ReplaceIfVersion guards.
+    fn observed_version(fence: &Fence, path: &Path, contents: &[u8]) -> u64 {
+        std::fs::write(path, contents).expect("seed file");
+        let (_, version) = fence.fence_read(path).expect("observe seeded file");
+        version
+    }
+
+    #[test]
+    fn write_requires_prior_read_in_l3() {
+        let ws = TempDir::new("l3-unobserved");
+        let target = ws.path().join("notes.txt");
+
+        // WorkspaceWrite demands read-before-edit for every guard contract.
+        let strict = fence(FenceMode::WorkspaceWrite, ws.path());
+        let unconditional = strict.fence_write(&target, WriteGuard::Unconditional, b"no");
+        let create = strict.fence_write(&target, WriteGuard::CreateIfAbsent, b"no");
+        let replace = strict.fence_write(
+            &target,
+            WriteGuard::ReplaceIfVersion { version: 0 },
+            b"no",
+        );
+        assert_eq!(unconditional.unwrap_err().code, FsError::FS_NOT_OBSERVED);
+        assert_eq!(create.unwrap_err().code, FsError::FS_NOT_OBSERVED);
+        assert_eq!(replace.unwrap_err().code, FsError::FS_NOT_OBSERVED);
+        assert!(!target.exists(), "refused writes must not touch disk");
+
+        // After an observation the guarded create goes through. The
+        // missing path records version 0.
+        let (_, version) = strict
+            .fence_read(&target)
+            .expect("observation of missing path");
+        assert_eq!(version, 0);
+        strict
+            .fence_write(&target, WriteGuard::CreateIfAbsent, b"created")
+            .expect("guarded create after observation");
+        assert_eq!(std::fs::read(&target).unwrap(), b"created");
+
+        // Full mode allows blind writes without any observation.
+        let blind = fence(FenceMode::Full, ws.path());
+        blind
+            .fence_write(&target, WriteGuard::Unconditional, b"blind")
+            .expect("blind write allowed in Full mode");
+        assert_eq!(std::fs::read(&target).unwrap(), b"blind");
+
+        // ReadOnly still denies at L0 before any guard runs.
+        let frozen = fence(FenceMode::ReadOnly, ws.path());
+        let denied = frozen.fence_write(&target, WriteGuard::Unconditional, b"x");
+        assert_eq!(denied.unwrap_err().code, FsError::FS_FENCE_DENIED);
+        assert_eq!(
+            frozen.policy().mode,
+            FenceMode::ReadOnly,
+            "policy stays immutable"
+        );
+    }
+
+    #[test]
+    fn replace_if_version_conflicts_on_concurrent_change() {
+        let ws = TempDir::new("l3-conflict");
+        let target = ws.path().join("notes.txt");
+        let f = fence(FenceMode::WorkspaceWrite, ws.path());
+
+        let version = observed_version(&f, &target, b"first draft");
+
+        // Same version passes and lands atomically.
+        f.fence_write(
+            &target,
+            WriteGuard::ReplaceIfVersion { version },
+            b"second draft",
+        )
+        .expect("matching version writes");
+
+        // A concurrent writer moves mtime+size after our observation.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&target, b"a concurrent writer got here first").expect("concurrent edit");
+
+        let conflict = f.fence_write(
+            &target,
+            WriteGuard::ReplaceIfVersion { version },
+            b"stale overwrite",
+        );
+        let error = conflict.expect_err("stale version must conflict");
+        assert_eq!(error.code, FsError::FS_VERSION_CONFLICT);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"a concurrent writer got here first",
+            "conflicted write must not clobber the concurrent change"
+        );
+
+        // The successful chained write refreshed the observation, so a second
+        // edit with a freshly captured version applies cleanly.
+        let (_, fresh) = f.fence_read(&target).expect("re-read");
+        f.fence_write(
+            &target,
+            WriteGuard::ReplaceIfVersion { version: fresh },
+            b"third draft",
+        )
+        .expect("fresh version writes");
+        assert_eq!(std::fs::read(&target).unwrap(), b"third draft");
+    }
+
+    #[test]
+    fn replace_if_version_refuses_disappeared_file() {
+        let ws = TempDir::new("l3-gone");
+        let target = ws.path().join("notes.txt");
+        let f = fence(FenceMode::WorkspaceWrite, ws.path());
+
+        let version = observed_version(&f, &target, b"do not lose me");
+        std::fs::remove_file(&target).expect("delete behind the fence");
+
+        let error = f
+            .fence_write(
+                &target,
+                WriteGuard::ReplaceIfVersion { version },
+                b"resurrect",
+            )
+            .expect_err("missing file must refuse replacement");
+        assert_eq!(error.code, FsError::FS_VERSION_CONFLICT);
+    }
+
+    #[test]
+    fn create_if_absent_refuses_overwrite() {
+        let ws = TempDir::new("l3-create");
+        let fresh = ws.path().join("fresh.txt");
+        let taken = ws.path().join("taken.txt");
+        let f = fence(FenceMode::WorkspaceWrite, ws.path());
+
+        f.fence_read(&fresh).expect("observe absent fresh path");
+        f.fence_write(&fresh, WriteGuard::CreateIfAbsent, b"v1")
+            .expect("create on absent path");
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"v1");
+
+        // Overwrite attempt fails with FS_EXISTS even though we observed it.
+        let error = f
+            .fence_write(&fresh, WriteGuard::CreateIfAbsent, b"clobber")
+            .expect_err("second create must refuse");
+        assert_eq!(error.code, FsError::FS_EXISTS);
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"v1", "content preserved");
+
+        // Unobserved creation still requires read-before-edit in this mode.
+        let error = f
+            .fence_write(&taken, WriteGuard::CreateIfAbsent, b"no")
+            .expect_err("unobserved create needs an observation");
+        assert_eq!(error.code, FsError::FS_NOT_OBSERVED);
+        assert!(!taken.exists());
+    }
+
+    #[test]
+    fn audit_ring_trims_at_capacity() {
+        let ws = TempDir::new("l3-audit");
+        let target = ws.path().join("loop.txt");
+        let f = fence(FenceMode::Full, ws.path());
+
+        for round in 0..(AUDIT_CAPACITY + 25) {
+            f.fence_write(
+                &target,
+                WriteGuard::Unconditional,
+                format!("round {round}").as_bytes(),
+            )
+            .expect("blind writes run in Full mode");
+        }
+
+        let log = f.audit_log();
+        assert_eq!(log.len(), AUDIT_CAPACITY);
+        // The oldest 25 entries left; the ring holds the last 200 writes.
+        assert!(log.iter().all(|entry| entry.outcome == FS_OK));
+        assert!(log
+            .iter()
+            .all(|entry| entry.guard_kind == Some(WriteGuard::Unconditional)));
+        assert_eq!(
+            log.first().expect("ring nonempty").ts_millis > 0,
+            true,
+            "entries carry timestamps"
+        );
+    }
+
+    #[test]
+    fn l0_l2_paths_unchanged() {
+        let ws = TempDir::new("l0l2-regression");
+
+        // L0: pure path check still denies ReadOnly writes...
+        let ro_policy = policy(FenceMode::ReadOnly, ws.path());
+        let victim = ws.path().join("victim.txt");
+        std::fs::write(&victim, b"keep").expect("seed victim");
+        assert!(!ro_policy.check_write(&victim).is_allowed());
+        assert!(ro_policy.check_read(&victim).is_allowed());
+        // ...and the Fence path refuses before any L3 logic or IO.
+        let frozen = fence(FenceMode::ReadOnly, ws.path());
+        let denied = frozen.fence_write(&victim, WriteGuard::Unconditional, b"x");
+        assert_eq!(denied.unwrap_err().code, FsError::FS_FENCE_DENIED);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep", "L0 protects");
+
+        // L1: traversal escape still denied through the Fence.
+        let escaper = fence(FenceMode::WorkspaceWrite, ws.path());
+        let escape = ws.path().join("..").join("escape.txt");
+        let error = escaper
+            .fence_write(&escape, WriteGuard::Unconditional, b"x")
+            .expect_err("escape refused");
+        assert_eq!(error.code, FsError::FS_FENCE_DENIED);
+        assert!(!escape.exists());
+
+        // L2: blocklist still wins over everything, including Full mode.
+        let full = fence(FenceMode::Full, ws.path());
+        let pem = ws.path().join("secret.key");
+        let error = full
+            .fence_write(&pem, WriteGuard::Unconditional, b"k")
+            .expect_err("blocklist hit refused");
+        assert_eq!(error.code, FsError::FS_FENCE_DENIED);
+        assert!(full.fence_read(&ws.path().join(".env")).is_err());
+        assert!(!pem.exists());
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_temp_files_and_sets_private_mode() {
+        let ws = TempDir::new("l3-atomic");
+        let target = ws.path().join("private.txt");
+        let f = fence(FenceMode::Full, ws.path());
+
+        f.fence_write(&target, WriteGuard::Unconditional, b"payload")
+            .expect("write lands");
+        let leftovers: Vec<_> = std::fs::read_dir(ws.path())
+            .expect("list workspace")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(leftovers, vec!["private.txt".to_string()], "tmp renamed away");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&target)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "best-effort chmod 0600 applied");
+        }
+    }
+
+    #[test]
+    fn audit_records_deny_and_success_outcomes() {
+        let ws = TempDir::new("l3-audit-mixed");
+        let good = ws.path().join("good.txt");
+        let bad = ws.path().join(".env");
+        let f = fence(FenceMode::WorkspaceWrite, ws.path());
+
+        // A blocklisted read is refused before any observation.
+        let error = f.fence_read(&bad).expect_err("blocklisted read refused");
+        assert_eq!(error.code, FsError::FS_FENCE_DENIED);
+
+        // An unobserved guarded create lands in the ring as FS_NOT_OBSERVED.
+        let error = f
+            .fence_write(&good, WriteGuard::CreateIfAbsent, b"ok")
+            .expect_err("create without observation refused");
+        assert_eq!(error.code, FsError::FS_NOT_OBSERVED);
+
+        // Observe, then succeed.
+        f.fence_read(&good).expect("observe absent path");
+        f.fence_write(&good, WriteGuard::CreateIfAbsent, b"ok")
+            .expect("guarded create after observation");
+
+        let log = f.audit_log();
+        let outcomes: Vec<&str> = log.iter().map(|entry| entry.outcome).collect();
+        assert_eq!(
+            outcomes,
+            vec![
+                FsError::FS_FENCE_DENIED,
+                FsError::FS_NOT_OBSERVED,
+                FS_OK,
+                FS_OK
+            ]
+        );
+        // Reads carry no guard contract; writes do.
+        assert_eq!(log[0].guard_kind, None);
+        assert_eq!(log[1].guard_kind, Some(WriteGuard::CreateIfAbsent));
     }
 
     impl FenceDecision {

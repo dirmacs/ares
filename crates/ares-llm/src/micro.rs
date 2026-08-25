@@ -464,14 +464,13 @@ mod tests {
             .expect("salvage fallback yields an outcome");
 
         assert_eq!(
-            outcome.retries,
-            DEFAULT_JSON_RETRIES,
+            outcome.retries, DEFAULT_JSON_RETRIES,
             "identical request repeated once per json retry before salvage"
         );
         assert_eq!(outcome.json, Some(serde_json::json!({ "score": 4 })));
         assert_eq!(
             client.call_count(),
-            usize::from(DEFAULT_JSON_RETRIES) + 1,
+            usize::try_from(DEFAULT_JSON_RETRIES).expect("retry count fits usize") + 1,
             "all json attempts happen before the single salvage pass"
         );
     }

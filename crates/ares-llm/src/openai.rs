@@ -25,6 +25,7 @@ use crate::coordinator::{ConversationMessage, MessageRole};
 use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_openai::types::chat::ResponseFormat;
 use async_openai::{
+    Client,
     config::OpenAIConfig,
     types::chat::{
         ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
@@ -33,7 +34,6 @@ use async_openai::{
         ChatCompletionRequestUserMessageArgs, ChatCompletionTool, ChatCompletionTools,
         CreateChatCompletionRequestArgs, FunctionCall, FunctionObject, ReasoningEffort,
     },
-    Client,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -749,7 +749,7 @@ mod tests {
         ToolChoiceOptions,
     };
     use futures::StreamExt;
-    use wiremock::{matchers::*, Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::*};
 
     fn openai_client(server: &MockServer, model: &str) -> OpenAIClient {
         openai_client_with_params(server, model, ModelParams::default())
@@ -1168,8 +1168,8 @@ mod tests {
 
     #[test]
     fn test_openai_from_config_missing_api_key_env() {
-        use crate::client::Provider;
         use crate::ProviderConfig;
+        use crate::client::Provider;
 
         std::env::remove_var("TEST_OPENAI_MISSING_KEY_OPENAI_RS");
         let config = ProviderConfig::OpenAI {
@@ -1646,8 +1646,8 @@ mod tests {
 
     #[test]
     fn test_openai_from_config_reads_api_key_from_env() {
-        use crate::client::Provider;
         use crate::ProviderConfig;
+        use crate::client::Provider;
 
         std::env::set_var("TEST_OPENAI_KEY_PRESENT_OPENAI_RS", "sk-test-value");
         let config = ProviderConfig::OpenAI {

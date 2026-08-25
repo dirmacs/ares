@@ -27,10 +27,10 @@ use async_stream::stream;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use ollama_rs::{
-    generation::chat::{request::ChatMessageRequest, ChatMessage},
+    Ollama,
+    generation::chat::{ChatMessage, request::ChatMessageRequest},
     generation::tools::{ToolCall as OllamaToolCall, ToolFunctionInfo, ToolInfo, ToolType},
     models::ModelOptions,
-    Ollama,
 };
 use schemars::Schema;
 use std::sync::RwLock;

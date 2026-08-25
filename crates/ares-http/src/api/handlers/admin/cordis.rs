@@ -829,6 +829,9 @@ pub async fn patch_cordis_entry(
         ));
     }
 
+    // Structured issues below describe THIS apply only: drop any record an
+    // earlier patch left for this entry before running the pre-flights.
+    let _ = cordis::error::take_trial_validation(&id);
     match apply_entries_from_disk(&ctx).await {
         Ok(actions) => {
             let patched = ctx
@@ -858,7 +861,17 @@ pub async fn patch_cordis_entry(
                 })),
             ))
         }
-        Err((status, body)) => Ok((status, Json(body))),
+        Err((status, mut body)) => {
+            // When the failing step was a config pre-flight, the loader
+            // trial stashed machine-readable issues for this entry; attach
+            // them alongside the legacy `error` string.
+            if let Some(validation) = cordis::error::take_trial_validation(&id) {
+                if let Ok(issues) = serde_json::to_value(&validation.issues) {
+                    body["issues"] = issues;
+                }
+            }
+            Ok((status, Json(body)))
+        }
     }
 }
 
@@ -1646,6 +1659,88 @@ mod tests {
             before,
             "404 must not touch the file"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A config pre-flight failing with structured validation issues answers
+    /// the PATCH 4xx body with a machine-readable `issues` array alongside
+    /// the legacy `error` string. A follow-up well-formed patch succeeds,
+    /// proving the failed trial left no stale slot behind.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_endpoint_returns_structured_issues_on_bad_config() {
+        let (ctx, dir) = build_entries_fixture(
+            "patch-validation",
+            CALC_TOML_BLOCK,
+            vec![probe_entry("calc", false)],
+        );
+        // The trial pre-flight only runs for journaled entries; seed the
+        // record the boot apply would have left (fiber id intentionally
+        // untracked so the failure can only come from the trial itself).
+        let journal = ctx.get::<cordis::LoaderJournal>().expect("journal");
+        journal.upsert("calc", "CalculatorService", serde_json::json!({}), Some(1));
+
+        // Override the fixture factory: the patched config asks for a
+        // validation-shaped rejection carrying a placed issue.
+        let registry = ctx.get::<cordis::PluginRegistry>().expect("registry");
+        registry.register(
+            "CalculatorService",
+            Arc::new(|ctx, cfg| {
+                if cfg.get("reject").and_then(|x| x.as_bool()) == Some(true) {
+                    return Err(cordis::CordisError::validation(vec![
+                        cordis::ValidationIssue::new("missing url").at(["calc", "url"]),
+                    ]));
+                }
+                let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(1);
+                let fut = ctx.plugin(Probe(AtomicU64::new(v)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+
+        let bad_update = cordis::loader::EntryUpdate {
+            config: Some(serde_json::json!({"reject": true})),
+            ..Default::default()
+        };
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            Path("calc".into()),
+            axum::Json(bad_update),
+        )
+        .await
+        .expect("resp");
+
+        // Legacy failure shape intact…
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["reloaded"], json!(false));
+        assert!(
+            body["error"]
+                .as_str()
+                .map(|e| e.contains("config pre-flight failed"))
+                .unwrap_or(false),
+            "legacy error names the pre-flight: {}",
+            body["error"]
+        );
+
+        // …plus the structured issues array from the stashed trial result.
+        assert_eq!(
+            body["issues"],
+            json!([{ "message": "missing url", "path": ["calc", "url"] }]),
+            "structured issues accompany the error field: {body}"
+        );
+
+        // The failed trial must leave nothing stashed: a healthy patch now
+        // goes through cleanly (200) instead of tripping stale issues.
+        let ok_update = cordis::loader::EntryUpdate {
+            config: Some(serde_json::json!({"v": 8})),
+            ..Default::default()
+        };
+        let (status, Json(ok_body)) =
+            patch_cordis_entry(State(ctx.clone()), Path("calc".into()), axum::Json(ok_update))
+                .await
+                .expect("resp");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ok_body["patched"], json!(true));
+        assert!(ok_body.get("issues").is_none(), "success carries no issues");
 
         std::fs::remove_dir_all(&dir).ok();
     }

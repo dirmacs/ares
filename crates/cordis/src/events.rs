@@ -86,6 +86,8 @@ const MECHANICS_TEST_EVENTS: &[&str] = &[
     "around.empty",
     "around.wrap",
     "around.short",
+    "once.test",
+    "once.bail",
 ];
 
 fn bypasses_catalog(event: &str) -> bool {
@@ -202,6 +204,62 @@ impl EventsService {
     /// Subscribe to the fire-and-forget emit broadcast bus.
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(EventId, serde_json::Value)> {
         self.bus.subscribe()
+    }
+
+    /// Register a one-shot flat listener.
+    ///
+    /// The returned handle is the same early-cancel subscription [`Self::on`]
+    /// yields; disposing it before the event ever fires unregisters the
+    /// listener. Exactly-once is claimed AT INVOCATION through an atomic
+    /// swap, so concurrent dispatches of the same event run the handler on
+    /// exactly one task and every later dispatch observes an already-spent
+    /// (skipped) slot.
+    ///
+    /// Bail-chain nuance: a listener that is SKIPPED because an earlier
+    /// handler bailed (`Dispatch::Serial`/`Dispatch::Bail`) never ran, so it
+    /// stays registered until a later dispatch actually reaches and runs it.
+    pub fn once<F, Fut>(&self, event: EventId, handler: F) -> Box<dyn Disposable>
+    where
+        F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
+    {
+        debug_enforce_listener(&event, false);
+        // One atomic flag does double duty: swapping it `true` AT INVOCATION
+        // claims the single run among concurrent dispatches, and because it
+        // IS the slot's cancellation flag, the spent slot is dropped by the
+        // next dispatch's retain pass. A listener skipped by a bail chain is
+        // never invoked, so its claim stays unspent and the slot stays
+        // registered until a dispatch actually reaches and runs it.
+        let claim = Arc::new(AtomicBool::new(false));
+        let slot_flag = claim.clone();
+        let handle_flag = claim.clone();
+        // The claim wrapper as a `Handler`: each invocation first flips the
+        // atomic; only the caller that observes `false` (the FIRST one)
+        // runs the user handler. Cloning the Arc inside keeps the closure
+        // `Fn` while handing an owned handle to the spawned future.
+        let user = Arc::new(handler);
+        let once_handler: Handler = {
+            let user = user.clone();
+            Arc::new(move |payload: serde_json::Value| {
+                let claimed = claim.swap(true, Ordering::SeqCst);
+                let user = user.clone();
+                Box::pin(async move {
+                    if claimed {
+                        // Already spent: pass the payload through untouched.
+                        return Ok(payload);
+                    }
+                    user(payload).await
+                })
+            })
+        };
+        let slot = HandlerSlot {
+            cancelled: slot_flag,
+            handler: once_handler,
+        };
+        self.handlers.write().entry(event).or_default().push(slot);
+        Box::new(move || {
+            handle_flag.store(true, Ordering::SeqCst);
+        })
     }
 
     pub fn on<F, Fut>(&self, event: EventId, handler: F) -> Box<dyn Disposable>
@@ -637,6 +695,136 @@ mod tests {
             "disposed on_waterfall handler must not run"
         );
         assert!(svc.waterfall_handlers.read().get("gone.wf").is_none());
+    }
+
+    /// Concurrent dispatches of the same event race the once-slot: exactly
+    /// ONE invocation runs the handler, every other dispatch observes an
+    /// already-claimed slot and passes through.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn once_fires_exactly_once_concurrently() {
+        let svc = std::sync::Arc::new(EventsService::new());
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let r = runs.clone();
+        svc.once("once.test".into(), move |payload| {
+            let r = r.clone();
+            async move {
+                r.fetch_add(1, Ordering::SeqCst);
+                Ok(payload)
+            }
+        });
+
+        // Fire N overlapping Parallel dispatches; each fans out to the same
+        // slot concurrently.
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..16 {
+            let svc = std::sync::Arc::clone(&svc);
+            tasks.spawn(async move {
+                svc.dispatch(
+                    "once.test".into(),
+                    serde_json::json!({}),
+                    Dispatch::Parallel,
+                )
+                .await
+            });
+        }
+        while let Some(res) = tasks.join_next().await {
+            res.expect("dispatch task").expect("parallel dispatch ok");
+        }
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "exactly one concurrent dispatch may run the once handler"
+        );
+    }
+
+    /// A bail-chain skip is NOT a run: a once listener that never got to run
+    /// because an earlier handler bailed stays registered until it actually
+    /// executes on a later dispatch.
+    #[tokio::test]
+    async fn once_stays_registered_when_skipped_by_bail() {
+        let svc = EventsService::new();
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first = ran.clone();
+        // Earlier handler bails with a non-null result: the chain stops here.
+        let bailer = svc.on("once.bail".into(), move |_payload| {
+            let first = first.clone();
+            async move {
+                first.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({ "handled": true }))
+            }
+        });
+        let second = ran.clone();
+        svc.once("once.bail".into(), move |payload| {
+            let second = second.clone();
+            async move {
+                second.fetch_add(1, Ordering::SeqCst);
+                Ok(payload)
+            }
+        });
+
+        // Dispatch 1: bail handler claims; the once listener is skipped
+        // WITHOUT running (its claim must stay unspent).
+        let out = svc
+            .dispatch("once.bail".into(), serde_json::json!({}), Dispatch::Bail)
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::json!({ "handled": true }));
+        assert_eq!(ran.load(Ordering::SeqCst), 1, "only the bail handler ran");
+        // Slot is still registered (never fired).
+        assert!(svc.handlers.read().get("once.bail").is_some());
+
+        // Dispatch 2: the bail handler terminates the chain again — the once
+        // listener is skipped a second time and REMAINS registered.
+        let _ = svc
+            .dispatch("once.bail".into(), serde_json::json!({}), Dispatch::Bail)
+            .await;
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            2,
+            "the bail handler claims every chain"
+        );
+        assert!(
+            svc.handlers.read().get("once.bail").is_some(),
+            "skipped-by-bail once slot stays registered"
+        );
+
+        // Dispose ONLY the bailer's own subscription so the next chain
+        // actually REACHES the pending once slot (same service instance,
+        // same slot — nothing was re-registered).
+        bailer.dispose();
+        let out = svc
+            .dispatch(
+                "once.bail".into(),
+                serde_json::json!({"n": 1}),
+                Dispatch::Bail,
+            )
+            .await
+            .unwrap();
+        // No bailer left: the once listener runs (chain ends null → payload).
+        assert_eq!(out, serde_json::json!({"n": 1}));
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            3,
+            "the surviving once slot fires exactly once"
+        );
+        // One more dispatch prunes the spent slot from the registry AND
+        // proves it cannot run again.
+        let _ = svc
+            .dispatch(
+                "once.bail".into(),
+                serde_json::json!({"n": 2}),
+                Dispatch::Bail,
+            )
+            .await;
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            3,
+            "spent once slot must not run again"
+        );
+        assert!(
+            svc.handlers.read().get("once.bail").is_none(),
+            "pruned from the registry after spending"
+        );
     }
 
     #[tokio::test]

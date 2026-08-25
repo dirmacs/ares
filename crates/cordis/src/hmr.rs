@@ -28,6 +28,19 @@
 //! The entry point is `extern "C"` and must not store the `ctx`
 //! pointer after it returns. The loaded `Library` is retained in
 //! [`HmrRegistry`] until drop (`dlclose` via RAII, no leak).
+//!
+//! **Panic containment:** the entry call runs inside
+//! [`catch_plugin_panic`]. A Rust panic that unwinds out of the entry
+//! becomes `Err(CordisError::Fiber("plugin entry panicked: ..."))` and the
+//! library is NOT retained. Stated honestly: the guard only converts
+//! unwinds that reach it. Plugins built with `panic=abort` terminate the
+//! process at the abort itself; and panics whose throw site lies in the
+//! plugin's own object code are observed to tear the host down while
+//! crossing the dylib boundary ("Rust cannot catch foreign exceptions") on
+//! this toolchain even with `extern "C-unwind"` entries and matching
+//! unwind strategies. Treat the guard as defense in depth for unwinds that
+//! survive the boundary crossing; a well-behaved plugin catches its own
+//! panics internally and returns a nonzero code.
 
 use std::path::Path;
 #[cfg(feature = "hmr")]
@@ -98,6 +111,27 @@ fn is_dynamic_library(path: &Path) -> bool {
         path.extension().and_then(|ext| ext.to_str()),
         Some("so" | "dylib" | "dll")
     )
+}
+
+/// Run `op`, converting a Rust panic escaping it into an `Err` message.
+///
+/// Best-effort payload recovery: `&str` and `String` payloads are echoed,
+/// anything else becomes a fixed placeholder. Shared by both plugin seams —
+/// the HMR entry call and [`crate::registry::RegistryService`] factory
+/// apply — so one panicking plugin cannot take the host down through an
+/// ordinary unwind.
+pub(crate) fn catch_plugin_panic<R>(
+    op: impl FnOnce() -> R + std::panic::UnwindSafe,
+) -> Result<R, String> {
+    std::panic::catch_unwind(op).map_err(|payload| {
+        if let Some(message) = payload.downcast_ref::<&str>() {
+            (*message).to_string()
+        } else if let Some(message) = payload.downcast_ref::<String>() {
+            message.clone()
+        } else {
+            "non-string panic payload".to_string()
+        }
+    })
 }
 
 /// Load a Cordis plugin `.so` via `libloading` and call its entry function.
@@ -202,7 +236,25 @@ pub fn load_plugin_so(
                 String::from_utf8_lossy(entry_symbol)
             ))
         })?;
-        func(ctx as *const Context as *const std::ffi::c_void)
+        // Panic containment: see "Panic containment" in the module docs. The
+        // `AssertUnwindSafe` covers the borrowed `Symbol`/`Library`; the
+        // entry contract forbids retaining the `ctx` pointer, so nothing the
+        // call touches outlives the unwind.
+        catch_plugin_panic(std::panic::AssertUnwindSafe(|| {
+            func(ctx as *const Context as *const std::ffi::c_void)
+        }))
+    };
+    let rc = match rc {
+        Ok(rc) => rc,
+        Err(payload) => {
+            // Best-effort cleanup of the process-unique load copy; `dlclose`
+            // follows when `lib` drops on return. The library is
+            // deliberately NOT retained after a caught panic.
+            let _ = std::fs::remove_file(&unique);
+            return Err(CordisError::Fiber(format!(
+                "plugin entry panicked: {payload}"
+            )));
+        }
     };
     if rc != 0 {
         return Err(CordisError::Configuration(format!("HMR entry {rc} != 0")));
@@ -356,6 +408,25 @@ mod tests {
         let applied = apply_plugin_so_if_dylib(&ctx, Path::new("config/agents/test.toon"))
             .expect("non-dylib should not error");
         assert!(!applied);
+    }
+
+    #[test]
+    fn catch_plugin_panic_passes_values_through() {
+        assert_eq!(catch_plugin_panic(|| 21 * 2).expect("no panic"), 42);
+    }
+
+    #[test]
+    fn catch_plugin_panic_echoes_payloads_best_effort() {
+        let echoed = catch_plugin_panic(std::panic::AssertUnwindSafe(|| -> i32 {
+            panic!("entry blew up")
+        }))
+        .unwrap_err();
+        assert_eq!(echoed, "entry blew up");
+        let opaque = catch_plugin_panic(std::panic::AssertUnwindSafe(|| -> i32 {
+            std::panic::panic_any(7_i64);
+        }))
+        .unwrap_err();
+        assert_eq!(opaque, "non-string panic payload");
     }
 
     #[cfg(feature = "hmr")]

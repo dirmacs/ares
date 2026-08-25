@@ -324,6 +324,24 @@ impl Loader {
                     (Ok(()), true)
                 }
                 LoaderAction::UpdateConfig { id, new_config } => {
+                    // Pre-flight: trial the NEW config through the same
+                    // scratch-context machinery the verified hot-swap uses,
+                    // BEFORE touching the live fiber or the journal. A
+                    // failing factory leaves the old provider serving and
+                    // fails the action; a passing trial discards the
+                    // candidate (the live fiber re-applies below).
+                    if let Err(error) = Self::trial_config_verified(ctx, id, new_config) {
+                        tracing::error!(entry_id = %id, error = %error,
+                            "Loader: config pre-flight failed; old provider kept");
+                        results.push(AppliedAction {
+                            id: id.clone(),
+                            action: "update-config",
+                            status: Err(format!("config pre-flight failed: {error}")),
+                            verified: true,
+                        });
+                        any_failure = true;
+                        continue;
+                    }
                     journal.update_config(id, new_config.clone(), None);
                     // Drive Fiber::update when a live fiber is known.
                     let recorded = journal.get(id).and_then(|r| r.fiber_id);
@@ -870,6 +888,45 @@ impl Loader {
             new_fiber_id = %new_fid, swap_mode = "verified",
             "Loader: hot-swapped provider with verification");
         Ok(true)
+    }
+
+    /// Pre-flight trial for [`LoaderAction::UpdateConfig`]: build the plugin
+    /// with the NEW config on a scratch child context exactly like the
+    /// out-of-band trial in [`Self::rebuild_fiber_verified`], then DISCARD
+    /// the candidate. Nothing is bridged or promoted — this only answers
+    /// "would the new configuration apply cleanly?" so a broken config can
+    /// never take down the live fiber's re-apply. Returns the factory error
+    /// verbatim on failure.
+    ///
+    /// Absent registry/factory means there is nothing to pre-flight (the
+    /// classic journal-only update path applies); that is not an error.
+    fn trial_config_verified(
+        ctx: &Arc<crate::Context>,
+        id: &str,
+        new_config: &serde_json::Value,
+    ) -> Result<(), String> {
+        let scratch = ctx.extend();
+        let Some(plugin_registry) = scratch.get::<crate::PluginRegistry>() else {
+            return Ok(());
+        };
+        // The entry's factory label comes from the journaled record; unknown
+        // ids have no factory to trial and fall through to journal-only.
+        let Some(record) = ctx.get::<crate::LoaderJournal>().and_then(|j| j.get(id)) else {
+            return Ok(());
+        };
+        let Some(factory) = plugin_registry.get(&record.plugin) else {
+            return Ok(());
+        };
+        let trial_fiber = std::sync::Arc::new(crate::Fiber::new());
+        trial_fiber.set_state(crate::FiberState::Loading);
+        let trial =
+            scratch.with_provider_fiber(&trial_fiber, || factory(&scratch, &new_config.clone()));
+        // A trial factory calling Context::plugin re-points ReflectService at
+        // the scratch context; restore the authoritative root binding.
+        if let Some(reflect) = ctx.get::<crate::ReflectService>() {
+            reflect.set_context(ctx);
+        }
+        trial.map(|_| ()).map_err(|e| e.to_string())
     }
 
     /// Broker a rolling provider replacement with zero absence window
@@ -1929,6 +1986,121 @@ disabled = false
             crate::FiberState::Active { .. }
         ));
         assert_eq!(current.0.len(), 1, "current tree advanced");
+    }
+
+    /// UpdateConfig pre-flight: a factory that rejects the new config fails
+    /// its action with the "config pre-flight failed" marker, the journal and
+    /// live fiber stay untouched, and the OLD provider keeps serving.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bad_config_update_keeps_old_provider_serving() {
+        use crate::RegistryService;
+        use std::sync::atomic::Ordering;
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        // Dual-mode factory: healthy instance for {"v": N}, hard failure for
+        // {"fail": true}. Mirrors the KeeperFactory shape of the swap tests.
+        plugin_registry.register(
+            "PickyFactory",
+            Arc::new(|ctx: &Arc<crate::Context>, cfg| {
+                if cfg.get("fail").and_then(|x| x.as_bool()) == Some(true) {
+                    return Err(crate::CordisError::Configuration(
+                        "config rejected by factory".into(),
+                    ));
+                }
+                let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
+                let fut = ctx.plugin(Swappable(std::sync::atomic::AtomicU64::new(v)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+
+        let entry_ok = Entry {
+            id: "picky".into(),
+            plugin: "PickyFactory".into(),
+            config: json!({"v": 1}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        };
+        let mut current = EntryTree(vec![]);
+        Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_ok]), &journal).await;
+        let before = journal.get("picky").expect("journal record after begin");
+        assert_eq!(
+            ctx.get::<Swappable>().unwrap().0.load(Ordering::SeqCst),
+            1,
+            "old provider serving"
+        );
+
+        // Config change to a REJECTED config → UpdateConfig action whose
+        // pre-flight trial fails; old provider must keep serving.
+        let desired_bad = EntryTree(vec![Entry {
+            id: "picky".into(),
+            plugin: "PickyFactory".into(),
+            config: json!({"fail": true}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }]);
+        let actions = Loader::apply(&ctx, &mut current, &desired_bad, &journal).await;
+        assert_eq!(actions[0].action, "update-config");
+        assert!(actions[0].status.is_err(), "pre-flight failure reported");
+        assert!(
+            actions[0]
+                .status
+                .as_ref()
+                .unwrap_err()
+                .contains("config pre-flight failed"),
+            "failure names the pre-flight marker, got {:?}",
+            actions[0].status
+        );
+
+        // Old provider fully intact; journal frozen (no generation bump, no
+        // config overwrite); current tree unchanged so a retry re-diffs.
+        assert!(
+            ctx.get::<Swappable>().is_some(),
+            "old provider kept serving"
+        );
+        assert_eq!(
+            ctx.get::<Swappable>().unwrap().0.load(Ordering::SeqCst),
+            1,
+            "still the OLD instance value"
+        );
+        let after = journal.get("picky").expect("record retained");
+        assert_eq!(after.generation, before.generation, "generation frozen");
+        assert_eq!(after.config, json!({"v": 1}), "config not overwritten");
+        let fid = before.fiber_id.expect("fiber tracked");
+        assert!(matches!(
+            ctx.get::<RegistryService>()
+                .unwrap()
+                .get_fiber(fid)
+                .unwrap()
+                .state(),
+            crate::FiberState::Active { .. }
+        ));
+        assert_eq!(current.0[0].config, json!({"v": 1}), "tree unchanged");
+
+        // A HEALTHY config change still goes through end-to-end (the
+        // pre-flight passes and Fiber::update re-applies).
+        let desired_good = EntryTree(vec![Entry {
+            id: "picky".into(),
+            plugin: "PickyFactory".into(),
+            config: json!({"v": 5}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }]);
+        let actions = Loader::apply(&ctx, &mut current, &desired_good, &journal).await;
+        assert_eq!(actions[0].action, "update-config");
+        assert!(actions[0].status.is_ok(), "healthy update applies");
+        assert_eq!(current.0[0].config, json!({"v": 5}), "tree advanced");
+        assert_eq!(
+            journal.get("picky").unwrap().generation,
+            before.generation + 1,
+            "journal bumped once on success"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

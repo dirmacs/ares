@@ -125,8 +125,10 @@ pub use loader::{
 pub mod cycles;
 pub use cycles::{find_dependency_cycle, DependencyGraph};
 
+pub mod reload;
 pub mod stamp;
-pub use stamp::FileStamp;
+pub use reload::reload_entries_from_disk;
+pub use stamp::{FileStamp, ReloadOutcome};
 
 pub mod metatheory;
 

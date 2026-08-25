@@ -36,6 +36,12 @@ pub struct RunLlmCall {
     pub total_tokens: i64,
     pub estimated_cost_usd: Decimal,
     pub latency_ms: i64,
+        /// Tokens served from the provider-side prompt cache (`None` when the
+    /// provider does not report cache hits).
+    pub cached_tokens: Option<i64>,
+    /// End-to-end wall-clock time for the whole call in milliseconds,
+    /// including retries and queueing (`None` when not measured).
+    pub total_time_ms: Option<i64>,
     pub status: String,
     pub error_message: Option<String>,
     pub request_payload: Option<serde_json::Value>,
@@ -152,7 +158,7 @@ pub struct ModelHealthMetrics {
 // =============================================================================
 
 /// Request body for logging an LLM call.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct LogLlmCallRequest {
     pub id: String,
     pub run_id: String,
@@ -166,6 +172,14 @@ pub struct LogLlmCallRequest {
     pub total_tokens: i64,
     pub estimated_cost_usd: Decimal,
     pub latency_ms: i64,
+        /// Tokens served from the provider-side prompt cache; `None` when
+    /// unknown or not reported.
+    #[serde(default)]
+    pub cached_tokens: Option<i64>,
+    /// End-to-end wall-clock time for the whole call in milliseconds,
+    /// including retries and queueing.
+    #[serde(default)]
+    pub total_time_ms: Option<i64>,
     pub status: String,
     pub error_message: Option<String>,
     pub request_payload: Option<serde_json::Value>,
@@ -301,6 +315,8 @@ impl<'a> RunHistoryStore<'a> {
         .bind(req.total_tokens)
         .bind(req.estimated_cost_usd)
         .bind(req.latency_ms)
+        .bind(req.cached_tokens)
+        .bind(req.total_time_ms)
         .bind(&req.status)
         .bind(&req.error_message)
         .bind(&req.request_payload)
@@ -318,7 +334,8 @@ impl<'a> RunHistoryStore<'a> {
         let row = sqlx::query(
             "SELECT id, run_id, tenant_id, agent_name, step_index, provider, model, \
                     prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, \
-                    latency_ms, status, error_message, request_payload, response_payload, created_at \
+                    latency_ms, cached_tokens, total_time_ms, status, \
+                    error_message, request_payload, response_payload, created_at \
              FROM run_llm_calls WHERE id = $1",
         )
         .bind(id)
@@ -334,7 +351,8 @@ impl<'a> RunHistoryStore<'a> {
         let mut sql = String::from(
             "SELECT id, run_id, tenant_id, agent_name, step_index, provider, model, \
                     prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, \
-                    latency_ms, status, error_message, request_payload, response_payload, created_at \
+                    latency_ms, cached_tokens, total_time_ms, status, \
+                    error_message, request_payload, response_payload, created_at \
              FROM run_llm_calls WHERE 1=1",
         );
         if q.run_id.is_some() {
@@ -379,7 +397,8 @@ impl<'a> RunHistoryStore<'a> {
         let rows = sqlx::query(
             "SELECT id, run_id, tenant_id, agent_name, step_index, provider, model, \
                     prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, \
-                    latency_ms, status, error_message, request_payload, response_payload, created_at \
+                    latency_ms, cached_tokens, total_time_ms, status, \
+                    error_message, request_payload, response_payload, created_at \
              FROM run_llm_calls WHERE run_id = $1 ORDER BY step_index ASC, id ASC",
         )
         .bind(run_id)
@@ -924,6 +943,69 @@ impl<'a> RunHistoryStore<'a> {
 
         rows.iter().map(row_to_model_health).collect()
     }
+
+    /// Per-model prompt-cache telemetry aggregated over `run_llm_calls`.
+    ///
+    /// `cache_hit_ratio` is `cached_tokens / prompt_tokens` across all calls
+    /// of the model; rows whose provider never reported cache hits (or whose
+    /// prompts total zero) get a `NULL` ratio rather than a division error.
+    pub async fn cache_hit_stats(&self) -> Result<Vec<CacheHitStat>> {
+        let rows = sqlx::query(
+            "SELECT model, \
+                    COUNT(*) AS calls, \
+                    COALESCE(SUM(cached_tokens), 0)::BIGINT AS cached_tokens_total, \
+                    SUM(prompt_tokens)::BIGINT AS prompt_tokens_total, \
+                    CASE \
+                        WHEN COALESCE(SUM(cached_tokens), 0) = 0 OR SUM(prompt_tokens) IS NULL \
+                             OR SUM(prompt_tokens) = 0 \
+                        THEN NULL \
+                        ELSE SUM(cached_tokens)::DOUBLE PRECISION / SUM(prompt_tokens)::DOUBLE PRECISION \
+                    END AS cache_hit_ratio, \
+                    AVG(total_time_ms) AS avg_total_time_ms \
+             FROM run_llm_calls \
+             GROUP BY model \
+             ORDER BY calls DESC, model ASC",
+        )
+        .fetch_all(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+
+        rows.iter().map(row_to_cache_hit_stat).collect()
+    }
+}
+
+// =============================================================================
+// Cache-hit stats
+// =============================================================================
+
+/// One per-model row of prompt-cache usage telemetry.
+#[derive(Debug, Clone, Serialize)]
+pub struct CacheHitStat {
+    /// Model name (e.g. "gpt-4o").
+    pub model: String,
+    /// Number of recorded LLM calls for the model.
+    pub calls: i64,
+    /// Sum of provider-reported cached tokens (`0` when never reported).
+    pub cached_tokens: i64,
+    /// Sum of prompt tokens across all calls.
+    pub prompt_tokens: i64,
+    /// Share of prompt tokens served from cache (`None` when no call
+    /// reported cache hits or prompts total zero).
+    pub cache_hit_ratio: Option<f64>,
+    /// Average whole-call wall-clock time in milliseconds (`None` when no
+    /// call measured it).
+    pub avg_total_time_ms: Option<f64>,
+}
+
+fn row_to_cache_hit_stat(row: &sqlx::postgres::PgRow) -> Result<CacheHitStat> {
+    Ok(CacheHitStat {
+        model: row.try_get("model").map_err(sqlx_err)?,
+        calls: row.try_get("calls").map_err(sqlx_err)?,
+        cached_tokens: row.try_get("cached_tokens_total").map_err(sqlx_err)?,
+        prompt_tokens: row.try_get("prompt_tokens_total").map_err(sqlx_err)?,
+        cache_hit_ratio: row.try_get("cache_hit_ratio").map_err(sqlx_err)?,
+        avg_total_time_ms: row.try_get("avg_total_time_ms").map_err(sqlx_err)?,
+    })
 }
 
 // =============================================================================
@@ -944,6 +1026,8 @@ fn row_to_llm_call(row: &sqlx::postgres::PgRow) -> Result<RunLlmCall> {
         total_tokens: row.try_get("total_tokens").map_err(sqlx_err)?,
         estimated_cost_usd: row.try_get("estimated_cost_usd").map_err(sqlx_err)?,
         latency_ms: row.try_get("latency_ms").map_err(sqlx_err)?,
+                cached_tokens: row.try_get("cached_tokens").map_err(sqlx_err)?,
+                total_time_ms: row.try_get("total_time_ms").map_err(sqlx_err)?,
         status: row.try_get("status").map_err(sqlx_err)?,
         error_message: row.try_get("error_message").map_err(sqlx_err)?,
         request_payload: row.try_get("request_payload").map_err(sqlx_err)?,
@@ -1130,6 +1214,8 @@ mod tests {
             total_tokens: 150,
             estimated_cost_usd: dec!(0.000250),
             latency_ms: 420,
+            cached_tokens: Some(40),
+            total_time_ms: Some(430),
             status: "success".into(),
             error_message: None,
             request_payload: Some(serde_json::json!({"messages": []})),
@@ -1307,7 +1393,8 @@ mod tests {
         let mut sql = String::from(
             "SELECT id, run_id, tenant_id, agent_name, step_index, provider, model, \
                     prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, \
-                    latency_ms, status, error_message, request_payload, response_payload, created_at \
+                    latency_ms, cached_tokens, total_time_ms, status, \
+                    error_message, request_payload, response_payload, created_at \
              FROM run_llm_calls WHERE 1=1",
         );
         sql.push_str(" ORDER BY created_at DESC, id ASC LIMIT $7 OFFSET $8");
@@ -1318,7 +1405,8 @@ mod tests {
     fn llm_calls_for_run_order_by_step_then_id() {
         let sql = "SELECT id, run_id, tenant_id, agent_name, step_index, provider, model, \
                     prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, \
-                    latency_ms, status, error_message, request_payload, response_payload, created_at \
+                    latency_ms, cached_tokens, total_time_ms, status, \
+                    error_message, request_payload, response_payload, created_at \
              FROM run_llm_calls WHERE run_id = $1 ORDER BY step_index ASC, id ASC";
         assert!(sql.contains("ORDER BY step_index ASC, id ASC"));
     }
@@ -1355,6 +1443,74 @@ mod tests {
         assert_eq!(q.limit, 50);
         assert_eq!(q.offset, 0);
         assert!(q.run_id.is_none());
+    }
+
+    #[test]
+    fn llm_call_telemetry_fields_default_when_absent() {
+        let back: RunLlmCall =
+            serde_json::from_str(r#"{"id":"c","run_id":"r","tenant_id":"t","agent_name":"a","step_index":0,"provider":"openai","model":"gpt-4o","prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"estimated_cost_usd":0,"latency_ms":5,"status":"success","created_at":0}"#)
+                .expect("deserialize without telemetry fields");
+        assert_eq!(back.cached_tokens, None);
+        assert_eq!(back.total_time_ms, None);
+    }
+
+    #[test]
+    fn log_llm_call_request_telemetry_fields_serde_roundtrip() {
+        let json = r#"{"cached_tokens": 40, "total_time_ms": 430}"#;
+        let partial: serde_json::Value = serde_json::from_str(json).unwrap();
+        let full = serde_json::json!({
+            "id": "call-1",
+            "run_id": "run-1",
+            "tenant_id": "tenant-a",
+            "agent_name": "agent-x",
+            "step_index": 0,
+            "provider": "openai",
+            "model": "gpt-4o",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "estimated_cost_usd": "0.000250",
+            "latency_ms": 420,
+            "status": "success",
+            "created_at": 1_700_000_000i64,
+        });
+        // Merge so the request deserializes; defaults keep old payloads valid.
+        let merged = match (full, partial) {
+            (serde_json::Value::Object(mut base), serde_json::Value::Object(extra)) => {
+                base.extend(extra);
+                serde_json::Value::Object(base)
+            }
+            _ => unreachable!(),
+        };
+        let req: LogLlmCallRequest = serde_json::from_value(merged).expect("deserialize");
+        assert_eq!(req.cached_tokens, Some(40));
+        assert_eq!(req.total_time_ms, Some(430));
+
+        let bare: LogLlmCallRequest =
+            serde_json::from_value(full).expect("deserialize without telemetry fields");
+        assert_eq!(bare.cached_tokens, None);
+        assert_eq!(bare.total_time_ms, None);
+    }
+
+    #[test]
+    fn cache_hit_stats_sql_is_null_safe_aggregate() {
+        let sql = "SELECT model, \
+                    COUNT(*) AS calls, \
+                    COALESCE(SUM(cached_tokens), 0)::BIGINT AS cached_tokens_total, \
+                    SUM(prompt_tokens)::BIGINT AS prompt_tokens_total, \
+                    CASE \
+                        WHEN COALESCE(SUM(cached_tokens), 0) = 0 OR SUM(prompt_tokens) IS NULL \
+                             OR SUM(prompt_tokens) = 0 \
+                        THEN NULL \
+                        ELSE SUM(cached_tokens)::DOUBLE PRECISION / SUM(prompt_tokens)::DOUBLE PRECISION \
+                    END AS cache_hit_ratio, \
+                    AVG(total_time_ms) AS avg_total_time_ms \
+             FROM run_llm_calls \
+             GROUP BY model \
+             ORDER BY calls DESC, model ASC";
+        assert!(sql.contains("COALESCE(SUM(cached_tokens), 0)"));
+        assert!(sql.contains("THEN NULL"));
+        assert!(sql.contains("GROUP BY model"));
     }
 
     #[test]
@@ -1478,6 +1634,92 @@ mod tests {
         let _ = sqlx::query("DELETE FROM run_llm_calls WHERE agent_name LIKE 'integration-test-%'")
             .execute(&pool)
             .await;
+    }
+
+    /// Telemetry fields survive insert → RETURNING → get → list, and
+    /// `cache_hit_stats` aggregates them per model.
+    #[tokio::test]
+    async fn integration_llm_call_cache_telemetry_roundtrip_and_stats() {
+        let Some(pool) = try_test_pool().await else {
+            eprintln!("SKIP: no postgres");
+            return;
+        };
+        let store = RunHistoryStore::new(&pool);
+        seed_integration_parents(&pool, "tenant-integration", "run-integration-cache").await;
+
+        // Clean up
+        let _ = sqlx::query(
+            "DELETE FROM run_llm_calls WHERE agent_name LIKE 'integration-test-%'",
+        )
+        .execute(&pool)
+        .await;
+
+        let req = LogLlmCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: "run-integration-cache".into(),
+            tenant_id: "tenant-integration".into(),
+            agent_name: "integration-test-agent".into(),
+            step_index: 0,
+            provider: "openai".into(),
+            model: "gpt-4o-telemetry".into(),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            estimated_cost_usd: dec!(0.000250),
+            latency_ms: 420,
+            cached_tokens: Some(40),
+            total_time_ms: Some(430),
+            status: "success".into(),
+            error_message: None,
+            request_payload: None,
+            response_payload: None,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+
+        // Insert returns the persisted row including telemetry.
+        let inserted = store.insert_llm_call(&req).await.expect("insert_llm_call");
+        assert_eq!(inserted.cached_tokens, Some(40));
+        assert_eq!(inserted.total_time_ms, Some(430));
+
+        // Get reads the same values back from storage.
+        let fetched = store
+            .get_llm_call(&inserted.id)
+            .await
+            .expect("get_llm_call")
+            .expect("row exists");
+        assert_eq!(fetched.cached_tokens, Some(40));
+        assert_eq!(fetched.total_time_ms, Some(430));
+
+        // A second call without reported cache hits stays NULL-safe.
+        let mut null_req = req.clone();
+        null_req.id = uuid::Uuid::new_v4().to_string();
+        null_req.model = "gpt-4o-telemetry".into();
+        null_req.cached_tokens = None;
+        null_req.total_time_ms = None;
+        let inserted_null = store
+            .insert_llm_call(&null_req)
+            .await
+            .expect("insert null-telemetry call");
+        assert_eq!(inserted_null.cached_tokens, None);
+
+        // Aggregate view sums cached tokens and skips the NULL row safely.
+        let stats = store.cache_hit_stats().await.expect("cache_hit_stats");
+        let stat = stats
+            .iter()
+            .find(|s| s.model == "gpt-4o-telemetry")
+            .expect("telemetry model in stats");
+        assert_eq!(stat.cached_tokens, 40);
+        assert_eq!(stat.prompt_tokens, 200);
+        assert_eq!(stat.calls, 2);
+        assert_eq!(stat.cache_hit_ratio, Some(0.2));
+        assert_eq!(stat.avg_total_time_ms, Some(215.0));
+
+        // Cleanup
+        let _ = sqlx::query(
+            "DELETE FROM run_llm_calls WHERE agent_name LIKE 'integration-test-%'",
+        )
+        .execute(&pool)
+        .await;
     }
 
     #[tokio::test]

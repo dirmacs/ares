@@ -305,98 +305,54 @@ pub fn routes() -> axum::Router<Arc<Context>> {
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;
 
-/// POST /admin/cordis/entries/reload — reload `cordis-entries.toml` through
-/// `Loader::reload_current`, diffing against the boot-applied tree. Shares the
-/// same journal/current-tree state as the file watcher. Returns per-action
-/// outcomes; 503 when loader state is missing (library deployments without a
-/// file program).
-/// Shared apply flow behind the reload endpoint and the entries mutations:
-/// parse + compose the on-disk file (`@include` splices, `@group` flattening,
-/// `${rhai: …}` interpolation), diff-apply it through
-/// [`cordis::loader::Loader::reload_current`], then store the updated tree
-/// back into `CurrentEntries`.
+/// Shared apply flow behind the reload endpoint and the entries mutations.
 ///
-/// Errors carry the exact `(status, body)` tuples the legacy reload handler
-/// produced (`"reloaded": false` markers included) so every caller answers
-/// uniformly.
+/// Thin adapter over [`cordis::reload_entries_from_disk`] — parse + compose +
+/// diff-apply + classify, serialized against watcher batches by the shared
+/// process-wide reload lock. The classified outcome maps back onto the exact
+/// `(status, body)` tuples the legacy inline flow produced (`"reloaded":
+/// false` markers included) so every caller answers uniformly; `Applied`
+/// actions pass through untouched (including per-action failures, which the
+/// response surfaces as `"ok": false` rows rather than a transport error).
 async fn apply_entries_from_disk(
     ctx: &Arc<Context>,
 ) -> Result<Vec<cordis::loader::AppliedAction>, (StatusCode, serde_json::Value)> {
-    use cordis::loader::Loader;
-
-    let Some(journal) = ctx.get::<cordis::LoaderJournal>() else {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({
-                "reloaded": false,
-                "error": "LoaderJournal is not provided on this context",
-            }),
-        ));
-    };
-    let Some(current_entries) = ctx.get::<cordis::CurrentEntries>() else {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({
-                "reloaded": false,
-                "error": "CurrentEntries is not provided on this context",
-            }),
-        ));
-    };
-
-    // Compose the freshly parsed file (includes/groups/interpolation) before
-    // diffing; on composition failure fall back to the raw entries so a bad
-    // include cannot brick the admin reload path either.
-    let desired = match Loader::load_from_file(&current_entries.path) {
-        Ok(mut tree) => {
-            if let Err(e) = ::cordis::compose_all(
-                &mut tree.0,
-                current_entries
-                    .path
-                    .parent()
-                    .unwrap_or(std::path::Path::new(".")),
-            ) {
-                tracing::error!(
-                    path = %current_entries.path.display(),
-                    error = %e,
-                    "Cordis compose failed on admin reload; proceeding with raw entries"
-                );
-                tree = Loader::load_from_file(&current_entries.path).unwrap_or_default();
+    match cordis::reload_entries_from_disk(ctx, &{
+        // Resolve the program path from CurrentEntries first so a missing
+        // service answers 503 with the legacy marker instead of a generic
+        // failure at an arbitrary path.
+        match ctx.get::<cordis::CurrentEntries>() {
+            Some(ce) => ce.path.clone(),
+            None => {
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    serde_json::json!({
+                        "reloaded": false,
+                        "error": "CurrentEntries is not provided on this context",
+                    }),
+                ))
             }
-            tree
         }
-        Err(_) => {
-            return Err((
-                StatusCode::UNPROCESSABLE_ENTITY,
-                serde_json::json!({
-                    "reloaded": false,
-                    "error": format!(
-                        "failed to read or parse {}",
-                        current_entries.path.display()
-                    ),
-                }),
-            ))
+    })
+    .await
+    {
+        cordis::ReloadOutcome::Applied { actions } => Ok(actions),
+        cordis::ReloadOutcome::NoChange => Ok(Vec::new()),
+        cordis::ReloadOutcome::Failed { error } => {
+            // Distinguish "loader state absent" (503) from "file bad" (422).
+            if error.contains("not provided on this context") {
+                Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    serde_json::json!({ "reloaded": false, "error": error }),
+                ))
+            } else {
+                Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    serde_json::json!({ "reloaded": false, "error": error }),
+                ))
+            }
         }
-    };
-
-    let mut current = current_entries.tree.lock().expect("entries lock").clone();
-    let actions =
-        Loader::reload_current(ctx, &current_entries.path, &mut current, &desired, &journal).await;
-
-    let Some(actions) = actions else {
-        return Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            serde_json::json!({
-                "reloaded": false,
-                "error": format!(
-                    "failed to read or parse {}",
-                    current_entries.path.display()
-                ),
-            }),
-        ));
-    };
-
-    *current_entries.tree.lock().expect("entries lock") = current;
-    Ok(actions)
+    }
 }
 
 /// Serialize per-action outcomes to the shared `"applied"` response shape.
@@ -492,11 +448,22 @@ pub async fn list_cordis_entries(
     State(ctx): State<Arc<Context>>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     use cordis::loader::{EntryConfigFillerHandle, Loader};
+    use cordis::watcher::WATCH_DEBOUNCE;
 
     let (_journal, current_entries) = match require_loader_state(&ctx) {
         Ok(state) => state,
         Err((status, body)) => return Ok((status, Json(body))),
     };
+
+    // Settle barrier: a PUT/DELETE/toggle that just rewrote the file may have
+    // an in-flight watcher batch applying the same bytes. Await the watcher's
+    // next settled outcome (bounded at 2x the debounce window) before reading
+    // `CurrentEntries`, so this GET reports applied state instead of racing
+    // the batch. Quiet systems simply time out here and read immediately.
+    if let Some(barrier) = ctx.get::<cordis::SettleBarrier>() {
+        let mut rx = (**barrier).clone();
+        let _ = tokio::time::timeout(WATCH_DEBOUNCE + WATCH_DEBOUNCE, rx.changed()).await;
+    }
 
     let current = current_entries.tree.lock().expect("entries lock").clone();
     let mut desired = match Loader::load_from_file(&current_entries.path) {

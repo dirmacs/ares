@@ -470,88 +470,16 @@ fn boot_loader_program(
     Ok(())
 }
 
-/// Reload the entries file through `Loader::apply`, diffing against the last
-/// applied tree. Returns true when at least one reconcile action ran.
+/// Reload the entries file through the shared classified flow
+/// (`cordis::reload_entries_from_disk`: parse → compose → diff-apply →
+/// classify, serialized against admin reloads). Returns true when at least
+/// one reconcile action ran.
 #[cfg(feature = "postgres")]
 fn reload_cordis_entries(ctx: &Arc<Context>, path: &std::path::Path) -> bool {
-    use cordis::loader::Loader;
-    let Some(journal) = ctx.get::<cordis::LoaderJournal>() else {
-        tracing::warn!("Cordis hot-reload: LoaderJournal missing; skipping");
-        return false;
-    };
-    let Some(current_entries) = ctx.get::<cordis::loader::CurrentEntries>() else {
-        tracing::warn!("Cordis hot-reload: CurrentEntries missing; skipping");
-        return false;
-    };
-    // Compose the freshly re-read tree BEFORE diffing so `@include` splices,
-    // `@group` flattening, and `${rhai: …}` interpolation match boot state
-    // (fail-open: on composition error we proceed with the raw entries).
-    let Ok(composed_tree) = Loader::load_from_file(path).map(|t| compose_entries_tree(t, path))
-    else {
-        tracing::warn!(path = %path.display(), "Cordis hot-reload: reparse failed after change");
-        return false;
-    };
-    let mut current = current_entries.tree.lock().expect("entries lock").clone();
-    let actions = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(Loader::reload_current(
-            ctx,
-            path,
-            &mut current,
-            &composed_tree,
-            &journal,
-        ))
+    let outcome = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(cordis::reload_entries_from_disk(ctx, path))
     });
-    let Some(actions) = actions else {
-        return false;
-    };
-    let ran = !actions.is_empty();
-    for action in &actions {
-        match &action.status {
-            Ok(()) => tracing::info!(
-                entry_id = %action.id,
-                action = action.action,
-                "Cordis hot-reload: applied"
-            ),
-            Err(err) => tracing::warn!(
-                entry_id = %action.id,
-                action = action.action,
-                error = %err,
-                "Cordis hot-reload: action failed"
-            ),
-        }
-    }
-    if ran {
-        *current_entries.tree.lock().expect("entries lock") = current;
-        tracing::info!(
-            actions = actions.len(),
-            "Cordis hot-reload: reconciled entries change"
-        );
-    }
-    ran
-}
-
-/// Compose freshly parsed entries in place: resolve `@include` splices,
-/// flatten `@group` children, then interpolate `${rhai: …}` config
-/// placeholders.
-///
-/// Composition is best-effort (fail-open): on error the RAW entries are kept
-/// and boot/reload proceeds — a bad include must not brick the server — but
-/// the reason is logged loudly at `error` level.
-#[cfg(feature = "postgres")]
-fn compose_entries_tree(
-    mut tree: cordis::loader::EntryTree,
-    path: &std::path::Path,
-) -> cordis::loader::EntryTree {
-    let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
-    if let Err(e) = cordis::compose_all(&mut tree.0, base_dir) {
-        tracing::error!(
-            path = %path.display(),
-            error = %e,
-            "Cordis compose: entry composition failed; \
-             proceeding with raw (uncomposed) entries"
-        );
-    }
-    tree
+    matches!(outcome, cordis::ReloadOutcome::Applied { .. })
 }
 
 /// Forward cordis-entries.toml onto `watch_many_with` so HMR dylib apply
@@ -563,10 +491,14 @@ fn start_cordis_entries_watch(
     entries_path: &std::path::Path,
 ) -> Option<cordis::watcher::WatchHandle> {
     let reflect = ctx.get::<cordis::ReflectService>()?;
-    let entries = entries_path.to_path_buf();
-    let on_change: cordis::watcher::WatchOnChange = std::sync::Arc::new(move |c, _p| {
-        let _ = reload_cordis_entries(c, &entries);
-    });
+    // The watcher drives the classified reload itself (batch touches
+    // CurrentEntries); the closure only logs the settled outcome.
+    let on_change: cordis::watcher::WatchOnChange =
+        std::sync::Arc::new(move |_c, _paths, outcome| {
+            if !matches!(outcome, cordis::ReloadOutcome::NoChange) {
+                tracing::info!(outcome = %outcome.summary(), "Cordis entries watch outcome");
+            }
+        });
     cordis::watcher::watch_many_with(
         ctx.clone(),
         reflect,
@@ -673,7 +605,9 @@ async fn run_server(
                 if cur != last_modified && cur.is_some() {
                     last_modified = cur;
                     if entries_path.exists() {
-                        reload_cordis_entries(&ctx_for_watch, entries_path);
+                        let outcome =
+                            cordis::reload_entries_from_disk(&ctx_for_watch, entries_path).await;
+                        tracing::info!(outcome = %outcome.summary(), "Cordis fallback poll reload");
                     }
                 }
             }
@@ -1025,34 +959,75 @@ async fn run_server(
 
 /// Daemon half of the supervised-worker protocol: re-exec this binary as a
 /// child with CORDIS_SUPERVISED set, hold its stdin write end, and interpret
-/// exit codes — 51 respawns (bounded against rapid loops), anything else
-/// ends supervision and the process returns the child's code. Dropping the
-/// child's stdin signals EOF so the child tears down gracefully even after
-/// a daemon SIGKILL.
+/// exit codes — 51 respawns (bounded against rapid loops and exponential
+/// respawn backoff), anything else ends supervision and the process returns
+/// the child's code. Dropping the child's stdin signals EOF so the child
+/// tears down gracefully even after a daemon SIGKILL; a worker that ignores
+/// EOF is force-killed once `WORKER_SHUTDOWN_GRACE` elapses.
 #[cfg(feature = "postgres")]
 async fn supervise_forever(_cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
     use std::sync::Arc;
 
+    // Write end of the live child's stdin; dropping it is the stop request
+    // (EOF) that starts the shutdown-grace countdown inside `wait_with_grace`.
     let held_stdin: Arc<std::sync::Mutex<Option<std::process::ChildStdin>>> =
         Arc::new(std::sync::Mutex::new(None));
     let last_code = Arc::new(AtomicI32::new(0));
+    // Set once supervision has ended while the loop still owes the closure a
+    // final call; that last pass must not spawn another worker. The terminal
+    // child is already gone — it exited with the non-restart code that ended
+    // the loop, and this function reaps nothing after `supervise` returns.
+    let reap_only = Arc::new(AtomicBool::new(false));
+
     let result = {
         let held_stdin = held_stdin.clone();
         let last_code = last_code.clone();
+        let reap_only = reap_only.clone();
         ares_server::supervisor::supervise(move || {
             // Clone the Arcs into each future; the closure itself stays Fn.
             let held_stdin = held_stdin.clone();
             let last_code = last_code.clone();
+            let reap_only = reap_only.clone();
             async move {
+                if reap_only.load(Ordering::SeqCst) {
+                    // Final bookkeeping pass: supervision has ended and the
+                    // terminal child already exited with the code that ended
+                    // the loop, so there is nothing to spawn or reap.
+                    return None;
+                }
                 // Release the previous child's stdin first: EOF tells it to
                 // stop before we spawn its replacement.
-                held_stdin.lock().expect("stdin guard").take();
                 match ares_server::supervisor::spawn_self_supervised() {
-                    Ok(mut sc) => {
-                        let status = sc.child.wait();
+                    Ok(sc) => {
+                        // Park the new stdin write end BEFORE anything else:
+                        // the daemon keeps the ability to stop this worker,
+                        // and the next pass's take() (or the final drop of
+                        // held_stdin) is its release.
                         *held_stdin.lock().expect("stdin guard") = Some(sc.stdin);
-                        let code = status.ok().and_then(|s| s.code()).unwrap_or(0);
+
+                        // Fresh async child with the same identity (exe,
+                        // args, env, piped stdin): waits can time out under
+                        // wait_with_grace, and kill_on_drop is the backstop
+                        // if this future is ever abandoned. The std child
+                        // from spawn_self_supervised is dropped unused — its
+                        // write end dies with it; the kernel reaps that
+                        // process when it exits.
+                        let mut child = {
+                            let mut cmd = tokio::process::Command::new(std::env::current_exe()?);
+                            cmd.args(std::env::args_os().skip(1))
+                                .env(ares_server::supervisor::CHILD_ENV_MARKER, "1")
+                                .stdin(std::process::Stdio::piped())
+                                .stdout(std::process::Stdio::inherit())
+                                .stderr(std::process::Stdio::inherit())
+                                .kill_on_drop(true);
+                            cmd.spawn()?
+                        };
+                        drop(sc);
+
+                        let code = ares_server::supervisor::wait_with_grace(&mut child)
+                            .await
+                            .unwrap_or(0);
                         last_code.store(code, Ordering::SeqCst);
                         Some(code)
                     }
@@ -1064,10 +1039,15 @@ async fn supervise_forever(_cli: &Cli) -> Result<(), Box<dyn std::error::Error>>
                 }
             }
         })
-        .await
+        .await;
+        // Loop ended (or never started). The terminal child already exited
+        // with the code that ended the loop; dropping the write end here is
+        // pure hygiene, and the flag makes the loop's owed final call a
+        // no-op instead of a fresh spawn.
+        drop(held_stdin);
+        reap_only.store(true, Ordering::SeqCst);
+        result
     };
-    // Final child still running (clean quit path): close stdin, wait it out.
-    drop(held_stdin);
     if let Err(e) = result {
         eprintln!("supervisor: {e}");
         return Err(e.into());

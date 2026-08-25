@@ -101,8 +101,10 @@ impl Default for CompactConfig {
     }
 }
 
+use serde::{Deserialize, Serialize};
+
 /// One recorded conversation turn with its audited importance score.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnEntry {
     /// Monotonic sequence number, starting at 1.
     pub seq: u64,
@@ -115,7 +117,7 @@ pub struct TurnEntry {
 }
 
 /// Internal compaction state guarded by the [`Compactor`] mutex.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct CompactionState {
     entries: Vec<TurnEntry>,
     critical: Vec<String>,
@@ -429,6 +431,25 @@ impl Compactor {
             messages.push(("assistant".to_string(), entry.assistant.clone()));
         }
         messages
+    }
+
+    /// Exports the full compaction state for persistence (DB snapshot row).
+    pub fn export(&self) -> CompactionState {
+        self.lock().clone()
+    }
+
+    /// Rebuilds a compactor from previously [`Compactor::export`]ed state,
+    /// restoring entries, critical facts, memory and audit position.
+    pub fn hydrate(
+        config: CompactConfig,
+        client: Arc<dyn LLMClient>,
+        state: CompactionState,
+    ) -> Self {
+        Self {
+            config,
+            client,
+            state: Mutex::new(state),
+        }
     }
 
     /// Counted view of the current state for tests and admin surfaces.
@@ -895,5 +916,52 @@ mod tests {
     fn truncate_chars_respects_boundaries() {
         assert_eq!(truncate_chars("hello", 50), "hello");
         assert_eq!(truncate_chars("héllo", 2), "hé");
+    }
+
+    /// State must survive a serde round trip unchanged: this is the contract
+    /// behind DB snapshot persistence (`export` → JSONB row → `hydrate`).
+    #[tokio::test]
+    async fn state_serde_round_trip_preserves_entries_critical_memory_audit_seq() {
+        let client = Arc::new(ScriptedClient::new(|_| {
+            Err(AppError::Internal("unused".into()))
+        }));
+        let compactor = Compactor::with_client(client);
+        {
+            let mut state = compactor.lock();
+            state.entries.push(TurnEntry {
+                seq: 1,
+                user: "theme?".to_string(),
+                assistant: "dark mode".to_string(),
+                score: Some(5),
+            });
+            state.entries.push(TurnEntry {
+                seq: 2,
+                user: "stack?".to_string(),
+                assistant: "rust".to_string(),
+                score: None,
+            });
+            state.critical.push("user: theme?\nassistant: dark mode".to_string());
+            state.memory = "User prefers dark mode.".to_string();
+            state.last_audit_seq = 1;
+        }
+
+        // export → JSON → JSON (store row) → hydrate.
+        let exported = compactor.export();
+        let json = serde_json::to_string(&exported).expect("serialize");
+        let restored: CompactionState = serde_json::from_str(&json).expect("deserialize");
+        let revived =
+            Compactor::hydrate(CompactConfig::default(), Arc::new(ScriptedClient::new(|_| {
+                Err(AppError::Internal("unused".into()))
+            })), restored);
+
+        assert_eq!(revived.export().entries, exported.entries);
+        assert_eq!(revived.export().critical, exported.critical);
+        assert_eq!(revived.export().memory, exported.memory);
+        assert_eq!(revived.export().last_audit_seq, 1);
+        // Hydrated audit position survives: no new turns means no audit due.
+        assert_eq!(
+            revived.audit_if_due().await.first(),
+            Some(&CompactEvent::Skipped { reason: "not-due" })
+        );
     }
 }

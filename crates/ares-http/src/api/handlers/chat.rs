@@ -112,6 +112,7 @@ fn agent_config_from_user_agent(user_agent: &UserAgent) -> AgentConfig {
         parallel_tools: user_agent.parallel_tools,
         allowed_tools: None,
         extra: std::collections::HashMap::new(),
+        compaction_enabled: None,
     }
 }
 

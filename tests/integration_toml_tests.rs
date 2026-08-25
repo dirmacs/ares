@@ -64,6 +64,7 @@ fn create_test_config() -> ares_http::overlay::AresConfig {
             max_tool_iterations: 10,
             parallel_tools: false,
             extra: HashMap::new(),
+            compaction_enabled: None,
         },
     );
     agents.insert(
@@ -76,6 +77,7 @@ fn create_test_config() -> ares_http::overlay::AresConfig {
             max_tool_iterations: 10,
             parallel_tools: false,
             extra: HashMap::new(),
+            compaction_enabled: None,
         },
     );
 
@@ -353,6 +355,7 @@ fn test_missing_reference_rejected() {
             max_tool_iterations: 10,
             parallel_tools: false,
             extra: HashMap::new(),
+            compaction_enabled: None,
         },
     );
 
@@ -385,6 +388,7 @@ fn test_tool_filtering_in_agent() {
         max_tool_iterations: 10,
         parallel_tools: false,
         extra: HashMap::new(),
+        compaction_enabled: None,
     };
 
     // Verify tools are captured

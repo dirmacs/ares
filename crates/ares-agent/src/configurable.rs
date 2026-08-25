@@ -1401,6 +1401,7 @@ pub fn agent_config_from_user_agent(user_agent: &ares_store::postgres::UserAgent
         tools: user_agent.tools_vec(),
         max_tool_iterations: user_agent.max_tool_iterations as usize,
         parallel_tools: user_agent.parallel_tools,
+        compaction_enabled: None,
         allowed_tools: None,
         extra: std::collections::HashMap::new(),
     }
@@ -1613,6 +1614,7 @@ mod tests {
             allowed_tools: None,
             max_tool_iterations: 5,
             parallel_tools: false,
+            compaction_enabled: None,
             extra: HashMap::new(),
         }
     }

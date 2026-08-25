@@ -121,6 +121,7 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
             max_tool_iterations: 5,
             parallel_tools: false,
             extra: HashMap::new(),
+            compaction_enabled: None,
         },
     );
     agents.insert(
@@ -133,6 +134,7 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
             max_tool_iterations: 5,
             parallel_tools: false,
             extra: HashMap::new(),
+            compaction_enabled: None,
         },
     );
 

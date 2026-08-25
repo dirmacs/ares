@@ -435,6 +435,65 @@ impl PostgresClient {
             .await
             .map_err(|e| AppError::Database(e.to_string()))
     }
+
+    /// Inserts or updates the persisted compaction snapshot for one session.
+    ///
+    /// `entries` and `critical` are JSONB values (serialized compaction
+    /// state); `last_audit_seq` is i64 to match the BIGINT column.
+    pub async fn upsert_conversation_snapshot(
+        &self,
+        session_id: &str,
+        entries: serde_json::Value,
+        critical: serde_json::Value,
+        memory: &str,
+        last_audit_seq: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO conversation_snapshots (session_id, entries, critical, memory, last_audit_seq, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, now()) \
+             ON CONFLICT(session_id) DO UPDATE SET \
+             entries = $2, critical = $3, memory = $4, last_audit_seq = $5, updated_at = now()",
+        )
+        .bind(session_id)
+        .bind(entries)
+        .bind(critical)
+        .bind(memory)
+        .bind(last_audit_seq)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to upsert conversation snapshot: {}", e)))?;
+        Ok(())
+    }
+
+    /// Fetches the persisted compaction snapshot for one session, if any.
+    pub async fn get_conversation_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ConversationSnapshotRow>> {
+        #[derive(sqlx::FromRow)]
+        struct SnapshotRow {
+            session_id: String,
+            entries: serde_json::Value,
+            critical: serde_json::Value,
+            memory: String,
+            last_audit_seq: i64,
+        }
+        let rows = sqlx::query_as::<_, SnapshotRow>(
+            "SELECT session_id, entries, critical, memory, last_audit_seq \
+             FROM conversation_snapshots WHERE session_id = $1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to get conversation snapshot: {}", e)))?;
+        Ok(rows.map(|row| ConversationSnapshotRow {
+            session_id: row.session_id,
+            entries: row.entries,
+            critical: row.critical,
+            memory: row.memory,
+            last_audit_seq: row.last_audit_seq,
+        }))
+    }
 }
 
 impl cordis::Service for PostgresClient {
@@ -447,6 +506,16 @@ impl cordis::Service for PostgresClient {
     fn check(&self) -> bool {
         true
     }
+}
+
+/// One persisted compaction snapshot row (`conversation_snapshots`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationSnapshotRow {
+    pub session_id: String,
+    pub entries: serde_json::Value,
+    pub critical: serde_json::Value,
+    pub memory: String,
+    pub last_audit_seq: i64,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1255,6 +1324,70 @@ mod tests {
                 .await
                 .expect("query after commit");
             assert_eq!(row.map(|r| r.0), Some(id));
+        }
+
+        #[tokio::test]
+        async fn integration_conversation_snapshot_roundtrip() {
+            let Some(pool) = try_test_pool().await else {
+                eprintln!("SKIP: no postgres");
+                return;
+            };
+            let client = PostgresClient { pool };
+            let session_id = unique("snap-session");
+
+            // Missing snapshot reads as None.
+            assert!(client
+                .get_conversation_snapshot(&session_id)
+                .await
+                .expect("get missing snapshot")
+                .is_none());
+
+            let entries = serde_json::json!([
+                {"seq": 1, "user": "theme?", "assistant": "dark mode", "score": 5},
+                {"seq": 2, "user": "stack?", "assistant": "rust", "score": null}
+            ]);
+            let critical = serde_json::json!(["user: theme?\nassistant: dark mode"]);
+
+            client
+                .upsert_conversation_snapshot(
+                    &session_id,
+                    entries.clone(),
+                    critical.clone(),
+                    "User prefers dark mode.",
+                    1,
+                )
+                .await
+                .expect("upsert snapshot");
+
+            let row = client
+                .get_conversation_snapshot(&session_id)
+                .await
+                .expect("get snapshot")
+                .expect("snapshot present");
+            assert_eq!(row.session_id, session_id);
+            assert_eq!(row.entries, entries);
+            assert_eq!(row.critical, critical);
+            assert_eq!(row.memory, "User prefers dark mode.");
+            assert_eq!(row.last_audit_seq, 1);
+
+            // Upsert replaces the whole state for the same session.
+            client
+                .upsert_conversation_snapshot(
+                    &session_id,
+                    serde_json::json!([]),
+                    serde_json::json!([]),
+                    "",
+                    2,
+                )
+                .await
+                .expect("re-upsert snapshot");
+            let row = client
+                .get_conversation_snapshot(&session_id)
+                .await
+                .expect("get snapshot after upsert")
+                .expect("snapshot still present");
+            assert_eq!(row.entries, serde_json::json!([]));
+            assert_eq!(row.last_audit_seq, 2);
         }
     }
 }

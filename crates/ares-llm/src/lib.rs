@@ -120,7 +120,7 @@ pub use exporter::{ExporterRouter, LogExporter, RecordLevel, TracingExporter};
 pub use llm_service::{Breaker, Llm, ModelOverride, TenantModelPolicy};
 pub use micro::{MicroEngine, MicroOutcome, MicroTask};
 pub use observability::{LlmCallRecord, ObservabilitySink};
-pub use plugins::register_plugins;
+pub use plugins::{install_tracing_router, register_plugins};
 pub use pool::{ClientPool, ClientPoolBuilder, PoolConfig, PoolStats, PooledClientGuard};
 pub use provider_registry::{ConfigBasedLLMFactory, ProviderRegistry};
 

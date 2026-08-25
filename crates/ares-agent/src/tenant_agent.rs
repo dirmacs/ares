@@ -108,6 +108,7 @@ pub fn agent_config_from_json(json: &serde_json::Value) -> Result<AgentConfig> {
         } else {
             Some(allowed_tools)
         },
+        compaction_enabled: None,
         extra: HashMap::new(),
     })
 }
@@ -849,6 +850,7 @@ mod tests {
                     tools: vec![],
                     max_tool_iterations: 5,
                     parallel_tools: false,
+                    compaction_enabled: None,
                     extra: HashMap::new(),
                     allowed_tools: None,
                 },
@@ -1035,6 +1037,7 @@ mod tests {
                     tools: vec![],
                     max_tool_iterations: 5,
                     parallel_tools: false,
+                    compaction_enabled: None,
                     extra: HashMap::new(),
                     allowed_tools: None,
                 },

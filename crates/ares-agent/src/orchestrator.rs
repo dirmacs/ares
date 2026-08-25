@@ -264,6 +264,7 @@ mod tests {
             parallel_tools: false,
             allowed_tools: None,
             extra: HashMap::new(),
+            compaction_enabled: None,
         }
     }
 
@@ -451,6 +452,7 @@ mod tests {
                 parallel_tools: false,
             allowed_tools: None,
             extra: HashMap::new(),
+            compaction_enabled: None,
             },
         );
         let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_agent_map(agents));

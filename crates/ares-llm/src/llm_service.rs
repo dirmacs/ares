@@ -23,7 +23,7 @@ use cordis::{Context, CordisError, EventsService, Service};
 use parking_lot::RwLock;
 
 use crate::capabilities::CapabilityRequirements;
-use crate::client::{LLMClient, LLMResponse};
+use crate::client::{GenerationHints, LLMClient, LLMResponse};
 use crate::config::ProviderConfig;
 use crate::pool::ClientPool;
 use crate::provider_registry::{
@@ -648,6 +648,12 @@ impl LLMClient for BoxedArcClient {
     fn model_name(&self) -> &str {
         self.0.model_name()
     }
+    fn supports_hints(&self) -> bool {
+        self.0.supports_hints()
+    }
+    fn set_hints(&self, hints: GenerationHints) {
+        self.0.set_hints(hints)
+    }
 }
 
 impl Service for Llm {
@@ -1105,5 +1111,118 @@ mod tests {
                 .any(|m| m.name == "stub-model" && m.provider == "stub"),
             "Llm::list_models should expose registry models: {models:?}"
         );
+    }
+
+    /// Mock recording every `set_hints` payload routed through it.
+    #[derive(Default)]
+    struct HintRecordingClient {
+        hints: parking_lot::Mutex<Vec<GenerationHints>>,
+        supports: bool,
+    }
+
+    #[async_trait]
+    impl LLMClient for HintRecordingClient {
+        async fn generate(&self, _prompt: &str) -> ares_types::types::Result<String> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn generate_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> ares_types::types::Result<String> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn generate_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> ares_types::types::Result<LLMResponse> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn generate_with_tools(
+            &self,
+            _prompt: &str,
+            _tools: &[ToolDefinition],
+        ) -> ares_types::types::Result<LLMResponse> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn generate_with_tools_and_history(
+            &self,
+            _messages: &[crate::coordinator::ConversationMessage],
+            _tools: &[ToolDefinition],
+        ) -> ares_types::types::Result<LLMResponse> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn stream(
+            &self,
+            _prompt: &str,
+        ) -> ares_types::types::Result<
+            Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn stream_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> ares_types::types::Result<
+            Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn stream_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> ares_types::types::Result<
+            Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        fn model_name(&self) -> &str {
+            "hint-recording-mock"
+        }
+
+        fn supports_hints(&self) -> bool {
+            self.supports
+        }
+
+        fn set_hints(&self, hints: GenerationHints) {
+            self.hints.lock().push(hints);
+        }
+    }
+
+    #[test]
+    fn boxed_arc_client_forwards_hints_to_inner_client() {
+        let inner = Arc::new(HintRecordingClient {
+            supports: true,
+            ..Default::default()
+        });
+        let boxed = BoxedArcClient(Arc::clone(&inner));
+
+        assert!(boxed.supports_hints());
+        boxed.set_hints(GenerationHints {
+            json_mode: true,
+            suppress_reasoning: false,
+            max_tokens: Some(256),
+        });
+        boxed.set_hints(GenerationHints::default());
+
+        // The adapter must reach the INNER client instead of stopping at the
+        // trait's no-op defaults on the box itself.
+        let recorded = inner.hints.lock();
+        assert_eq!(
+            recorded.len(),
+            2,
+            "both set_hints calls must reach the inner client"
+        );
+        assert!(recorded[0].json_mode && recorded[0].max_tokens == Some(256));
+        assert_eq!(recorded[1], GenerationHints::default());
     }
 }

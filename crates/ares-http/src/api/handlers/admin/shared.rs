@@ -1981,10 +1981,10 @@ pub fn runtime_provider_api_key(headers: &mut HashMap<String, String>) -> Option
 // =============================================================================
 
 pub use ares_store::run_history::{
-    AcknowledgeBudgetAlertRequest, AgentHealthMetrics, BudgetAlert, ListBudgetAlertsQuery,
-    ListLlmCallsQuery, ListToolCallsQuery, LogLlmCallRequest, LogToolCallRequest,
-    ModelHealthMetrics, RunCost, RunHistoryStore, RunLlmCall, RunToolCall, SetTenantBudgetRequest,
-    TenantBudget,
+    AcknowledgeBudgetAlertRequest, AgentHealthMetrics, BudgetAlert, CacheHitStat,
+    ListBudgetAlertsQuery, ListLlmCallsQuery, ListToolCallsQuery, LogLlmCallRequest,
+    LogToolCallRequest, ModelHealthMetrics, RunCost, RunHistoryStore, RunLlmCall, RunToolCall,
+    SetTenantBudgetRequest, TenantBudget,
 };
 pub use ares_store::token_budgets::{BudgetStatus, TokenBudget, TokenBudgetStore, TokenUsageEntry};
 

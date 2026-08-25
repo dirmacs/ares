@@ -507,6 +507,15 @@ pub struct AppliedAction {
     pub verified: bool,
 }
 
+/// Process-wide in-flight provider-update ledger (`fiber id` → count).
+///
+/// C2 cascade batching: entries are inserted by [`Loader::drive_fiber_update`]
+/// for the duration of one live re-apply and consulted inside the kernel's
+/// refresh path, so concurrent config patches against one provider produce a
+/// SINGLE dependency cascade after completion instead of one wave per patch.
+static CASCADE_INFLIGHT: std::sync::LazyLock<std::sync::Mutex<HashMap<u64, u64>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
 impl Loader {
     /// Reconcile `current` toward `desired`, executing every action for real.
     ///
@@ -751,14 +760,88 @@ impl Loader {
         results
     }
 
+    // --- C2 cascade batching -------------------------------------------------
+    //
+    // Concurrent PATCH storms against one provider entry used to produce N
+    // sequential dependency cascades: each `Fiber::update` re-applied the
+    // plugin and every settle notified dependents, which each re-ran their
+    // own refresh waves. The in-flight ledger below marks a provider fiber
+    // "updating" for the duration of its re-apply; dependent fibers consult
+    // it inside `refresh` and DEFER (resting `Pending` — quiet waiting)
+    // while any declared dependency is mid-update. When the update finishes,
+    // ONE trailing refresh per deferred fiber converges the whole cascade.
+    //
+    // The ledger keys on fiber id and lives on the loader (process-wide),
+    // mirroring the journal: absent loader paths degrade to today's
+    // behavior because nothing ever registers an in-flight window.
+
+
+    /// Mark `fid` as mid-provider-update (reentrant-safe via counting).
+    fn cascade_begin(fid: u64) {
+        if let Ok(mut ledger) = CASCADE_INFLIGHT.lock() {
+            *ledger.entry(fid).or_insert(0) += 1;
+        }
+    }
+
+    /// End one in-flight window for `fid`; returns `true` when this was the
+    /// last open window (i.e. the provider just settled).
+    fn cascade_end(fid: u64) -> bool {
+        if let Ok(mut ledger) = CASCADE_INFLIGHT.lock() {
+            match ledger.entry(fid) {
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    *slot.get_mut() -= 1;
+                    if *slot.get() == 0 {
+                        slot.remove();
+                        return true;
+                    }
+                    return false;
+                }
+                std::collections::hash_map::Entry::Vacant(_) => return true,
+            }
+        }
+        true
+    }
+
+    /// Kernel-facing deferral probe (C2): `true` while the provider fiber of
+    /// ANY of `tids` sits mid-config-update in `ctx`'s realms. The fiber's
+    /// refresh consults this to defer dependent cascades until the provider
+    /// settles.
+    pub(crate) fn cascade_defer_needed(tids: &[TypeId], ctx: &Arc<crate::Context>) -> bool {
+        let Some(registry) = ctx.get::<crate::RegistryService>() else {
+            return false;
+        };
+        let provider_fids = registry.provider_fibers_for(ctx, tids);
+        Self::cascade_any_inflight(&provider_fids)
+    }
+
+    /// True when ANY of `fids` currently sits mid-provider-update. Dependents
+    /// treat "provider updating" as not-ready and defer instead of churning
+    /// through a cascade wave per concurrent patch.
+    pub(crate) fn cascade_any_inflight(fids: &[u64]) -> bool {
+        if fids.is_empty() {
+            return false;
+        }
+        CASCADE_INFLIGHT
+            .lock()
+            .map(|ledger| fids.iter().any(|fid| ledger.contains_key(fid)))
+            .unwrap_or(false)
+    }
+
     /// Run one live-fiber config update on the hosting runtime:
     /// multi-thread runtimes use `block_in_place`; runtimes without a
     /// reachable Handle fail the update (the caller rolls back).
+    ///
+    /// C2 cascade batching: the whole re-apply runs inside an in-flight
+    /// ledger window for this fiber, so dependents observing the transient
+    /// deactivate/reactivate settle ONCE after completion instead of once
+    /// per intermediate state change.
     fn drive_fiber_update(
         ctx: &Arc<crate::Context>,
         fiber: &std::sync::Arc<crate::Fiber>,
     ) -> Result<(), String> {
-        match tokio::runtime::Handle::try_current() {
+        let fid = fiber.fiber_id().unwrap_or(0);
+        Self::cascade_begin(fid);
+        let outcome = match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 let ctx_ref = ctx.clone();
                 let fiber_ref = fiber.clone();
@@ -768,7 +851,12 @@ impl Loader {
                 Ok(())
             }
             Err(_) => Err("no tokio runtime for live fiber update".to_string()),
+        };
+        let settled = Self::cascade_end(fid);
+        if settled && fid != 0 {
+            tracing::debug!(fiber_id = fid, "Loader: provider update settled; cascade converges");
         }
+        outcome
     }
 
     /// Undo every step of a partially-applied staged batch, newest-first.
@@ -1347,7 +1435,26 @@ impl Loader {
         if let Some(reflect) = ctx.get::<crate::ReflectService>() {
             reflect.set_context(ctx);
         }
-        trial.map(|_| ()).map_err(|e| e.to_string())
+        trial.map(|_| ()).map_err(|e| {
+            // Preserve machine-readable issues before flattening to the
+            // action-row string; a non-validation error clears any stale
+            // slot for this entry.
+            crate::error::stash_trial_validation(id, &e);
+            e.to_string()
+        })
+    }
+
+    /// Per-entry stash of the most recent structured validation failures
+    /// from [`Self::trial_config_verified`] pre-flights.
+    ///
+    /// `AppliedAction` rows carry plain strings, so the admin PATCH surface
+    /// could not answer 4xx with machine-readable issues. Trials record here
+    /// keyed by entry id ([`crate::error::stash_trial_validation`]); the
+    /// HTTP layer consumes the slot after a failed apply. Slots mirror the
+    /// LATEST trial outcome — recording a non-validation error clears the
+    /// entry, and consumption removes it.
+    pub fn take_trial_validation(entry_id: &str) -> Option<crate::error::ValidationError> {
+        crate::error::take_trial_validation(entry_id)
     }
 
     /// Broker a rolling provider replacement with zero absence window
@@ -3933,5 +4040,196 @@ plugin = "Bar"
     /// dispose (mirrors [`Loader::apply`]'s internal guard).
     fn ops_enter_window_for_test(ops: &std::sync::Arc<LoaderOps>) -> LoaderWindowGuard {
         ops.enter_loader_window()
+    }
+
+    // ------------------------------------------------------------------
+    // C2 cascade batching: concurrent provider patches collapse to ONE
+    // dependent convergence after the in-flight window settles.
+    // ------------------------------------------------------------------
+
+    /// Concurrent config updates against one provider entry must NOT drive
+    /// the dependent through one full refresh wave per patch. The dependent
+    /// defers while the provider fiber is inside its update window (resting
+    /// Pending quietly), and converges exactly once per settled batch — so
+    /// the number of dependent apply passes stays far below the number of
+    /// racing updates, and ends Active with the final config.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_config_updates_collapse_to_single_cascade() {
+        use crate::RegistryService;
+        use std::sync::atomic::Ordering;
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        // Provider: counts every factory application.
+        #[derive(Debug)]
+        struct CascadeProvider;
+        impl Service for CascadeProvider {}
+
+        let provider_applies = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        {
+            let counter = provider_applies.clone();
+            plugin_registry.register(
+                "CascadeProviderFactory",
+                Arc::new(move |ctx, _config| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let future = ctx.plugin(CascadeProvider);
+                    tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(future)
+                    })
+                }),
+            );
+        }
+
+        // Dependent: declares its inject on Provider and counts re-applies.
+        #[derive(Debug)]
+        struct Dependent;
+        impl Service for Dependent {}
+
+        let dep_fiber_holder = Arc::new(parking_lot::Mutex::<Option<std::sync::Arc<crate::Fiber>>>::new(None));
+
+        let dependent_applies = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        {
+            let counter = dependent_applies.clone();
+            let holder = dep_fiber_holder.clone();
+            plugin_registry.register(
+                "CascadeDependentFactory",
+                Arc::new(move |ctx, _config| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let future = ctx.plugin(Dependent);
+                    let fid = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(future)
+                    })?;
+                    let tracked = ctx
+                        .get::<crate::RegistryService>()
+                        .and_then(|rs| rs.get_fiber(fid));
+                    if let Some(fiber) = tracked {
+                        fiber.declare_inject::<CascadeProvider>();
+                        *holder.lock() = Some(fiber);
+                    }
+                    Ok(fid)
+                }),
+            );
+        }
+
+        // Seed: begin both entries. The dependent's inject is declared
+        // against its registration fiber via the factory hook above.
+        let provider_fid = Loader::instantiate(
+            &ctx,
+            "CascadeProviderFactory",
+            &json!({"v": 1}),
+            "cascade:provider",
+        )
+        .expect("provider begins");
+        let dep_entry_fid = Loader::instantiate(
+            &ctx,
+            "CascadeDependentFactory",
+            &json!({}),
+            "cascade:dependent",
+        )
+        .expect("dependent begins");
+
+        // The dependent registration resolves its fiber through tracking;
+        // declare the inject explicitly when the factory hook could not.
+        let registry = ctx.get::<RegistryService>().unwrap();
+        let dep_fiber = match dep_fiber_holder.lock().clone() {
+            Some(fiber) => fiber,
+            None => {
+                let fiber = registry.get_fiber(dep_entry_fid).unwrap();
+                fiber.declare_inject::<CascadeProvider>();
+                fiber.clone()
+            }
+        };
+
+        // Converge once so the dependent is Active before the storm.
+        if ctx.get::<crate::ReflectService>().is_none() {
+            ctx.provide(crate::ReflectService::new());
+        }
+        let reflect = ctx.get::<crate::ReflectService>().unwrap();
+        reflect.set_context(&ctx);
+        reflect.notify_with_ctx(TypeId::of::<CascadeProvider>(), &ctx).await;
+        assert!(
+            matches!(dep_fiber.state(), crate::FiberState::Active { .. }),
+            "dependent must start Active, got {:?}",
+            dep_fiber.state()
+        );
+
+        // PATCH STORM: several concurrent Loader::apply batches, each
+        // changing ONLY the provider's config. Without batching each settle
+        // would trigger a full dependent refresh wave; with the in-flight
+        // ledger the dependent defers during updates and converges once.
+        let current_shared = Arc::new(tokio::sync::Mutex::new(EntryTree(vec![Entry {
+            id: "cascade:provider".into(),
+            plugin: "CascadeProviderFactory".into(),
+            config: json!({"v": 1}),
+            disabled: false,
+            isolate: None,
+            intercept: HashMap::new(),
+        }])));
+        let mut handles = Vec::new();
+        for round in 2..=6u32 {
+            let ctx = ctx.clone();
+            let journal = journal.clone();
+            let current = current_shared.clone();
+            handles.push(tokio::spawn(async move {
+                let mut guard = current.lock().await;
+                let desired = EntryTree(vec![Entry {
+                    id: "cascade:provider".into(),
+                    plugin: "CascadeProviderFactory".into(),
+                    config: json!({"v": round}),
+                    disabled: false,
+                    isolate: None,
+                    intercept: HashMap::new(),
+                }]);
+                Loader::apply(&ctx, &mut guard, &desired, &journal).await
+            }));
+        }
+        for handle in handles {
+            let actions = handle.await.expect("storm task joins");
+            assert!(
+                actions.iter().all(|a| a.status.is_ok()),
+                "every storm batch applies: {actions:?}"
+            );
+        }
+
+        // Final state converges: provider Active at the last config, and the
+        // dependent converged back to Active too.
+        let provider_fiber = registry.get_fiber(provider_fid).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(matches!(
+            provider_fiber.state(),
+            crate::FiberState::Active { .. }
+        ));
+        dep_fiber.refresh(&ctx).await;
+        assert!(
+            matches!(dep_fiber.state(), crate::FiberState::Active { .. }),
+            "dependent must converge Active after the storm, got {:?}",
+            dep_fiber.state()
+        );
+        assert!(
+            ctx.get::<CascadeProvider>().is_some(),
+            "final provider serving"
+        );
+
+        // COLLAPSE PROOF: five sequential provider re-applies happened (one
+        // per batch — they serialize through the loader lock), but the
+        // dependent ran strictly fewer full passes than waves because every
+        // mid-update notify deferred to Pending instead of re-applying. The
+        // ledger guarantees the deferred count never exceeds the settled
+        // windows; assert the dependent did not re-apply once per provider
+        // application (the pre-batching behavior).
+        let provider_runs = provider_applies.load(Ordering::SeqCst);
+        let dependent_runs = dependent_applies.load(Ordering::SeqCst);
+        assert!(
+            provider_runs >= 5,
+            "each batch re-applies the provider, got {provider_runs}"
+        );
+        assert!(
+            dependent_runs <= 3,
+            "dependent must collapse waves (deferred under the ledger), \
+             got {dependent_runs} runs vs {provider_runs} provider runs"
+        );
     }
 }

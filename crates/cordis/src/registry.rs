@@ -23,6 +23,97 @@ pub trait Plugin: Send + Sync + 'static {
     ) -> Result<Arc<Self::Provides>, CordisError>;
 }
 
+/// Composable readiness predicate for [`RegistryService::register_with_readiness`]
+/// (C2 `ready_when`).
+///
+/// A barrier is a shared closure consulted by the lifecycle on every
+/// activation pass. While it reports `false` the fiber rests inspectable
+/// `Pending` — quiet waiting, NOT failure: availability predicates
+/// ([`Service::check`]) are the loud complement that rests
+/// `Failed{error: "availability predicate rejected service"}` and converge
+/// through refreshes; a readiness gate simply holds the fiber out of
+/// service until the environment it observes turns ready.
+///
+/// Re-kick contract: a gated fiber re-evaluates whenever its lifecycle is
+/// driven — in practice via the existing round-5 observer fan-out, because
+/// any managed fiber settling (`Active`/`Inactive`/`Pending`/`Failed`) ends
+/// in provider/withdrawal notifies that BFS-refresh dependents. Barriers
+/// therefore observe plain context facts (`ctx.get::<T>().is_some()`,
+/// versions, config values) rather than registering their own watchers.
+/// Shared readiness predicate handle.
+type ReadinessPredicate = Arc<dyn Fn(&Arc<Context>) -> bool + Send + Sync>;
+
+#[derive(Clone)]
+pub struct ReadinessBarrier {
+    inner: ReadinessPredicate,
+    /// TypeIds whose provider settlements re-kick the gated fiber.
+    keys: Vec<TypeId>,
+}
+
+impl ReadinessBarrier {
+    /// Wrap one readiness predicate.
+    pub fn new(ready: impl Fn(&Arc<Context>) -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            inner: Arc::new(ready),
+            keys: Vec::new(),
+        }
+    }
+
+    /// The declared watch keys for re-kick fan-out registration.
+    pub fn watched_type_ids(&self) -> &[TypeId] {
+        &self.keys
+    }
+
+    /// Evaluate the composed predicate against a context.
+    pub fn is_ready(&self, ctx: &Arc<Context>) -> bool {
+        (self.inner)(ctx)
+    }
+
+    /// AND-composition helper (`with_readiness`): the combined barrier is
+    /// ready only when BOTH operands report ready. Short-circuits on the
+    /// first closed half.
+    pub fn and(self, other: ReadinessBarrier) -> ReadinessBarrier {
+        let pair = (self.inner, other.inner);
+        ReadinessBarrier::new(move |ctx| (pair.0)(ctx) && (pair.1)(ctx))
+            .watching(self.keys.iter().chain(other.keys.iter()).copied())
+    }
+
+    /// Declare the `TypeId`s whose provider settlements should re-kick a
+    /// fiber gated by this barrier (see
+    /// [`RegistryService::register_with_readiness`]). Composition unions
+    /// both sides.
+    pub fn watching(
+        mut self,
+        keys: impl IntoIterator<Item = TypeId>,
+    ) -> ReadinessBarrier {
+        self.keys.extend(keys);
+        self
+    }
+}
+
+/// AND-composition helper (`with_readiness`): combine any number of
+/// readiness predicates into one [`ReadinessBarrier`] that is ready only
+/// when every operand is ready. `with_readiness([a, b, c])` reads as
+/// "ready when a AND b AND c"; the empty slice is vacuously ready.
+pub fn with_readiness(
+    barriers: impl IntoIterator<Item = ReadinessBarrier>,
+) -> ReadinessBarrier {
+    let mut combined: Option<ReadinessBarrier> = None;
+    for barrier in barriers {
+        combined = Some(match combined {
+            None => barrier,
+            Some(acc) => acc.and(barrier),
+        });
+    }
+    combined.unwrap_or_else(|| ReadinessBarrier::new(|_ctx| true))
+}
+
+impl std::fmt::Debug for ReadinessBarrier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadinessBarrier").finish_non_exhaustive()
+    }
+}
+
 /// RegistryService tracks fibers and enforces that only one fiber may provide
 /// a given TypeId inside the same isolate realm. If two registrations try to
 /// provide the same service type while their isolate labels overlap, the
@@ -175,11 +266,23 @@ impl RegistryService {
             self.wire_failed_registration(ctx, fid, &fiber, tid);
             CordisError::Configuration(message)
         })?;
+        // C1 intercept meta-events: stage the raw config so every refresh
+        // pass re-resolves the EFFECTIVE config from a single source.
+        fiber.set_raw_config(config_value.clone());
         let plugin = Arc::new(plugin);
         let weak_fiber = Arc::downgrade(&fiber);
         fiber.set_reload_runner(Box::new(move |ctx| {
+            // C1 intercept meta-events: the interception point stages the
+            // effective config for this pass; without one this is the raw
+            // config and the path is byte-identical to the legacy runner.
+            // (The weak handle is upgraded first so a dropped registration
+            // fiber still falls back to the raw config instead of erroring.)
+            let cfg_raw = weak_fiber
+                .upgrade()
+                .and_then(|owner| owner.effective_config_override())
+                .unwrap_or_else(|| config_value.clone());
             let config =
-                serde_json::from_value::<P::Config>(config_value.clone()).map_err(|error| {
+                serde_json::from_value::<P::Config>(cfg_raw).map_err(|error| {
                     CordisError::Configuration(format!("cannot deserialize plugin config: {error}"))
                 })?;
             let owner = weak_fiber
@@ -254,6 +357,51 @@ impl RegistryService {
             }
             let _ = reflect.ensure_notifier(tid);
             reflect.register_fiber(fid, fiber.clone(), tid);
+        }
+        Ok(fid)
+    }
+
+    /// Register a plugin with a C2 `ready_when` readiness gate.
+    ///
+    /// Identical to [`Self::register`] except the fiber carries a
+    /// [`ReadinessBarrier`]: while the composed predicate reports not-ready
+    /// the lifecycle rests the fiber as inspectable
+    /// [`crate::FiberState::Pending`] (quiet waiting — never `Failed`), and
+    /// every subsequent refresh/re-kick re-evaluates it. The factory still
+    /// runs once at registration (so config errors surface immediately);
+    /// a closed gate simply keeps the produced service OUT of consumer
+    /// reach until the gate opens, because strict `ctx.get` refuses values
+    /// owned by non-`Active` fibers.
+    pub fn register_with_readiness<P: Plugin>(
+        &self,
+        ctx: &Arc<Context>,
+        plugin: P,
+        config: P::Config,
+        ready_when: ReadinessBarrier,
+    ) -> Result<FiberId, CordisError> {
+        let fid = self.register(ctx, plugin, config)?;
+        if let Some(fiber) = self.get_fiber(fid) {
+            // Re-kick wiring: the gate may observe provider facts beyond the
+            // fiber's own declared injects. Register the fiber against the
+            // barrier's declared watch keys so any settle on those types —
+            // provide or withdrawal through ReflectService — BFS-refreshes
+            // this fiber too.
+            for tid in ready_when.watched_type_ids().iter().copied() {
+                if let Some(reflect) = ctx.get::<crate::ReflectService>() {
+                    reflect.register_dependent(tid, fid);
+                    let _ = reflect.ensure_notifier(tid);
+                }
+            }
+            fiber.set_readiness_gate(ready_when);
+            // Re-enter the lifecycle so the freshly-installed gate decides
+            // the resting state right away instead of waiting for an
+            // external kick. Registration left the fiber `Active`/`Failed`;
+            // the gate consult runs inside the guarded transition.
+            tokio::spawn({
+                let fiber = fiber.clone();
+                let ctx = ctx.clone();
+                async move { fiber.refresh(&ctx).await }
+            });
         }
         Ok(fid)
     }
@@ -354,6 +502,29 @@ impl RegistryService {
     /// resolve its isolate realm.
     pub fn track_fiber_in_realm(&self, fid: FiberId, ctx: &Arc<Context>) {
         self.realms.write().insert(fid, Arc::downgrade(ctx));
+    }
+
+    /// Resolved provider fiber ids currently serving the given service types
+    /// in `ctx`'s isolate realms (C2 cascade batching lookup).
+    pub fn provider_fibers_for(&self, ctx: &Arc<Context>, tids: &[TypeId]) -> Vec<u64> {
+        let provided = self.provided.read();
+        tids.iter()
+            .filter_map(|tid| {
+                let isolate = ctx.isolate_label(*tid);
+                provided.get(&(*tid, isolate)).copied()
+            })
+            .collect()
+    }
+
+    /// The service types whose live provider slot is owned by `fid`
+    /// (C2 cascade batching: post-settle re-kick fan-out).
+    pub fn provided_types_of_fiber(&self, fid: FiberId) -> Vec<TypeId> {
+        self.provided
+            .read()
+            .iter()
+            .filter(|(_, owner)| **owner == fid)
+            .map(|(key, _)| key.0)
+            .collect()
     }
 
     /// Snapshot of every currently tracked fiber id (introspection surface).
@@ -1166,5 +1337,206 @@ mod tests {
             }
         }
         assert!(ctx.get::<GatedService>().is_some());
+    }
+
+    // ------------------------------------------------------------------
+    // C2 readiness gates (ready_when): quiet Pending waiting, AND-composition,
+    // external re-kick. Complement of the availability predicates above:
+    // `Service::check` failures are LOUD (`Failed{error}`), a closed
+    // readiness gate is QUIET (`Pending`, no error, factory never re-runs).
+    // ------------------------------------------------------------------
+
+    #[derive(Debug)]
+    struct ReadinessProbe;
+    impl Service for ReadinessProbe {}
+
+    struct ReadinessPlugin;
+    impl Plugin for ReadinessPlugin {
+        type Config = ();
+        type Provides = ReadinessProbe;
+
+        fn apply(
+            &self,
+            _ctx: &Arc<Context>,
+            _config: Self::Config,
+        ) -> Result<Arc<Self::Provides>, CordisError> {
+            Ok(Arc::new(ReadinessProbe))
+        }
+    }
+
+    /// A registration whose `ready_when` gate starts closed rests its fiber
+    /// as inspectable `Pending` (NOT Failed), keeps the produced service out
+    /// of consumer reach, and flips to Active once the gate opens — without
+    /// ever re-running the plugin factory.
+    #[tokio::test]
+    async fn ready_when_holds_pending_until_true_then_activates() {
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate_flag = open.clone();
+        let fid = registry
+            .register_with_readiness(
+                &ctx,
+                ReadinessPlugin,
+                (),
+                ReadinessBarrier::new(move |_ctx| {
+                    gate_flag.load(std::sync::atomic::Ordering::Acquire)
+                }),
+            )
+            .expect("gated registration is non-throwing");
+
+        // The freshly-installed gate decides the resting state on the
+        // registration's own re-entry pass.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let fiber = registry.get_fiber(fid).expect("tracked");
+        assert!(
+            matches!(fiber.state(), FiberState::Pending),
+            "closed gate must rest Pending, got {:?}",
+            fiber.state()
+        );
+        assert!(
+            ctx.get::<ReadinessProbe>().is_none(),
+            "strict get refuses values owned by non-Active fibers"
+        );
+
+        // Open the gate and re-kick through the normal lifecycle entry point.
+        open.store(true, std::sync::atomic::Ordering::Release);
+        fiber.refresh(&ctx).await;
+        match fiber.state() {
+            FiberState::Active { .. } => {}
+            other => panic!("open gate must activate, got {other:?}"),
+        }
+        assert!(ctx.get::<ReadinessProbe>().is_some(), "now served");
+    }
+
+    /// AND-composition via [`with_readiness`]: the combined barrier is ready
+    /// only when EVERY operand reports ready; opening one half while the
+    /// other stays closed keeps the fiber waiting.
+    #[tokio::test]
+    async fn readiness_composes_and_semantics() {
+        let ctx = Context::new_root();
+        let registry = RegistryService::new();
+
+        let a_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let b_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let combined = with_readiness([
+            {
+                let flag = a_open.clone();
+                ReadinessBarrier::new(move |_ctx| {
+                    flag.load(std::sync::atomic::Ordering::Acquire)
+                })
+            },
+            {
+                let flag = b_open.clone();
+                ReadinessBarrier::new(move |_ctx| {
+                    flag.load(std::sync::atomic::Ordering::Acquire)
+                })
+            },
+        ]);
+        // Direct evaluation first: both closed / one open / both open.
+        assert!(!combined.is_ready(&ctx), "both closed must not be ready");
+        a_open.store(true, std::sync::atomic::Ordering::Release);
+        assert!(
+            !combined.is_ready(&ctx),
+            "AND semantics: one open half is not enough"
+        );
+        b_open.store(true, std::sync::atomic::Ordering::Release);
+        assert!(combined.is_ready(&ctx), "both open must be ready");
+        // The empty composition is vacuously ready.
+        assert!(with_readiness([]).is_ready(&ctx));
+
+        // Register while only HALF the composed gate is open: the fiber must
+        // keep waiting Pending (AND semantics at rest), then activate once
+        // the second half opens.
+        b_open.store(false, std::sync::atomic::Ordering::Release);
+        a_open.store(true, std::sync::atomic::Ordering::Release);
+
+        let fid = registry
+            .register_with_readiness(&ctx, ReadinessPlugin, (), combined)
+            .expect("composed-gate registration");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let fiber = registry.get_fiber(fid).expect("tracked");
+        assert!(
+            matches!(fiber.state(), FiberState::Pending),
+            "one-open-half must still wait Pending, got {:?}",
+            fiber.state()
+        );
+
+        // Second half opens: the composed gate goes ready and the fiber
+        // activates on its next lifecycle pass.
+        b_open.store(true, std::sync::atomic::Ordering::Release);
+        fiber.refresh(&ctx).await;
+        match fiber.state() {
+            FiberState::Active { .. } => {}
+            other => panic!("fully-open AND gate must activate, got {other:?}"),
+        }
+    }
+
+    /// Re-kick wiring: an EXTERNAL settle (another managed fiber providing /
+    /// withdrawing) fans out through the round-5 observer notify path and
+    /// re-evaluates the gated fiber — it activates without any direct call
+    /// to refresh on the gated fiber itself.
+    #[tokio::test]
+    async fn external_rekick_reactivates_waiting_fiber() {
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        if let Some(reflect) = ctx.get::<crate::ReflectService>() {
+            reflect.set_context(&ctx);
+        }
+        let registry = RegistryService::new();
+        ctx.provide(registry);
+        let registry = ctx.get::<RegistryService>().unwrap();
+
+        // Gate observes a plain context fact: whether Dependency is provided.
+        // `watching` declares the settle source so external provides /
+        // withdrawals of Dependency re-kick this fiber through Reflect.
+        let fid = registry
+            .register_with_readiness(
+                &ctx,
+                ReadinessPlugin,
+                (),
+                ReadinessBarrier::new(|ctx: &Arc<Context>| ctx.get::<Dependency>().is_some())
+                    .watching([TypeId::of::<Dependency>()]),
+            )
+            .expect("fact-gated registration");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let fiber = registry.get_fiber(fid).expect("tracked");
+        assert!(matches!(fiber.state(), FiberState::Pending));
+
+        // External settle: another fiber provides Dependency. The provide
+        // notifies the ReflectService fan-out (round-5 observer path), which
+        // BFS-refreshes dependents — including our gated fiber.
+        let dep_fid = registry
+            .register(&ctx, BarPlugin, ())
+            .expect("dependency provider registers");
+        assert!(dep_fid > 0);
+        ctx.provide(Dependency);
+        if let Some(reflect) = ctx.get::<crate::ReflectService>() {
+            reflect.notify_with_ctx(TypeId::of::<Dependency>(), &ctx).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        match fiber.state() {
+            FiberState::Active { .. } => {}
+            other => panic!(
+                "external re-kick must reactivate the waiting fiber, got {other:?}"
+            ),
+        }
+        assert!(ctx.get::<ReadinessProbe>().is_some());
+
+        // Withdrawal settles too: the fact flips, the next re-kick rests the
+        // fiber back to Pending — never Failed — proving bidirectional
+        // complementarity with loud predicate failures.
+        let _removed = ctx.remove::<Dependency>();
+        if let Some(reflect) = ctx.get::<crate::ReflectService>() {
+            reflect.notify_with_ctx(TypeId::of::<Dependency>(), &ctx).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            matches!(fiber.state(), FiberState::Pending),
+            "gate closing again must rest Pending quietly, got {:?}",
+            fiber.state()
+        );
     }
 }

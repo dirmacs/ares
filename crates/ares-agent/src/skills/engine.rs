@@ -568,6 +568,8 @@ impl SkillEngine {
             total_tokens: usage.total_tokens as i64,
             estimated_cost_usd,
             latency_ms,
+            cached_tokens: usage.cached_tokens,
+            total_time_ms: Some(latency_ms),
             status: RUN_HISTORY_STATUS_SUCCESS.to_string(),
             error_message: None,
             request_payload: None,

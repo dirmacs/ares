@@ -172,6 +172,27 @@ impl ExporterRouter {
             exporter.export_tool(record).await;
         }
     }
+
+    /// Fire-and-forget variant of [`log_llm`](Self::log_llm).
+    ///
+    /// Clones the record, clones `self`, and moves the sequential fan-out
+    /// onto a detached tokio task, so a caller inside an inference path never
+    /// awaits slow exporters. Ordering across calls is not guaranteed; use
+    /// the async methods when order or backpressure matters. Requires a live
+    /// tokio runtime; without one the record is silently dropped (exporting
+    /// must never fail inference).
+    pub fn log_llm_spawned(&self, level: RecordLevel, record: LlmCallRecord) {
+        let router = self.clone();
+        let _ = tokio::spawn(async move { router.log_llm(level, &record).await });
+    }
+}
+
+impl Clone for ExporterRouter {
+    fn clone(&self) -> Self {
+        Self {
+            exporters: self.exporters.clone(),
+        }
+    }
 }
 
 impl Default for ExporterRouter {

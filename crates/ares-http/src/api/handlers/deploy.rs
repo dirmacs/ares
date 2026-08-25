@@ -385,6 +385,7 @@ use cordis::Context;
                                 max_tool_iterations: 1,
                                 parallel_tools: false,
                                 extra: HashMap::new(),
+                                compaction_enabled: None,
                             },
             );
             AresConfig {

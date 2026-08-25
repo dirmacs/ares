@@ -900,7 +900,9 @@ impl Overlay {
             snapshot.config.mcps_dir.clone(),
         ];
 
-        let on_change: cordis::watcher::WatchOnChange = Arc::new(move |c, path| {
+        let on_change: cordis::watcher::WatchOnChange =
+            Arc::new(move |c, paths: &[std::path::PathBuf], _outcome| {
+            for path in paths {
             if path_is_toml(path, &overlay_path) {
                 match AresConfig::load(&overlay_path) {
                     Ok(new_config) => {
@@ -923,6 +925,7 @@ impl Overlay {
                     }
                 }
                 crate::toon_config::notify_tools_and_execute(c);
+            }
             }
         });
 
@@ -2521,6 +2524,7 @@ api_key_env = "API"
                 m.insert("temperature".to_string(), toml::Value::Float(0.9));
                 m
             },
+            compaction_enabled: None,
         };
         let decoded: AgentConfig = toml::from_str(&toml::to_string(&agent).unwrap()).unwrap();
         assert_eq!(decoded.model, "m1");

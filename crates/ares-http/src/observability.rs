@@ -92,6 +92,8 @@ impl ObservabilitySink for RunObservability {
             total_tokens: record.prompt_tokens + record.completion_tokens,
             estimated_cost_usd: estimated,
             latency_ms: record.latency_ms,
+            cached_tokens: record.cached_tokens,
+            total_time_ms: record.total_time_ms,
             status: record.status,
             error_message: None,
             request_payload: None,

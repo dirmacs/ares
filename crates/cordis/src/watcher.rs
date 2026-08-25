@@ -33,7 +33,48 @@ use std::time::Duration;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
+/// Debounce window every batch settles through before dispatch. Public so
+/// consumers sizing settle-barrier timeouts derive from the real window.
+pub const WATCH_DEBOUNCE: Duration = Duration::from_millis(500);
+
 use crate::{Context, ReflectService};
+
+/// Settle barrier for readers that must observe applied state, not a batch
+/// mid-flight.
+///
+/// The watcher sends the [`ReloadOutcome`] of every settled batch into this
+/// single-slot channel; a reader (e.g. an admin GET) awaits
+/// [`SettleBarrier::changed`] with a bounded timeout (≥ 2× debounce window)
+/// before reading shared loader state. If no reload is in flight the wait
+/// simply times out and the reader proceeds — the barrier never blocks
+/// quiet systems.
+///
+/// ```ignore
+/// let barrier = handle.settle_barrier();
+/// let _ = tokio::time::timeout(SETTLE_TIMEOUT, barrier.changed()).await;
+/// // safe to read CurrentEntries now
+/// ```
+#[derive(Clone)]
+pub struct SettleBarrier {
+    rx: tokio::sync::watch::Receiver<Option<crate::stamp::ReloadOutcome>>,
+}
+
+impl crate::Service for SettleBarrier {}
+
+impl SettleBarrier {
+    /// Resolve when the watcher publishes another settled batch outcome.
+    /// Errors only when the owning watcher was dropped.
+    pub async fn changed(
+        &mut self,
+    ) -> Result<(), tokio::sync::watch::error::RecvError> {
+        self.rx.changed().await
+    }
+
+    /// Latest published outcome, if any (without waiting).
+    pub fn last(&self) -> Option<crate::stamp::ReloadOutcome> {
+        self.rx.borrow().clone()
+    }
+}
 
 /// Handle that keeps the watcher and background task alive.
 ///
@@ -44,6 +85,16 @@ use crate::{Context, ReflectService};
 pub struct WatchHandle {
     _watcher: RecommendedWatcher,
     _task: tokio::task::JoinHandle<()>,
+    /// Settled-batch outcomes for admin readers (see [`SettleBarrier`]).
+    barrier: std::sync::Arc<SettleBarrier>,
+}
+
+impl WatchHandle {
+    /// Barrier receiving one [`ReloadOutcome`] per settled batch; clone it
+    /// before the handle drops if a reader outlives the watcher.
+    pub fn settle_barrier(&self) -> std::sync::Arc<SettleBarrier> {
+        std::sync::Arc::clone(&self.barrier)
+    }
 }
 
 /// Watch `agents_dir` (`config/agents/*.toon` recursively) and `entries_path`
@@ -67,7 +118,7 @@ pub fn watch_cordis_entries(
     entries_path: impl AsRef<Path>,
     tid: TypeId,
 ) -> Result<WatchHandle, notify::Error> {
-    watch_many(
+    watch_many_with(
         ctx,
         reflect,
         vec![
@@ -75,12 +126,18 @@ pub fn watch_cordis_entries(
             entries_path.as_ref().to_path_buf(),
         ],
         tid,
+        Arc::new(|_, _, _| {}),
     )
 }
 
-/// Callback invoked on a debounced filesystem event, after optional HMR dylib
-/// apply and before `ReflectService` notify.
-pub type WatchOnChange = Arc<dyn Fn(&Arc<Context>, &Path) + Send + Sync>;
+/// Callback invoked on a debounced filesystem event batch, after optional
+/// HMR dylib apply and before `ReflectService` notify.
+///
+/// Receives the context, the changed paths of the batch, and the classified
+/// outcome of the reload that produced them ([`NoChange`](crate::stamp::ReloadOutcome::NoChange)
+/// when the stamp gate short-circuited identical content).
+pub type WatchOnChange =
+    Arc<dyn Fn(&Arc<Context>, &[PathBuf], &crate::stamp::ReloadOutcome) + Send + Sync>;
 
 /// Watch multiple paths (files or dirs) and notify `tid` on change.
 pub fn watch_many(
@@ -89,11 +146,18 @@ pub fn watch_many(
     paths: Vec<PathBuf>,
     tid: TypeId,
 ) -> Result<WatchHandle, notify::Error> {
-    watch_many_with(ctx, reflect, paths, tid, Arc::new(|_, _| {}))
+    watch_many_with(ctx, reflect, paths, tid, Arc::new(|_, _, _| {}))
 }
 
 /// Watch multiple paths (files or dirs) and notify `tid` on change, invoking
 /// `on_change` after optional HMR apply and before ReflectService notify.
+///
+/// Stamp gate: each batch path is compared against the cached content stamp
+/// from its previous dispatch; identical bytes are dropped from the batch.
+/// A batch left empty by the gate skips callback/notify entirely ("no
+/// content change"). Deletions propagate: an unreadable path counts as
+/// changed. The returned handle exposes a [`SettleBarrier`] carrying every
+/// settled batch's outcome.
 pub fn watch_many_with(
     ctx: Arc<Context>,
     reflect: Arc<ReflectService>,
@@ -134,8 +198,16 @@ pub fn watch_many_with(
 
     let reflect_clone = reflect.clone();
     let ctx_clone = ctx.clone();
+    let (barrier_tx, barrier_rx) =
+        tokio::sync::watch::channel::<Option<crate::stamp::ReloadOutcome>>(None);
+    let barrier = Arc::new(SettleBarrier { rx: barrier_rx });
     let task = tokio::spawn(async move {
-        let debounce = Duration::from_millis(500);
+        let debounce = WATCH_DEBOUNCE;
+        // Content stamps from the previous dispatch, seeded lazily per event
+        // path: watched targets include directories (agents/*.toon), so any
+        // pre-seeded snapshot would be wrong for files not yet on disk.
+        let stamps: parking_lot::Mutex<std::collections::HashMap<PathBuf, crate::stamp::FileStamp>> =
+            parking_lot::Mutex::new(std::collections::HashMap::new());
         while let Some(path) = rx.recv().await {
             // DEFER-NOT-DROP: every received path lands in `pending`; nothing
             // arriving inside the settle window is discarded. Sleep out the
@@ -148,11 +220,48 @@ pub fn watch_many_with(
                     pending.push(p);
                 }
             }
-            let path = pending.last().cloned().unwrap_or_default();
 
-            tracing::info!(path = %path.display(), tid = ?tid, "Cordis config change detected, notifying dependents");
+            // STAMP GATE: drop paths whose bytes match the stamp of their
+            // last dispatch (editor churn, touch, mtime-only noise). A
+            // missing file stamps as None — treated as changed so deletions
+            // propagate. Seeding happens here, per event path.
+            let mut changed: Vec<PathBuf> = Vec::with_capacity(pending.len());
+            {
+                let mut cache = stamps.lock();
+                for p in &pending {
+                    let fresh = crate::stamp::FileStamp::of_path(p);
+                    let unchanged = match (&cache.get(p), &fresh) {
+                        (Some(old), Some(new)) => old.matches(new),
+                        _ => false,
+                    };
+                    if unchanged {
+                        continue;
+                    }
+                    match fresh {
+                        Some(stamp) => {
+                            cache.insert(p.clone(), stamp);
+                        }
+                        // Deletion: forget the stale stamp so a later recreate
+                        // re-fires instead of matching the ghost entry.
+                        None => {
+                            cache.remove(p);
+                        }
+                    }
+                    changed.push(p.clone());
+                }
+            }
+            if changed.is_empty() {
+                tracing::debug!(tid = ?tid, "Cordis watch batch settled with no content change; skipping dispatch");
+                continue;
+            }
+
+            tracing::info!(
+                paths = ?changed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                tid = ?tid,
+                "Cordis config change detected, notifying dependents"
+            );
             #[cfg(feature = "hmr")]
-            for p in &pending {
+            for p in &changed {
                 match crate::hmr::apply_plugin_so_if_dylib(&ctx_clone, p) {
                     Ok(true) => {
                         tracing::info!(path = %p.display(), "HMR dylib applied via libloading");
@@ -163,7 +272,18 @@ pub fn watch_many_with(
                     }
                 }
             }
-            on_change(&ctx_clone, &path);
+            // Classified reload: when the batch touched the provided entries
+            // program (`CurrentEntries`), the watcher itself drives the
+            // hoisted parse→apply→classify flow so callbacks and the settle
+            // barrier carry the REAL outcome. Other watchers (overlay TOON /
+            // ares.toml) publish NoChange.
+            let mut outcome = crate::stamp::ReloadOutcome::NoChange;
+            if let Some(entries_path) = entries_program_touched(&ctx_clone, &changed) {
+                outcome = crate::reload::reload_entries_from_disk(&ctx_clone, &entries_path).await;
+                tracing::info!(outcome = %outcome.summary(), "Cordis watch batch settled");
+            }
+            on_change(&ctx_clone, &changed, &outcome);
+            let _ = barrier_tx.send(Some(outcome));
             // Ensure reflect knows ctx for BFS async refresh (spawned internally)
             reflect_clone.set_context(&ctx_clone);
             reflect_clone.notify(tid);
@@ -175,10 +295,33 @@ pub fn watch_many_with(
         }
     });
 
+    // Publish the barrier as a Service when an entries program exists, so
+    // admin readers can `ctx.get::<SettleBarrier>()` and await settled
+    // state without plumbing the handle around.
+    if ctx.get::<crate::loader::CurrentEntries>().is_some() {
+        ctx.provide_arc(Arc::clone(&barrier));
+    }
+
     Ok(WatchHandle {
         _watcher: watcher,
         _task: task,
+        barrier,
     })
+}
+
+/// Whether the settled batch touched the provided Cordis entries program;
+/// returns its path so the watcher can run the classified reload there.
+fn entries_program_touched(ctx: &Arc<Context>, changed: &[PathBuf]) -> Option<PathBuf> {
+    let current_entries = ctx.get::<crate::loader::CurrentEntries>()?;
+    let path = current_entries.path.clone();
+    changed
+        .iter()
+        .any(|p| {
+            p == &path
+                || std::fs::canonicalize(p).ok().as_deref()
+                    == std::fs::canonicalize(&path).ok().as_deref()
+        })
+        .then_some(path)
 }
 
 #[cfg(test)]
@@ -594,5 +737,173 @@ mod tests {
         } else {
             format!("lib{stem}.so")
         }
+    }
+
+    /// Stamp-gate regression: an identical-byte rewrite must NOT fire the
+    /// callback (cached stamp matches), while a real content change after it
+    /// must fire.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn watcher_no_change_short_circuit() {
+        use parking_lot::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("entries.toml");
+        std::fs::write(&file_path, "v1").unwrap();
+
+        let ctx = Context::new_root();
+        let reflect = ctx.provide(ReflectService::new());
+
+        let seen = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let seen_cb = seen.clone();
+        let on_change: WatchOnChange =
+            Arc::new(move |_ctx, paths, _outcome| seen_cb.lock().extend(paths.iter().cloned()));
+
+        let _handle = watch_many_with(
+            ctx,
+            reflect,
+            vec![file_path.clone()],
+            TypeId::of::<ReflectService>(),
+            on_change,
+        )
+        .expect("watcher should start");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Identical-byte rewrite: event fires but the stamp gate drops it.
+        std::fs::write(&file_path, "v1").unwrap();
+        let quiet = tokio::time::timeout(Duration::from_millis(1500), async {
+            loop {
+                if !seen.lock().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_err();
+        assert!(
+            quiet,
+            "identical rewrite must short-circuit (callback fired for {seen:?})"
+        );
+
+        // Real change: same length, different bytes — the gate must pass it.
+        std::fs::write(&file_path, "v2").unwrap();
+        let fired = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if !seen.lock().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(
+            fired,
+            "real content change must reach the callback; seen = {seen:?}"
+        );
+        drop(_handle);
+    }
+
+    /// Choreography regression: with a provided entries program, the first
+    /// good content change fires the callback carrying
+    /// [`ReloadOutcome::Applied`] (non-empty actions), and a subsequent
+    /// malformed TOML fires `Failed { error }`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn watcher_classifies_applied_and_failed() {
+        use crate::loader::{CurrentEntries, EntryTree};
+        use crate::stamp::ReloadOutcome;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("cordis-entries.toml");
+        std::fs::write(&file_path, "").unwrap(); // empty program at boot
+
+        let ctx = Context::new_root();
+        let reflect = ctx.provide(ReflectService::new());
+        crate::LoaderJournal::provide_new(&ctx);
+        ctx.provide(crate::RegistryService::new());
+        let registry = ctx.provide(crate::PluginRegistry::new());
+
+        #[derive(Debug)]
+        struct Probe(u64);
+        impl crate::Service for Probe {}
+        registry.register(
+            "ProbeService",
+            Arc::new(|ctx, _cfg| {
+                let fut = ctx.plugin(Probe(1));
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(fut)
+                })
+            }),
+        );
+
+        ctx.provide_arc(Arc::new(CurrentEntries {
+            tree: Arc::new(std::sync::Mutex::new(EntryTree(vec![]))),
+            path: file_path.clone(),
+        }));
+
+        let outcomes = Arc::new(parking_lot::Mutex::new(Vec::<ReloadOutcome>::new()));
+        let outcomes_cb = outcomes.clone();
+        let on_change: WatchOnChange =
+            Arc::new(move |_ctx, _paths, outcome| outcomes_cb.lock().push(outcome.clone()));
+
+        let _handle = watch_many_with(
+            ctx.clone(),
+            reflect,
+            vec![file_path.clone()],
+            TypeId::of::<crate::ReflectService>(),
+            on_change,
+        )
+        .expect("watcher should start");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Phase 1: valid entry → Applied with non-empty actions.
+        std::fs::write(
+            &file_path,
+            "[[entry]]\nid = \"probe\"\nplugin = \"ProbeService\"\ndisabled = false\n\n[entry.config]\n",
+        )
+        .unwrap();
+        let applied = tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let got = outcomes.lock().iter().any(|o| {
+                    matches!(o, ReloadOutcome::Applied { actions } if !actions.is_empty())
+                });
+                if got {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(
+            applied,
+            "good content must classify Applied; got {:?}",
+            outcomes.lock()
+        );
+
+        // Phase 2: malformed TOML → Failed carrying error text.
+        std::fs::write(&file_path, "[[entry\nid = broken").unwrap();
+        let failed = tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let got = outcomes.lock().iter().any(|o| match o {
+                    ReloadOutcome::Failed { error } => !error.is_empty(),
+                    _ => false,
+                });
+                if got {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(
+            failed,
+            "malformed TOML must classify Failed; got {:?}",
+            outcomes.lock()
+        );
+        drop(_handle);
     }
 }

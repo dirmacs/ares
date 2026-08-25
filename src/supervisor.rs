@@ -19,6 +19,12 @@
 //! of its standard input. Dropping that handle closes the pipe, the child's
 //! standard input reaches end-of-file, and the worker-side watcher performs
 //! a graceful teardown.
+//!
+//! Two safeguards keep the daemon responsive. Respawns after runs too short
+//! to prove health pace themselves exponentially (`next_backoff`: 100 ms
+//! doubling to a 5 s cap) instead of hammering at full speed, and a worker
+//! that has been asked to stop but ignores the request is force-killed once
+//! [`WORKER_SHUTDOWN_GRACE`] elapses ([`wait_with_grace`]).
 
 use std::future::Future;
 use std::io;
@@ -50,6 +56,57 @@ const RAPID_RESTART_LIMIT: usize = 5;
 /// starts from zero instead of inheriting stale strikes.
 const HEALTHY_RUN_DURATION: Duration = Duration::from_secs(10 * 60);
 
+/// A child run that exits sooner than this never proved the worker could
+/// serve, so it counts as unhealthy: the next respawn is delayed by
+/// `next_backoff`.
+const UNHEALTHY_RUN_DURATION: Duration = Duration::from_secs(10);
+
+/// Delay before the first respawn that follows an unhealthy run; each
+/// further consecutive unhealthy run doubles it, up to `BACKOFF_MAX_DELAY`.
+const BACKOFF_INITIAL_DELAY: Duration = Duration::from_millis(100);
+
+/// Upper bound for the exponentially growing respawn delay.
+const BACKOFF_MAX_DELAY: Duration = Duration::from_secs(5);
+
+/// Grace window granted to a worker that has been asked to stop (its
+/// standard input reached end-of-file) before the daemon force-kills it.
+/// Bounds the goodbye, never the working lifetime.
+pub const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
+/// Waits for `child` to exit, granting it [`WORKER_SHUTDOWN_GRACE`] once its
+/// standard input has been dropped (the stop request). A worker that exits
+/// within the window yields its real code; one that outstays the grace is
+/// force-killed and the resulting status supplies the code instead, so a
+/// hung child can never park the daemon forever.
+///
+/// Callers must already have released the child's stdin handle: the grace
+/// bounds the goodbye, not the working lifetime.
+async fn wait_with_grace(child: &mut tokio::process::Child) -> Option<i32> {
+    match tokio::time::timeout(WORKER_SHUTDOWN_GRACE, child.wait()).await {
+        Ok(Ok(status)) => status.code(),
+        // Wait error (polling failure): nothing more to reap.
+        Ok(Err(_)) => None,
+        // Grace elapsed while the child ignored EOF: kill it and take the
+        // code from the forced-exit status.
+        Err(_) => {
+            tracing::warn!("worker exceeded shutdown grace, killed");
+            let _ = child.kill().await;
+            child.wait().await.ok().and_then(|s| s.code())
+        }
+    }
+}
+
+/// Respawn delay after `consecutive_unhealthy` runs that each exited before
+/// [`UNHEALTHY_RUN_DURATION`]: 100 ms doubling per strike, capped at 5 s —
+/// 100 ms, 200 ms, 400 ms, 800 ms, 1.6 s, 3.2 s, 5 s, 5 s, ...
+fn next_backoff(consecutive_unhealthy: u32) -> Duration {
+    let shift = consecutive_unhealthy.min(16);
+    BACKOFF_INITIAL_DELAY
+        .checked_mul(1u32 << shift)
+        .unwrap_or(BACKOFF_MAX_DELAY)
+        .min(BACKOFF_MAX_DELAY)
+}
+
 /// Wall-clock milliseconds since the Unix epoch; the loop's single time
 /// source. Tests override it via [`NOW_OVERRIDE`] to simulate long-lived
 /// children without sleeping.
@@ -66,6 +123,12 @@ fn now() -> u64 {
 
 #[cfg(test)]
 static NOW_OVERRIDE: parking_lot::Mutex<Option<u64>> = parking_lot::Mutex::new(None);
+
+/// Respawn delays requested by [`supervise`], recorded so tests assert the
+/// pacing instead of measuring slept wall-clock time. Guarded by the tests'
+/// `ENV_LOCK`: every `supervise` caller holds it, so mutations serialise.
+#[cfg(test)]
+static BACKOFF_DELAYS: parking_lot::Mutex<Vec<Duration>> = parking_lot::Mutex::new(Vec::new());
 
 /// A running child together with the write end of its standard input.
 ///
@@ -115,6 +178,11 @@ pub fn is_supervised() -> bool {
 /// - A child that ran for at least [`HEALTHY_RUN_DURATION`] before exiting
 ///   clears the accumulated restart ladder first: a long-lived run proves a
 ///   healthy cadence, so old strikes never doom the fresh process.
+/// - Respawn after a run shorter than [`UNHEALTHY_RUN_DURATION`] is delayed
+///   by [`next_backoff`] (100 ms doubling per consecutive unhealthy run,
+///   capped at 5 s); any run at or beyond the healthy threshold resets the
+///   delay to the first step. The pacing counter and the rapid-restart
+///   ladder share one health definition.
 pub async fn supervise<F, Fut>(run_child: F) -> Result<(), io::Error>
 where
     F: Fn() -> Fut,
@@ -132,9 +200,18 @@ where
     // to detect a healthy long-lived run.
     let mut spawned_at = now();
 
+    // Consecutive runs that each ended inside [`UNHEALTHY_RUN_DURATION`];
+    // drives respawn pacing through [`next_backoff`] until a run proves
+    // healthy again.
+    let mut consecutive_unhealthy: u32 = 0;
+
     loop {
         let code = run_child().await;
         let ran_for = now().saturating_sub(spawned_at);
+        let healthy_run = ran_for >= UNHEALTHY_RUN_DURATION.as_millis() as u64;
+        if healthy_run {
+            consecutive_unhealthy = 0;
+        }
 
         match code {
             Some(EXIT_RESTART) => {}
@@ -153,6 +230,23 @@ where
                 ran_for_ms = ran_for,
                 "supervisor: long-lived worker exited cleanly; restart backoff reset"
             );
+        }
+
+        // Pace respawns after unhealthy runs so a crash-loop burns time
+        // exponentially instead of respawning at full speed until the
+        // rapid-restart cap trips.
+        if !healthy_run {
+            let delay = next_backoff(consecutive_unhealthy);
+            tracing::warn!(
+                delay_ms = delay.as_millis() as u64,
+                consecutive_unhealthy,
+                "supervisor: worker exited before proving health; backing off before respawn"
+            );
+            #[cfg(test)]
+            BACKOFF_DELAYS.lock().push(delay);
+            #[cfg(not(test))]
+            tokio::time::sleep(delay).await;
+            consecutive_unhealthy += 1;
         }
 
         let stamp = now();
@@ -378,5 +472,114 @@ mod tests {
         assert_eq!(script.calls(), 0);
 
         std::env::remove_var(CHILD_ENV_MARKER);
+    }
+
+    /// Grace constant is part of the daemon's operational contract: a hung
+    /// worker must never hold the daemon past this window.
+    #[test]
+    fn shutdown_grace_is_ten_seconds() {
+        assert_eq!(WORKER_SHUTDOWN_GRACE, Duration::from_secs(10));
+    }
+
+    /// A child that exits well inside the grace window yields its real exit
+    /// code unchanged — the kill path never fires for cooperative workers.
+    #[tokio::test]
+    async fn wait_with_grace_returns_fast_child_code() {
+        let mut child = tokio::process::Command::new("true")
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn true");
+        let code = wait_with_grace(&mut child).await;
+        assert_eq!(code, Some(0));
+    }
+
+    /// A child that ignores EOF outstays the grace: it is force-killed and
+    /// the code comes from the forced-exit status (signal death → None).
+    /// Uses a short-lived `sleep` child only to prove the timeout branch is
+    /// reachable; the 10 s wall cost is bounded by the grace itself.
+    #[tokio::test]
+    async fn wait_with_grace_kills_child_after_timeout() {
+        // `cat` with no input would also hang, but `sleep` ignores nothing
+        // we rely on; both work. SIGKILL on Linux yields status.code() ==
+        // None, so the observable outcome is the absence of a code plus the
+        // fact that this returns instead of hanging forever.
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sleep");
+        let code = wait_with_grace(&mut child).await;
+        // Killed by SIGKILL: no exit code, but crucially no hang.
+        assert_eq!(code, None);
+    }
+
+    /// Backoff table: first unhealthy respawn waits 100 ms, each further
+    /// consecutive unhealthy run doubles it, capped at 5 s.
+    #[test]
+    fn backoff_doubles_and_caps() {
+        let cases = [
+            (0u32, Duration::from_millis(100)),
+            (1, Duration::from_millis(200)),
+            (2, Duration::from_millis(400)),
+            (3, Duration::from_millis(800)),
+            (
+                4,
+                Duration::from_secs(2)
+                    .checked_add(Duration::from_millis(600))
+                    .unwrap(),
+            ),
+            (5, Duration::from_millis(3200)),
+            (6, Duration::from_secs(5)),
+            (7, Duration::from_secs(5)),
+            (100, Duration::from_secs(5)),
+            (u32::MAX, Duration::from_secs(5)),
+        ];
+        for (n, expected) in cases {
+            assert_eq!(
+                next_backoff(n),
+                expected,
+                "next_backoff({n}) must be {expected:?}"
+            );
+        }
+    }
+
+    /// A crash sequence through the full loop paces its respawns: delays
+    /// follow the doubling table while runs stay unhealthy, and one healthy
+    /// (HEALTHY_RUN_DURATION-length) run resets the counter so the next
+    /// crash starts over at 100 ms — same reset condition as the ladder.
+    #[tokio::test]
+    async fn healthy_run_resets_backoff_counter() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::remove_var(CHILD_ENV_MARKER);
+
+        const HEALTHY_MS: u64 = HEALTHY_RUN_DURATION.as_millis() as u64;
+        const BASE: u64 = 3_000_000_000;
+
+        BACKOFF_DELAYS.lock().clear();
+        // Two rapid crashes (delays 100 ms, 200 ms), then a healthy-length
+        // run, then another rapid crash: delay must restart at 100 ms.
+        let exits = vec![BASE + 1, BASE + 2, BASE + 2 + HEALTHY_MS];
+        let script = ClockScript::new(
+            vec![Some(EXIT_RESTART), Some(EXIT_RESTART), Some(EXIT_RESTART)],
+            exits,
+        );
+
+        *NOW_OVERRIDE.lock() = Some(BASE);
+        let result = supervise(|| script.clone().step()).await;
+        *NOW_OVERRIDE.lock() = None;
+
+        assert!(result.is_ok(), "exhausted script ends clean: {result:?}");
+        assert_eq!(
+            *BACKOFF_DELAYS.lock(),
+            vec![
+                Duration::from_millis(100),
+                Duration::from_millis(200),
+                // Post-healthy-run reset proves the counter cleared.
+                Duration::from_millis(100),
+            ]
+        );
+
+        BACKOFF_DELAYS.lock().clear();
     }
 }

@@ -30,6 +30,14 @@ pub struct AgentConfig {
     #[serde(default)]
     pub parallel_tools: bool,
 
+    /// Enable per-session history compaction ([`ares_llm::Compactor`]).
+    ///
+    /// Off by default; when on, long conversations are maintained as a
+    /// bounded working set (critical facts + rolling memory + recent turns)
+    /// instead of a naive last-5 history slice.
+    #[serde(default)]
+    pub compaction_enabled: Option<bool>,
+
     /// Additional agent-specific configuration passed through.
     #[serde(flatten)]
     pub extra: HashMap<String, toml::Value>,

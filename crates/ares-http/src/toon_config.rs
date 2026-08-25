@@ -1153,6 +1153,7 @@ fn toon_to_agent_config(t: &ToonAgentConfig) -> ares_agent::AgentConfig {
         allowed_tools: t.allowed_tools.clone(),
         max_tool_iterations: t.max_tool_iterations,
         parallel_tools: t.parallel_tools,
+        compaction_enabled: None,
         extra: json_extra_to_toml(&t.extra),
     }
 }

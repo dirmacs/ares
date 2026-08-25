@@ -81,6 +81,7 @@ async fn create_test_app() -> Router {
             max_tool_iterations: 10,
             parallel_tools: false,
             extra: HashMap::new(),
+            compaction_enabled: None,
         },
     );
     agents.insert(
@@ -93,6 +94,7 @@ async fn create_test_app() -> Router {
             max_tool_iterations: 10,
             parallel_tools: false,
             extra: HashMap::new(),
+            compaction_enabled: None,
         },
     );
 

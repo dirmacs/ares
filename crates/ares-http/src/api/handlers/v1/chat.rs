@@ -420,6 +420,7 @@ mod tests {
             max_tool_iterations: 1,
             parallel_tools: false,
             extra: std::collections::HashMap::new(),
+            compaction_enabled: None,
         };
         let mut agent = ConfigurableAgent::new_with_tool_service(
             "tenant-a",

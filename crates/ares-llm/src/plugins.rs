@@ -89,6 +89,27 @@ pub fn register_plugins(reg: &cordis::PluginRegistry) {
     reg.register("Llm", Arc::new(factory_llm));
 }
 
+/// Builds an [`ExporterRouter`] with [`TracingExporter`] registered and
+/// returns it ready for fan-out.
+///
+/// One-line production wiring, e.g. from boot after the Llm plugin loads:
+///
+/// ```ignore
+/// let router = ares_llm::install_tracing_router();
+/// router.log_llm_spawned(RecordLevel::Info, record);
+/// ```
+///
+/// Add more sinks later with `Arc::get_mut` before sharing the returned
+/// `Arc`, or wrap additional exporters around this call at registration.
+pub fn install_tracing_router() -> std::sync::Arc<crate::ExporterRouter> {
+    let mut router = crate::ExporterRouter::with_capacity(1);
+    if let Err(err) = router.register(std::sync::Arc::new(crate::TracingExporter)) {
+        // TracingExporter::validate always succeeds; this is contract armor.
+        tracing::warn!("TracingExporter registration failed: {err}");
+    }
+    Arc::new(router)
+}
+
 #[cfg(feature = "inventory")]
 inventory::submit! {
     cordis::CordisPluginFactory { name: "Llm", make: factory_llm }

@@ -304,6 +304,19 @@ pub async fn acknowledge_budget_alert(
     Ok(Json(alert))
 }
 
+/// Per-model prompt-cache telemetry aggregated over `run_llm_calls`.
+///
+/// Backs `GET /admin/stats/cache-hits`: calls, summed cached/prompt tokens,
+/// NULL-safe cache-hit ratio, and average whole-call wall time per model.
+pub async fn get_cache_hit_stats(
+    State(ctx): State<Arc<Context>>,
+) -> Result<Json<Vec<CacheHitStat>>> {
+    let __pool_21 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let store = RunHistoryStore::new(&__pool_21);
+    let stats = store.cache_hit_stats().await?;
+    Ok(Json(stats))
+}
+
 pub fn routes() -> axum::Router<Arc<Context>> {
     use axum::routing::{delete, get, post, put};
     axum::Router::new()
@@ -329,6 +342,7 @@ pub fn routes() -> axum::Router<Arc<Context>> {
         .route("/billing/list_token_usage", get(list_token_usage))
         .route("/billing/list_budget_alerts", get(list_budget_alerts))
         .route("/billing/acknowledge_budget_alert", post(acknowledge_budget_alert))
+        .route("/billing/get_cache_hit_stats", get(get_cache_hit_stats))
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)

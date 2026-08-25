@@ -204,6 +204,7 @@ mod tests {
                         max_tool_iterations: 7,
                         parallel_tools: true,
                         extra: HashMap::new(),
+                        compaction_enabled: None,
                     }
     }
 

@@ -199,6 +199,7 @@ mod tests {
                 max_tool_iterations: 5,
                 parallel_tools: false,
                 extra: HashMap::new(),
+                compaction_enabled: None,
             },
         );
         minimal_overlay_config(agents)
@@ -327,6 +328,7 @@ mod tests {
                 max_tool_iterations: 1,
                 parallel_tools: false,
                 extra: HashMap::new(),
+                compaction_enabled: None,
             },
         );
         let config = minimal_overlay_config(agents);
@@ -346,6 +348,7 @@ mod tests {
                 max_tool_iterations: 1,
                 parallel_tools: false,
                 extra: HashMap::new(),
+                compaction_enabled: None,
             },
         );
         let config = minimal_overlay_config(agents);

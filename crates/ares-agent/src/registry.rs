@@ -507,6 +507,7 @@ mod tests {
             parallel_tools: false,
             extra: HashMap::new(),
             allowed_tools: None,
+            compaction_enabled: None,
         };
 
         registry.register("test-agent", config);
@@ -533,6 +534,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
+                compaction_enabled: None,
             },
         );
 
@@ -546,6 +548,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
+                compaction_enabled: None,
             },
         );
 
@@ -571,6 +574,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
+                compaction_enabled: None,
             },
         );
 
@@ -597,6 +601,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
+                compaction_enabled: None,
             },
         );
 
@@ -610,6 +615,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
+                compaction_enabled: None,
             },
         );
 
@@ -646,6 +652,7 @@ mod tests {
                     parallel_tools: false,
                     extra: HashMap::new(),
                     allowed_tools: None,
+                    compaction_enabled: None,
                 },
             )
             .build();
@@ -687,6 +694,7 @@ mod tests {
                     parallel_tools: false,
                     extra: HashMap::new(),
                     allowed_tools: None,
+                    compaction_enabled: None,
                 },
             );
             map
@@ -722,6 +730,7 @@ mod tests {
                     parallel_tools: true,
                     extra: HashMap::new(),
                     allowed_tools: None,
+                    compaction_enabled: None,
                 },
             );
             map
@@ -759,6 +768,7 @@ mod tests {
                     parallel_tools: false,
                     extra: HashMap::new(),
                     allowed_tools: None,
+                    compaction_enabled: None,
                 },
             )
             .build();
@@ -785,6 +795,7 @@ mod tests {
                     parallel_tools: false,
                     extra: HashMap::new(),
                     allowed_tools: None,
+                    compaction_enabled: None,
                 },
             )
             .build();
@@ -828,6 +839,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
+                compaction_enabled: None,
             },
         );
 
@@ -853,6 +865,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
+                compaction_enabled: None,
             },
         );
 
@@ -920,6 +933,7 @@ mod tests {
                 max_tool_iterations: 10,
                 parallel_tools: false,
                 extra: HashMap::new(),
+                compaction_enabled: None,
             },
         );
         Arc::new(MapToon(agents))
@@ -976,6 +990,7 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 allowed_tools: None,
+                compaction_enabled: None,
             },
         );
 

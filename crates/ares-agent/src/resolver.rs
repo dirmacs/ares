@@ -254,6 +254,7 @@ mod tests {
             parallel_tools: true,
             allowed_tools: None,
             extra: HashMap::new(),
+            compaction_enabled: None,
         }
 }
 

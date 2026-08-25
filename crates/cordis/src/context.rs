@@ -411,6 +411,72 @@ impl Context {
         self.intercept.write().remove(&tid);
     }
 
+    /// Relaxed read: like [`Self::get`], but a locally-owned provider whose
+    /// owner fiber rests in a TRANSITIONING state (`Loading`, `Reloading`,
+    /// `Unloading`, or reactive `Pending`) still resolves. Strict [`Self::get`]
+    /// refuses those so consumers never observe mid-transition values;
+    /// lifecycle/observer code (and tests) use this to inspect the value that
+    /// is about to serve or was just retracted during transitions.
+    ///
+    /// Terminal resting states (`Failed`, disposed) and missing owners stay
+    /// refused exactly as in [`Self::get`].
+    pub fn get_relaxed<T: Service>(&self) -> Option<Arc<T>> {
+        let tid = TypeId::of::<T>();
+        if self.isolate_label(tid).is_none() {
+            if let Some(any) = self.intercept.read().get(&tid) {
+                if let Ok(arc) = any.clone().downcast::<T>() {
+                    return Some(arc);
+                }
+            }
+        }
+        if let Some(any) = self.store.read().get(&tid) {
+            let transitioning = self
+                .owners
+                .read()
+                .get(&tid)
+                .and_then(Weak::upgrade)
+                .map(|fiber| {
+                    matches!(
+                        fiber.state(),
+                        FiberState::Active { .. }
+                            | FiberState::Loading
+                            | FiberState::Reloading
+                            | FiberState::Unloading { .. }
+                            | FiberState::Pending
+                    )
+                })
+                .unwrap_or(true);
+            // Disposed fibers stay refused even in relaxed mode: disposal
+            // already ran its undos, so the value is logically gone.
+            if transitioning && !self.disposed_owner(tid) {
+                if let Ok(arc) = any.clone().downcast::<T>() {
+                    return Some(arc);
+                }
+            }
+            return None;
+        }
+        if self.isolate.read().contains_key(&tid) {
+            return self.parent.as_ref().and_then(|parent| {
+                if parent.isolate_label(tid) == self.isolate_label(tid) {
+                    parent.get_relaxed::<T>()
+                } else {
+                    None
+                }
+            });
+        }
+        self.parent.as_ref().and_then(|parent| parent.get_relaxed::<T>())
+    }
+
+    /// True when the owner fiber of `tid` has been disposed.
+    fn disposed_owner(&self, tid: TypeId) -> bool {
+        self.owners
+            .read()
+            .get(&tid)
+            .and_then(Weak::upgrade)
+            .map(|fiber| fiber.is_disposed())
+            .unwrap_or(false)
+    }
+
     pub fn get<T: Service>(&self) -> Option<Arc<T>> {
         let tid = TypeId::of::<T>();
         // Isolate-labeled TypeIds resolve from store / isolate parent walk.
@@ -695,5 +761,71 @@ impl Context {
         self.fiber.set_state(FiberState::Active { epoch });
         let fid = NEXT_FIBER_ID.fetch_add(1, Ordering::SeqCst) as u64;
         Ok(fid)
+    }
+}
+
+#[cfg(test)]
+mod relaxed_tests {
+    use super::*;
+    use crate::fiber::FiberState;
+
+    /// `get_relaxed` reads a locally-owned value while its owner fiber sits
+    /// mid-transition (`Loading`/`Reloading`/`Unloading`/`Pending`), where
+    /// strict [`Context::get`] still refuses; terminal/disposed owners stay
+    /// refused even in relaxed mode.
+    #[tokio::test]
+    async fn relaxed_read_succeeds_while_provider_transitioning() {
+        #[derive(Debug)]
+        struct TransitionProbe(u32);
+        impl Service for TransitionProbe {}
+
+        let ctx = Context::new_root();
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(96_001);
+
+        // Provide ON the registration fiber so the owner link exists — the
+        // provide_on_fiber path used by RegistryService.
+        let svc = Arc::new(TransitionProbe(7));
+        ctx.provide_on_fiber(svc, &fiber);
+
+        // Strict get refuses non-Active owners...
+        assert!(ctx.get::<TransitionProbe>().is_none());
+
+        for state in [
+            FiberState::Loading,
+            FiberState::Reloading,
+            FiberState::Unloading { error: None },
+            FiberState::Pending,
+        ] {
+            fiber.set_state(state.clone());
+            let relaxed = ctx.get_relaxed::<TransitionProbe>();
+            assert!(
+                relaxed.is_some(),
+                "relaxed read must succeed in {state:?}"
+            );
+            assert_eq!(
+                relaxed.as_ref().map(|s| s.0),
+                Some(7),
+                "the transitioning value itself is served"
+            );
+        }
+
+        // Terminal Failed stays refused even in relaxed mode.
+        fiber.set_state(FiberState::Failed {
+            error: Some("boom".into()),
+        });
+        assert!(
+            ctx.get_relaxed::<TransitionProbe>().is_none(),
+            "Failed owner must stay invisible to relaxed reads"
+        );
+
+        // Disposed owners stay refused too (dispose rests Inactive + flag).
+        fiber.set_state(FiberState::Inactive { error: None });
+        let _ = fiber.dispose().await;
+        assert!(
+            ctx.get_relaxed::<TransitionProbe>().is_none(),
+            "disposed owner must stay invisible to relaxed reads"
+        );
     }
 }

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::context::Context;
+use crate::effect::Disposable;
 use crate::service::{CordisError, Service};
 
 pub(crate) type ReloadResult = Result<bool, CordisError>;
@@ -134,6 +135,13 @@ pub enum FiberState {
     Unloading {
         error: Option<String>,
     },
+    /// Reactive dependency loss on a fiber that has a reload runner: effects
+    /// were disposed (LIFO) during the pass through `Unloading`, but the fiber
+    /// is NOT disposed — it waits for its dependencies to become available
+    /// again, then re-enters through `Loading` and re-applies. Apply errors
+    /// still rest terminal `Failed`; this state is reserved for reactive
+    /// waiting.
+    Pending,
 }
 
 /// One registered undo: its introspection metadata plus the teardown closure.
@@ -156,8 +164,35 @@ pub struct Fiber {
     // guard was held), so the refresh loop folds the declaration in instead
     // of losing it between passes.
     pending_declare: AtomicBool,
+    /// True once this fiber's reload runner completed an application with all
+    /// dependencies satisfied. Reactive dependency loss on such a fiber rests
+    /// `Pending` (effects existed worth disposing, reactive re-apply is
+    /// meaningful); fibers that never activated keep the historical
+    /// `Inactive` rest so bookkeeping distinguishes "waiting to first apply"
+    /// from "lost a working configuration".
+    ever_activated: AtomicBool,
+    /// True when the fiber rested `Failed` because the reload runner returned
+    /// Err (a plugin apply error). Such failures are TERMINAL: reactive
+    /// refreshes refuse to touch the fiber afterwards. Availability-predicate
+    /// rejections (`Failed` with the runner having succeeded) are exempt —
+    /// later refreshes converge those.
+    apply_failed: AtomicBool,
     id: Mutex<Option<crate::FiberId>>,
     disposed: AtomicBool,
+    /// Lifecycle observers registered via [`Fiber::subscribe_state`]. Called
+    /// synchronously on every `set_state`; the returned handle removes the
+    /// observer. std-only by design (parking_lot + Vec, no tokio watch).
+    observers: Mutex<Vec<StateObserver>>,
+}
+
+/// One lifecycle observer: a shared callback plus its cancellation flag,
+/// mirroring the listener-slot pattern of [`crate::EventsService`].
+/// Shared, cloneable observer callback handle.
+type StateCallback = std::sync::Arc<dyn Fn(&FiberState) + Send + Sync>;
+
+struct StateObserver {
+    cancelled: Arc<AtomicBool>,
+    callback: StateCallback,
 }
 
 impl Fiber {
@@ -172,8 +207,53 @@ impl Fiber {
             reload_ctx: Mutex::new(None),
             inject_constraints: RwLock::new(HashMap::new()),
             pending_declare: AtomicBool::new(false),
+            ever_activated: AtomicBool::new(false),
+            apply_failed: AtomicBool::new(false),
             id: Mutex::new(None),
             disposed: AtomicBool::new(false),
+            observers: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Subscribe a synchronous observer to every lifecycle state change of
+    /// this fiber. The returned handle cancels the subscription when
+    /// disposed; already-cancelled observers are dropped on the next event.
+    /// Observers run inline under the state lock's short critical section —
+    /// they MUST NOT call back into the fiber (no refresh/dispose/set_state).
+    pub fn subscribe_state(
+        &self,
+        observer: Box<dyn Fn(&FiberState) + Send + Sync>,
+    ) -> Box<dyn Disposable> {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let callback: std::sync::Arc<dyn Fn(&FiberState) + Send + Sync> = observer.into();
+        self.observers.lock().push(StateObserver {
+            cancelled: cancelled.clone(),
+            callback,
+        });
+        Box::new(move || {
+            cancelled.store(true, Ordering::SeqCst);
+        })
+    }
+
+    /// Notify every live observer of `state`, dropping cancelled ones first.
+    /// Panics inside an observer are caught so one broken observer can never
+    /// corrupt a lifecycle transition.
+    fn notify_observers(&self, state: &FiberState) {
+        let callbacks: Vec<StateCallback> = {
+            let mut observers = self.observers.lock();
+            observers.retain(|o| !o.cancelled.load(Ordering::SeqCst));
+            observers.iter().map(|o| o.callback.clone()).collect()
+        };
+        for callback in callbacks {
+            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                callback(state)
+            })) {
+                let message = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "observer panicked".to_string());
+                tracing::warn!(error = %message, "Cordis fiber state observer panicked");
+            }
         }
     }
 
@@ -222,20 +302,33 @@ impl Fiber {
         let reload_ctx = weak_ctx
             .and_then(|weak| weak.upgrade())
             .unwrap_or_else(|| ctx.clone());
+        // Runner probe happens BEFORE any state write: the success leg needs
+        // it to mark the application, the loss leg to choose Pending.
+        let has_runner = self.reload_runner.lock().is_some();
         if self.is_satisfied(&reload_ctx) {
             let epoch = self.compute_epoch(&reload_ctx);
             self.set_epoch(epoch.clone());
+            // A declaration landing on a served Active runner fiber completes
+            // a fully-satisfied configuration: it earns Pending eligibility
+            // for later reactive losses, same as a full refresh pass.
+            if has_runner {
+                self.mark_applied();
+            }
             self.set_state(FiberState::Active { epoch });
             return;
         }
         self.set_state(FiberState::Reloading);
-        let has_runner = self.reload_runner.lock().is_some();
-        if has_runner {
-            self.undo_effects();
+        // NOTE: declarations NEVER rest `Pending` — even on previously-applied
+        // fibers. The reactive Pending lifecycle (C2) is driven by runtime
+        // dependency churn through `Fiber::refresh` (notify/BFS); a late
+        // declaration keeps the historical delta #1 shape (`Inactive{missing
+        // dep}`). The next reactive refresh converts a genuinely-lossed
+        // configuration to `Pending` if appropriate.
+        {
+            self.set_state(FiberState::Inactive {
+                error: Some("missing or inactive dependency".into()),
+            });
         }
-        self.set_state(FiberState::Inactive {
-            error: Some("missing or inactive dependency".into()),
-        });
         tracing::debug!(
             state = ?self.state(),
             "Cordis fiber deactivated by unsatisfied late inject declaration"
@@ -272,6 +365,12 @@ impl Fiber {
         }
     }
 
+    /// Record that the reload runner completed one fully-satisfied application
+    /// (the fiber reached a working `Active`). See [`Self::ever_activated`].
+    pub(crate) fn mark_applied(&self) {
+        self.ever_activated.store(true, Ordering::Release);
+    }
+
     /// The recorded peer-version requirement for `tid`, if any.
     pub(crate) fn inject_constraint(&self, tid: TypeId) -> Option<u64> {
         self.inject_constraints.read().get(&tid).copied()
@@ -284,8 +383,11 @@ impl Fiber {
     /// Record a lifecycle state transition (used by the registry while a plugin
     /// is loading or after it fails). Kept `pub(crate)` so sibling modules can
     /// drive the state machine without exposing write access publicly.
+    ///
+    /// Every transition fans out to [`Fiber::subscribe_state`] observers.
     pub(crate) fn set_state(&self, state: FiberState) {
-        *self.state.write() = state;
+        *self.state.write() = state.clone();
+        self.notify_observers(&state);
     }
 
     pub fn epoch(&self) -> String {
@@ -385,6 +487,17 @@ impl Fiber {
             if self.disposed.load(Ordering::Acquire) {
                 return;
             }
+            // Terminal apply-error short-circuit (C2): a fiber that Failed
+            // because its plugin factory errored stays exactly there —
+            // reactive dependency churn never revives or reclassifies it.
+            // Recovery is explicit re-registration (fresh fiber id). This
+            // deliberately does NOT cover availability-predicate failures,
+            // where the runner succeeded and later refreshes must converge.
+            if matches!(&*self.state.read(), FiberState::Failed { .. })
+                && self.apply_failed.load(Ordering::Acquire)
+            {
+                return;
+            }
             let reload_ctx = self
                 .reload_ctx
                 .lock()
@@ -406,6 +519,33 @@ impl Fiber {
             self.set_state(FiberState::Reloading);
             tokio::task::yield_now().await;
             let has_runner = self.reload_runner.lock().is_some();
+            // Reactive dependency loss (C2): a previously-working runner
+            // fiber whose dependencies VANISHED (genuinely unavailable)
+            // disposes its effects LIFO under `Unloading` and rests `Pending`
+            // (NOT Disposed). A peer-version CONSTRAINT refusal over an
+            // existing-but-incompatible provider is policy, not loss — the
+            // provider is still `is_available`, so those stay `Inactive`.
+            // (A withdrawn provider reads version 0 again after its undo
+            // runs; a live provider carries its provided semantic version,
+            // so the guard cleanly separates "absent/inactive" from
+            // "present but refused by constraint".)
+            let deps_unavailable = self.injects.read().keys().any(|tid| {
+                !ctx.is_available(*tid) && ctx.provider_version(*tid) == 0
+            });
+            let reactive_loss = !satisfied
+                && deps_unavailable
+                && has_runner
+                && self.ever_activated.load(Ordering::Acquire)
+                && !matches!(previous, FiberState::Failed { .. });
+            if reactive_loss {
+                self.set_state(FiberState::Unloading { error: None });
+                self.undo_effects();
+                self.set_state(FiberState::Pending);
+                if self.pending_declare.swap(false, Ordering::AcqRel) {
+                    continue;
+                }
+                return;
+            }
             if has_runner {
                 self.undo_effects();
             }
@@ -419,9 +559,18 @@ impl Fiber {
                 return;
             }
 
+            // Re-entry from Pending (first-ever activation included, since
+            // fresh fibers start `Inactive`): the apply runs under `Loading`
+            // so observers see … → Pending → Loading → Active, matching C2.
+            if has_runner && matches!(previous, FiberState::Pending | FiberState::Inactive { .. })
+            {
+                self.set_state(FiberState::Loading);
+            }
+
             let result = self.run_runner(&reload_ctx);
             match result {
                 Ok(true) => {
+                    self.mark_applied();
                     self.set_epoch(new_epoch.clone());
                     self.set_state(FiberState::Active { epoch: new_epoch });
                 }
@@ -429,6 +578,9 @@ impl Fiber {
                     self.set_state(FiberState::Inactive { error: None });
                 }
                 Err(error) => {
+                    // Apply errors are terminal (C2): record the marker so
+                    // reactive refreshes never resurrect this fiber.
+                    self.apply_failed.store(true, Ordering::Release);
                     self.set_state(FiberState::Failed {
                         error: Some(error.to_string()),
                     });
@@ -479,7 +631,8 @@ impl Fiber {
 
     /// Extract the human-readable error carried by a resting terminal state:
     /// `Failed{error}`, `Inactive{error}`, or `Unloading{error}`. Active,
-    /// Loading, and Reloading fibers report `None`.
+    /// Loading, Reloading, and Pending fibers report `None` (Pending carries
+    /// no error — it is reactive waiting, not a failure).
     pub fn error(&self) -> Option<String> {
         match &*self.state.read() {
             FiberState::Failed { error }
@@ -620,8 +773,10 @@ impl Fiber {
     }
 
     /// True once [`Self::dispose`] has run on this fiber. Disposed fibers are
-    /// prunable from tracking maps; `Failed` fibers are not disposed and stay
-    /// inspectable by design.
+    /// prunable from tracking maps; `Failed` and `Pending` fibers are not
+    /// disposed and stay inspectable by design — Pending fibers survive
+    /// [`crate::RegistryService::prune_disposed`] so they can reactivate
+    /// when their dependencies return.
     pub fn is_disposed(&self) -> bool {
         self.disposed.load(Ordering::Acquire)
     }
@@ -636,6 +791,8 @@ impl Default for Fiber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ReflectService;
+    use std::sync::atomic::AtomicUsize;
     use parking_lot::Mutex as ParkingMutex;
 
     #[derive(Debug)]
@@ -979,5 +1136,230 @@ mod tests {
             error: Some("dispose undo panicked".into()),
         });
         assert_eq!(fiber.error(), Some("dispose undo panicked".to_string()));
+    }
+
+    // ------------------------------------------------------------------
+    // Reactive Pending lifecycle (C2)
+    // ------------------------------------------------------------------
+
+    #[derive(Debug)]
+    struct C2Prov(u32);
+    impl Service for C2Prov {}
+
+    /// Stand-in product type for runner fibers: registered as the fibers'
+    /// "provides" TypeId so ReflectService BFS bookkeeping has a target.
+    #[derive(Debug)]
+    struct C2Derived;
+    impl Service for C2Derived {}
+
+    /// Full reactive arc: Active fiber loses its provider → Unloading
+    /// disposes effects LIFO → rests Pending (NOT Disposed) → provider
+    /// returns → Loading → Active with effects re-established.
+    #[tokio::test]
+    async fn dependent_reactivates_when_provider_returns() {
+        set_test_transition_wait(Duration::from_millis(100));
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        let reflect = ctx.get::<ReflectService>().unwrap();
+        reflect.set_context(&ctx);
+
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(95_001);
+        reflect.register_fiber(95_001, fiber.clone(), TypeId::of::<C2Derived>());
+        reflect.register_dependent(TypeId::of::<C2Prov>(), 95_001);
+        let runner_ran = Arc::new(AtomicUsize::new(0));
+        let effect_live = Arc::new(AtomicBool::new(false));
+
+        // Reload runner: "apply" bumps the counter and pushes an undo onto
+        // the fiber's own accumulator (through a Weak) so the Unloading pass
+        // really disposes it — proving dispose/re-apply through flags.
+        let calls = runner_ran.clone();
+        let live = effect_live.clone();
+        let weak_fiber = Arc::downgrade(&fiber);
+        fiber.set_reload_runner(Box::new(move |_ctx| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            live.store(true, Ordering::SeqCst);
+            let Some(owner) = weak_fiber.upgrade() else {
+                return Ok(true);
+            };
+            let live_undo = live.clone();
+            owner.push_undo(Box::new(move || {
+                live_undo.store(false, Ordering::SeqCst);
+            }));
+            Ok(true)
+        }));
+
+        fiber.declare_inject::<C2Prov>();
+
+        // 1. Not satisfied yet: never-activated fiber rests Inactive.
+        fiber.refresh(&ctx).await;
+        assert!(
+            matches!(fiber.state(), FiberState::Inactive { .. }),
+            "pre-activation loss must rest Inactive, got {:?}",
+            fiber.state()
+        );
+
+        // 2. Provider arrives: full pass runs → Active, ever_activated set.
+        let _prov = ctx.provide(C2Prov(1));
+        fiber.refresh(&ctx).await;
+        assert!(
+            matches!(fiber.state(), FiberState::Active { .. }),
+            "provide must activate, got {:?}",
+            fiber.state()
+        );
+        assert_eq!(runner_ran.load(Ordering::SeqCst), 1);
+
+        // 3. Provider withdrawn reactively: notify drives refresh.
+        drop(ctx.remove::<C2Prov>());
+        reflect.notify_with_ctx(TypeId::of::<C2Prov>(), &ctx).await;
+        match fiber.state() {
+            FiberState::Pending => {}
+            other => panic!("expected reactive Pending after dep loss, got {other:?}"),
+        }
+        assert!(!fiber.is_disposed(), "Pending fibers are NOT disposed");
+        assert!(!effect_live.load(Ordering::SeqCst),
+            "Unloading pass must have disposed effects LIFO");
+        assert!(ctx.get::<C2Prov>().is_none());
+        // Registry prune predicate keeps Pending fibers alive.
+        assert!(!fiber.is_disposed(), "prune predicate must skip Pending");
+
+        // 4. Provider returns: Loading → Active, runner re-applied.
+        let _prov = ctx.provide(C2Prov(2));
+        reflect.notify_with_ctx(TypeId::of::<C2Prov>(), &ctx).await;
+        match fiber.state() {
+            FiberState::Active { .. } => {}
+            other => panic!("expected reactivation, got {other:?}"),
+        }
+        assert_eq!(runner_ran.load(Ordering::SeqCst), 2, "runner re-applied");
+        assert!(
+            effect_live.load(Ordering::SeqCst),
+            "re-apply must re-establish effects"
+        );
+    }
+
+    /// Failed stays terminal: a fiber that rested `Failed` from a real apply
+    /// error never transitions back — not to `Pending` when deps churn, and
+    /// not to `Active` when they return.
+    #[tokio::test]
+    async fn failed_stays_failed_on_dep_return() {
+        set_test_transition_wait(Duration::from_millis(100));
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        let reflect = ctx.get::<ReflectService>().unwrap();
+        reflect.set_context(&ctx);
+
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(95_002);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        fiber.set_reload_runner(Box::new(move |_ctx| {
+            c.fetch_add(1, Ordering::SeqCst);
+            Err(CordisError::Configuration("apply exploded".into()))
+        }));
+        fiber.declare_inject::<C2Prov>();
+        let _prov = ctx.provide(C2Prov(1));
+
+        // First refresh: apply fails → Failed (terminal marker set).
+        fiber.refresh(&ctx).await;
+        match fiber.state() {
+            FiberState::Failed { error } => {
+                assert!(error.as_deref().unwrap_or("").contains("apply exploded"));
+            }
+            other => panic!("expected Failed after apply error, got {other:?}"),
+        }
+
+        // Dependency churn around the failed fiber changes nothing.
+        drop(ctx.remove::<C2Prov>());
+        reflect.notify_with_ctx(TypeId::of::<C2Prov>(), &ctx).await;
+        assert!(
+            matches!(fiber.state(), FiberState::Failed { .. }),
+            "dep loss must NOT reclassify Failed, got {:?}",
+            fiber.state()
+        );
+        let _prov = ctx.provide(C2Prov(2));
+        reflect.notify_with_ctx(TypeId::of::<C2Prov>(), &ctx).await;
+        assert!(
+            matches!(fiber.state(), FiberState::Failed { .. }),
+            "dep return must NOT revive Failed, got {:?}",
+            fiber.state()
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "terminal Failed refuses further runner invocations"
+        );
+    }
+
+    /// Observers see the exact documented sequence across one reactive
+    /// cycle: … Active → Reloading → Unloading → Pending → Loading →
+    /// Active. The subscription handle stops delivery.
+    #[tokio::test]
+    async fn observer_sees_unloading_pending_active_sequence() {
+        set_test_transition_wait(Duration::from_millis(100));
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        let reflect = ctx.get::<ReflectService>().unwrap();
+        reflect.set_context(&ctx);
+
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(95_003);
+        reflect.register_fiber(95_003, fiber.clone(), TypeId::of::<C2Derived>());
+        reflect.register_dependent(TypeId::of::<C2Prov>(), 95_003);
+        fiber.set_reload_runner(Box::new(|_ctx| Ok(true)));
+        fiber.declare_inject::<C2Prov>();
+        let _prov = ctx.provide(C2Prov(1));
+        fiber.refresh(&ctx).await;
+        assert!(matches!(fiber.state(), FiberState::Active { .. }));
+
+        let seen = Arc::new(parking_lot::Mutex::<Vec<String>>::new(Vec::new()));
+        let s = seen.clone();
+        let handle = fiber.subscribe_state(Box::new(move |state| {
+            s.lock().push(format!("{state:?}"));
+        }));
+
+        // Reactive loss → Pending.
+        drop(ctx.remove::<C2Prov>());
+        reflect.notify_with_ctx(TypeId::of::<C2Prov>(), &ctx).await;
+        // Reactive return → Active.
+        let _prov = ctx.provide(C2Prov(2));
+        reflect.notify_with_ctx(TypeId::of::<C2Prov>(), &ctx).await;
+
+        let events = seen.lock().clone();
+        let contains = |needle: &str| events.iter().any(|e| e.contains(needle));
+        assert!(contains("Active"), "observed: {events:?}");
+        assert!(contains("Reloading"), "observed: {events:?}");
+        assert!(contains("Unloading"), "observed: {events:?}");
+        assert!(contains("Pending"), "observed: {events:?}");
+        assert!(contains("Loading"), "observed: {events:?}");
+
+        // Order check: Unloading precedes Pending, and Pending precedes the
+        // LAST Loading of the observed stream (the re-entry pass).
+        let first = |needle: &str| {
+            events
+                .iter()
+                .position(|e| e.contains(needle))
+                .expect("presence asserted above")
+        };
+        assert!(first("Unloading") < first("Pending"));
+        assert!(first("Pending") < idx_rev(&events, "Loading"));
+
+        // Dispose the subscription: no further deliveries.
+        handle.dispose();
+        seen.lock().clear();
+        fiber.set_state(FiberState::Reloading);
+        assert!(
+            seen.lock().is_empty(),
+            "disposed observer must receive nothing"
+        );
+    }
+
+    fn idx_rev(events: &[String], needle: &str) -> usize {
+        events
+            .iter()
+            .rposition(|e| e.contains(needle))
+            .unwrap_or(0)
     }
 }

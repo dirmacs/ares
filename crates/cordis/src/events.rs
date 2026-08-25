@@ -61,6 +61,31 @@ pub enum Dispatch {
     Waterfall,
 }
 
+/// Registration options for a flat listener, mirroring the reference-kernel
+/// `EventOptions` shape.
+///
+/// * `prepend: true` inserts the listener at the FRONT of the dispatch-order
+///   list (upstream `unshift`), so it runs before previously registered
+///   listeners of the same event.
+/// * `global: true` marks the listener as realm-agnostic: context filters
+///   ([`EventsService::emit_filtered`]) never exclude it.
+///
+/// The historical [`EventsService::on`] / [`EventsService::once`] paths
+/// delegate with `EventOptions::default()` (both `false`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EventOptions {
+    pub prepend: bool,
+    pub global: bool,
+}
+
+/// Per-listener participation predicate for [`EventsService::emit_filtered`].
+///
+/// Receives the listener's registration [`EventOptions`] — the only
+/// per-listener metadata this kernel records — and decides whether that
+/// non-global listener participates in the filtered dispatch. Global
+/// listeners bypass the filter entirely and never invoke it.
+pub type ListenerFilter = Box<dyn Fn(&EventOptions) -> bool + Send + Sync>;
+
 /// Synthetic event names used by this crate's own unit tests to exercise
 /// dispatch mechanics (ordering, bail, disposal). They are not product
 /// contracts and bypass catalog validation when built for tests.
@@ -88,6 +113,10 @@ const MECHANICS_TEST_EVENTS: &[&str] = &[
     "around.short",
     "once.test",
     "once.bail",
+    // C1 EventOptions mechanics tests.
+    "prepend.test",
+    "filtered.test",
+    "global.test",
 ];
 
 fn bypasses_catalog(event: &str) -> bool {
@@ -150,6 +179,10 @@ type WaterfallHandler = Arc<
 #[derive(Clone)]
 struct HandlerSlot {
     cancelled: Arc<AtomicBool>,
+    /// Full registration [`EventOptions`]. `global` exempts the listener from
+    /// filtered-dispatch exclusion outright; the whole option set is what
+    /// [`EventsService::emit_filtered`]'s filter gets to inspect.
+    options: EventOptions,
     handler: Handler,
 }
 
@@ -184,6 +217,7 @@ impl EventsService {
         let cancelled = Arc::new(AtomicBool::new(false));
         let slot = HandlerSlot {
             cancelled,
+            options: EventOptions::default(),
             handler: Arc::new(|payload| Box::pin(async move { Ok(default_agent_admit(payload)) })),
         };
         self.handlers
@@ -213,12 +247,30 @@ impl EventsService {
     /// listener. Exactly-once is claimed AT INVOCATION through an atomic
     /// swap, so concurrent dispatches of the same event run the handler on
     /// exactly one task and every later dispatch observes an already-spent
-    /// (skipped) slot.
-    ///
-    /// Bail-chain nuance: a listener that is SKIPPED because an earlier
-    /// handler bailed (`Dispatch::Serial`/`Dispatch::Bail`) never ran, so it
-    /// stays registered until a later dispatch actually reaches and runs it.
+    /// (skipped) slot. Delegates to [`Self::once_with`] with default options;
+    /// a bail-chain-skipped listener stays registered until it actually runs
+    /// (see [`Self::once_with`]).
     pub fn once<F, Fut>(&self, event: EventId, handler: F) -> Box<dyn Disposable>
+    where
+        F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
+    {
+        self.once_with(event, EventOptions::default(), handler)
+    }
+
+    /// Register a one-shot flat listener with explicit [`EventOptions`].
+    ///
+    /// The claim/dispose flag discipline is identical to [`Self::once`];
+    /// `options.prepend` controls the insertion position in the
+    /// dispatch-order list, `options.global` marks the listener as exempt
+    /// from context filters in [`Self::emit_filtered`]. The historical
+    /// [`Self::once`] delegates here with default options.
+    pub fn once_with<F, Fut>(
+        &self,
+        event: EventId,
+        options: EventOptions,
+        handler: F,
+    ) -> Box<dyn Disposable>
     where
         F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
@@ -254,9 +306,10 @@ impl EventsService {
         };
         let slot = HandlerSlot {
             cancelled: slot_flag,
+            options,
             handler: once_handler,
         };
-        self.handlers.write().entry(event).or_default().push(slot);
+        self.insert_handler(event, options.prepend, slot);
         Box::new(move || {
             handle_flag.store(true, Ordering::SeqCst);
         })
@@ -267,18 +320,46 @@ impl EventsService {
         F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
     {
+        self.on_with(event, EventOptions::default(), handler)
+    }
+
+    /// Register a flat listener with explicit [`EventOptions`]: `prepend`
+    /// inserts at the front of the dispatch-order list, `global` marks the
+    /// listener as realm-agnostic for [`Self::emit_filtered`]. The
+    /// historical [`Self::on`] delegates here with default options.
+    pub fn on_with<F, Fut>(
+        &self,
+        event: EventId,
+        options: EventOptions,
+        handler: F,
+    ) -> Box<dyn Disposable>
+    where
+        F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<serde_json::Value, CordisError>> + Send + 'static,
+    {
         debug_enforce_listener(&event, false);
         let cancelled = Arc::new(AtomicBool::new(false));
         let slot = HandlerSlot {
             cancelled: cancelled.clone(),
+            options,
             handler: Arc::new(move |v| Box::pin(handler(v))),
         };
-        let mut handlers = self.handlers.write();
-        let entry = handlers.entry(event).or_default();
-        entry.push(slot);
+        self.insert_handler(event, options.prepend, slot);
         Box::new(move || {
             cancelled.store(true, Ordering::SeqCst);
         })
+    }
+
+    /// Shared insertion point so `prepend` ordering is identical for
+    /// `on_with` and `once_with` registrations.
+    fn insert_handler(&self, event: EventId, prepend: bool, slot: HandlerSlot) {
+        let mut handlers = self.handlers.write();
+        let entry = handlers.entry(event).or_default();
+        if prepend {
+            entry.insert(0, slot);
+        } else {
+            entry.push(slot);
+        }
     }
 
     /// Register a Cordis `waterfall` around-middleware handler.
@@ -306,6 +387,39 @@ impl EventsService {
         Box::new(move || {
             cancelled.store(true, Ordering::SeqCst);
         })
+    }
+
+    /// Snapshot active handlers for `event`, optionally excluding non-global
+    /// listeners whose [`EventOptions`] fails `filter`. Global listeners are
+    /// passed to the filter NEVER — they always participate, mirroring the
+    /// reference-kernel `hook.global || !filter || filter.call(...)` clause.
+    ///
+    /// The retain pass runs under the same write guard as the unfiltered
+    /// variant, so cancelled slots still drop here.
+    fn active_handlers_filtered(
+        &self,
+        event: &EventId,
+        filter: Option<&ListenerFilter>,
+    ) -> Vec<Handler> {
+        let Some(filter) = filter else {
+            return self.active_handlers(event);
+        };
+        let mut handlers = self.handlers.write();
+        let active = {
+            let Some(slots) = handlers.get_mut(event) else {
+                return Vec::new();
+            };
+            slots.retain(|slot| !slot.cancelled.load(Ordering::SeqCst));
+            slots
+                .iter()
+                .filter(|slot| slot.options.global || filter(&slot.options))
+                .map(|slot| slot.handler.clone())
+                .collect::<Vec<_>>()
+        };
+        if active.is_empty() && handlers.get(event).is_some_and(Vec::is_empty) {
+            handlers.remove(event);
+        }
+        active
     }
 
     fn active_handlers(&self, event: &EventId) -> Vec<Handler> {
@@ -342,6 +456,36 @@ impl EventsService {
             handlers.remove(event);
         }
         active
+    }
+
+    /// Filtered fire-and-forget emit: like [`Dispatch::Emit`] via
+    /// [`Self::dispatch`], but non-global listeners are offered to `filter`
+    /// first — a `false` verdict excludes the listener from this dispatch
+    /// without unregistering it. Global listeners bypass the filter.
+    ///
+    /// The broadcast bus fan-out is NOT filtered (it has no listener
+    /// metadata to filter on); only registered handlers participate in
+    /// filtering. Returns null like every emit path.
+    pub fn emit_filtered(
+        &self,
+        event: EventId,
+        args: serde_json::Value,
+        filter: ListenerFilter,
+    ) -> Result<serde_json::Value, CordisError> {
+        debug_enforce_dispatch(&event, Dispatch::Emit);
+        *self
+            .dispatch_counts
+            .lock()
+            .entry(event.to_string())
+            .or_insert(0) += 1;
+        let _ = self.bus.send((event.clone(), args.clone()));
+        for h in self.active_handlers_filtered(&event, Some(&filter)) {
+            let p = args.clone();
+            tokio::spawn(async move {
+                let _ = h(p).await;
+            });
+        }
+        Ok(serde_json::Value::Null)
     }
 
     pub async fn dispatch(
@@ -642,6 +786,7 @@ fn run_waterfall_chain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[tokio::test]
     async fn on_dispose_unregisters_handler() {
@@ -1233,6 +1378,216 @@ mod tests {
         assert_eq!(
             err.message(),
             "internal kernel error: 1 listener failure: listener[0]: internal kernel error: only one"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // EventOptions: prepend ordering + global filter bypass (C1)
+    // ------------------------------------------------------------------
+
+    /// `on_with(prepend)` runs the prepended listener BEFORE previously
+    /// registered listeners of the same event; default registration keeps
+    /// appending. Proved with a Serial dispatch whose run order is recorded.
+    #[tokio::test]
+    async fn prepend_ordering_observed() {
+        let svc = EventsService::new();
+        let order = Arc::new(parking_lot::Mutex::<Vec<String>>::new(Vec::new()));
+
+        for name in ["first", "second"] {
+            let slot = order.clone();
+            svc.on("prepend.test".into(), move |_p| {
+                let slot = slot.clone();
+                async move {
+                    slot.lock().push(name.to_string());
+                    Ok(serde_json::Value::Null)
+                }
+            });
+        }
+
+        // Prepended persistent listener: must land in FRONT of both defaults.
+        let prepended_slot = order.clone();
+        svc.on_with(
+            "prepend.test".into(),
+            EventOptions {
+                prepend: true,
+                global: false,
+            },
+            move |_p| {
+                let prepended_slot = prepended_slot.clone();
+                async move {
+                    prepended_slot.lock().push("prepended".to_string());
+                    Ok(serde_json::Value::Null)
+                }
+            },
+        );
+
+        // Also prove the once_with path honors prepend: it must land in front.
+        let once_slot = order.clone();
+        svc.once_with(
+            "prepend.test".into(),
+            EventOptions {
+                prepend: true,
+                global: false,
+            },
+            move |_p| {
+                let once_slot = once_slot.clone();
+                async move {
+                    once_slot.lock().push("once-prepended".to_string());
+                    Ok(serde_json::Value::Null)
+                }
+            },
+        );
+
+        svc.dispatch(
+            "prepend.test".into(),
+            serde_json::json!({}),
+            Dispatch::Serial,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *order.lock(),
+            ["once-prepended", "prepended", "first", "second"],
+            "prepend inserts at the dispatch-order front; defaults append"
+        );
+
+        // A second Serial pass re-runs only the persistent listeners, in the
+        // same relative order (the once slot is spent).
+        svc.dispatch(
+            "prepend.test".into(),
+            serde_json::json!({}),
+            Dispatch::Serial,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            order.lock()[4..],
+            ["prepended", "first", "second"],
+            "spent once slot drops out; relative order is stable"
+        );
+    }
+
+    /// `emit_filtered` excludes non-global listeners whose options fail the
+    /// filter and runs the rest — without unregistering anyone: an
+    /// unfiltered dispatch afterwards runs every listener again.
+    #[tokio::test]
+    async fn filter_excludes_nonmatching_contexts() {
+        let svc = EventsService::new();
+        // One counter per listener, incremented on EVERY run so each
+        // dispatch's participation is directly observable.
+        let ran_a = Arc::new(AtomicUsize::new(0));
+        let ran_b = Arc::new(AtomicUsize::new(0));
+
+        let a = ran_a.clone();
+        svc.on_with("filtered.test".into(), EventOptions::default(), move |p| {
+            let a = a.clone();
+            async move {
+                a.fetch_add(1, Ordering::SeqCst);
+                Ok(p)
+            }
+        });
+        let b = ran_b.clone();
+        svc.on_with("filtered.test".into(), EventOptions::default(), move |p| {
+            let b = b.clone();
+            async move {
+                b.fetch_add(1, Ordering::SeqCst);
+                Ok(p)
+            }
+        });
+
+        // Filter admits NOTHING: neither listener runs.
+        svc.emit_filtered(
+            "filtered.test".into(),
+            serde_json::json!({ "tenant": "a" }),
+            Box::new(|_opts| false),
+        )
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(ran_a.load(Ordering::SeqCst), 0, "rejecting filter excludes a");
+        assert_eq!(ran_b.load(Ordering::SeqCst), 0, "rejecting filter excludes b");
+
+        // Exclusion was per-dispatch: an UNFILTERED emit runs both listeners.
+        svc.dispatch("filtered.test".into(), serde_json::json!({}), Dispatch::Emit)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(
+            ran_a.load(Ordering::SeqCst),
+            1,
+            "listener a must be back for unfiltered dispatches"
+        );
+        assert_eq!(
+            ran_b.load(Ordering::SeqCst),
+            1,
+            "listener b must be back for unfiltered dispatches"
+        );
+
+        // And both registration slots survived the filtered pass untouched.
+        let handlers = svc.handlers.read();
+        let slots = handlers.get("filtered.test").expect("entry kept");
+        assert_eq!(
+            slots.len(),
+            2,
+            "filter exclusion must not unregister anyone"
+        );
+    }
+
+    /// Global listeners bypass context filters entirely: the same
+    /// `emit_filtered` that excludes a non-global listener leaves a global
+    /// one untouched by the filter verdict.
+    #[tokio::test]
+    async fn global_bypasses_filter() {
+        let svc = EventsService::new();
+        let ran = Arc::new(AtomicUsize::new(0));
+
+        // Non-global listener registered for tenant "b".
+        let b = ran.clone();
+        svc.on_with(
+            "global.test".into(),
+            EventOptions::default(),
+            move |payload| {
+                let b = b.clone();
+                async move {
+                    if payload["tenant"] == "b" {
+                        b.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Ok(payload)
+                }
+            },
+        );
+
+        // Global listener for tenant "b": exempt from every filter.
+        let g = ran.clone();
+        svc.on_with(
+            "global.test".into(),
+            EventOptions {
+                prepend: false,
+                global: true,
+            },
+            move |payload| {
+                let g = g.clone();
+                async move {
+                    if payload["tenant"] == "b" {
+                        g.fetch_add(10, Ordering::SeqCst);
+                    }
+                    Ok(payload)
+                }
+            },
+        );
+
+        // Dispatch under a filter that admits NOTHING ("tenant z"): the
+        // non-global listener is excluded, the global one still runs.
+        svc.emit_filtered(
+            "global.test".into(),
+            serde_json::json!({ "tenant": "b" }),
+            Box::new(|_opts| false),
+        )
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            10,
+            "global listener runs despite a rejecting filter; non-global does not"
         );
     }
 }

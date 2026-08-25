@@ -233,6 +233,12 @@ impl RegistryService {
         // operators see WHY it is down.
         let epoch = fiber.compute_epoch(ctx);
         fiber.set_epoch(epoch.clone());
+        // NOTE: `mark_applied` is intentionally NOT called here. Reactive
+        // `Pending` eligibility requires a FULLY-SATISFIED refresh pass (all
+        // declared injects available), which registration cannot prove — a
+        // factory may succeed while its declares are still unserved. The
+        // flag is set by [`crate::Fiber::refresh`] on its first all-green
+        // pass.
         fiber.set_state(if healthy {
             crate::FiberState::Active { epoch }
         } else {
@@ -943,6 +949,65 @@ mod tests {
         let _ = registry.get_fiber(bar_fid).unwrap().dispose().await;
         assert_eq!(registry.len(), 1, "only the Failed fiber remains");
         assert!(registry.get_fiber(bar_fid).is_none());
+    }
+
+    /// Reactive Pending fibers survive `prune_disposed`: they are NOT
+    /// disposed (no dispose ran), so the prune predicate keeps them tracked,
+    /// and their provider slot stays reserved while they wait.
+    #[tokio::test]
+    async fn pending_fiber_survives_prune_disposed() {
+        let ctx = Context::new_root();
+        ctx.provide(ReflectService::new());
+        let reflect = ctx.get::<ReflectService>().unwrap();
+        reflect.set_context(&ctx);
+        let registry = RegistryService::new();
+        ctx.provide(registry);
+        let registry = ctx.get::<RegistryService>().unwrap();
+
+        // Provider + consumer, consumer declares its inject reactively.
+        let provider_fid = registry.register(&ctx, FooPlugin, ()).expect("provider");
+        let fid = registry
+            .register(&ctx, DependentPlugin, ())
+            .expect("consumer registration");
+        let fiber = registry.get_fiber(fid).unwrap();
+        fiber.declare_inject::<FooService>();
+        fiber.refresh(&ctx).await;
+        assert!(matches!(fiber.state(), FiberState::Active { .. }));
+
+        // Reactive dependency loss: the provider registration is retired
+        // (disposed), which retracts the service and reactively notifies the
+        // consumer.
+        let _ = registry.get_fiber(provider_fid).unwrap().dispose().await;
+        reflect.notify_with_ctx(TypeId::of::<FooService>(), &ctx).await;
+        assert!(
+            matches!(fiber.state(), FiberState::Pending),
+            "consumer must rest Pending after dep loss, got {:?}",
+            fiber.state()
+        );
+
+        // Prune drops the DISPOSED provider but keeps the Pending consumer:
+        // the predicate is is_disposed(), and Pending fibers are not.
+        let pruned = registry.prune_disposed();
+        assert_eq!(pruned, 1, "exactly the disposed provider is pruned");
+        assert!(
+            matches!(fiber.state(), FiberState::Pending),
+            "Pending fiber must survive prune"
+        );
+        assert!(registry.get_fiber(fid).is_some(), "still tracked");
+
+        // Provider returns: the surviving Pending fiber reactivates.
+        registry.register(&ctx, FooPlugin, ()).expect("provider back");
+        reflect.notify_with_ctx(TypeId::of::<FooService>(), &ctx).await;
+        assert!(
+            matches!(fiber.state(), FiberState::Active { .. }),
+            "reactivation after prune-pass, got {:?}",
+            fiber.state()
+        );
+        assert_eq!(
+            registry.len(),
+            2,
+            "both live fibers remain tracked through the cycle"
+        );
     }
 
     /// Pruning a disposed provider clears its `provided` slot so the same key

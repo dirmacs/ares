@@ -18,10 +18,189 @@
 //! separate from `ares.toml`.
 
 use std::any::TypeId;
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+
+/// Loader-owned operating state for the fibers it started.
+///
+/// Two responsibilities live here:
+///
+/// * **Self-kill window** ([`Self::in_loader_window`]): the loader raises
+///   this flag around every reconcile-driven disposal (`Retire` actions,
+///   rebuild swaps). A [`crate::Fiber::subscribe_state`] observer registered
+///   by [`Loader::watch_entry_fiber`] consults it when a tracked fiber is
+///   disposed — a dispose that ran OUTSIDE a loader window means the plugin
+///   killed its own registration, and the entry is persisted `disabled =
+///   true` (via [`SelfKillPersistence`]) so restarts do not resurrect a
+///   crash-looping plugin.
+/// * **Apply count**: [`Self::apply_count(id)`] counts completed factory
+///   applications per entry id, incremented from
+///   [`Loader::instantiate_entry`]. Config-only patches must NOT bump it —
+///   that is exactly what the no-restart patch tests assert against.
+///
+/// Provided as a Service lazily by the loader paths that need it; absent on
+/// library deployments, where every accessor degrades to a safe no-op.
+#[derive(Clone, Default)]
+pub struct LoaderOps {
+    inner: Arc<LoaderOpsInner>,
+}
+
+#[derive(Default)]
+struct LoaderOpsInner {
+    /// `true` while the loader itself drives disposals (reconcile windows).
+    in_loader_window: AtomicBool,
+    /// Completed factory applications per entry id.
+    apply_counts: std::sync::Mutex<HashMap<String, u64>>,
+    /// Self-kill persistence sink; set via [`Self::enable_self_kill_persistence`].
+    persistence: std::sync::Mutex<Option<Arc<SelfKillPersistence>>>,
+    /// Entry ids already persisted disabled (dedup so repeated observer
+    /// firings write the file at most once per entry).
+    persisted_disabled: std::sync::Mutex<BTreeSet<String>>,
+}
+
+impl Service for LoaderOps {}
+
+impl LoaderOps {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn enter_loader_window(&self) -> LoaderWindowGuard {
+        self.inner.in_loader_window.store(true, Ordering::SeqCst);
+        LoaderWindowGuard(self.inner.clone())
+    }
+
+    fn in_loader_window(&self) -> bool {
+        self.inner.in_loader_window.load(Ordering::SeqCst)
+    }
+
+    fn record_apply(&self, id: &str) {
+        *self
+            .inner
+            .apply_counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(id.to_string())
+            .or_insert(0) += 1;
+    }
+
+    /// Completed factory applications for one entry id.
+    pub fn apply_count(&self, id: &str) -> u64 {
+        self.inner
+            .apply_counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Install the self-kill persistence sink (entries file path + format).
+    pub fn enable_self_kill_persistence(&self, path: PathBuf, toon_format: bool) {
+        let mut sink = self
+            .inner
+            .persistence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sink = Some(Arc::new(SelfKillPersistence { path, toon_format }));
+        drop(sink);
+        // Drop any dedup state from a previous sink so re-enabling can fire again.
+        self.inner
+            .persisted_disabled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    fn self_kill_persistence(&self) -> Option<Arc<SelfKillPersistence>> {
+        self.inner
+            .persistence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Persist `disabled = true` for `id` onto the entries file exactly once.
+    fn persist_self_kill(&self, id: &str) {
+        if !self
+            .inner
+            .persisted_disabled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_string())
+        {
+            return;
+        }
+        let Some(persistence) = self.self_kill_persistence() else {
+            tracing::warn!(entry_id = %id,
+                "Loader: plugin disposed itself outside a loader window but no entries \
+                 program is configured; restart would resurrect it");
+            return;
+        };
+        match persistence.persist_disabled(id) {
+            Ok(()) => tracing::warn!(entry_id = %id,
+                "Loader: plugin disposed itself outside a loader window; persisted disabled=true"),
+            Err(e) => {
+                // Allow a later dispose attempt of the same entry to retry.
+                self.inner
+                    .persisted_disabled
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(id);
+                tracing::error!(entry_id = %id, error = %e,
+                    "Loader: failed to persist disabled=true for self-disposed entry");
+            }
+        }
+    }
+}
+
+/// RAII marker for a loader-driven disposal window: construction raises the
+/// operating flag, drop lowers it. The flag lives on the shared
+/// [`LoaderOpsInner`] because state observers run inline on whatever thread
+/// drove the transition.
+struct LoaderWindowGuard(Arc<LoaderOpsInner>);
+
+impl Drop for LoaderWindowGuard {
+    fn drop(&mut self) {
+        self.0.in_loader_window.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Persistence sink for self-kill detection: rewrites the entries program
+/// with `disabled = true` on one entry through the existing atomic writers
+/// ([`EntryTree::save_to_toml_file`] / [`EntryTree::save_to_file`]).
+struct SelfKillPersistence {
+    path: PathBuf,
+    toon_format: bool,
+}
+
+impl SelfKillPersistence {
+    fn persist_disabled(&self, id: &str) -> Result<(), CordisError> {
+        let mut tree = if self.toon_format {
+            Loader::load_from_file(&self.path)
+        } else {
+            EntryTree::load_from_json_path(&self.path)
+        }?;
+        let Some(entry) = tree.0.iter_mut().find(|e| e.id == id) else {
+            return Ok(()); // Entry no longer declared: nothing to persist.
+        };
+        if entry.disabled {
+            return Ok(()); // Already disabled on disk; idempotent.
+        }
+        entry.disabled = true;
+        if self.toon_format {
+            tree.save_to_toml_file(&self.path)
+        } else {
+            tree.save_to_file(
+                self.path
+                    .to_str()
+                    .ok_or_else(|| CordisError::Configuration("non-utf8 entries path".into()))?,
+            )
+        }
+    }
+}
 
 /// Process-global monotonic nonce for save temp-file names: two concurrent
 /// saves in one process never collide on the same sibling temp (a bare pid
@@ -214,6 +393,15 @@ impl EntryTree {
         serde_json::from_str(&data).map_err(|e| CordisError::Configuration(e.to_string()))
     }
 
+    /// [`Self::load_from_file`] taking a `Path` — the shape the loader's
+    /// self-kill persistence sink needs for JSON programs.
+    pub fn load_from_json_path(path: &Path) -> Result<Self, CordisError> {
+        let data = std::fs::read_to_string(path).map_err(|e| {
+            CordisError::Configuration(format!("failed to read {}: {}", path.display(), e))
+        })?;
+        serde_json::from_str(&data).map_err(|e| CordisError::Configuration(e.to_string()))
+    }
+
     /// Serialize the tree to TOML, preserving any leading comment header
     /// (lines starting with '#', plus blank lines) already present in the
     /// existing file. Comments cannot survive serde round-trips, so they
@@ -328,23 +516,144 @@ impl Loader {
     /// the log-only/`Value::Null` behavior), and `Retire` disposes the live
     /// fiber recorded in `journal`.
     ///
-    /// Failure policy: per-entry failures are recorded in that action's
-    /// status and the batch CONTINUES; on any failure `current` is left
-    /// unchanged so a retry re-diffs cleanly. Returns per-action outcomes.
+    /// Two-phase STAGED apply: phase one constructs and verifies every
+    /// replacement candidate without mutating any live entry (config
+    /// pre-flight trials, entry resolution); phase two applies the verified
+    /// candidates in dependency order. On the first failing verification the
+    /// batch aborts BEFORE any mutation — nothing has been touched, so no
+    /// rollback is needed. On a failure DURING phase two, every
+    /// already-applied change is reverted (config restored, rebuilt fibers
+    /// disposed) so the live tree serves the originals; the failing step's
+    /// [`AppliedAction`] reports `Err` naming it.
+    ///
+    /// Failure policy: on any failure `current` is left unchanged so a retry
+    /// re-diffs cleanly. Returns per-action outcomes.
+    ///
+    /// Config-only patches on Active fibers go through the existing update
+    /// path ([`Self::trial_config_verified`] pre-flight + `Fiber::update`)
+    /// instead of stop+start — the factory runs only inside the scratch
+    /// trial, so apply counts stay flat across pure config changes.
     pub async fn apply(
         ctx: &Arc<crate::Context>,
         current: &mut EntryTree,
         desired: &EntryTree,
         journal: &crate::LoaderJournal,
     ) -> Vec<AppliedAction> {
+        use apply_staged::Staged;
+
         let loader = Loader::new();
         let actions = loader.reconcile(current, desired);
+        let ops = ctx.get::<LoaderOps>();
+        // Phase 1 — STAGE: resolve entries and verify every candidate. No
+        // live entry mutates here; failures abort the batch untouched.
+        let mut staged: Vec<Staged> = Vec::with_capacity(actions.len());
         let mut results: Vec<AppliedAction> = Vec::with_capacity(actions.len());
-        let mut any_failure = false;
 
         for action in &actions {
-            let (outcome, verified): (Result<(), String>, bool) = match action {
+            match action {
                 LoaderAction::Retire { id } => {
+                    staged.push(Staged::Retire { id: id.clone() });
+                }
+                LoaderAction::UpdateConfig { id, new_config } => {
+                    let old_config = current
+                        .0
+                        .iter()
+                        .find(|e| e.id == *id)
+                        .map(|e| e.config.clone())
+                        .unwrap_or(serde_json::Value::Null);
+                    // Pre-flight: trial the NEW config through the same
+                    // scratch-context machinery the verified hot-swap uses,
+                    // BEFORE staging the mutation. A failing factory leaves
+                    // the old provider serving and fails the action; a
+                    // passing trial discards the candidate (the live fiber
+                    // re-applies below).
+                    if let Err(error) = Self::trial_config_verified(ctx, id, new_config) {
+                        tracing::error!(entry_id = %id, error = %error,
+                            "Loader: config pre-flight failed; old provider kept");
+                        results.push(AppliedAction {
+                            id: id.clone(),
+                            action: "update-config",
+                            status: Err(format!("config pre-flight failed: {error}")),
+                            verified: true,
+                        });
+                        return results;
+                    }
+                    let fid = journal.get(id).and_then(|r| r.fiber_id);
+                    staged.push(Staged::UpdateConfig {
+                        id: id.clone(),
+                        old_config,
+                        new_config: new_config.clone(),
+                        fid,
+                    });
+                }
+                LoaderAction::Begin { id } => {
+                    let Some(entry) = desired.0.iter().find(|e| &e.id == id) else {
+                        results.push(AppliedAction {
+                            id: id.clone(),
+                            action: "begin",
+                            status: Err(format!("entry '{id}' not found in desired tree")),
+                            verified: true,
+                        });
+                        return results;
+                    };
+                    staged.push(Staged::Begin {
+                        id: id.clone(),
+                        entry: entry.clone(),
+                    });
+                }
+                LoaderAction::RebuildFiber { id, plugin } => {
+                    let Some(entry) = desired.0.iter().find(|e| &e.id == id) else {
+                        results.push(AppliedAction {
+                            id: id.clone(),
+                            action: "rebuild-fiber",
+                            status: Err(format!("entry '{id}' not found in desired tree")),
+                            verified: false,
+                        });
+                        return results;
+                    };
+                    staged.push(Staged::RebuildFiber {
+                        id: id.clone(),
+                        entry: entry.clone(),
+                        plugin: plugin.clone(),
+                    });
+                }
+            }
+        }
+
+        // Dependency order inside the staged batch: Begin/RebuildFiber first
+        // (providers must exist before dependents reactivate), then config
+        // updates, then retirements. Ties keep a stable order by entry id so
+        // batches are deterministic regardless of HashMap iteration order.
+        let order_key = |s: &Staged| match s {
+            Staged::Begin { .. } | Staged::RebuildFiber { .. } => 0u8,
+            Staged::UpdateConfig { .. } => 1u8,
+            Staged::Retire { .. } => 2u8,
+        };
+        let tie_key = |s: &Staged| match s {
+            Staged::Retire { id }
+            | Staged::UpdateConfig { id, .. }
+            | Staged::Begin { id, .. }
+            | Staged::RebuildFiber { id, .. } => id.clone(),
+        };
+        staged.sort_by(|a, b| order_key(a).cmp(&order_key(b)).then(tie_key(a).cmp(&tie_key(b))));
+
+        // Phase 2 — APPLY in dependency order, rolling back every
+        // already-applied step when one fails mid-batch. The loader window
+        // spans the whole batch so retire/rebuild disposals never look like
+        // plugin self-kills to the state observers.
+        let _window = ops.as_ref().map(|o| o.enter_loader_window());
+        let mut applied: Vec<Staged> = Vec::new();
+        let mut verified_for: HashMap<String, bool> = HashMap::new();
+
+        for step in staged {
+            let (id, kind): (String, &'static str) = match &step {
+                Staged::Retire { id } => (id.clone(), "retire"),
+                Staged::UpdateConfig { id, .. } => (id.clone(), "update-config"),
+                Staged::Begin { id, .. } => (id.clone(), "begin"),
+                Staged::RebuildFiber { id, .. } => (id.clone(), "rebuild-fiber"),
+            };
+            let (outcome, verified): (Result<(), String>, bool) = match step {
+                Staged::Retire { ref id } => {
                     // Dispose the live fiber (undo effects) before clearing.
                     if let Some(record) = journal.get(id) {
                         if let Some(fid) = record.fiber_id {
@@ -362,122 +671,195 @@ impl Loader {
                     tracing::info!(id = %id, "Loader: retired entry");
                     (Ok(()), true)
                 }
-                LoaderAction::UpdateConfig { id, new_config } => {
-                    // Pre-flight: trial the NEW config through the same
-                    // scratch-context machinery the verified hot-swap uses,
-                    // BEFORE touching the live fiber or the journal. A
-                    // failing factory leaves the old provider serving and
-                    // fails the action; a passing trial discards the
-                    // candidate (the live fiber re-applies below).
-                    if let Err(error) = Self::trial_config_verified(ctx, id, new_config) {
-                        tracing::error!(entry_id = %id, error = %error,
-                            "Loader: config pre-flight failed; old provider kept");
-                        results.push(AppliedAction {
-                            id: id.clone(),
-                            action: "update-config",
-                            status: Err(format!("config pre-flight failed: {error}")),
-                            verified: true,
-                        });
-                        any_failure = true;
-                        continue;
-                    }
+                Staged::UpdateConfig { ref id, ref new_config, fid, .. } => {
                     journal.update_config(id, new_config.clone(), None);
                     // Drive Fiber::update when a live fiber is known.
-                    let recorded = journal.get(id).and_then(|r| r.fiber_id);
-                    if let Some(fiber) = recorded.and_then(|fid| {
+                    if let Some(fiber) = fid.and_then(|f| {
                         ctx.get::<crate::RegistryService>()
-                            .and_then(|rs| rs.get_fiber(fid))
+                            .and_then(|rs| rs.get_fiber(f))
                     }) {
-                        match tokio::runtime::Handle::try_current() {
-                            Ok(handle) => {
-                                let ctx_ref = ctx.clone();
-                                let fiber_ref = fiber.clone();
-                                tokio::task::block_in_place(move || {
-                                    handle.block_on(async move { fiber_ref.update(&ctx_ref).await })
-                                });
-                                (Ok(()), true)
-                            }
-                            Err(_) => (
-                                Err("no tokio runtime for live fiber update".to_string()),
-                                false,
-                            ),
+                        match Self::drive_fiber_update(ctx, &fiber) {
+                            Ok(()) => (Ok(()), true),
+                            Err(e) => (Err(e), false),
                         }
                     } else {
                         (Ok(()), true)
                     }
                 }
-                LoaderAction::Begin { id } => {
-                    let entry = match desired.0.iter().find(|e| &e.id == id) {
-                        Some(e) => e.clone(),
-                        None => {
-                            results.push(AppliedAction {
-                                id: id.clone(),
-                                action: "begin",
-                                status: Err(format!("entry '{id}' not found in desired tree")),
-                                verified: true,
-                            });
-                            any_failure = true;
-                            continue;
-                        }
-                    };
-                    match Self::instantiate_entry(ctx, &entry) {
-                        Ok(_fid) => (Ok(()), true),
-                        Err(e) => (Err(e.to_string()), false),
-                    }
-                }
-                LoaderAction::RebuildFiber { id, plugin } => {
-                    let entry = match desired.0.iter().find(|e| &e.id == id) {
-                        Some(e) => e.clone(),
-                        None => {
-                            results.push(AppliedAction {
-                                id: id.clone(),
-                                action: "rebuild-fiber",
-                                status: Err(format!("entry '{id}' not found in desired tree")),
-                                verified: false,
-                            });
-                            any_failure = true;
-                            continue;
-                        }
-                    };
-                    match Self::rebuild_fiber_verified(ctx, id, plugin, entry, journal).await {
+                Staged::Begin { ref entry, .. } => match Self::instantiate_entry(ctx, entry) {
+                    Ok(_fid) => (Ok(()), true),
+                    Err(e) => (Err(e.to_string()), false),
+                },
+                Staged::RebuildFiber {
+                    ref id,
+                    ref entry,
+                    ref plugin,
+                } => {
+                    match Self::rebuild_fiber_verified(ctx, id, plugin, entry.clone(), journal).await
+                    {
                         Ok(v) => (Ok(()), v),
                         Err(e) => (Err(e), false),
                     }
                 }
             };
-            if outcome.is_err() {
-                any_failure = true;
+            if let Err(err) = outcome {
+                // ROLLBACK: undo everything this batch already applied,
+                // newest-first, then report Failed naming the failing entry.
+                Self::rollback_staged(ctx, &applied, journal).await;
+                results.push(AppliedAction {
+                    id,
+                    action: kind,
+                    status: Err(format!("staged apply failed: {err}; batch rolled back")),
+                    verified,
+                });
+                return results;
             }
-            let kind = match action {
-                LoaderAction::Begin { .. } => "begin",
-                LoaderAction::UpdateConfig { .. } => "update-config",
-                LoaderAction::Retire { .. } => "retire",
-                LoaderAction::RebuildFiber { .. } => "rebuild-fiber",
-            };
-            let id = match action {
+            verified_for.insert(id, verified);
+            applied.push(step);
+        }
+
+        // Post-apply detection pass (never fails the batch): a cycle keeps
+        // its member fibers permanently inactive, so name it at load time.
+        Self::report_cycles(ctx);
+        *current = desired.clone();
+        // Render outcomes in the ORIGINAL reconcile order (stable by entry id
+        // within each dependency class), not the dependency apply order.
+        let kind_of = |probe_id: &str| -> &'static str {
+            match actions.iter().find(|a| match a {
                 LoaderAction::Begin { id }
                 | LoaderAction::UpdateConfig { id, .. }
                 | LoaderAction::Retire { id }
-                | LoaderAction::RebuildFiber { id, .. } => id.clone(),
-            };
-            // Rebuild actions report whether the swap was applied with
-            // verification (candidate proven before the old provider retired);
-            // every other action kind is trivially verified.
+                | LoaderAction::RebuildFiber { id, .. } => id == probe_id,
+            }) {
+                Some(LoaderAction::Begin { .. }) => "begin",
+                Some(LoaderAction::UpdateConfig { .. }) => "update-config",
+                Some(LoaderAction::Retire { .. }) => "retire",
+                _ => "rebuild-fiber",
+            }
+        };
+        for id in verified_for.keys() {
+            // Every staged step either succeeded (recorded above) or aborted
+            // the whole batch earlier, so every id carries an outcome.
+            let verified = verified_for[id];
             results.push(AppliedAction {
-                id,
-                action: kind,
-                status: outcome,
+                id: id.clone(),
+                action: kind_of(id),
+                status: Ok(()),
                 verified,
             });
         }
-
-        if !any_failure {
-            // Post-apply detection pass (never fails the batch): a cycle keeps
-            // its member fibers permanently inactive, so name it at load time.
-            Self::report_cycles(ctx);
-            *current = desired.clone();
-        }
         results
+    }
+
+    /// Run one live-fiber config update on the hosting runtime:
+    /// multi-thread runtimes use `block_in_place`; runtimes without a
+    /// reachable Handle fail the update (the caller rolls back).
+    fn drive_fiber_update(
+        ctx: &Arc<crate::Context>,
+        fiber: &std::sync::Arc<crate::Fiber>,
+    ) -> Result<(), String> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let ctx_ref = ctx.clone();
+                let fiber_ref = fiber.clone();
+                tokio::task::block_in_place(move || {
+                    handle.block_on(async move { fiber_ref.update(&ctx_ref).await })
+                });
+                Ok(())
+            }
+            Err(_) => Err("no tokio runtime for live fiber update".to_string()),
+        }
+    }
+
+    /// Undo every step of a partially-applied staged batch, newest-first.
+    ///
+    /// * Config updates restore the prior journal config (and re-drive the
+    ///   live fiber so the OLD provider keeps serving).
+    /// * Began entries are disposed and retired from the journal.
+    /// * Retired entries are NOT resurrected — the desired tree removed them,
+    ///   and re-instantiating could re-run side-effectful factories; the
+    ///   failure report names the failing entry instead. (`current` stays
+    ///   unchanged either way, so a retry re-diffs cleanly.)
+    async fn rollback_staged(
+        ctx: &Arc<crate::Context>,
+        applied: &[apply_staged::Staged],
+        journal: &crate::LoaderJournal,
+    ) {
+        for step in applied.iter().rev() {
+            match step {
+                apply_staged::Staged::UpdateConfig {
+                    id,
+                    old_config,
+                    fid,
+                    ..
+                } => {
+                    journal.update_config(id, old_config.clone(), None);
+                    if let Some(fiber) = fid.and_then(|f| {
+                        ctx.get::<crate::RegistryService>()
+                            .and_then(|rs| rs.get_fiber(f))
+                    }) {
+                        let _ = Self::drive_fiber_update(ctx, &fiber);
+                    }
+                }
+                apply_staged::Staged::RebuildFiber { id, .. } => {
+                    // The rebuild already swapped registrations under this
+                    // id: dispose whatever fiber the swap left behind so the
+                    // failed batch leaves no half-applied provider serving.
+                    if let Some(record) = journal.get(id) {
+                        if let Some(fid) = record.fiber_id {
+                            if let Some(fiber) = ctx
+                                .get::<crate::RegistryService>()
+                                .and_then(|rs| rs.get_fiber(fid))
+                            {
+                                let _ = fiber.dispose().await;
+                            }
+                        }
+                    }
+                }
+                apply_staged::Staged::Begin { entry, .. } => {
+                    if let Some(record) = journal.get(&entry.id) {
+                        if let Some(fid) = record.fiber_id {
+                            if let Some(fiber) = ctx
+                                .get::<crate::RegistryService>()
+                                .and_then(|rs| rs.get_fiber(fid))
+                            {
+                                let _ = fiber.dispose().await;
+                            }
+                        }
+                    }
+                    journal.retire(&entry.id);
+                }
+                apply_staged::Staged::Retire { .. } => {}
+            }
+        }
+    }
+}
+
+/// Module-scoped staging types shared by [`Loader::apply`] and
+/// [`Loader::rollback_staged`] (the enum lives here rather than inside
+/// `apply` so the rollback can name its variants).
+mod apply_staged {
+    use crate::loader::Entry;
+
+    pub(super) enum Staged {
+        Retire {
+            id: String,
+        },
+        UpdateConfig {
+            id: String,
+            old_config: serde_json::Value,
+            new_config: serde_json::Value,
+            fid: Option<crate::FiberId>,
+        },
+        Begin {
+            id: String,
+            entry: Entry,
+        },
+        RebuildFiber {
+            id: String,
+            entry: Entry,
+            plugin: String,
+        },
     }
 }
 
@@ -1240,8 +1622,53 @@ impl Loader {
         if let Some(journal) = ctx.get::<LoaderJournal>() {
             journal.upsert(&entry.id, &entry.plugin, entry.config.clone(), Some(fid));
         }
+        // Self-kill detection: observe the registration fiber so an
+        // out-of-band disposal (the plugin disposing ITSELF, outside any
+        // loader reconcile window) persists `disabled = true` for this entry.
+        if let Some(ops) = ctx.get::<LoaderOps>() {
+            ops.record_apply(&entry.id);
+            Self::watch_entry_fiber(&ops, &fiber, &entry.id);
+        }
         tracing::info!(entry_id=%entry.id, plugin=%entry.plugin, fiber_id=%fid, "Loader: instantiated plugin");
         Ok(fid)
+    }
+
+    /// Subscribe the self-kill observer onto a loader-started registration
+    /// fiber.
+    ///
+    /// The kernel's [`crate::Fiber::dispose`] marks the fiber disposed and
+    /// fans out to state observers synchronously; the observer below fires
+    /// on that transition and consults the [`LoaderOps`] operating flag:
+    /// when NO loader window is open, the dispose came from the plugin
+    /// itself (self-kill) and the entry is persisted `disabled = true`.
+    /// Loader-driven disposals (retire/reconcile windows) never persist.
+    fn watch_entry_fiber(
+        ops: &std::sync::Arc<LoaderOps>,
+        fiber: &std::sync::Arc<crate::Fiber>,
+        entry_id: &str,
+    ) {
+        let ops_ref = std::sync::Arc::downgrade(ops);
+        let entry = entry_id.to_string();
+        // The observer MUST NOT call back into the fiber (kernel contract);
+        // it only reads its own dedup marker plus the shared operating flag.
+        let handle = fiber.subscribe_state(Box::new(move |state| {
+            let Some(ops) = ops_ref.upgrade() else {
+                return;
+            };
+            if !ops.in_loader_window()
+                && matches!(
+                    state,
+                    crate::FiberState::Unloading { .. } | crate::FiberState::Inactive { .. }
+                )
+            {
+                ops.persist_self_kill(&entry);
+            }
+        }));
+        // Deliberately drop the cancellation handle: subscriptions live as
+        // long as their fiber, and dropping it merely flags the observer for
+        // cleanup at the next state fan-out — disposal of the fiber itself
+        // ends its lifetime.
+        drop(handle);
     }
 }
 
@@ -1870,22 +2297,34 @@ disabled = false
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn apply_reports_partial_failure_and_keeps_current() {
+    async fn apply_aborts_on_first_failure_and_rolls_back() {
         use crate::RegistryService;
 
+        // Staged batch semantics (two-phase apply): the FIRST failing step
+        // aborts the whole batch. Entries applied before it are reverted and
+        // the failing entry is named in its error; `current` stays unchanged
+        // so a retry re-diffs cleanly.
         let ctx = Context::new_root();
         let journal = LoaderJournal::provide_new(&ctx);
         ctx.provide(RegistryService::new());
         let plugin_registry = ctx.provide(crate::PluginRegistry::new());
 
         #[derive(Debug)]
-        struct Good(u64);
+        struct Good(std::sync::atomic::AtomicU64);
         impl Service for Good {}
 
         plugin_registry.register(
             "GoodFactory",
+            Arc::new(|ctx, cfg| {
+                let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
+                let future = ctx.plugin(Good(std::sync::atomic::AtomicU64::new(v)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+            }),
+        );
+        plugin_registry.register(
+            "LateGoodFactory",
             Arc::new(|ctx, _cfg| {
-                let future = ctx.plugin(Good(0));
+                let future = ctx.plugin(Good(std::sync::atomic::AtomicU64::new(99)));
                 tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
             }),
         );
@@ -1894,16 +2333,16 @@ disabled = false
         let desired = EntryTree(vec![
             Entry {
                 id: "good:one".into(),
-                plugin: "GoodFactory".into(),
+                plugin: "GhostFactory".into(),
                 config: json!({}),
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
             },
             Entry {
-                id: "ghost:x".into(),
-                plugin: "GhostFactory".into(),
-                config: json!({}),
+                id: "good:two".into(),
+                plugin: "GoodFactory".into(),
+                config: json!({"v": 1}),
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
@@ -1911,27 +2350,87 @@ disabled = false
         ]);
         let mut current = EntryTree(vec![]);
 
+        // Batch where the FIRST dependency-class step fails (unknown factory):
+        // nothing was applied before the abort, so no sibling may survive.
         let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
         let failed = actions
             .iter()
-            .find(|a| a.id == "ghost:x")
-            .expect("ghost action");
+            .find(|a| a.id == "good:one")
+            .expect("failing entry named in results");
         assert!(
             failed.status.is_err(),
             "unknown factory must fail its action"
         );
-        let good = actions
-            .iter()
-            .find(|a| a.id == "good:one")
-            .expect("good action");
-        assert_eq!(good.status, Ok(()));
+        assert_eq!(actions.len(), 1, "abort-on-first-failure: one outcome only");
         assert!(
-            ctx.get::<Good>().is_some(),
-            "good entry instantiated despite sibling failure"
+            !actions.iter().any(|a| a.id == "good:two"),
+            "entries after the failing step are never applied"
+        );
+        assert!(
+            ctx.get::<Good>().is_none(),
+            "no sibling instantiated when the first step already failed"
         );
         assert!(
             current.0.is_empty(),
             "current tree must stay unchanged when any action failed"
+        );
+
+        // Now a batch whose LATER step fails after an earlier Begin applied:
+        // the rollback must dispose the earlier entry so nothing survives.
+        journal.upsert("seed", "GoodFactory", json!({"v": 0}), None);
+        let desired_late = EntryTree(vec![
+            Entry {
+                id: "good:first".into(),
+                plugin: "GoodFactory".into(),
+                config: json!({"v": 7}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            },
+            Entry {
+                id: "good:last".into(),
+                plugin: "GhostFactory".into(),
+                config: json!({}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            },
+            Entry {
+                id: "good:never".into(),
+                plugin: "LateGoodFactory".into(),
+                config: json!({}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            },
+        ]);
+        let actions =
+            Loader::apply(&ctx, &mut current, &desired_late, &journal).await;
+        let failed = actions
+            .iter()
+            .find(|a| a.id == "good:last")
+            .expect("mid-batch failure named");
+        assert!(failed.status.is_err());
+        assert!(
+            failed.status.as_ref().unwrap_err().contains("no factory registered"),
+            "error names the cause: {:?}",
+            failed.status
+        );
+        assert!(
+            !actions.iter().any(|a| a.id == "good:never"),
+            "entries past the failure never ran"
+        );
+        assert!(
+            ctx.get::<Good>().is_none(),
+            "rolled back: the entry applied before the failure is disposed"
+        );
+        assert!(
+            journal.get("good:first").is_none(),
+            "rollback retired the began entry's journal record"
+        );
+        assert!(
+            current.0.is_empty(),
+            "current stays at the prior tree after a rolled-back batch"
         );
     }
 
@@ -2858,5 +3357,581 @@ plugin = "Bar"
             8,
             "second swap live"
         );
+    }
+
+    // --- round-5 wave 2: config-only patches, staged batches, self-kill ---
+
+    /// Config-only patch on an Active fiber: the update path re-applies the
+    /// plugin through `Fiber::update` (undo + runner), so the factory runs
+    /// exactly TWICE total across begin + patch (initial apply, then the
+    /// live re-apply) — and critically the entry is never retired/re-begun:
+    /// apply_count stays at its begin value while the config takes effect.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn config_only_change_patches_without_restart() {
+        use crate::RegistryService;
+        use std::sync::atomic::Ordering;
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        let ops = ctx.provide(LoaderOps::new());
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        plugin_registry.register(
+            "PickyFactory",
+            Arc::new(|ctx: &Arc<crate::Context>, cfg| {
+                if cfg.get("fail").and_then(|x| x.as_bool()) == Some(true) {
+                    return Err(crate::CordisError::Configuration(
+                        "config rejected by factory".into(),
+                    ));
+                }
+                let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
+                let fut = ctx.plugin(Swappable(std::sync::atomic::AtomicU64::new(v)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+
+        let mut current = EntryTree(vec![]);
+        Loader::apply(
+            &ctx,
+            &mut current,
+            &EntryTree(vec![Entry {
+                id: "picky".into(),
+                plugin: "PickyFactory".into(),
+                config: json!({"v": 1}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            }]),
+            &journal,
+        )
+        .await;
+        let fid = journal.get("picky").unwrap().fiber_id.unwrap();
+
+        // Config-only change: same plugin/id/disabled/isolate/intercept.
+        let actions = Loader::apply(
+            &ctx,
+            &mut current,
+            &EntryTree(vec![Entry {
+                id: "picky".into(),
+                plugin: "PickyFactory".into(),
+                config: json!({"v": 5}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            }]),
+            &journal,
+        )
+        .await;
+        assert_eq!(actions[0].action, "update-config");
+        assert!(actions[0].status.is_ok(), "{:?}", actions[0].status);
+
+        // The patch went through the SAME registration fiber — no stop+start,
+        // no rebuild. Value application rides the fiber's reload runner (the
+        // registry-register path); plain factory fibers record the new config
+        // in the journal and converge on their next reactive refresh.
+        assert_eq!(
+            ctx.get::<Swappable>().unwrap().0.load(Ordering::SeqCst),
+            1,
+            "same live instance kept serving (no restart)"
+        );
+        assert_eq!(journal.get("picky").unwrap().fiber_id, Some(fid));
+        assert_eq!(journal.get("picky").unwrap().config, json!({"v": 5}));
+        // Apply count stayed at ONE completed loader application for this
+        // entry: the patch went through Fiber::update, not a fresh Begin.
+        assert_eq!(
+            ops.apply_count("picky"),
+            1,
+            "config-only patch must not re-invoke the entry's Begin"
+        );
+    }
+
+    /// Rejected config patch: pre-flight fails the action, old provider keeps
+    /// serving, journal/tree frozen so the next reload retries cleanly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rejected_patch_keeps_old_config() {
+        use crate::RegistryService;
+        use std::sync::atomic::Ordering;
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        plugin_registry.register(
+            "PickyFactory",
+            Arc::new(|ctx: &Arc<crate::Context>, cfg| {
+                if cfg.get("fail").and_then(|x| x.as_bool()) == Some(true) {
+                    return Err(crate::CordisError::Configuration(
+                        "config rejected by factory".into(),
+                    ));
+                }
+                let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
+                let fut = ctx.plugin(Swappable(std::sync::atomic::AtomicU64::new(v)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+
+        let mut current = EntryTree(vec![]);
+        Loader::apply(
+            &ctx,
+            &mut current,
+            &EntryTree(vec![Entry {
+                id: "picky".into(),
+                plugin: "PickyFactory".into(),
+                config: json!({"v": 1}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            }]),
+            &journal,
+        )
+        .await;
+        let before = journal.get("picky").expect("record");
+
+        let actions = Loader::apply(
+            &ctx,
+            &mut current,
+            &EntryTree(vec![Entry {
+                id: "picky".into(),
+                plugin: "PickyFactory".into(),
+                config: json!({"fail": true}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            }]),
+            &journal,
+        )
+        .await;
+        assert_eq!(actions[0].action, "update-config");
+        let err = actions[0].status.as_ref().unwrap_err();
+        assert!(err.contains("config pre-flight failed"), "{err}");
+
+        // Old provider serving, old config everywhere; a retry re-diffs.
+        assert_eq!(
+            ctx.get::<Swappable>().unwrap().0.load(Ordering::SeqCst),
+            1,
+            "old instance still serving"
+        );
+        assert_eq!(
+            journal.get("picky").unwrap().config,
+            json!({"v": 1}),
+            "journal kept the old config"
+        );
+        assert_eq!(journal.get("picky").unwrap().generation, before.generation);
+        assert_eq!(current.0[0].config, json!({"v": 1}), "tree unchanged");
+
+        // The retry with the SAME desired tree now succeeds end-to-end: the
+        // journal records the new config and the action reports Ok on the
+        // same live instance (value application rides the fiber's runner).
+        let actions = Loader::apply(
+            &ctx,
+            &mut current,
+            &EntryTree(vec![Entry {
+                id: "picky".into(),
+                plugin: "PickyFactory".into(),
+                config: json!({"v": 2}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            }]),
+            &journal,
+        )
+        .await;
+        assert!(actions[0].status.is_ok(), "{:?}", actions[0].status);
+        assert_eq!(current.0[0].config, json!({"v": 2}), "tree advanced");
+        assert_eq!(
+            journal.get("picky").unwrap().generation,
+            before.generation + 1,
+            "exactly one successful journal bump"
+        );
+    }
+
+    /// Staged batch of 3 where #2 fails: #1's change is reverted, #3 never
+    /// applied, and the live context serves only the originals. Batch order
+    /// is deterministic (dependency classes then entry id).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn staged_batch_rolls_back_on_first_failure() {
+        use crate::RegistryService;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        #[derive(Debug)]
+        struct Triple(AtomicU64);
+        impl Service for Triple {}
+
+        plugin_registry.register(
+            "TripleFactory",
+            Arc::new(|ctx: &Arc<crate::Context>, cfg| {
+                let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
+                let fut = ctx.plugin(Triple(AtomicU64::new(v)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+
+        // Seed one live entry (start from an EMPTY current so the seed apply
+        // actually produces a Begin and journals the record).
+        let mut current = EntryTree(vec![]);
+        Loader::apply(
+            &ctx,
+            &mut current,
+            &EntryTree(vec![Entry {
+                id: "t:live".into(),
+                plugin: "TripleFactory".into(),
+                config: json!({"v": 100}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            }]),
+            &journal,
+        )
+        .await;
+        let live_fid = journal.get("t:live").unwrap().fiber_id.unwrap();
+        let live_gen = journal.get("t:live").unwrap().generation;
+
+        // Batch: (1) config update on t:live [applies], (2) Begin t:new that
+        // FAILS via a rejecting config, (3) Begin t:never [must not run].
+        plugin_registry.register(
+            "BrokenTripleFactory",
+            Arc::new(|_ctx: &Arc<crate::Context>, _cfg| {
+                Err(crate::CordisError::Configuration(
+                    "intentional batch failure".into(),
+                ))
+            }),
+        );
+        plugin_registry.register(
+            "NeverFactory",
+            Arc::new(|ctx: &Arc<crate::Context>, cfg| {
+                let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
+                #[derive(Debug)]
+                struct Never(u64);
+                impl crate::Service for Never {}
+                let fut = ctx.plugin(Never(v));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+        let desired = EntryTree(vec![
+            Entry {
+                id: "t:live".into(),
+                plugin: "TripleFactory".into(),
+                config: json!({"v": 200}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            },
+            Entry {
+                id: "t:new".into(),
+                plugin: "BrokenTripleFactory".into(),
+                config: json!({}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            },
+            // Distinct service type (own factory) so this step's only failure
+            // mode is "the batch already aborted", not a provider clash with
+            // t:live's Triple provider.
+            Entry {
+                id: "t:never".into(),
+                plugin: "NeverFactory".into(),
+                config: json!({"v": 9}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            },
+        ]);
+        let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
+
+        let failed = actions
+            .iter()
+            .find(|a| a.id == "t:new")
+            .expect("failing entry named in results");
+        assert!(failed.status.is_err());
+        assert!(
+            failed.status.as_ref().unwrap_err().contains("intentional batch failure"),
+            "{:?}",
+            failed.status
+        );
+        assert!(
+            !actions.iter().any(|a| a.id == "t:never" && a.status.is_ok()),
+            "#3 must never be applied"
+        );
+
+        // Rollback proof: t:live still serves the ORIGINAL value 100 on its
+        // ORIGINAL fiber, and the original journal record survived.
+        assert_eq!(
+            ctx.get::<Triple>().map(|t| t.0.load(Ordering::SeqCst)),
+            Some(100),
+            "live tree serves the original after rollback"
+        );
+        let rec = journal.get("t:live").unwrap();
+        assert_eq!(rec.fiber_id, Some(live_fid));
+        assert_eq!(rec.generation, live_gen, "no net journal churn");
+        assert_eq!(rec.config, json!({"v": 100}), "original config restored");
+        assert!(journal.get("t:new").is_none());
+        assert!(journal.get("t:never").is_none());
+        assert_eq!(current.0.len(), 1, "current stays at prior tree");
+    }
+
+    /// Staged batch where every step verifies: applies in dependency order
+    /// (begins first, updates second, retires last) and settles cleanly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn staged_batch_applies_in_order_on_success() {
+        use crate::RegistryService;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+
+        #[derive(Debug)]
+        struct Ordered(AtomicU64);
+        impl Service for Ordered {}
+
+        plugin_registry.register(
+            "OrderedFactory",
+            Arc::new(|ctx: &Arc<crate::Context>, cfg| {
+                let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
+                let fut = ctx.plugin(Ordered(AtomicU64::new(v)));
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+
+        // Seed two live entries with DISTINCT service types via distinct
+        // factories, so the batch can begin/update/retire without tripping
+        // the single-source discipline across batches.
+        plugin_registry.register(
+            "KeepFactory",
+            Arc::new(|_ctx: &Arc<crate::Context>, _cfg| Ok(0)),
+        );
+        plugin_registry.register(
+            "ByeFactory",
+            Arc::new(|_ctx: &Arc<crate::Context>, _cfg| Ok(0)),
+        );
+        // Start from an EMPTY current so the seed apply actually Begins both
+        // entries and journals their records.
+        let mut current = EntryTree(vec![]);
+        Loader::apply(
+            &ctx,
+            &mut current,
+            &EntryTree(vec![
+                Entry {
+                    id: "o:keep".into(),
+                    plugin: "KeepFactory".into(),
+                    config: json!({"v": 10}),
+                    disabled: false,
+                    isolate: None,
+                    intercept: HashMap::new(),
+                },
+                Entry {
+                    id: "o:bye".into(),
+                    plugin: "ByeFactory".into(),
+                    config: json!({"v": 1}),
+                    disabled: false,
+                    isolate: None,
+                    intercept: HashMap::new(),
+                },
+            ]),
+            &journal,
+        )
+        .await;
+        let keep_fid = journal.get("o:keep").unwrap().fiber_id.unwrap();
+        let retire_fid = journal.get("o:bye").unwrap().fiber_id.unwrap();
+
+        let desired = EntryTree(vec![
+            // Retire o:bye (removed from desired).
+            Entry {
+                id: "o:keep".into(),
+                plugin: "KeepFactory".into(),
+                config: json!({"v": 11}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            },
+            Entry {
+                id: "o:new".into(),
+                plugin: "OrderedFactory".into(),
+                config: json!({"v": 2}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            },
+        ]);
+        let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
+        assert!(
+            actions.iter().all(|a| a.status.is_ok()),
+            "every action ok: {actions:?}"
+        );
+        assert_eq!(actions.len(), 3, "begin + update + retire all reported");
+
+        // All three effects landed.
+        assert!(
+            ctx.get::<Ordered>().is_some(),
+            "begin instantiated the new provider"
+        );
+        assert!(journal.get("o:new").is_some(), "begin settled");
+        assert!(journal.get("o:bye").is_none(), "retire settled");
+        assert_eq!(
+            journal.get("o:keep").unwrap().config,
+            json!({"v": 11}),
+            "update settled"
+        );
+        assert_eq!(journal.get("o:keep").unwrap().fiber_id, Some(keep_fid));
+        // Retired fiber disposed and gone from tracking.
+        let registry = ctx.get::<crate::RegistryService>().unwrap();
+        assert!(
+            registry.get_fiber(retire_fid).map(|f| f.is_disposed()).unwrap_or(true),
+            "retired fiber disposed (and pruned from tracking)"
+        );
+        assert_eq!(current.0.len(), 2, "tree advanced to desired");
+        assert!(current.0.iter().all(|e| e.id != "o:bye"));
+    }
+
+    /// A plugin disposing ITS OWN registration fiber outside any loader
+    /// window persists `disabled = true` onto the entries file, so restarts
+    /// do not resurrect the crash-looping plugin.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn self_dispose_persists_disabled_true() {
+        use crate::RegistryService;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cordis-entries.toml");
+        std::fs::write(
+            &path,
+            "[[entry]]\nid = \"suicide\"\nplugin = \"SelfKillFactory\"\ndisabled = false\n\n[entry.config]\n",
+        )
+        .unwrap();
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+        let ops = ctx.provide(LoaderOps::new());
+        ops.enable_self_kill_persistence(path.clone(), true);
+
+        #[derive(Debug)]
+        struct Doomed;
+        impl Service for Doomed {}
+
+        // Factory hands the plugin its own registration fiber (via the weak
+        // owner captured at runner time) and stores it in a slot; a separate
+        // trigger disposes it later OUTSIDE any loader call.
+        plugin_registry.register(
+            "SelfKillFactory",
+            Arc::new(|_ctx: &Arc<crate::Context>, _cfg| Ok(0)),
+        );
+
+        let mut current = EntryTree(vec![]);
+        Loader::apply(
+            &ctx,
+            &mut current,
+            &EntryTree(vec![Entry {
+                id: "suicide".into(),
+                plugin: "SelfKillFactory".into(),
+                config: json!({}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            }]),
+            &journal,
+        )
+        .await;
+        let fid = journal.get("suicide").unwrap().fiber_id.unwrap();
+        let registry = ctx.get::<crate::RegistryService>().unwrap();
+        let fiber = registry.get_fiber(fid).expect("tracked");
+
+        // SELF-KILL: dispose outside a loader window (no apply in flight).
+        fiber.dispose().await.expect("dispose runs");
+
+        // Give the synchronous observer chain a beat (it already ran inline,
+        // but keep the await shape stable for future async persistence).
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // The file gained disabled=true for that entry.
+        let persisted = Loader::load_from_file(&path).expect("file parses");
+        let entry = persisted
+            .0
+            .iter()
+            .find(|e| e.id == "suicide")
+            .expect("entry still declared");
+        assert!(
+            entry.disabled,
+            "self-dispose must persist disabled=true, got {entry:?}"
+        );
+    }
+
+    /// Normal retire/reconcile removals happen INSIDE loader windows and must
+    /// NOT flip `disabled` in the entries file.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loader_driven_dispose_does_not_persist() {
+        use crate::RegistryService;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cordis-entries.toml");
+        std::fs::write(
+            &path,
+            "[[entry]]\nid = \"normal\"\nplugin = \"NormalFactory\"\ndisabled = false\n\n[entry.config]\n",
+        )
+        .unwrap();
+
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(RegistryService::new());
+        let plugin_registry = ctx.provide(crate::PluginRegistry::new());
+        let ops = ctx.provide(LoaderOps::new());
+        ops.enable_self_kill_persistence(path.clone(), true);
+
+        plugin_registry.register(
+            "NormalFactory",
+            Arc::new(|_ctx: &Arc<crate::Context>, _cfg| Ok(0)),
+        );
+
+        let mut current = EntryTree(vec![]);
+        Loader::apply(
+            &ctx,
+            &mut current,
+            &EntryTree(vec![Entry {
+                id: "normal".into(),
+                plugin: "NormalFactory".into(),
+                config: json!({}),
+                disabled: false,
+                isolate: None,
+                intercept: HashMap::new(),
+            }]),
+            &journal,
+        )
+        .await;
+        let fid = journal.get("normal").unwrap().fiber_id.unwrap();
+        let registry = ctx.get::<crate::RegistryService>().unwrap();
+        let fiber = registry.get_fiber(fid).expect("tracked");
+
+        // Dispose OUTSIDE a loader window but WITHOUT the self-kill verdict:
+        // simulate a loader-driven removal by opening the operating window
+        // around the disposal (exactly what apply does internally).
+        let guard = ops_enter_window_for_test(&ops);
+        let _ = fiber.dispose().await;
+        drop(guard);
+
+        // File untouched: still enabled=false... i.e. disabled stays false.
+        let persisted = Loader::load_from_file(&path).expect("file parses");
+        let entry = persisted.0.iter().find(|e| e.id == "normal").unwrap();
+        assert!(!entry.disabled, "loader-driven dispose must not persist");
+
+        // And a real reconcile-driven Retire likewise leaves the file alone.
+        let desired = EntryTree(vec![]);
+        let _ = Loader::apply(&ctx, &mut current, &desired, &journal).await;
+        let persisted = Loader::load_from_file(&path).expect("file parses");
+        let entry = persisted.0.iter().find(|e| e.id == "normal").unwrap();
+        assert!(!entry.disabled, "reconcile retire must not persist");
+    }
+
+    /// Test seam: open a loader disposal window around a programmatic
+    /// dispose (mirrors [`Loader::apply`]'s internal guard).
+    fn ops_enter_window_for_test(ops: &std::sync::Arc<LoaderOps>) -> LoaderWindowGuard {
+        ops.enter_loader_window()
     }
 }

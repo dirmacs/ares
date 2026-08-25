@@ -119,7 +119,7 @@ pub use events_payload::{
 pub mod loader;
 pub use loader::{
     AppliedAction, CurrentEntries, Entry, EntryConfigFiller, EntryConfigFillerHandle, EntryTree,
-    EntryUpdate, Loader,
+    EntryUpdate, Loader, LoaderOps,
 };
 
 pub mod cycles;

@@ -781,6 +781,87 @@ pub async fn toggle_cordis_entry(
     }
 }
 
+/// PATCH /admin/cordis/entries/{id} — partial update of one entry: only the
+/// fields present in the [`cordis::loader::EntryUpdate`] body are applied
+/// (`config`, `disabled`, `isolate`, `intercept`); everything else is left
+/// untouched, so an empty body is a validated no-op that still persists and
+/// re-applies the unchanged tree. Persists to the TOML program file and
+/// applies through the same flow as reload; responds with the post-patch
+/// entry. Unknown ids answer 404.
+pub async fn patch_cordis_entry(
+    State(ctx): State<Arc<Context>>,
+    Path(id): Path<String>,
+    axum::Json(update): axum::Json<cordis::loader::EntryUpdate>,
+) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
+    if let Err((status, body)) = require_loader_state(&ctx) {
+        return Ok((status, Json(body)));
+    }
+    let Some(current_entries) = ctx.get::<cordis::CurrentEntries>() else {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "patched": false,
+                "error": "CurrentEntries is not provided on this context",
+            })),
+        ));
+    };
+    let path = current_entries.path.clone();
+
+    let mut tree = match load_desired_tree(&path) {
+        Ok(tree) => tree,
+        Err((status, body)) => return Ok((status, Json(body))),
+    };
+    let Some(entry) = tree.0.iter_mut().find(|e| e.id == id) else {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "patched": false,
+                "error": "no such entry",
+            })),
+        ));
+    };
+    update.apply_to(entry);
+    tree.0 = tree.0.drain(..).map(normalize_entry_config).collect();
+    if let Err(e) = tree.save_to_toml_file(&path) {
+        return Ok((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
+        ));
+    }
+
+    match apply_entries_from_disk(&ctx).await {
+        Ok(actions) => {
+            let patched = ctx
+                .get::<cordis::CurrentEntries>()
+                .and_then(|ce| {
+                    ce.tree
+                        .lock()
+                        .ok()
+                        .map(|t| t.0.iter().find(|e| e.id == id).cloned())
+                })
+                .flatten();
+            let Some(patched) = patched else {
+                return Ok((
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "patched": false,
+                        "error": "entry vanished during apply",
+                    })),
+                ));
+            };
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "applied": applied_json(&actions),
+                    "patched": true,
+                    "entry": patched,
+                })),
+            ))
+        }
+        Err((status, body)) => Ok((status, Json(body))),
+    }
+}
+
 /// GET /admin/cordis/events — per-event dispatch counters from the
 /// `EventsService`. Returns 503 when the service is not provided.
 pub async fn cordis_event_metrics(
@@ -1454,6 +1535,114 @@ mod tests {
             .await
             .expect_err("blank plugin must be rejected");
         assert_eq!(err.0.status_code(), 400);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Patching only `config` leaves `disabled`, `isolate`, and `intercept`
+    /// untouched; the response carries the post-patch entry and the apply
+    /// reports the config change.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_config_only_updates_single_field() {
+        let mut seeded = probe_entry("calc", false);
+        seeded.config = serde_json::json!({"v": 1});
+        seeded.isolate = Some("tenant-a".into());
+        let (ctx, dir) =
+            build_entries_fixture("patch-config", CALC_TOML_BLOCK, vec![seeded.clone()]);
+
+        let update = cordis::loader::EntryUpdate {
+            config: Some(serde_json::json!({"v": 7})),
+            disabled: None,
+            isolate: None,
+            intercept: None,
+        };
+        let (status, Json(body)) =
+            patch_cordis_entry(State(ctx.clone()), Path("calc".into()), axum::Json(update))
+                .await
+                .expect("resp");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["patched"], json!(true));
+        assert_eq!(
+            body["entry"],
+            json!({
+                "id": "calc",
+                "plugin": "CalculatorService",
+                "config": {"v": 7},
+                "disabled": false,
+                "isolate": "tenant-a",
+                "intercept": {},
+            }),
+            "only config changed; everything else untouched"
+        );
+        assert_eq!(body["entry"]["config"]["v"], 7);
+        assert_eq!(body["entry"]["disabled"], false);
+        assert_eq!(body["entry"]["isolate"], "tenant-a");
+
+        // The on-disk program carries the patched config.
+        let raw = std::fs::read_to_string(dir.join("cordis-entries.toml")).expect("read back");
+        assert!(raw.contains("v = 7"), "config persisted, got: {raw}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An empty body is a validated no-op: 200 with the entry unchanged and
+    /// still persisted + re-applied through the shared flow.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_empty_body_is_noop() {
+        let (ctx, dir) =
+            build_entries_fixture("patch-empty", CALC_TOML_BLOCK, vec![probe_entry("calc", false)]);
+
+        let before = std::fs::read_to_string(dir.join("cordis-entries.toml")).expect("read");
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            Path("calc".into()),
+            axum::Json(cordis::loader::EntryUpdate::default()),
+        )
+        .await
+        .expect("resp");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["patched"], json!(true));
+        assert_eq!(body["entry"], serde_json::to_value(probe_entry("calc", false)).unwrap());
+
+        // File content is byte-identical modulo header handling: the same
+        // entries round-trip through save_to_toml_file.
+        let after = std::fs::read_to_string(dir.join("cordis-entries.toml")).expect("read back");
+        assert_eq!(
+            after.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).count(),
+            before.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).count(),
+            "no-op patch keeps the entry set intact"
+        );
+        assert!(after.contains("id = \"calc\""));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Unknown id answers 404 with `patched:false`; nothing was written or
+    /// applied.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_unknown_id_404s() {
+        let (ctx, dir) =
+            build_entries_fixture("patch-unknown", CALC_TOML_BLOCK, vec![probe_entry("calc", false)]);
+        let before = std::fs::read_to_string(dir.join("cordis-entries.toml")).expect("read");
+
+        let update = cordis::loader::EntryUpdate {
+            config: Some(serde_json::json!({"v": 3})),
+            ..Default::default()
+        };
+        let (status, Json(body)) =
+            patch_cordis_entry(State(ctx.clone()), Path("nope".into()), axum::Json(update))
+                .await
+                .expect("resp");
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["patched"], json!(false));
+        assert_eq!(body["error"], "no such entry");
+
+        // Nothing persisted.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cordis-entries.toml")).expect("read back"),
+            before,
+            "404 must not touch the file"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

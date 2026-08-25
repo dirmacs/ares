@@ -3,7 +3,9 @@
 //! A [`MicroTask`] is one tiny structured request: a fixed system template, a
 //! minimal input payload, and a token budget. A [`MicroEngine`] runs such
 //! tasks against a shared client, forces JSON-shaped answers, and treats
-//! transport errors as correctness problems worth retrying.
+//! transport errors as correctness problems worth retrying. An answer with
+//! no directly parseable JSON is re-requested identically up to
+//! `json_retries` times before substring salvage gets a chance.
 //!
 //! # Example
 //!
@@ -31,6 +33,10 @@ use serde_json::Value;
 
 use crate::client::LLMClient;
 use ares_types::types::Result;
+
+/// Default number of identical re-requests after an answer whose JSON could
+/// not be parsed directly, before substring salvage runs.
+pub(crate) const DEFAULT_JSON_RETRIES: u32 = 2;
 
 /// One tiny structured request sent to a model.
 ///
@@ -64,31 +70,48 @@ pub struct MicroOutcome {
     pub text: String,
     /// Wall-clock milliseconds spent on all attempts of this task.
     pub latency_ms: u128,
-    /// Number of retries performed after failed attempts.
+    /// Number of retries performed after failed attempts: transport errors
+    /// and answers whose JSON could not be parsed directly.
     pub retries: u32,
 }
 
 /// Bounded-concurrency runner for many tiny structured tasks over one client.
 ///
 /// Retries are treated as part of correctness: a transport-level failure is
-/// retried up to `max_retries` times before the error is surfaced.
+/// retried up to `max_retries` times before the error is surfaced, and an
+/// answer with no directly parseable JSON is re-requested up to
+/// `json_retries` times before the substring-salvage fallback runs.
 pub struct MicroEngine {
     client: Arc<dyn LLMClient>,
     max_retries: u32,
     max_concurrency: usize,
+    json_retries: u32,
 }
 
 impl MicroEngine {
     /// Create an engine with explicit retry and concurrency limits.
+    ///
+    /// Malformed-JSON retries start at [`DEFAULT_JSON_RETRIES`]; override
+    /// with [`MicroEngine::with_json_retries`].
     pub fn new(client: Arc<dyn LLMClient>, max_retries: u32, max_concurrency: usize) -> Self {
         Self {
             client,
             max_retries,
             max_concurrency,
+            json_retries: DEFAULT_JSON_RETRIES,
         }
     }
 
-    /// Create an engine with defaults: 2 retries, 4 concurrent calls.
+    /// Re-request an answer with no directly parseable JSON this many times,
+    /// sending the identical request each time, before the substring-salvage
+    /// fallback runs. Defaults to [`DEFAULT_JSON_RETRIES`].
+    pub fn with_json_retries(mut self, json_retries: u32) -> Self {
+        self.json_retries = json_retries;
+        self
+    }
+
+    /// Create an engine with defaults: 2 transport retries, 2 malformed-JSON
+    /// retries, 4 concurrent calls.
     pub fn with_client(client: Arc<dyn LLMClient>) -> Self {
         Self::new(client, 2, 4)
     }
@@ -96,12 +119,15 @@ impl MicroEngine {
     /// Run one task, retrying transport errors up to `max_retries` times.
     ///
     /// The answer text is trimmed of optional Markdown code fences before a
-    /// JSON parse is attempted; [`MicroOutcome::json`] is `Some` only when
-    /// that parse succeeds. The last error is returned when every attempt
-    /// fails.
+    /// strict JSON parse is attempted. An answer that does not parse is
+    /// re-requested identically up to `json_retries` times; only then does
+    /// the tolerant [`salvage_json`] fallback run on the last answer.
+    /// [`MicroOutcome::json`] is `Some` only when the direct parse or the
+    /// salvage succeeds. The last error is returned when every attempt fails.
     pub async fn run(&self, task: &MicroTask<'_>) -> Result<MicroOutcome> {
         let started = Instant::now();
         let mut retries = 0u32;
+        let mut json_retries = 0u32;
 
         loop {
             match self
@@ -111,14 +137,44 @@ impl MicroEngine {
             {
                 Ok(content) => {
                     let text = strip_code_fences(&content);
-                    let json = salvage_json(text);
-                    return Ok(MicroOutcome {
-                        task: task.name.to_string(),
-                        json,
-                        text: text.to_string(),
-                        latency_ms: started.elapsed().as_millis(),
-                        retries,
-                    });
+                    match serde_json::from_str::<Value>(text) {
+                        Ok(json) => {
+                            return Ok(MicroOutcome {
+                                task: task.name.to_string(),
+                                json: Some(json),
+                                text: text.to_string(),
+                                latency_ms: started.elapsed().as_millis(),
+                                retries,
+                            });
+                        }
+                        Err(_) => {
+                            // Silent degradation: a malformed answer costs one
+                            // more identical request while budget remains;
+                            // salvage is the final fallback and never errors.
+                            if json_retries < self.json_retries {
+                                json_retries += 1;
+                                retries += 1;
+                                tracing::debug!(
+                                    task = task.name,
+                                    json_retry = json_retries,
+                                    "micro answer had no parseable JSON; re-requesting"
+                                );
+                                continue;
+                            }
+                            tracing::debug!(
+                                task = task.name,
+                                "micro answer still unparseable; falling back to salvage"
+                            );
+                            let json = salvage_json(text);
+                            return Ok(MicroOutcome {
+                                task: task.name.to_string(),
+                                json,
+                                text: text.to_string(),
+                                latency_ms: started.elapsed().as_millis(),
+                                retries,
+                            });
+                        }
+                    }
                 }
                 Err(err) => {
                     if retries >= self.max_retries {
@@ -368,6 +424,73 @@ mod tests {
 
         assert!(result.is_err(), "expected Err after exhausting retries");
         assert_eq!(client.call_count(), 3, "initial attempt plus 2 retries");
+    }
+
+    #[tokio::test]
+    async fn parse_failure_retries_then_succeeds() {
+        let client = Arc::new(BehaviorClient::new(|call| {
+            if call < 2 {
+                Ok("no json in this answer".to_string())
+            } else {
+                Ok("{\"recovered\":true}".to_string())
+            }
+        }));
+        let engine = MicroEngine::with_client(client.clone());
+
+        let outcome = engine
+            .run(&task("retry-json", "payload"))
+            .await
+            .expect("third attempt parses");
+
+        assert_eq!(outcome.retries, 2, "two malformed-JSON re-requests");
+        assert_eq!(
+            outcome.json,
+            Some(serde_json::json!({ "recovered": true })),
+            "directly parsed answer must win over salvage"
+        );
+        assert_eq!(client.call_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn retries_exhausted_falls_back_to_salvage() {
+        let client = Arc::new(BehaviorClient::new(|_| {
+            Ok("Sure! {\"score\": 4} — hope that helps.".to_string())
+        }));
+        let engine = MicroEngine::with_client(client.clone());
+
+        let outcome = engine
+            .run(&task("salvage-after-retries", "payload"))
+            .await
+            .expect("salvage fallback yields an outcome");
+
+        assert_eq!(
+            outcome.retries,
+            DEFAULT_JSON_RETRIES,
+            "identical request repeated once per json retry before salvage"
+        );
+        assert_eq!(outcome.json, Some(serde_json::json!({ "score": 4 })));
+        assert_eq!(
+            client.call_count(),
+            usize::from(DEFAULT_JSON_RETRIES) + 1,
+            "all json attempts happen before the single salvage pass"
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_retries_goes_straight_to_salvage() {
+        let client = Arc::new(BehaviorClient::new(|_| {
+            Ok("Sure! {\"score\": 4} — hope that helps.".to_string())
+        }));
+        let engine = MicroEngine::with_client(client.clone()).with_json_retries(0);
+
+        let outcome = engine
+            .run(&task("salvage-now", "payload"))
+            .await
+            .expect("first unparseable answer salvages immediately");
+
+        assert_eq!(outcome.retries, 0);
+        assert_eq!(outcome.json, Some(serde_json::json!({ "score": 4 })));
+        assert_eq!(client.call_count(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -33,6 +33,20 @@ fn estimated_cost_usd(prompt_tokens: i64, completion_tokens: i64) -> rust_decima
 const MAX_SKILL_CALL_DEPTH: usize = 8;
 const RUN_HISTORY_STATUS_SUCCESS: &str = "success";
 
+/// Fixed cache-friendly preamble for delegated-result self-critique rounds.
+///
+/// Kept byte-stable across calls and rounds so provider-side prompt caches
+/// hit on the template; only the per-call tail (skill id, input, current
+/// result) varies. Each round asks whether the answer addressed the task and
+/// carries obvious errors or omissions; the model either outputs the
+/// corrected final answer or returns the original verbatim.
+const SELF_CHECK_TEMPLATE: &str = "You are double-checking the final answer of a delegated \
+                                   sub-workflow step.\n\
+                                   Ask yourself: (a) did the answer address the requested task? \
+                                   (b) are there obvious errors or omissions?\n\
+                                   If corrections are needed, output ONLY the corrected final \
+                                   answer. Otherwise return the original answer verbatim.\n";
+
 /// Opt-in ambient enrichment for assistant completions.
 ///
 /// When enabled, every LLM step completion fires two parallel micro calls
@@ -197,6 +211,7 @@ pub struct SkillEngine {
     tools: Arc<Tools>,
     llm: Arc<Llm>,
     ambient: AmbientEnrichmentConfig,
+    self_check_rounds: Option<u32>,
 }
 
 impl SkillEngine {
@@ -214,6 +229,7 @@ impl SkillEngine {
             tools,
             llm,
             ambient: AmbientEnrichmentConfig::default(),
+            self_check_rounds: None,
         }
     }
 
@@ -224,6 +240,17 @@ impl SkillEngine {
     /// outcomes as session metadata on the existing skill-step record.
     pub fn with_ambient_enrichment(mut self, config: AmbientEnrichmentConfig) -> Self {
         self.ambient = config;
+        self
+    }
+
+    /// Opt in to delegated-result self-critique rounds (default off).
+    ///
+    /// When set to `Some(n)` with `n >= 1`, each nested `SkillCall` result
+    /// passes through up to `n` self-check rounds — one LLM call per round
+    /// over a cache-stable template — before the result integrates. An LLM
+    /// failure mid-loop keeps the last good answer silently.
+    pub fn with_self_check_rounds(mut self, rounds: Option<u32>) -> Self {
+        self.self_check_rounds = rounds.filter(|r| *r >= 1);
         self
     }
 
@@ -262,6 +289,85 @@ impl SkillEngine {
                 AppError::NotFound(_) => format!("Tool {name} not found"),
                 e => format!("Tool {name} execution error: {e}"),
             })
+    }
+
+    /// Answer text a self-check round critiques: the `content` field of a
+    /// standard step-context result, or a bare string result itself.
+    /// Anything else carries no answer to check.
+    fn self_check_answer(result: &serde_json::Value) -> Option<&str> {
+        match result {
+            serde_json::Value::String(text) => Some(text.as_str()),
+            serde_json::Value::Object(_) => result.get("content").and_then(|c| c.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Fold a corrected answer back into the result: structured results keep
+    /// their shape (only `content` moves); bare strings are replaced whole.
+    fn apply_self_check_answer(
+        mut current: serde_json::Value,
+        answer: &str,
+    ) -> serde_json::Value {
+        if current.is_object() && current.get("content").is_some() {
+            current["content"] = serde_json::Value::String(answer.to_string());
+            current
+        } else {
+            serde_json::Value::String(answer.to_string())
+        }
+    }
+
+    /// Run up to `rounds` self-critique-and-fix rounds over a delegated skill
+    /// result BEFORE any downstream gate sees it.
+    ///
+    /// Each round is exactly one LLM call whose prompt is the byte-stable
+    /// [`SELF_CHECK_TEMPLATE`] followed by the delegated skill id, requested
+    /// input, and current answer — identical request shape across rounds so
+    /// provider-side prefix caches hit. A verbatim reply means the model found
+    /// no corrections and ends the loop; an LLM error or empty answer keeps
+    /// the last good answer silently and stops further rounds.
+    async fn self_check_nested_result(
+        &self,
+        ctx: &Arc<cordis::Context>,
+        delegated_skill_id: &str,
+        delegated_input: &serde_json::Value,
+        result: serde_json::Value,
+    ) -> serde_json::Value {
+        let Some(rounds) = self.self_check_rounds else {
+            return result;
+        };
+        let Some(original_answer) = Self::self_check_answer(&result).map(str::to_string) else {
+            return result;
+        };
+        let mut answer = original_answer.clone();
+        for _ in 0..rounds {
+            let prompt = format!(
+                "{SELF_CHECK_TEMPLATE}Delegated sub-workflow: {delegated_skill_id}\n\
+                 Requested input: {delegated_input}\n\
+                 Current answer to check: {answer}",
+            );
+            match self.llm.complete(ctx, &prompt).await {
+                Ok(next) if next.trim().is_empty() => {
+                    tracing::debug!(
+                        "self-check round returned an empty answer; keeping last good answer"
+                    );
+                    break;
+                }
+                // Verbatim reply: the model judged the answer sound.
+                Ok(next) if next == answer => break,
+                Ok(next) => answer = next,
+                Err(err) => {
+                    tracing::debug!(
+                        error = %err,
+                        "self-check LLM call failed; keeping last good answer"
+                    );
+                    break;
+                }
+            }
+        }
+        if answer == original_answer {
+            return result;
+        }
+        Self::apply_self_check_answer(result, &answer)
     }
 
     /// Run the completion and, when ambient enrichment is enabled, fire the
@@ -507,6 +613,9 @@ impl SkillEngine {
                 }
                 SkillStep::SkillCall { skill_id, input } => {
                     tracing::info!("Step {}: skill_call {}", step_index, skill_id);
+                    let check_input = self
+                        .self_check_rounds
+                        .map(|_| input.clone());
                     let result = Box::pin(self.execute_skill_at_depth(
                         &skill_id,
                         tenant_id,
@@ -516,6 +625,13 @@ impl SkillEngine {
                         depth + 1,
                     ))
                     .await?;
+                    let result = match check_input {
+                        Some(check_input) => {
+                            self.self_check_nested_result(ctx, &skill_id, &check_input, result)
+                                .await
+                        }
+                        None => result,
+                    };
                     context[&format!("step_{}", step_index)] = successful_step_context(result);
                 }
                 SkillStep::Condition {
@@ -631,6 +747,7 @@ impl SkillEngine {
             }
             SkillStep::SkillCall { skill_id, input } => {
                 tracing::info!("Sub-step {}: skill_call {}", step_index, skill_id);
+                let check_input = self.self_check_rounds.map(|_| input.clone());
                 let result = Box::pin(self.execute_skill_at_depth(
                     skill_id,
                     tenant_id,
@@ -640,6 +757,13 @@ impl SkillEngine {
                     depth + 1,
                 ))
                 .await?;
+                let result = match check_input {
+                    Some(check_input) => {
+                        self.self_check_nested_result(ctx, skill_id, &check_input, result)
+                            .await
+                    }
+                    None => result,
+                };
                 context[&format!("step_{}", step_index)] = successful_step_context(result);
             }
             SkillStep::Condition {
@@ -1642,5 +1766,210 @@ mod tests {
             "no ambient key when enrichment failed"
         );
         assert_eq!(folded["content"], json!("classification-of-hello there"));
+    }
+
+    /// Scripted mock for self-check rounds: `generate` pops the next scripted
+    /// outcome per call and records every prompt it saw.
+    struct SelfCheckMockClient {
+        replies: Mutex<std::collections::VecDeque<Result<String, String>>>,
+        prompts: Mutex<Vec<String>>,
+    }
+
+    impl SelfCheckMockClient {
+        fn scripted(replies: Vec<Result<String, String>>) -> Arc<Self> {
+            Arc::new(Self {
+                replies: Mutex::new(replies.into()),
+                prompts: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn recorded_prompts(&self) -> Vec<String> {
+            self.prompts.lock().expect("prompts").clone()
+        }
+
+        fn record(&self, prompt: &str) {
+            self.prompts
+                .lock()
+                .expect("prompts")
+                .push(prompt.to_string());
+        }
+
+        fn pop_reply(&self) -> Result<String, AppError> {
+            let reply = self
+                .replies
+                .lock()
+                .expect("replies")
+                .pop_front()
+                .unwrap_or_else(|| Ok(String::new()));
+            reply.map_err(AppError::Internal)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMClient for SelfCheckMockClient {
+        async fn generate(&self, prompt: &str) -> ares_types::Result<String> {
+            self.record(prompt);
+            self.pop_reply()
+        }
+
+        async fn generate_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> ares_types::Result<String> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn generate_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> ares_types::Result<LLMResponse> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn generate_with_tools(
+            &self,
+            _prompt: &str,
+            _tools: &[ares_types::types::ToolDefinition],
+        ) -> ares_types::Result<LLMResponse> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn generate_with_tools_and_history(
+            &self,
+            _messages: &[ares_llm::ConversationMessage],
+            _tools: &[ares_types::types::ToolDefinition],
+        ) -> ares_types::Result<LLMResponse> {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn stream(
+            &self,
+            _prompt: &str,
+        ) -> ares_types::Result<
+            Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn stream_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> ares_types::Result<
+            Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        async fn stream_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> ares_types::Result<
+            Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("unused".into()))
+        }
+
+        fn model_name(&self) -> &str {
+            "self-check-mock"
+        }
+    }
+
+    /// Engine pinned to the scripted self-check mock; the lazy pool is never
+    /// touched because only `self_check_nested_result` runs.
+    fn self_check_engine(mock: Arc<SelfCheckMockClient>, rounds: Option<u32>) -> SkillEngine {
+        SkillEngine::new(
+            PgPool::connect_lazy("postgres://localhost/ares_test").expect("lazy pool"),
+            Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())),
+            Arc::new(Llm::from_client(mock as Arc<dyn LLMClient>)),
+        )
+        .with_self_check_rounds(rounds)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn self_check_off_passthrough_identical() {
+        // No LLM service traffic at all: the mock is never consulted.
+        let ctx = Context::new_root();
+
+        let result = json!({
+            "status": "success",
+            "content": "flawed answer",
+            "usage": {"prompt_tokens": 1},
+        });
+        let engine = self_check_engine(SelfCheckMockClient::scripted(vec![]), None);
+        let out = engine
+            .self_check_nested_result(&ctx, "child-skill", &json!({"q": "capital of France"}), result.clone())
+            .await;
+        assert_eq!(out, result, "off must return the delegated result unchanged");
+
+        // Explicit zero behaves identically to off.
+        let engine_zero = self_check_engine(SelfCheckMockClient::scripted(vec![]), Some(0));
+        let out_zero = engine_zero
+            .self_check_nested_result(&ctx, "child-skill", &json!({"q": "x"}), result.clone())
+            .await;
+        assert_eq!(out_zero, result);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn one_round_fixes_flawed_answer() {
+        let ctx = Context::new_root();
+        let mock = SelfCheckMockClient::scripted(vec![Ok("The capital of France is Paris.".into())]);
+        let engine = self_check_engine(Arc::clone(&mock), Some(1));
+
+        let flawed = json!({"status": "success", "content": "The capital of France is Lyon."});
+        let out = engine
+            .self_check_nested_result(&ctx, "geo-skill", &json!({"task": "capital of France"}), flawed)
+            .await;
+
+        assert_eq!(out["content"], json!("The capital of France is Paris."));
+        assert_eq!(out["status"], json!("success"), "non-content fields stay intact");
+
+        let prompts = mock.recorded_prompts();
+        assert_eq!(prompts.len(), 1, "exactly one round means exactly one LLM call");
+        assert!(
+            prompts[0].starts_with(SELF_CHECK_TEMPLATE),
+            "round prompt must lead with the cache-stable template"
+        );
+        assert!(prompts[0].contains("geo-skill"));
+        assert!(prompts[0].contains("The capital of France is Lyon."));
+
+        // Bare string results are replaced whole.
+        let bare = engine
+            .self_check_nested_result(&ctx, "s", &json!({}), json!("stale text"))
+            .await;
+        assert_eq!(bare, json!("stale text"), "verbatim reply keeps the original");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn llm_failure_keeps_last_good_answer() {
+        let ctx = Context::new_root();
+        // Round 1 fixes the flaw; round 2's call errors out.
+        let mock = SelfCheckMockClient::scripted(vec![
+            Ok("corrected answer".into()),
+            Err("provider down".into()),
+        ]);
+        let engine = self_check_engine(Arc::clone(&mock), Some(2));
+
+        let flawed = json!({"status": "success", "content": "broken draft"});
+        let out = engine
+            .self_check_nested_result(&ctx, "child", &json!({}), flawed.clone())
+            .await;
+
+        assert_eq!(
+            out["content"],
+            json!("corrected answer"),
+            "failure mid-loop must keep the last good answer"
+        );
+        assert_eq!(mock.recorded_prompts().len(), 2, "both rounds attempted");
+
+        // A failure on the FIRST round degrades to the untouched input.
+        let first_fails =
+            SelfCheckMockClient::scripted(vec![Err("down".into())]);
+        let degraded = self_check_engine(first_fails.clone(), Some(3))
+            .self_check_nested_result(&ctx, "child", &json!({}), flawed.clone())
+            .await;
+        assert_eq!(degraded, flawed, "first-round failure passes the original through");
+        assert_eq!(first_fails.recorded_prompts().len(), 1);
     }
 }

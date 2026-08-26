@@ -369,7 +369,7 @@ slot must be stable across processes and platforms, so it comes from a
 hash, not a counter. <code>name_color_code</code> in <code>logger.rs</code> computes FNV-1a
 over the name bytes:</p>
 <p>$$h_0 = \texttt{0xcbf29ce484222325}, \qquad h_{i+1} = (h_i \oplus b_i) \cdot \texttt{0x00000100000001b3} ;\bmod; 2^{64}$$</p>
-<p>where $b_i$ is the $i$-th name byte. The palette index is then</p>
+<p>where \(b_i\) is the \(i\)-th name byte. The palette index is then</p>
 <p>$$\text{color}(name) = \text{ANSI16}[,h \bmod 16,]$$</p>
 <p>with <code>ANSI16 = [30..=37, 90..=97]</code>: eight normal foregrounds followed by
 their bright variants. The multiplication wraps (<code>wrapping_mul</code>), so no
@@ -591,6 +591,8 @@ deterministic. Every operation lands in a bounded audit ring
         <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
     </div>

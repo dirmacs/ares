@@ -228,7 +228,7 @@
 </ol>
 <p>Step 8 is the first step that touches the network for serving. A failure in any earlier step exits before any port opens.</p>
 <h3 id="the-rate-limit-layer"><a class="header" href="#the-rate-limit-layer">The rate-limit layer</a></h3>
-<p>When <code>rate_limit_per_second &gt; 0</code>, startup wraps the router in <code>tower_governor</code> (<code>src/main.rs:900-913</code>). The limiter is a GCRA bucket per client IP. It admits up to <code>rate_limit_burst</code> requests immediately and then admits one more request every $1/\text{rate_limit_per_second}$ seconds. A background task prunes idle per-IP buckets every 60 seconds (<code>src/main.rs:917-930</code>). Responses carry <code>x-ratelimit-*</code> headers. Setting <code>rate_limit_per_second = 0</code> removes the layer entirely and logs a warning.</p>
+<p>When <code>rate_limit_per_second &gt; 0</code>, startup wraps the router in <code>tower_governor</code> (<code>src/main.rs:900-913</code>). The limiter is a GCRA bucket per client IP. It admits up to <code>rate_limit_burst</code> requests immediately and then admits one more request every \(1/\text{rate_limit_per_second}\) seconds. A background task prunes idle per-IP buckets every 60 seconds (<code>src/main.rs:917-930</code>). Responses carry <code>x-ratelimit-*</code> headers. Setting <code>rate_limit_per_second = 0</code> removes the layer entirely and logs a warning.</p>
 <h2 id="request-path"><a class="header" href="#request-path">Request path</a></h2>
 <pre><code>request / job
   -&gt; TenantRealms.open then intercept (HTTP/MCP/JWT) or isolate only (background)
@@ -237,7 +237,7 @@
   -&gt; Tools / Llm / skills via EventsService waterfalls
   -&gt; response
 </code></pre>
-<pre><code class="language-mermaid">flowchart LR
+<pre class="mermaid">flowchart LR
     A[Request] --&gt; B{Route class}
     B --&gt;|protected| C[JWT auth]
     B --&gt;|admin| D[Admin secret]
@@ -252,7 +252,7 @@
     J --&gt; K[Execute.run]
     K --&gt; L[Tools / Llm waterfalls]
     L --&gt; M[Response]
-</code></pre>
+</pre>
 <p>Middleware order in <code>create_router</code> (<code>crates/ares-http/src/api/routes.rs</code>) matches this flow. On protected routes the outermost layer validates the JWT, the next layer injects <code>TenantDb</code> into extensions, and the innermost layer records token usage after the handler returns. Admin routes sit behind <code>admin_middleware</code>, which checks the <code>X-Admin-Secret</code> header. The <code>/v1</code> routes use API key authentication, plus context injection when the <code>eruka-context</code> feature is enabled.</p>
 <p>Inside a handler, <code>request_tenant_ctx</code> opens the tenant realm and then applies the <code>TenantContext</code> intercept. Realms are cached child contexts; the same tenant gets the same realm. Background jobs call <code>tenant_scope</code> instead. They isolate without an intercept. The <code>agent.admit</code> event is the shared quota gate. A deny maps to HTTP 429 or an MCP tool error. After the gate, <code>Execute::run</code> drives tools, model calls, and skills through <code>EventsService</code> waterfalls.</p>
 <h2 id="cordis-concepts-as-server-concerns"><a class="header" href="#cordis-concepts-as-server-concerns">Cordis concepts as server concerns</a></h2>
@@ -264,7 +264,7 @@
 <h3 id="peer-dependency-versions"><a class="header" href="#peer-dependency-versions">Peer-dependency versions</a></h3>
 <p>Provider versions are plain <code>u64</code> values with a packed layout (<code>crates/cordis/src/context.rs:227-247</code>, constant <code>VERSION_MAJOR_SCALE = 100_000</code>). The major lives in the high digits and the minimum compatible floor in the remainder:</p>
 <p>$$\text{major}(v) = \left\lfloor \frac{v}{100,000} \right\rfloor, \qquad \text{floor}(v) = v \bmod 100,000$$</p>
-<p>An inject that requires $M \cdot 100,000 + f$ is satisfied by provider version $p$ exactly when the provider exists and is available, $\text{major}(p) = M$, and $p \geq M \cdot 100,000 + f$. Any mismatch leaves the inject unsatisfied and the dependent fiber <code>Inactive</code>; it never binds across a major boundary. Legacy <code>provide()</code> installs version 0, which satisfies only unconstrained injects.</p>
+<p>An inject that requires \(M \cdot 100,000 + f\) is satisfied by provider version \(p\) exactly when the provider exists and is available, \(\text{major}(p) = M\), and \(p \geq M \cdot 100,000 + f\). Any mismatch leaves the inject unsatisfied and the dependent fiber <code>Inactive</code>; it never binds across a major boundary. Legacy <code>provide()</code> installs version 0, which satisfies only unconstrained injects.</p>
 <h2 id="storage-model"><a class="header" href="#storage-model">Storage model</a></h2>
 <p>PostgreSQL is the default backend, through sqlx with rustls TLS. Turso/libSQL compiles behind the <code>turso</code> feature for edge deployment. Vector data lives in <code>ares-vector</code> by default, or in Qdrant, pgvector, ChromaDB, Pinecone, or LanceDB behind features. SQL migrations are embedded in the <code>ares-store</code> crate at compile time. The migrator ships inside the published package, so <code>cargo install ares-server</code> needs no external files.</p>
 <h2 id="tenant-realms"><a class="header" href="#tenant-realms">Tenant realms</a></h2>
@@ -274,17 +274,17 @@
 <li><strong>Only data-bearing services isolate.</strong> The realm isolates on the <code>Tools</code> TypeId, so each tenant sees its own tool state and allowlists. <code>Execute</code> stays shared on purpose: it is a stateless engine, and its tenancy comes from the context handed to it (<code>realms.rs:29-34</code>). No <code>TenantContext</code> intercept lands inside the cached realm; handlers add it per request.</li>
 <li><strong>Disposal unwinds LIFO.</strong> <code>dispose(tenant_id)</code> removes the child from the map and disposes its fiber (<code>realms.rs:49-57</code>). Fiber disposal undoes that realm's provides in last-in-first-out order, so teardown runs in exact reverse registration order. Tenant delete (<code>crates/ares-http/src/api/handlers/admin/tenants.rs</code>) calls this before dropping rows.</li>
 </ul>
-<pre><code class="language-mermaid">sequenceDiagram
+<pre class="mermaid">sequenceDiagram
     participant R as Request
     participant TR as TenantRealms
     participant C as Cached child ctx
-    R-&gt;&gt;TR: open(root, "acme")
+    R-&gt;&gt;TR: open(root, &quot;acme&quot;)
     TR-&gt;&gt;C: first open: extend + isolate Tools
     C--&gt;&gt;R: realm (same Arc for every later request)
     R-&gt;&gt;R: intercept TenantContext per request
-    Note over TR: delete_tenant -&gt; dispose("acme")
+    Note over TR: delete_tenant -&gt; dispose(&quot;acme&quot;)
     TR-&gt;&gt;C: fiber dispose, undos unwind LIFO
-</code></pre>
+</pre>
 <h2 id="failure-philosophy"><a class="header" href="#failure-philosophy">Failure philosophy</a></h2>
 <p>ARES fails closed at every trust boundary:</p>
 <ul>
@@ -299,7 +299,7 @@
 <h2 id="retrieval-scoring"><a class="header" href="#retrieval-scoring">Retrieval scoring</a></h2>
 <p>Embedding similarity uses cosine similarity over dense vectors (<code>crates/ares-rag/src/embeddings.rs:128-149</code>):</p>
 <p>$$\cos(a, b) = \frac{a \cdot b}{\lVert a \rVert,\lVert b \rVert}$$</p>
-<p>The implementation clamps the result to $[-1, 1]$ and returns $0$ for mismatched lengths or zero magnitude instead of dividing by zero. Search results report distance, not similarity; <code>distance_to_similarity</code> maps cosine distance back with $1 - d$, L2 with $1/(1+d)$, and inner product with $-d$ (<code>crates/ares-rag/src/search.rs:296-302</code>). The hybrid reranker then min-max normalizes retrieval scores across the candidate set and blends: $\text{final} = (1 - w),\text{norm}_{\text{retrieval}} + w,\text{rerank}$ (<code>crates/ares-rag/src/reranker.rs:362-371</code>).</p>
+<p>The implementation clamps the result to \([-1, 1]\) and returns \(0\) for mismatched lengths or zero magnitude instead of dividing by zero. Search results report distance, not similarity; <code>distance_to_similarity</code> maps cosine distance back with \(1 - d\), L2 with \(1/(1+d)\), and inner product with \(-d\) (<code>crates/ares-rag/src/search.rs:296-302</code>). The hybrid reranker then min-max normalizes retrieval scores across the candidate set and blends: \(\text{final} = (1 - w),\text{norm}_{\text{retrieval}} + w,\text{rerank}\) (<code>crates/ares-rag/src/reranker.rs:362-371</code>).</p>
 <h2 id="design-rules"><a class="header" href="#design-rules">Design rules</a></h2>
 <p>Three rules explain most ARES behavior at failure boundaries. Each rule names one concrete place you can observe it.</p>
 <h3 id="fail-closed"><a class="header" href="#fail-closed">Fail closed</a></h3>
@@ -360,6 +360,8 @@
         <script src="book.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="mermaid.min.js"></script>
+        <script src="mermaid-init.js"></script>
 
 
     </div>

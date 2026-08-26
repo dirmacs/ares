@@ -312,7 +312,7 @@ Every field here is read from the source files named in each section.</p>
 <li>On error, stop the loop. The last good answer stays in place. No retry happens inside the loop.</li>
 <li>After the rounds end, fold the answer back. Structured results keep their shape; only <code>content</code> moves. Bare strings are replaced whole. An unchanged answer leaves the result untouched.</li>
 </ol>
-<pre><code class="language-mermaid">flowchart TD
+<pre class="mermaid">flowchart TD
     A[Nested skill result] --&gt; B{Self-check on?}
     B -- off --&gt; H[Integrate result]
     B -- on --&gt; C[Extract answer]
@@ -325,7 +325,7 @@ Every field here is read from the source files named in each section.</p>
     E -- yes --&gt; D
     E -- no --&gt; F
     F --&gt; H
-</code></pre>
+</pre>
 <p>The template prefix stays identical across rounds, so provider-side prompt caches hit on every round after the first.</p>
 <p>Delegated sub-workflows accept only allowlisted step kinds. Nested tool rounds hard-cap at three (<code>check_tool_round_cap</code>). Anti-recursion blocks delegation inside a delegated sub-workflow (<code>validate_delegated_step</code>). Slash-command chatter lines are stripped from delegated text before it enters the parent context (<code>sanitize_result_value</code>).</p>
 <h2 id="ambient-enrichment"><a class="header" href="#ambient-enrichment">Ambient enrichment</a></h2>
@@ -453,6 +453,8 @@ project_dir = "./.claude/skills/"
         <script src="book.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="mermaid.min.js"></script>
+        <script src="mermaid-init.js"></script>
 
 
     </div>

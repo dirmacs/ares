@@ -194,7 +194,7 @@
 <li><strong>Server facade</strong>. The <code>ares-server</code> package holds the binary and the library facade. It boots the context, registers factories, applies the entries program, and binds the listener.</li>
 <li><strong>Surfaces</strong>. The CLI, the HTTP API, the MCP server, and the embedded web UI are entry points into the same running context graph.</li>
 </ol>
-<pre><code class="language-mermaid">flowchart TD
+<pre class="mermaid">flowchart TD
     CLI[CLI] --&gt; Facade
     HTTP[HTTP API] --&gt; Facade
     MCP[MCP server] --&gt; Facade
@@ -204,7 +204,7 @@
     end
     Boot --&gt; Kernel[cordis kernel: Context, fibers, events]
     Kernel --&gt; Capabilities[capability crates]
-</code></pre>
+</pre>
 <p>The layering gives you two properties. First, you can build a smaller server by dropping capability crates, because nothing above the kernel hard-depends on a capability. Second, you can replace a capability at run time through the loader, because consumers resolve it through the context at call time.</p>
 <h2 id="what-you-can-do-with-ares"><a class="header" href="#what-you-can-do-with-ares">What you can do with ARES</a></h2>
 <p>You use ARES in three ways:</p>
@@ -284,6 +284,8 @@
         <script src="book.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="mermaid.min.js"></script>
+        <script src="mermaid-init.js"></script>
 
 
     </div>

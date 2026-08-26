@@ -249,7 +249,7 @@ Error: "docs path is not a directory: /tmp/no-such-dir"
 <li><strong>Build documents.</strong> Each chunk becomes a <code>Document</code> with id <code>{base_uuid}_{index}</code> and metadata carrying <code>title</code>, <code>source</code>, <code>created_at</code>, and <code>tags</code>.</li>
 <li><strong>Upsert into the vector store</strong> and return <code>chunks_created</code> with the document id list. A structured log records user, collections, chunk count, and duration.</li>
 </ol>
-<pre><code class="language-mermaid">flowchart TD
+<pre class="mermaid">flowchart TD
     A[POST /api/rag/ingest] --&gt; B{Auth valid?}
     B -- no --&gt; X[401]
     B -- yes --&gt; C{Collection allowlisted?}
@@ -260,7 +260,7 @@ Error: "docs path is not a directory: /tmp/no-such-dir"
     E --&gt; F[Embed chunks with dedup]
     F --&gt; G[Upsert documents to vector store]
     G --&gt; H[chunks_created + document_ids]
-</code></pre>
+</pre>
 <h2 id="chunking-algorithms"><a class="header" href="#chunking-algorithms">Chunking algorithms</a></h2>
 <p>Each mode behaves differently (<code>crates/ares-rag/src/chunker.rs</code>):</p>
 <ul>
@@ -293,7 +293,7 @@ Error: "docs path is not a directory: /tmp/no-such-dir"
 <h2 id="similarity-math"><a class="header" href="#similarity-math">Similarity math</a></h2>
 <p>Two dense vectors compare through cosine similarity (<code>cosine_similarity</code>, <code>crates/ares-rag/src/embeddings.rs</code>):</p>
 <p>$$\cos(\mathbf{a},\mathbf{b}) ;=; \frac{\sum_i a_i b_i}{\sqrt{\sum_i a_i^2},\sqrt{\sum_i b_i^2}}$$</p>
-<p>Mismatched lengths or a zero magnitude return <code>0.0</code>, and the result clamps into $[-1, 1]$. When both vectors have unit length — which <code>normalize_embedding</code> produces — the denominator equals 1 and the whole expression reduces to the dot product:</p>
+<p>Mismatched lengths or a zero magnitude return <code>0.0</code>, and the result clamps into \([-1, 1]\). When both vectors have unit length — which <code>normalize_embedding</code> produces — the denominator equals 1 and the whole expression reduces to the dot product:</p>
 <p>$$|\mathbf{a}| = |\mathbf{b}| = 1 \quad\Longrightarrow\quad \cos(\mathbf{a},\mathbf{b}) = \sum_i a_i b_i$$</p>
 <p>Cosine distance stored by pgvector-style comparisons is <code>1 - cos(a,b)</code> (<code>cosine_distance</code>). At query time, raw distances convert back to similarity scores where higher means better (<code>distance_to_similarity</code>, <code>crates/ares-rag/src/search.rs</code>):</p>
 <p>$$\text{sim}<em>{\text{cosine}} = 1 - d \qquad \text{sim}</em>{L2} = \frac{1}{1+d} \qquad \text{sim}_{\text{inner}} = -d$$</p>
@@ -314,14 +314,14 @@ Error: "docs path is not a directory: /tmp/no-such-dir"
 <h3 id="bm25-scoring"><a class="header" href="#bm25-scoring">BM25 scoring</a></h3>
 <p><code>Bm25Index</code> keeps an inverted index and document frequencies. Tokenization lowercases, splits on non-alphanumeric characters, and drops tokens of length 1 or less. Term rarity enters through IDF (<code>Bm25Index::idf</code>):</p>
 <p>$$\mathrm{idf}(t) ;=; \ln!\left(\frac{N - df_t + 0.5}{df_t + 0.5} ;+; 1\right)$$</p>
-<p>Defaults follow standard BM25 saturation and length normalization: $k_1 = 1.2$, $b = 0.75$ (<code>Bm25Index::new</code>). Search collects candidate documents containing any query term, scores them, sorts descending, and truncates.</p>
+<p>Defaults follow standard BM25 saturation and length normalization: \(k_1 = 1.2\), \(b = 0.75\) (<code>Bm25Index::new</code>). Search collects candidate documents containing any query term, scores them, sorts descending, and truncates.</p>
 <h3 id="fuzzy-matching"><a class="header" href="#fuzzy-matching">Fuzzy matching</a></h3>
 <p><code>FuzzyIndex</code> stores a vocabulary of indexed words. Query correction finds the closest vocabulary word within <code>max_distance</code> edits (default 2, Levenshtein). Exact hits short-circuit at distance 0. <code>correct_query</code> rewrites each misspelled word and reports every correction as an <code>original</code>/<code>corrected</code>/<code>distance</code> triple. Match score per document is one minus normalized distance, averaged over matched query words.</p>
 <h3 id="hybrid-fusion"><a class="header" href="#hybrid-fusion">Hybrid fusion</a></h3>
-<p>Hybrid search fuses three ranked lists through reciprocal rank fusion (<code>RrfFusion::fuse</code>). Raw scores are ignored; only positions count. With lists $\ell$ and weights $w_\ell$, a document's fused score is:</p>
+<p>Hybrid search fuses three ranked lists through reciprocal rank fusion (<code>RrfFusion::fuse</code>). Raw scores are ignored; only positions count. With lists \(\ell\) and weights \(w_\ell\), a document's fused score is:</p>
 <p>$$\mathrm{score}(d) ;=; \sum_{\ell} \frac{w_\ell}{k + \mathrm{rank}_\ell(d)} \qquad k = 60 \text{ by default}$$</p>
 <p>Ranks start at 1 in this implementation (<code>search.rs</code>, <code>RrfFusion::fuse</code>). Default weights are <code>semantic = 0.6</code>, <code>bm25 = 0.3</code>, <code>fuzzy = 0.1</code> (<code>HybridWeights::default</code>); the sum should be 1.0. Hybrid fetches <code>top_k * 2</code> candidates from BM25 and fuzzy before fusion, then truncates the fused list to <code>top_k</code>. A typo-corrected variant corrects the query first, then reruns the whole fusion.</p>
-<p>Worked fusion, with unit weights and $k = 60$ (adapted from the passing test <code>test_rrf_fusion_ranking_prefers_shared_top_ranks</code>). The semantic list ranks <code>doc_a</code> first and <code>doc_b</code> second. The BM25 list ranks <code>doc_b</code> first and <code>doc_c</code> second:</p>
+<p>Worked fusion, with unit weights and \(k = 60\) (adapted from the passing test <code>test_rrf_fusion_ranking_prefers_shared_top_ranks</code>). The semantic list ranks <code>doc_a</code> first and <code>doc_b</code> second. The BM25 list ranks <code>doc_b</code> first and <code>doc_c</code> second:</p>
 <p>$$\mathrm{score}(\text{doc_a}) = \tfrac{1}{61} = 0.0164$$
 $$\mathrm{score}(\text{doc_b}) = \tfrac{1}{62} + \tfrac{1}{61} = 0.0325$$
 $$\mathrm{score}(\text{doc_c}) = \tfrac{1}{62} = 0.0161$$</p>
@@ -390,6 +390,8 @@ $$\mathrm{score}(\text{doc_c}) = \tfrac{1}{62} = 0.0161$$</p>
         <script src="book.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="mermaid.min.js"></script>
+        <script src="mermaid-init.js"></script>
 
 
     </div>

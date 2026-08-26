@@ -192,7 +192,7 @@
 <li><strong>Server facade</strong>. The <code>ares-server</code> package holds the binary and the library facade. It boots the context, registers factories, applies the entries program, and binds the listener.</li>
 <li><strong>Surfaces</strong>. The CLI, the HTTP API, the MCP server, and the embedded web UI are entry points into the same running context graph.</li>
 </ol>
-<pre><code class="language-mermaid">flowchart TD
+<pre class="mermaid">flowchart TD
     CLI[CLI] --&gt; Facade
     HTTP[HTTP API] --&gt; Facade
     MCP[MCP server] --&gt; Facade
@@ -202,7 +202,7 @@
     end
     Boot --&gt; Kernel[cordis kernel: Context, fibers, events]
     Kernel --&gt; Capabilities[capability crates]
-</code></pre>
+</pre>
 <p>The layering gives you two properties. First, you can build a smaller server by dropping capability crates, because nothing above the kernel hard-depends on a capability. Second, you can replace a capability at run time through the loader, because consumers resolve it through the context at call time.</p>
 <h2 id="what-you-can-do-with-ares"><a class="header" href="#what-you-can-do-with-ares">What you can do with ARES</a></h2>
 <p>You use ARES in three ways:</p>
@@ -442,7 +442,7 @@ watch_interval_ms = 1000
 <pre><code class="language-toml">rate_limit_per_second = 100   # Requests per second per IP; 0 disables limiting
 rate_limit_burst = 10         # Bucket size admitted above the steady rate
 </code></pre>
-<p>The limiter is <code>tower_governor</code> (<code>src/main.rs</code>, rate-limit layer build): it admits bursts up to <code>rate_limit_burst</code> and refills one slot every $1/\text{rate_limit_per_second}$ seconds. Responses carry <code>x-ratelimit-*</code> headers.</p>
+<p>The limiter is <code>tower_governor</code> (<code>src/main.rs</code>, rate-limit layer build): it admits bursts up to <code>rate_limit_burst</code> and refills one slot every \(1/\text{rate_limit_per_second}\) seconds. Responses carry <code>x-ratelimit-*</code> headers.</p>
 <p><strong><code>[auth]</code></strong> names the secret environment variables and token lifetimes. <code>jwt_secret_env = "JWT_SECRET"</code> means: read the signing key from the environment variable called <code>JWT_SECRET</code>. The same pattern applies to <code>api_key_env</code>. Lifetimes are seconds: 900 gives 15-minute access tokens; 604800 gives 7-day refresh tokens.</p>
 <p><strong><code>[database]</code></strong> holds one connection URL. The template writes a local file path for an embedded store. A production deployment points at <code>postgres://user:pass@host/db</code>; the store then runs embedded migrations from <code>ares_store::MIGRATOR</code> on first connect.</p>
 <p><strong><code>[providers.&lt;name&gt;]</code></strong> defines one LLM provider. <code>&lt;name&gt;</code> (<code>ollama-local</code> here) is your label for it; agents reference this label. <code>type</code> picks the client implementation. <code>base_url</code> is where the client sends requests. <code>default_model</code> applies when an agent names no model of its own.</p>
@@ -617,7 +617,7 @@ curl -s -X POST http://localhost:3000/admin/tenants/TENANT_ID/api-keys \
 </ol>
 <p>Step 8 is the first step that touches the network for serving. A failure in any earlier step exits before any port opens.</p>
 <h3 id="the-rate-limit-layer"><a class="header" href="#the-rate-limit-layer">The rate-limit layer</a></h3>
-<p>When <code>rate_limit_per_second &gt; 0</code>, startup wraps the router in <code>tower_governor</code> (<code>src/main.rs:900-913</code>). The limiter is a GCRA bucket per client IP. It admits up to <code>rate_limit_burst</code> requests immediately and then admits one more request every $1/\text{rate_limit_per_second}$ seconds. A background task prunes idle per-IP buckets every 60 seconds (<code>src/main.rs:917-930</code>). Responses carry <code>x-ratelimit-*</code> headers. Setting <code>rate_limit_per_second = 0</code> removes the layer entirely and logs a warning.</p>
+<p>When <code>rate_limit_per_second &gt; 0</code>, startup wraps the router in <code>tower_governor</code> (<code>src/main.rs:900-913</code>). The limiter is a GCRA bucket per client IP. It admits up to <code>rate_limit_burst</code> requests immediately and then admits one more request every \(1/\text{rate_limit_per_second}\) seconds. A background task prunes idle per-IP buckets every 60 seconds (<code>src/main.rs:917-930</code>). Responses carry <code>x-ratelimit-*</code> headers. Setting <code>rate_limit_per_second = 0</code> removes the layer entirely and logs a warning.</p>
 <h2 id="request-path"><a class="header" href="#request-path">Request path</a></h2>
 <pre><code>request / job
   -&gt; TenantRealms.open then intercept (HTTP/MCP/JWT) or isolate only (background)
@@ -626,7 +626,7 @@ curl -s -X POST http://localhost:3000/admin/tenants/TENANT_ID/api-keys \
   -&gt; Tools / Llm / skills via EventsService waterfalls
   -&gt; response
 </code></pre>
-<pre><code class="language-mermaid">flowchart LR
+<pre class="mermaid">flowchart LR
     A[Request] --&gt; B{Route class}
     B --&gt;|protected| C[JWT auth]
     B --&gt;|admin| D[Admin secret]
@@ -641,7 +641,7 @@ curl -s -X POST http://localhost:3000/admin/tenants/TENANT_ID/api-keys \
     J --&gt; K[Execute.run]
     K --&gt; L[Tools / Llm waterfalls]
     L --&gt; M[Response]
-</code></pre>
+</pre>
 <p>Middleware order in <code>create_router</code> (<code>crates/ares-http/src/api/routes.rs</code>) matches this flow. On protected routes the outermost layer validates the JWT, the next layer injects <code>TenantDb</code> into extensions, and the innermost layer records token usage after the handler returns. Admin routes sit behind <code>admin_middleware</code>, which checks the <code>X-Admin-Secret</code> header. The <code>/v1</code> routes use API key authentication, plus context injection when the <code>eruka-context</code> feature is enabled.</p>
 <p>Inside a handler, <code>request_tenant_ctx</code> opens the tenant realm and then applies the <code>TenantContext</code> intercept. Realms are cached child contexts; the same tenant gets the same realm. Background jobs call <code>tenant_scope</code> instead. They isolate without an intercept. The <code>agent.admit</code> event is the shared quota gate. A deny maps to HTTP 429 or an MCP tool error. After the gate, <code>Execute::run</code> drives tools, model calls, and skills through <code>EventsService</code> waterfalls.</p>
 <h2 id="cordis-concepts-as-server-concerns"><a class="header" href="#cordis-concepts-as-server-concerns">Cordis concepts as server concerns</a></h2>
@@ -653,7 +653,7 @@ curl -s -X POST http://localhost:3000/admin/tenants/TENANT_ID/api-keys \
 <h3 id="peer-dependency-versions"><a class="header" href="#peer-dependency-versions">Peer-dependency versions</a></h3>
 <p>Provider versions are plain <code>u64</code> values with a packed layout (<code>crates/cordis/src/context.rs:227-247</code>, constant <code>VERSION_MAJOR_SCALE = 100_000</code>). The major lives in the high digits and the minimum compatible floor in the remainder:</p>
 <p>$$\text{major}(v) = \left\lfloor \frac{v}{100,000} \right\rfloor, \qquad \text{floor}(v) = v \bmod 100,000$$</p>
-<p>An inject that requires $M \cdot 100,000 + f$ is satisfied by provider version $p$ exactly when the provider exists and is available, $\text{major}(p) = M$, and $p \geq M \cdot 100,000 + f$. Any mismatch leaves the inject unsatisfied and the dependent fiber <code>Inactive</code>; it never binds across a major boundary. Legacy <code>provide()</code> installs version 0, which satisfies only unconstrained injects.</p>
+<p>An inject that requires \(M \cdot 100,000 + f\) is satisfied by provider version \(p\) exactly when the provider exists and is available, \(\text{major}(p) = M\), and \(p \geq M \cdot 100,000 + f\). Any mismatch leaves the inject unsatisfied and the dependent fiber <code>Inactive</code>; it never binds across a major boundary. Legacy <code>provide()</code> installs version 0, which satisfies only unconstrained injects.</p>
 <h2 id="storage-model"><a class="header" href="#storage-model">Storage model</a></h2>
 <p>PostgreSQL is the default backend, through sqlx with rustls TLS. Turso/libSQL compiles behind the <code>turso</code> feature for edge deployment. Vector data lives in <code>ares-vector</code> by default, or in Qdrant, pgvector, ChromaDB, Pinecone, or LanceDB behind features. SQL migrations are embedded in the <code>ares-store</code> crate at compile time. The migrator ships inside the published package, so <code>cargo install ares-server</code> needs no external files.</p>
 <h2 id="tenant-realms"><a class="header" href="#tenant-realms">Tenant realms</a></h2>
@@ -663,17 +663,17 @@ curl -s -X POST http://localhost:3000/admin/tenants/TENANT_ID/api-keys \
 <li><strong>Only data-bearing services isolate.</strong> The realm isolates on the <code>Tools</code> TypeId, so each tenant sees its own tool state and allowlists. <code>Execute</code> stays shared on purpose: it is a stateless engine, and its tenancy comes from the context handed to it (<code>realms.rs:29-34</code>). No <code>TenantContext</code> intercept lands inside the cached realm; handlers add it per request.</li>
 <li><strong>Disposal unwinds LIFO.</strong> <code>dispose(tenant_id)</code> removes the child from the map and disposes its fiber (<code>realms.rs:49-57</code>). Fiber disposal undoes that realm's provides in last-in-first-out order, so teardown runs in exact reverse registration order. Tenant delete (<code>crates/ares-http/src/api/handlers/admin/tenants.rs</code>) calls this before dropping rows.</li>
 </ul>
-<pre><code class="language-mermaid">sequenceDiagram
+<pre class="mermaid">sequenceDiagram
     participant R as Request
     participant TR as TenantRealms
     participant C as Cached child ctx
-    R-&gt;&gt;TR: open(root, "acme")
+    R-&gt;&gt;TR: open(root, &quot;acme&quot;)
     TR-&gt;&gt;C: first open: extend + isolate Tools
     C--&gt;&gt;R: realm (same Arc for every later request)
     R-&gt;&gt;R: intercept TenantContext per request
-    Note over TR: delete_tenant -&gt; dispose("acme")
+    Note over TR: delete_tenant -&gt; dispose(&quot;acme&quot;)
     TR-&gt;&gt;C: fiber dispose, undos unwind LIFO
-</code></pre>
+</pre>
 <h2 id="failure-philosophy"><a class="header" href="#failure-philosophy">Failure philosophy</a></h2>
 <p>ARES fails closed at every trust boundary:</p>
 <ul>
@@ -688,7 +688,7 @@ curl -s -X POST http://localhost:3000/admin/tenants/TENANT_ID/api-keys \
 <h2 id="retrieval-scoring"><a class="header" href="#retrieval-scoring">Retrieval scoring</a></h2>
 <p>Embedding similarity uses cosine similarity over dense vectors (<code>crates/ares-rag/src/embeddings.rs:128-149</code>):</p>
 <p>$$\cos(a, b) = \frac{a \cdot b}{\lVert a \rVert,\lVert b \rVert}$$</p>
-<p>The implementation clamps the result to $[-1, 1]$ and returns $0$ for mismatched lengths or zero magnitude instead of dividing by zero. Search results report distance, not similarity; <code>distance_to_similarity</code> maps cosine distance back with $1 - d$, L2 with $1/(1+d)$, and inner product with $-d$ (<code>crates/ares-rag/src/search.rs:296-302</code>). The hybrid reranker then min-max normalizes retrieval scores across the candidate set and blends: $\text{final} = (1 - w),\text{norm}_{\text{retrieval}} + w,\text{rerank}$ (<code>crates/ares-rag/src/reranker.rs:362-371</code>).</p>
+<p>The implementation clamps the result to \([-1, 1]\) and returns \(0\) for mismatched lengths or zero magnitude instead of dividing by zero. Search results report distance, not similarity; <code>distance_to_similarity</code> maps cosine distance back with \(1 - d\), L2 with \(1/(1+d)\), and inner product with \(-d\) (<code>crates/ares-rag/src/search.rs:296-302</code>). The hybrid reranker then min-max normalizes retrieval scores across the candidate set and blends: \(\text{final} = (1 - w),\text{norm}_{\text{retrieval}} + w,\text{rerank}\) (<code>crates/ares-rag/src/reranker.rs:362-371</code>).</p>
 <h2 id="design-rules"><a class="header" href="#design-rules">Design rules</a></h2>
 <p>Three rules explain most ARES behavior at failure boundaries. Each rule names one concrete place you can observe it.</p>
 <h3 id="fail-closed"><a class="header" href="#fail-closed">Fail closed</a></h3>
@@ -2094,7 +2094,7 @@ true.</p>
 </div>
 <p><code>Pending</code> carries no error. Reactive waiting is not a failure.</p>
 <h2 id="state-diagram"><a class="header" href="#state-diagram">State diagram</a></h2>
-<pre><code class="language-mermaid">stateDiagram-v2
+<pre class="mermaid">stateDiagram-v2
     [*] --&gt; Inactive
     Inactive --&gt; Loading : dependencies satisfied and gate open
     Loading --&gt; Active : runner returns Ok(true)
@@ -2108,7 +2108,7 @@ true.</p>
     Pending --&gt; Loading : gate opens or provider returns
     Pending --&gt; Pending : still-closed gate (no-op)
     Failed --&gt; Failed : terminal; refreshes refuse to revive
-</code></pre>
+</pre>
 <p>Observers see the exact documented sequence across one reactive cycle: <code>Active</code>, <code>Reloading</code>, <code>Unloading</code>, <code>Pending</code>, <code>Loading</code>, <code>Active</code>. Subscribe with <code>Fiber::subscribe_state</code>. Test anchor: <code>observer_sees_unloading_pending_active_sequence</code>.</p>
 <h2 id="one-fibers-life-narrated"><a class="header" href="#one-fibers-life-narrated">One fiber's life, narrated</a></h2>
 <p>Follow one registration through its whole life. Every step names the
@@ -2170,16 +2170,16 @@ scheme lives in <code>Context::VERSION_MAJOR_SCALE</code>
 (<code>crates/cordis/src/context.rs</code>). One scale constant splits a plain <code>u64</code>
 into two fields:</p>
 <p>$$S = 100,000, \qquad \operatorname{major}(v) = \left\lfloor \frac{v}{S} \right\rfloor, \qquad \operatorname{floor}(v) = v - S \cdot \operatorname{major}(v)$$</p>
-<p>An inject constrained with requirement $r = M \cdot S + f$ accepts a
-provider of version $p$ if and only if:</p>
+<p>An inject constrained with requirement \(r = M \cdot S + f\) accepts a
+provider of version \(p\) if and only if:</p>
 <p>$$\text{satisfied}(p, r) \iff \bigl(\operatorname{major}(p) = \operatorname{major}(r)\bigr) ;\wedge; (p \ge r)$$</p>
 <p>Read the two clauses as separate guarantees:</p>
 <ul>
 <li>Same major means compatible. Peer dependencies never bind across a
-breaking boundary. A provider at major $M+1$ leaves the dependent
+breaking boundary. A provider at major \(M+1\) leaves the dependent
 unsatisfied even when its remainder is huge.</li>
 <li>At or above the floor means feature-complete. Under equal majors,
-$p \ge r$ reduces to $\operatorname{floor}(p) \ge f$. The provider has
+\(p \ge r\) reduces to \(\operatorname{floor}(p) \ge f\). The provider has
 every capability the consumer asked for.</li>
 </ul>
 <p>Any mismatch keeps the inject unsatisfied. The dependent fiber rests
@@ -2189,11 +2189,11 @@ every capability the consumer asked for.</li>
 unconstrained injects. Migrate providers to <code>provide_versioned</code> to opt
 into matching. Declare the constraint side with
 <code>Fiber::declare_inject_versioned</code>.</p>
-<p>Worked example: a provider publishes $p = 200,003$ (major 2, floor 3).</p>
-<div class="table-wrapper"><table><thead><tr><th>Requirement $r$</th><th>major match</th><th>$p \ge r$</th><th>Verdict</th></tr></thead><tbody>
-<tr><td>$2 \cdot S + 3 = 200,003$</td><td>yes</td><td>yes</td><td>Satisfied</td></tr>
-<tr><td>$2 \cdot S + 7 = 200,007$</td><td>yes</td><td>no</td><td>Unsatisfied; floor too high</td></tr>
-<tr><td>$1 \cdot S + 1 = 100,001$</td><td>no</td><td>yes</td><td>Unsatisfied; cross-major</td></tr>
+<p>Worked example: a provider publishes \(p = 200,003\) (major 2, floor 3).</p>
+<div class="table-wrapper"><table><thead><tr><th>Requirement \(r\)</th><th>major match</th><th>\(p \ge r\)</th><th>Verdict</th></tr></thead><tbody>
+<tr><td>\(2 \cdot S + 3 = 200,003\)</td><td>yes</td><td>yes</td><td>Satisfied</td></tr>
+<tr><td>\(2 \cdot S + 7 = 200,007\)</td><td>yes</td><td>no</td><td>Unsatisfied; floor too high</td></tr>
+<tr><td>\(1 \cdot S + 1 = 100,001\)</td><td>no</td><td>yes</td><td>Unsatisfied; cross-major</td></tr>
 <tr><td>unconstrained</td><td>n/a</td><td>n/a</td><td>Satisfied</td></tr>
 </tbody></table>
 </div>
@@ -2240,7 +2240,7 @@ Consumers of <code>A</code> see its original value throughout.</p>
 <p>When a provider fiber sits mid-config-update, dependent refreshes defer instead of churning. <code>Loader::cascade_defer_needed</code> probes an in-flight ledger. A deferred dependent rests <code>Pending</code> quietly. One post-settle re-kick converges every deferred dependent at once, instead of running one full cascade wave per concurrent patch. Without a <code>RegistryService</code> on the context, the probe always reports false and legacy behavior holds.</p>
 <p>The timeline below shows two dependents deferring behind one provider
 patch and converging together:</p>
-<pre><code class="language-mermaid">sequenceDiagram
+<pre class="mermaid">sequenceDiagram
     participant L as Loader
     participant P as Provider fiber (db)
     participant D1 as Dependent (api)
@@ -2258,7 +2258,7 @@ patch and converging together:</p>
     L-&gt;&gt;D2: single post-settle re-kick
     D1-&gt;&gt;D1: Pending -&gt; Loading -&gt; Active
     D2-&gt;&gt;D2: Pending -&gt; Loading -&gt; Active
-</code></pre>
+</pre>
 <p>Without batching, each concurrent patch would trigger one full cascade
 wave through every dependent. With three patches landing together, that
 is three teardown-rebuild cycles per dependent. Batching collapses them
@@ -2653,7 +2653,7 @@ slot must be stable across processes and platforms, so it comes from a
 hash, not a counter. <code>name_color_code</code> in <code>logger.rs</code> computes FNV-1a
 over the name bytes:</p>
 <p>$$h_0 = \texttt{0xcbf29ce484222325}, \qquad h_{i+1} = (h_i \oplus b_i) \cdot \texttt{0x00000100000001b3} ;\bmod; 2^{64}$$</p>
-<p>where $b_i$ is the $i$-th name byte. The palette index is then</p>
+<p>where \(b_i\) is the \(i\)-th name byte. The palette index is then</p>
 <p>$$\text{color}(name) = \text{ANSI16}[,h \bmod 16,]$$</p>
 <p>with <code>ANSI16 = [30..=37, 90..=97]</code>: eight normal foregrounds followed by
 their bright variants. The multiplication wraps (<code>wrapping_mul</code>), so no
@@ -3446,7 +3446,7 @@ Every field here is read from the source files named in each section.</p>
 <li>On error, stop the loop. The last good answer stays in place. No retry happens inside the loop.</li>
 <li>After the rounds end, fold the answer back. Structured results keep their shape; only <code>content</code> moves. Bare strings are replaced whole. An unchanged answer leaves the result untouched.</li>
 </ol>
-<pre><code class="language-mermaid">flowchart TD
+<pre class="mermaid">flowchart TD
     A[Nested skill result] --&gt; B{Self-check on?}
     B -- off --&gt; H[Integrate result]
     B -- on --&gt; C[Extract answer]
@@ -3459,7 +3459,7 @@ Every field here is read from the source files named in each section.</p>
     E -- yes --&gt; D
     E -- no --&gt; F
     F --&gt; H
-</code></pre>
+</pre>
 <p>The template prefix stays identical across rounds, so provider-side prompt caches hit on every round after the first.</p>
 <p>Delegated sub-workflows accept only allowlisted step kinds. Nested tool rounds hard-cap at three (<code>check_tool_round_cap</code>). Anti-recursion blocks delegation inside a delegated sub-workflow (<code>validate_delegated_step</code>). Slash-command chatter lines are stripped from delegated text before it enters the parent context (<code>sanitize_result_value</code>).</p>
 <h2 id="ambient-enrichment"><a class="header" href="#ambient-enrichment">Ambient enrichment</a></h2>
@@ -3608,7 +3608,7 @@ Error: "docs path is not a directory: /tmp/no-such-dir"
 <li><strong>Build documents.</strong> Each chunk becomes a <code>Document</code> with id <code>{base_uuid}_{index}</code> and metadata carrying <code>title</code>, <code>source</code>, <code>created_at</code>, and <code>tags</code>.</li>
 <li><strong>Upsert into the vector store</strong> and return <code>chunks_created</code> with the document id list. A structured log records user, collections, chunk count, and duration.</li>
 </ol>
-<pre><code class="language-mermaid">flowchart TD
+<pre class="mermaid">flowchart TD
     A[POST /api/rag/ingest] --&gt; B{Auth valid?}
     B -- no --&gt; X[401]
     B -- yes --&gt; C{Collection allowlisted?}
@@ -3619,7 +3619,7 @@ Error: "docs path is not a directory: /tmp/no-such-dir"
     E --&gt; F[Embed chunks with dedup]
     F --&gt; G[Upsert documents to vector store]
     G --&gt; H[chunks_created + document_ids]
-</code></pre>
+</pre>
 <h2 id="chunking-algorithms"><a class="header" href="#chunking-algorithms">Chunking algorithms</a></h2>
 <p>Each mode behaves differently (<code>crates/ares-rag/src/chunker.rs</code>):</p>
 <ul>
@@ -3652,7 +3652,7 @@ Error: "docs path is not a directory: /tmp/no-such-dir"
 <h2 id="similarity-math"><a class="header" href="#similarity-math">Similarity math</a></h2>
 <p>Two dense vectors compare through cosine similarity (<code>cosine_similarity</code>, <code>crates/ares-rag/src/embeddings.rs</code>):</p>
 <p>$$\cos(\mathbf{a},\mathbf{b}) ;=; \frac{\sum_i a_i b_i}{\sqrt{\sum_i a_i^2},\sqrt{\sum_i b_i^2}}$$</p>
-<p>Mismatched lengths or a zero magnitude return <code>0.0</code>, and the result clamps into $[-1, 1]$. When both vectors have unit length — which <code>normalize_embedding</code> produces — the denominator equals 1 and the whole expression reduces to the dot product:</p>
+<p>Mismatched lengths or a zero magnitude return <code>0.0</code>, and the result clamps into \([-1, 1]\). When both vectors have unit length — which <code>normalize_embedding</code> produces — the denominator equals 1 and the whole expression reduces to the dot product:</p>
 <p>$$|\mathbf{a}| = |\mathbf{b}| = 1 \quad\Longrightarrow\quad \cos(\mathbf{a},\mathbf{b}) = \sum_i a_i b_i$$</p>
 <p>Cosine distance stored by pgvector-style comparisons is <code>1 - cos(a,b)</code> (<code>cosine_distance</code>). At query time, raw distances convert back to similarity scores where higher means better (<code>distance_to_similarity</code>, <code>crates/ares-rag/src/search.rs</code>):</p>
 <p>$$\text{sim}<em>{\text{cosine}} = 1 - d \qquad \text{sim}</em>{L2} = \frac{1}{1+d} \qquad \text{sim}_{\text{inner}} = -d$$</p>
@@ -3673,14 +3673,14 @@ Error: "docs path is not a directory: /tmp/no-such-dir"
 <h3 id="bm25-scoring"><a class="header" href="#bm25-scoring">BM25 scoring</a></h3>
 <p><code>Bm25Index</code> keeps an inverted index and document frequencies. Tokenization lowercases, splits on non-alphanumeric characters, and drops tokens of length 1 or less. Term rarity enters through IDF (<code>Bm25Index::idf</code>):</p>
 <p>$$\mathrm{idf}(t) ;=; \ln!\left(\frac{N - df_t + 0.5}{df_t + 0.5} ;+; 1\right)$$</p>
-<p>Defaults follow standard BM25 saturation and length normalization: $k_1 = 1.2$, $b = 0.75$ (<code>Bm25Index::new</code>). Search collects candidate documents containing any query term, scores them, sorts descending, and truncates.</p>
+<p>Defaults follow standard BM25 saturation and length normalization: \(k_1 = 1.2\), \(b = 0.75\) (<code>Bm25Index::new</code>). Search collects candidate documents containing any query term, scores them, sorts descending, and truncates.</p>
 <h3 id="fuzzy-matching"><a class="header" href="#fuzzy-matching">Fuzzy matching</a></h3>
 <p><code>FuzzyIndex</code> stores a vocabulary of indexed words. Query correction finds the closest vocabulary word within <code>max_distance</code> edits (default 2, Levenshtein). Exact hits short-circuit at distance 0. <code>correct_query</code> rewrites each misspelled word and reports every correction as an <code>original</code>/<code>corrected</code>/<code>distance</code> triple. Match score per document is one minus normalized distance, averaged over matched query words.</p>
 <h3 id="hybrid-fusion"><a class="header" href="#hybrid-fusion">Hybrid fusion</a></h3>
-<p>Hybrid search fuses three ranked lists through reciprocal rank fusion (<code>RrfFusion::fuse</code>). Raw scores are ignored; only positions count. With lists $\ell$ and weights $w_\ell$, a document's fused score is:</p>
+<p>Hybrid search fuses three ranked lists through reciprocal rank fusion (<code>RrfFusion::fuse</code>). Raw scores are ignored; only positions count. With lists \(\ell\) and weights \(w_\ell\), a document's fused score is:</p>
 <p>$$\mathrm{score}(d) ;=; \sum_{\ell} \frac{w_\ell}{k + \mathrm{rank}_\ell(d)} \qquad k = 60 \text{ by default}$$</p>
 <p>Ranks start at 1 in this implementation (<code>search.rs</code>, <code>RrfFusion::fuse</code>). Default weights are <code>semantic = 0.6</code>, <code>bm25 = 0.3</code>, <code>fuzzy = 0.1</code> (<code>HybridWeights::default</code>); the sum should be 1.0. Hybrid fetches <code>top_k * 2</code> candidates from BM25 and fuzzy before fusion, then truncates the fused list to <code>top_k</code>. A typo-corrected variant corrects the query first, then reruns the whole fusion.</p>
-<p>Worked fusion, with unit weights and $k = 60$ (adapted from the passing test <code>test_rrf_fusion_ranking_prefers_shared_top_ranks</code>). The semantic list ranks <code>doc_a</code> first and <code>doc_b</code> second. The BM25 list ranks <code>doc_b</code> first and <code>doc_c</code> second:</p>
+<p>Worked fusion, with unit weights and \(k = 60\) (adapted from the passing test <code>test_rrf_fusion_ranking_prefers_shared_top_ranks</code>). The semantic list ranks <code>doc_a</code> first and <code>doc_b</code> second. The BM25 list ranks <code>doc_b</code> first and <code>doc_c</code> second:</p>
 <p>$$\mathrm{score}(\text{doc_a}) = \tfrac{1}{61} = 0.0164$$
 $$\mathrm{score}(\text{doc_b}) = \tfrac{1}{62} + \tfrac{1}{61} = 0.0325$$
 $$\mathrm{score}(\text{doc_c}) = \tfrac{1}{62} = 0.0161$$</p>
@@ -3788,7 +3788,7 @@ $$\mathrm{score}(\text{doc_c}) = \tfrac{1}{62} = 0.0161$$</p>
 <li><strong>Shutdown grace.</strong> After a stop request, the child gets 10 seconds to exit on its own; past that, the daemon force-kills it. The grace bounds the goodbye, never the working lifetime.</li>
 </ul>
 <p>Nested supervision refuses to start: a child marked <code>CORDIS_SUPERVISED</code> never spawns its own daemon. Exit code 53 mirrors the child's real code to the daemon's process exit, so systemd or another service manager still observes the failure.</p>
-<pre><code class="language-mermaid">flowchart TD
+<pre class="mermaid">flowchart TD
     A[Child exits] --&gt; B{Code}
     B -- 51 RESTART --&gt; C{5 restarts in 30 s?}
     C -- yes --&gt; H[Stop loop with error]
@@ -3800,7 +3800,7 @@ $$\mathrm{score}(\text{doc_c}) = \tfrac{1}{62} = 0.0161$$</p>
     B -- 52 QUIT --&gt; I[Shut down daemon]
     B -- 53 BOOT --&gt; J[Report failure, do not restart]
     B -- other / signal --&gt; I
-</code></pre>
+</pre>
 <h2 id="observability"><a class="header" href="#observability">Observability</a></h2>
 <ul>
 <li>
@@ -3879,13 +3879,13 @@ cargo crap --workspace --format json --threshold 30 --fail-above
 </code></pre>
 <p>CRAP (Change Risk Anti-Patterns) combines cyclomatic complexity with test coverage per function. The upstream metric definition (Savoia &amp; Evans, 2007; implemented by cargo-crap) is:</p>
 <p>$$\mathrm{CRAP}(m) ;=; \mathrm{comp}(m)^2 \times \left(1 - \frac{\mathrm{cov}(m)}{100}\right)^{3} ;+; \mathrm{comp}(m)$$</p>
-<p>Here $\mathrm{comp}(m)$ is the function's cyclomatic complexity and $\mathrm{cov}(m)$ its line coverage percentage. Three properties explain the gate's shape:</p>
+<p>Here \(\mathrm{comp}(m)\) is the function's cyclomatic complexity and \(\mathrm{cov}(m)\) its line coverage percentage. Three properties explain the gate's shape:</p>
 <ul>
-<li>A trivial, fully covered function scores exactly $1$.</li>
-<li>At full coverage the cubic term collapses, so $\mathrm{CRAP}$ equals complexity. Tests cap the risk; they do not remove it.</li>
-<li>Above complexity $\approx 30$, no coverage level brings the score under the threshold of 30. Oversized functions fail regardless of tests.</li>
+<li>A trivial, fully covered function scores exactly \(1\).</li>
+<li>At full coverage the cubic term collapses, so \(\mathrm{CRAP}\) equals complexity. Tests cap the risk; they do not remove it.</li>
+<li>Above complexity \(\approx 30\), no coverage level brings the score under the threshold of 30. Oversized functions fail regardless of tests.</li>
 </ul>
-<p>Two concrete scores, taken from the upstream tool's own example table: a function with complexity 12 and zero coverage scores $12^2 \times (1-0)^3 + 12 = 156$. A function with complexity 4 at roughly 44% coverage scores $16 \times (1-0.444)^3 + 4 \approx 6.7$.</p>
+<p>Two concrete scores, taken from the upstream tool's own example table: a function with complexity 12 and zero coverage scores \(12^2 \times (1-0)^3 + 12 = 156\). A function with complexity 4 at roughly 44% coverage scores \(16 \times (1-0.444)^3 + 4 \approx 6.7\).</p>
 <p>The gate fails when any workspace function exceeds the threshold of 30. Treat a red gate as work, not noise. Split the flagged function or raise its test coverage.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="cordis--rust-mapping-phase-0-step-5"><a class="header" href="#cordis--rust-mapping-phase-0-step-5">Cordis → rust mapping (Phase 0, step 5)</a></h1>
 <p><strong>Source:</strong> DeepSeek Cordis paper ("A Programming Paradigm for Spatiotemporal Composability", Aug 2026, <code>cordiverse/cordis</code> + <code>cordiverse/paper</code>) and DeepSeek Harness (<code>deepseek-ai/deepseek-harness</code>, TS, ~60 packages, 12 layers).
@@ -5138,6 +5138,8 @@ Before merge, re-run the cited tests.</p>
         <script src="book.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="mermaid.min.js"></script>
+        <script src="mermaid-init.js"></script>
 
         <script>
         window.addEventListener('load', function() {

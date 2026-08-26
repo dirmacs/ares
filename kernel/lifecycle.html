@@ -196,7 +196,7 @@
 </div>
 <p><code>Pending</code> carries no error. Reactive waiting is not a failure.</p>
 <h2 id="state-diagram"><a class="header" href="#state-diagram">State diagram</a></h2>
-<pre><code class="language-mermaid">stateDiagram-v2
+<pre class="mermaid">stateDiagram-v2
     [*] --&gt; Inactive
     Inactive --&gt; Loading : dependencies satisfied and gate open
     Loading --&gt; Active : runner returns Ok(true)
@@ -210,7 +210,7 @@
     Pending --&gt; Loading : gate opens or provider returns
     Pending --&gt; Pending : still-closed gate (no-op)
     Failed --&gt; Failed : terminal; refreshes refuse to revive
-</code></pre>
+</pre>
 <p>Observers see the exact documented sequence across one reactive cycle: <code>Active</code>, <code>Reloading</code>, <code>Unloading</code>, <code>Pending</code>, <code>Loading</code>, <code>Active</code>. Subscribe with <code>Fiber::subscribe_state</code>. Test anchor: <code>observer_sees_unloading_pending_active_sequence</code>.</p>
 <h2 id="one-fibers-life-narrated"><a class="header" href="#one-fibers-life-narrated">One fiber's life, narrated</a></h2>
 <p>Follow one registration through its whole life. Every step names the
@@ -272,16 +272,16 @@ scheme lives in <code>Context::VERSION_MAJOR_SCALE</code>
 (<code>crates/cordis/src/context.rs</code>). One scale constant splits a plain <code>u64</code>
 into two fields:</p>
 <p>$$S = 100,000, \qquad \operatorname{major}(v) = \left\lfloor \frac{v}{S} \right\rfloor, \qquad \operatorname{floor}(v) = v - S \cdot \operatorname{major}(v)$$</p>
-<p>An inject constrained with requirement $r = M \cdot S + f$ accepts a
-provider of version $p$ if and only if:</p>
+<p>An inject constrained with requirement \(r = M \cdot S + f\) accepts a
+provider of version \(p\) if and only if:</p>
 <p>$$\text{satisfied}(p, r) \iff \bigl(\operatorname{major}(p) = \operatorname{major}(r)\bigr) ;\wedge; (p \ge r)$$</p>
 <p>Read the two clauses as separate guarantees:</p>
 <ul>
 <li>Same major means compatible. Peer dependencies never bind across a
-breaking boundary. A provider at major $M+1$ leaves the dependent
+breaking boundary. A provider at major \(M+1\) leaves the dependent
 unsatisfied even when its remainder is huge.</li>
 <li>At or above the floor means feature-complete. Under equal majors,
-$p \ge r$ reduces to $\operatorname{floor}(p) \ge f$. The provider has
+\(p \ge r\) reduces to \(\operatorname{floor}(p) \ge f\). The provider has
 every capability the consumer asked for.</li>
 </ul>
 <p>Any mismatch keeps the inject unsatisfied. The dependent fiber rests
@@ -291,11 +291,11 @@ every capability the consumer asked for.</li>
 unconstrained injects. Migrate providers to <code>provide_versioned</code> to opt
 into matching. Declare the constraint side with
 <code>Fiber::declare_inject_versioned</code>.</p>
-<p>Worked example: a provider publishes $p = 200,003$ (major 2, floor 3).</p>
-<div class="table-wrapper"><table><thead><tr><th>Requirement $r$</th><th>major match</th><th>$p \ge r$</th><th>Verdict</th></tr></thead><tbody>
-<tr><td>$2 \cdot S + 3 = 200,003$</td><td>yes</td><td>yes</td><td>Satisfied</td></tr>
-<tr><td>$2 \cdot S + 7 = 200,007$</td><td>yes</td><td>no</td><td>Unsatisfied; floor too high</td></tr>
-<tr><td>$1 \cdot S + 1 = 100,001$</td><td>no</td><td>yes</td><td>Unsatisfied; cross-major</td></tr>
+<p>Worked example: a provider publishes \(p = 200,003\) (major 2, floor 3).</p>
+<div class="table-wrapper"><table><thead><tr><th>Requirement \(r\)</th><th>major match</th><th>\(p \ge r\)</th><th>Verdict</th></tr></thead><tbody>
+<tr><td>\(2 \cdot S + 3 = 200,003\)</td><td>yes</td><td>yes</td><td>Satisfied</td></tr>
+<tr><td>\(2 \cdot S + 7 = 200,007\)</td><td>yes</td><td>no</td><td>Unsatisfied; floor too high</td></tr>
+<tr><td>\(1 \cdot S + 1 = 100,001\)</td><td>no</td><td>yes</td><td>Unsatisfied; cross-major</td></tr>
 <tr><td>unconstrained</td><td>n/a</td><td>n/a</td><td>Satisfied</td></tr>
 </tbody></table>
 </div>
@@ -342,7 +342,7 @@ Consumers of <code>A</code> see its original value throughout.</p>
 <p>When a provider fiber sits mid-config-update, dependent refreshes defer instead of churning. <code>Loader::cascade_defer_needed</code> probes an in-flight ledger. A deferred dependent rests <code>Pending</code> quietly. One post-settle re-kick converges every deferred dependent at once, instead of running one full cascade wave per concurrent patch. Without a <code>RegistryService</code> on the context, the probe always reports false and legacy behavior holds.</p>
 <p>The timeline below shows two dependents deferring behind one provider
 patch and converging together:</p>
-<pre><code class="language-mermaid">sequenceDiagram
+<pre class="mermaid">sequenceDiagram
     participant L as Loader
     participant P as Provider fiber (db)
     participant D1 as Dependent (api)
@@ -360,7 +360,7 @@ patch and converging together:</p>
     L-&gt;&gt;D2: single post-settle re-kick
     D1-&gt;&gt;D1: Pending -&gt; Loading -&gt; Active
     D2-&gt;&gt;D2: Pending -&gt; Loading -&gt; Active
-</code></pre>
+</pre>
 <p>Without batching, each concurrent patch would trigger one full cascade
 wave through every dependent. With three patches landing together, that
 is three teardown-rebuild cycles per dependent. Batching collapses them
@@ -412,6 +412,8 @@ into one.</p>
         <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
     </div>

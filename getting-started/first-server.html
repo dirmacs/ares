@@ -262,7 +262,7 @@ watch_interval_ms = 1000
 <pre><code class="language-toml">rate_limit_per_second = 100   # Requests per second per IP; 0 disables limiting
 rate_limit_burst = 10         # Bucket size admitted above the steady rate
 </code></pre>
-<p>The limiter is <code>tower_governor</code> (<code>src/main.rs</code>, rate-limit layer build): it admits bursts up to <code>rate_limit_burst</code> and refills one slot every $1/\text{rate_limit_per_second}$ seconds. Responses carry <code>x-ratelimit-*</code> headers.</p>
+<p>The limiter is <code>tower_governor</code> (<code>src/main.rs</code>, rate-limit layer build): it admits bursts up to <code>rate_limit_burst</code> and refills one slot every \(1/\text{rate_limit_per_second}\) seconds. Responses carry <code>x-ratelimit-*</code> headers.</p>
 <p><strong><code>[auth]</code></strong> names the secret environment variables and token lifetimes. <code>jwt_secret_env = "JWT_SECRET"</code> means: read the signing key from the environment variable called <code>JWT_SECRET</code>. The same pattern applies to <code>api_key_env</code>. Lifetimes are seconds: 900 gives 15-minute access tokens; 604800 gives 7-day refresh tokens.</p>
 <p><strong><code>[database]</code></strong> holds one connection URL. The template writes a local file path for an embedded store. A production deployment points at <code>postgres://user:pass@host/db</code>; the store then runs embedded migrations from <code>ares_store::MIGRATOR</code> on first connect.</p>
 <p><strong><code>[providers.&lt;name&gt;]</code></strong> defines one LLM provider. <code>&lt;name&gt;</code> (<code>ollama-local</code> here) is your label for it; agents reference this label. <code>type</code> picks the client implementation. <code>base_url</code> is where the client sends requests. <code>default_model</code> applies when an agent names no model of its own.</p>
@@ -437,6 +437,8 @@ curl -s -X POST http://localhost:3000/admin/tenants/TENANT_ID/api-keys \
         <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
     </div>

@@ -288,6 +288,8 @@ pub struct Entry {
     pub isolate: Option<String>,
     #[serde(default)]
     pub intercept: HashMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<EntryPosition>,
 }
 
 impl Default for Entry {
@@ -299,8 +301,26 @@ impl Default for Entry {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+            position: None,
         }
     }
+}
+
+/// Hierarchy placement for one [`Entry`]: an optional parent id plus an
+/// ordering index among that parent's children (`None` parent = tree root).
+///
+/// The parent link is advisory structure for admin surfaces (tree rendering,
+/// [`EntryTree::move_entry`]); it never affects reconciliation, which keys on
+/// ids alone. Descendant naming follows the `{ancestor}:` path convention:
+/// every child of `grp` is expected to carry an id prefixed `grp:`, so a
+/// subtree rename can mechanically remap the whole namespace (see
+/// [`EntryTree::move_entry`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct EntryPosition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub position: usize,
 }
 
 /// Partial update for one [`Entry`] — the request body of
@@ -317,6 +337,14 @@ pub struct EntryUpdate {
     pub disabled: Option<bool>,
     pub isolate: Option<String>,
     pub intercept: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    /// Move directive: the outer `Option` marks field presence; the inner
+    /// one is the target parent (`None` = move to tree root). Present
+    /// `parent` / `position` fields drive [`EntryTree::move_entry`] BEFORE
+    /// the remaining fields apply, so one PATCH can relocate and reconfigure
+    /// in a single call. They are consumed by the admin layer and never
+    /// copied onto the entry by [`EntryUpdate::apply_to`].
+    pub parent: Option<Option<String>>,
+    pub position: Option<usize>,
 }
 
 impl EntryUpdate {
@@ -427,6 +455,147 @@ impl EntryTree {
         // pid+nonce temp naming so concurrent saves never collide.
         write_atomic(path, format!("{header}{body}").as_bytes())
     }
+
+    // --- Hierarchy (parent / position) -----------------------------------
+
+    /// Separator of the hierarchical id namespace: a child of `grp` carries
+    /// an id prefixed `grp:`; the whole descendant namespace remaps under a
+    /// subtree rename ([`Self::move_entry`]).
+    pub const ID_SEP: char = ':';
+
+    /// Leaf segment of a hierarchical id (`"a:b:c"` → `"c"`).
+    fn leaf_id(id: &str) -> &str {
+        id.rsplit(Self::ID_SEP).next().unwrap_or(id)
+    }
+
+    /// Ids of every entry whose stored [`EntryPosition::parent`] is `parent`
+    /// (`None` = roots), ordered by stored position with tree order as the
+    /// stable tiebreak.
+    pub fn children_ids(&self, parent: Option<&str>) -> Vec<String> {
+        self.0
+            .iter()
+            .filter(|e| e.position.as_ref().and_then(|p| p.parent.as_deref()) == parent)
+            .filter(|e| e.id != parent.unwrap_or(""))
+            .map(|e| e.id.clone())
+            .collect()
+    }
+
+    /// Every id in the subtree rooted at `id` (excluding `id` itself): the
+    /// union of the `{id}:*` id-prefix namespace and parent-pointer
+    /// reachability, in tree order.
+    pub fn subtree_ids(&self, id: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut frontier: Vec<String> = vec![id.to_string()];
+        while let Some(front) = frontier.pop() {
+            for e in &self.0 {
+                let linked = e.id.starts_with(&format!("{front}{}", Self::ID_SEP))
+                    || e.position
+                        .as_ref()
+                        .and_then(|p| p.parent.as_deref())
+                        == Some(front.as_str());
+                if linked && !out.contains(&e.id) && e.id != id {
+                    out.push(e.id.clone());
+                    frontier.push(e.id.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Pure structural move of the subtree rooted at `id` under `target`
+    /// (`None` = tree root), inserting it at `position` among the target's
+    /// children.
+    ///
+    /// Because the id namespace is hierarchical, relocating renames: the
+    /// moved entry becomes `{target}:{leaf}` (or `{leaf}` when moving to the
+    /// root), and EVERY descendant `{id}:…` remaps to `{new_id}:…`. Parent
+    /// pointers inside the subtree follow their renamed owners. Returns the
+    /// old → new pairs in subtree order (moved entry first).
+    ///
+    /// Refusals (the tree is left untouched):
+    /// - unknown `id` or `target`;
+    /// - moving an entry under ITSELF or one of its own descendants;
+    /// - any renamed id colliding with an entry outside the moved subtree.
+    pub fn move_entry(
+        &mut self,
+        id: &str,
+        target: Option<&str>,
+        position: usize,
+    ) -> Result<Vec<(String, String)>, String> {
+        if id.is_empty() {
+            return Err("cannot move the empty id".to_string());
+        }
+        if !self.0.iter().any(|e| e.id == id) {
+            return Err(format!("no such entry '{id}'"));
+        }
+        if let Some(t) = target {
+            if t == id {
+                return Err(format!(
+                    "cannot move entry '{id}' under itself"
+                ));
+            }
+            if !self.0.iter().any(|e| e.id == t) {
+                return Err(format!("no such entry '{t}'"));
+            }
+            if self.subtree_ids(id).iter().any(|d| d == t) {
+                return Err(format!(
+                    "cannot move entry '{id}' under its own descendant '{t}'"
+                ));
+            }
+        }
+
+        // Compute the rename map over the whole moved subtree.
+        let new_root = match target {
+            Some(t) => format!("{t}{}{}", Self::ID_SEP, Self::leaf_id(id)),
+            None => Self::leaf_id(id).to_string(),
+        };
+        let mut renames: Vec<(String, String)> =
+            vec![(id.to_string(), new_root.clone())];
+        for desc in self.subtree_ids(id) {
+            let new_id = desc.replacen(&format!("{id}{}", Self::ID_SEP), &format!("{new_root}{}", Self::ID_SEP), 1);
+            renames.push((desc, new_id));
+        }
+
+        // Collision check: each new id must be free outside the moved set.
+        for (old, new) in &renames {
+            let in_subtree = renames.iter().any(|(o, _)| o == new);
+            if !in_subtree {
+                if let Some(existing) = self.0.iter().find(|e| &e.id == new) {
+                    return Err(format!(
+                        "cannot rename '{old}' to '{new}': id already used by plugin '{}'",
+                        existing.plugin
+                    ));
+                }
+            }
+        }
+        let map: HashMap<&str, &str> =
+            renames.iter().map(|(o, n)| (o.as_str(), n.as_str())).collect();
+
+        // Apply renames + pointer remaps in one pass.
+        for e in self.0.iter_mut() {
+            if let Some(n) = map.get(e.id.as_str()) {
+                e.id = (*n).to_string();
+            }
+            if let Some(pos) = e.position.as_mut() {
+                if let Some(p) = pos.parent.as_deref() {
+                    if let Some(n) = map.get(p) {
+                        pos.parent = Some((*n).to_string());
+                    }
+                }
+            }
+        }
+
+        // Re-point the moved root and place it at the requested position.
+        let moved = self
+            .0
+            .iter_mut()
+            .find(|e| e.id == new_root)
+            .expect("renamed root just written");
+        let slot = moved.position.get_or_insert_with(EntryPosition::default);
+        slot.parent = target.map(str::to_string);
+        slot.position = position;
+        Ok(renames)
+    }
 }
 
 /// Per-entry diff emitted by [`Loader::reconcile`].
@@ -469,6 +638,113 @@ pub enum LoaderAction {
 pub struct Loader;
 
 impl Service for Loader {}
+
+/// Outcome of [`Loader::move_entry`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveOutcome {
+    /// Old → new id for the moved entry and every renamed descendant, in
+    /// subtree order (moved entry first). Empty when nothing moved.
+    pub renamed: Vec<(String, String)>,
+    /// `true` when the contexts-equivalence gate kept every live fiber
+    /// untouched (pure structural move); `false` when the gate fell back to a
+    /// full reconcile apply (dispose + re-create of renamed entries).
+    pub noop: bool,
+}
+
+impl Loader {
+    /// Relocate the subtree rooted at `id` under `target` (`None` = root) at
+    /// `position`, then make the LIVE kernel agree with the moved tree.
+    ///
+    /// Validation and the rename cascade are [`EntryTree::move_entry`] (pure,
+    /// error → tree untouched). Fiber handling then goes through the
+    /// contexts-equivalence gate:
+    ///
+    /// * **Equivalent composition** (same multiset of plugin/config/disabled/
+    ///   isolate across both trees — what every pure structural move is):
+    ///   NOOP. Every journaled record is re-keyed old → new with its fiber id
+    ///   PRESERVED (the existing registration fiber handle is refreshed in
+    ///   place — epoch label + ledger annotation — never disposed or
+    ///   re-created), so consumers keep resolving the same live instances.
+    /// * **Different composition** (mixed edits rode along): fall back to the
+    ///   standard staged [`Self::apply`] reconcile, which restarts renamed
+    ///   entries through Retire + Begin.
+    ///
+    /// The shared [`CurrentEntries`] view (when provided) is synced to the
+    /// post-move tree either way, so a follow-up disk reload diffs cleanly
+    /// instead of seeing phantom Retire/Begin pairs for the renames.
+    pub async fn move_entry(
+        ctx: &Arc<crate::Context>,
+        current: &mut EntryTree,
+        journal: &crate::LoaderJournal,
+        id: &str,
+        target: Option<&str>,
+        position: usize,
+    ) -> Result<MoveOutcome, CordisError> {
+        let before = current.clone();
+        let renamed = current
+            .move_entry(id, target, position)
+            .map_err(CordisError::Configuration)?;
+
+        let noop = Self::composition_equivalent(&before, current);
+        if noop {
+            for (old, new) in &renamed {
+                // Re-key the journal record, keeping plugin/config/generation
+                // AND the tracked fiber id — identity preservation is the
+                // whole point of the noop path.
+                let Some(record) = journal.rename(old, new) else {
+                    continue;
+                };
+                let Some(fid) = record.fiber_id else {
+                    continue;
+                };
+                // Refresh the EXISTING fiber handle in place: same Arc<Fiber>,
+                // same registration id, only the ownership label moves.
+                if let Some(fiber) = ctx
+                    .get::<crate::RegistryService>()
+                    .and_then(|rs| rs.get_fiber(fid))
+                {
+                    fiber.set_epoch(new.clone());
+                }
+                if let Some(ledger) = ctx.get::<crate::cycles::CycleLedger>() {
+                    ledger.note_entry(fid, new);
+                }
+            }
+        } else {
+            let desired = current.clone();
+            Self::apply(ctx, current, &desired, journal).await;
+        }
+
+        if let Some(shared) = ctx.get::<crate::CurrentEntries>() {
+            if let Ok(mut tree) = shared.tree.lock() {
+                *tree = current.clone();
+            }
+        }
+        Ok(MoveOutcome { renamed, noop })
+    }
+
+    /// Contexts-equivalence gate: `true` when both trees declare the SAME
+    /// effective service composition — identical multisets of
+    /// `(plugin, config, disabled, isolate)` ignoring ids and positions.
+    fn composition_equivalent(a: &EntryTree, b: &EntryTree) -> bool {
+        let signature = |tree: &EntryTree| {
+            let mut sig: Vec<(String, String, bool, Option<String>)> = tree
+                .0
+                .iter()
+                .map(|e| {
+                    (
+                        e.plugin.clone(),
+                        serde_json::to_string(&e.config).unwrap_or_default(),
+                        e.disabled,
+                        e.isolate.clone(),
+                    )
+                })
+                .collect();
+            sig.sort();
+            sig
+        };
+        signature(a) == signature(b)
+    }
+}
 
 /// Shared, mutable view of the last successfully applied entry tree plus the
 /// file it was loaded from. Provided as a Service so the file watcher, admin
@@ -846,9 +1122,10 @@ impl Loader {
                 let ctx_ref = ctx.clone();
                 let fiber_ref = fiber.clone();
                 tokio::task::block_in_place(move || {
-                    handle.block_on(async move { fiber_ref.update(&ctx_ref).await })
-                });
-                Ok(())
+                    handle
+                        .block_on(async move { fiber_ref.update(&ctx_ref).await })
+                        .map_err(|e| e.to_string())
+                })
             }
             Err(_) => Err("no tokio runtime for live fiber update".to_string()),
         };
@@ -1222,7 +1499,10 @@ impl Loader {
                             tracing::info!(id = %id, "Loader: applying fiber config update (live fiber)");
                             let ctx_ref = ctx.clone();
                             let fiber_ref = fiber.clone();
-                            tokio::task::block_in_place(move || {
+                            // Legacy log-only arm: a kernel-refused update is
+                            // surfaced by the fiber's own Failed state; the
+                            // journal already carries the new config either way.
+                            let _ = tokio::task::block_in_place(move || {
                                 handle.block_on(fiber_ref.update(&ctx_ref))
                             });
                         }
@@ -1636,6 +1916,7 @@ impl Loader {
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
         )
     }
@@ -1896,6 +2177,7 @@ mod tests {
             disabled: false,
             isolate: Some("tenant:acme".into()),
             intercept: HashMap::new(),
+                    position: None,
         };
         let s = serde_json::to_string(&entry).unwrap();
         let back: Entry = serde_json::from_str(&s).unwrap();
@@ -1912,6 +2194,7 @@ mod tests {
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
             Entry {
                 id: "b".into(),
@@ -1920,6 +2203,7 @@ mod tests {
                 disabled: true,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
         ]);
         let s = serde_json::to_string(&tree).unwrap();
@@ -1939,6 +2223,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let des = EntryTree(vec![Entry {
             id: "a".into(),
@@ -1947,6 +2232,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let loader = Loader::new();
         let acts = loader.reconcile(&cur, &des);
@@ -1963,6 +2249,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let des = EntryTree(vec![Entry {
             id: "a".into(),
@@ -1971,6 +2258,7 @@ mod tests {
             disabled: true,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let loader = Loader::new();
         assert!(matches!(
@@ -1992,6 +2280,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let des = EntryTree(vec![Entry {
             id: "a".into(),
@@ -2000,6 +2289,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let loader = Loader::new();
         assert!(matches!(
@@ -2017,6 +2307,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let des_isolate = EntryTree(vec![Entry {
             id: "a".into(),
@@ -2025,6 +2316,7 @@ mod tests {
             disabled: false,
             isolate: Some("tenant:acme".into()),
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let loader = Loader::new();
         assert!(matches!(
@@ -2041,6 +2333,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept,
+                    position: None,
         }]);
         assert!(matches!(
             loader.reconcile(&cur, &des_intercept)[0],
@@ -2310,6 +2603,7 @@ disabled = false
             disabled: false,
             isolate: Some("tenant:acme".into()),
             intercept,
+                    position: None,
         };
         Loader::instantiate_entry(&ctx, &entry).expect("instantiate_entry");
 
@@ -2370,6 +2664,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
             Entry {
                 id: "b:two".into(),
@@ -2378,6 +2673,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
         ]);
         let mut current = EntryTree(vec![]);
@@ -2445,6 +2741,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
             Entry {
                 id: "good:two".into(),
@@ -2453,6 +2750,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
         ]);
         let mut current = EntryTree(vec![]);
@@ -2493,6 +2791,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
             Entry {
                 id: "good:last".into(),
@@ -2501,6 +2800,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
             Entry {
                 id: "good:never".into(),
@@ -2509,6 +2809,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
         ]);
         let actions =
@@ -2582,6 +2883,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let mut current = EntryTree(vec![]);
         let actions = Loader::apply(&ctx, &mut current, &desired_a, &journal).await;
@@ -2601,6 +2903,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let ctx_probe = ctx.clone();
         let prober = tokio::spawn(async move {
@@ -2669,6 +2972,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         };
         let mut current = EntryTree(vec![]);
         Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_ok]), &journal).await;
@@ -2688,6 +2992,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let actions = Loader::apply(&ctx, &mut current, &desired_bad, &journal).await;
         assert_eq!(actions[0].action, "update-config");
@@ -2736,6 +3041,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let actions = Loader::apply(&ctx, &mut current, &desired_good, &journal).await;
         assert_eq!(actions[0].action, "update-config");
@@ -2784,6 +3090,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let mut current = EntryTree(vec![]);
         Loader::apply(&ctx, &mut current, &desired_ok, &journal).await;
@@ -2797,6 +3104,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let actions = Loader::apply(&ctx, &mut current, &desired_bad, &journal).await;
         assert_eq!(actions[0].action, "rebuild-fiber");
@@ -2847,6 +3155,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let mut current = EntryTree(vec![Entry {
             id: "fb".into(),
@@ -2855,6 +3164,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
         assert_eq!(actions[0].action, "rebuild-fiber");
@@ -2875,6 +3185,7 @@ disabled = false
                 disabled: true,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
             Entry {
                 id: "svc:acme".into(),
@@ -2883,6 +3194,7 @@ disabled = false
                 disabled: false,
                 isolate: Some("acme".into()),
                 intercept: HashMap::new(),
+                            position: None,
             },
         ]);
         tree.save_to_toml_file(&path).unwrap();
@@ -2901,6 +3213,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         // Two consecutive saves exercise both the create and rename-over
         // paths; neither may leave `.tmp-*` siblings behind.
@@ -2948,6 +3261,7 @@ plugin = "Bar"
             disabled: false,
             isolate: Some("acme".into()),
             intercept: HashMap::new(),
+                    position: None,
         });
         tree.save_to_toml_file(&path).unwrap();
 
@@ -2989,6 +3303,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }]);
         // Parent directory does not exist yet — the save must create it.
         tree.save_to_file(path.to_str().unwrap()).unwrap();
@@ -3179,6 +3494,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         };
         let mut entry_b = entry_a.clone();
         entry_b.id = "cyc:b".into();
@@ -3257,6 +3573,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         };
         let mut current = EntryTree(vec![]);
         Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_a]), &journal).await;
@@ -3350,6 +3667,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         };
         let mut current = EntryTree(vec![]);
         Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_ok]), &journal).await;
@@ -3415,6 +3733,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         };
         let mut current = EntryTree(vec![]);
         Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_a]), &journal).await;
@@ -3509,6 +3828,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             }]),
             &journal,
         )
@@ -3526,6 +3846,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             }]),
             &journal,
         )
@@ -3590,6 +3911,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             }]),
             &journal,
         )
@@ -3606,6 +3928,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             }]),
             &journal,
         )
@@ -3641,6 +3964,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             }]),
             &journal,
         )
@@ -3693,6 +4017,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             }]),
             &journal,
         )
@@ -3729,6 +4054,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
             Entry {
                 id: "t:new".into(),
@@ -3737,6 +4063,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
             // Distinct service type (own factory) so this step's only failure
             // mode is "the batch already aborted", not a provider clash with
@@ -3748,6 +4075,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
         ]);
         let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
@@ -3833,6 +4161,7 @@ plugin = "Bar"
                     disabled: false,
                     isolate: None,
                     intercept: HashMap::new(),
+                                    position: None,
                 },
                 Entry {
                     id: "o:bye".into(),
@@ -3841,6 +4170,7 @@ plugin = "Bar"
                     disabled: false,
                     isolate: None,
                     intercept: HashMap::new(),
+                                    position: None,
                 },
             ]),
             &journal,
@@ -3858,6 +4188,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
             Entry {
                 id: "o:new".into(),
@@ -3866,6 +4197,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             },
         ]);
         let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
@@ -3943,6 +4275,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             }]),
             &journal,
         )
@@ -4008,6 +4341,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
+                            position: None,
             }]),
             &journal,
         )
@@ -4167,6 +4501,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
+                    position: None,
         }])));
         let mut handles = Vec::new();
         for round in 2..=6u32 {
@@ -4182,6 +4517,7 @@ plugin = "Bar"
                     disabled: false,
                     isolate: None,
                     intercept: HashMap::new(),
+                                    position: None,
                 }]);
                 Loader::apply(&ctx, &mut guard, &desired, &journal).await
             }));
@@ -4231,5 +4567,312 @@ plugin = "Bar"
             "dependent must collapse waves (deferred under the ledger), \
              got {dependent_runs} runs vs {provider_runs} provider runs"
         );
+    }
+
+    // --- Entry hierarchy: structural moves ---------------------------------
+
+    /// Distinct probe types so sibling entries never collide as providers.
+    struct MoveProbe(std::sync::atomic::AtomicU64);
+    impl Service for MoveProbe {}
+    struct MoveProbeB(std::sync::atomic::AtomicU64);
+    impl Service for MoveProbeB {}
+    struct MoveProbeC(std::sync::atomic::AtomicU64);
+    impl Service for MoveProbeC {}
+
+    fn move_fixture(ctx: &Arc<Context>) {
+        ctx.provide(crate::RegistryService::new());
+        let plugins = ctx.provide(crate::PluginRegistry::new());
+        fn reg<T: Service>(
+            plugins: &crate::PluginRegistry,
+            label: &str,
+            mk: fn(u64) -> T,
+        ) {
+            plugins.register(
+                label,
+                Arc::new(move |ctx: &Arc<Context>, cfg| {
+                    let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let fut = ctx.plugin(mk(v));
+                    tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(fut)
+                    })
+                }),
+            );
+        }
+        reg(&plugins, "MoveFactory", |v| MoveProbe(
+            std::sync::atomic::AtomicU64::new(v),
+        ));
+        reg(&plugins, "MoveFactoryB", |v| MoveProbeB(
+            std::sync::atomic::AtomicU64::new(v),
+        ));
+        reg(&plugins, "MoveFactoryC", |v| MoveProbeC(
+            std::sync::atomic::AtomicU64::new(v),
+        ));
+    }
+
+    fn move_entry_spec(id: &str, plugin: &str, v: u64, disabled: bool) -> Entry {
+        Entry {
+            id: id.to_string(),
+            plugin: plugin.to_string(),
+            config: json!({ "v": v }),
+            disabled,
+            isolate: None,
+            intercept: HashMap::new(),
+            position: None,
+        }
+    }
+
+    /// A pure structural move must keep the SAME registration fiber alive:
+    /// journal record re-keyed with fiber id intact, epoch label refreshed,
+    /// and a follow-up config update lands under the NEW parent id driving
+    /// that same handle — never dispose + re-create.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn move_preserves_fiber_identity_and_lands_update_in_new_parent() {
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        move_fixture(&ctx);
+        let ops = ctx.provide(LoaderOps::new());
+
+        let mut current = EntryTree(vec![]);
+        let desired = EntryTree(vec![
+            move_entry_spec("grp", "MoveFactory", 1, false),
+            move_entry_spec("svc", "MoveFactoryB", 2, false),
+        ]);
+        let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
+        assert!(actions.iter().all(|a| a.status.is_ok()), "{actions:?}");
+        let fid = journal.get("svc").unwrap().fiber_id.unwrap();
+        assert_eq!(ops.apply_count("svc"), 1);
+
+        let out = Loader::move_entry(&ctx, &mut current, &journal, "svc", Some("grp"), 0)
+            .await
+            .expect("move succeeds");
+        assert!(out.noop, "pure structural move takes the noop path");
+        assert_eq!(out.renamed, vec![("svc".to_string(), "grp:svc".to_string())]);
+
+        // Identity preserved: same fiber id, same handle, refreshed label.
+        let rec = journal.get("grp:svc").expect("journal re-keyed");
+        assert_eq!(rec.fiber_id, Some(fid));
+        assert!(journal.get("svc").is_none(), "old key gone");
+        let registry = ctx.get::<crate::RegistryService>().unwrap();
+        let fiber = registry.get_fiber(fid).expect("same fiber still tracked");
+        assert_eq!(fiber.epoch(), "grp:svc", "epoch label refreshed in place");
+        assert!(
+            ctx.get::<MoveProbe>().is_some(),
+            "live instance never disposed"
+        );
+        // No restart happened for either entry.
+        assert_eq!(ops.apply_count("grp:svc"), 0);
+        assert_eq!(ops.apply_count("svc"), 1);
+
+        // Tree carries the new id + parent pointer.
+        let moved = current.0.iter().find(|e| e.id == "grp:svc").unwrap();
+        assert_eq!(
+            moved.position.as_ref().unwrap().parent.as_deref(),
+            Some("grp")
+        );
+
+        // Land an update under the new parent through the standard apply:
+        // exactly one UpdateConfig action against the preserved fiber.
+        let updated = EntryTree(vec![
+            move_entry_spec("grp", "MoveFactory", 1, false),
+            move_entry_spec("grp:svc", "MoveFactoryB", 9, false),
+        ]);
+        let actions = Loader::apply(&ctx, &mut current, &updated, &journal).await;
+        assert_eq!(actions.len(), 1, "{actions:?}");
+        assert_eq!(actions[0].id, "grp:svc");
+        assert_eq!(actions[0].action, "update-config");
+        assert!(actions[0].status.is_ok(), "{:?}", actions[0].status);
+        assert_eq!(journal.get("grp:svc").unwrap().fiber_id, Some(fid));
+        assert_eq!(journal.get("grp:svc").unwrap().config, json!({ "v": 9 }));
+        // Still no factory re-application: update rode the existing fiber.
+        assert_eq!(ops.apply_count("grp:svc"), 0);
+    }
+
+    /// Moving an entry under ITSELF or any of its own descendants is refused.
+    #[test]
+    fn descendant_move_refused() {
+        let child = |id: &str, parent: Option<&str>| Entry {
+            id: id.to_string(),
+            plugin: "P".into(),
+            position: Some(EntryPosition {
+                parent: parent.map(str::to_string),
+                position: 0,
+            }),
+            ..Default::default()
+        };
+        let mut tree = EntryTree(vec![
+            child("g", None),
+            child("g:child", Some("g")),
+            child("g:child:leaf", Some("g:child")),
+        ]);
+        let snapshot = tree.clone();
+
+        let err = tree.move_entry("g", Some("g:child"), 0).unwrap_err();
+        assert!(err.contains("descendant"), "{err}");
+        let err = tree.move_entry("g", Some("g:child:leaf"), 0).unwrap_err();
+        assert!(err.contains("descendant"), "{err}");
+        let err = tree.move_entry("g", Some("g"), 0).unwrap_err();
+        assert!(err.contains("itself"), "{err}");
+        assert_eq!(tree, snapshot, "refusals leave the tree untouched");
+    }
+
+    /// Relocating a subtree remaps the WHOLE `{id}:*` namespace plus every
+    /// parent pointer inside it; unrelated entries stay untouched.
+    #[test]
+    fn subtree_rename_cascades_descendants() {
+        let e = |id: &str, parent: Option<&str>| Entry {
+            id: id.to_string(),
+            plugin: "P".into(),
+            position: parent.map(|p| EntryPosition {
+                parent: Some(p.to_string()),
+                position: 0,
+            }),
+            ..Default::default()
+        };
+        let mut tree = EntryTree(vec![
+            e("other", None),
+            e("g:a", Some("g")),
+            e("g:a:b", Some("g:a")),
+            e("unrelated", None),
+            e("g:a:b:deep", Some("g:a:b")),
+        ]);
+        // Note: no explicit "g" root entry — the subtree hangs off ids alone.
+        let renames = tree.move_entry("g:a", None, 3).unwrap();
+        assert_eq!(
+            renames,
+            vec![
+                ("g:a".to_string(), "a".to_string()),
+                ("g:a:b".to_string(), "a:b".to_string()),
+                ("g:a:b:deep".to_string(), "a:b:deep".to_string()),
+            ]
+        );
+        let ids: Vec<&str> = tree.0.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["other", "a", "a:b", "unrelated", "a:b:deep"]);
+        let pos = |id: &str| {
+            tree.0
+                .iter()
+                .find(|e| e.id == id)
+                .unwrap()
+                .position
+                .as_ref()
+                .unwrap()
+                .parent
+                .clone()
+        };
+        assert_eq!(pos("a:b"), Some("a".to_string()), "pointer remapped");
+        assert_eq!(pos("a:b:deep"), Some("a:b".to_string()));
+        assert_eq!(pos("a"), None, "moved root landed at tree root");
+    }
+
+    /// Moving a DISABLED group starts nothing (no phantom Begins for renamed
+    /// ids); re-enabling it afterwards restores normal Begin lifecycle.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disabled_group_move_suppresses_start_then_restores() {
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        move_fixture(&ctx);
+        let ops = ctx.provide(LoaderOps::new());
+
+        let mut current = EntryTree(vec![]);
+        let mut g = move_entry_spec("g", "MoveFactoryB", 1, false);
+        g.position = Some(EntryPosition::default());
+        let mut kid = move_entry_spec("g:kid", "MoveFactoryC", 2, false);
+        kid.position = Some(EntryPosition {
+            parent: Some("g".into()),
+            position: 0,
+        });
+        let desired = EntryTree(vec![move_entry_spec("other", "MoveFactory", 3, false), g, kid]);
+        let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
+        assert!(actions.iter().all(|a| a.status.is_ok()), "{actions:?}");
+
+        // Disable the whole group → both fibers retire.
+        let disabled = EntryTree(
+            desired
+                .0
+                .iter()
+                .map(|e| {
+                    let mut c = e.clone();
+                    if c.id == "g" || c.id == "g:kid" {
+                        c.disabled = true;
+                    }
+                    c
+                })
+                .collect(),
+        );
+        let actions = Loader::apply(&ctx, &mut current, &disabled, &journal).await;
+        assert!(actions.iter().all(|a| a.action == "retire"), "{actions:?}");
+        assert!(journal.get("g").is_none() && journal.get("g:kid").is_none());
+
+        // Move the DISABLED group: the noop path re-keys nothing (no records)
+        // and starts nothing — no phantom Begin for other:g / other:g:kid.
+        let out = Loader::move_entry(&ctx, &mut current, &journal, "g", Some("other"), 0)
+            .await
+            .expect("move succeeds");
+        assert!(out.noop);
+        assert_eq!(
+            out.renamed,
+            vec![
+                ("g".to_string(), "other:g".to_string()),
+                ("g:kid".to_string(), "other:g:kid".to_string()),
+            ]
+        );
+        assert!(journal.get("other:g").is_none());
+        assert!(journal.get("other:g:kid").is_none());
+        assert_eq!(
+            ops.apply_count("other:g") + ops.apply_count("other:g:kid"),
+            0,
+            "moving a disabled group must not start fibers"
+        );
+
+        // Restore: re-enable the moved group → Begins fire under new ids.
+        let restored = EntryTree(vec![
+            move_entry_spec("other", "MoveFactory", 3, false),
+            move_entry_spec("other:g", "MoveFactoryB", 1, false),
+            {
+                let mut k = move_entry_spec("other:g:kid", "MoveFactoryC", 2, false);
+                k.position = Some(EntryPosition {
+                    parent: Some("other:g".into()),
+                    position: 0,
+                });
+                k
+            },
+        ]);
+        let actions = Loader::apply(&ctx, &mut current, &restored, &journal).await;
+        assert_eq!(actions.len(), 2, "{actions:?}");
+        assert!(actions
+            .iter()
+            .all(|a| a.action == "begin" && a.status.is_ok()));
+        assert!(journal.get("other:g").unwrap().fiber_id.is_some());
+        assert!(journal.get("other:g:kid").unwrap().fiber_id.is_some());
+        assert!(ctx.get::<MoveProbe>().is_some());
+    }
+
+    /// Every invalid move — collision with an existing id outside the moved
+    /// subtree, unknown id, unknown target — errors WITHOUT mutating the tree.
+    #[test]
+    fn invalid_move_errors_without_mutating_tree() {
+        let e = |id: &str, parent: Option<&str>| Entry {
+            id: id.to_string(),
+            plugin: format!("Plugin-{id}"),
+            position: parent.map(|p| EntryPosition {
+                parent: Some(p.to_string()),
+                position: 0,
+            }),
+            ..Default::default()
+        };
+        let mut tree = EntryTree(vec![
+            e("a", None),
+            e("b", None),
+            e("b:a", Some("b")), // occupies the id 'a' would get under 'b'
+        ]);
+        let snapshot = tree.clone();
+
+        // Collision: moving 'a' under 'b' would need the taken id 'b:a'.
+        let err = tree.move_entry("a", Some("b"), 0).unwrap_err();
+        assert!(err.contains("already used by plugin 'Plugin-b:a'"), "{err}");
+        // Unknown source / target.
+        assert!(tree.move_entry("nope", None, 0).is_err());
+        assert!(tree.move_entry("a", Some("nope"), 0).is_err());
+
+        assert_eq!(tree, snapshot, "failed moves never mutate the tree");
     }
 }

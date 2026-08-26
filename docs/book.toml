@@ -15,6 +15,7 @@ git-repository-url = "https://github.com/dirmacs/ares"
 edit-url-template = "https://github.com/dirmacs/ares/edit/main/docs/{path}"
 site-url = "/ares/"
 no-section-label = false
+mathjax-support = true
 
 [output.html.search]
 enable = true

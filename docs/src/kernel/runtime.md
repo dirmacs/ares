@@ -65,6 +65,39 @@ entries under one short lock, then runs callbacks outside the lock.
 Callbacks must be cheap and non-blocking. A panicking callback is caught
 and logged; the thread survives.
 
+### Wheel mechanics
+
+The wheel is a min-heap of entries ordered by `(deadline, seq)`. The
+sequence number breaks ties so equal deadlines fire in registration
+order. One process-wide instance serves every fiber; it lives behind a
+`LazyLock<Mutex<Wheel>>`.
+
+The driver loop has two phases:
+
+1. **Sleep.** Read the nearest deadline while holding the lock, release,
+   then `park_timeout` for that long. A park with no timeout waits for
+   the next insert. Any `schedule` call pushes its entry and unparks the
+   thread, so an earlier deadline preempts a long sleep immediately.
+2. **Drain.** Re-acquire the lock, pop every entry whose deadline is at
+   or before now, release, then run each job. Callbacks run outside the
+   lock on purpose: an interval callback re-arms itself by calling
+   `schedule`, which needs the lock. Holding it across callbacks would
+   deadlock every self-re-arming pattern, including debounce and
+   throttle emits.
+
+Cancellation is cooperative through `EffectHandle`. Disposal flips the
+shared flag but does not remove the heap entry. Two paths make that
+safe:
+
+- The `timeout` job checks the flag inside the job body. A disposal
+  racing the drain still prevents the callback from running.
+- The future-based `sleep` resolves early and silently when disposed
+  while pending; nothing observes a cancelled wake-up.
+
+A panicking callback lands in `catch_unwind`. The driver logs a warning
+and moves to the next job. One bad callback cannot starve the rest of
+the wheel.
+
 | Primitive | Shape |
 |---|---|
 | `timeout(delay, callback)` | One-shot delay, then callback. Returns `EffectHandle`. |
@@ -173,6 +206,25 @@ Unknown specifiers and exhausted arguments stay literal. Unconsumed
 arguments join at the end with spaces. Without a format head, arguments
 join with single spaces.
 
+### Stable color slots
+
+`%c` and `%C` pick one of sixteen ANSI colors from the logger name. The
+slot must be stable across processes and platforms, so it comes from a
+hash, not a counter. `name_color_code` in `logger.rs` computes FNV-1a
+over the name bytes:
+
+$$h_0 = \texttt{0xcbf29ce484222325}, \qquad h_{i+1} = (h_i \oplus b_i) \cdot \texttt{0x00000100000001b3} \;\bmod\; 2^{64}$$
+
+where $b_i$ is the $i$-th name byte. The palette index is then
+
+$$\text{color}(name) = \text{ANSI16}[\,h \bmod 16\,]$$
+
+with `ANSI16 = [30..=37, 90..=97]`: eight normal foregrounds followed by
+their bright variants. The multiplication wraps (`wrapping_mul`), so no
+input can overflow-panic. The same name always renders in the same
+color — in tests, in production logs, and across restarts. Test anchor:
+`colorization_is_stable_per_name`.
+
 ### LoggerIntercept override
 
 `LoggerIntercept` rides the normal intercept channel. Install it with
@@ -239,6 +291,46 @@ The classified result is a `ChangeOutcome`:
 The default seam, `NoopReload`, never fails. Deployments wire their own
 `reload` / `rollback` pair, or swap one in later with `set_reloader`.
 
+### One transaction, narrated
+
+Watch two shared files change at once: `routes.toml` and `auth.toml`.
+Three modules depend on them. `foo` depends on both; `bar` depends on
+`shared`; `baz` is independent.
+
+1. The watcher's debounce settles with both paths. Each path maps to its
+   file stem, and the watcher hands `["routes", "auth"]` to
+   `change_many`.
+2. The compute phase walks the transitive dependent set across BOTH keys
+   with one shared visited set. It reaches `foo` through either key but
+   records it once — dedup happens during the walk, not after.
+3. The apply phase reloads affected plugins in breadth-first order:
+   dependencies before their dependents, so each plugin reloads into a
+   kernel where what it injects already exists.
+4. Suppose `bar`'s reload fails on its new code. The seam rolls `bar`
+   back to its previous state and the batch stops there. `baz` never ran
+   — it matched no input key.
+
+The result is
+`RolledBack { reloaded: ["foo"], failed_plugin: "bar", error: .. }`.
+
+**Sibling survival.** Plugins that reloaded before the failure stay
+active on their NEW code. The batch does not unwind earlier successes.
+This guarantee shapes how you write reloaders:
+
+- A reload must leave the kernel consistent on its own. Earlier siblings
+  will not be reverted for you.
+- Order failures so cheap ones fail first when possible; breadth-first
+  order plus early failure minimizes divergence between old and new.
+- The rollback text reports a restore failure separately. Rolling back
+  `bar` can itself error; the error field says so. Surface that case as
+  an operator alert: the running state then matches no recorded state.
+
+Contrast with the loader's two-phase reload (see
+[Lifecycle](lifecycle.md)): the loader rolls back everything newest-first;
+the module graph deliberately keeps successful siblings. The loader owns
+declarative trees. The module graph owns native-code hot swap, where a
+reloaded `.so` cannot always be unloaded again safely.
+
 ### Watcher integration
 
 When a debounced watcher batch settles, the watcher maps each changed
@@ -268,6 +360,38 @@ passes:
 
 `check_read` and `check_write` on `FencePolicy` stay pure path checks
 (L0-L2). Only the `Fence` methods touch file contents.
+
+### Layer matrix
+
+The matrix lists, for each layer, what it guarantees and which stable
+code reports its failure. Layers run top to bottom; the first failure
+decides the code.
+
+| Layer | Guarantee | Fails with | Applies to |
+| --- | --- | --- | --- |
+| L0 mode | `ReadOnly` denies every write | `FS_FENCE_DENIED` | Writes only |
+| L1 boundary | Resolved path stays inside `workspace_root` (`Full` waives) | `FS_FENCE_DENIED` | Reads and writes |
+| L2 blocklist | Blocked names denied in every mode | `FS_FENCE_DENIED` | Reads and writes |
+| L3 observation | Canonical path observed before any guarded write in non-blind modes; missing paths record version 0 | `FS_NOT_OBSERVED` | Writes only |
+| L3 contract | Guard matches observed state: absent path for create, unchanged version for replace | `FS_EXISTS`, `FS_VERSION_CONFLICT` | Writes only |
+| L3 I/O | Atomic sibling-temp-plus-rename write | `FS_IO` | Writes only |
+
+Reading the table as an operator:
+
+- Three different denials all report `FS_FENCE_DENIED`; the audit ring
+  entry records the reason text that separates them.
+- `FS_NOT_OBSERVED` is a protocol error, not a permission error. The
+  agent forgot to read before writing. A read of a missing path counts,
+  so creating a new file needs one prior failed-or-absent read.
+- `FS_VERSION_CONFLICT` means someone changed the file after your read.
+  Re-read and re-apply the edit.
+- `FS_IO` covers everything underneath the policy: permission bits at
+  the OS level, full disks, vanished parents. The reason text carries
+  the OS message.
+
+Determinism is the point. The same path, mode, guard, and observed state
+always produce the same code. Agent-facing retry logic branches on codes,
+not on parsed prose.
 
 ### L3 write guards
 

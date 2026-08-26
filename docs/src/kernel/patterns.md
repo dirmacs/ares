@@ -341,3 +341,195 @@ fiber stays safe.
 Source: `interval_stream_final_err_on_dispose` and
 `interval_stream_discards_stale_live_ticks_before_final_err` in
 `crates/cordis/src/timer.rs`.
+
+## `emit_filtered` with a Global Bypass
+
+Register an audit listener with `global: true` when it must observe every
+dispatch, even filtered ones. The filter excludes only non-global
+listeners; the global one always runs. Exclusion is per dispatch: nobody
+is unregistered, and a later unfiltered emit runs everyone again.
+
+```rust
+use cordis::events::{EventOptions, EventsService};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+let svc = EventsService::new();
+let ran = Arc::new(AtomicUsize::new(0));
+
+// Non-global listener for tenant "b".
+let b = ran.clone();
+svc.on_with("global.test".into(), EventOptions::default(), move |payload| {
+    let b = b.clone();
+    async move {
+        if payload["tenant"] == "b" {
+            b.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(payload)
+    }
+});
+
+// Global listener: exempt from every filter verdict.
+let g = ran.clone();
+svc.on_with(
+    "global.test".into(),
+    EventOptions { prepend: false, global: true },
+    move |payload| {
+        let g = g.clone();
+        async move {
+            if payload["tenant"] == "b" {
+                g.fetch_add(10, Ordering::SeqCst);
+            }
+            Ok(payload)
+        }
+    },
+);
+
+// A filter that admits NOTHING still lets the global listener run.
+svc.emit_filtered(
+    "global.test".into(),
+    serde_json::json!({ "tenant": "b" }),
+    Box::new(|_opts| false),
+)
+.unwrap();
+assert_eq!(ran.load(Ordering::SeqCst), 10);
+```
+
+Use this for security audit trails, metrics, and tracing sinks. Anything
+that must not miss an event rides `global: true`.
+
+Source: `global_bypasses_filter` in `crates/cordis/src/events.rs`.
+
+## Inspecting Values Mid-Transition with `get_relaxed`
+
+Strict `Context::get` refuses values owned by fibers resting in
+`Loading`, `Reloading`, `Unloading`, or reactive `Pending`. Lifecycle
+and observer code needs exactly those values. `get_relaxed` resolves a
+locally-owned value while its owner transitions; terminal `Failed` and
+disposed owners stay refused in relaxed mode too.
+
+```rust
+use cordis::{Context, Fiber, Service};
+use std::sync::Arc;
+
+struct TransitionProbe(u32);
+impl Service for TransitionProbe {}
+
+let ctx = Context::new_root();
+let fiber = Arc::new(Fiber::new());
+fiber.set_reload_context(&ctx);
+fiber.set_id(96_001);
+
+// Provide ON the registration fiber so the owner link exists.
+ctx.provide_on_fiber(Arc::new(TransitionProbe(7)), &fiber);
+
+// Strict get refuses non-Active owners...
+assert!(ctx.get::<TransitionProbe>().is_none());
+
+// ...but relaxed reads serve the transitioning value itself.
+fiber.set_state(cordis::FiberState::Pending);
+assert_eq!(ctx.get_relaxed::<TransitionProbe>().unwrap().0, 7);
+```
+
+The setup calls `set_reload_context`, `set_id`, `provide_on_fiber`, and
+`set_state` are crate-internal. The source test uses them to place the
+owner fiber into each transitioning state directly. Product code reaches
+those states through a readiness gate or a dependency loss instead; only
+`get_relaxed` is public API.
+
+Reach for this in diagnostics endpoints, state inspectors, and tests —
+never in ordinary consumers. Consumers keep strict `get` so they never
+observe half-torn configurations.
+
+Source: `relaxed_read_succeeds_while_provider_transitioning` in
+`crates/cordis/src/context.rs`.
+
+## Inspecting a Deferred Config After an Update Veto
+
+An `internal/update` listener returning JSON `false` vetoes the restart.
+The proposed config parks in `Fiber::vetoed_config`, the fiber stays
+`Active` on its old application, and `update` returns `Ok(())`. Only
+explicit `false` is a veto; any other non-null value proceeds. Operators
+can read what was deferred and apply it later inside the window.
+
+```rust
+use cordis::{Context, EventsService, Fiber};
+use std::sync::Arc;
+
+let ctx = Context::new_root();
+let events = Arc::new(EventsService::new());
+ctx.provide_arc(events.clone());
+let fiber = Arc::new(Fiber::new());
+fiber.set_reload_context(&ctx);   // crate-internal, see note below
+fiber.set_id(70_300);             // crate-internal
+// ... install a reload runner and satisfy its declared injects ...
+
+fiber.set_raw_config(serde_json::json!({ "deferred": true })); // crate-internal
+
+// An explicit JSON `false` bail verdict IS the veto.
+let gate = events.on(
+    cordis::events::INTERNAL_UPDATE_EVENT.into(),
+    |_p| async move { Ok(serde_json::json!(false)) },
+);
+fiber.update(&ctx).await.expect("veto is Ok, not an error");
+gate.dispose();
+
+assert!(matches!(fiber.state(), cordis::fiber::FiberState::Active { .. }));
+assert_eq!(
+    fiber.vetoed_config(),
+    Some(serde_json::json!({ "deferred": true })),
+);
+```
+
+The setup calls `set_reload_context`, `set_id`, and `set_raw_config`
+are crate-internal. The source test uses them to stage a minimal fiber.
+Product code gets the same state from a normal `RegistryService`
+registration; only the veto listener, `Fiber::update`, and
+`Fiber::vetoed_config` are public surface.
+
+Pair the gate with a maintenance-window check. During the window return
+null (proceed); outside it return `false` (defer). A later update call
+with a fresh proposed config overwrites `vetoed_config`.
+
+Source: `update_veto_defers_config_and_returns_ok` in
+`crates/cordis/src/fiber.rs`.
+
+## Per-Fiber Log Level Override via `LoggerIntercept`
+
+Install a `LoggerIntercept` on a child context to quiet one noisy logger
+for one subtree. Writes through that context handle resolve the override
+at write time; writes through other handles keep the ambient
+configuration. `name: None` matches every logger.
+
+```rust
+use cordis::logger::{LogLevel, LoggerIntercept, LoggerService};
+
+let root = Context::new_root();
+root.provide(LoggerService::new());
+
+// Fiber-scoped override: only "svc" drops to Error-only on the child.
+let child = root.intercept(LoggerIntercept {
+    name: Some("svc".into()),
+    level: Some(LogLevel::ERROR),
+});
+child.debug("svc", vec!["suppressed".into()]);
+child.error("svc", vec!["survives".into()]);
+// Non-matching names keep the ambient configuration.
+child.debug("other", vec!["other-passes".into()]);
+
+// Wildcard intercept: name=None forces the level for every logger.
+let wild = root.intercept(LoggerIntercept {
+    name: None,
+    level: Some(LogLevel::ERROR),
+});
+wild.info("anything", vec!["blocked".into()]);
+```
+
+`level: Some(l)` replaces the effective threshold for matching writes,
+over both per-name pins and the default. Stack two intercepts and the
+innermost matching layer wins, like every layered override. Use the
+scoped form for request-scoped suppression; use the wildcard form for a
+temporary global mute during a hot path benchmark.
+
+Source: `logger_intercept_overrides_level` in
+`crates/cordis/src/logger.rs`.

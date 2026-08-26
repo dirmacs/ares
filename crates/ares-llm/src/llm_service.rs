@@ -1213,6 +1213,7 @@ mod tests {
             json_mode: true,
             suppress_reasoning: false,
             max_tokens: Some(256),
+            guided_grammar: None,
         });
         boxed.set_hints(GenerationHints::default());
 

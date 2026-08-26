@@ -30,6 +30,11 @@ use async_trait::async_trait;
 /// - `suppress_reasoning` → `chat_template_kwargs: { "enable_thinking": false }`
 ///   (reasoning-capable OpenAI-compatible servers; ignore where unsupported)
 /// - `max_tokens` → the request's max-output-tokens field
+/// - `guided_grammar` → a JSON-Schema-shaped value (JSON object with a
+///   `"type"` member) maps to structured-output response formats on
+///   OpenAI-compatible paths; raw GBNF/EBNF-style text is carried in a
+///   provider-specific extension field where the server supports grammar-
+///   constrained decoding, and silently ignored elsewhere
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GenerationHints {
     /// Ask the provider for a JSON object response.
@@ -38,6 +43,11 @@ pub struct GenerationHints {
     pub suppress_reasoning: bool,
     /// Advisory maximum number of output tokens (`None` = provider default).
     pub max_tokens: Option<u32>,
+    /// Optional constrained-output grammar in GBNF/EBNF-style syntax
+    /// (`None` = unconstrained). Providers honor it only where a native
+    /// mechanism exists; unsupported backends silently ignore it without
+    /// erroring.
+    pub guided_grammar: Option<String>,
 }
 
 /// Generic LLM client trait for provider abstraction
@@ -1575,6 +1585,7 @@ mod tests {
                 json_mode: true,
                 suppress_reasoning: false,
                 max_tokens: Some(256),
+                guided_grammar: None,
             });
             client.set_hints(GenerationHints::default());
 

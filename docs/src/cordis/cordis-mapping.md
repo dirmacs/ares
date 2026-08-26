@@ -720,3 +720,25 @@ Addresses the paper's open problem (§discussion):
 ### Status vs paper guarantees
 
 Quiescence (Thm 66): held. Order confluence (Cor 21/Thm 73): held. LIFO disposal (Thm 16): held. Reactive invariant (§spatial): now fully held — eager declarations close the last observable gap. Terminal-state divergence (Failed vs Inactive) is documented and deliberate.
+
+## 20. Round 10 (0.9.x): accessors, layered chains, lifecycle riders, module graph, entry moves
+
+### Accessor registry (name-keyed computed properties)
+
+`Context::register_accessor(name, Accessor::{read_only, read_write, setter_only})` installs a computed property beside the TypeId service store and returns an `EffectHandle` whose disposal removes the declaration AND every alias. `Context::alias(alias, target)` binds an alternate name through the same registration slot; duplicates (including alias collisions) are rejected with `DuplicateProvider`. Typed reads surface `PropertyTypeMismatch` instead of a silent `None`; writes against a read-only property are refused with `ReadOnlyProperty`. Crucially, accessor traffic BYPASSES the `internal/get` / `internal/set` intercept waterfalls entirely — resolving an accessor never consults or re-enters a veto chain (accessors are policy plumbing, not provider state). Anchors: `crates/cordis/src/context.rs`.
+
+### Layered intercept chains
+
+Intercept layers per TypeId are an ordered outermost..innermost sequence; NEW registrations APPEND rather than replace, so the innermost layer stays effective for all existing getters — no caller breakage when another policy layer joins. `Context::intercept_chain(tid)` returns every layer in dispatch order; `Context::chains_structurally_equal(a, b)` compares two chains by shared-instance identity (`Arc::ptr_eq` per layer pair) — erased values carry no comparable contract, so freshly-built values compare unequal by design, which is the honest test for restart decisions.
+
+### Lifecycle riders
+
+`Fiber::update` now returns `Result<(), CordisError>`: a restart-path error propagates to the caller while the fiber stays `Active` serving its OLD configuration (effects never unwind on a failed restart). An `internal/update` veto parks the deferred config in `Fiber::vetoed_config()` and returns `Ok` — the skip is observable without being destructive. The `internal/config` waterfall consult now also covers the ACTIVATION path in the registry, so config rewrites apply on first activation identically to re-applies.
+
+### Module graph fan-out (opt-in)
+
+`cordis::module_graph::ModuleGraph` maps module keys to their dependencies. With a `ModuleReload` implementation installed (`with_reloader` / `set_reloader`), `change_many(ctx, keys)` runs in two phases: phase 1 computes the TRANSITIVE affected plugin set READ-ONLY across the dependency closure; phase 2 reloads each affected plugin EXACTLY ONCE per transaction through `ModuleReload`, classified into a `ChangeOutcome`. A failing reload rolls back that plugin only — successfully reloaded siblings stay `Active`. The file watcher's debounced batch fans through a registered `ModuleGraph` when one is provided on the context; WITHOUT one, watcher behavior is byte-identical to before. Anchors: `crates/cordis/src/module_graph.rs`, wiring in `crates/cordis/src/watcher.rs`.
+
+### Entry moves (move_entry surface)
+
+Entries gain hierarchy: `EntryPosition { parent, position }` rides on `Entry`. PATCH `/admin/cordis/entries/{id}` accepts optional `parent` / `position` applied move-THEN-update — an invalid placement (e.g. moving an entry into its own descendant) answers 409 before ANY mutation of file or live tree. `POST /admin/cordis/entries/{id}/move` relocates an entry together with its whole `{id}:*` subtree in one rename cascade. A valid move preserves fiber identity: the live instance refreshes IN PLACE under the new key, so consumers never observe a dispose/recreate window. Disabled groups move suppressed-then-restored. Anchors: `EntryPosition`, `EntryTree::move_entry`, `subtree_ids`, `Loader::move_entry` in `crates/cordis/src/loader.rs`; handlers in `crates/ares-http/src/api/handlers/admin/cordis.rs`.

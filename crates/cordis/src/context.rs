@@ -16,10 +16,108 @@ use crate::{FiberId, ReflectService, Symbol};
 
 pub(crate) static NEXT_FIBER_ID: AtomicUsize = AtomicUsize::new(1);
 
+/// Erased getter for one name-keyed accessor. Receives the context so a
+/// computed property can compose over services; MUST NOT consult the
+/// `internal/get` waterfall (accessor reads bypass interception by design).
+pub type AccessorGetter =
+    Arc<dyn Fn(&Context) -> Result<Option<Arc<dyn Any + Send + Sync>>, CordisError> + Send + Sync>;
+
+/// Erased setter for one name-keyed accessor. Bypasses the `internal/set`
+/// waterfall by construction.
+pub type AccessorSetter =
+    Arc<dyn Fn(&Context, Arc<dyn Any + Send + Sync>) -> Result<(), CordisError> + Send + Sync>;
+
+/// Declarative descriptor handed to [`Context::register_accessor`].
+#[derive(Clone, Default)]
+pub struct Accessor {
+    getter: Option<AccessorGetter>,
+    setter: Option<AccessorSetter>,
+}
+
+impl Accessor {
+    /// Readable property: reads resolve through `getter`, writes are refused
+    /// with [`CordisError::ReadOnlyProperty`].
+    pub fn read_only<F>(getter: F) -> Self
+    where
+        F: Fn(&Context) -> Result<Option<Arc<dyn Any + Send + Sync>>, CordisError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self { getter: Some(Arc::new(getter)), setter: None }
+    }
+
+    /// Read-write property.
+    pub fn read_write<G, S>(getter: G, setter: S) -> Self
+    where
+        G: Fn(&Context) -> Result<Option<Arc<dyn Any + Send + Sync>>, CordisError>
+            + Send
+            + Sync
+            + 'static,
+        S: Fn(&Context, Arc<dyn Any + Send + Sync>) -> Result<(), CordisError> + Send + Sync + 'static,
+    {
+        Self { getter: Some(Arc::new(getter)), setter: Some(Arc::new(setter)) }
+    }
+
+    /// Write-only property: reads resolve `None`, writes go through `setter`.
+    pub fn setter_only<S>(setter: S) -> Self
+    where
+        S: Fn(&Context, Arc<dyn Any + Send + Sync>) -> Result<(), CordisError> + Send + Sync + 'static,
+    {
+        Self { getter: None, setter: Some(Arc::new(setter)) }
+    }
+}
+
+/// Shared registration record: one declaration plus every name bound to it
+/// (the declared name and any [`Context::alias`] alternates). Disposing the
+/// handle removes ALL bound names in one shot.
+struct AccessorSlot {
+    getter: Option<AccessorGetter>,
+    setter: Option<AccessorSetter>,
+    names: parking_lot::Mutex<Vec<String>>,
+}
+
+/// Handle returned by [`Context::register_accessor`]. Call
+/// [`EffectHandle::dispose`] to remove the accessor (and its aliases).
+pub struct EffectHandle {
+    ctx: Weak<Context>,
+    slot: Weak<AccessorSlot>,
+}
+
+impl EffectHandle {
+    /// Remove the registered accessor and every alias pointing at it.
+    /// Returns `true` when the declaration was still live and got removed.
+    pub fn dispose(self) -> bool {
+        let (Some(ctx), Some(slot)) = (self.ctx.upgrade(), self.slot.upgrade()) else {
+            return false;
+        };
+        let names = slot.names.lock().clone();
+        let mut accessors = ctx.accessors.write();
+        let mut removed = false;
+        for name in names {
+            if accessors
+                .get(&name)
+                .is_some_and(|bound| std::sync::Arc::ptr_eq(bound, &slot))
+            {
+                accessors.remove(&name);
+                removed = true;
+            }
+        }
+        removed
+    }
+}
+
 pub struct Context {
     store: RwLock<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
     isolate: RwLock<HashMap<TypeId, Symbol>>,
-    intercept: RwLock<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
+    /// Layered intercept overrides per TypeId, ordered OUTERMOST..INNERMOST.
+    /// Every set APPENDS a layer; the effective value is the innermost (the
+    /// last element). See [`Context::intercept_chain`].
+    intercept: RwLock<HashMap<TypeId, Vec<Arc<dyn Any + Send + Sync>>>>,
+    /// Name-keyed computed-property accessors living beside the TypeId
+    /// service store. Accessor reads/writes deliberately bypass the
+    /// `internal/get` / `internal/set` intercept waterfalls.
+    accessors: RwLock<HashMap<String, std::sync::Arc<AccessorSlot>>>,
     versions: RwLock<HashMap<TypeId, u64>>,
     /// Semantic peer-dependency versions declared alongside a value by
     /// [`Context::provide_versioned`]. Legacy `provide` paths keep this map
@@ -70,6 +168,7 @@ impl Context {
             store: RwLock::new(HashMap::new()),
             isolate: RwLock::new(HashMap::new()),
             intercept: RwLock::new(HashMap::new()),
+            accessors: RwLock::new(HashMap::new()),
             versions: RwLock::new(HashMap::new()),
             provided_versions: RwLock::new(HashMap::new()),
             owners: RwLock::new(HashMap::new()),
@@ -84,6 +183,7 @@ impl Context {
             store: RwLock::new(HashMap::new()),
             isolate: RwLock::new(HashMap::new()),
             intercept: RwLock::new(HashMap::new()),
+            accessors: RwLock::new(HashMap::new()),
             versions: RwLock::new(HashMap::new()),
             provided_versions: RwLock::new(HashMap::new()),
             owners: RwLock::new(HashMap::new()),
@@ -100,6 +200,7 @@ impl Context {
             store: RwLock::new(HashMap::new()),
             isolate: RwLock::new(parent_isolate),
             intercept: RwLock::new(HashMap::new()),
+            accessors: RwLock::new(HashMap::new()),
             versions: RwLock::new(HashMap::new()),
             provided_versions: RwLock::new(HashMap::new()),
             owners: RwLock::new(HashMap::new()),
@@ -117,7 +218,8 @@ impl Context {
         let child = self.extend();
         let tid = TypeId::of::<T>();
         let any: Arc<dyn Any + Send + Sync> = Arc::new(val);
-        child.intercept.write().insert(tid, any);
+        // Append a fresh layer on the forked frame; effective stays innermost.
+        child.intercept.write().entry(tid).or_default().push(any);
         // bump version for intercept as well? Not needed for epoch but keep
         child
     }
@@ -413,17 +515,26 @@ impl Context {
     /// Install an untyped intercept override without forking a child context.
     /// Companion to [`Self::bind_intercept`] for erased service values.
     pub(crate) fn bind_intercept_untyped(&self, tid: TypeId, any: Arc<dyn Any + Send + Sync>) {
-        self.intercept.write().insert(tid, any);
+        // Layered: appending keeps the previous outer layers intact and makes
+        // `any` the new effective (innermost) value.
+        self.intercept.write().entry(tid).or_default().push(any);
     }
 
-    /// Read an intercept override without removing it.
+    /// Read the EFFECTIVE (innermost) intercept override without removing it.
     pub(crate) fn peek_intercept_untyped(&self, tid: TypeId) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.intercept.read().get(&tid).cloned()
+        self.intercept.read().get(&tid).and_then(|layers| layers.last()).cloned()
     }
 
-    /// Drop an intercept override.
+    /// Pop the innermost intercept layer. The key is removed entirely once
+    /// the last layer goes.
     pub(crate) fn remove_intercept_untyped(&self, tid: TypeId) {
-        self.intercept.write().remove(&tid);
+        let mut intercept = self.intercept.write();
+        if let Some(layers) = intercept.get_mut(&tid) {
+            layers.pop();
+            if layers.is_empty() {
+                intercept.remove(&tid);
+            }
+        }
     }
 
     /// Relaxed read: like [`Self::get`], but a locally-owned provider whose
@@ -438,7 +549,7 @@ impl Context {
     pub fn get_relaxed<T: Service>(&self) -> Option<Arc<T>> {
         let tid = TypeId::of::<T>();
         if self.isolate_label(tid).is_none() {
-            if let Some(any) = self.intercept.read().get(&tid) {
+            if let Some(any) = self.intercept.read().get(&tid).and_then(|l| l.last()) {
                 if let Ok(arc) = any.clone().downcast::<T>() {
                     return Some(arc);
                 }
@@ -536,9 +647,9 @@ impl Context {
     fn get_impl<T: Service>(&self) -> Option<Arc<T>> {
         let tid = TypeId::of::<T>();
         // Isolate-labeled TypeIds resolve from store / isolate parent walk.
-        // Unlabeled TypeIds still let intercept win (request-scoped override).
+        // Unlabeled TypeIds still let the EFFECTIVE (innermost) intercept win.
         if self.isolate_label(tid).is_none() {
-            if let Some(any) = self.intercept.read().get(&tid) {
+            if let Some(any) = self.intercept.read().get(&tid).and_then(|l| l.last()) {
                 if let Ok(arc) = any.clone().downcast::<T>() {
                     return Some(arc);
                 }
@@ -602,7 +713,11 @@ impl Context {
     }
 
     pub(crate) fn is_available(&self, tid: TypeId) -> bool {
-        if self.isolate_label(tid).is_none() && self.intercept.read().contains_key(&tid) {
+        if self
+            .isolate_label(tid)
+            .is_none()
+            && self.intercept.read().get(&tid).is_some_and(|layers| !layers.is_empty())
+        {
             return true;
         }
         if self.store.read().contains_key(&tid) {
@@ -648,10 +763,158 @@ impl Context {
     }
 
     /// Record an intercept override on this context without forking a child.
+    /// APPENDS a layer: the effective value becomes the innermost (this one)
+    /// while outer layers stay inspectable through [`Self::intercept_chain`].
     pub fn bind_intercept<T: Service>(&self, val: T) {
         let tid = TypeId::of::<T>();
         let any: Arc<dyn Any + Send + Sync> = Arc::new(val);
-        self.intercept.write().insert(tid, any);
+        self.intercept.write().entry(tid).or_default().push(any);
+    }
+    // --- Name-keyed computed-property accessors ---------------------------
+
+    /// Register a computed property under `name` beside the TypeId service
+    /// store. Duplicate declarations (including alias collisions) are
+    /// rejected with [`CordisError::DuplicateProvider`]. The returned
+    /// [`EffectHandle`] removes the declaration (and any aliases) on
+    /// dispose.
+    ///
+    /// Accessor reads/writes BYPASS the `internal/get` / `internal/set`
+    /// intercept waterfalls entirely — resolving an accessor never consults
+    /// or re-enters a veto chain.
+    pub fn register_accessor(
+        self: &Arc<Self>,
+        name: &str,
+        accessor: Accessor,
+    ) -> Result<EffectHandle, CordisError> {
+        let mut accessors = self.accessors.write();
+        if accessors.contains_key(name) {
+            return Err(CordisError::DuplicateProvider {
+                name: name.to_string(),
+                owner: "accessor".to_string(),
+            });
+        }
+        let slot = std::sync::Arc::new(AccessorSlot {
+            getter: accessor.getter,
+            setter: accessor.setter,
+            names: parking_lot::Mutex::new(vec![name.to_string()]),
+        });
+        accessors.insert(name.to_string(), slot.clone());
+        Ok(EffectHandle {
+            ctx: Arc::downgrade(self),
+            slot: Arc::downgrade(&slot),
+        })
+    }
+
+    /// Bind `alias` as an alternate name resolving through the SAME
+    /// registration as `target` — same getter/setter, disposed together.
+    pub fn alias(self: &Arc<Self>, alias: &str, target: &str) -> Result<(), CordisError> {
+        let mut accessors = self.accessors.write();
+        let slot = accessors.get(target).cloned().ok_or_else(|| {
+            CordisError::ServiceNotFound(format!(
+                "cannot alias '{alias}': no property named '{target}'"
+            ))
+        })?;
+        if accessors.contains_key(alias) {
+            return Err(CordisError::DuplicateProvider {
+                name: alias.to_string(),
+                owner: "accessor".to_string(),
+            });
+        }
+        slot.names.lock().push(alias.to_string());
+        accessors.insert(alias.to_string(), slot);
+        Ok(())
+    }
+
+    /// Resolve `name` through its accessor (bypassing all interception
+    /// waterfalls). Undeclared names and write-only properties resolve
+    /// `None`; use [`Self::read_property_typed`] for downcast checking.
+    pub fn read_property(
+        &self,
+        name: &str,
+    ) -> Result<Option<Arc<dyn Any + Send + Sync>>, CordisError> {
+        let slot = self.accessors.read().get(name).cloned();
+        let Some(slot) = slot else {
+            return Ok(None);
+        };
+        match &slot.getter {
+            Some(getter) => getter(self),
+            None => Ok(None),
+        }
+    }
+
+    /// Typed accessor read: a value that fails to downcast to `T` is
+    /// [`CordisError::PropertyTypeMismatch`], never a silent `None`.
+    pub fn read_property_typed<T: Any + Send + Sync>(
+        &self,
+        name: &str,
+    ) -> Result<Option<Arc<T>>, CordisError> {
+        match self.read_property(name)? {
+            None => Ok(None),
+            Some(any) => any.downcast::<T>().map(Some).map_err(|_| {
+                CordisError::PropertyTypeMismatch {
+                    name: name.to_string(),
+                    expected: std::any::type_name::<T>().to_string(),
+                }
+            }),
+        }
+    }
+
+    /// Write `value` to `name` through its accessor. A fully undeclared
+    /// name is refused MissingService-style ("cannot set property"); a
+    /// declared-but-setter-less name is refused
+    /// [`CordisError::ReadOnlyProperty`]. Never consults the
+    /// `internal/set` waterfall.
+    pub fn write_property(
+        self: &Arc<Self>,
+        name: &str,
+        value: Arc<dyn Any + Send + Sync>,
+    ) -> Result<(), CordisError> {
+        let slot = self.accessors.read().get(name).cloned();
+        let Some(slot) = slot else {
+            return Err(CordisError::ServiceNotFound(format!(
+                "cannot set property '{name}': no accessor declared"
+            )));
+        };
+        let Some(setter) = &slot.setter else {
+            return Err(CordisError::ReadOnlyProperty(name.to_string()));
+        };
+        setter(self, value)
+    }
+
+    // --- Layered intercept chains -----------------------------------------
+
+    /// All intercept layers for `tid` visible from this frame, ordered
+    /// OUTERMOST..INNERMOST (ancestor frames first, this frame's appended
+    /// layers last). The innermost element is the effective value every
+    /// existing single-value getter returns.
+    pub fn intercept_chain(&self, tid: TypeId) -> Vec<Arc<dyn Any + Send + Sync>> {
+        let mut chain = match &self.parent {
+            // An isolate label is a realm boundary: layers beyond it do not
+            // leak in, mirroring the strict-read parent walk.
+            Some(parent)
+                if !self.isolate.read().contains_key(&tid)
+                    || parent.isolate_label(tid) == self.isolate_label(tid) =>
+            {
+                parent.intercept_chain(tid)
+            }
+            _ => Vec::new(),
+        };
+        if let Some(layers) = self.intercept.read().get(&tid) {
+            chain.extend(layers.iter().cloned());
+        }
+        chain
+    }
+
+    /// Structural equality for two intercepted chains, used by
+    /// restart-decision comparisons: same length and every layer pair the
+    /// SAME shared instance (`Arc::ptr_eq`). Erased values carry no
+    /// comparable contract, so identity is the only honest structural test;
+    /// freshly-built values therefore compare unequal by design.
+    pub fn chains_structurally_equal(
+        a: &[Arc<dyn Any + Send + Sync>],
+        b: &[Arc<dyn Any + Send + Sync>],
+    ) -> bool {
+        a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| Arc::ptr_eq(x, y))
     }
 
     /// Retrieve a service only if it was provided in a context whose isolate
@@ -883,5 +1146,294 @@ mod relaxed_tests {
             ctx.get_relaxed::<TransitionProbe>().is_none(),
             "disposed owner must stay invisible to relaxed reads"
         );
+    }
+}
+
+#[cfg(test)]
+mod accessor_tests {
+    use super::*;
+    use parking_lot::Mutex as StdMutex;
+
+    #[derive(Debug, PartialEq)]
+    struct PropValue(pub u64);
+
+    fn read_cell_getter(
+        cell: Arc<StdMutex<u64>>,
+    ) -> impl Fn(&Context) -> Result<Option<Arc<dyn Any + Send + Sync>>, CordisError>
+           + Send
+           + Sync
+           + 'static {
+        move |_| {
+            Ok(Some(Arc::new(PropValue(*cell.lock()))
+                as Arc<dyn Any + Send + Sync>))
+        }
+    }
+
+    #[test]
+    fn accessor_read_write_roundtrip() {
+        let ctx = Context::new_root();
+        let cell = Arc::new(StdMutex::new(1u64));
+        let write_cell = cell.clone();
+        let _handle = ctx
+            .register_accessor(
+                "quota",
+                Accessor::read_write(
+                    read_cell_getter(cell.clone()),
+                    move |_ctx, value: Arc<dyn Any + Send + Sync>| {
+                        let v = value
+                            .downcast::<PropValue>()
+                            .map_err(|_| CordisError::Internal("bad property type".into()))?;
+                        *write_cell.lock() = v.0;
+                        Ok(())
+                    },
+                ),
+            )
+            .unwrap();
+
+        let got = ctx.read_property_typed::<PropValue>("quota").unwrap().unwrap();
+        assert_eq!(*got, PropValue(1));
+        ctx.write_property("quota", Arc::new(PropValue(42))).unwrap();
+        let got = ctx.read_property_typed::<PropValue>("quota").unwrap().unwrap();
+        assert_eq!(*got, PropValue(42));
+        assert_eq!(*cell.lock(), 42);
+
+        // A wrong typed read is a PropertyTypeMismatch, never a silent None.
+        match ctx.read_property_typed::<String>("quota") {
+            Err(CordisError::PropertyTypeMismatch { name, .. }) => assert_eq!(name, "quota"),
+            other => panic!("expected PropertyTypeMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_accessor_declaration_rejected() {
+        let ctx = Context::new_root();
+        ctx.register_accessor("dup", Accessor::read_only(|_| Ok(None)))
+            .expect("first declaration wins");
+        match ctx.register_accessor("dup", Accessor::read_only(|_| Ok(None))) {
+            Err(CordisError::DuplicateProvider { name, owner }) => {
+                assert_eq!(name, "dup");
+                assert_eq!(owner, "accessor");
+            }
+            Err(other) => panic!("expected DuplicateProvider, got {other:?}"),
+            Ok(_) => panic!("duplicate declaration must be rejected"),
+        }
+    }
+
+    #[test]
+    fn readonly_property_rejects_set() {
+        let ctx = Context::new_root();
+        let _handle = ctx
+            .register_accessor(
+                "ro",
+                Accessor::read_only(read_cell_getter(Arc::new(StdMutex::new(7u64)))),
+            )
+            .unwrap();
+        let err = ctx.write_property("ro", Arc::new(PropValue(9))).unwrap_err();
+        assert!(matches!(err, CordisError::ReadOnlyProperty(ref n) if n == "ro"));
+        // The stored resolution is untouched.
+        assert_eq!(
+            *ctx.read_property_typed::<PropValue>("ro").unwrap().unwrap(),
+            PropValue(7)
+        );
+    }
+
+    #[test]
+    fn dispose_accessor_resolves_none() {
+        let ctx = Context::new_root();
+        let handle = ctx
+            .register_accessor("gone", Accessor::read_only(|_| Ok(None)))
+            .unwrap();
+        assert!(ctx.read_property("gone").unwrap().is_none());
+        assert!(handle.dispose(), "live handle reports removal");
+        // Still resolves none afterwards, but writes now hit the undeclared path.
+        assert!(ctx.read_property("gone").unwrap().is_none());
+        let err = ctx.write_property("gone", Arc::new(PropValue(1))).unwrap_err();
+        assert!(
+            matches!(err, CordisError::ServiceNotFound(ref m) if m.contains("cannot set property")),
+            "unexpected error: {err}"
+        );
+        // A re-registered declaration is disposable again.
+        let handle2 = ctx
+            .register_accessor("gone2", Accessor::read_only(|_| Ok(None)))
+            .unwrap();
+        assert!(handle2.dispose());
+        assert!(ctx.read_property("gone2").unwrap().is_none());
+    }
+
+    #[test]
+    fn alias_resolves_same_value() {
+        let ctx = Context::new_root();
+        let cell = Arc::new(StdMutex::new(5u64));
+        let write_cell = cell.clone();
+        let handle = ctx
+            .register_accessor(
+                "primary",
+                Accessor::read_write(
+                    read_cell_getter(cell),
+                    move |_ctx, value: Arc<dyn Any + Send + Sync>| {
+                        *write_cell.lock() =
+                            value.downcast::<PropValue>().unwrap().0;
+                        Ok(())
+                    },
+                ),
+            )
+            .unwrap();
+        ctx.alias("nick", "primary").expect("alias binds");
+
+        // Same getter through the alias.
+        assert_eq!(
+            *ctx.read_property_typed::<PropValue>("nick").unwrap().unwrap(),
+            PropValue(5)
+        );
+        // Same setter through the alias.
+        ctx.write_property("nick", Arc::new(PropValue(6))).unwrap();
+        assert_eq!(
+            *ctx.read_property_typed::<PropValue>("primary").unwrap().unwrap(),
+            PropValue(6)
+        );
+
+        // Collisions and unknown targets are refused.
+        assert!(matches!(
+            ctx.alias("nick", "primary"),
+            Err(CordisError::DuplicateProvider { .. })
+        ));
+        assert!(matches!(
+            ctx.alias("x", "missing"),
+            Err(CordisError::ServiceNotFound(_))
+        ));
+
+        // Disposing the original registration removes BOTH names.
+        assert!(handle.dispose());
+        assert!(ctx.read_property("primary").unwrap().is_none());
+        assert!(ctx.read_property("nick").unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn accessor_bypasses_intercept_waterfalls() {
+        struct Marker;
+        impl crate::Service for Marker {}
+
+        let ctx = Context::new_root();
+        let events = Arc::new(crate::EventsService::new());
+        ctx.provide_arc(events.clone());
+
+        // Refuse every strict service read and veto every service write.
+        let _get_gate = events
+            .on(crate::events::INTERNAL_GET_EVENT.into(), |_p| async move {
+                Ok(serde_json::json!({ "refuse": true }))
+            });
+        let _set_gate = events
+            .on(crate::events::INTERNAL_SET_EVENT.into(), |_p| async move {
+                Ok(serde_json::json!("vetoed"))
+            });
+
+        // Sanity: with the gates up, the strict paths ARE intercepted.
+        ctx.provide(Marker);
+        assert!(
+            ctx.get::<Marker>().is_none(),
+            "internal/get waterfall must refuse strict reads in this test"
+        );
+
+        // The accessor path ignores both waterfalls entirely.
+        let cell = Arc::new(StdMutex::new(3u64));
+        let write_cell = cell.clone();
+        let _handle = ctx
+            .register_accessor(
+                "open",
+                Accessor::read_write(
+                    read_cell_getter(cell),
+                    move |_c, value: Arc<dyn Any + Send + Sync>| {
+                        *write_cell.lock() =
+                            value.downcast::<PropValue>().unwrap().0;
+                        Ok(())
+                    },
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            *ctx.read_property_typed::<PropValue>("open").unwrap().unwrap(),
+            PropValue(3),
+            "accessor read bypasses internal/get"
+        );
+        ctx.write_property("open", Arc::new(PropValue(4))).unwrap();
+        assert_eq!(
+            *ctx.read_property_typed::<PropValue>("open").unwrap().unwrap(),
+            PropValue(4),
+            "accessor write bypasses internal/set"
+        );
+    }
+}
+
+#[cfg(test)]
+mod intercept_chain_tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct LayerSvc(pub u64);
+    impl crate::Service for LayerSvc {}
+
+    #[tokio::test]
+    async fn chained_layers_append_innermost_effective() {
+        let ctx = Context::new_root();
+        ctx.bind_intercept(LayerSvc(1));
+        assert_eq!(ctx.get::<LayerSvc>().unwrap().0, 1);
+        ctx.bind_intercept(LayerSvc(2));
+        assert_eq!(ctx.get::<LayerSvc>().unwrap().0, 2, "innermost layer wins");
+        let chain = ctx.intercept_chain(TypeId::of::<LayerSvc>());
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].clone().downcast::<LayerSvc>().unwrap().0, 1);
+        assert_eq!(chain[1].clone().downcast::<LayerSvc>().unwrap().0, 2);
+    }
+
+    #[tokio::test]
+    async fn intercept_chain_returns_all_layers_in_order() {
+        let root = Context::new_root();
+        let mid = root.intercept(LayerSvc(10));
+        let leaf = mid.intercept(LayerSvc(11));
+        leaf.bind_intercept(LayerSvc(12));
+
+        let chain = leaf.intercept_chain(TypeId::of::<LayerSvc>());
+        assert_eq!(chain.len(), 3);
+        let vals: Vec<u64> = chain
+            .iter()
+            .map(|a| a.clone().downcast::<LayerSvc>().unwrap().0)
+            .collect();
+        assert_eq!(vals, vec![10, 11, 12], "outermost..innermost order");
+        assert_eq!(leaf.get::<LayerSvc>().unwrap().0, 12);
+
+        // Structural equality: the same chain matches its own snapshot but
+        // not an identically-built chain of fresh values.
+        assert!(Context::chains_structurally_equal(
+            &chain,
+            &leaf.intercept_chain(TypeId::of::<LayerSvc>())
+        ));
+        let fresh_root = Context::new_root();
+        let fresh_mid = fresh_root.intercept(LayerSvc(10));
+        let fresh_leaf = fresh_mid.intercept(LayerSvc(11));
+        fresh_leaf.bind_intercept(LayerSvc(12));
+        assert!(!Context::chains_structurally_equal(
+            &chain,
+            &fresh_leaf.intercept_chain(TypeId::of::<LayerSvc>())
+        ));
+    }
+
+    #[tokio::test]
+    async fn inject_appends_layer() {
+        let ctx = Context::new_root();
+        let tid = TypeId::of::<LayerSvc>();
+
+        // Untyped plugin-style injection APPENDS instead of replacing.
+        ctx.bind_intercept_untyped(tid, Arc::new(LayerSvc(20)) as Arc<dyn Any + Send + Sync>);
+        ctx.bind_intercept_untyped(tid, Arc::new(LayerSvc(21)) as Arc<dyn Any + Send + Sync>);
+        assert_eq!(ctx.intercept_chain(tid).len(), 2);
+        assert_eq!(ctx.get::<LayerSvc>().unwrap().0, 21);
+
+        // Popping the innermost layer restores the outer one as effective.
+        ctx.remove_intercept_untyped(tid);
+        assert_eq!(ctx.intercept_chain(tid).len(), 1);
+        assert_eq!(ctx.get::<LayerSvc>().unwrap().0, 20);
+        ctx.remove_intercept_untyped(tid);
+        assert!(ctx.intercept_chain(tid).is_empty());
+        assert!(ctx.get::<LayerSvc>().is_none());
     }
 }

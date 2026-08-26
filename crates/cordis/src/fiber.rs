@@ -442,6 +442,13 @@ impl Fiber {
         self.staged_config.lock().take()
     }
 
+    /// Stage an effective config for the NEXT runner pass. Companion to
+    /// [`Self::effective_config_override`]; used by the registration
+    /// (activation) path's `internal/config` consult.
+    pub(crate) fn stage_effective_config(&self, effective: serde_json::Value) {
+        *self.staged_config.lock() = Some(effective);
+    }
+
     /// The config stored by a vetoed update (`internal/update` bail), if any.
     /// Loader-side callers read this to keep the deferred configuration
     /// visible without having applied it.
@@ -911,7 +918,12 @@ impl Fiber {
     /// application and the proposed change is stored as [`Self::vetoed_config`]
     /// so operators can inspect what was deferred. A pass-through proceeds
     /// exactly like before.
-    pub async fn update(&self, ctx: &Arc<Context>) {
+    ///
+    /// A chain ERROR is distinct from a veto: it PROPAGATES out of
+    /// [`Self::update`] as [`CordisError`] while the fiber stays `Active` on
+    /// its OLD configuration — nothing was applied and nothing was deferred,
+    /// so the caller decides how to surface the failure.
+    pub async fn update(&self, ctx: &Arc<Context>) -> Result<(), CordisError> {
         if let Some(events) = ctx.get::<crate::EventsService>() {
             match events.intercept_update(&self.service_label()).await {
                 Ok(true) => {}
@@ -920,18 +932,21 @@ impl Fiber {
                         fiber = self.service_label().as_str(),
                         "internal/update vetoed restart; storing config without applying"
                     );
-                    return;
+                    *self.vetoed_config.write() = self.raw_config.read().clone();
+                    return Ok(());
                 }
                 Err(error) => {
                     tracing::warn!(
                         error = %error,
-                        "internal/update chain errored; storing config without applying"
+                        fiber = self.service_label().as_str(),
+                        "internal/update chain errored; propagating, fiber stays Active on old config"
                     );
-                    return;
+                    return Err(error);
                 }
             }
         }
         self.refresh(ctx).await;
+        Ok(())
     }
 
     /// Best-effort human label for interception payloads: the single declared
@@ -1577,5 +1592,117 @@ mod tests {
             .iter()
             .rposition(|e| e.contains(needle))
             .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod update_error_tests {
+    use super::*;
+    use crate::events::{EventsService, INTERNAL_UPDATE_EVENT};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Rider: an `internal/update` chain ERROR is not a veto — it propagates
+    /// out of `Fiber::update` while the fiber stays `Active` on its OLD
+    /// configuration (runner never re-ran).
+    #[tokio::test]
+    async fn update_error_stays_active_old_config() {
+        let ctx = Context::new_root();
+        let events = Arc::new(EventsService::new());
+        ctx.provide_arc(events.clone());
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(70_200);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        fiber.set_reload_runner(Box::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        }));
+        fiber.declare_inject::<crate::ReflectService>();
+        let _prov = ctx.provide(crate::ReflectService::new());
+        fiber.refresh(&ctx).await;
+        assert!(matches!(fiber.state(), FiberState::Active { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "initial apply ran");
+        let old_epoch = fiber.epoch.read().clone();
+
+        // A proposed config change is staged raw; the erroring interceptor
+        // must keep it UNAPPLIED.
+        fiber.set_raw_config(serde_json::json!({ "model": "proposed" }));
+
+        // Erroring internal/update chain (a handler returns Err).
+        let gate = events.on(INTERNAL_UPDATE_EVENT.into(), |_payload| async move {
+            Err::<serde_json::Value, CordisError>(CordisError::Configuration(
+                "maintenance window".into(),
+            ))
+        });
+
+        let err = fiber.update(&ctx).await.expect_err("chain error must propagate");
+        assert!(
+            err.to_string().contains("maintenance window"),
+            "unexpected error: {err}"
+        );
+        gate.dispose();
+
+        // The fiber never left Active on its OLD application.
+        assert!(
+            matches!(fiber.state(), FiberState::Active { .. }),
+            "erroring update must stay Active, got {:?}",
+            fiber.state()
+        );
+        assert_eq!(fiber.epoch.read().clone(), old_epoch, "old epoch preserved");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "runner must not run on an erroring update"
+        );
+        assert_eq!(
+            fiber.vetoed_config(),
+            None,
+            "an error is NOT a veto: nothing is deferred"
+        );
+
+        // After the failing listener goes away, updates flow again.
+        fiber.update(&ctx).await.expect("pass-through update after disposal");
+    }
+
+    /// Contrast case for the same rider: a VETO stores the proposed config in
+    /// `vetoed_config` and returns Ok — silently skipping the restart.
+    #[tokio::test]
+    async fn update_veto_defers_config_and_returns_ok() {
+        let ctx = Context::new_root();
+        let events = Arc::new(EventsService::new());
+        ctx.provide_arc(events.clone());
+        let fiber = Arc::new(Fiber::new());
+        fiber.set_reload_context(&ctx);
+        fiber.set_id(70_300);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        fiber.set_reload_runner(Box::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        }));
+        fiber.declare_inject::<crate::ReflectService>();
+        let _prov = ctx.provide(crate::ReflectService::new());
+        fiber.refresh(&ctx).await;
+        let old_epoch = fiber.epoch.read().clone();
+
+        fiber.set_raw_config(serde_json::json!({ "deferred": true }));
+        // An explicit JSON `false` bail verdict IS the veto (a non-null
+        // object would read as proceed).
+        let gate = events.on(INTERNAL_UPDATE_EVENT.into(), |_p| async move {
+            Ok(serde_json::json!(false))
+        });
+        fiber.update(&ctx).await.expect("veto is Ok, not an error");
+        gate.dispose();
+
+        assert!(matches!(fiber.state(), FiberState::Active { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fiber.epoch.read().clone(), old_epoch);
+        assert_eq!(
+            fiber.vetoed_config(),
+            Some(serde_json::json!({ "deferred": true })),
+            "veto defers the proposed config for inspection"
+        );
     }
 }

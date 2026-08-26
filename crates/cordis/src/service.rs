@@ -26,6 +26,10 @@ pub enum CordisError {
     TransitionStuck { fiber: u64, waited_ms: u64 },
     #[error("internal kernel error: {0}")]
     Internal(String),
+    #[error("property '{name}' type mismatch: expected '{expected}'")]
+    PropertyTypeMismatch { name: String, expected: String },
+    #[error("property '{0}' is read-only")]
+    ReadOnlyProperty(String),
 }
 
 impl CordisError {

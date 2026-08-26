@@ -269,6 +269,26 @@ impl RegistryService {
         // C1 intercept meta-events: stage the raw config so every refresh
         // pass re-resolves the EFFECTIVE config from a single source.
         fiber.set_raw_config(config_value.clone());
+        // C1 `internal/config` covers the ACTIVATION path too, not just
+        // refresh passes: resolve the effective config ONCE here so the very
+        // first runner pass below applies the intercepted configuration. A
+        // chain error fails the activation (`Failed`), mirroring refresh.
+        if let Some(events) = ctx.get::<crate::EventsService>() {
+            match crate::events::blocking_intercept_config(&events, config_value.clone()) {
+                Ok(effective) => {
+                    if !effective.is_null() {
+                        fiber.stage_effective_config(effective);
+                    }
+                }
+                Err(error) => {
+                    fiber.set_state(crate::FiberState::Failed {
+                        error: Some(error.to_string()),
+                    });
+                    self.wire_failed_registration(ctx, fid, &fiber, tid);
+                    return Err(error);
+                }
+            }
+        }
         let plugin = Arc::new(plugin);
         let weak_fiber = Arc::downgrade(&fiber);
         fiber.set_reload_runner(Box::new(move |ctx| {
@@ -1537,6 +1557,67 @@ mod tests {
             matches!(fiber.state(), FiberState::Pending),
             "gate closing again must rest Pending quietly, got {:?}",
             fiber.state()
+        );
+    }
+}
+
+#[cfg(test)]
+mod config_waterfall_tests {
+    use super::*;
+    use crate::events::{EventsService, INTERNAL_CONFIG_EVENT};
+    use crate::{Context, FiberState};
+
+    /// Captures the config its factory actually received.
+    struct CapturePlugin;
+    #[derive(Debug)]
+    struct CapturedConfig(pub serde_json::Value);
+    impl Service for CapturedConfig {}
+    impl Plugin for CapturePlugin {
+        type Config = serde_json::Value;
+        type Provides = CapturedConfig;
+        fn apply(
+            &self,
+            _ctx: &Arc<Context>,
+            cfg: Self::Config,
+        ) -> Result<Arc<Self::Provides>, CordisError> {
+            Ok(Arc::new(CapturedConfig(cfg)))
+        }
+    }
+
+    /// C1 `internal/config` covers the ACTIVATION path: the very first runner
+    /// pass at registration time must apply the intercepted (effective)
+    /// config, not the raw one. A multi-thread runtime is required so the
+    /// synchronous bridge can park the worker.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn config_waterfall_covers_activation_path() {
+        let ctx = Context::new_root();
+        let events = Arc::new(EventsService::new());
+        ctx.provide_arc(events.clone());
+        let _gate = events.on(INTERNAL_CONFIG_EVENT.into(), |raw| async move {
+            let mut effective = raw;
+            if let Some(obj) = effective.as_object_mut() {
+                obj.insert("rewritten_at_activation".into(), serde_json::json!(true));
+            }
+            Ok(effective)
+        });
+
+        let registry = RegistryService::new();
+        let fid = registry
+            .register(
+                &ctx,
+                CapturePlugin,
+                serde_json::json!({ "model": "base" }),
+            )
+            .expect("registration with an intercept-config listener");
+        assert!(matches!(
+            registry.get_fiber(fid).unwrap().state(),
+            FiberState::Active { .. }
+        ));
+        let captured = ctx.get::<CapturedConfig>().expect("provider active");
+        assert_eq!(captured.0["model"], "base");
+        assert_eq!(
+            captured.0["rewritten_at_activation"], true,
+            "activation pass must consume the EFFECTIVE config"
         );
     }
 }

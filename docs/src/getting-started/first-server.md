@@ -98,7 +98,7 @@ rate_limit_per_second = 100   # Requests per second per IP; 0 disables limiting
 rate_limit_burst = 10         # Bucket size admitted above the steady rate
 ```
 
-The limiter is `tower_governor` (`src/main.rs`, rate-limit layer build): it admits bursts up to `rate_limit_burst` and refills one slot every $1/\text{rate\_limit\_per\_second}$ seconds. Responses carry `x-ratelimit-*` headers.
+The limiter is `tower_governor` (`src/main.rs`, rate-limit layer build): it admits bursts up to `rate_limit_burst` and refills one slot every \\(1/\text{rate\_limit\_per\_second}\\) seconds. Responses carry `x-ratelimit-*` headers.
 
 **`[auth]`** names the secret environment variables and token lifetimes. `jwt_secret_env = "JWT_SECRET"` means: read the signing key from the environment variable called `JWT_SECRET`. The same pattern applies to `api_key_env`. Lifetimes are seconds: 900 gives 15-minute access tokens; 604800 gives 7-day refresh tokens.
 

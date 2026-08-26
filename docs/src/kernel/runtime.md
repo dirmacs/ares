@@ -215,7 +215,7 @@ over the name bytes:
 
 $$h_0 = \texttt{0xcbf29ce484222325}, \qquad h_{i+1} = (h_i \oplus b_i) \cdot \texttt{0x00000100000001b3} \;\bmod\; 2^{64}$$
 
-where $b_i$ is the $i$-th name byte. The palette index is then
+where \\(b_i\\) is the \\(i\\)-th name byte. The palette index is then
 
 $$\text{color}(name) = \text{ANSI16}[\,h \bmod 16\,]$$
 

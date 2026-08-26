@@ -144,7 +144,7 @@ Two dense vectors compare through cosine similarity (`cosine_similarity`, `crate
 
 $$\cos(\mathbf{a},\mathbf{b}) \;=\; \frac{\sum_i a_i b_i}{\sqrt{\sum_i a_i^2}\,\sqrt{\sum_i b_i^2}}$$
 
-Mismatched lengths or a zero magnitude return `0.0`, and the result clamps into $[-1, 1]$. When both vectors have unit length — which `normalize_embedding` produces — the denominator equals 1 and the whole expression reduces to the dot product:
+Mismatched lengths or a zero magnitude return `0.0`, and the result clamps into \\([-1, 1]\\). When both vectors have unit length — which `normalize_embedding` produces — the denominator equals 1 and the whole expression reduces to the dot product:
 
 $$\|\mathbf{a}\| = \|\mathbf{b}\| = 1 \quad\Longrightarrow\quad \cos(\mathbf{a},\mathbf{b}) = \sum_i a_i b_i$$
 
@@ -179,7 +179,7 @@ Result post-processing follows one shared path (`rank_results`): drop scores und
 
 $$\mathrm{idf}(t) \;=\; \ln\!\left(\frac{N - df_t + 0.5}{df_t + 0.5} \;+\; 1\right)$$
 
-Defaults follow standard BM25 saturation and length normalization: $k_1 = 1.2$, $b = 0.75$ (`Bm25Index::new`). Search collects candidate documents containing any query term, scores them, sorts descending, and truncates.
+Defaults follow standard BM25 saturation and length normalization: \\(k_1 = 1.2\\), \\(b = 0.75\\) (`Bm25Index::new`). Search collects candidate documents containing any query term, scores them, sorts descending, and truncates.
 
 ### Fuzzy matching
 
@@ -187,13 +187,13 @@ Defaults follow standard BM25 saturation and length normalization: $k_1 = 1.2$, 
 
 ### Hybrid fusion
 
-Hybrid search fuses three ranked lists through reciprocal rank fusion (`RrfFusion::fuse`). Raw scores are ignored; only positions count. With lists $\ell$ and weights $w_\ell$, a document's fused score is:
+Hybrid search fuses three ranked lists through reciprocal rank fusion (`RrfFusion::fuse`). Raw scores are ignored; only positions count. With lists \\(\ell\\) and weights \\(w_\ell\\), a document's fused score is:
 
 $$\mathrm{score}(d) \;=\; \sum_{\ell} \frac{w_\ell}{k + \mathrm{rank}_\ell(d)} \qquad k = 60 \text{ by default}$$
 
 Ranks start at 1 in this implementation (`search.rs`, `RrfFusion::fuse`). Default weights are `semantic = 0.6`, `bm25 = 0.3`, `fuzzy = 0.1` (`HybridWeights::default`); the sum should be 1.0. Hybrid fetches `top_k * 2` candidates from BM25 and fuzzy before fusion, then truncates the fused list to `top_k`. A typo-corrected variant corrects the query first, then reruns the whole fusion.
 
-Worked fusion, with unit weights and $k = 60$ (adapted from the passing test `test_rrf_fusion_ranking_prefers_shared_top_ranks`). The semantic list ranks `doc_a` first and `doc_b` second. The BM25 list ranks `doc_b` first and `doc_c` second:
+Worked fusion, with unit weights and \\(k = 60\\) (adapted from the passing test `test_rrf_fusion_ranking_prefers_shared_top_ranks`). The semantic list ranks `doc_a` first and `doc_b` second. The BM25 list ranks `doc_b` first and `doc_c` second:
 
 $$\mathrm{score}(\text{doc\_a}) = \tfrac{1}{61} = 0.0164$$
 $$\mathrm{score}(\text{doc\_b}) = \tfrac{1}{62} + \tfrac{1}{61} = 0.0325$$

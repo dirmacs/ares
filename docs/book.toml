@@ -16,6 +16,7 @@ edit-url-template = "https://github.com/dirmacs/ares/edit/main/docs/{path}"
 site-url = "/ares/"
 no-section-label = false
 mathjax-support = true
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [output.html.search]
 enable = true
@@ -25,3 +26,8 @@ boost-hierarchy = 2
 [output.html.fold]
 enable = true
 level = 1
+
+[preprocessor]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

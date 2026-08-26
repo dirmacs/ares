@@ -116,18 +116,18 @@ into two fields:
 
 $$S = 100\,000, \qquad \operatorname{major}(v) = \left\lfloor \frac{v}{S} \right\rfloor, \qquad \operatorname{floor}(v) = v - S \cdot \operatorname{major}(v)$$
 
-An inject constrained with requirement $r = M \cdot S + f$ accepts a
-provider of version $p$ if and only if:
+An inject constrained with requirement \\(r = M \cdot S + f\\) accepts a
+provider of version \\(p\\) if and only if:
 
 $$\text{satisfied}(p, r) \iff \bigl(\operatorname{major}(p) = \operatorname{major}(r)\bigr) \;\wedge\; (p \ge r)$$
 
 Read the two clauses as separate guarantees:
 
 - Same major means compatible. Peer dependencies never bind across a
-  breaking boundary. A provider at major $M+1$ leaves the dependent
+  breaking boundary. A provider at major \\(M+1\\) leaves the dependent
   unsatisfied even when its remainder is huge.
 - At or above the floor means feature-complete. Under equal majors,
-  $p \ge r$ reduces to $\operatorname{floor}(p) \ge f$. The provider has
+  \\(p \ge r\\) reduces to \\(\operatorname{floor}(p) \ge f\\). The provider has
   every capability the consumer asked for.
 
 Any mismatch keeps the inject unsatisfied. The dependent fiber rests
@@ -139,13 +139,13 @@ unconstrained injects. Migrate providers to `provide_versioned` to opt
 into matching. Declare the constraint side with
 `Fiber::declare_inject_versioned`.
 
-Worked example: a provider publishes $p = 200\,003$ (major 2, floor 3).
+Worked example: a provider publishes \\(p = 200\,003\\) (major 2, floor 3).
 
-| Requirement $r$ | major match | $p \ge r$ | Verdict |
+| Requirement \\(r\\) | major match | \\(p \ge r\\) | Verdict |
 | --- | --- | --- | --- |
-| $2 \cdot S + 3 = 200\,003$ | yes | yes | Satisfied |
-| $2 \cdot S + 7 = 200\,007$ | yes | no | Unsatisfied; floor too high |
-| $1 \cdot S + 1 = 100\,001$ | no | yes | Unsatisfied; cross-major |
+| \\(2 \cdot S + 3 = 200\,003\\) | yes | yes | Satisfied |
+| \\(2 \cdot S + 7 = 200\,007\\) | yes | no | Unsatisfied; floor too high |
+| \\(1 \cdot S + 1 = 100\,001\\) | no | yes | Unsatisfied; cross-major |
 | unconstrained | n/a | n/a | Satisfied |
 
 Source: `VERSION_MAJOR_SCALE` documentation in `context.rs`; constraint

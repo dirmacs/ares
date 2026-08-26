@@ -53,7 +53,7 @@ Step 8 is the first step that touches the network for serving. A failure in any 
 
 ### The rate-limit layer
 
-When `rate_limit_per_second > 0`, startup wraps the router in `tower_governor` (`src/main.rs:900-913`). The limiter is a GCRA bucket per client IP. It admits up to `rate_limit_burst` requests immediately and then admits one more request every $1/\text{rate\_limit\_per\_second}$ seconds. A background task prunes idle per-IP buckets every 60 seconds (`src/main.rs:917-930`). Responses carry `x-ratelimit-*` headers. Setting `rate_limit_per_second = 0` removes the layer entirely and logs a warning.
+When `rate_limit_per_second > 0`, startup wraps the router in `tower_governor` (`src/main.rs:900-913`). The limiter is a GCRA bucket per client IP. It admits up to `rate_limit_burst` requests immediately and then admits one more request every \\(1/\text{rate\_limit\_per\_second}\\) seconds. A background task prunes idle per-IP buckets every 60 seconds (`src/main.rs:917-930`). Responses carry `x-ratelimit-*` headers. Setting `rate_limit_per_second = 0` removes the layer entirely and logs a warning.
 
 ## Request path
 
@@ -100,7 +100,7 @@ Provider versions are plain `u64` values with a packed layout (`crates/cordis/sr
 
 $$\text{major}(v) = \left\lfloor \frac{v}{100\,000} \right\rfloor, \qquad \text{floor}(v) = v \bmod 100\,000$$
 
-An inject that requires $M \cdot 100\,000 + f$ is satisfied by provider version $p$ exactly when the provider exists and is available, $\text{major}(p) = M$, and $p \geq M \cdot 100\,000 + f$. Any mismatch leaves the inject unsatisfied and the dependent fiber `Inactive`; it never binds across a major boundary. Legacy `provide()` installs version 0, which satisfies only unconstrained injects.
+An inject that requires \\(M \cdot 100\,000 + f\\) is satisfied by provider version \\(p\\) exactly when the provider exists and is available, \\(\text{major}(p) = M\\), and \\(p \geq M \cdot 100\,000 + f\\). Any mismatch leaves the inject unsatisfied and the dependent fiber `Inactive`; it never binds across a major boundary. Legacy `provide()` installs version 0, which satisfies only unconstrained injects.
 
 ## Storage model
 
@@ -145,7 +145,7 @@ Embedding similarity uses cosine similarity over dense vectors (`crates/ares-rag
 
 $$\cos(a, b) = \frac{a \cdot b}{\lVert a \rVert\,\lVert b \rVert}$$
 
-The implementation clamps the result to $[-1, 1]$ and returns $0$ for mismatched lengths or zero magnitude instead of dividing by zero. Search results report distance, not similarity; `distance_to_similarity` maps cosine distance back with $1 - d$, L2 with $1/(1+d)$, and inner product with $-d$ (`crates/ares-rag/src/search.rs:296-302`). The hybrid reranker then min-max normalizes retrieval scores across the candidate set and blends: $\text{final} = (1 - w)\,\text{norm}_{\text{retrieval}} + w\,\text{rerank}$ (`crates/ares-rag/src/reranker.rs:362-371`).
+The implementation clamps the result to \\([-1, 1]\\) and returns \\(0\\) for mismatched lengths or zero magnitude instead of dividing by zero. Search results report distance, not similarity; `distance_to_similarity` maps cosine distance back with \\(1 - d\\), L2 with \\(1/(1+d)\\), and inner product with \\(-d\\) (`crates/ares-rag/src/search.rs:296-302`). The hybrid reranker then min-max normalizes retrieval scores across the candidate set and blends: \\(\text{final} = (1 - w)\,\text{norm}_{\text{retrieval}} + w\,\text{rerank}\\) (`crates/ares-rag/src/reranker.rs:362-371`).
 
 ## Design rules
 

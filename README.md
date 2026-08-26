@@ -78,10 +78,10 @@ The default features of `ares-server` are postgres, openai, ares-vector, mcp, in
 
 ```bash
 # Install from crates.io
-cargo install ares-server --version 0.9.1
+cargo install ares-server --version 0.10.0
 
 # Install with embedded Web UI
-cargo install ares-server --version 0.9.1 --features ui
+cargo install ares-server --version 0.10.0 --features ui
 
 # Initialize a new project (creates ares.toml and config files)
 ares-server init
@@ -555,7 +555,7 @@ By default ARES uses `NoOpContextProvider`, which returns `None`.
 
 ## Architecture
 
-Composition is a Cordis `Context` plus loader entries. Components register into a typed `Context`. Handlers and engines pull `Execute`, `Tools`, `Llm`, and `Store` at call time. The `ares_server` lib has no axum on its graph. The kernel follows the hardening rules of the [Cordis model](https://github.com/cordiverse/paper). Guarded withdrawal protects providers against removal under active consumers. Verified hot-swap and drain-and-shift replacement give zero-downtime rebuilds through `POST /admin/cordis/services/{name}/replace`. Peer-dependency versioning uses `provide_versioned`/`declare_inject_versioned`. Incompatible versions leave dependents Inactive instead of a silent bind. Inject reconciliation runs eagerly. Cycle detection at load reports rings through `GET /admin/cordis/entries`. A metatheory property suite proves quiescence, confluence, LIFO, and reactive invariants. RhaiPolicy scripting ships default-on. TOML entries attach sandboxed script gates to capability events with fail-closed semantics. `docs/cordis-mapping.md` documents the full Cordis surface (§10–§19).
+Composition is a Cordis `Context` plus loader entries. Components register into a typed `Context`. Handlers and engines pull `Execute`, `Tools`, `Llm`, and `Store` at call time. The `ares_server` lib has no axum on its graph. The kernel follows the hardening rules of the [Cordis model](https://github.com/cordiverse/paper). Guarded withdrawal protects providers against removal under active consumers. Verified hot-swap and drain-and-shift replacement give zero-downtime rebuilds through `POST /admin/cordis/services/{name}/replace`. Peer-dependency versioning uses `provide_versioned`/`declare_inject_versioned`. Incompatible versions leave dependents Inactive instead of a silent bind. Inject reconciliation runs eagerly. Cycle detection at load reports rings through `GET /admin/cordis/entries`. A metatheory property suite proves quiescence, confluence, LIFO, and reactive invariants. RhaiPolicy scripting ships default-on. TOML entries attach sandboxed script gates to capability events with fail-closed semantics. The 0.10 kernel adds: intercept meta-events (`internal/get|set|config|update|listener`) that veto or rewrite kernel operations; readiness barriers that rest fibers in inspectable `Pending` until watched providers settle; name-keyed computed properties (`register_accessor`) and layered intercept chains; identity-preserving entry moves with rename cascades through `POST /admin/cordis/entries/{id}/move`; a module graph that reloads each affected plugin exactly once per debounced batch; an in-kernel logger, fiber-scoped timers, and wired per-subtask cancellation. `docs/cordis-mapping.md` documents the full Cordis surface (§10–§19).
 
 ```
 request / job

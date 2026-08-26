@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -192,6 +194,7 @@
 <tr><td><code>vector_path</code></td><td><code>"./data/vectors"</code></td><td>Path for vector data on disk.</td></tr>
 </tbody></table>
 </div>
+<p>The default model emits 384-dimension vectors (<code>BgeSmallEnV15</code>, <code>crates/ares-rag/src/embeddings.rs</code>). Quantized variants of several models exist under separate names.</p>
 <h3 id="chunking-group-ragchunking"><a class="header" href="#chunking-group-ragchunking">Chunking group (<code>[rag.chunking]</code>)</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead><tbody>
 <tr><td><code>chunking_strategy</code></td><td><code>"word"</code></td><td>One of <code>"word"</code>, <code>"semantic"</code>, <code>"character"</code>.</td></tr>
@@ -200,23 +203,9 @@
 <tr><td><code>min_chunk_size</code></td><td>20</td><td>Smallest chunk size to keep, in characters.</td></tr>
 </tbody></table>
 </div>
-<p>The chunker (<code>crates/ares-rag/src/chunker.rs</code>) exposes <code>TextChunker</code> with word, semantic, and character modes. <code>chunk_with_metadata</code> returns chunks that carry offsets.</p>
-<h3 id="search-group-ragsearch"><a class="header" href="#search-group-ragsearch">Search group (<code>[rag.search]</code>)</a></h3>
-<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead><tbody>
-<tr><td><code>search_strategy</code></td><td><code>"semantic"</code></td><td>One of <code>"semantic"</code>, <code>"bm25"</code>, <code>"fuzzy"</code>, <code>"hybrid"</code>.</td></tr>
-<tr><td><code>search_limit</code></td><td>10</td><td>Number of results to return.</td></tr>
-<tr><td><code>search_threshold</code></td><td>0.0</td><td>Similarity threshold.</td></tr>
-<tr><td><code>hybrid_weights</code></td><td>see below</td><td>Optional weights table.</td></tr>
-</tbody></table>
-</div>
-<p><code>hybrid_weights</code> takes three floats: <code>semantic</code> (default 0.5), <code>bm25</code> (default 0.3), and <code>fuzzy</code> (default 0.2). The sum should be 1.0.</p>
-<h3 id="rerank-group-ragrerank"><a class="header" href="#rerank-group-ragrerank">Rerank group (<code>[rag.rerank]</code>)</a></h3>
-<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead><tbody>
-<tr><td><code>rerank_enabled</code></td><td>false</td><td>Enable reranking of retrieved results.</td></tr>
-<tr><td><code>reranker_model</code></td><td><code>"bge-reranker-base"</code></td><td>Reranker model name.</td></tr>
-<tr><td><code>rerank_weight</code></td><td>0.6</td><td>Weight that combines rerank and retrieval scores.</td></tr>
-</tbody></table>
-</div>
+<p>The chunker (<code>crates/ares-rag/src/chunker.rs</code>) exposes <code>TextChunker</code> with word, semantic, and character modes. <code>chunk_with_metadata</code> returns chunks that carry offsets. Each <code>Chunk</code> records <code>index</code>, <code>content</code>, <code>start_offset</code>, and <code>end_offset</code>.</p>
+<p>Strategy names accept aliases when parsed from strings (<code>FromStr for ChunkingStrategy</code>): <code>words</code>; <code>sentence</code> or <code>paragraph</code> for semantic; <code>char</code> or <code>chars</code> for character. Unknown names fail with an error naming the valid set.</p>
+<p>Note one asymmetry. The standalone <code>ChunkerConfig</code> struct defaults <code>chunk_size</code> to 512. The HTTP ingest handler builds chunkers with its own fixed sizes per strategy (see below).</p>
 <h2 id="ingestion-paths"><a class="header" href="#ingestion-paths">Ingestion paths</a></h2>
 <p>Two paths reach the same ingest handler:</p>
 <h3 id="command-line"><a class="header" href="#command-line">Command line</a></h3>
@@ -233,30 +222,126 @@
 </tbody></table>
 </div>
 <p>The command fails closed: a bad path or a failed login stops before any network write. Each document reports its own audit trail, so a partial run leaves no half-ingested files unrecorded.</p>
+<p>The following outputs come from running this binary against a real directory (<code>exercised</code>, ARES v0.10 tree):</p>
+<pre><code class="language-console">$ ares-server rag ingest-dir --collection demo --docs-path /tmp/ragdemo --dry-run
+/tmp/ragdemo/alpha.md	alpha	21 bytes
+/tmp/ragdemo/beta.txt	beta	12 bytes
+dry_run=true documents=2
+
+$ ares-server rag ingest-dir --collection demo --docs-path /tmp/no-such-dir
+Error: "docs path is not a directory: /tmp/no-such-dir"
+</code></pre>
+<p>The dry-run prints one <code>path&lt;TAB&gt;title&lt;TAB&gt;size</code> line per candidate file and a summary line. The bad path aborts with an error before any login or HTTP call.</p>
 <h3 id="http"><a class="header" href="#http">HTTP</a></h3>
-<p><code>POST /api/rag/ingest</code> accepts a JSON body with <code>collection</code>, <code>content</code>, <code>title</code>, <code>source</code>, <code>tags</code>, and <code>chunking_strategy</code>; it returns <code>chunks_created</code> (<code>crates/ares-http/src/api/routes.rs</code>, <code>src/cli/rag.rs</code>). The endpoint requires authentication and checks tenant-level RAG source allowlists before ingesting.</p>
-<p>Related endpoints: <code>POST /api/rag/search</code>, collection listing under <code>/api/rag/collections</code>.</p>
+<p><code>POST /api/rag/ingest</code> accepts a JSON body with <code>collection</code>, <code>content</code>, <code>title</code>, <code>source</code>, <code>tags</code>, and <code>chunking_strategy</code>; it returns <code>chunks_created</code> plus <code>document_ids</code> and echoes the unscoped collection name (<code>crates/ares-http/src/api/handlers/rag.rs</code>, <code>src/cli/rag.rs</code>). The endpoint requires authentication and checks tenant-level RAG source allowlists before ingesting. Routes register only when both the <code>local-embeddings</code> and <code>ares-vector</code> features compile in (<code>crates/ares-http/src/api/routes.rs</code>).</p>
+<p>Related endpoints: <code>POST /api/rag/search</code>, collection listing under <code>/api/rag/collections</code>, and <code>DELETE /api/rag/collection</code>.</p>
+<h3 id="ingest-handler-stages"><a class="header" href="#ingest-handler-stages">Ingest handler stages</a></h3>
+<p>The handler (<code>crates/ares-http/src/api/handlers/rag.rs</code>, <code>ingest</code>) runs these stages in order:</p>
+<ol>
+<li><strong>Validate input.</strong> An empty <code>collection</code> or empty <code>content</code> returns an error before any work starts.</li>
+<li><strong>Check the tenant allowlist.</strong> <code>TenantAllowlistStore::is_rag_source_allowed</code> consults PostgreSQL. A denied collection fails with an auth error naming the collection.</li>
+<li><strong>Scope the collection name.</strong> <code>user_scoped_collection</code> combines the user id and requested name, giving each user an isolated namespace.</li>
+<li><strong>Resolve services.</strong> The embedding service comes from the context, or gets constructed on first use. Construction pre-downloads ONNX model files through lancor, because fastembed's own client fails on HuggingFace CDN redirects. The vector store opens at <code>[rag.vector] vector_path</code>.</li>
+<li><strong>Parse the chunking strategy.</strong> Absent keys fall back to <code>Word</code>. The handler then fixes chunker parameters per strategy: word uses size 200 with overlap 50, semantic uses size 500 with no overlap, character uses size 500 with overlap 100.</li>
+<li><strong>Chunk the content.</strong> Zero chunks fail with <code>Content too small to chunk</code>. Short trailing remainders below <code>min_chunk_size</code> drop out silently instead.</li>
+<li><strong>Create the collection on demand.</strong> If the scoped collection does not exist, the handler creates it with the model's dimension count.</li>
+<li><strong>Embed all chunk texts.</strong> The batch passes through the dedup planner described below.</li>
+<li><strong>Build documents.</strong> Each chunk becomes a <code>Document</code> with id <code>{base_uuid}_{index}</code> and metadata carrying <code>title</code>, <code>source</code>, <code>created_at</code>, and <code>tags</code>.</li>
+<li><strong>Upsert into the vector store</strong> and return <code>chunks_created</code> with the document id list. A structured log records user, collections, chunk count, and duration.</li>
+</ol>
+<pre><code class="language-mermaid">flowchart TD
+    A[POST /api/rag/ingest] --&gt; B{Auth valid?}
+    B -- no --&gt; X[401]
+    B -- yes --&gt; C{Collection allowlisted?}
+    C -- no --&gt; Y[Auth error]
+    C -- yes --&gt; D[Scope collection to user]
+    D --&gt; E[Chunk content by strategy]
+    E -- zero chunks --&gt; Z[Input error]
+    E --&gt; F[Embed chunks with dedup]
+    F --&gt; G[Upsert documents to vector store]
+    G --&gt; H[chunks_created + document_ids]
+</code></pre>
+<h2 id="chunking-algorithms"><a class="header" href="#chunking-algorithms">Chunking algorithms</a></h2>
+<p>Each mode behaves differently (<code>crates/ares-rag/src/chunker.rs</code>):</p>
+<ul>
+<li><strong>Word.</strong> Split text on whitespace. Walk forward by <code>step = chunk_size - chunk_overlap</code>, never less than 1. Join each window back with single spaces. Character offsets are approximated by summing word lengths plus one separator per earlier word, so offsets drift when original spacing differed.</li>
+<li><strong>Semantic.</strong> Hand the text to <code>TextSplitter::new(chunk_size)</code> from the <code>text-splitter</code> crate. It splits on sentence and paragraph boundaries up to the size cap. Overlap does not apply in this mode. Offsets come from searching each produced slice in the remaining text.</li>
+<li><strong>Character.</strong> Collect chars and walk by the same step formula as word mode. Offsets are exact char positions.</li>
+</ul>
+<p>All three modes drop candidates shorter than <code>min_chunk_size</code>.</p>
 <h2 id="embeddings-and-deduplication"><a class="header" href="#embeddings-and-deduplication">Embeddings and deduplication</a></h2>
 <p>Embeddings live in <code>crates/ares-rag/src/embeddings.rs</code>. Two facts matter:</p>
 <ul>
 <li>Dedup per request: identical inputs collapse by a whitespace-normalized SHA-256 content hash (<code>normalize_for_dedup</code> plus <code>content_hash_hex</code>) before the backend call. Computed vectors fan back to every duplicate slot, so callers receive full-length results while identical texts cost one backend call.</li>
 <li>Vectors are L2-normalized to unit length after computation (<code>normalize_embedding</code>).</li>
 </ul>
+<h3 id="dedup-walkthrough"><a class="header" href="#dedup-walkthrough">Dedup walkthrough</a></h3>
+<p>Three functions cooperate:</p>
+<ol>
+<li><code>normalize_for_dedup("  hello   world \n\t again ")</code> returns <code>"hello world again"</code>. Trimming and collapsing whitespace makes spacing differences invisible to the hash.</li>
+<li><code>content_hash_hex</code> hashes the normalized text with SHA-256 and formats lowercase hex.</li>
+<li><code>DedupPlan::plan(texts)</code> walks inputs once. First occurrences record their index in <code>unique_indices</code>; every duplicate records which unique slot it maps to in <code>sources</code>.</li>
+</ol>
+<p>After the backend embeds only the unique texts, <code>fan_out(&amp;vectors)</code> rebuilds the full-length list where <code>result[i] == vectors[sources[i]]</code>. The seen-set lives only for the duration of one call, so memory stays bounded. Both the local fastembed path and the HTTP batched path use the same plan (<code>embed_texts</code>, <code>embed_texts_batched</code>).</p>
+<p>Worked example, given inputs <code>["alpha", " alpha\n", "beta"]</code>:</p>
+<ul>
+<li>Hashes: slot 0 covers <code>alpha</code>; the second entry normalizes to <code>alpha</code> too, so it maps to slot 0; <code>beta</code> takes slot 1.</li>
+<li>Backend call receives <code>["alpha", "beta"]</code> — two texts, not three.</li>
+<li>Fan-out returns <code>[v0, v0, v1]</code>.</li>
+</ul>
+<p>Model initialization serializes through global per-model locks, so parallel first-use requests cannot race a model download.</p>
+<h2 id="similarity-math"><a class="header" href="#similarity-math">Similarity math</a></h2>
+<p>Two dense vectors compare through cosine similarity (<code>cosine_similarity</code>, <code>crates/ares-rag/src/embeddings.rs</code>):</p>
+<p>$$\cos(\mathbf{a},\mathbf{b}) ;=; \frac{\sum_i a_i b_i}{\sqrt{\sum_i a_i^2},\sqrt{\sum_i b_i^2}}$$</p>
+<p>Mismatched lengths or a zero magnitude return <code>0.0</code>, and the result clamps into $[-1, 1]$. When both vectors have unit length — which <code>normalize_embedding</code> produces — the denominator equals 1 and the whole expression reduces to the dot product:</p>
+<p>$$|\mathbf{a}| = |\mathbf{b}| = 1 \quad\Longrightarrow\quad \cos(\mathbf{a},\mathbf{b}) = \sum_i a_i b_i$$</p>
+<p>Cosine distance stored by pgvector-style comparisons is <code>1 - cos(a,b)</code> (<code>cosine_distance</code>). At query time, raw distances convert back to similarity scores where higher means better (<code>distance_to_similarity</code>, <code>crates/ares-rag/src/search.rs</code>):</p>
+<p>$$\text{sim}<em>{\text{cosine}} = 1 - d \qquad \text{sim}</em>{L2} = \frac{1}{1+d} \qquad \text{sim}_{\text{inner}} = -d$$</p>
 <p>The <code>local-embeddings</code> feature enables the <code>fastembed</code> backend (<code>crates/ares-rag/Cargo.toml</code>). Without it, embedding calls go over HTTP.</p>
 <h2 id="search-flow"><a class="header" href="#search-flow">Search flow</a></h2>
 <p><code>SearchStrategy</code> (<code>crates/ares-rag/src/search.rs</code>) supports four strategies, also accepted by the CLI as <code>--strategy</code>:</p>
-<ul>
-<li><code>semantic</code> — dense vector similarity through embeddings.</li>
-<li><code>bm25</code> — sparse lexical matching.</li>
-<li><code>fuzzy</code> — approximate string matching for typo tolerance.</li>
-<li><code>hybrid</code> — combines strategies with reciprocal rank fusion weighted by <code>hybrid_weights</code>.</li>
-</ul>
-<p>The BM25 and fuzzy indices support <code>save()</code> and <code>load()</code>, so they survive restarts without re-indexing. <code>ares-server rag search --collection &lt;name&gt; --query &lt;text&gt; [--top-k N] [--strategy S]</code> drives the flow from the terminal.</p>
+<div class="table-wrapper"><table><thead><tr><th>Strategy</th><th>Aliases</th><th>Matches on</th><th>Index used</th><th>Persisted</th></tr></thead><tbody>
+<tr><td><code>semantic</code></td><td><code>dense</code>, <code>vector</code></td><td>Meaning, via dense embeddings</td><td>Vector store collection</td><td>Yes (vector data)</td></tr>
+<tr><td><code>bm25</code></td><td><code>lexical</code>, <code>sparse</code></td><td>Exact terms, TF-IDF weighted</td><td>Inverted index</td><td>Yes (<code>bm25_index.json</code>)</td></tr>
+<tr><td><code>fuzzy</code></td><td><code>approximate</code></td><td>Typos, via edit distance</td><td>Vocabulary plus document map</td><td>Yes (<code>fuzzy_index.json</code>)</td></tr>
+<tr><td><code>hybrid</code></td><td><code>combined</code>, <code>rrf</code></td><td>Union of all three</td><td>All indices</td><td>Via component indices</td></tr>
+</tbody></table>
+</div>
+<p>Unknown names fail with an error naming the four valid sets.</p>
+<h3 id="semantic-scoring"><a class="header" href="#semantic-scoring">Semantic scoring</a></h3>
+<p>The engine validates query embeddings first: non-empty, all finite, and dimension-matched when a dimension is known (<code>validate_embedding</code>). SQL orders by the metric operator and computes the score expression inline; collection names must pass validation before they can reach a table name (<code>{prefix}_{collection}</code>).</p>
+<p>Result post-processing follows one shared path (<code>rank_results</code>): drop scores under the threshold, keep the highest-scoring copy of duplicate ids, sort descending, truncate to <code>top_k</code>.</p>
+<h3 id="bm25-scoring"><a class="header" href="#bm25-scoring">BM25 scoring</a></h3>
+<p><code>Bm25Index</code> keeps an inverted index and document frequencies. Tokenization lowercases, splits on non-alphanumeric characters, and drops tokens of length 1 or less. Term rarity enters through IDF (<code>Bm25Index::idf</code>):</p>
+<p>$$\mathrm{idf}(t) ;=; \ln!\left(\frac{N - df_t + 0.5}{df_t + 0.5} ;+; 1\right)$$</p>
+<p>Defaults follow standard BM25 saturation and length normalization: $k_1 = 1.2$, $b = 0.75$ (<code>Bm25Index::new</code>). Search collects candidate documents containing any query term, scores them, sorts descending, and truncates.</p>
+<h3 id="fuzzy-matching"><a class="header" href="#fuzzy-matching">Fuzzy matching</a></h3>
+<p><code>FuzzyIndex</code> stores a vocabulary of indexed words. Query correction finds the closest vocabulary word within <code>max_distance</code> edits (default 2, Levenshtein). Exact hits short-circuit at distance 0. <code>correct_query</code> rewrites each misspelled word and reports every correction as an <code>original</code>/<code>corrected</code>/<code>distance</code> triple. Match score per document is one minus normalized distance, averaged over matched query words.</p>
+<h3 id="hybrid-fusion"><a class="header" href="#hybrid-fusion">Hybrid fusion</a></h3>
+<p>Hybrid search fuses three ranked lists through reciprocal rank fusion (<code>RrfFusion::fuse</code>). Raw scores are ignored; only positions count. With lists $\ell$ and weights $w_\ell$, a document's fused score is:</p>
+<p>$$\mathrm{score}(d) ;=; \sum_{\ell} \frac{w_\ell}{k + \mathrm{rank}_\ell(d)} \qquad k = 60 \text{ by default}$$</p>
+<p>Ranks start at 1 in this implementation (<code>search.rs</code>, <code>RrfFusion::fuse</code>). Default weights are <code>semantic = 0.6</code>, <code>bm25 = 0.3</code>, <code>fuzzy = 0.1</code> (<code>HybridWeights::default</code>); the sum should be 1.0. Hybrid fetches <code>top_k * 2</code> candidates from BM25 and fuzzy before fusion, then truncates the fused list to <code>top_k</code>. A typo-corrected variant corrects the query first, then reruns the whole fusion.</p>
+<p>Worked fusion, with unit weights and $k = 60$ (adapted from the passing test <code>test_rrf_fusion_ranking_prefers_shared_top_ranks</code>). The semantic list ranks <code>doc_a</code> first and <code>doc_b</code> second. The BM25 list ranks <code>doc_b</code> first and <code>doc_c</code> second:</p>
+<p>$$\mathrm{score}(\text{doc_a}) = \tfrac{1}{61} = 0.0164$$
+$$\mathrm{score}(\text{doc_b}) = \tfrac{1}{62} + \tfrac{1}{61} = 0.0325$$
+$$\mathrm{score}(\text{doc_c}) = \tfrac{1}{62} = 0.0161$$</p>
+<p>The document appearing in both lists wins even though it never held rank one anywhere.</p>
+<p>The BM25 and fuzzy indices support <code>save()</code> and <code>load()</code>, so they survive restarts without re-indexing. <code>SearchEngine::save</code> writes <code>bm25_index.json</code> and <code>fuzzy_index.json</code> into one directory; <code>load_or_new</code> falls back to fresh empty indices when the directory is missing. <code>ares-server rag search --collection &lt;name&gt; --query &lt;text&gt; [--top-k N] [--strategy S]</code> drives the flow from the terminal.</p>
 <h2 id="vector-stores"><a class="header" href="#vector-stores">Vector stores</a></h2>
 <p>Two backends exist behind features:</p>
 <ul>
-<li><code>ares-vector</code> (<code>crates/ares-vector/</code>) — a pure-Rust embedded store. <code>VectorDb::open(Config::persistent("./data/vectors"))</code> loads collections from disk; <code>Config::memory()</code> runs in process. Persistence writes collection data under the configured path. This backend backs the default <code>[rag.vector]</code> path.</li>
-<li>Qdrant — optional external store configured through <code>database.qdrant</code> in <code>ares.toml</code> (<code>QdrantConfig</code> in <code>crates/ares-store/src/config.rs</code>). Fields: <code>url</code> (default <code>http://localhost:6334</code>) and <code>api_key_env</code>, the environment variable holding the API key.</li>
+<li>
+<p><code>ares-vector</code> (<code>crates/ares-vector/</code>) — a pure-Rust embedded store built on an HNSW index. Two construction modes differ only in persistence (<code>Config</code>, <code>crates/ares-vector/src/config.rs</code>):</p>
+<div class="table-wrapper"><table><thead><tr><th>Mode</th><th>Constructor</th><th>Behavior</th></tr></thead><tbody>
+<tr><td>Memory</td><td><code>Config::memory()</code></td><td>No <code>data_path</code>; data dies with the process.</td></tr>
+<tr><td>Persistent</td><td><code>Config::persistent(path)</code></td><td>Sets <code>data_path</code> and turns on periodic snapshotting; collections reload on startup.</td></tr>
+</tbody></table>
+</div>
+<p>Tuning knobs include <code>max_vectors</code> per collection and the <code>HnswConfig</code> fields (<code>m</code>, <code>m_max</code>, <code>ef_construction</code>, <code>ef_search</code>, thread counts). A <code>memory_efficient()</code> preset trades accuracy for footprint (<code>m = 8</code>, single-threaded construction). Collections are typed by dimension and distance metric at creation; searches reject wrong-dimension queries with <code>DimensionMismatch</code>. This backend backs the default <code>[rag.vector]</code> path.</p>
+</li>
+<li>
+<p>Qdrant — optional external store configured through <code>database.qdrant</code> in <code>ares.toml</code> (<code>QdrantConfig</code> in <code>crates/ares-store/src/config.rs</code>). Fields: <code>url</code> (default <code>http://localhost:6334</code>) and <code>api_key_env</code>, the environment variable holding the API key. ARES treats it as an external service and holds no local state for it.</p>
+</li>
 </ul>
 
                     </main>

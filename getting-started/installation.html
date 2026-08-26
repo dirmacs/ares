@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -244,12 +246,56 @@ cargo build --release
 <tr><td><code>minimal</code></td><td>Nothing optional</td></tr>
 </tbody></table>
 </div>
-<p>Enable features with <code>--features</code>:</p>
-<pre><code class="language-bash">cargo install ares-server --features full-ui
+<h3 id="choose-feature-combinations"><a class="header" href="#choose-feature-combinations">Choose feature combinations</a></h3>
+<p>Features compose along three independent axes. Pick one option per axis:</p>
+<ol>
+<li><strong>LLM providers</strong> (<code>openai</code>, <code>azure</code>, <code>bedrock</code>, or none for Ollama). These add provider clients to <code>ares-llm</code>. They do not interact with each other, so <code>all-llm</code> is safe when you want runtime choice.</li>
+<li><strong>Database backend</strong> (<code>postgres</code> or <code>turso</code>). The server binary requires the <code>postgres</code> feature. A binary built without it prints a rebuild hint and exits with code 1 at startup (<code>src/main.rs</code> compiles a stub <code>main</code> without it). Keep <code>postgres</code> unless you embed the library and run no HTTP server.</li>
+<li><strong>Vector store</strong> (<code>ares-vector</code>, <code>qdrant</code>, <code>pgvector</code>, <code>chromadb</code>, <code>pinecone</code>, <code>lancedb</code>). Clients are additive. <code>local-vectorstores</code> keeps the build small because only the embedded store compiles.</li>
+</ol>
+<p>Cross-axis rules worth knowing:</p>
+<ul>
+<li><code>postgres</code> also gates sqlx code paths in <code>ares-store</code>, <code>ares-agent</code>, <code>ares-mcp</code>, <code>ares-tools</code>, and <code>ares-http</code> through feature forwarding.</li>
+<li><code>mcp</code>, <code>inventory</code>, and <code>rhai-policy</code> ride in <code>default</code>; dropping <code>default</code> drops all three. Re-add them explicitly if you build with <code>--no-default-features</code> plus your own picks.</li>
+<li><code>swagger-ui</code> needs nothing extra, but the OpenAPI document includes RAG paths only when both <code>local-embeddings</code> and <code>ares-vector</code> are on (see the <code>#[cfg(all(...))]</code> gate around the <code>OpenApi</code> derive in <code>src/main.rs</code>).</li>
+</ul>
+<p>Some features cost real compile time or native dependencies:</p>
+<div class="table-wrapper"><table><thead><tr><th>Feature</th><th>Cost</th></tr></thead><tbody>
+<tr><td><code>lancedb</code></td><td>Needs the <code>protoc</code> compiler on <code>PATH</code> at build time</td></tr>
+<tr><td><code>local-embeddings</code></td><td>Pulls the ONNX Runtime; unsupported on Windows MSVC; slow link step</td></tr>
+<tr><td><code>ui</code></td><td>Builds the embedded Leptos UI as part of the crate; longest cold build of any single feature</td></tr>
+<tr><td><code>full-ui</code></td><td>Everything above together; budget several minutes on a modest machine</td></tr>
+</tbody></table>
+</div>
+<p>For a first install, stay on defaults plus what you actually call. Defaults already give you <code>postgres</code>, <code>openai</code>, <code>ares-vector</code>, <code>mcp</code>, <code>inventory</code>, and <code>rhai-policy</code>.</p>
+<h3 id="build-offline-or-air-gapped"><a class="header" href="#build-offline-or-air-gapped">Build offline or air-gapped</a></h3>
+<p>The repository ships no vendor directory. For an air-gapped machine, vendor dependencies on a connected machine first:</p>
+<pre><code class="language-bash">cd ares
+cargo vendor vendor
 </code></pre>
-<p>For an embed-only library build without server defaults, disable all features:</p>
-<pre><code class="language-bash">cargo build --no-default-features
+<p>Copy the whole tree, including <code>vendor/</code>, to the target machine. Then point Cargo at it through <code>.cargo/config.toml</code> next to <code>Cargo.toml</code>:</p>
+<pre><code class="language-toml">[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
 </code></pre>
+<p>Build with <code>cargo build --release --offline</code>. Two notes apply:</p>
+<ul>
+<li>SQL migrations live inside the <code>ares-store</code> crate and ship inside the published package, so an offline build needs no external migration files.</li>
+<li>The default TLS stack uses rustls, so you need no system OpenSSL headers. If a non-default feature drags in OpenSSL on a host without <code>pkg-config</code>/<code>libssl-dev</code>, enable its vendored form in <code>Cargo.toml</code> (see the commented <code>vendored</code> example near the end of the dependency list) instead of installing system packages.</li>
+</ul>
+<h2 id="troubleshoot-installation"><a class="header" href="#troubleshoot-installation">Troubleshoot installation</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead><tbody>
+<tr><td><code>package \</code>ares-server v0.10.0` cannot be built because it requires rustc 1.98 or newer`</td><td>Toolchain older than the declared <code>rust-version</code></td><td>Run <code>rustup update stable</code>, then retry</td></tr>
+<tr><td>Installed binary prints <code>requires the \</code>postgres` feature` and exits 1</td><td>Built or installed with <code>--no-default-features</code> or without <code>postgres</code></td><td>Reinstall with <code>--features postgres</code>, or keep <code>default</code></td></tr>
+<tr><td><code>error: failed to run custom build command</code> naming <code>protoc</code></td><td><code>lancedb</code> enabled without Protocol Buffers compiler</td><td>Install <code>protoc</code>, or drop <code>lancedb</code> from <code>--features</code></td></tr>
+<tr><td>Link errors mentioning ONNXRuntime under <code>local-embeddings</code></td><td>Missing ONNX Runtime library, or Windows MSVC host</td><td>Install ONNX Runtime, or use a remote embeddings endpoint without the feature</td></tr>
+<tr><td><code>ares-server: command not found</code> after install</td><td><code>$HOME/.cargo/bin</code> missing from <code>PATH</code></td><td>Add <code>export PATH="$HOME/.cargo/bin:$PATH"</code> to your shell profile</td></tr>
+<tr><td>Build succeeds but <code>/ui</code> returns 404</td><td><code>ui</code> feature absent from this binary</td><td>Rebuild with <code>--features ui</code></td></tr>
+</tbody></table>
+</div>
+<p>Compile-time versus run time matters here. Features such as <code>openai</code>, <code>azure</code>, or <code>bedrock</code> decide which provider code exists inside the binary. A provider that is absent at compile time cannot appear at run time by editing <code>ares.toml</code>. Configuration selects among compiled-in options; it never adds new ones.</p>
 <h2 id="verify-the-install"><a class="header" href="#verify-the-install">Verify the install</a></h2>
 <p>Print the version:</p>
 <pre><code class="language-console">$ ares-server --version

@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -236,6 +238,36 @@ sleeps until the nearest deadline in a shared wheel, drains all due
 entries under one short lock, then runs callbacks outside the lock.
 Callbacks must be cheap and non-blocking. A panicking callback is caught
 and logged; the thread survives.</p>
+<h3 id="wheel-mechanics"><a class="header" href="#wheel-mechanics">Wheel mechanics</a></h3>
+<p>The wheel is a min-heap of entries ordered by <code>(deadline, seq)</code>. The
+sequence number breaks ties so equal deadlines fire in registration
+order. One process-wide instance serves every fiber; it lives behind a
+<code>LazyLock&lt;Mutex&lt;Wheel&gt;&gt;</code>.</p>
+<p>The driver loop has two phases:</p>
+<ol>
+<li><strong>Sleep.</strong> Read the nearest deadline while holding the lock, release,
+then <code>park_timeout</code> for that long. A park with no timeout waits for
+the next insert. Any <code>schedule</code> call pushes its entry and unparks the
+thread, so an earlier deadline preempts a long sleep immediately.</li>
+<li><strong>Drain.</strong> Re-acquire the lock, pop every entry whose deadline is at
+or before now, release, then run each job. Callbacks run outside the
+lock on purpose: an interval callback re-arms itself by calling
+<code>schedule</code>, which needs the lock. Holding it across callbacks would
+deadlock every self-re-arming pattern, including debounce and
+throttle emits.</li>
+</ol>
+<p>Cancellation is cooperative through <code>EffectHandle</code>. Disposal flips the
+shared flag but does not remove the heap entry. Two paths make that
+safe:</p>
+<ul>
+<li>The <code>timeout</code> job checks the flag inside the job body. A disposal
+racing the drain still prevents the callback from running.</li>
+<li>The future-based <code>sleep</code> resolves early and silently when disposed
+while pending; nothing observes a cancelled wake-up.</li>
+</ul>
+<p>A panicking callback lands in <code>catch_unwind</code>. The driver logs a warning
+and moves to the next job. One bad callback cannot starve the rest of
+the wheel.</p>
 <div class="table-wrapper"><table><thead><tr><th>Primitive</th><th>Shape</th></tr></thead><tbody>
 <tr><td><code>timeout(delay, callback)</code></td><td>One-shot delay, then callback. Returns <code>EffectHandle</code>.</td></tr>
 <tr><td><code>sleep(delay)</code></td><td>One-shot delay as a future. Returns <code>(EffectHandle, impl Future)</code>.</td></tr>
@@ -331,6 +363,19 @@ treats it as a format string:</p>
 <p>Unknown specifiers and exhausted arguments stay literal. Unconsumed
 arguments join at the end with spaces. Without a format head, arguments
 join with single spaces.</p>
+<h3 id="stable-color-slots"><a class="header" href="#stable-color-slots">Stable color slots</a></h3>
+<p><code>%c</code> and <code>%C</code> pick one of sixteen ANSI colors from the logger name. The
+slot must be stable across processes and platforms, so it comes from a
+hash, not a counter. <code>name_color_code</code> in <code>logger.rs</code> computes FNV-1a
+over the name bytes:</p>
+<p>$$h_0 = \texttt{0xcbf29ce484222325}, \qquad h_{i+1} = (h_i \oplus b_i) \cdot \texttt{0x00000100000001b3} ;\bmod; 2^{64}$$</p>
+<p>where $b_i$ is the $i$-th name byte. The palette index is then</p>
+<p>$$\text{color}(name) = \text{ANSI16}[,h \bmod 16,]$$</p>
+<p>with <code>ANSI16 = [30..=37, 90..=97]</code>: eight normal foregrounds followed by
+their bright variants. The multiplication wraps (<code>wrapping_mul</code>), so no
+input can overflow-panic. The same name always renders in the same
+color — in tests, in production logs, and across restarts. Test anchor:
+<code>colorization_is_stable_per_name</code>.</p>
 <h3 id="loggerintercept-override"><a class="header" href="#loggerintercept-override">LoggerIntercept override</a></h3>
 <p><code>LoggerIntercept</code> rides the normal intercept channel. Install it with
 <code>ctx.intercept(..)</code>. Writes through that context handle resolve it at
@@ -386,6 +431,43 @@ failure when the restore itself failed.</li>
 </ul>
 <p>The default seam, <code>NoopReload</code>, never fails. Deployments wire their own
 <code>reload</code> / <code>rollback</code> pair, or swap one in later with <code>set_reloader</code>.</p>
+<h3 id="one-transaction-narrated"><a class="header" href="#one-transaction-narrated">One transaction, narrated</a></h3>
+<p>Watch two shared files change at once: <code>routes.toml</code> and <code>auth.toml</code>.
+Three modules depend on them. <code>foo</code> depends on both; <code>bar</code> depends on
+<code>shared</code>; <code>baz</code> is independent.</p>
+<ol>
+<li>The watcher's debounce settles with both paths. Each path maps to its
+file stem, and the watcher hands <code>["routes", "auth"]</code> to
+<code>change_many</code>.</li>
+<li>The compute phase walks the transitive dependent set across BOTH keys
+with one shared visited set. It reaches <code>foo</code> through either key but
+records it once — dedup happens during the walk, not after.</li>
+<li>The apply phase reloads affected plugins in breadth-first order:
+dependencies before their dependents, so each plugin reloads into a
+kernel where what it injects already exists.</li>
+<li>Suppose <code>bar</code>'s reload fails on its new code. The seam rolls <code>bar</code>
+back to its previous state and the batch stops there. <code>baz</code> never ran
+— it matched no input key.</li>
+</ol>
+<p>The result is
+<code>RolledBack { reloaded: ["foo"], failed_plugin: "bar", error: .. }</code>.</p>
+<p><strong>Sibling survival.</strong> Plugins that reloaded before the failure stay
+active on their NEW code. The batch does not unwind earlier successes.
+This guarantee shapes how you write reloaders:</p>
+<ul>
+<li>A reload must leave the kernel consistent on its own. Earlier siblings
+will not be reverted for you.</li>
+<li>Order failures so cheap ones fail first when possible; breadth-first
+order plus early failure minimizes divergence between old and new.</li>
+<li>The rollback text reports a restore failure separately. Rolling back
+<code>bar</code> can itself error; the error field says so. Surface that case as
+an operator alert: the running state then matches no recorded state.</li>
+</ul>
+<p>Contrast with the loader's two-phase reload (see
+<a href="lifecycle.html">Lifecycle</a>): the loader rolls back everything newest-first;
+the module graph deliberately keeps successful siblings. The loader owns
+declarative trees. The module graph owns native-code hot swap, where a
+reloaded <code>.so</code> cannot always be unloaded again safely.</p>
 <h3 id="watcher-integration"><a class="header" href="#watcher-integration">Watcher integration</a></h3>
 <p>When a debounced watcher batch settles, the watcher maps each changed
 path to its file stem and hands those stems to <code>change_many</code> — but only
@@ -411,6 +493,35 @@ mode.</li>
 </ul>
 <p><code>check_read</code> and <code>check_write</code> on <code>FencePolicy</code> stay pure path checks
 (L0-L2). Only the <code>Fence</code> methods touch file contents.</p>
+<h3 id="layer-matrix"><a class="header" href="#layer-matrix">Layer matrix</a></h3>
+<p>The matrix lists, for each layer, what it guarantees and which stable
+code reports its failure. Layers run top to bottom; the first failure
+decides the code.</p>
+<div class="table-wrapper"><table><thead><tr><th>Layer</th><th>Guarantee</th><th>Fails with</th><th>Applies to</th></tr></thead><tbody>
+<tr><td>L0 mode</td><td><code>ReadOnly</code> denies every write</td><td><code>FS_FENCE_DENIED</code></td><td>Writes only</td></tr>
+<tr><td>L1 boundary</td><td>Resolved path stays inside <code>workspace_root</code> (<code>Full</code> waives)</td><td><code>FS_FENCE_DENIED</code></td><td>Reads and writes</td></tr>
+<tr><td>L2 blocklist</td><td>Blocked names denied in every mode</td><td><code>FS_FENCE_DENIED</code></td><td>Reads and writes</td></tr>
+<tr><td>L3 observation</td><td>Canonical path observed before any guarded write in non-blind modes; missing paths record version 0</td><td><code>FS_NOT_OBSERVED</code></td><td>Writes only</td></tr>
+<tr><td>L3 contract</td><td>Guard matches observed state: absent path for create, unchanged version for replace</td><td><code>FS_EXISTS</code>, <code>FS_VERSION_CONFLICT</code></td><td>Writes only</td></tr>
+<tr><td>L3 I/O</td><td>Atomic sibling-temp-plus-rename write</td><td><code>FS_IO</code></td><td>Writes only</td></tr>
+</tbody></table>
+</div>
+<p>Reading the table as an operator:</p>
+<ul>
+<li>Three different denials all report <code>FS_FENCE_DENIED</code>; the audit ring
+entry records the reason text that separates them.</li>
+<li><code>FS_NOT_OBSERVED</code> is a protocol error, not a permission error. The
+agent forgot to read before writing. A read of a missing path counts,
+so creating a new file needs one prior failed-or-absent read.</li>
+<li><code>FS_VERSION_CONFLICT</code> means someone changed the file after your read.
+Re-read and re-apply the edit.</li>
+<li><code>FS_IO</code> covers everything underneath the policy: permission bits at
+the OS level, full disks, vanished parents. The reason text carries
+the OS message.</li>
+</ul>
+<p>Determinism is the point. The same path, mode, guard, and observed state
+always produce the same code. Agent-facing retry logic branches on codes,
+not on parsed prose.</p>
 <h3 id="l3-write-guards"><a class="header" href="#l3-write-guards">L3 write guards</a></h3>
 <p>Every write names a guard contract (<code>WriteGuard</code>):</p>
 <ul>

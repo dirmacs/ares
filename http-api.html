@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -203,7 +205,47 @@
 <p>Send the access token as a bearer token:</p>
 <pre><code class="language-bash">Authorization: Bearer &lt;access_token&gt;
 </code></pre>
-<p>The middleware also accepts <code>?token=&lt;access_token&gt;</code> as a query parameter. EventSource clients cannot set custom headers, so they use this fallback. Tokens are HS256 JSON Web Tokens signed with the <code>JWT_SECRET</code> environment variable. A token carries claims <code>sub</code>, <code>email</code>, <code>exp</code>, <code>iat</code>, and optionally <code>jti</code> and <code>tenant_id</code>.</p>
+<h4 id="token-anatomy"><a class="header" href="#token-anatomy">Token anatomy</a></h4>
+<p><code>Claims</code> lives in <code>crates/ares-types/src/types/mod.rs</code>; the signing logic lives in <code>crates/ares-http/src/auth/jwt.rs</code>. One decoded access token:</p>
+<pre><code class="language-json">{
+  "sub": "9b2f3c58-4b1e-4a7d-9c11-0f5a6b8c2d10",
+  "email": "user@example.com",
+  "exp": 1756221600,
+  "iat": 1756220700
+}
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Claim</th><th>Presence</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>sub</code></td><td>always</td><td>User id. Refresh tokens must match the session row by this field.</td></tr>
+<tr><td><code>email</code></td><td>always</td><td>Account email.</td></tr>
+<tr><td><code>exp</code>, <code>iat</code></td><td>always</td><td>Expiry and issue time as Unix seconds. Validation allows a 60-second clock-skew leeway.</td></tr>
+<tr><td><code>jti</code></td><td>refresh tokens only</td><td>Random UUID that identifies one refresh session. Access tokens omit it.</td></tr>
+<tr><td><code>tenant_id</code></td><td>tenant-scoped tokens only</td><td>Tenant that issued or owns the session.</td></tr>
+</tbody></table>
+</div>
+<p>Defaults from <code>AuthConfig</code> (<code>crates/ares-http/src/config.rs</code>): access tokens live 900 seconds (15 minutes), refresh tokens 604800 seconds (7 days). <code>expires_in</code> in the response echoes the configured access expiry, so read it instead of hard-coding 900.</p>
+<h4 id="register-login-refresh-logout"><a class="header" href="#register-login-refresh-logout">Register, login, refresh, logout</a></h4>
+<p>Validation runs before any database call:</p>
+<div class="table-wrapper"><table><thead><tr><th>Route</th><th>Failure</th><th>Response</th></tr></thead><tbody>
+<tr><td><code>POST /auth/register</code></td><td>Empty email or password under 8 characters</td><td><code>400 {"error":"Email required and password must be at least 8 characters"}</code></td></tr>
+<tr><td><code>POST /auth/register</code></td><td>Email already registered</td><td><code>400 {"error":"User already exists"}</code></td></tr>
+<tr><td><code>POST /auth/login</code></td><td>Unknown email or wrong password</td><td><code>401 {"error":"Invalid credentials"}</code></td></tr>
+</tbody></table>
+</div>
+<p>Passwords hash with Argon2id; refresh tokens are stored only as SHA-256 hashes.</p>
+<p>The refresh flow rotates sessions — each refresh token works exactly once (<code>refresh_token</code>, <code>crates/ares-http/src/api/handlers/auth.rs</code>):</p>
+<ol>
+<li>Verify the refresh token's HS256 signature and expiry.</li>
+<li>Hash it and look up the session row. No row answers <code>401 {"error":"Refresh token has been revoked or expired"}</code>.</li>
+<li>Compare the session's user id with the <code>sub</code> claim. A mismatch answers <code>401 {"error":"Token mismatch"}</code>.</li>
+<li>Delete the old session row.</li>
+<li>Issue and return a fresh pair; the new refresh token lands in its own session.</li>
+</ol>
+<pre><code class="language-bash">curl -s -X POST http://localhost:3000/api/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "&lt;refresh_token&gt;"}'
+</code></pre>
+<p>The response is a full <code>TokenResponse</code>. Reuse of an already-rotated refresh token fails at step 2, which is why clients must persist the newest pair after every call.</p>
+<p><code>POST /auth/logout</code> takes <code>{"refresh_token": "..."}</code>, deletes the matching session by hash, and returns <code>{"message":"Logged out successfully"}</code> even when the session is already gone.</p>
 <h3 id="admin-secret-admin-routes"><a class="header" href="#admin-secret-admin-routes">Admin secret (admin routes)</a></h3>
 <p>Admin routes check the <code>X-Admin-Secret</code> header against the <code>ADMIN_API_KEY</code> environment variable. As an alternative, admin routes accept a JWT with an admin role claim.</p>
 <pre><code class="language-bash">curl -s http://localhost:3000/api/admin/stats \
@@ -216,7 +258,26 @@
 <p>Routes under <code>/v1</code> authenticate machine clients with tenant API keys. Keys start with <code>ares_</code> and travel in the same bearer header:</p>
 <pre><code class="language-bash">Authorization: Bearer ares_&lt;key&gt;
 </code></pre>
-<p>A missing or malformed key answers <code>401</code> with messages such as <code>Missing Authorization header</code> or <code>Invalid Authorization format. Expected: Bearer ares_...</code>.</p>
+<h4 id="scheme-matrix"><a class="header" href="#scheme-matrix">Scheme matrix</a></h4>
+<div class="table-wrapper"><table><thead><tr><th>Property</th><th>JWT bearer</th><th>Admin secret</th><th>Tenant API key</th></tr></thead><tbody>
+<tr><td>Credential</td><td>Access token from login/register</td><td>Static value of <code>ADMIN_API_KEY</code> env var</td><td>Key created via <code>POST /v1/api-keys</code>, prefix <code>ares_</code></td></tr>
+<tr><td>Header</td><td><code>Authorization: Bearer &lt;access_token&gt;</code> or <code>?token=</code></td><td><code>X-Admin-Secret: &lt;value&gt;</code>; a JWT with an admin role claim also works</td><td><code>Authorization: Bearer ares_&lt;key&gt;</code></td></tr>
+<tr><td>Route group</td><td><code>/chat</code>, <code>/research</code>, <code>/user/agents</code>, <code>/conversations</code>, <code>/workflows</code>, ...</td><td><code>/admin/*</code></td><td><code>/v1/*</code></td></tr>
+<tr><td>Identity</td><td>User id in <code>sub</code> claim</td><td>None (operator)</td><td>Tenant resolved from the key row</td></tr>
+<tr><td>Metering</td><td>No quota gate at the middleware</td><td>Not metered</td><td>Monthly and daily quota checks run before the handler</td></tr>
+<tr><td>Revocation</td><td>Refresh rotation plus logout deletes the session</td><td>Rotate the environment variable and restart</td><td>Revoke with <code>DELETE /v1/api-keys/{id}</code></td></tr>
+</tbody></table>
+</div>
+<p>The middleware rejects malformed <code>/v1</code> credentials before touching the database (<code>crates/ares-http/src/middleware/api_key_auth.rs</code>). All format failures answer <code>401 {"error": "&lt;message&gt;"}</code>:</p>
+<div class="table-wrapper"><table><thead><tr><th>Condition</th><th>Message</th></tr></thead><tbody>
+<tr><td>No <code>Authorization</code> header</td><td><code>Missing Authorization header</code></td></tr>
+<tr><td>Header not valid ASCII</td><td><code>Invalid Authorization header</code></td></tr>
+<tr><td>Value does not start with <code>Bearer </code> (case-sensitive)</td><td><code>Invalid Authorization format. Expected: Bearer ares_...</code></td></tr>
+<tr><td>Key does not start with <code>ares_</code></td><td><code>Invalid API key format. Must start with ares_</code></td></tr>
+<tr><td>Key is well formed but unknown</td><td><code>Invalid API key</code></td></tr>
+</tbody></table>
+</div>
+<p>Quota breaches answer <code>429</code>: <code>Monthly request quota exceeded</code> or <code>Daily rate limit exceeded</code>. The monthly check wins when both are exhausted. Tier limits come from the tenant's quota row; the unit tests pin examples — a Free-tier tenant blocks at 1,000 requests per month or 50 per day, a Dev-tier tenant at 2,000 per day, Enterprise tiers allow large volumes. Infrastructure faults answer <code>500</code> with messages such as <code>Tenant database not configured</code>, <code>Failed to verify API key</code>, <code>Failed to check usage</code>, or <code>Failed to check rate limit</code>.</p>
 <h2 id="response-envelope"><a class="header" href="#response-envelope">Response Envelope</a></h2>
 <p>Successful handlers return the documented payload directly. Errors return one consistent shape with two fields, <code>error</code> and <code>code</code> (<code>crates/ares-http/src/error.rs</code>):</p>
 <pre><code class="language-json">{
@@ -224,7 +285,23 @@
   "code": "NOT_FOUND"
 }
 </code></pre>
-<p><code>code</code> values use stable SCREAMING_SNAKE_CASE identifiers. Middleware rejections before a handler runs answer with only the <code>error</code> field.</p>
+<h3 id="error-catalog"><a class="header" href="#error-catalog">Error catalog</a></h3>
+<p>Handlers return <code>HttpError</code>, which wraps <code>AppError</code> (<code>crates/ares-http/src/error.rs</code>). The status comes from <code>AppError::status_code()</code> and the code from <code>AppError::code()</code>, both in <code>crates/ares-types/src/types/mod.rs</code>. The mapping is fixed:</p>
+<div class="table-wrapper"><table><thead><tr><th><code>AppError</code> variant</th><th>HTTP status</th><th><code>code</code></th><th>Example message prefix</th></tr></thead><tbody>
+<tr><td><code>Database</code></td><td>500</td><td><code>DATABASE_ERROR</code></td><td><code>Database error:</code></td></tr>
+<tr><td><code>LLM</code></td><td>500</td><td><code>LLM_ERROR</code></td><td><code>LLM error:</code></td></tr>
+<tr><td><code>Auth</code></td><td>401</td><td><code>AUTHENTICATION_FAILED</code></td><td><code>Authentication error:</code></td></tr>
+<tr><td><code>NotFound</code></td><td>404</td><td><code>NOT_FOUND</code></td><td><code>Not found:</code></td></tr>
+<tr><td><code>InvalidInput</code></td><td>400</td><td><code>INVALID_INPUT</code></td><td><code>Invalid input:</code></td></tr>
+<tr><td><code>Configuration</code></td><td>500</td><td><code>CONFIGURATION_ERROR</code></td><td><code>Configuration error:</code></td></tr>
+<tr><td><code>External</code></td><td>502</td><td><code>EXTERNAL_SERVICE_ERROR</code></td><td><code>External service error:</code></td></tr>
+<tr><td><code>Internal</code></td><td>500</td><td><code>INTERNAL_ERROR</code></td><td><code>Internal error:</code></td></tr>
+<tr><td><code>Unavailable</code></td><td>503</td><td><code>INTERNAL_ERROR</code></td><td><code>Service unavailable:</code></td></tr>
+<tr><td><code>RateLimited</code></td><td>429</td><td><code>INTERNAL_ERROR</code></td><td><code>Rate limited:</code></td></tr>
+<tr><td><code>FeatureDisabled</code></td><td>400</td><td><code>INTERNAL_ERROR</code></td><td><code>Feature disabled:</code></td></tr>
+</tbody></table>
+</div>
+<p>Three variants carry status codes that do not match their code class: <code>Unavailable</code> answers 503 but reports <code>INTERNAL_ERROR</code>, and <code>RateLimited</code> answers 429 while <code>FeatureDisabled</code> answers 400, both also reporting <code>INTERNAL_ERROR</code>. Match on the status plus the message prefix, not on <code>code</code> alone.</p>
 <h2 id="chat"><a class="header" href="#chat">Chat</a></h2>
 <h3 id="post-chat"><a class="header" href="#post-chat">POST /chat</a></h3>
 <p>Runs one agent turn. Requires a JWT bearer token.</p>
@@ -260,7 +337,29 @@ data: {"event":"token","content":"Here "}
 
 data: {"event":"done","agent":"researcher","context_id":"8f14e45f-..."}
 </code></pre>
-<p>Event types are <code>start</code>, <code>token</code>, <code>done</code>, and <code>error</code>.</p>
+<h4 id="event-anatomy"><a class="header" href="#event-anatomy">Event anatomy</a></h4>
+<p><code>StreamEvent</code> and its four constructors live in <code>crates/ares-http/src/api/handlers/chat.rs</code>. Absent optional fields are omitted from the JSON, never sent as <code>null</code>:</p>
+<div class="table-wrapper"><table><thead><tr><th>Event</th><th>Fields set</th><th>Producer behavior</th></tr></thead><tbody>
+<tr><td><code>start</code></td><td><code>agent</code> (<code>"&lt;name&gt; (system)"</code>), <code>context_id</code></td><td>Sent once before any model output, after agent resolution succeeds.</td></tr>
+<tr><td><code>token</code></td><td><code>content</code></td><td>One per streamed token chunk. No <code>agent</code> or <code>context_id</code>.</td></tr>
+<tr><td><code>done</code></td><td><code>agent</code> (<code>"{AgentType:?} ({source})"</code>, for example <code>"Sales (system)"</code>), <code>context_id</code></td><td>Final event of a successful run.</td></tr>
+<tr><td><code>error</code></td><td><code>error</code>; <code>context_id</code> when known</td><td>Terminal. Failures before a context exists (admission denial, missing Llm service) omit <code>context_id</code> entirely.</td></tr>
+</tbody></table>
+</div>
+<p>An admission failure yields an error event with no other fields:</p>
+<pre><code>data: {"event":"error","error":"monthly quota exceeded"}
+</code></pre>
+<p>A mid-stream failure carries the conversation scope:</p>
+<pre><code>data: {"event":"start","agent":"product (system)","context_id":"8f14e45f-..."}
+
+data: {"event":"token","content":"Here "}
+
+data: {"event":"error","context_id":"8f14e45f-...","error":"Stream error: provider closed connection"}
+</code></pre>
+<p>The endpoint attaches an SSE keep-alive comment every 15 seconds (<code>Sse::keep_alive</code> in <code>chat_stream_response</code>). Idle connections therefore never time out silently; clients should ignore comment frames.</p>
+<p>The <code>GET</code> variant takes the request fields as query parameters (<code>ChatStreamQuery</code>): <code>message</code> (required), plus optional <code>agent_type</code>, <code>context_id</code>, and <code>workspace_id</code>. Authenticate it with <code>Authorization: Bearer</code> or the <code>?token=</code> fallback:</p>
+<pre><code class="language-bash">curl -N -s "http://localhost:3000/api/chat/stream?message=Summarize%20my%20notes&amp;agent_type=researcher&amp;token=$ACCESS_TOKEN"
+</code></pre>
 <h3 id="post-research"><a class="header" href="#post-research">POST /research</a></h3>
 <p>Runs deep research. Body is <code>{"query": "...", "depth": 3, "max_iterations": 10}</code>; both limits are optional.</p>
 <h3 id="get-memory"><a class="header" href="#get-memory">GET /memory</a></h3>
@@ -427,6 +526,40 @@ data: {"event":"done","agent":"researcher","context_id":"8f14e45f-..."}
   -d '{"message": "Hello"}'
 </code></pre>
 <p>Quota breaches answer with a quota-exceeded error body.</p>
+<h2 id="pagination-and-filtering"><a class="header" href="#pagination-and-filtering">Pagination and Filtering</a></h2>
+<p>List endpoints use two different parameter conventions.</p>
+<h3 id="v1-page-based-pagination"><a class="header" href="#v1-page-based-pagination"><code>/v1</code> page-based pagination</a></h3>
+<p><code>GET /v1/agents</code>, <code>GET /v1/agents/{name}/runs</code>, and <code>GET /v1/agents/{name}/logs</code> take <code>page</code> and <code>per_page</code> query parameters and return a <code>Paginated&lt;T&gt;</code> envelope (<code>crates/ares-http/src/api/handlers/v1/shared.rs</code>):</p>
+<pre><code class="language-json">{
+  "items": [],
+  "total": 0,
+  "page": 1,
+  "per_page": 20,
+  "total_pages": 0
+}
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Normalization</th><th>Notes</th></tr></thead><tbody>
+<tr><td><code>page</code></td><td>Defaults to 1; values under 1 clamp to 1</td><td></td></tr>
+<tr><td><code>per_page</code></td><td>Defaults to 20 for agents, 25 for runs; caps at 100</td><td>Logs default to 50</td></tr>
+</tbody></table>
+</div>
+<p>Example:</p>
+<pre><code class="language-bash">curl -s "http://localhost:3000/api/v1/agents?page=2&amp;per_page=50" \
+  -H "Authorization: Bearer ares_$API_KEY"
+</code></pre>
+<h3 id="admin-limitoffset-pagination"><a class="header" href="#admin-limitoffset-pagination">Admin limit/offset pagination</a></h3>
+<p>Admin list endpoints in <code>crates/ares-http/src/api/handlers/admin/audit.rs</code> and siblings take <code>limit</code> and <code>offset</code>. The handler clamps the values before querying:</p>
+<div class="table-wrapper"><table><thead><tr><th>Route group</th><th>Parameters</th><th>Clamping</th></tr></thead><tbody>
+<tr><td><code>GET /admin/alerts</code></td><td><code>limit</code>, <code>severity</code>, <code>resolved</code></td><td>Default limit 50, cap 200; filter by severity string and resolved flag</td></tr>
+<tr><td><code>GET /admin/audit-log</code></td><td><code>limit</code>, <code>offset</code></td><td>Default limit 50, cap 200</td></tr>
+<tr><td><code>GET .../tenants/{tenant_id}/usage/daily</code></td><td><code>days</code></td><td>Default 30, cap 90</td></tr>
+<tr><td>Tenant agent runs (<code>.../agents/{name}/runs</code>)</td><td><code>limit</code>, <code>offset</code></td><td>Default 50, cap 200</td></tr>
+<tr><td>Feedback summary (<code>.../{agent_name}/feedback/summary</code>)</td><td><code>days</code></td><td>Default 30, clamped to 1..366</td></tr>
+<tr><td>Missed runs (<code>GET .../schedules/{id}/missed-runs</code>)</td><td><code>limit</code></td><td>Default 10, clamped to 1..100</td></tr>
+<tr><td>Run history costs (<code>POST /admin/run-history/costs</code>)</td><td><code>limit</code>, <code>offset</code> in body</td><td>Limit clamped to 1..10000</td></tr>
+</tbody></table>
+</div>
+<p>Tenant-scoped list routes such as <code>/admin/triggers</code>, <code>/admin/pipelines</code>, and <code>/admin/schedules</code> require <code>?tenant_id=</code>. An empty value answers <code>400 {"error":"tenant_id query param is required"}</code>.</p>
 <h2 id="webhooks-oauth-events"><a class="header" href="#webhooks-oauth-events">Webhooks, OAuth, Events</a></h2>
 <p>Public routes without authentication:</p>
 <ul>
@@ -465,6 +598,13 @@ data: {"event":"done","agent":"researcher","context_id":"8f14e45f-..."}
 </code></pre>
 <pre><code class="language-json">{"provided": true, "service": "events_service", "type": "cordis::events::EventsService"}
 </code></pre>
+<p><code>POST /admin/cordis/services/{name}/retire</code> answers <code>200 {"retired": true, ...}</code> on removal and <code>200 {"retired": false, ...}</code> when the service was already absent. Guarded withdrawal refuses the removal while active consumer fibers still rely on the provider; it answers <code>409 {"retired": false, "reason": "guarded", "consumers": &lt;N&gt;}</code>. Names that are not direct Cordis services answer <code>409</code> as well — wrapper types are not supported today (<code>crates/ares-http/src/api/handlers/admin/cordis.rs</code>, <code>retire_cordis_service</code>).</p>
+<p>Two read-only routes help interpret those outcomes:</p>
+<ul>
+<li><code>GET /admin/cordis/services</code> lists every tracked fiber with <code>fiber_id</code>, <code>state</code> (the debug form of <code>FiberState</code>: <code>Active</code>, <code>Inactive</code>, <code>Loading</code>, <code>Failed</code>, <code>Reloading</code>, <code>Unloading</code>), <code>error</code> when the fiber rests in a terminal state with a message, <code>disposed</code>, and <code>pending_undo_count</code>.</li>
+<li><code>GET /admin/cordis/undo</code> lists the labeled undo closures still pending per fiber, in registration order. Only labeled undos surface; anonymous ones count toward <code>pending_undo_count</code> only.</li>
+</ul>
+<p>Both answer <code>503 {"error":"RegistryService is not provided on this context"}</code> on library deployments without a registry.</p>
 <h3 id="post-admincordisservicesnamereplace"><a class="header" href="#post-admincordisservicesnamereplace">POST /admin/cordis/services/{name}/replace</a></h3>
 <p>Rolling drain-and-shift replacement of a journaled provider. The body must be <code>{"config": &lt;value&gt;}</code> carrying the new configuration. Success answers:</p>
 <pre><code class="language-json">{"replaced": true, "plugin": "calc", "fiber_id": 17}
@@ -486,18 +626,35 @@ data: {"event":"done","agent":"researcher","context_id":"8f14e45f-..."}
 </div>
 <h4 id="">PATCH /admin/cordis/entries/</h4>
 <p>Applies only the present fields: <code>config</code>, <code>disabled</code>, <code>isolate</code>, <code>intercept</code>. An empty body is a validated no-op that still persists and re-applies the tree. Present <code>parent</code> or <code>position</code> fields move the entry first. Invalid moves answer <code>409</code>; unknown ids answer <code>404</code>.</p>
-<p>When the new configuration fails the factory pre-flight, the response carries a structured <code>issues</code> array next to the legacy <code>error</code> string. Each issue has a <code>message</code> and a <code>path</code>:</p>
+<p>When the new configuration fails the factory pre-flight, the response carries a structured <code>issues</code> array next to the legacy <code>error</code> string. Each issue has a <code>message</code> and a <code>path</code>. The <code>error</code> string is the loader's marker plus the rendered error (<code>"config pre-flight failed: {error}"</code>, <code>crates/cordis/src/loader.rs</code>; a validation issue renders as <code>- &lt;message&gt; (at &lt;path&gt;)</code>):</p>
 <pre><code class="language-json">{
   "applied": [],
   "patched": false,
   "reloaded": false,
-  "error": "config pre-flight failed for calc: missing url",
+  "error": "config pre-flight failed: invalid config: - missing url (at calc.url)",
   "issues": [{"message": "missing url", "path": ["calc", "url"]}]
 }
 </code></pre>
-<p>Success answers <code>200</code>:</p>
-<pre><code class="language-json">{"applied": [], "patched": true, "entry": {"id": "calc"}}
+<h4 id="move-then-update-in-one-call"><a class="header" href="#move-then-update-in-one-call">Move-then-update in one call</a></h4>
+<p>A body with a present <code>parent</code> or <code>position</code> field relocates the entry first, then applies the remaining fields. One request can rename a subtree and reconfigure its root:</p>
+<pre><code class="language-bash">curl -s -X PATCH http://localhost:3000/api/admin/cordis/entries/calc \
+  -H "X-Admin-Secret: $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"parent": "tools-group", "config": {"precision": 2}}'
 </code></pre>
+<p>The response carries the post-patch entry plus <code>renamed</code> old-to-new id pairs from the move phase:</p>
+<pre><code class="language-json">{
+  "applied": [],
+  "patched": true,
+  "renamed": [["calc", "tools-group:calc"]],
+  "entry": {"id": "tools-group:calc"}
+}
+</code></pre>
+<p>The live fiber keeps its identity across the structural move. The journal re-keys the record to the new id while preserving the fiber id, so consumers never observe a restart. The config update then lands under the new id. This sequence comes from the test <code>patch_endpoint_moves_entry</code> in <code>crates/ares-http/src/api/handlers/admin/cordis.rs</code>.</p>
+<p>A position-only body reorders within the current parent; an explicit <code>"parent": null</code> moves to the tree root.</p>
+<h4 id="failed-pre-flight-the-issues-array"><a class="header" href="#failed-pre-flight-the-issues-array">Failed pre-flight: the issues array</a></h4>
+<p>When the patched config fails the factory trial pre-flight, the loader stashes machine-readable issues for the entry and the handler attaches them to the failure body shown above. The status is <code>422</code> (<code>patch_endpoint_returns_structured_issues_on_bad_config</code>).</p>
+<p>The failed trial leaves nothing behind: a follow-up well-formed patch succeeds with <code>200</code> and no <code>issues</code> field, instead of tripping stale issues from the earlier attempt.</p>
 <h4 id="post-admincordisentriesidmove"><a class="header" href="#post-admincordisentriesidmove">POST /admin/cordis/entries/{id}/move</a></h4>
 <p>Relocates the entry and its whole <code>{id}:*</code> descendant namespace under a new parent. Body fields:</p>
 <ul>
@@ -517,7 +674,14 @@ data: {"event":"done","agent":"researcher","context_id":"8f14e45f-..."}
   "applied": []
 }
 </code></pre>
-<p>Invalid moves (unknown ids, moves under one's own descendant, id collisions) answer <code>409 {"moved": false, "error": "..."}</code> without touching the file or the live tree. Unknown entry ids answer <code>404</code>.</p>
+<p>Parent semantics in detail (<code>move_cordis_entry</code> and <code>EntryTree::move_entry</code>):</p>
+<ul>
+<li><code>"parent": "&lt;id&gt;"</code> moves under that entry. Every descendant id prefixed <code>{moved-id}:</code> renames mechanically; ids without the prefix stay untouched.</li>
+<li><code>"parent": null</code> moves the entry to the tree root and strips any parent prefix from it and its descendants.</li>
+<li>Omitting the <code>parent</code> field behaves like <code>null</code>: the entry moves to the tree root. To reorder within the current parent without relocating, use <code>PATCH</code> with a <code>position</code> only.</li>
+<li><code>"position"</code> must be a non-negative integer. A wrong type answers <code>400 {"error":"\"position\" must be a non-negative integer"}</code>. A non-string, non-null <code>parent</code> answers <code>400 {"error":"\"parent\" must be a string or null"}</code>.</li>
+</ul>
+<p>Pure structural moves never restart fibers: the loader detects that plugins, configs, disabled flags, and isolates are identical on both sides, takes the noop path, re-keys journal records while keeping fiber ids, and reports <code>"noop": true</code> when nothing but placement changed.</p>
 
                     </main>
 

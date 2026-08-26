@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -180,30 +182,53 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="operations"><a class="header" href="#operations">Operations</a></h1>
-<p>This chapter covers configuration, supervision, observability, security posture, and backup notes for running an ARES server. All keys come from the config structs cited per section.</p>
+<p>This chapter covers configuration, supervision, observability, security posture, CI gates, and backup notes for running an ARES server. All keys come from the config structs cited per section.</p>
 <h2 id="configuration-file"><a class="header" href="#configuration-file">Configuration file</a></h2>
-<p>The server reads <code>ares.toml</code> from the working directory. <code>ares-server --config my-config.toml</code> selects another file. <code>ares-server init</code> scaffolds a project with <code>ares.toml</code>, <code>.env.example</code>, and a <code>config/</code> directory tree (<code>src/cli/init.rs</code>). The root schema is <code>AresConfig</code> (<code>crates/ares-http/src/overlay.rs</code>).</p>
+<p>The server reads <code>ares.toml</code> from the working directory. <code>ares-server --config my-config.toml</code> selects another file. <code>ares-server init</code> scaffolds a project with <code>ares.toml</code>, <code>.env.example</code>, and a <code>config/</code> directory tree (<code>src/cli/init.rs</code>). The root schema is <code>AresConfig</code> (<code>crates/ares-http/src/overlay.rs</code>). Check any config file before deploy with <code>ares-server config --validate</code>. The <code>[auth]</code> and <code>[database]</code> tables are required, but an empty table satisfies them because every field inside carries a default.</p>
 <h3 id="server-group"><a class="header" href="#server-group"><code>[server]</code> group</a></h3>
 <p><code>ServerConfig</code> (<code>crates/ares-http/src/config.rs</code>):</p>
 <div class="table-wrapper"><table><thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead><tbody>
 <tr><td><code>host</code></td><td><code>"127.0.0.1"</code></td><td>Bind address.</td></tr>
 <tr><td><code>port</code></td><td>3000</td><td>Listen port.</td></tr>
 <tr><td><code>log_level</code></td><td><code>"info"</code></td><td>One of <code>trace</code>, <code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>.</td></tr>
-<tr><td><code>cors_origins</code></td><td><code>["*"]</code></td><td>Allowed CORS origins. Set explicit origins in production.</td></tr>
+<tr><td><code>cors_origins</code></td><td><code>["http://localhost:3000"]</code></td><td>Allowed CORS origins. Set explicit origins in production.</td></tr>
 <tr><td><code>rate_limit_per_second</code></td><td>100</td><td>Requests per second per IP; 0 disables limiting.</td></tr>
 <tr><td><code>rate_limit_burst</code></td><td>10</td><td>Rate limiter burst size.</td></tr>
 </tbody></table>
 </div>
+<h4 id="cors-behavior"><a class="header" href="#cors-behavior">CORS behavior</a></h4>
+<p><code>build_cors_layer</code> (<code>src/main.rs</code>) maps the origin list to three modes:</p>
+<ol>
+<li>Single <code>"*"</code> entry, or an empty list: any origin is allowed, credentials are disabled, and a warning logs at startup. Browsers reject credentials together with wildcard origins, so this mode never sends them.</li>
+<li>Any other list: only listed origins pass. Credentials are enabled. Origins that fail to parse drop out silently.</li>
+</ol>
+<p>Allowed methods cover GET, POST, PUT, PATCH, DELETE, and OPTIONS. Allowed request headers are <code>Authorization</code>, <code>Content-Type</code>, <code>Accept</code>, <code>Origin</code>, and <code>x-admin-secret</code>.</p>
+<h4 id="rate-limit-algorithm"><a class="header" href="#rate-limit-algorithm">Rate limit algorithm</a></h4>
+<p>The two <code>rate_limit_*</code> keys drive one middleware built at startup (<code>src/main.rs</code>, around the layer assembly):</p>
+<ul>
+<li>When <code>rate_limit_per_second &gt; 0</code>, the app wraps in <code>tower_governor::GovernorLayer</code>. The governor runs the Generic Cell Rate Algorithm (GCRA) per client IP: <code>per_second</code> sets the sustained refill rate, and <code>burst_size</code> permits short bursts above it before rejections start.</li>
+<li><code>use_headers()</code> adds standard <code>x-ratelimit-*</code> headers to responses, so clients can observe their budget.</li>
+<li>A background task prunes stale per-IP state every 60 seconds to bound memory.</li>
+<li>Setting <code>rate_limit_per_second = 0</code> skips the layer entirely. Startup then logs a warning that disabling limiting is not recommended for production.</li>
+</ul>
+<p>A second, independent limiter lives in the API-key auth middleware: tenant daily usage accumulates in the PostgreSQL <code>daily_rate_limits</code> table keyed by <code>(tenant_id, usage_date)</code> and caches per tenant in memory (<code>crates/ares-store/src/tenants.rs</code>). If the database check itself fails, requests fail closed with HTTP 500 <code>Failed to check rate limit</code>.</p>
 <h3 id="auth-group"><a class="header" href="#auth-group"><code>[auth]</code> group</a></h3>
 <p><code>AuthConfig</code>:</p>
 <div class="table-wrapper"><table><thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead><tbody>
 <tr><td><code>jwt_secret_env</code></td><td><code>"JWT_SECRET"</code></td><td>Environment variable name holding the JWT (JSON Web Token) secret.</td></tr>
-<tr><td><code>jwt_access_expiry</code></td><td>900</td><td>Access token lifetime in seconds (15 minutes).</td></tr>
+<tr><td><code>jwt_access_expiry</code></td><td>900</td><td>Access token lifetime in seconds (15 minutes). Short-lived by design; refresh tokens renew sessions.</td></tr>
 <tr><td><code>jwt_refresh_expiry</code></td><td>604800</td><td>Refresh token lifetime in seconds (7 days).</td></tr>
 <tr><td><code>api_key_env</code></td><td><code>"API_KEY"</code></td><td>Environment variable name holding the API key.</td></tr>
 </tbody></table>
 </div>
-<p>Secrets live in environment variables by name, never in <code>ares.toml</code>.</p>
+<p>Secrets live in environment variables by name, never in <code>ares.toml</code>. Expiry values are plain second counts; there is no separate unit key.</p>
+<h3 id="database-group"><a class="header" href="#database-group"><code>[database]</code> group</a></h3>
+<p><code>DatabaseConfig</code> (<code>crates/ares-store/src/config.rs</code>):</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>url</code></td><td><code>postgres://postgres:postgres@localhost:5432/ares</code></td><td>PostgreSQL connection string. Holds tenants, agents, skills, run history, billing, and compaction snapshots.</td></tr>
+<tr><td><code>qdrant</code></td><td>none</td><td>Optional <code>QdrantConfig</code> table for an external vector store. See RAG.</td></tr>
+</tbody></table>
+</div>
 <h3 id="providers-group"><a class="header" href="#providers-group"><code>[providers.*]</code> group</a></h3>
 <p>Each named provider deserializes into <code>ProviderConfig</code> (<code>crates/ares-llm/src/config.rs</code>), tagged by <code>type = "..."</code>. Variants: <code>openai</code> (fields <code>api_key_env</code>, <code>api_base</code>, <code>default_model</code>; also serves NVIDIA NIM and compatible endpoints), <code>azure</code> (<code>api_key_env</code>, <code>base_url_env</code>, <code>default_model</code>), <code>anthropic</code> (<code>api_key_env</code>, <code>default_model</code>), <code>bedrock</code> (<code>api_key_env</code>, <code>region_env</code>, <code>default_model</code>), and <code>ollama</code> (<code>base_url</code>, <code>default_model</code>). A missing environment variable fails at client creation with a clear error.</p>
 <p>An optional <code>[nvidia]</code> group (<code>NvidiaConfig</code>) adds catalog settings: <code>api_key_env</code>, <code>api_base</code>, <code>models_url</code>, <code>catalog_refresh_seconds</code>, and <code>default_model</code>. When absent, the registry synthesizes one NVIDIA provider from defaults.</p>
@@ -222,24 +247,70 @@
 <li><code>acquire_timeout</code> — wait budget for borrowing a pooled client. Default 30 seconds.</li>
 <li><code>enable_health_check</code> — default true.</li>
 </ul>
-<p>A permit spans the whole call including streams; saturation fails closed.</p>
-<h2 id="supervised-mode"><a class="header" href="#supervised-mode">Supervised mode</a></h2>
-<p>Start the server with <code>--supervise</code> (<code>src/main.rs</code>, <code>src/supervisor.rs</code>). The daemon runs the real server as a child copy marked by the <code>CORDIS_SUPERVISED</code> environment variable. Exit codes drive the loop:</p>
+<p>A permit spans the whole call including streams; saturation fails closed. This admission model rejects excess callers instead of queueing them onto the backend, so a saturated provider degrades loudly and early rather than silently stretching latencies.</p>
+<h2 id="supervised-operation-runbook"><a class="header" href="#supervised-operation-runbook">Supervised operation runbook</a></h2>
+<p>Start the server with <code>--supervise</code> (<code>src/main.rs</code>, <code>src/supervisor.rs</code>). The daemon runs the real server as a child copy marked by the <code>CORDIS_SUPERVISED</code> environment variable. Dropping the child's standard-input handle is the stop request; the child watches for end-of-file and tears down gracefully.</p>
+<p>Exit codes drive the loop:</p>
 <div class="table-wrapper"><table><thead><tr><th>Exit code</th><th>Constant</th><th>Effect</th></tr></thead><tbody>
 <tr><td>51</td><td><code>EXIT_RESTART</code></td><td>Start a fresh child. Rapid loops back off exponentially.</td></tr>
 <tr><td>52</td><td><code>EXIT_QUIT</code></td><td>End supervision; shut down for good.</td></tr>
 <tr><td>53</td><td><code>EXIT_BOOT</code></td><td>Boot failed; report and do not restart.</td></tr>
 </tbody></table>
 </div>
-<p>Any other terminal status also ends the loop. Hot restarts use code 51 so configuration changes apply without dropping the daemon.</p>
+<p>Any other terminal status also ends the loop, including death by signal. Hot restarts use code 51 so configuration changes apply without dropping the daemon.</p>
+<h3 id="restart-loop-guard-rails"><a class="header" href="#restart-loop-guard-rails">Restart loop guard rails</a></h3>
+<p>The loop carries four safeguards (<code>src/supervisor.rs</code>):</p>
+<ul>
+<li><strong>Rapid-restart cap.</strong> Five exits inside a 30-second window stop the loop with an error instead of spinning. A plugin that crashes at boot trips this cap.</li>
+<li><strong>Health reset.</strong> A child that ran at least 10 minutes counts as healthy. Its exit clears the strike ladder, so old crashes never doom a fresh process.</li>
+<li><strong>Backoff ladder.</strong> A child that exited within 10 seconds never proved health. The next respawn delays 100 ms, doubling per consecutive unhealthy run: 100 ms, 200 ms, 400 ms, 800 ms, 1.6 s, 3.2 s, capped at 5 s.</li>
+<li><strong>Shutdown grace.</strong> After a stop request, the child gets 10 seconds to exit on its own; past that, the daemon force-kills it. The grace bounds the goodbye, never the working lifetime.</li>
+</ul>
+<p>Nested supervision refuses to start: a child marked <code>CORDIS_SUPERVISED</code> never spawns its own daemon. Exit code 53 mirrors the child's real code to the daemon's process exit, so systemd or another service manager still observes the failure.</p>
+<pre><code class="language-mermaid">flowchart TD
+    A[Child exits] --&gt; B{Code}
+    B -- 51 RESTART --&gt; C{5 restarts in 30 s?}
+    C -- yes --&gt; H[Stop loop with error]
+    C -- no --&gt; D{Run under 10 s?}
+    D -- yes --&gt; E[Delay backoff ladder]
+    D -- no --&gt; F[Reset ladder]
+    E --&gt; G[Spawn fresh child]
+    F --&gt; G
+    B -- 52 QUIT --&gt; I[Shut down daemon]
+    B -- 53 BOOT --&gt; J[Report failure, do not restart]
+    B -- other / signal --&gt; I
+</code></pre>
 <h2 id="observability"><a class="header" href="#observability">Observability</a></h2>
 <ul>
-<li>Health endpoints: <code>/health</code> (Http plugin) and <code>/health/detailed</code> (<code>src/main.rs</code>). Admin routes expose health metrics and model metrics under <code>/health/list_health_metrics</code> and <code>/health/list_model_metrics</code> (<code>crates/ares-http/src/api/routes.rs</code>).</li>
-<li>Telemetry records: every LLM call produces an <code>LlmCallRecord</code> that carries <code>cached_tokens</code> and <code>total_time_ms</code> alongside token counts (<code>crates/ares-llm/src/observability.rs</code>). Micro-call cache hits report <code>latency_ms: 0</code> and carry a <code>cache_hit</code> flag.</li>
-<li>Log exporters: the <code>ExporterRouter</code> (<code>crates/ares-llm/src/exporter.rs</code>) fans LLM and tool call records out to registered sinks — stdout formatters, database writers, OTLP (OpenTelemetry Protocol) forwarders, or test captures. Each sink gates on a <code>RecordLevel</code> (<code>Debug</code>, <code>Info</code>, <code>Warn</code>, <code>Error</code>). An exporter failure logs a warning inside the exporter and never fails inference.</li>
-<li>Skill-step records attach ambient enrichment metadata under the <code>ambient_enrichment</code> key when enabled (see Agents).</li>
+<li>
+<p>Health endpoints: <code>/health</code> (Http plugin) and <code>/health/detailed</code> (<code>src/main.rs</code>). Admin routes expose health metrics and model metrics under <code>/health/list_health_metrics</code> and <code>/health/list_model_metrics</code> (<code>crates/ares-http/src/api/routes.rs</code>). Observed responses from a running v0.10 server (<code>exercised</code>):</p>
+<pre><code class="language-console">$ curl -s http://localhost:3000/health
+OK
+
+$ curl -s http://localhost:3000/health/detailed
+{"status":"healthy","version":"0.1.0","checks":{},"agents":[],"latency_ms":1}
+</code></pre>
+<p><code>/health</code> answers plain text for cheap probes. <code>/health/detailed</code> returns JSON with per-check status, registered agents, and measured latency.</p>
+</li>
+<li>
+<p>Telemetry records: every LLM call produces an <code>LlmCallRecord</code> that carries <code>cached_tokens</code> and <code>total_time_ms</code> alongside token counts (<code>crates/ares-llm/src/observability.rs</code>). Micro-call cache hits report <code>latency_ms: 0</code> and carry a <code>cache_hit</code> flag.</p>
+</li>
 </ul>
-<p>There is no Prometheus endpoint; scrape-style monitoring must read the admin endpoints above.</p>
+<h3 id="telemetry-field-semantics"><a class="header" href="#telemetry-field-semantics">Telemetry field semantics</a></h3>
+<p>Both new columns are optional integers (<code>Option&lt;i64&gt;</code>), and their absence carries meaning:</p>
+<ul>
+<li><code>cached_tokens</code> reports tokens served from the provider-side prompt cache. It is <code>None</code> when unknown or unreported. When present it is always zero or more and forms a subset of <code>prompt_tokens</code>.</li>
+<li><code>total_time_ms</code> measures end-to-end wall-clock time for the whole call, including retries and queueing. Callers commonly mirror <code>latency_ms</code> into it when they cannot measure the two separately. <code>None</code> means not measured.</li>
+</ul>
+<h3 id="exporter-routing"><a class="header" href="#exporter-routing">Exporter routing</a></h3>
+<p>Log exporters fan records out through the <code>ExporterRouter</code> (<code>crates/ares-llm/src/exporter.rs</code>):</p>
+<ul>
+<li>Each registered sink declares which records it accepts through a <code>RecordLevel</code> gate: <code>Debug</code>, <code>Info</code>, <code>Warn</code>, or <code>Error</code>. The level is metadata about the record; it does not change the record.</li>
+<li>The built-in stdout formatter emits a <code>tracing</code> info event for successful calls and a warn event for failures. Both include <code>cached_tokens</code> and <code>total_time_ms</code>; an absent <code>Option</code> emits nothing rather than a placeholder.</li>
+<li>Sinks include stdout formatters, database writers, OTLP (OpenTelemetry Protocol) forwarders, and test captures.</li>
+<li>An exporter failure logs a warning inside the exporter and never fails inference.</li>
+</ul>
+<p>There is no Prometheus endpoint; scrape-style monitoring must read the admin endpoints above. Skill-step records attach ambient enrichment metadata under the <code>ambient_enrichment</code> key when enabled (see Agents).</p>
 <h2 id="security-posture"><a class="header" href="#security-posture">Security posture</a></h2>
 <p>ARES fails closed on its trust boundaries:</p>
 <ul>
@@ -256,14 +327,45 @@
 <li>Remove the old environment variable after the new one proves active.</li>
 </ol>
 <p>Never place secret values in <code>ares.toml</code>, TOON files, or version control.</p>
-<h2 id="backup-notes"><a class="header" href="#backup-notes">Backup notes</a></h2>
+<h2 id="backup-and-restore-runbook"><a class="header" href="#backup-and-restore-runbook">Backup and restore runbook</a></h2>
 <p>Storage choice comes from <code>[database]</code> (<code>DatabaseConfig</code>, <code>crates/ares-store/src/config.rs</code>):</p>
 <ul>
-<li><code>url</code> — PostgreSQL connection string, default <code>postgres://postgres:postgres@localhost:5432/ares</code>. PostgreSQL holds tenants, agents, skills, run history, billing, and compaction snapshots. Back it up with standard database tooling such as <code>pg_dump</code> on a schedule that matches your recovery point objective.</li>
+<li><code>url</code> — PostgreSQL connection string, default <code>postgres://postgres:postgres@localhost:5432/ares</code>. PostgreSQL holds tenants, agents, skills, run history, billing, and compaction snapshots.</li>
 <li><code>qdrant</code> — optional external vector store. Back up collections through Qdrant's own snapshot mechanism; ARES treats it as an external service.</li>
-<li>The embedded <code>ares-vector</code> store persists under <code>[rag.vector] vector_path</code> (default <code>./data/vectors</code>). Include that directory in file-level backups. Stop writes or quiesce ingestion during the copy so chunk files stay consistent.</li>
+<li>The embedded <code>ares-vector</code> store persists under <code>[rag.vector] vector_path</code> (default <code>./data/vectors</code>). Include that directory in file-level backups.</li>
 </ul>
-<p>Restore order matters: restore PostgreSQL first, then vector data, then start the server so migrations run against the restored database.</p>
+<p>Backup procedure:</p>
+<ol>
+<li>Quiesce RAG ingestion first. Stop writes or pause ingest traffic so chunk files stay consistent during the copy.</li>
+<li>Dump PostgreSQL with standard tooling: <code>pg_dump "$DATABASE_URL" &gt; ares-backup.sql</code>. Schedule dumps to match your recovery point objective.</li>
+<li>Copy the vector directory while writes are quiesced: <code>cp -a ./data/vectors /backups/vectors-$(date +%F)/</code>.</li>
+<li>For Qdrant deployments, take its snapshot through Qdrant's API or tooling. Do not copy its files behind its back.</li>
+<li>Verify each artifact restores before trusting the schedule: load the dump into a scratch database and open the copied vector directory read-only.</li>
+</ol>
+<p>Restore procedure, in this order:</p>
+<ol>
+<li>Stop the ARES server.</li>
+<li>Restore PostgreSQL first: create the database, apply <code>ares-backup.sql</code>, then let migrations reconcile schema state on next boot.</li>
+<li>Restore the vector directory second, back to the exact <code>[rag.vector] vector_path</code> the restored config names.</li>
+<li>Restore Qdrant snapshots third, if used.</li>
+<li>Start the server so migrations run against the restored database before traffic arrives.</li>
+</ol>
+<p>Order matters: vector data references documents whose metadata lives in PostgreSQL, so restoring the database first keeps ids consistent.</p>
+<h2 id="ci-quality-gates"><a class="header" href="#ci-quality-gates">CI quality gates</a></h2>
+<p>The repository pins one automated quality gate in GitHub Actions (<code>.github/workflows/ci.yml</code>, job <code>crap</code>, named "CRAP Score Gate"):</p>
+<pre><code>cargo install cargo-crap
+cargo crap --workspace --format json --threshold 30 --fail-above
+</code></pre>
+<p>CRAP (Change Risk Anti-Patterns) combines cyclomatic complexity with test coverage per function. The upstream metric definition (Savoia &amp; Evans, 2007; implemented by cargo-crap) is:</p>
+<p>$$\mathrm{CRAP}(m) ;=; \mathrm{comp}(m)^2 \times \left(1 - \frac{\mathrm{cov}(m)}{100}\right)^{3} ;+; \mathrm{comp}(m)$$</p>
+<p>Here $\mathrm{comp}(m)$ is the function's cyclomatic complexity and $\mathrm{cov}(m)$ its line coverage percentage. Three properties explain the gate's shape:</p>
+<ul>
+<li>A trivial, fully covered function scores exactly $1$.</li>
+<li>At full coverage the cubic term collapses, so $\mathrm{CRAP}$ equals complexity. Tests cap the risk; they do not remove it.</li>
+<li>Above complexity $\approx 30$, no coverage level brings the score under the threshold of 30. Oversized functions fail regardless of tests.</li>
+</ul>
+<p>Two concrete scores, taken from the upstream tool's own example table: a function with complexity 12 and zero coverage scores $12^2 \times (1-0)^3 + 12 = 156$. A function with complexity 4 at roughly 44% coverage scores $16 \times (1-0.444)^3 + 4 \approx 6.7$.</p>
+<p>The gate fails when any workspace function exceeds the threshold of 30. Treat a red gate as work, not noise. Split the flagged function or raise its test coverage.</p>
 
                     </main>
 

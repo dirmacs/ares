@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -218,6 +220,83 @@ It never binds a socket unless the <code>Http</code> service runs.</p>
 <code>Tool</code>, <code>ToolDefinition</code>, <code>TenantContext</code>, and <code>AppError</code> ride the same
 re-export list. Deeper types live in the capability crates: <code>ares-tools</code>,
 <code>ares-llm</code>, <code>ares-agent</code>, and <code>ares-store</code>.</p>
+<h2 id="end-to-end-in-one-file"><a class="header" href="#end-to-end-in-one-file">End-to-end in one file</a></h2>
+<p>This complete program builds a context, registers services, dispatches one
+tool call, and runs one agent turn. Every piece is adapted from code that
+compiles and passes in this repository:</p>
+<ul>
+<li>The static tool list follows <code>tools_with_probe()</code> in
+<code>crates/ares-agent/src/execution.rs</code> (<code>Tools::from_static</code>).</li>
+<li>The calculator arguments and result shape come from <code>Calculator</code> in
+<code>crates/ares-tools/src/tools/calculator.rs</code>, re-exported by the facade.</li>
+<li>The event bus provide follows the middleware tests in
+<code>crates/ares-http/src/middleware/api_key_auth.rs</code>
+(<code>ctx.provide(cordis::EventsService::new())</code>).</li>
+<li>The agent turn uses <code>Execute::run</code>; with no <code>Llm</code> on the context it takes
+the documented echo fallback in <code>crates/ares-agent/src/execution.rs</code>.</li>
+</ul>
+<pre><code class="language-toml">[dependencies]
+ares-server = "0.10"
+ares-cordis = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
+</code></pre>
+<pre><pre class="playground"><code class="language-rust">use std::sync::Arc;
+
+use ares_server::{AgentRequest, Context, Execute, Tool, Tools};
+
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    // One context is the whole graph.
+    let ctx = Context::new_root();
+
+    // The event bus. Tool calls fan their arguments through a
+    // `tools.execute` waterfall when this service is present.
+    ctx.provide(cordis::EventsService::new());
+
+    // A tool set with one real tool. Calculator answers
+    // {"result": &lt;number&gt;} for basic arithmetic.
+    ctx.provide(Tools::from_static(
+        [Arc::new(ares_server::Calculator) as Arc&lt;dyn Tool&gt;],
+    ));
+
+    let tools = ctx.get::&lt;Tools&gt;().expect("tools on context");
+    let out = tools
+        .execute(&amp;ctx, "calculator", serde_json::json!({
+            "operation": "add", "a": 2, "b": 3
+        }))
+        .await?;
+    println!("calculator -&gt; {}", out["result"]); // calculator -&gt; 5.0
+
+    // One agent turn through the shared engine. No Llm is provided, so
+    // run() returns the message itself through the echo fallback path.
+    let execute = Execute::new();
+    let req = AgentRequest {
+        agent_name: "echo".to_string(),
+        message: "hello".to_string(),
+        ..Default::default()
+    };
+    let result = execute.run(&amp;req, &amp;ctx).await?;
+    println!("agent -&gt; {}", result.response.content); // agent -&gt; hello
+
+    Ok(())
+}</code></pre></pre>
+<p>Run it with <code>cargo run</code>. This exact program was compiled and executed against
+the workspace; its output:</p>
+<pre><code class="language-console">calculator -&gt; 5.0
+agent -&gt; hello
+</code></pre>
+<p>Three details keep this working:</p>
+<ul>
+<li>Use a multi-threaded Tokio flavor. Kernel plugin activation calls
+<code>tokio::task::block_in_place</code>, which current-thread runtimes reject.</li>
+<li><code>Execute</code> is stateless; construct or provide one instance anywhere. Do
+not isolate it per tenant — isolating it hides the root instance from
+request paths (the regression guard test
+<code>request_tenant_ctx_keeps_root_execute_resolvable</code> pins this).</li>
+<li>Add an <code>Llm::from_client(...)</code> provider to make the agent turn produce
+real model output instead of the echo fallback.</li>
+</ul>
 <h2 id="minimal-embed-through-the-loader"><a class="header" href="#minimal-embed-through-the-loader">Minimal embed through the loader</a></h2>
 <p>The server boots as one ordered pass over an entries file. A library embed
 can run the same pass with two calls. This example adapts the in-tree test
@@ -476,6 +555,113 @@ disabled = false
 [entry.config]
 prefix = "hello, "
 </code></pre>
+<h3 id="lifecycle-hooks-every-service-can-implement"><a class="header" href="#lifecycle-hooks-every-service-can-implement">Lifecycle hooks every service can implement</a></h3>
+<p>The <code>Service</code> trait (<code>crates/cordis/src/service.rs</code>) has three methods with
+working defaults. Override only what you need:</p>
+<div class="table-wrapper"><table><thead><tr><th>Hook</th><th>Default</th><th>When the kernel calls it</th></tr></thead><tbody>
+<tr><td><code>name()</code></td><td>The Rust type name</td><td>Diagnostics and duplicate-provider messages</td></tr>
+<tr><td><code>init(ctx)</code></td><td>Returns <code>Ok(None)</code></td><td>Once per activation, after <code>apply</code> produces the value</td></tr>
+<tr><td><code>check()</code></td><td>Returns <code>true</code></td><td>Every time a freshly built instance meets the graph</td></tr>
+</tbody></table>
+</div>
+<p><code>init</code> returns an optional cleanup handle. The boxed value is any closure
+with the <code>Disposable</code> shape; the kernel pushes it onto the owning fiber's
+undo accumulator. Use it to close connections or cancel background work:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use cordis::effect::Disposable;
+use cordis::ServiceInitFuture;
+
+impl Service for PoolService {
+    fn name(&amp;self) -&gt; &amp;'static str { "pool" }
+
+    fn init(&amp;self, _ctx: &amp;Arc&lt;Context&gt;) -&gt; ServiceInitFuture&lt;'_&gt; {
+        Box::pin(async move {
+            println!("pool online");
+            // Returned cleanup runs once when the fiber disposes.
+            let guard: Box&lt;dyn Disposable&gt; = Box::new(|| println!("pool closed"));
+            Ok(Some(guard))
+        })
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p><code>check()</code> is an availability predicate evaluated at build-and-met points,
+such as after <code>RegistryService::register</code> runs your factory and before the
+value is provided. A <code>false</code> verdict is terminal and inspectable: the fiber
+rests in state <code>Failed</code>, never <code>Pending</code> (<code>crates/cordis/src/service.rs</code>,
+<code>check</code> documentation). Services whose availability changes later — circuit
+breakers, feature gates — must re-provide or notify instead of relying on
+spontaneous re-checks. The kernel holds no downcasting machinery for
+per-read checks.</p>
+<h3 id="dispose-ordering"><a class="header" href="#dispose-ordering">Dispose ordering</a></h3>
+<p>One rule covers every teardown path: effects run in reverse registration
+order, last-in first-out (<code>docs/src/kernel/runtime.md</code>;
+<code>Fiber::dispose</code>). Concretely, for a plugin that registered a listener,
+then a timer, then returned an <code>init</code> cleanup handle:</p>
+<ol>
+<li>The init cleanup handle runs.</li>
+<li>The timer cancels.</li>
+<li>The listener detaches.</li>
+</ol>
+<p>The same LIFO pass runs during reactive loss (<code>Unloading</code>), during loader
+rollback (newest-first across applied steps), and at process shutdown.
+Nothing observes a half-torn configuration: by the time an undo starts,
+every effect registered after it is already gone. Design <code>init</code> cleanups to
+depend on nothing registered later than themselves.</p>
+<h2 id="error-handling-patterns"><a class="header" href="#error-handling-patterns">Error handling patterns</a></h2>
+<p>Kernel calls return <code>Result&lt;_, CordisError&gt;</code> (<code>crates/cordis/src/service.rs</code>).
+The enum has ten variants. Match the ones you can act on and let the rest
+bubble:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use cordis::{CordisError, ValidationIssue};
+
+fn describe(err: &amp;CordisError) -&gt; String {
+    match err {
+        // Config failed to deserialize into the plugin's Config type.
+        CordisError::Configuration(msg) =&gt; format!("bad wiring: {msg}"),
+        // Structured pre-flight failures carry placed issues.
+        CordisError::Validation(err) =&gt; err
+            .issues
+            .iter()
+            .map(|i: &amp;ValidationIssue| format!("{} at {}", i.message, i.path.join(".")))
+            .collect::&lt;Vec&lt;_&gt;&gt;()
+            .join("; "),
+        // Two plugins provide the same service type.
+        CordisError::DuplicateProvider { name, owner } =&gt; {
+            format!("{name} provided twice; second by {owner}")
+        }
+        // A transition lease timed out after 10 s of contention.
+        CordisError::TransitionStuck { fiber, waited_ms } =&gt; {
+            format!("fiber {fiber} stuck for {waited_ms} ms")
+        }
+        // Typed property reads that fail to downcast.
+        CordisError::PropertyTypeMismatch { name, expected } =&gt; {
+            format!("property {name} is not a {expected}")
+        }
+        other =&gt; other.message(), // Fiber, ServiceNotFound, InvalidConfig,
+                                  // Internal, ReadOnlyProperty
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Guidance per variant, grounded in kernel behavior:</p>
+<ul>
+<li><code>ServiceNotFound</code> means nothing provides the type on this context or its
+parents. Check isolate labels first: <code>get_isolated::&lt;T&gt;("other-realm")</code>
+fails even when another realm serves the type.</li>
+<li><code>DuplicateProvider</code> is single-source discipline firing. Drop one factory
+or move it to a realm.</li>
+<li><code>InvalidConfig</code> is stringly; <code>Validation</code> is structured. Only <code>Validation</code>
+exposes machine-readable issues through <code>validation_error()</code>. The loader
+lifts structured issues with <code>CordisError::validation(...)</code>, keeping the
+<code>"invalid config: ..."</code> Display prefix.</li>
+<li>Apply errors recorded on a fiber are terminal (<code>Failed</code>). Retrying the
+same registration never recovers it; re-register with a fresh fiber
+instead (<code>docs/src/kernel/lifecycle.md</code>).</li>
+</ul>
+<p>At HTTP edges, convert with the existing adapter: <code>HttpError::from(app_err)</code>
+wraps an <code>AppError</code>, and <code>app_error_into_response</code> renders the
+<code>{"error", "code"}</code> body (<code>crates/ares-http/src/error.rs</code>).</p>
 <h2 id="loader-entries-versus-pure-library-composition"><a class="header" href="#loader-entries-versus-pure-library-composition">Loader entries versus pure-library composition</a></h2>
 <p>Pick one composition style per process:</p>
 <div class="table-wrapper"><table><thead><tr><th>Aspect</th><th>Loader entries</th><th>Direct provides</th></tr></thead><tbody>
@@ -493,6 +679,22 @@ configs after the <code>Overlay</code> entry lands (<code>boot_loader_program</c
 embed can reuse that machinery with <code>Loader::load_from_file</code> and
 <code>Loader::instantiate_entry</code>, or skip it and call <code>ctx.provide(...)</code> directly.
 Direct provides are what every kernel and agent test in the repository does.</p>
+<h3 id="choosing-a-composition-style"><a class="header" href="#choosing-a-composition-style">Choosing a composition style</a></h3>
+<p>Answer two questions. Who changes the wiring? How often does it change?</p>
+<div class="table-wrapper"><table><thead><tr><th>Situation</th><th>Style</th><th>Why</th></tr></thead><tbody>
+<tr><td>Wiring is fixed at build time; you own all call sites</td><td>Direct provides</td><td>One less file format; the compiler checks every reference</td></tr>
+<tr><td>Operators re-wire services between releases without rebuilds</td><td>Loader entries</td><td>Editing TOML and reloading beats shipping a binary</td></tr>
+<tr><td>You need admin-surface retire/replace/patch per service</td><td>Loader entries</td><td>The journal tracks each entry's fiber for lifecycle routes</td></tr>
+<tr><td>Unit tests and examples</td><td>Direct provides</td><td>Every kernel and agent test composes this way</td></tr>
+<tr><td>Product boots from entries; tests exercise one plugin</td><td>Hybrid</td><td>Both styles feed the same context and coexist</td></tr>
+</tbody></table>
+</div>
+<p>The hybrid form registers your string-keyed factory beside
+<code>register_plugins</code>, then names it from an entry. The factory table and the
+typed store meet inside the kernel: an entry instantiates through the
+factory, and the produced value lands as a typed provider like any direct
+provide. Use this when library users should wire your plugin declaratively
+while your own tests keep constructing it directly.</p>
 <h2 id="tenant-isolation"><a class="header" href="#tenant-isolation">Tenant isolation</a></h2>
 <p>Multi-tenant hosts keep shared services on a root context and scope
 per-request data into child contexts. Two mechanisms exist:</p>

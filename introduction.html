@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -184,6 +186,26 @@
 <h2 id="the-cordis-kernel"><a class="header" href="#the-cordis-kernel">The Cordis kernel</a></h2>
 <p>Every ARES component is a service on a typed <code>Context</code>. Services declare dependencies, and the Cordis kernel resolves them at run time. You can add, replace, or intercept services while the server runs.</p>
 <p><img src="assets/cli-demo.svg" alt="ARES × Cordis — the live service graph, zero-downtime provider replacement, guarded operations, and fail-closed policy gates" /></p>
+<h2 id="how-the-pieces-fit"><a class="header" href="#how-the-pieces-fit">How the pieces fit</a></h2>
+<p>ARES has four layers. Each layer depends only on the layer below it.</p>
+<ol>
+<li><strong>Kernel</strong>. The Cordis kernel (<code>ares-cordis</code>) owns one typed <code>Context</code> graph, fibers, events, and intercepts. It knows nothing about agents or LLMs.</li>
+<li><strong>Capability crates</strong>. Crates under <code>crates/</code> register services on that context: storage (<code>ares-store</code>), tools (<code>ares-tools</code>), providers (<code>ares-llm</code>), agents (<code>ares-agent</code>), retrieval (<code>ares-rag</code>), protocol glue (<code>ares-mcp</code>), and HTTP routes (<code>ares-http</code>). They talk to each other through services on the context, not through direct wiring.</li>
+<li><strong>Server facade</strong>. The <code>ares-server</code> package holds the binary and the library facade. It boots the context, registers factories, applies the entries program, and binds the listener.</li>
+<li><strong>Surfaces</strong>. The CLI, the HTTP API, the MCP server, and the embedded web UI are entry points into the same running context graph.</li>
+</ol>
+<pre><code class="language-mermaid">flowchart TD
+    CLI[CLI] --&gt; Facade
+    HTTP[HTTP API] --&gt; Facade
+    MCP[MCP server] --&gt; Facade
+    UI[Web UI] --&gt; Facade
+    subgraph Facade [ares-server]
+        Boot[Boot + bind]
+    end
+    Boot --&gt; Kernel[cordis kernel: Context, fibers, events]
+    Kernel --&gt; Capabilities[capability crates]
+</code></pre>
+<p>The layering gives you two properties. First, you can build a smaller server by dropping capability crates, because nothing above the kernel hard-depends on a capability. Second, you can replace a capability at run time through the loader, because consumers resolve it through the context at call time.</p>
 <h2 id="what-you-can-do-with-ares"><a class="header" href="#what-you-can-do-with-ares">What you can do with ARES</a></h2>
 <p>You use ARES in three ways:</p>
 <ul>
@@ -208,6 +230,18 @@
 <tr><td><a href="getting-started/installation.html">Installation</a></td><td>Install or build the <code>ares-server</code> binary</td></tr>
 <tr><td><a href="getting-started/first-server.html">First Server</a></td><td>Scaffold, validate, run, and call the server</td></tr>
 <tr><td><a href="cli.html">Command Line Interface</a></td><td>Every subcommand and flag</td></tr>
+</tbody></table>
+</div>
+<h2 id="reading-paths"><a class="header" href="#reading-paths">Reading paths</a></h2>
+<p>Pick the row that matches your goal. Each path lists chapters in reading order.</p>
+<div class="table-wrapper"><table><thead><tr><th>I want to...</th><th>Read, in order</th></tr></thead><tbody>
+<tr><td>Run a server today</td><td><a href="getting-started/installation.html">Installation</a>, <a href="getting-started/first-server.html">First Server</a></td></tr>
+<tr><td>Call the API from my application</td><td><a href="http-api.html">HTTP API</a>; skim <a href="getting-started/first-server.html">First Server</a> for tenant and key setup</td></tr>
+<tr><td>Embed ARES in my own Rust binary</td><td><a href="library.html">ARES as a Library</a>, then <a href="kernel/patterns.html">Kernel Patterns in Rust</a></td></tr>
+<tr><td>Understand what happens at boot</td><td><a href="architecture.html">System Overview</a>, then <a href="kernel/index.html">Ideas and Map</a></td></tr>
+<tr><td>Replace services while the server runs</td><td><a href="kernel/lifecycle.html">Fiber Lifecycle</a>, <a href="kernel/interception.html">Interception Points</a>, <a href="operations.html">Configuration and Deployment</a></td></tr>
+<tr><td>Define agents, tools, or workflows</td><td><a href="agents.html">Agents and Skills</a>; <a href="cli.html">Command Line Interface</a> for scaffolding commands</td></tr>
+<tr><td>Ground answers in my documents</td><td><a href="rag.html">Retrieval</a></td></tr>
 </tbody></table>
 </div>
                     </main>

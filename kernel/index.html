@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -189,6 +191,47 @@
 <p><strong>Interception.</strong> Five kernel meta-events act as veto points around reads, writes, config resolution, restarts, and listener registration. A sixth meta-event observes every non-internal dispatch. With no listener registered, each point costs two map lookups.</p>
 <p><strong>Layered overrides.</strong> An intercept override shadows one service type. Overrides stack in layers. The innermost layer wins. Accessors are name-keyed computed properties beside the TypeId store; they bypass interception on purpose.</p>
 <p><strong>Declarative management.</strong> A loader applies entry trees against a journal. It stages changes in two phases and rolls back on failure. A reflect service fans change notifications out through a dependency graph.</p>
+<h2 id="why-a-kernel"><a class="header" href="#why-a-kernel">Why a kernel</a></h2>
+<p>Applications wire objects together by hand. Hand wiring creates four
+recurring problems. The kernel solves each one with one mechanism.</p>
+<p><strong>Problem 1: wiring.</strong> Components reference each other by concrete type.
+Every change to a component ripples through every construction site.
+The kernel replaces hand wiring with typed lookup: provide once, resolve
+anywhere through the parent chain. Consumers name what they need; nobody
+names who builds it.</p>
+<p><strong>Problem 2: lifecycle.</strong> Services start in the wrong order and stop in
+the wrong order. Timers, listeners, and connections leak when shutdown
+misses one. The kernel gives every registration a fiber. The fiber tracks
+every undo closure in registration order. Teardown runs them in reverse,
+always, even during reactive dependency churn.</p>
+<p><strong>Problem 3: observation.</strong> Once components talk directly, nothing sees
+the traffic. Debugging relies on print statements at every call site.
+The kernel routes reads, writes, config resolution, restarts, and listener
+registration through six meta-events. One subscription observes every
+sensitive operation. With no subscriber, each point costs two map lookups.</p>
+<p><strong>Problem 4: replacement.</strong> Swapping an implementation means touching
+call sites or restarting the process. The kernel separates declaration
+from use. A loader stages a new entry tree in two phases and rolls back
+on failure. Layered intercept overrides shadow one service type for one
+subtree without touching the parent context. Hot swap of native plugins
+rides the same fibers.</p>
+<p>The result is one graph that owns construction, teardown, inspection,
+and substitution. Product code states facts; the kernel keeps the facts
+true.</p>
+<h2 id="glossary"><a class="header" href="#glossary">Glossary</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Term</th><th>Definition</th></tr></thead><tbody>
+<tr><td>Fiber</td><td>Lifecycle owner of one registration. Holds the state machine, the dependency epoch, and the undo accumulator. Type: <code>cordis::fiber::Fiber</code>.</td></tr>
+<tr><td>Service</td><td>Any value stored by Rust <code>TypeId</code>. Implement the empty <code>Service</code> trait to participate.</td></tr>
+<tr><td>Effect</td><td>One labeled undo closure on a fiber. Every provide, timer, and listener pushes one. Disposal pops effects last-in, first-out.</td></tr>
+<tr><td>Event</td><td>Named message on the event bus. Dispatch modes: <code>emit</code>, <code>parallel</code>, <code>serial</code>, <code>bail</code>, <code>waterfall</code>.</td></tr>
+<tr><td>Meta-event</td><td>Kernel-owned veto point such as <code>internal/get</code> or <code>internal/set</code>. Distinct from product events.</td></tr>
+<tr><td>Isolate</td><td>Realm label marking a boundary. Contexts beyond an isolate do not see layers or services across it. Multi-tenant isolation uses this.</td></tr>
+<tr><td>Loader</td><td>Declarative engine applying entry trees against a journal in two phases, with rollback.</td></tr>
+<tr><td>Epoch</td><td>String encoding every declared dependency version. A changed epoch triggers a refresh pass.</td></tr>
+<tr><td>Readiness gate</td><td>Predicate holding a fiber in reversible <code>Pending</code> until it reports ready.</td></tr>
+<tr><td>Accessor</td><td>Name-keyed computed property beside the <code>TypeId</code> store. Bypasses interception by design.</td></tr>
+</tbody></table>
+</div>
 <h2 id="map-idea-to-module"><a class="header" href="#map-idea-to-module">Map: idea to module</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Idea</th><th>Implemented in</th></tr></thead><tbody>
 <tr><td>Typed store, parent walk, isolate realms, accessors, layered overrides</td><td><code>cordis::context</code></td></tr>

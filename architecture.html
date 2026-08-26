@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -196,18 +198,37 @@
 <tr><td><code>ares-http</code></td><td>Axum routes, middleware, auth, overlay config, admin handlers.</td><td><code>ares-agent</code>, <code>ares-tools</code>, <code>ares-llm</code>, <code>ares-store</code>, <code>ares-rag</code>, <code>ares-types</code>, <code>cordis</code>; optional <code>ares-mcp</code>, <code>ares-vector</code></td></tr>
 </tbody></table>
 </div>
+<p>The same crates with one-line data-flow notes each:</p>
+<div class="table-wrapper"><table><thead><tr><th>Crate</th><th>Data that flows through it</th></tr></thead><tbody>
+<tr><td><code>ares-server</code></td><td>Boot order and wiring only: it pushes factories into the context and hands the context to the HTTP listener; no domain data crosses it at request time.</td></tr>
+<tr><td><code>cordis</code></td><td>Service handles and dependency epochs. Every <code>get::&lt;T&gt;()</code> in the server resolves here; versions bump when a store entry changes.</td></tr>
+<tr><td><code>ares-types</code></td><td>Structs every crate shares: requests, responses, errors, <code>TenantContext</code>. Pure data; no I/O.</td></tr>
+<tr><td><code>ares-vector</code></td><td>Raw f32 vectors plus HNSW graph nodes in process memory; queries enter as vectors and leave as neighbor ids and distances.</td></tr>
+<tr><td><code>ares-rag</code></td><td>Text in, embeddings out: chunks go to an embedder, vectors to a store, and query results back through scoring and reranking.</td></tr>
+<tr><td><code>ares-store</code></td><td>Rows over sqlx: tenants, API keys, usage, agent versions, runs. Migrations flow outward from the embedded migrator at boot.</td></tr>
+<tr><td><code>ares-tools</code></td><td>JSON tool calls in, JSON results out. The registry maps names to <code>Tool</code> impls; per-tenant allowlists gate resolution.</td></tr>
+<tr><td><code>ares-llm</code></td><td>Chat completions to provider HTTP APIs; token counts and latency back. The circuit breaker wraps each provider client.</td></tr>
+<tr><td><code>ares-mcp</code></td><td>MCP protocol frames both ways: external servers become agent tools; the built-in MCP server exposes ARES agents outward.</td></tr>
+<tr><td><code>ares-agent</code></td><td>The run pipeline: admitted request, tool-call rounds against <code>Tools</code>/<code>Llm</code>, assembled final response, run records toward storage.</td></tr>
+<tr><td><code>ares-http</code></td><td>HTTP in, responses out. Middleware attaches tenant identity and usage; handlers open realms and call <code>Execute</code>.</td></tr>
+</tbody></table>
+</div>
 <p>Feature flags forward down the chain: <code>postgres</code> enables sqlx in store, agent, mcp, tools, http; <code>openai</code>, <code>azure</code>, and <code>bedrock</code> add providers in <code>ares-llm</code>.</p>
 <h2 id="process-lifecycle"><a class="header" href="#process-lifecycle">Process lifecycle</a></h2>
-<p>Startup follows one ordered pass in <code>run_server</code> (<code>src/main.rs</code>):</p>
+<p>Startup follows one ordered pass in <code>run_server</code> (<code>src/main.rs:524</code>). Each step gates the next:</p>
 <ol>
-<li>Load environment and start tracing.</li>
-<li>Create the root Cordis <code>Context</code> and the <code>ReflectService</code>.</li>
-<li>Register loader factories (<code>register_plugins</code> chains, or inventory collection).</li>
-<li>Boot the entries program: parse <code>config/cordis-entries.toml</code>, compose includes, instantiate entries in file order. The <code>Overlay</code> entry runs early and fills empty entry configs from <code>ares.toml</code>. A boot failure exits with code 1.</li>
-<li>Start the file watcher for the entries program. Reloads re-compose and apply diffs through the loader journal.</li>
-<li>Bind the TCP listener and serve the Axum router with graceful shutdown.</li>
+<li>Load <code>.env</code> and start tracing (<code>src/main.rs:528-532</code>).</li>
+<li>Create the root Cordis <code>Context</code> and the <code>ReflectService</code> (<code>src/main.rs:534-554</code>). The service registers notifiers for the <code>Tools</code> and <code>Llm</code> types and fires an initial <code>notify</code>, so dependents reconcile from the first moment.</li>
+<li>Register loader factories through <code>register_loader_factories</code> (<code>src/main.rs:328</code>, called at <code>src/main.rs:557-558</code>). Explicit chains run without the <code>inventory</code> feature; inventory collection runs with it.</li>
+<li>Boot the entries program (<code>src/main.rs:560-568</code>): parse <code>config/cordis-entries.toml</code>, compose includes, instantiate entries in file order. The <code>Overlay</code> entry runs early and fills empty entry configs from <code>ares.toml</code>. A boot failure logs <code>Cordis Loader: boot failed</code> and exits with code 1.</li>
+<li>Guard configuration presence (<code>src/main.rs:570-585</code>). A missing config prints an <code>ares-server init</code> hint and exits with code 1.</li>
+<li>Start the entries watcher (<code>src/main.rs:592-625</code>). File events re-compose the program and apply diffs through the loader journal. When the watcher cannot start, a 30-second modified-time poll replaces it.</li>
+<li>Preload runtime providers (<code>src/main.rs:630-632</code>) and snapshot current agent definitions into the version history (<code>src/main.rs:673-707</code>).</li>
+<li>Build CORS and rate-limit layers (<code>src/main.rs:895-944</code>), bind the TCP listener (<code>src/main.rs:949-950</code>), and serve the Axum router with graceful shutdown on Ctrl+C and SIGTERM (<code>src/main.rs:957-964</code>).</li>
 </ol>
-<p>The <code>Store</code> factory connects to the database, runs migrations from <code>ares_store::MIGRATOR</code>, and seeds default agent templates.</p>
+<p>Step 8 is the first step that touches the network for serving. A failure in any earlier step exits before any port opens.</p>
+<h3 id="the-rate-limit-layer"><a class="header" href="#the-rate-limit-layer">The rate-limit layer</a></h3>
+<p>When <code>rate_limit_per_second &gt; 0</code>, startup wraps the router in <code>tower_governor</code> (<code>src/main.rs:900-913</code>). The limiter is a GCRA bucket per client IP. It admits up to <code>rate_limit_burst</code> requests immediately and then admits one more request every $1/\text{rate_limit_per_second}$ seconds. A background task prunes idle per-IP buckets every 60 seconds (<code>src/main.rs:917-930</code>). Responses carry <code>x-ratelimit-*</code> headers. Setting <code>rate_limit_per_second = 0</code> removes the layer entirely and logs a warning.</p>
 <h2 id="request-path"><a class="header" href="#request-path">Request path</a></h2>
 <pre><code>request / job
   -&gt; TenantRealms.open then intercept (HTTP/MCP/JWT) or isolate only (background)
@@ -240,8 +261,30 @@
 <li><strong>Providers equal LLM clients.</strong> The <code>Llm</code> service wraps the provider registry. Its circuit breaker feeds <code>Service::check</code>. When the breaker opens, dependent fibers deactivate through guarded withdrawal.</li>
 <li><strong>Fibers own lifecycle.</strong> Each provided service has a fiber. <code>Fiber::refresh</code> recomputes the dependency epoch. Losing a dependency moves a fiber to Pending, not Failed. Hot swap replaces a service in place; retire withdraws it under guard while consumers exist.</li>
 </ul>
+<h3 id="peer-dependency-versions"><a class="header" href="#peer-dependency-versions">Peer-dependency versions</a></h3>
+<p>Provider versions are plain <code>u64</code> values with a packed layout (<code>crates/cordis/src/context.rs:227-247</code>, constant <code>VERSION_MAJOR_SCALE = 100_000</code>). The major lives in the high digits and the minimum compatible floor in the remainder:</p>
+<p>$$\text{major}(v) = \left\lfloor \frac{v}{100,000} \right\rfloor, \qquad \text{floor}(v) = v \bmod 100,000$$</p>
+<p>An inject that requires $M \cdot 100,000 + f$ is satisfied by provider version $p$ exactly when the provider exists and is available, $\text{major}(p) = M$, and $p \geq M \cdot 100,000 + f$. Any mismatch leaves the inject unsatisfied and the dependent fiber <code>Inactive</code>; it never binds across a major boundary. Legacy <code>provide()</code> installs version 0, which satisfies only unconstrained injects.</p>
 <h2 id="storage-model"><a class="header" href="#storage-model">Storage model</a></h2>
 <p>PostgreSQL is the default backend, through sqlx with rustls TLS. Turso/libSQL compiles behind the <code>turso</code> feature for edge deployment. Vector data lives in <code>ares-vector</code> by default, or in Qdrant, pgvector, ChromaDB, Pinecone, or LanceDB behind features. SQL migrations are embedded in the <code>ares-store</code> crate at compile time. The migrator ships inside the published package, so <code>cargo install ares-server</code> needs no external files.</p>
+<h2 id="tenant-realms"><a class="header" href="#tenant-realms">Tenant realms</a></h2>
+<p><code>TenantRealms</code> (<code>crates/ares-store/src/realms.rs</code>) is the cache that turns one row per tenant into one live child context per tenant.</p>
+<ul>
+<li><strong>Open once, reuse forever.</strong> <code>open(root, tenant_id)</code> returns the cached child, or creates it on first call with a double-checked write (<code>realms.rs:35-47</code>). The child is <code>root.extend().isolate_type(tools_tid, tenant_id)</code>.</li>
+<li><strong>Only data-bearing services isolate.</strong> The realm isolates on the <code>Tools</code> TypeId, so each tenant sees its own tool state and allowlists. <code>Execute</code> stays shared on purpose: it is a stateless engine, and its tenancy comes from the context handed to it (<code>realms.rs:29-34</code>). No <code>TenantContext</code> intercept lands inside the cached realm; handlers add it per request.</li>
+<li><strong>Disposal unwinds LIFO.</strong> <code>dispose(tenant_id)</code> removes the child from the map and disposes its fiber (<code>realms.rs:49-57</code>). Fiber disposal undoes that realm's provides in last-in-first-out order, so teardown runs in exact reverse registration order. Tenant delete (<code>crates/ares-http/src/api/handlers/admin/tenants.rs</code>) calls this before dropping rows.</li>
+</ul>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant R as Request
+    participant TR as TenantRealms
+    participant C as Cached child ctx
+    R-&gt;&gt;TR: open(root, "acme")
+    TR-&gt;&gt;C: first open: extend + isolate Tools
+    C--&gt;&gt;R: realm (same Arc for every later request)
+    R-&gt;&gt;R: intercept TenantContext per request
+    Note over TR: delete_tenant -&gt; dispose("acme")
+    TR-&gt;&gt;C: fiber dispose, undos unwind LIFO
+</code></pre>
 <h2 id="failure-philosophy"><a class="header" href="#failure-philosophy">Failure philosophy</a></h2>
 <p>ARES fails closed at every trust boundary:</p>
 <ul>
@@ -253,6 +296,23 @@
 <li>Loader composition stays fail-open for bad includes so one broken file cannot brick a running reload, but a failed boot pass still exits with code 1.</li>
 <li>The emergency stop switch halts all agent execution.</li>
 </ul>
+<h2 id="retrieval-scoring"><a class="header" href="#retrieval-scoring">Retrieval scoring</a></h2>
+<p>Embedding similarity uses cosine similarity over dense vectors (<code>crates/ares-rag/src/embeddings.rs:128-149</code>):</p>
+<p>$$\cos(a, b) = \frac{a \cdot b}{\lVert a \rVert,\lVert b \rVert}$$</p>
+<p>The implementation clamps the result to $[-1, 1]$ and returns $0$ for mismatched lengths or zero magnitude instead of dividing by zero. Search results report distance, not similarity; <code>distance_to_similarity</code> maps cosine distance back with $1 - d$, L2 with $1/(1+d)$, and inner product with $-d$ (<code>crates/ares-rag/src/search.rs:296-302</code>). The hybrid reranker then min-max normalizes retrieval scores across the candidate set and blends: $\text{final} = (1 - w),\text{norm}_{\text{retrieval}} + w,\text{rerank}$ (<code>crates/ares-rag/src/reranker.rs:362-371</code>).</p>
+<h2 id="design-rules"><a class="header" href="#design-rules">Design rules</a></h2>
+<p>Three rules explain most ARES behavior at failure boundaries. Each rule names one concrete place you can observe it.</p>
+<h3 id="fail-closed"><a class="header" href="#fail-closed">Fail closed</a></h3>
+<p>When identity or availability cannot be proven, reject; never guess. JWT scope resolution is the sharpest example: if claims name a tenant but no matching <code>TenantContext</code> exists, or the tenant store is absent, the request fails instead of falling back to an unscoped context (<code>crates/ares-http/src/auth/middleware.rs:31-32</code>). The same rule puts auth middleware outside every handler and makes quota denial through <code>agent.admit</code> block execution.</p>
+<h3 id="guarded-withdrawal"><a class="header" href="#guarded-withdrawal">Guarded withdrawal</a></h3>
+<p>A provider with live consumers does not vanish underneath them. Retiring a service through <code>POST /admin/cordis/services/{name}/retire</code> answers <code>409 {"retired": false, "reason": "guarded", "consumers": N}</code> while N active consumer fibers still rely on it; the removal happens only after the last consumer drops its reliance (<code>crates/ares-http/src/api/handlers/admin/cordis.rs:71-80</code>). Dependent fibers deactivate rather than bind to an incompatible replacement.</p>
+<h3 id="eager-reconciliation"><a class="header" href="#eager-reconciliation">Eager reconciliation</a></h3>
+<p>State changes propagate immediately, not at next use. Two mechanisms carry this rule:</p>
+<ul>
+<li>Boot wires <code>ReflectService</code> notifiers for <code>Tools</code> and <code>Llm</code> and fires an initial notify, so dependent fibers recompute their dependency epoch right away (<code>src/main.rs:534-554</code>).</li>
+<li>Editing <code>config/cordis-entries.toml</code> triggers parse, compose, diff-apply, and classify in one pass (<code>cordis::reload_entries_from_disk</code>, called from <code>src/main.rs:488-493</code>); consumers see the new provider set without a restart.</li>
+</ul>
+<p>Together the three rules produce the observed lifecycle semantics: Pending means waiting, Failed means rejected permanently, and a guarded retire never leaves a consumer resolving nothing.</p>
 
                     </main>
 

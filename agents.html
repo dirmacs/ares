@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -186,8 +188,8 @@ Every field here is read from the source files named in each section.</p>
 <h2 id="agent-fields"><a class="header" href="#agent-fields">Agent fields</a></h2>
 <p>Each agent entry deserializes into <code>AgentConfig</code> (<code>crates/ares-agent/src/config.rs</code>):</p>
 <div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead><tbody>
-<tr><td><code>model</code></td><td>string</td><td>required</td><td>Model name defined under <code>[models]</code>.</td></tr>
-<tr><td><code>system_prompt</code></td><td>string</td><td>none</td><td>Personality and instructions for the agent.</td></tr>
+<tr><td><code>model</code></td><td>string</td><td>required</td><td>Model name defined under <code>[models]</code>. Missing values fail deserialization.</td></tr>
+<tr><td><code>system_prompt</code></td><td>string</td><td>none</td><td>Personality and instructions for the agent, per the source doc comment.</td></tr>
 <tr><td><code>tools</code></td><td>list of strings</td><td>empty</td><td>Tool names this agent uses.</td></tr>
 <tr><td><code>allowed_tools</code></td><td>list of strings</td><td>all tools</td><td>Whitelist of permitted tool names. Absent means all tools are allowed.</td></tr>
 <tr><td><code>max_tool_iterations</code></td><td>integer</td><td>10</td><td>Maximum tool-calling rounds before the agent stops.</td></tr>
@@ -196,6 +198,13 @@ Every field here is read from the source files named in each section.</p>
 <tr><td><em>(extra keys)</em></td><td>table</td><td>empty</td><td>Unknown keys pass through unchanged via <code>#[serde(flatten)]</code>.</td></tr>
 </tbody></table>
 </div>
+<p>Deserialization details worth knowing when you write TOML:</p>
+<ul>
+<li>Only <code>model</code> lacks a serde default. Every other field tolerates absence.</li>
+<li><code>allowed_tools</code> carries <code>skip_serializing_if = "Option::is_none"</code>. An absent key stays absent on round-trip, so "all tools" survives config rewrites.</li>
+<li><code>compaction_enabled</code> is an <code>Option&lt;bool&gt;</code>. The engine reads <code>unwrap_or(false)</code>, so omitting the key equals <code>false</code>.</li>
+<li>Extra keys land in <code>extra: HashMap&lt;String, toml::Value&gt;</code> (<code>#[serde(flatten)]</code>). They never fail parsing. Runtime consumers read them by name.</li>
+</ul>
 <h2 id="agent-resolution-order"><a class="header" href="#agent-resolution-order">Agent resolution order</a></h2>
 <p>The resolver (<code>crates/ares-agent/src/resolver.rs</code>) picks one agent definition from three tiers:</p>
 <ol>
@@ -224,13 +233,43 @@ Every field here is read from the source files named in each section.</p>
 </div>
 <p>The engine (<code>crates/ares-agent/src/workflows/engine.rs</code>) runs steps through the unified executor and records a <code>WorkflowStep</code> per hop: <code>agent_name</code>, <code>input</code>, <code>output</code>, <code>timestamp</code>, <code>duration_ms</code>. The result is a <code>WorkflowOutput</code> with <code>final_response</code>, <code>steps_executed</code>, <code>agents_used</code>, and <code>reasoning_path</code>. Workflows live on the context as a <code>WorkflowSet</code>; the HTTP overlay copies <code>[workflows]</code> from TOML into it.</p>
 <h2 id="delegation-flags"><a class="header" href="#delegation-flags">Delegation flags</a></h2>
-<p>Skill delegation arguments parse into <code>DelegationArgs</code> (<code>crates/ares-agent/src/skills/mod.rs</code>). Three flags exist:</p>
+<p>Skill delegation arguments parse into <code>DelegationArgs</code> (<code>crates/ares-agent/src/skills/mod.rs</code>). Parsing runs in two steps: tokenizing, then flag assignment.</p>
+<h3 id="tokenizer-rules"><a class="header" href="#tokenizer-rules">Tokenizer rules</a></h3>
+<p><code>tokenize_delegation_args</code> scans characters once:</p>
+<ol>
+<li>Whitespace outside quotes splits tokens. Empty tokens never appear.</li>
+<li>A double-quoted segment forms one token. It may contain spaces and bare <code>|</code>.</li>
+<li>Inside quotes only, a backslash escapes the next character. Outside quotes a backslash is an ordinary character.</li>
+<li>Quotes themselves disappear from the output token. <code>"delta echo"</code> becomes <code>delta echo</code>.</li>
+</ol>
+<h3 id="flag-assignment"><a class="header" href="#flag-assignment">Flag assignment</a></h3>
+<p><code>parse_delegation_args</code> walks the token list left to right:</p>
 <ul>
-<li><code>--parallel</code> — latches split-per-token mode. After the flag, every plain token starts its own task and <code>|</code> separators are ignored.</li>
-<li><code>--model &lt;value&gt;</code> — consumes exactly one token as the model override. An error occurs when no value follows.</li>
-<li><code>--tools</code> — enables the inner tool loop for delegated tasks.</li>
+<li><code>--parallel</code> latches split-per-token mode. After the flag, every plain token starts its own task and <code>|</code> separators are ignored. Tokens before the flag stay one sequential task.</li>
+<li><code>--model &lt;value&gt;</code> consumes exactly one following token as the model override. A missing value returns the error <code>--model consumes exactly one value; none given</code>.</li>
+<li><code>--tools</code> enables the inner tool loop for delegated tasks. It takes no value.</li>
+<li>Before the latch, bare <code>|</code> separates sequential tasks. After the latch, bare <code>|</code> is dropped.</li>
 </ul>
-<p>Before <code>--parallel</code>, bare <code>|</code> separates sequential tasks. Double-quoted segments parse as single tokens and may contain spaces and <code>|</code>. Model resolution precedence: explicit flag &gt; profile default &gt; global default.</p>
+<h3 id="parallel-task-cap"><a class="header" href="#parallel-task-cap">Parallel task cap</a></h3>
+<p><code>MAX_PARALLEL_DELEGATED_TASKS</code> equals <code>MAX_SKILL_CALL_DEPTH</code>, which is 8 (<code>crates/ares-agent/src/skills/mod.rs</code>). Each parallel task becomes its own delegated skill call one level deeper, so the recursion depth is the natural ceiling. Excess tasks are truncated, not rejected.</p>
+<h3 id="model-resolution-precedence"><a class="header" href="#model-resolution-precedence">Model resolution precedence</a></h3>
+<p><code>DelegationArgs::resolved_model(profile_default, global_default)</code> applies this order:</p>
+<ol>
+<li>Explicit <code>--model</code> flag.</li>
+<li>Profile default model, when non-empty.</li>
+<li>Global default model.</li>
+</ol>
+<p>An empty profile default falls through to the global default.</p>
+<h3 id="worked-examples"><a class="header" href="#worked-examples">Worked examples</a></h3>
+<p>Both examples come verbatim from the test suite (<code>delegation_flag_tests</code>, same file).</p>
+<p>Example 1 — quoted pipe inside one sequential task:</p>
+<pre><code class="language-text">translate "hello | world" --model fast-model --tools
+</code></pre>
+<p>Result: one task with tokens <code>["translate", "hello | world"]</code>, <code>model = "fast-model"</code>, <code>tools = true</code>, <code>parallel = false</code>. The quoted pipe does not split the task because quoting happens at tokenize time, before any <code>|</code> handling.</p>
+<p>Example 2 — latch mid-stream:</p>
+<pre><code class="language-text">alpha | beta --parallel gamma "delta echo" | epsilon
+</code></pre>
+<p>Result: five tasks — <code>alpha</code>, <code>beta</code>, <code>gamma</code>, <code>delta echo</code>, <code>epsilon</code>. <code>alpha</code> and <code>beta</code> split on the first pipe. After <code>--parallel</code> latches, <code>gamma</code> starts a task, the quoted <code>"delta echo"</code> forms its own task despite the space, and the trailing <code>|</code> is ignored.</p>
 <h2 id="review-gate-for-delegated-results"><a class="header" href="#review-gate-for-delegated-results">Review gate for delegated results</a></h2>
 <p><code>SkillsPluginConfig.review_delegated_results</code> (<code>crates/ares-agent/src/skills/mod.rs</code>) opts nested skill results into a review micro-step before integration:</p>
 <ul>
@@ -238,19 +277,84 @@ Every field here is read from the source files named in each section.</p>
 <li>On acceptance, the original result integrates unchanged.</li>
 <li>On rejection, the parent receives a structured rejection with review notes; the original stays intact in metadata for re-dispatch.</li>
 </ul>
+<h3 id="verdict-protocol"><a class="header" href="#verdict-protocol">Verdict protocol</a></h3>
+<p>The reviewer prompt uses a fixed preamble (<code>DELEGATED_REVIEW_TEMPLATE</code>, same file). The preamble asks the reviewer to judge consistency between result and requested input. It requires the verdict word on the first line, followed by one sentence of notes. The preamble is byte-stable across calls so provider-side prompt caches hit on it.</p>
+<p><code>parse_review_verdict</code> applies these rules:</p>
+<ol>
+<li>Take the first non-empty line of the reply.</li>
+<li>Skip leading non-alphabetic characters, then read the first alphabetic run as the verdict word.</li>
+<li>Accept exactly <code>ACCEPT</code> or <code>REJECT</code>. Anything else is a parse error.</li>
+<li>Notes are the rest of the first line plus any further lines.</li>
+</ol>
+<p>An empty reply or an unparsable verdict returns an error. Callers treat that error like a reviewer outage: the original result integrates unchanged. The gate never guesses.</p>
+<h3 id="rejection-payload-shape"><a class="header" href="#rejection-payload-shape">Rejection payload shape</a></h3>
+<p>On rejection the parent receives this JSON structure instead of the original result:</p>
+<pre><code class="language-json">{
+  "status": "rejected",
+  "review": { "accepted": false, "notes": "&lt;reviewer text&gt;" },
+  "metadata": {
+    "delegated_skill_id": "&lt;nested skill id&gt;",
+    "original_result": { "...": "unchanged original" }
+  }
+}
+</code></pre>
+<p>The gate snapshots the delegated input before running the sub-execution. With the gate off, no snapshot allocation happens.</p>
+<p>Without the <code>postgres</code> feature there is no reviewer, so the gate is permanently off and every result passes through.</p>
 <h2 id="self-check-rounds"><a class="header" href="#self-check-rounds">Self-check rounds</a></h2>
-<p><code>SkillEngine::with_self_check_rounds(n)</code> (<code>crates/ares-agent/src/skills/engine.rs</code>) adds up to <code>n</code> critique rounds over each nested skill result before integration. One LLM call runs per round over a fixed template. A verbatim reply ends the loop early. An LLM failure keeps the last good answer silently. Off by default.</p>
-<p>Delegated sub-workflows accept only allowlisted step kinds. Nested tool rounds hard-cap at three. Slash-command chatter lines are stripped from delegated text before it enters the parent context.</p>
+<p><code>SkillEngine::with_self_check_rounds(n)</code> (<code>crates/ares-agent/src/skills/engine.rs</code>) adds critique rounds over each nested skill result before integration. One LLM call runs per round. Off by default; zero behaves identically to off.</p>
+<h3 id="round-flow"><a class="header" href="#round-flow">Round flow</a></h3>
+<p>Each round follows this sequence:</p>
+<ol>
+<li>Extract the answer text. Structured results contribute their <code>content</code> field; bare strings contribute themselves. Results with neither carry nothing checkable, so the loop skips them.</li>
+<li>Build the prompt from a byte-stable template (<code>SELF_CHECK_TEMPLATE</code>, same file). The template asks two questions: did the answer address the requested task, and are there obvious errors or omissions. The tail names the delegated skill id, the requested input, and the current answer.</li>
+<li>Send one LLM call.</li>
+<li>On success, compare the reply with the current answer. A verbatim reply means no corrections were found, so the loop exits early.</li>
+<li>On error, stop the loop. The last good answer stays in place. No retry happens inside the loop.</li>
+<li>After the rounds end, fold the answer back. Structured results keep their shape; only <code>content</code> moves. Bare strings are replaced whole. An unchanged answer leaves the result untouched.</li>
+</ol>
+<pre><code class="language-mermaid">flowchart TD
+    A[Nested skill result] --&gt; B{Self-check on?}
+    B -- off --&gt; H[Integrate result]
+    B -- on --&gt; C[Extract answer]
+    C -- none found --&gt; H
+    C --&gt; D[Round: LLM call over stable template]
+    D -- error --&gt; G[Keep last good answer]
+    G --&gt; F
+    D -- verbatim reply --&gt; F[Fold answer back]
+    D -- corrected reply --&gt; E{Rounds left?}
+    E -- yes --&gt; D
+    E -- no --&gt; F
+    F --&gt; H
+</code></pre>
+<p>The template prefix stays identical across rounds, so provider-side prompt caches hit on every round after the first.</p>
+<p>Delegated sub-workflows accept only allowlisted step kinds. Nested tool rounds hard-cap at three (<code>check_tool_round_cap</code>). Anti-recursion blocks delegation inside a delegated sub-workflow (<code>validate_delegated_step</code>). Slash-command chatter lines are stripped from delegated text before it enters the parent context (<code>sanitize_result_value</code>).</p>
 <h2 id="ambient-enrichment"><a class="header" href="#ambient-enrichment">Ambient enrichment</a></h2>
 <p><code>AmbientEnrichmentConfig.enabled</code> (<code>crates/ares-agent/src/skills/engine.rs</code>) is off by default. When enabled, each LLM step completion fires two parallel micro calls after the answer: intent classification and keyword tagging. Outcomes attach as session metadata on the skill-step record under the <code>ambient_enrichment</code> key. Enrichment input truncates at 4000 characters. Failures log at debug level and never delay or fail the completion.</p>
 <h2 id="emergency-stop"><a class="header" href="#emergency-stop">Emergency stop</a></h2>
-<p><code>EmergencyStop</code> (<code>crates/ares-agent/src/emergency_stop.rs</code>) is a Cordis service with an atomic flag. <code>set_active(true)</code> turns the kill switch on. Skill execution checks the switch at step boundaries together with per-subtask cancel tokens. An aborted subtask integrates nothing into the parent context.</p>
+<p><code>EmergencyStop</code> (<code>crates/ares-agent/src/emergency_stop.rs</code>) is a Cordis service holding one atomic boolean. <code>set_active(true)</code> turns the kill switch on; <code>set_active(false)</code> clears it. Startup provides a fresh instance set to inactive when none exists yet (<code>crates/ares-agent/src/plugins.rs</code>).</p>
+<h3 id="propagation-path"><a class="header" href="#propagation-path">Propagation path</a></h3>
+<p>The switch reaches execution through the shared context:</p>
+<ol>
+<li>Plugins provide <code>EmergencyStop</code> on the root context.</li>
+<li>Skill execution resolves it with <code>ctx.get::&lt;EmergencyStop&gt;()</code>.</li>
+<li><code>ensure_execution_active</code> (<code>crates/ares-agent/src/skills/engine.rs</code>) checks the flag before every nested skill call. The check runs at call boundaries, so a stop request lands at the next boundary without cancelling in-flight work mid-call.</li>
+<li>An active flag aborts with the stable marker <code>subtask_cancelled</code> prefixed to the error text, so callers classify aborts without parsing prose.</li>
+<li>The aborted subtask integrates nothing into the parent context.</li>
+</ol>
+<p>Per-subtask cancel tokens work alongside the global switch. Tokens are sticky cancel flags keyed <code>"{run_id}/{skill_id}"</code>; registration is idempotent and there is no un-cancel. Execution reads the registry fresh at every boundary, so an external trigger racing a starting subtask still stops it at its first call boundary. Token aborts reuse the same <code>subtask_cancelled</code> marker.</p>
 <h2 id="worked-example"><a class="header" href="#worked-example">Worked example</a></h2>
-<p>Every key below appears in the structures cited above:</p>
+<p>Every key below appears in the structures cited above. The file passes <code>ares-server config --validate</code> on the v0.10 tree:</p>
 <pre><code class="language-toml">[server]
 host = "127.0.0.1"
 port = 3000
 log_level = "info"
+
+# Required tables; every field inside defaults, so empty tables work.
+[auth]
+jwt_secret_env = "JWT_SECRET"
+api_key_env = "API_KEY"
+
+[database]
 
 [providers.local]
 type = "ollama"
@@ -282,6 +386,26 @@ parallel_subagents = false
 [skills]
 project_dir = "./.claude/skills/"
 </code></pre>
+<p>Validation output, captured from a real run (<code>exercised</code>):</p>
+<pre><code class="language-console">$ ares-server config --validate
+  ✓ Configuration is valid!
+
+  Configuration Summary
+
+    Config file: ares.toml
+    Server: 127.0.0.1:3000
+    Log level: info
+
+  Providers
+    • local
+
+  Models
+    • default
+
+  Agents
+    • helper
+</code></pre>
+<p>Omitting either <code>[auth]</code> or <code>[database]</code> fails with <code>missing field 'auth'</code> or <code>missing field 'database'</code>. The tables themselves are required even though every field inside them carries serde defaults.</p>
 
                     </main>
 

@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -208,6 +210,13 @@ Commands:
 <tr><td><code>-V, --version</code></td><td>Print the version</td></tr>
 </tbody></table>
 </div>
+<h3 id="global-flag-placement"><a class="header" href="#global-flag-placement">Global flag placement</a></h3>
+<p>Every option carries <code>global = true</code> (<code>src/cli/mod.rs</code>). Place a global flag before or after the subcommand. These two lines parse identically:</p>
+<pre><code class="language-bash">ares-server --no-color config --validate
+ares-server config --validate --no-color
+</code></pre>
+<p><code>-v, --verbose</code> changes the log filter of a server run from <code>info</code> to <code>debug,ares=trace</code> (<code>run_server</code>, <code>src/main.rs</code>). Subcommands print their diagnostics to standard error regardless of this flag.</p>
+<p><code>--mcp</code> needs the <code>mcp</code> build feature. Without it, the binary prints a rebuild hint and exits <code>1</code>.</p>
 <h3 id="supervisor-semantics"><a class="header" href="#supervisor-semantics">Supervisor semantics</a></h3>
 <p><code>--supervise</code> runs the real server in a child copy of the same executable. The child signals the parent through its exit code:</p>
 <div class="table-wrapper"><table><thead><tr><th>Exit code</th><th>Meaning</th><th>Parent action</th></tr></thead><tbody>
@@ -216,11 +225,34 @@ Commands:
 <tr><td><code>53</code></td><td>Boot failure</td><td>Stop and mirror the non-zero code to the service manager</td></tr>
 </tbody></table>
 </div>
-<p>Any other terminal status also ends the loop. Respawns that follow very short runs pace themselves with exponential backoff, from 100 ms up to a 5 s cap.</p>
+<p>The constants live in <code>src/supervisor.rs</code>. The child carries the <code>CORDIS_SUPERVISED</code> environment variable. The daemon holds the write end of the child's standard input. Dropping it closes the pipe, so the child sees end-of-file and tears down gracefully.</p>
 <p>Example: run a daemon that survives hot restarts:</p>
 <pre><code class="language-bash">ares-server --supervise
 </code></pre>
 <p>Pair it with a service manager such as systemd. Boot failures still surface as non-zero exits.</p>
+<h3 id="restart-safeguards"><a class="header" href="#restart-safeguards">Restart safeguards</a></h3>
+<p>Four safeguards keep the loop responsive (<code>src/supervisor.rs</code>):</p>
+<ul>
+<li><strong>Rapid-restart guard.</strong> Five exits inside any 30-second window stop the loop. This bounds a crash loop that a misbehaving child cannot out-wait.</li>
+<li><strong>Health ladder reset.</strong> A child that ran for at least 10 minutes before exiting counts as healthy. The next crash sequence starts its backoff from zero, not from stale strikes.</li>
+<li><strong>Exponential backoff.</strong> A child that exited within 10 seconds never proved it could serve. The daemon delays the respawn: 100 ms first, then double each consecutive unhealthy run, capped at 5 s.</li>
+<li><strong>Stop grace.</strong> A stopped worker gets 10 seconds to exit after its standard input closes. A worker that ignores the request is force-killed.</li>
+</ul>
+<h3 id="exit-codes"><a class="header" href="#exit-codes">Exit codes</a></h3>
+<p>Use these codes in scripts and service units:</p>
+<div class="table-wrapper"><table><thead><tr><th>Code</th><th>Producer</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>0</code></td><td>every subcommand</td><td>Success. <code>config --validate</code> reports a valid file</td></tr>
+<tr><td><code>1</code></td><td><code>init</code></td><td>Target files already exist (<code>--force</code> overwrites), or scaffolding failed</td></tr>
+<tr><td><code>1</code></td><td>server boot</td><td>Missing config file, missing Overlay entry, failed entries program, or <code>--mcp</code> without the feature</td></tr>
+<tr><td><code>51</code></td><td>supervised child</td><td>Hot-restart request; the daemon respawns</td></tr>
+<tr><td><code>52</code></td><td>supervised child</td><td>Clean shutdown; the daemon stops</td></tr>
+<tr><td><code>53</code></td><td>supervised child</td><td>Boot failure; the daemon stops and mirrors <code>53</code></td></tr>
+</tbody></table>
+</div>
+<p>Two details matter for wrappers:</p>
+<ul>
+<li>Without <code>--supervise</code>, a failing boot returns <code>1</code>. With <code>--supervise</code>, the parent mirrors the real child code (<code>exit(last_code &amp; 0xff)</code>), so a boot failure surfaces as <code>53</code>.</li>
+</ul>
 <h2 id="init"><a class="header" href="#init"><code>init</code></a></h2>
 <p>Scaffold a new project. Creates <code>ares.toml</code>, a <code>.env.example</code> template, the <code>data/</code> directory, and the <code>config/</code> directory tree with example TOON files.</p>
 <pre><code class="language-console">$ ares-server init [OPTIONS] [PATH]
@@ -309,13 +341,14 @@ Commands:
 <p>Recursively ingest local text documents into a collection.</p>
 <pre><code class="language-console">$ ares-server rag ingest-dir [OPTIONS] --collection &lt;COLLECTION&gt; --docs-path &lt;DOCS_PATH&gt;
 </code></pre>
-<p>Notable options:</p>
+<p>All options (<code>--help</code> output):</p>
 <div class="table-wrapper"><table><thead><tr><th>Option</th><th>Effect</th></tr></thead><tbody>
 <tr><td><code>--collection &lt;NAME&gt;</code></td><td>Collection to ingest into. Required</td></tr>
 <tr><td><code>--docs-path &lt;DIR&gt;</code></td><td>Directory with the documents. Required</td></tr>
 <tr><td><code>--chunking-strategy &lt;KIND&gt;</code></td><td><code>word</code> (default), <code>semantic</code>, or <code>character</code></td></tr>
 <tr><td><code>--tag &lt;TAG&gt;</code></td><td>Attach a tag. Repeat for multiple tags</td></tr>
 <tr><td><code>--dry-run</code></td><td>List the files that would be ingested. Send no requests</td></tr>
+<tr><td><code>--host &lt;URL&gt;</code></td><td>ARES server base URL. Default: <code>http://localhost:3000</code></td></tr>
 <tr><td><code>--user</code> / <code>--password</code></td><td>Login credentials</td></tr>
 <tr><td><code>--token &lt;TOKEN&gt;</code></td><td>Bearer token; skips login</td></tr>
 </tbody></table>
@@ -332,12 +365,13 @@ Commands:
 <p>Search a collection.</p>
 <pre><code class="language-console">$ ares-server rag search [OPTIONS] --collection &lt;COLLECTION&gt; --query &lt;QUERY&gt;
 </code></pre>
-<p>Notable options:</p>
+<p>All options (<code>--help</code> output):</p>
 <div class="table-wrapper"><table><thead><tr><th>Option</th><th>Effect</th></tr></thead><tbody>
 <tr><td><code>--collection &lt;NAME&gt;</code></td><td>Collection to search. Required</td></tr>
 <tr><td><code>--query &lt;TEXT&gt;</code></td><td>Search query. Required</td></tr>
 <tr><td><code>--top-k &lt;N&gt;</code></td><td>Maximum number of results. Default: <code>10</code></td></tr>
 <tr><td><code>--strategy &lt;KIND&gt;</code></td><td><code>semantic</code> (default), <code>bm25</code>, <code>fuzzy</code>, or <code>hybrid</code></td></tr>
+<tr><td><code>--host &lt;URL&gt;</code></td><td>ARES server base URL. Default: <code>http://localhost:3000</code></td></tr>
 <tr><td><code>--user</code> / <code>--password</code></td><td>Login credentials</td></tr>
 <tr><td><code>--token &lt;TOKEN&gt;</code></td><td>Bearer token; skips login</td></tr>
 </tbody></table>
@@ -348,6 +382,33 @@ Commands:
   --query "how do I rotate API keys" \
   --top-k 5 \
   --strategy hybrid
+</code></pre>
+<h2 id="scripting-and-composition"><a class="header" href="#scripting-and-composition">Scripting and composition</a></h2>
+<p>Every command reports its result through the exit code. Chain commands with <code>&amp;&amp;</code> so a later step runs only after an earlier step succeeds.</p>
+<p>Validate, then start under the supervisor:</p>
+<pre><code class="language-bash">ares-server config --validate &amp;&amp; ares-server --supervise
+</code></pre>
+<p>Preview an ingest, then run it for real:</p>
+<pre><code class="language-bash">ares-server rag ingest-dir --collection docs --docs-path ./handbook --dry-run \
+  &amp;&amp; ares-server rag ingest-dir --collection docs --docs-path ./handbook \
+       --tag handbook --user me@example.com --password "$PASS"
+</code></pre>
+<p>Scripting guidance:</p>
+<ul>
+<li>Check <code>$?</code> after each call. <code>0</code> means success; see the exit-code table above for failure codes.</li>
+<li><code>--verbose</code> raises server log verbosity to <code>debug,ares=trace</code>. It does not change subcommand output.</li>
+<li>Progress lines go to standard output; failures go to standard error. Redirect them separately: <code>2&gt;err.log</code>.</li>
+<li>A failed ingest still processes every document first. The summary line on stdout reads <code>summary&lt;TAB&gt;documents=N succeeded=S failed=F chunks=C</code>; parse it to decide whether to retry.</li>
+<li>A dry run prints one tab-separated line per file: <code>&lt;path&gt;&lt;TAB&gt;&lt;title&gt;&lt;TAB&gt;&lt;N bytes&gt;</code>, then <code>dry_run=true documents=&lt;count&gt;</code>. Both formats are stable for parsing.</li>
+</ul>
+<p>A guarded ingest in shell:</p>
+<pre><code class="language-bash">if ares-server rag ingest-dir --collection docs --docs-path ./handbook \
+     --token "$ARES_TOKEN" &gt; out.log 2&gt; err.log; then
+  grep '^summary' out.log
+else
+  cat err.log
+  exit 1
+fi
 </code></pre>
 <h2 id="where-to-go-next"><a class="header" href="#where-to-go-next">Where to go next</a></h2>
 <ul>

@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -185,23 +187,29 @@
 <h2 id="scaffold-a-project"><a class="header" href="#scaffold-a-project">Scaffold a project</a></h2>
 <p>Run <code>init</code> in an empty directory:</p>
 <pre><code class="language-bash">mkdir my-ares &amp;&amp; cd my-ares
-ares-server init --minimal
+ares-server init
 </code></pre>
-<p><code>--minimal</code> writes fewer agents and tools. Without it, <code>init</code> writes the full example set. Add <code>--no-examples</code> to skip example TOON files, or <code>--provider openai</code> to configure OpenAI instead of Ollama.</p>
+<p><code>init</code> accepts a target path, <code>--force</code> to overwrite, and these switches:</p>
+<ul>
+<li><code>--no-examples</code> skips the example TOON files under <code>config/</code>. Verified against 0.10.0: the run then creates only <code>ares.toml</code>, <code>.env.example</code>, <code>.gitignore</code>, and empty directories.</li>
+<li><code>--provider openai|both</code> selects which provider template lands in <code>ares.toml</code>; the default is <code>ollama</code>.</li>
+<li><code>--minimal</code> asks for a smaller configuration. In 0.10.0 both modes write the same file set; prefer plain <code>init</code>.</li>
+</ul>
 <p>The command creates this layout:</p>
 <pre><code class="language-text">.
 ├── ares.toml          # Main configuration file
 ├── .env.example       # Template for environment variables
+├── .gitignore
 ├── data/              # Local database and RAG data
 └── config/
-    ├── agents/        # TOON agent definitions
-    ├── models/        # TOON model definitions
-    ├── tools/         # TOON tool definitions
-    ├── workflows/     # TOON workflow definitions
-    └── mcps/          # TOON MCP server definitions
+    ├── agents/        # router.toon, orchestrator.toon
+    ├── models/        # fast.toon, balanced.toon, powerful.toon
+    ├── tools/         # calculator.toon, web_search.toon
+    ├── workflows/     # default.toon, research.toon
+    └── mcps/          # TOON MCP server definitions (empty)
 </code></pre>
 <h2 id="inspect-the-generated-configuration"><a class="header" href="#inspect-the-generated-configuration">Inspect the generated configuration</a></h2>
-<p>Open <code>ares.toml</code>. The minimal file contains these sections:</p>
+<p>Open <code>ares.toml</code>. The generated file contains these sections (comments stripped):</p>
 <pre><code class="language-toml">[server]
 host = "127.0.0.1"
 port = 3000
@@ -221,18 +229,47 @@ type = "ollama"
 base_url = "http://localhost:11434"
 default_model = "ministral-3:3b"
 
+[tools.calculator]
+enabled = true
+description = "Performs basic arithmetic operations (+, -, *, /)"
+timeout_secs = 10
+
 [agents.router]
 model = "meta/llama-3.3-70b-instruct"
 tools = []
 max_tool_iterations = 1
-system_prompt = "..."           # Multi-line prompt text
+parallel_tools = false
+system_prompt = """..."""        # Routing prompt; answers with one agent name
+
+[agents.orchestrator]
+model = "meta/llama-3.3-70b-instruct"
+tools = ["calculator", "web_search"]
+max_tool_iterations = 10
+
+[workflows.default]
+entry_agent = "router"
+fallback_agent = "orchestrator"
+max_depth = 3
 
 [config]
 agents_dir = "config/agents"    # TOON directories, watched for hot reload
 hot_reload = true
 watch_interval_ms = 1000
 </code></pre>
-<p>Every credential is an environment-variable <em>name</em>, not a value. The server reads the value at startup.</p>
+<p>A <code>[rag]</code> block also appears (<code>embedding_model = "BAAI/bge-small-en-v1.5"</code>, chunk size and overlap). Retrieval reads it when you add collections.</p>
+<h3 id="what-each-block-does"><a class="header" href="#what-each-block-does">What each block does</a></h3>
+<p><strong><code>[server]</code></strong> controls the listener and logging. <code>host</code> and <code>port</code> feed the single <code>TcpListener::bind</code> call in <code>run_server</code> (<code>src/main.rs</code>). Keep <code>127.0.0.1</code> while you test; use <code>0.0.0.0</code> only when another machine must connect. Two more fields exist beyond the template: <code>cors_origins</code> (default <code>["http://localhost:3000"]</code>, set explicit origins in production) and the rate-limit pair below.</p>
+<pre><code class="language-toml">rate_limit_per_second = 100   # Requests per second per IP; 0 disables limiting
+rate_limit_burst = 10         # Bucket size admitted above the steady rate
+</code></pre>
+<p>The limiter is <code>tower_governor</code> (<code>src/main.rs</code>, rate-limit layer build): it admits bursts up to <code>rate_limit_burst</code> and refills one slot every $1/\text{rate_limit_per_second}$ seconds. Responses carry <code>x-ratelimit-*</code> headers.</p>
+<p><strong><code>[auth]</code></strong> names the secret environment variables and token lifetimes. <code>jwt_secret_env = "JWT_SECRET"</code> means: read the signing key from the environment variable called <code>JWT_SECRET</code>. The same pattern applies to <code>api_key_env</code>. Lifetimes are seconds: 900 gives 15-minute access tokens; 604800 gives 7-day refresh tokens.</p>
+<p><strong><code>[database]</code></strong> holds one connection URL. The template writes a local file path for an embedded store. A production deployment points at <code>postgres://user:pass@host/db</code>; the store then runs embedded migrations from <code>ares_store::MIGRATOR</code> on first connect.</p>
+<p><strong><code>[providers.&lt;name&gt;]</code></strong> defines one LLM provider. <code>&lt;name&gt;</code> (<code>ollama-local</code> here) is your label for it; agents reference this label. <code>type</code> picks the client implementation. <code>base_url</code> is where the client sends requests. <code>default_model</code> applies when an agent names no model of its own.</p>
+<p><strong><code>[tools.&lt;name&gt;]</code></strong> declares one tool in the main file: an <code>enabled</code> switch, a description the model sees, and a <code>timeout_secs</code> cap. The matching TOON file under <code>config/tools/</code> carries the same fields for hot reload.</p>
+<p><strong><code>[agents.&lt;name&gt;]</code></strong> defines one agent. <code>model</code> selects the model (a provider default when omitted). <code>tools</code> lists callable tools; empty means the agent answers without side effects. <code>max_tool_iterations</code> caps the tool-call loop rounds. <code>parallel_tools</code> runs independent calls in one round together. <code>system_prompt</code> sets the persona text sent with every request. The scaffold defines two agents: <code>router</code> classifies a request and answers with one agent name; <code>orchestrator</code> does the real work and owns the tools.</p>
+<p><strong><code>[workflows.default]</code></strong> chains agents. A workflow enters at <code>entry_agent</code> and falls back to <code>fallback_agent</code>; <code>max_depth</code> bounds the hops.</p>
+<p><strong><code>[config]</code></strong> points at the TOON directories. With <code>hot_reload = true</code>, a watcher re-reads them every <code>watch_interval_ms</code>. Edits apply without a restart.</p>
 <h2 id="set-environment-variables"><a class="header" href="#set-environment-variables">Set environment variables</a></h2>
 <p>Copy the template and fill in the values:</p>
 <pre><code class="language-bash">cp .env.example .env
@@ -259,12 +296,25 @@ ollama pull ministral-3:3b
     Server: 127.0.0.1:3000
     Log level: info
 </code></pre>
-<p>Validation fails when a named environment variable is missing, or when an agent references an unknown provider.</p>
+<p>Validation checks structure and cross-references: unknown providers in agent blocks and malformed TOML fail here. Verified against 0.10.0: validation passes even while <code>JWT_SECRET</code> and <code>API_KEY</code> are unset, so export them anyway before you start.</p>
 <h2 id="start-the-server"><a class="header" href="#start-the-server">Start the server</a></h2>
 <p>Run without arguments to start:</p>
 <pre><code class="language-bash">ares-server
 </code></pre>
-<p>The server binds to <code>127.0.0.1:3000</code>. It watches <code>ares.toml</code> and the TOON directories. Edits apply while it runs.</p>
+<h3 id="what-happens-on-boot"><a class="header" href="#what-happens-on-boot">What happens on boot</a></h3>
+<p><code>run_server</code> in <code>src/main.rs</code> runs one ordered pass. Each step gates the next:</p>
+<ol>
+<li><strong>Load environment and tracing</strong> (<code>src/main.rs:528-532</code>). <code>.env</code> is read if present, then the log filter starts at <code>info</code>.</li>
+<li><strong>Create the root context</strong> (<code>src/main.rs:534-554</code>). A Cordis root <code>Context</code> appears, plus a <code>ReflectService</code>. The service registers notifiers for the <code>Tools</code> and <code>Llm</code> types so later changes fan out immediately.</li>
+<li><strong>Register loader factories</strong> (<code>src/main.rs:557-558</code>). Built-in factories (Store, Llm, Tools, CalculatorService, and others) enter the <code>PluginRegistry</code>, either through explicit chains or inventory collection.</li>
+<li><strong>Boot the entries program</strong> (<code>src/main.rs:560-568</code>). The loader parses <code>config/cordis-entries.toml</code> and instantiates entries in file order. When it reaches the <code>Overlay</code> entry, empty entry configs fill from <code>ares.toml</code>. The <code>Store</code> factory connects to the database, runs migrations, and seeds default agents here. Any boot failure logs <code>Cordis Loader: boot failed</code> and exits with code 1.</li>
+<li><strong>Guard configuration presence</strong> (<code>src/main.rs:570-585</code>). No loaded config means a friendly error that points at <code>ares-server init</code>, then exit 1.</li>
+<li><strong>Start the entries watcher</strong> (<code>src/main.rs:592-625</code>). File events re-compose the program and apply diffs through the loader journal. If the watcher cannot start, a 30-second poll takes over.</li>
+<li><strong>Preload runtime providers and snapshot agent configs</strong> (<code>src/main.rs:630-707</code>). Runtime provider registrations load; current agent definitions land in the version history table.</li>
+<li><strong>Build HTTP layers</strong> (<code>src/main.rs:895-944</code>). CORS applies from <code>cors_origins</code>; the rate-limit layer builds only when <code>rate_limit_per_second &gt; 0</code>.</li>
+<li><strong>Bind and serve</strong> (<code>src/main.rs:949-964</code>). The listener binds <code>host:port</code>, and Axum serves with graceful shutdown on Ctrl+C or SIGTERM.</li>
+</ol>
+<p>If step 4 or 9 fails, you see the reason in the log before the process exits. Nothing listens before step 9, so a failure never leaves a half-open port.</p>
 <h2 id="send-a-chat-request"><a class="header" href="#send-a-chat-request">Send a chat request</a></h2>
 <p>The external chat route is <code>POST /v1/chat</code>. It authenticates with a tenant API key of the form <code>ares_...</code>.</p>
 <p>Create a tenant and its first key. The admin routes need the <code>ADMIN_API_KEY</code> environment variable on the server process and the matching <code>x-admin-secret</code> header:</p>
@@ -306,6 +356,34 @@ curl -s -X POST http://localhost:3000/admin/tenants/TENANT_ID/api-keys \
   }
 }
 </code></pre>
+<h2 id="exercise-a-tool-through-chat"><a class="header" href="#exercise-a-tool-through-chat">Exercise a tool through chat</a></h2>
+<p>The scaffold already wires one tool-capable agent: <code>orchestrator</code> lists <code>calculator</code> and <code>web_search</code> in its <code>tools</code> field, and both tool files exist under <code>config/tools/</code>. The <code>router</code> agent carries <code>tools = []</code> on purpose.</p>
+<p>To exercise the calculator directly, ask through the orchestrator path:</p>
+<pre><code class="language-bash">curl -s -X POST http://localhost:3000/v1/chat \
+  -H "Authorization: Bearer $ARES_TENANT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Use the calculator to compute 21 * 2."}'
+</code></pre>
+<p>What happens inside:</p>
+<ol>
+<li><code>Execute::run</code> receives the message.</li>
+<li>The model answers with a tool call instead of text.</li>
+<li>ARES resolves <code>calculator</code> through the <code>Tools</code> service and executes it.</li>
+<li>ARES sends the tool result back to the model, up to <code>max_tool_iterations</code> rounds.</li>
+<li>The final response arrives in the same JSON shape as before. Token usage now covers every round.</li>
+</ol>
+<p>You can also give the <code>router</code> agent tools: set <code>tools = ["calculator"]</code> in <code>ares.toml</code>, or add <code>tools[0]: calculator</code> to <code>config/agents/router.toon</code>. Save the file; hot reload applies it within about one second.</p>
+<p>If the response says the tool is unknown, check three things: the tool file exists under <code>config/tools/</code>, <code>enabled: true</code> is set, and the agent's <code>tools</code> list matches the tool name exactly.</p>
+<h2 id="common-first-run-errors"><a class="header" href="#common-first-run-errors">Common first-run errors</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead><tbody>
+<tr><td>Bind error such as <code>Address already in use (os error 98)</code></td><td>Another process holds <code>host:port</code>; often a previous server that never stopped</td><td>Stop the old process, or change <code>port</code> in <code>[server]</code></td></tr>
+<tr><td>Chat returns an authentication error</td><td>Missing, malformed, or revoked tenant API key</td><td>Confirm the header reads <code>Bearer ares_...</code> with the raw key from creation time</td></tr>
+<tr><td><code>Cordis Loader: boot failed</code> in the log, then exit code 1</td><td>A loader entry failed during boot; most often the database URL points at an unreachable server</td><td>Check <code>[database].url</code>; for <code>postgres://</code> URLs confirm the server accepts connections, then retry</td></tr>
+<tr><td>Friendly banner naming the missing config file, exit code 1</td><td><code>ares.toml</code> absent from the working directory</td><td>Run <code>ares-server init</code> in that directory, or start from a directory that has one</td></tr>
+<tr><td>Chat fails with a provider connection error</td><td>Ollama (or your provider) is down, or <code>base_url</code> is wrong</td><td>Start <code>ollama serve</code>, pull the model named in the provider block, and re-check <code>base_url</code></td></tr>
+<tr><td>Admin routes answer 401</td><td>Server started without <code>ADMIN_API_KEY</code> set</td><td>Restart the server process with <code>ADMIN_API_KEY</code> exported</td></tr>
+</tbody></table>
+</div>
 <h2 id="stop-the-server"><a class="header" href="#stop-the-server">Stop the server</a></h2>
 <p>Press <code>Ctrl+C</code> in the server terminal. The server shuts down cleanly.</p>
 <p>For daemon-style operation, run under the built-in supervisor:</p>

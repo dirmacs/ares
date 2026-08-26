@@ -30,6 +30,8 @@
 
         <!-- Custom theme stylesheets -->
 
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
@@ -191,10 +193,50 @@
 </tbody></table>
 </div>
 <p>These meta-events do not join the product event catalog, so catalog validation skips them.</p>
+<h2 id="decision-guide-which-meta-event-for-which-need"><a class="header" href="#decision-guide-which-meta-event-for-which-need">Decision guide: which meta-event for which need</a></h2>
+<p>Pick by the operation you want to guard, not by the mechanism.</p>
+<div class="table-wrapper"><table><thead><tr><th>You need to...</th><th>Subscribe to</th><th>Veto power</th></tr></thead><tbody>
+<tr><td>Hide or rewrite one service from consumers</td><td><code>internal/get</code></td><td>Refuse the read, redirect to the parent frame, or substitute the value</td></tr>
+<tr><td>Freeze writes or audit every provide</td><td><code>internal/set</code></td><td>Block the write; old value stays intact</td></tr>
+<tr><td>Transform or validate plugin configuration</td><td><code>internal/config</code></td><td>Replace the effective config, or fail activation</td></tr>
+<tr><td>Defer a restart during a change window</td><td><code>internal/update</code></td><td>Park the proposed config in <code>vetoed_config</code>, keep serving</td></tr>
+<tr><td>Gate listener registration per realm</td><td><code>internal/listener</code></td><td>Cancel registration with an inert handle</td></tr>
+<tr><td>Trace every product dispatch</td><td><code>internal/dispatch</code></td><td>None — observation only</td></tr>
+</tbody></table>
+</div>
+<p>Rules of thumb:</p>
+<ul>
+<li>One need, one meta-event. Do not emulate <code>internal/update</code> vetoes with
+config rewriting; update preserves the running application untouched,
+while config changes force a new application.</li>
+<li>For multi-tenant scoping, register listeners inside the isolate realm.
+Meta-event listeners are ordinary listeners; they obey isolate
+boundaries like everything else on that context.</li>
+<li>Prefer <code>internal/dispatch</code> over wrapping product code in logging. The
+observer sees every dispatch without touching call sites.</li>
+</ul>
 <h2 id="zero-cost-gates"><a class="header" href="#zero-cost-gates">Zero-cost gates</a></h2>
 <p>Every interception point calls <code>EventsService::listener_count</code> first. The count is one pair of map lookups over the flat and waterfall registries. With zero listeners, the operation proceeds on its historical path with no chain work. This gate makes the whole feature free until someone subscribes.</p>
 <h2 id="veto-semantics"><a class="header" href="#veto-semantics">Veto semantics</a></h2>
 <p>All veto chains run as <code>bail</code> chains: handlers run in registration order, and the first non-null result terminates the chain.</p>
+<h3 id="ordering-guarantees-within-one-chain"><a class="header" href="#ordering-guarantees-within-one-chain">Ordering guarantees within one chain</a></h3>
+<p>Order inside a chain is deterministic:</p>
+<ul>
+<li>Default registrations append to the back of that event's list.
+First registered runs first.</li>
+<li>A registration with <code>EventOptions { prepend: true }</code> inserts at the
+front. It runs before every default registration, including ones made
+earlier.</li>
+<li>Handlers are async but the chain awaits them sequentially. Handler N+1
+never starts before handler N returns. There is no concurrency inside
+a bail chain.</li>
+<li>The first non-null result wins. Later handlers do not run at all —
+not even for observation. Put audit listeners on <code>internal/dispatch</code>
+instead if they must always run.</li>
+<li>Disposing a listener handle removes exactly that slot. Remaining
+handlers keep their relative order.</li>
+</ul>
+<p>Test anchors: <code>prepend_ordering_observed</code> in <code>events.rs</code>.</p>
 <h3 id="internalget"><a class="header" href="#internalget"><code>internal/get</code></a></h3>
 <p>Payload: <code>{ "service", "ctx" }</code>. Rules for <code>intercept_get</code>:</p>
 <ul>
@@ -237,6 +279,52 @@
 <h3 id="internaldispatch"><a class="header" href="#internaldispatch"><code>internal/dispatch</code></a></h3>
 <p>Observer, not veto. Before every non-internal dispatch, listeners receive <code>{ mode, name, args }</code> fire-and-forget. Handler results and errors drop by design: observability must never break or delay the observed operation. Internal meta-events are exempt, so observation cannot recurse into itself.</p>
 <p>Test anchor: <code>internal_dispatch_observes_non_internal_only</code>.</p>
+<h2 id="worked-mini-scenarios"><a class="header" href="#worked-mini-scenarios">Worked mini-scenarios</a></h2>
+<p>Each scenario shows the payload shape and one verdict path. Payloads are
+JSON objects; shapes come from the bridge implementations in
+<code>events.rs</code> and its tests.</p>
+<p><strong>Scenario: tenant A may not read the billing service.</strong>
+A listener on <code>internal/get</code> receives:</p>
+<pre><code class="language-json">{ "service": "BillingStore", "ctx": "&lt;frame id&gt;" }
+</code></pre>
+<p>The handler returns <code>{ "refuse": true }</code> when <code>"service"</code> names a
+billing type and the dispatch belongs to tenant A. The synchronous
+bridge maps that to <code>ReadVerdict::Refuse</code>, so <code>Context::get</code> returns
+<code>None</code>. Tenant B's handler returns null for the same event; null passes
+the read through untouched.</p>
+<p><strong>Scenario: freeze all writes during a migration.</strong>
+One listener on <code>internal/set</code> receives
+<code>{ "service": "SessionCache", "ctx": "&lt;frame id&gt;" }</code> and returns an
+<code>Err(CordisError)</code>. The chain aborts with that error and vetoes the
+write. The previous value stays fully intact: no store slot, owner, or
+version changes. Callers see the error; nothing else moves.</p>
+<p><strong>Scenario: inject feature flags into plugin config.</strong>
+The registry captured raw config <code>{"pool": 4}</code> at registration. A
+listener on <code>internal/config</code> receives that raw value and returns</p>
+<pre><code class="language-json">{ "pool": 4, "feature_x": true }
+</code></pre>
+<p>That non-null terminal IS the effective configuration for every apply
+and refresh pass of this fiber. Removing the listener reverts the next
+refresh to the raw value.</p>
+<p><strong>Scenario: hold a restart during peak hours.</strong>
+An operator gate listens on <code>internal/update</code>. It receives
+<code>{ "service": "SearchIndex" }</code> and returns JSON <code>false</code> outside the
+maintenance window. The proposed config parks in <code>Fiber::vetoed_config</code>
+and <code>update</code> returns <code>Ok(())</code>; the old application keeps serving.
+Returning any other non-null value — including an object — counts as
+proceed. Only explicit <code>false</code> is a veto.</p>
+<p><strong>Scenario: block a debug-only listener in production.</strong>
+A listener on <code>internal/listener</code> receives
+<code>{ "event": "tools/execute" }</code>. For events matching a deny list it
+returns <code>Ok(json!(false))</code>. The registration cancels fail-closed and the
+caller gets an inert handle whose <code>dispose</code> flips nothing.</p>
+<p><strong>Scenario: trace latency per dispatch mode.</strong>
+A listener on <code>internal/dispatch</code> receives</p>
+<pre><code class="language-json">{ "mode": "emit", "name": "agent/step", "args": { "n": 1 } }
+</code></pre>
+<p>before every non-internal emit. The handler records the timestamp and
+returns anything; results drop by design. Internal meta-events never
+trigger it, so tracing cannot recurse into itself.</p>
 <h2 id="layered-intercept-chains"><a class="header" href="#layered-intercept-chains">Layered intercept chains</a></h2>
 <p>Intercept overrides stack per <code>TypeId</code>. Every set appends a layer. Layers order outermost to innermost across ancestor frames; the innermost layer is the effective value every getter returns. <code>Context::intercept_chain</code> returns the full chain. An isolate label is a realm boundary: layers beyond it do not leak in.</p>
 <p>Structural comparison uses shared-instance identity (<code>Arc::ptr_eq</code> per layer) via <code>Context::chains_structurally_equal</code>. Freshly built values compare unequal by design.</p>
@@ -255,6 +343,46 @@
 <p>Test anchors: <code>target_carrying_dispatches_filter_per_dispatch</code>, <code>filter_excludes_nonmatching_contexts</code>, <code>global_bypasses_filter</code>.</p>
 <h2 id="re-entrancy-protection"><a class="header" href="#re-entrancy-protection">Re-entrancy protection</a></h2>
 <p>A thread-local fence (<code>InterceptFence</code>) marks the thread while a synchronous bridge drives its chain. Nested operations on the same thread pass through unintercepted, so an <code>internal/get</code> listener that reads services does not recurse into its own veto. Bridges also require a multi-thread runtime; without one they fall open and log a warning.</p>
+<h3 id="why-the-fence-exists"><a class="header" href="#why-the-fence-exists">Why the fence exists</a></h3>
+<p>Consider an <code>internal/get</code> listener that inspects other services to make
+its verdict. The inspection calls <code>ctx.get</code>. Without protection that read
+re-enters the same veto chain, which reads services again. The stack
+grows until something breaks.</p>
+<p>The fence is one boolean in thread-local storage:</p>
+<ol>
+<li><code>InterceptFence::enter</code> sets it and returns a guard.</li>
+<li>The bridge drives its chain while the guard lives.</li>
+<li>Any nested operation on this thread sees the flag set. Its bridge
+short-circuits to "allow" before consulting listeners.</li>
+<li>Dropping the guard clears the flag.</li>
+</ol>
+<p>The scope is deliberately per-thread, not global. Two worker threads can
+each drive their own chain at the same time. Only true nesting — one
+bridge inside another on the same call stack — passes through
+unintercepted.</p>
+<p>The same reasoning protects <code>internal/set</code>, <code>internal/config</code>,
+<code>internal/update</code>, and <code>internal/listener</code>: every synchronous bridge
+enters the fence first. A fenced nested write proceeds unintercepted,
+so an interceptor can record state without tripping its own gate.</p>
+<p>Test anchor: <code>accessor_bypasses_intercept_waterfalls</code> shows the related
+design bypass for accessors; the fence covers same-thread recursion for
+every bridge.</p>
+<h3 id="fall-open-on-single-thread-runtimes"><a class="header" href="#fall-open-on-single-thread-runtimes">Fall-open on single-thread runtimes</a></h3>
+<p>Synchronous bridges park the current worker with <code>block_in_place</code>.
+Parking requires spare workers, so it needs a multi-thread tokio
+runtime. On a current-thread flavor there are no spare workers, and
+<code>block_in_place</code> panics.</p>
+<p>Each bridge checks the flavor before parking:</p>
+<pre><code class="language-text">listener_count == 0        -&gt; historical path (zero cost)
+fence already held         -&gt; allow, no recursion
+single-thread runtime      -&gt; allow + warning: skipped veto
+otherwise                  -&gt; park and run the bail chain
+</code></pre>
+<p>Fall-open means fail-open by design choice. Registration and reads are
+core APIs; refusing them because of a runtime flavor would break every
+test harness and embedded use. The warning names the skipped veto so
+deployments notice when they expected enforcement. Product deployments
+run multi-thread flavors, where the chain always runs.</p>
 
                     </main>
 

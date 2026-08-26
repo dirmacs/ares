@@ -36,6 +36,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 // Note: Arc is now used both for MODEL_INIT_LOCKS and for wrapping the embedding models
 use tokio::task::spawn_blocking;
+use sha2::{Digest, Sha256};
 
 // Re-export fastembed types for convenience
 pub use fastembed::{EmbeddingModel as FastEmbedModel, InitOptions, SparseModel, TextEmbedding};
@@ -944,26 +945,32 @@ impl EmbeddingService {
             return Ok(vec![]);
         }
 
-        // Clone texts to owned strings for the spawn_blocking closure
-        let texts_owned: Vec<String> = texts.iter().map(|s| s.as_ref().to_string()).collect();
+        // Deduplicate identical inputs (whitespace-normalized content hash) so
+        // each distinct text is embedded once; vectors are then fanned back out
+        // to every duplicate. The seen-set is per-call, keeping memory bounded.
+        let plan = DedupPlan::plan(texts);
+        // Owned strings so the blocking task does not borrow the caller's slice
+        let unique: Vec<String> =
+            plan.unique_indices.iter().map(|&i| texts[i].as_ref().to_string()).collect();
         let batch_size = self.config.batch_size;
 
         // Clone the Arc to move into the blocking task
         let model = Arc::clone(&self.model);
 
-        spawn_blocking(move || {
+        let vectors = spawn_blocking(move || {
             // Lock the model for use
             let mut model_guard = model
                 .lock()
                 .map_err(|e| AppError::Internal(format!("Failed to acquire model lock: {}", e)))?;
 
-            let refs: Vec<&str> = texts_owned.iter().map(|s| s.as_str()).collect();
+            let refs: Vec<&str> = unique.iter().map(|s| s.as_str()).collect();
             model_guard
                 .embed(refs, Some(batch_size))
                 .map_err(|e| AppError::Internal(format!("Embedding failed: {}", e)))
         })
         .await
-        .map_err(|e| AppError::Internal(format!("Blocking task failed: {}", e)))?
+        .map_err(|e| AppError::Internal(format!("Blocking task failed: {}", e)))??;
+        Ok(plan.fan_out(&vectors))
     }
 
     /// Generate sparse embeddings for hybrid search
@@ -1308,6 +1315,60 @@ pub fn batch_chunks<T: Clone>(items: &[T], batch_size: usize) -> Vec<Vec<T>> {
     items.chunks(size).map(|c| c.to_vec()).collect()
 }
 
+/// Normalize text for content-hash deduplication.
+///
+/// Trims the input and collapses internal whitespace runs to single spaces so
+/// inputs that differ only in spacing hash identically.
+pub fn normalize_for_dedup(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// SHA-256 content hash (hex) over the whitespace-normalized text.
+pub fn content_hash_hex(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(normalize_for_dedup(text).as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Plan for deduplicating an embedding batch by content hash.
+///
+/// The seen-set lives only for the duration of one batch/request, keeping
+/// memory bounded: it is dropped as soon as the call returns.
+#[derive(Debug, Clone)]
+pub struct DedupPlan {
+    /// Index into the original input of the first occurrence of each unique text.
+    pub unique_indices: Vec<usize>,
+    /// For each original input, the position in `unique_indices` yielding its vector.
+    pub sources: Vec<usize>,
+}
+
+impl DedupPlan {
+    /// Compute a dedup plan: duplicate inputs map to the first occurrence's slot.
+    pub fn plan(texts: &[impl AsRef<str>]) -> Self {
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        let mut unique_indices = Vec::new();
+        let mut sources = Vec::with_capacity(texts.len());
+        for (i, text) in texts.iter().enumerate() {
+            let hash = content_hash_hex(text.as_ref());
+            match seen.get(&hash) {
+                Some(&slot) => sources.push(slot),
+                None => {
+                    seen.insert(hash, unique_indices.len());
+                    sources.push(unique_indices.len());
+                    unique_indices.push(i);
+                }
+            }
+        }
+        Self { unique_indices, sources }
+    }
+
+    /// Fan backend vectors for the unique texts back out over all original
+    /// inputs: `result[i] == vectors[sources[i]]`.
+    pub fn fan_out(&self, vectors: &[Vec<f32>]) -> Vec<Vec<f32>> {
+        self.sources.iter().map(|&slot| vectors[slot].clone()).collect()
+    }
+}
+
 /// Build an OpenAI-compatible [`EmbeddingRequest`] from model name and text inputs.
 pub fn build_embedding_request(
     model: impl Into<String>,
@@ -1407,14 +1468,21 @@ impl HttpEmbeddingClient {
     }
     pub async fn embed_texts_batched(&self, model: &str, texts: &[impl AsRef<str>], batch_size: usize,
         encoding_format: Option<EmbeddingEncodingFormat>, dimensions: Option<u32>) -> Result<Vec<Vec<f32>>> {
-        let owned: Vec<String> = texts.iter().map(|t| t.as_ref().to_string()).collect();
-        let mut all = Vec::with_capacity(owned.len());
-        for batch in batch_chunks(&owned, batch_size) {
+        // Deduplicate identical inputs (whitespace-normalized content hash) so
+        // each distinct text costs exactly one backend call; vectors are then
+        // fanned back out to every duplicate. The seen-set is per-request.
+        let plan = DedupPlan::plan(texts);
+        if plan.unique_indices.is_empty() {
+            return Ok(vec![]);
+        }
+        let unique: Vec<&str> = plan.unique_indices.iter().map(|&i| texts[i].as_ref()).collect();
+        let mut all = Vec::with_capacity(unique.len());
+        for batch in batch_chunks(&unique, batch_size) {
             let request = build_embedding_request(model, &batch, encoding_format, dimensions);
             let mut vectors = self.embed(&request).await?;
             all.append(&mut vectors);
         }
-        Ok(all)
+        Ok(plan.fan_out(&all))
     }
 }
 
@@ -2610,6 +2678,139 @@ mod tests {
         }).mount(&server).await;
         let vectors = HttpEmbeddingClient::new(server.uri()).unwrap().embed_texts_batched("m", &["t0","t1","t2","t3","t4"], 2, None, None).await.unwrap();
         assert_eq!(vectors.len(), 5); assert_eq!(vectors[0], vec![1.0]); assert_eq!(vectors[4], vec![5.0]);
+    }
+
+    // ---- content-hash dedup ----
+
+    #[test]
+    fn normalize_for_dedup_collapses_whitespace() {
+        assert_eq!(normalize_for_dedup("  hello   world \n\t again "), "hello world again");
+        assert_eq!(normalize_for_dedup(""), "");
+        assert_eq!(normalize_for_dedup("a"), "a");
+    }
+
+    #[test]
+    fn content_hash_hex_ignores_whitespace_differences_only() {
+        assert_eq!(content_hash_hex("hello world"), content_hash_hex("  hello\tworld\n"));
+        assert_ne!(content_hash_hex("hello world"), content_hash_hex("helloworld"));
+        assert_ne!(content_hash_hex("a b"), content_hash_hex("b a"));
+    }
+
+    #[test]
+    fn dedup_plan_maps_duplicates_to_first_occurrence_slot() {
+        let plan = DedupPlan::plan(&["a", "b", "a", " a ", "c", "b"]);
+        // Unique first occurrences in order of appearance: "a", "b", "c"
+        assert_eq!(plan.unique_indices, vec![0, 1, 4]);
+        assert_eq!(plan.sources, vec![0, 1, 0, 0, 2, 1]);
+        let vectors = vec![vec![0.0], vec![1.0], vec![2.0]];
+        assert_eq!(
+            plan.fan_out(&vectors),
+            vec![vec![0.0], vec![1.0], vec![0.0], vec![0.0], vec![2.0], vec![1.0]]
+        );
+        let empty: [&str; 0] = [];
+        assert_eq!(DedupPlan::plan(&empty).unique_indices, Vec::<usize>::new());
+    }
+
+    fn echo_inputs_responder() -> impl Fn(&wiremock::Request) -> wiremock::ResponseTemplate {
+        |req: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            let inputs: Vec<String> = match &body["input"] {
+                serde_json::Value::String(s) => vec![s.clone()],
+                serde_json::Value::Array(a) => {
+                    a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+                }
+                _ => panic!("unexpected input payload"),
+            };
+            let vectors: Vec<Vec<f32>> =
+                inputs.iter().map(|s| vec![s.len() as f32]).collect();
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::from_str::<serde_json::Value>(
+                    &sample_float_response_json(&vectors),
+                )
+                .unwrap())
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicate_texts_single_backend_call_vectors_fanned_back() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(echo_inputs_responder())
+            .mount(&server)
+            .await;
+
+        let client = HttpEmbeddingClient::new(server.uri()).unwrap();
+        let vectors = client
+            .embed_texts_batched("m", &["alpha", "beta", "alpha", "beta"], 10, None, None)
+            .await
+            .unwrap();
+
+        // Exactly one backend request carrying only the unique texts.
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1, "duplicates must not trigger extra backend calls");
+        let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["input"], serde_json::json!(["alpha", "beta"]));
+
+        // Vectors fanned back out to every original position.
+        assert_eq!(
+            vectors,
+            vec![vec![5.0], vec![4.0], vec![5.0], vec![4.0]]
+        );
+    }
+
+    #[tokio::test]
+    async fn unique_texts_all_sent() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(echo_inputs_responder())
+            .mount(&server)
+            .await;
+
+        let client = HttpEmbeddingClient::new(server.uri()).unwrap();
+        let vectors = client
+            .embed_texts_batched(
+                "m",
+                &["one", "two", "three", "four", "five"],
+                2,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // All unique texts sent: ceil(5/2) = 3 backend requests.
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 3);
+        let mut sent = Vec::new();
+        for req in &received {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            match body["input"].clone() {
+                serde_json::Value::String(s) => sent.push(s),
+                serde_json::Value::Array(a) => {
+                    sent.extend(a.into_iter().filter_map(|v| v.as_str().map(str::to_string)))
+                }
+                _ => panic!("unexpected input payload"),
+            }
+        }
+        assert_eq!(sent, vec!["one", "two", "three", "four", "five"]);
+        assert_eq!(
+            vectors,
+            vec![
+                vec![3.0],
+                vec![3.0],
+                vec![5.0],
+                vec![4.0],
+                vec![4.0]
+            ]
+        );
     }
     #[tokio::test] async fn wiremock_http_embedding_base64_response_path() {
         use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};

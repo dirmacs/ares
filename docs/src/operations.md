@@ -217,12 +217,12 @@ CRAP (Change Risk Anti-Patterns) combines cyclomatic complexity with test covera
 
 $$\mathrm{CRAP}(m) \;=\; \mathrm{comp}(m)^2 \times \left(1 - \frac{\mathrm{cov}(m)}{100}\right)^{3} \;+\; \mathrm{comp}(m)$$
 
-Here $\mathrm{comp}(m)$ is the function's cyclomatic complexity and $\mathrm{cov}(m)$ its line coverage percentage. Three properties explain the gate's shape:
+Here \\(\mathrm{comp}(m)\\) is the function's cyclomatic complexity and \\(\mathrm{cov}(m)\\) its line coverage percentage. Three properties explain the gate's shape:
 
-- A trivial, fully covered function scores exactly $1$.
-- At full coverage the cubic term collapses, so $\mathrm{CRAP}$ equals complexity. Tests cap the risk; they do not remove it.
-- Above complexity $\approx 30$, no coverage level brings the score under the threshold of 30. Oversized functions fail regardless of tests.
+- A trivial, fully covered function scores exactly \\(1\\).
+- At full coverage the cubic term collapses, so \\(\mathrm{CRAP}\\) equals complexity. Tests cap the risk; they do not remove it.
+- Above complexity \\(\approx 30\\), no coverage level brings the score under the threshold of 30. Oversized functions fail regardless of tests.
 
-Two concrete scores, taken from the upstream tool's own example table: a function with complexity 12 and zero coverage scores $12^2 \times (1-0)^3 + 12 = 156$. A function with complexity 4 at roughly 44% coverage scores $16 \times (1-0.444)^3 + 4 \approx 6.7$.
+Two concrete scores, taken from the upstream tool's own example table: a function with complexity 12 and zero coverage scores \\(12^2 \times (1-0)^3 + 12 = 156\\). A function with complexity 4 at roughly 44% coverage scores \\(16 \times (1-0.444)^3 + 4 \approx 6.7\\).
 
 The gate fails when any workspace function exceeds the threshold of 30. Treat a red gate as work, not noise. Split the flagged function or raise its test coverage.

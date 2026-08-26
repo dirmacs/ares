@@ -78,10 +78,10 @@ The default features of `ares-server` are postgres, openai, ares-vector, mcp, in
 
 ```bash
 # Install from crates.io
-cargo install ares-server --version 0.10.0
+cargo install ares-server
 
 # Install with embedded Web UI
-cargo install ares-server --version 0.10.0 --features ui
+cargo install ares-server --features ui
 
 # Initialize a new project (creates ares.toml and config files)
 ares-server init

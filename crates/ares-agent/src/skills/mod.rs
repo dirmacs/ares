@@ -304,6 +304,124 @@ pub fn check_tool_round_cap(rounds: usize, scope: &str) -> Result<(), String> {
     ))
 }
 
+/// Hard cap on parallel delegated tasks accepted by
+/// [`parse_delegation_args`].
+///
+/// Reuses the existing configured recursion limit: each parallel task
+/// becomes its own delegated skill call one level deeper, so the depth cap
+/// is the natural ceiling.
+#[cfg(feature = "postgres")]
+pub const MAX_PARALLEL_DELEGATED_TASKS: usize = MAX_SKILL_CALL_DEPTH;
+
+/// Parsed delegation argument flags and per-task tokens.
+#[cfg(feature = "postgres")]
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DelegationArgs {
+    /// One token vector per task. Before `--parallel` all plain tokens form
+    /// one task split on bare `|` separators; once `--parallel` latches,
+    /// every following plain token starts its own task and `|` is ignored.
+    pub tasks: Vec<Vec<String>>,
+    /// `--parallel` mode latch.
+    pub parallel: bool,
+    /// Value consumed from exactly one token after `--model`.
+    pub model: Option<String>,
+    /// `--tools` boolean enabling the inner tool loop for delegated tasks.
+    pub tools: bool,
+}
+
+impl DelegationArgs {
+    /// Model resolution precedence: explicit flag > profile default >
+    /// global default. An empty profile default falls through to the global
+    /// default.
+    pub fn resolved_model(&self, profile_default: &str, global_default: &str) -> String {
+        match (&self.model, profile_default.is_empty()) {
+            (Some(model), _) => model.clone(),
+            (None, false) => profile_default.to_string(),
+            (None, true) => global_default.to_string(),
+        }
+    }
+}
+
+/// Quote-aware tokenizer: a double-quoted segment is one token that may
+/// contain spaces and `|` separators; inside quotes a backslash escapes the
+/// next character.
+#[cfg(feature = "postgres")]
+pub fn tokenize_delegation_args(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for ch in input.chars() {
+        if in_quotes && escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_quotes => escaped = true,
+            '"' => in_quotes = !in_quotes,
+            c if !in_quotes && c.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// Parse a delegation argument string into flags plus per-task tokens.
+///
+/// Flags: `--parallel` (mode latch — tokens after it become separate tasks
+/// and `|` separators are ignored), `--model <value>` (consumes exactly one
+/// token), `--tools` (boolean enabling the inner tool loop). Everything
+/// else is task text; bare `|` separates sequential tasks before the latch.
+#[cfg(feature = "postgres")]
+pub fn parse_delegation_args(input: &str) -> Result<DelegationArgs, String> {
+    let tokens = tokenize_delegation_args(input);
+    let mut args = DelegationArgs::default();
+    args.tasks.push(Vec::new());
+    let mut latched = false;
+    let mut index = 0;
+    while index < tokens.len() {
+        match tokens[index].as_str() {
+            "--parallel" => {
+                args.parallel = true;
+                latched = true;
+                args.tasks.push(Vec::new());
+            }
+            "--model" => {
+                index += 1;
+                let value = tokens
+                    .get(index)
+                    .ok_or_else(|| "--model consumes exactly one value; none given".to_string())?;
+                args.model = Some(value.clone());
+            }
+            "--tools" => args.tools = true,
+            "|" if !latched => args.tasks.push(Vec::new()),
+            // '|' separators are ignored once --parallel latched.
+            "|" => {}
+            plain if latched => args.tasks.push(vec![plain.to_string()]),
+            plain => args
+                .tasks
+                .last_mut()
+                .expect("seed task bucket always present")
+                .push(plain.to_string()),
+        }
+        index += 1;
+    }
+    // Drop empty buckets left by leading/trailing/doubled separators.
+    args.tasks.retain(|task| !task.is_empty());
+    if args.tasks.len() > MAX_PARALLEL_DELEGATED_TASKS {
+        args.tasks.truncate(MAX_PARALLEL_DELEGATED_TASKS);
+    }
+    Ok(args)
+}
+
 /// Strip tool-chatter lines from delegated result text before it enters the
 /// parent context.
 ///
@@ -1866,4 +1984,84 @@ mod tool_hygiene_tests {
         assert_eq!(content, "answer: 42");
     }
 
+}
+#[cfg(all(test, feature = "postgres"))]
+mod delegation_flag_tests {
+    use super::{parse_delegation_args, DelegationArgs, MAX_PARALLEL_DELEGATED_TASKS};
+
+    #[test]
+    fn parse_flags_quote_aware_tokens() {
+        let parsed = parse_delegation_args(
+            r#"translate "hello | world" --model fast-model --tools"#,
+        )
+        .expect("quoted delegation args should parse");
+        assert_eq!(
+            parsed.tasks,
+            vec![vec![
+                "translate".to_string(),
+                "hello | world".to_string(),
+            ]]
+        );
+        assert_eq!(parsed.model.as_deref(), Some("fast-model"));
+        assert!(parsed.tools);
+        assert!(!parsed.parallel);
+    }
+
+    #[test]
+    fn parallel_latch_splits_tasks() {
+        let parsed = parse_delegation_args(
+            r#"alpha | beta --parallel gamma "delta echo" | epsilon"#,
+        )
+        .expect("latched delegation args should parse");
+        assert!(parsed.parallel);
+        assert_eq!(
+            parsed.tasks,
+            vec![
+                vec!["alpha".to_string()],
+                vec!["beta".to_string()],
+                vec!["gamma".to_string()],
+                vec!["delta echo".to_string()],
+                vec!["epsilon".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn model_flag_overrides_profile_default() {
+        let flagged = parse_delegation_args("--model flag-model task").expect("parse");
+        assert_eq!(
+            DelegationArgs::resolved_model(&flagged, "profile-model", "global-model"),
+            "flag-model"
+        );
+
+        let unflagged = parse_delegation_args("task").expect("parse");
+        assert_eq!(
+            DelegationArgs::resolved_model(&unflagged, "profile-model", "global-model"),
+            "profile-model"
+        );
+        assert_eq!(
+            DelegationArgs::resolved_model(&unflagged, "", "global-model"),
+            "global-model"
+        );
+    }
+
+    #[test]
+    fn tools_flag_enables_inner_loop() {
+        let off = parse_delegation_args("summarize notes").expect("parse");
+        assert!(!off.tools, "--tools absent must keep the inner loop disabled");
+
+        let on = parse_delegation_args("research topic --tools").expect("parse");
+        assert!(on.tools, "--tools must enable the inner tool loop");
+    }
+
+    #[test]
+    fn parallel_tasks_cap_at_configured_limit() {
+        let names = (0..MAX_PARALLEL_DELEGATED_TASKS + 5)
+            .map(|i| format!("t{i}"))
+            .collect::<Vec<_>>();
+        let parsed =
+            parse_delegation_args(&format!("--parallel {}", names.join(" "))).expect("parse");
+        assert!(parsed.parallel);
+        assert_eq!(parsed.tasks.len(), MAX_PARALLEL_DELEGATED_TASKS);
+    }
 }

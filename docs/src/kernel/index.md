@@ -18,6 +18,55 @@ The Cordis kernel is a typed service graph with a lifecycle engine. This chapter
 
 **Declarative management.** A loader applies entry trees against a journal. It stages changes in two phases and rolls back on failure. A reflect service fans change notifications out through a dependency graph.
 
+## Why a kernel
+
+Applications wire objects together by hand. Hand wiring creates four
+recurring problems. The kernel solves each one with one mechanism.
+
+**Problem 1: wiring.** Components reference each other by concrete type.
+Every change to a component ripples through every construction site.
+The kernel replaces hand wiring with typed lookup: provide once, resolve
+anywhere through the parent chain. Consumers name what they need; nobody
+names who builds it.
+
+**Problem 2: lifecycle.** Services start in the wrong order and stop in
+the wrong order. Timers, listeners, and connections leak when shutdown
+misses one. The kernel gives every registration a fiber. The fiber tracks
+every undo closure in registration order. Teardown runs them in reverse,
+always, even during reactive dependency churn.
+
+**Problem 3: observation.** Once components talk directly, nothing sees
+the traffic. Debugging relies on print statements at every call site.
+The kernel routes reads, writes, config resolution, restarts, and listener
+registration through six meta-events. One subscription observes every
+sensitive operation. With no subscriber, each point costs two map lookups.
+
+**Problem 4: replacement.** Swapping an implementation means touching
+call sites or restarting the process. The kernel separates declaration
+from use. A loader stages a new entry tree in two phases and rolls back
+on failure. Layered intercept overrides shadow one service type for one
+subtree without touching the parent context. Hot swap of native plugins
+rides the same fibers.
+
+The result is one graph that owns construction, teardown, inspection,
+and substitution. Product code states facts; the kernel keeps the facts
+true.
+
+## Glossary
+
+| Term | Definition |
+| --- | --- |
+| Fiber | Lifecycle owner of one registration. Holds the state machine, the dependency epoch, and the undo accumulator. Type: `cordis::fiber::Fiber`. |
+| Service | Any value stored by Rust `TypeId`. Implement the empty `Service` trait to participate. |
+| Effect | One labeled undo closure on a fiber. Every provide, timer, and listener pushes one. Disposal pops effects last-in, first-out. |
+| Event | Named message on the event bus. Dispatch modes: `emit`, `parallel`, `serial`, `bail`, `waterfall`. |
+| Meta-event | Kernel-owned veto point such as `internal/get` or `internal/set`. Distinct from product events. |
+| Isolate | Realm label marking a boundary. Contexts beyond an isolate do not see layers or services across it. Multi-tenant isolation uses this. |
+| Loader | Declarative engine applying entry trees against a journal in two phases, with rollback. |
+| Epoch | String encoding every declared dependency version. A changed epoch triggers a refresh pass. |
+| Readiness gate | Predicate holding a fiber in reversible `Pending` until it reports ready. |
+| Accessor | Name-keyed computed property beside the `TypeId` store. Bypasses interception by design. |
+
 ## Map: idea to module
 
 | Idea | Implemented in |

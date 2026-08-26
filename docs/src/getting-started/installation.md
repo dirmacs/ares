@@ -85,17 +85,67 @@ Feature bundles combine several flags:
 | `full-ui` | `full` plus `ui` |
 | `minimal` | Nothing optional |
 
-Enable features with `--features`:
+### Choose feature combinations
+
+Features compose along three independent axes. Pick one option per axis:
+
+1. **LLM providers** (`openai`, `azure`, `bedrock`, or none for Ollama). These add provider clients to `ares-llm`. They do not interact with each other, so `all-llm` is safe when you want runtime choice.
+2. **Database backend** (`postgres` or `turso`). The server binary requires the `postgres` feature. A binary built without it prints a rebuild hint and exits with code 1 at startup (`src/main.rs` compiles a stub `main` without it). Keep `postgres` unless you embed the library and run no HTTP server.
+3. **Vector store** (`ares-vector`, `qdrant`, `pgvector`, `chromadb`, `pinecone`, `lancedb`). Clients are additive. `local-vectorstores` keeps the build small because only the embedded store compiles.
+
+Cross-axis rules worth knowing:
+
+- `postgres` also gates sqlx code paths in `ares-store`, `ares-agent`, `ares-mcp`, `ares-tools`, and `ares-http` through feature forwarding.
+- `mcp`, `inventory`, and `rhai-policy` ride in `default`; dropping `default` drops all three. Re-add them explicitly if you build with `--no-default-features` plus your own picks.
+- `swagger-ui` needs nothing extra, but the OpenAPI document includes RAG paths only when both `local-embeddings` and `ares-vector` are on (see the `#[cfg(all(...))]` gate around the `OpenApi` derive in `src/main.rs`).
+
+Some features cost real compile time or native dependencies:
+
+| Feature | Cost |
+|---|---|
+| `lancedb` | Needs the `protoc` compiler on `PATH` at build time |
+| `local-embeddings` | Pulls the ONNX Runtime; unsupported on Windows MSVC; slow link step |
+| `ui` | Builds the embedded Leptos UI as part of the crate; longest cold build of any single feature |
+| `full-ui` | Everything above together; budget several minutes on a modest machine |
+
+For a first install, stay on defaults plus what you actually call. Defaults already give you `postgres`, `openai`, `ares-vector`, `mcp`, `inventory`, and `rhai-policy`.
+
+### Build offline or air-gapped
+
+The repository ships no vendor directory. For an air-gapped machine, vendor dependencies on a connected machine first:
 
 ```bash
-cargo install ares-server --features full-ui
+cd ares
+cargo vendor vendor
 ```
 
-For an embed-only library build without server defaults, disable all features:
+Copy the whole tree, including `vendor/`, to the target machine. Then point Cargo at it through `.cargo/config.toml` next to `Cargo.toml`:
 
-```bash
-cargo build --no-default-features
+```toml
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
 ```
+
+Build with `cargo build --release --offline`. Two notes apply:
+
+- SQL migrations live inside the `ares-store` crate and ship inside the published package, so an offline build needs no external migration files.
+- The default TLS stack uses rustls, so you need no system OpenSSL headers. If a non-default feature drags in OpenSSL on a host without `pkg-config`/`libssl-dev`, enable its vendored form in `Cargo.toml` (see the commented `vendored` example near the end of the dependency list) instead of installing system packages.
+
+## Troubleshoot installation
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `package \`ares-server v0.10.0\` cannot be built because it requires rustc 1.98 or newer` | Toolchain older than the declared `rust-version` | Run `rustup update stable`, then retry |
+| Installed binary prints `requires the \`postgres\` feature` and exits 1 | Built or installed with `--no-default-features` or without `postgres` | Reinstall with `--features postgres`, or keep `default` |
+| `error: failed to run custom build command` naming `protoc` | `lancedb` enabled without Protocol Buffers compiler | Install `protoc`, or drop `lancedb` from `--features` |
+| Link errors mentioning ONNXRuntime under `local-embeddings` | Missing ONNX Runtime library, or Windows MSVC host | Install ONNX Runtime, or use a remote embeddings endpoint without the feature |
+| `ares-server: command not found` after install | `$HOME/.cargo/bin` missing from `PATH` | Add `export PATH="$HOME/.cargo/bin:$PATH"` to your shell profile |
+| Build succeeds but `/ui` returns 404 | `ui` feature absent from this binary | Rebuild with `--features ui` |
+
+Compile-time versus run time matters here. Features such as `openai`, `azure`, or `bedrock` decide which provider code exists inside the binary. A provider that is absent at compile time cannot appear at run time by editing `ares.toml`. Configuration selects among compiled-in options; it never adds new ones.
 
 ## Verify the install
 

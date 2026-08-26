@@ -28,7 +28,20 @@ SVGTERM = Path("/tmp/svgterm")
 
 WIDTH, HEIGHT = 100, 34
 FPS = 12            # render frame rate
-IDLE_MS = 900       # collapse idle gaps longer than this at render time
+# svg-term collapses idle gaps LONGER than this many milliseconds. 120_000 ms
+# exceeds every scripted pause, so no authored pause is ever dropped and the
+# rendered SVG plays at the same pace as the cast.
+IDLE_MS = 120_000
+
+# Pacing targets: total runtime 90-120 s; every completed output screen stays
+# up at least MIN_SCREEN_DWELL before the next command; Act title cards stay
+# up at least CARD_TITLE_HOLD.
+CARD_CLEAR_DWELL = 0.8     # blank beat after the previous scene
+CARD_TITLE_HOLD = 3.6      # Act title card readability floor (>= 3 s)
+PROMPT_DWELL = 0.9         # typed command visible before its output appears
+NOTE_DWELL = 1.5           # annotation line under the output
+MIN_SCREEN_DWELL = 2.6     # floor on time a completed screen stays visible
+DEFAULT_OUT_DELAY = 4.5    # typical output screen hold, above the floor
 
 CYAN = "\x1b[1;36m"
 GREEN = "\x1b[1;32m"
@@ -44,17 +57,17 @@ def emit(text, delay):
 
 def card(title):
     """Emit a visible Act title card on a cleared screen."""
-    emit("\x1b[H\x1b[2J\x1b[3J", 0.35)
-    emit(f"{CYAN}── {title} ──{RESET}\r\n\r\n", 0.9)
+    emit("\x1b[H\x1b[2J\x1b[3J", CARD_CLEAR_DWELL)
+    emit(f"{CYAN}── {title} ──{RESET}\r\n\r\n", CARD_TITLE_HOLD)
 
 
 def prompt(display):
     display = display.replace("\n", "\r\n")
-    emit(f"{CYAN}${RESET} {display}\r\n", 0.55)
+    emit(f"{CYAN}${RESET} {display}\r\n", PROMPT_DWELL)
 
 
 def note(text):
-    emit(f"{DIM}   → {text}{RESET}\r\n", 0.85)
+    emit(f"{DIM}   → {text}{RESET}\r\n", NOTE_DWELL)
 
 
 def clean_output(raw, max_cols=96):
@@ -82,7 +95,7 @@ def run(cmd, cwd, timeout=20):
     return p.returncode, p.stdout + p.stderr
 
 
-def scene(display, cmd, cwd, keep_lines=None, out_delay=1.1,
+def scene(display, cmd, cwd, keep_lines=None, out_delay=DEFAULT_OUT_DELAY,
           exit_note=None, raw_display=None):
     prompt(raw_display if raw_display else display)
     code, output = run(cmd, cwd)
@@ -92,6 +105,10 @@ def scene(display, cmd, cwd, keep_lines=None, out_delay=1.1,
     if keep_lines is not None:
         lines = lines[:keep_lines]
     emit("".join(ln + "\r\n" for ln in lines), out_delay)
+    # Enforce the minimum dwell on any completed output screen.
+    held = out_delay + (NOTE_DWELL if exit_note else 0)
+    if held < MIN_SCREEN_DWELL:
+        emit("", MIN_SCREEN_DWELL - held)
     if exit_note:
         note(exit_note(code) if callable(exit_note) else exit_note)
     return code
@@ -155,7 +172,8 @@ def check_coverage():
                "Act2·Inspect",
                "Act3·Guardrails",
                "Act4·Operate",
-               "supervise"]
+               "supervise",
+               "readiness"]
     missing = [n for n in needles if n not in compact]
     if missing:
         print("coverage check FAILED, missing:", missing, file=sys.stderr)
@@ -180,46 +198,49 @@ def main():
 
     card("Act 1 · Bootstrap")
     scene("ares-server --version", [str(BIN), "--version"], fresh,
-          out_delay=0.8,
           exit_note="single static binary, no runtime dependencies")
     scene("ares-server init --minimal", [str(BIN), "init", "--minimal"], fresh,
-          out_delay=2.2, keep_lines=24,
+          keep_lines=24,
           exit_note="one command scaffolds config, agents, models, tools")
     scene("find . -type f | sort", ["/bin/sh", "-c", "cd fresh && find . -type f | sort"], tmp,
-          out_delay=1.0, keep_lines=10, raw_display="find . -type f | sort",
+          keep_lines=10, raw_display="find . -type f | sort",
           exit_note="agents and models land as TOON files under config/")
 
     # ── Act 2 · Inspect ────────────────────────────────────────────────────
     card("Act 2 · Inspect")
     scene("ares-server config --validate", [str(BIN), "config", "--validate"], fresh,
-          out_delay=1.5, keep_lines=17,
+          keep_lines=17,
           exit_note="every provider, model, tool reference resolves before boot")
     scene("ares-server agent list", [str(BIN), "agent", "list"], fresh,
-          out_delay=1.2, keep_lines=10)
+          keep_lines=10)
     scene("ares-server agent show orchestrator",
           [str(BIN), "agent", "show", "orchestrator"], fresh,
-          out_delay=1.5, keep_lines=13,
+          keep_lines=13,
           exit_note="system prompt included — inspect what will really run")
+    scene("ares-server agent show router",
+          [str(BIN), "agent", "show", "router"], fresh,
+          keep_lines=11,
+          exit_note="no tools attached — routing agents classify, they do not act")
 
     # ── Act 3 · Guardrails ─────────────────────────────────────────────────
     card("Act 3 · Guardrails")
     scene("ares-server init --minimal   # again — guarded",
           [str(BIN), "init", "--minimal"], fresh,
-          out_delay=0.9, keep_lines=6,
+          keep_lines=6,
           exit_note="refuses to clobber an existing project")
 
     scene("ares-server rag ingest-dir …   # bad path",
           [str(BIN), "rag", "ingest-dir", "--collection", "knowledge",
            "--docs-path", "./missing-docs", "--user", "demo@example.com",
            "--password", "demo-pass"],
-          fresh, out_delay=0.9, keep_lines=3, raw_display="ares-server rag ingest-dir --collection knowledge \\\n    --docs-path ./missing-docs …   # bad path",
+          fresh, keep_lines=3, raw_display="ares-server rag ingest-dir --collection knowledge \\\n    --docs-path ./missing-docs …   # bad path",
           exit_note="bad input refused before any network call")
 
     scene("ares-server rag search …   # unauthenticated",
           [str(BIN), "rag", "search", "--collection", "knowledge",
            "--query", "rust agentic", "--user", "demo@example.com",
            "--password", "demo-pass"],
-          fresh, out_delay=1.2, keep_lines=3, raw_display="ares-server rag search --collection knowledge \\\n    --query \"rust agentic\" …   # unauthenticated",
+          fresh, keep_lines=3, raw_display="ares-server rag search --collection knowledge \\\n    --query \"rust agentic\" …   # unauthenticated",
           exit_note="fails closed — HTTP 401, nothing half-served")
 
     broken = fresh / "broken.toml"
@@ -227,23 +248,27 @@ def main():
         'port = 3000', 'port = "not-a-number"'))
     scene("ares-server config --validate -c broken.toml",
           [str(BIN), "config", "--validate", "-c", "broken.toml"], fresh,
-          out_delay=1.3, keep_lines=4,
+          keep_lines=4,
           raw_display="sed 's/port = 3000/port = \"not-a-number\"/' ares.toml > broken.toml\n$ ares-server config --validate -c broken.toml",
           exit_note=None)
+    scene("ares-server config --validate   # original still passes",
+          [str(BIN), "config", "--validate"], fresh,
+          keep_lines=17,
+          raw_display="$ ares-server config --validate   # the untouched file still passes")
 
     # ── Act 4 · Operate ────────────────────────────────────────────────────
     card("Act 4 · Operate")
     scene("ares-server --help", [str(BIN), "--help"], fresh,
-          out_delay=1.6, keep_lines=36, raw_display="ares-server --help   # capability breadth, supervision built in",
+          keep_lines=36, raw_display="ares-server --help   # capability breadth, supervision built in",
           exit_note="--supervise: respawn on hot-restart exits (51), stop on clean exits, "
                     "surface boot failures (53) non-zero")
 
     # Closing card: headline v0.10 kernel capabilities.
-    emit("\x1b[H\x1b[2J\x1b[3J", 0.4)
-    emit(f"{GREEN}═══ ARES 0.10 · kernel highlights ═══{RESET}\r\n", 1.1)
-    emit(f"{DIM}intercept meta-events · readiness barriers{RESET}\r\n", 1.1)
-    emit(f"{DIM}name-keyed accessors · identity-preserving entry moves{RESET}\r\n", 1.1)
-    emit(f"{CYAN}ares-server init · config · agent · rag · --supervise{RESET}\r\n", 1.3)
+    emit("\x1b[H\x1b[2J\x1b[3J", CARD_CLEAR_DWELL)
+    emit(f"{GREEN}═══ ARES 0.10 · kernel highlights ═══{RESET}\r\n", 2.2)
+    emit(f"{DIM}intercept meta-events · readiness barriers{RESET}\r\n", 2.2)
+    emit(f"{DIM}name-keyed accessors · identity-preserving entry moves{RESET}\r\n", 2.2)
+    emit(f"{CYAN}ares-server init · config · agent · rag · --supervise{RESET}\r\n", 3.0)
 
     total = write_cast()
     print(f"wrote {CAST_OUT}: {len(events)} events, {total:.1f}s")
